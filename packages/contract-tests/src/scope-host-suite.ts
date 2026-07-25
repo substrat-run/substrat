@@ -12,7 +12,7 @@ import {
   type PrincipalId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ulid, type OperationHandler, type ScopeHost } from '@substrat-run/kernel';
+import { runPlatformSweep, ulid, type OperationHandler, type ScopeHost } from '@substrat-run/kernel';
 import {
   billedMod,
   contractTestBareOps,
@@ -689,6 +689,83 @@ export function scopeHostContractSuite(
         // Opting out never snapshots, even across a migration boundary.
         await host.admin.bindScopeVersion(staff, t1, sb, vA); // gB→gA, no opts
         expect(await countForks(sb)).toBe(before + 1);
+      });
+    });
+
+    // -- snapshot retention: deleteSnapshot + the GC sweep (§3/§9) -------------
+    //
+    // The one sanctioned hard delete, kept narrow: only a FORK may be reaped, and the
+    // sweep only reaps forks whose creator asked for an expiry. What matters: the
+    // delete removes record + hostnames + storage; a primary scope is refused; the
+    // sweep takes exactly the expired and leaves the unexpired and the pinned.
+
+    describe('snapshot retention (§3/§9)', () => {
+      it('deleteSnapshot removes the fork — record, hostnames, and reachability', async () => {
+        const snapId = await host.snapshotScope(staff, t1, s1);
+        await host.admin.bindHostname(staff, {
+          hostname: `snap-${snapId.toLowerCase()}.test.example`,
+          tenantId: t1,
+          scopeId: snapId,
+          surface: 'app',
+          region: null,
+          canonical: true,
+        });
+        expect(await host.admin.listHostnames(staff, { scopeId: snapId })).toHaveLength(1);
+
+        await host.deleteSnapshot(staff, t1, snapId);
+
+        expect(await host.admin.getScopeRecord(staff, t1, snapId)).toBeUndefined();
+        expect(await host.admin.listHostnames(staff, { scopeId: snapId })).toHaveLength(0);
+        // The storage is unreachable through every read: the directory row is gone,
+        // so the K-3 cross-check fails closed.
+        await expect(host.admin.exportScope(staff, t1, snapId)).rejects.toThrow();
+      });
+
+      it('refuses to delete a primary scope (forkedFrom is null)', async () => {
+        await expect(host.deleteSnapshot(staff, t1, s1)).rejects.toThrow(/not a fork/);
+        // Still there, still readable.
+        expect((await host.admin.getScopeRecord(staff, t1, s1))?.id).toBe(s1);
+      });
+
+      it('the GC sweep reaps exactly the expired forks', async () => {
+        const past = new Date(Date.now() - 60_000).toISOString();
+        const future = new Date(Date.now() + 3_600_000).toISOString();
+        const expired = await host.snapshotScope(staff, t1, s1, { expiresAt: past });
+        const unexpired = await host.snapshotScope(staff, t1, s1, { expiresAt: future });
+        const pinned = await host.snapshotScope(staff, t1, s1); // no expiry — retained
+
+        const report = await runPlatformSweep(host, {
+          actor: staff,
+          fetch: connectorTestFetch,
+          sweepers: {},
+          drainRetries: false,
+        });
+
+        expect(report.snapshotsReaped).toBeGreaterThanOrEqual(1);
+        expect(await host.admin.getScopeRecord(staff, t1, expired)).toBeUndefined();
+        expect((await host.admin.getScopeRecord(staff, t1, unexpired))?.id).toBe(unexpired);
+        expect((await host.admin.getScopeRecord(staff, t1, pinned))?.id).toBe(pinned);
+        // The primary scope was never in danger.
+        expect((await host.admin.getScopeRecord(staff, t1, s1))?.id).toBe(s1);
+
+        // Clean up the survivors so later suite state stays predictable.
+        await host.deleteSnapshot(staff, t1, unexpired);
+        await host.deleteSnapshot(staff, t1, pinned);
+      });
+
+      it('gcSnapshots: false skips the phase', async () => {
+        const past = new Date(Date.now() - 60_000).toISOString();
+        const snapId = await host.snapshotScope(staff, t1, s1, { expiresAt: past });
+        const report = await runPlatformSweep(host, {
+          actor: staff,
+          fetch: connectorTestFetch,
+          sweepers: {},
+          drainRetries: false,
+          gcSnapshots: false,
+        });
+        expect(report.snapshotsReaped).toBe(0);
+        expect((await host.admin.getScopeRecord(staff, t1, snapId))?.id).toBe(snapId);
+        await host.deleteSnapshot(staff, t1, snapId);
       });
     });
 

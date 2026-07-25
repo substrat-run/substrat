@@ -41,6 +41,7 @@ export const adminAction = z.enum([
   'setTenantStatus', // §4.1 — before/after carry the transitioned status
   'provisionScope', // §4.2 — the first scope-lifecycle transition (→ active)
   'importScope', // preview-and-snapshots.md §3 — provision a scope + load a dump (fork)
+  'deleteSnapshot', // preview-and-snapshots.md §9 — reap an expired fork: storage + directory row
   'suspendScope', // §4.2
   'unsuspendScope', // §4.2
   'archiveScope', // §4.2

@@ -153,6 +153,13 @@ export const scope = z.object({
    */
   forkedFrom: scopeId.nullable(),
   forkedAt: instant.nullable(),
+  /**
+   * When this scope stops being retained (preview-and-snapshots.md §3): the GC sweep
+   * reaps a FORK whose expiry has passed. Null = no expiry (every normal scope, and a
+   * deliberately-pinned archive). Only ever set on forks — retention is a snapshot
+   * concept, and the reaper refuses non-forks regardless.
+   */
+  expiresAt: instant.nullable(),
   createdAt: instant,
 });
 export type Scope = z.infer<typeof scope>;

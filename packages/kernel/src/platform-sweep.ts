@@ -34,6 +34,14 @@ export interface PlatformSweepOptions {
    * Default `true`; set `false` to sweep only connectors.
    */
   drainRetries?: boolean;
+  /**
+   * Also reap expired snapshots (preview-and-snapshots.md §3/§9): any FORK
+   * (`forkedFrom` set) whose `expiresAt` has passed is hard-deleted via
+   * `deleteSnapshot`. Default `true` — an expiry is only ever present because the
+   * snapshot's creator asked for one, so sweeping it is honoring that request, and
+   * `deleteSnapshot` refuses non-forks regardless. Set `false` to skip the phase.
+   */
+  gcSnapshots?: boolean;
 }
 
 export interface PlatformSweepReport {
@@ -45,8 +53,10 @@ export interface PlatformSweepReport {
   connectionsSwept: number;
   /** Connections skipped — revoked, or their provider has no registered sweeper. */
   connectionsSkipped: number;
+  /** Expired forks reaped by `deleteSnapshot` this pass. */
+  snapshotsReaped: number;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
-  errors: { kind: 'drain' | 'sweep'; id: string; error: string }[];
+  errors: { kind: 'drain' | 'sweep' | 'gc'; id: string; error: string }[];
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -98,6 +108,7 @@ export async function runPlatformSweep(
     drainTotals: { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 },
     connectionsSwept: 0,
     connectionsSkipped: 0,
+    snapshotsReaped: 0,
     errors: [],
   };
 
@@ -113,6 +124,26 @@ export async function runPlatformSweep(
         report.drainTotals.deadLettered += r.deadLettered;
       } catch (err) {
         report.errors.push({ kind: 'drain', id: s.id, error: message(err) });
+      }
+    });
+  }
+
+  if (options.gcSnapshots !== false) {
+    // Reap expired forks (§3/§9). Enumerate every scope regardless of status — a fork
+    // is `active` in the directory — and compare ISO instants lexically, the same
+    // move the tuple checker's `live()` makes. `deleteSnapshot` re-checks fork-ness,
+    // so a mislabeled row fails closed there, never silently deletes.
+    const now = new Date().toISOString();
+    const scopes = await host.admin.listScopes(options.actor);
+    const expired = scopes.filter(
+      (s) => s.forkedFrom !== null && s.expiresAt !== null && s.expiresAt <= now,
+    );
+    await mapBounded(expired, concurrency, async (s) => {
+      try {
+        await host.deleteSnapshot(options.actor, s.tenantId, s.id);
+        report.snapshotsReaped += 1;
+      } catch (err) {
+        report.errors.push({ kind: 'gc', id: s.id, error: message(err) });
       }
     });
   }

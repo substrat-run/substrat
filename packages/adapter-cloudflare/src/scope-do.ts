@@ -783,6 +783,18 @@ export function defineScopeDO(
       }
     }
 
+    /**
+     * Wipe this scope's storage — the reap half of deleteSnapshot (preview-and-
+     * snapshots.md §9). The fork-only refusal lives on the coordinator (which holds
+     * the directory record); this DO just deletes its own bytes. After deleteAll the
+     * instance is inert; a stray re-open would rebuild an empty kernel schema, which
+     * the directory no longer points at.
+     */
+    async destroyStorage(): Promise<void> {
+      await this.ctx.storage.deleteAll();
+      this.applied.clear();
+    }
+
     // -- event dispatch (port of dispatch) ------------------------------------
 
     private async dispatch(tenantId: TenantId, scopeId: ScopeId): Promise<void> {

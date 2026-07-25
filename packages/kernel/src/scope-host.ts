@@ -970,6 +970,12 @@ export interface ProvisionScopeInput {
    */
   forkedFrom?: ScopeId;
   forkedAt?: string;
+  /**
+   * Retention horizon (preview-and-snapshots.md §3): when the GC sweep may reap this
+   * scope. Only meaningful on forks — the reaper refuses non-forks regardless. Unset =
+   * retained until deliberately deleted.
+   */
+  expiresAt?: string;
 }
 
 /**
@@ -1087,8 +1093,22 @@ export interface ScopeHost {
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    opts?: { kind?: string },
+    opts?: { kind?: string; expiresAt?: string },
   ): Promise<ScopeId>;
+
+  /**
+   * Reap a fork — delete its storage AND its directory row (preview-and-snapshots.md
+   * §3/§9). The one sanctioned hard delete on the platform, and deliberately narrow:
+   * it REFUSES any scope whose `forkedFrom` is null. A fork is an ephemeral copy —
+   * its deletion reclaims storage and PII without touching spine history; every
+   * primary scope keeps the platform's tombstone-only rule (`archiveScope` et al).
+   *
+   * Removes, in order: the scope's hostname bindings (a reaped preview URL must stop
+   * resolving), the directory row, and the scope's own storage (the DO's SQLite / the
+   * adapter's file). Audited as `deleteSnapshot` with the fork's provenance in the
+   * entry, so the log records what was reaped and where it came from.
+   */
+  deleteSnapshot(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
 
   /** Enforcement-input writes: roles, assignments, grants, membership. */
   readonly admin: HostAdmin;

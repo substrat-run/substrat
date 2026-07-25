@@ -12,6 +12,7 @@ export interface ResolvedScopeRecord {
   jurisdiction: Jurisdiction;
   forkedFrom: string | null;
   forkedAt: string | null;
+  expiresAt: string | null;
 }
 
 /**
@@ -46,5 +47,6 @@ export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRec
     // Provenance is set only by importScope; a normal provision leaves it null.
     forkedFrom: input.forkedFrom ?? null,
     forkedAt: input.forkedAt ?? null,
+    expiresAt: input.expiresAt ?? null,
   };
 }
