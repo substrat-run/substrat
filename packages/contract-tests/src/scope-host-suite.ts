@@ -836,6 +836,41 @@ export function scopeHostContractSuite(
       ).rejects.toThrow(/owned by the platform/);
     });
 
+    it('carries registry-driven install metadata (marketplace-publish.md §3) and refreshes it', async () => {
+      // ownerGrants/entitlements/provides/requires ride the registry (one install_spec JSON
+      // column) so the dashboard installs a vertical without a hardcoded catalog entry.
+      await host.admin.registerVertical(staff, {
+        slug: 'authy',
+        name: 'Authy',
+        source: 'cli',
+        ownerTenant: t2,
+        entitlements: ['authy'],
+        ownerGrants: ['content:admin'],
+        provides: ['oidc-issuer'],
+      });
+      const first = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'authy');
+      expect(first?.entitlements).toEqual(['authy']);
+      expect(first?.ownerGrants).toEqual(['content:admin']);
+      expect(first?.provides).toEqual(['oidc-issuer']);
+      expect(first?.requires).toBeUndefined();
+
+      // Like envSpec, install metadata evolves with the manifest: an otherwise-identical
+      // re-registration refreshes it rather than conflicting.
+      await host.admin.registerVertical(staff, {
+        slug: 'authy',
+        name: 'Authy',
+        source: 'cli',
+        ownerTenant: t2,
+        entitlements: ['authy'],
+        ownerGrants: ['content:admin', 'content:publish'],
+        requires: ['oidc-issuer'],
+      });
+      const second = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'authy');
+      expect(second?.ownerGrants).toEqual(['content:admin', 'content:publish']);
+      expect(second?.requires).toEqual(['oidc-issuer']);
+      expect(second?.provides).toBeUndefined(); // dropped on refresh — the blob is replaced whole
+    });
+
     it('refuses to bind a rejected version, and rejection is terminal', async () => {
       const versionId = ulid();
       await host.admin.publishVersion(staff, {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { instant, tenantId, verticalSlug } from './ids.js';
-import { envVarSpec } from './manifest.js';
+import { instant, permissionKey, tenantId, verticalSlug } from './ids.js';
+import { envVarSpec, capability } from './manifest.js';
 
 /**
  * The vertical + version registry (#31 step 1; D-33's milestone one).
@@ -37,11 +37,24 @@ export const vertical = z.object({
    * "opt into a settings form by declaring `envSpec` in your manifest" flow automatically.
    */
   envSpec: z.array(envVarSpec).optional(),
+  /**
+   * Registry-driven install (marketplace-publish.md §3) — carried on push from the manifest,
+   * so the dashboard installs a vertical without a hardcoded catalog entry. `entitlements` +
+   * `ownerGrants` are what an install grants (scope-provisioning verticals); `provides` /
+   * `requires` are the capabilities the connection store wires (§4). All additive (D-28);
+   * stored as one `install_spec` json column adapter-side.
+   */
+  entitlements: z.array(z.string()).optional(),
+  ownerGrants: z.array(permissionKey).optional(),
+  provides: z.array(capability).optional(),
+  requires: z.array(capability).optional(),
   createdAt: instant,
 });
 export type Vertical = z.infer<typeof vertical>;
 
-export const registerVerticalInput = vertical.pick({ slug: true, name: true, source: true, envSpec: true }).extend({
+export const registerVerticalInput = vertical
+  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true })
+  .extend({
   // Optional on input — a staff/platform push omits it (⇒ platform-owned).
   ownerTenant: tenantId.nullable().default(null),
 });

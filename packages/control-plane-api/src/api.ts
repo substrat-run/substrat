@@ -688,6 +688,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // The vertical's declared config surface rides to the registry, so the dashboard
       // renders a settings form for a pushed vertical exactly like a builtin.
       ...(manifest.envSpec ? { envSpec: manifest.envSpec } : {}),
+      // Registry-driven install metadata (marketplace-publish.md §3) — so the dashboard
+      // installs a pushed vertical without a hardcoded catalog entry.
+      ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
+      ...(manifest.entitlements ? { entitlements: manifest.entitlements } : {}),
+      ...(manifest.provides ? { provides: manifest.provides } : {}),
+      ...(manifest.requires ? { requires: manifest.requires } : {}),
     });
     await admin.publishVersion(c.get('actor'), {
       id,

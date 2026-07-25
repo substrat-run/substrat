@@ -33,6 +33,11 @@ export interface PushOptions {
   /** The vertical's declared env-spec (from package.json `substrat.envSpec`), carried to the
    *  registry so the platform can render a config form for it. Validated control-plane-side. */
   envSpec?: readonly unknown[];
+  /** Registry-driven install fields (marketplace-publish.md §3), from package.json `substrat.*`. */
+  ownerGrants?: readonly unknown[];
+  entitlements?: readonly unknown[];
+  provides?: readonly unknown[];
+  requires?: readonly unknown[];
   controlPlaneUrl: string;
   /** The auth header to send — a bearer session or an x-service-token (see config.resolveAuth). */
   authHeader: Record<string, string>;
@@ -100,6 +105,12 @@ export async function push(opts: PushOptions): Promise<{ id: string; admission: 
     // validated) so the platform renders a settings form for it. Not part of any admission
     // digest — it's metadata, not code.
     ...(opts.envSpec ? { envSpec: opts.envSpec } : {}),
+    // Registry-driven install metadata (marketplace-publish.md §3) — carried so the dashboard
+    // installs without a hardcoded catalog entry. Metadata, not code; not in any digest.
+    ...(opts.ownerGrants ? { ownerGrants: opts.ownerGrants } : {}),
+    ...(opts.entitlements ? { entitlements: opts.entitlements } : {}),
+    ...(opts.provides ? { provides: opts.provides } : {}),
+    ...(opts.requires ? { requires: opts.requires } : {}),
     digests: {
       manifest: await sha256(concat),
       permission: await sha256(Buffer.from(JSON.stringify(bindings))),
@@ -138,6 +149,11 @@ export interface VerticalMeta {
   /** The vertical's declared env-spec, from package.json `substrat.envSpec` — the static,
    *  code-free source the CLI can read at push time (like slug/name). Undefined if none. */
   envSpec: readonly unknown[] | undefined;
+  /** Registry-driven install fields, from package.json `substrat.{ownerGrants,entitlements,provides,requires}`. */
+  ownerGrants: readonly unknown[] | undefined;
+  entitlements: readonly unknown[] | undefined;
+  provides: readonly unknown[] | undefined;
+  requires: readonly unknown[] | undefined;
 }
 
 /**
@@ -148,7 +164,11 @@ export interface VerticalMeta {
  * Returns empty strings when there is no package.json — the caller then requires flags.
  */
 export function readVerticalMeta(dir: string): VerticalMeta {
-  let pkg: { name?: string; version?: string; substrat?: { slug?: string; name?: string; envSpec?: unknown[] } } = {};
+  let pkg: {
+    name?: string;
+    version?: string;
+    substrat?: { slug?: string; name?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[] };
+  } = {};
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg;
   } catch {
@@ -157,7 +177,17 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   const bare = (pkg.name ?? '').split('/').pop()?.replace(/^demo-/, '') ?? '';
   const slug = pkg.substrat?.slug ?? bare;
   const title = slug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  return { slug, name: pkg.substrat?.name ?? title, versionSeed: pkg.version, envSpec: pkg.substrat?.envSpec };
+  const s = pkg.substrat;
+  return {
+    slug,
+    name: s?.name ?? title,
+    versionSeed: pkg.version,
+    envSpec: s?.envSpec,
+    ownerGrants: s?.ownerGrants,
+    entitlements: s?.entitlements,
+    provides: s?.provides,
+    requires: s?.requires,
+  };
 }
 
 function parseSemver(v: string): [number, number, number] | null {
