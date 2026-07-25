@@ -357,6 +357,9 @@ interface VerticalRow {
   /** Registry-driven install (marketplace-publish.md): {entitlements, ownerGrants, provides,
    *  requires} as one JSON string (or null). */
   install_spec: string | null;
+  /** Published to the public marketplace (0/1). Set on insert; the publish action updates it;
+   *  a re-push refresh never touches it. */
+  listed: number;
   created_at: string;
 }
 
@@ -543,6 +546,10 @@ export class SqliteScopeHost implements ScopeHost {
         -- provides, requires} as one JSON blob, so the dashboard installs without a hardcoded
         -- catalog entry. NULL = none declared.
         install_spec TEXT,
+        -- Published to the public marketplace (marketplace-publish.md §2). 0 = private to
+        -- owner_tenant. Its own column: set on insert, updated by the publish action, never
+        -- clobbered by a re-push refresh.
+        listed       INTEGER NOT NULL DEFAULT 0,
         created_at   TEXT NOT NULL
       );
       -- admission: 'pending' until the gates pass. A push is not a deploy, and
@@ -1552,6 +1559,7 @@ export class SqliteScopeHost implements ScopeHost {
         ownerTenant: r.owner_tenant,
         ...(r.env_spec ? { envSpec: JSON.parse(r.env_spec) } : {}),
         ...(r.install_spec ? (JSON.parse(r.install_spec) as Record<string, unknown>) : {}),
+        listed: !!r.listed,
         createdAt: r.created_at,
       });
     const readVertical = (slugValue: string): Vertical | undefined => {
@@ -2093,9 +2101,9 @@ export class SqliteScopeHost implements ScopeHost {
         }
         this.directory
           .prepare(
-            'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           )
-          .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, new Date().toISOString());
+          .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString());
         this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed);
       },
       listVerticals: async (actor) => {
@@ -3109,6 +3117,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'verticals', 'env_spec', 'env_spec TEXT');
     // marketplace-publish.md §3: registry-driven install metadata (one JSON blob).
     this.ensureColumn(this.directory, 'verticals', 'install_spec', 'install_spec TEXT');
+    this.ensureColumn(this.directory, 'verticals', 'listed', 'listed INTEGER NOT NULL DEFAULT 0');
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,

@@ -112,6 +112,8 @@ export interface VerticalRow {
   /** Registry-driven install (marketplace-publish.md): {entitlements, ownerGrants, provides,
    *  requires} as one JSON string (or null). */
   install_spec: string | null;
+  /** Published to the public marketplace (0/1); set on insert, never touched by a re-push. */
+  listed: number;
   created_at: string;
 }
 
@@ -256,6 +258,9 @@ const DIRECTORY_DDL = `
     -- Registry-driven install (marketplace-publish.md §3): {entitlements, ownerGrants,
     -- provides, requires} as one JSON blob. NULL = none declared.
     install_spec TEXT,
+    -- Published to the public marketplace (marketplace-publish.md §2). Own column: set on
+    -- insert, updated by the publish action, never clobbered by a re-push refresh.
+    listed       INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS vertical_versions (
@@ -529,6 +534,7 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('verticals', 'env_spec TEXT');
     // marketplace-publish.md §3: registry-driven install metadata (one JSON blob).
     this.addColumn('verticals', 'install_spec TEXT');
+    this.addColumn('verticals', 'listed INTEGER NOT NULL DEFAULT 0');
     this.sql.exec("UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL");
     this.sql.exec("UPDATE scopes SET kind = 'scope' WHERE kind IS NULL");
     this.sql.exec('UPDATE scopes SET name = slug WHERE name IS NULL');
@@ -958,10 +964,10 @@ export class ControlPlaneDO extends DurableObject {
       .toArray()[0] as unknown as VerticalRow | undefined;
   }
 
-  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, createdAt: string): void {
+  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): void {
     this.sql.exec(
-      'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      slug, name, source, ownerTenant, envSpec, installSpec, createdAt,
+      'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      slug, name, source, ownerTenant, envSpec, installSpec, listed, createdAt,
     );
   }
 

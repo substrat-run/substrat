@@ -1,4 +1,4 @@
-import type { EnvVarSpec, PermissionKey, PlatformActorId } from '@substrat-run/contracts';
+import type { EnvVarSpec, PermissionKey, PlatformActorId, Vertical } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import { PERM as WO } from '@substrat-run/engine-workorder';
@@ -102,24 +102,30 @@ export async function ensureCatalog(host: ScopeHost, staff: PlatformActorId): Pr
       slug,
       name: e.name,
       source: 'builtin',
+      // The provisioning specifics ride to the registry (marketplace-publish.md §3), so
+      // install reads them from there — not this map. First-party verticals are PUBLISHED to
+      // everyone (`listed`), unless bundled-but-not-yet-deployed (`connected: false`), which
+      // stays private so it isn't offered an install that 501s in connected mode.
+      entitlements: e.entitlements,
+      ownerGrants: e.ownerGrants,
+      listed: e.connected !== false,
       ...(e.envSpec ? { envSpec: e.envSpec } : {}),
     });
   }
 }
 
 /**
- * The verticals to advertise, for the current provisioning mode. In CONNECTED mode
- * (a shared control plane is bound) we only offer entries that plane can actually
- * provision (`connected !== false`); advertising one it can't hands the user a
- * marketplace tile whose install always 501s. Embedded/standalone bundles every module
- * in-process, so every catalog entry is provisionable there. `verticals` is the registry
- * listing; the result is the `{ slug, name }[]` the catalog endpoint returns.
+ * The verticals to advertise for a caller — REGISTRY-DRIVEN (marketplace-publish.md §3), no
+ * hardcoded gate: a vertical shows if it's PUBLISHED (`listed`) or OWNED by the caller's tenant
+ * (private to your team). So a pushed → promoted → published vertical appears with no dashboard
+ * change. `verticals` is the registry listing; the result is the `{ slug, name }[]` the endpoint
+ * returns.
  */
 export function availableCatalog(
-  verticals: readonly { slug: string; name: string }[],
-  opts: { connected: boolean },
+  verticals: readonly Vertical[],
+  opts: { tenantId: string | null },
 ): Array<{ slug: string; name: string }> {
   return verticals
-    .filter((v) => CATALOG[v.slug] && (!opts.connected || CATALOG[v.slug]!.connected !== false))
+    .filter((v) => v.listed || (opts.tenantId !== null && v.ownerTenant === opts.tenantId))
     .map((v) => ({ slug: v.slug, name: v.name }));
 }

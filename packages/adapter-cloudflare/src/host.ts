@@ -229,7 +229,7 @@ interface ControlPlaneStub {
   setHostnameStatus(hostname: string, status: string, note: string | null): Promise<void>;
   listHostnames(filter: { tenantId?: string; scopeId?: string }): Promise<HostnameRow[]>;
   readVertical(slug: string): Promise<VerticalRow | undefined>;
-  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, createdAt: string): Promise<void>;
+  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null): Promise<void>;
   listVerticals(): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
@@ -958,6 +958,7 @@ export class CloudflareScopeHost implements ScopeHost {
         ownerTenant: r.owner_tenant,
         ...(r.env_spec ? { envSpec: JSON.parse(r.env_spec) } : {}),
         ...(r.install_spec ? (JSON.parse(r.install_spec) as Record<string, unknown>) : {}),
+        listed: !!r.listed,
         createdAt: r.created_at,
       });
     const mapVersion = (r: VersionRow): VerticalVersion =>
@@ -1333,7 +1334,7 @@ export class CloudflareScopeHost implements ScopeHost {
           }
           throw new Error(`vertical '${parsed.slug}' is already registered as ${existing.source}`);
         }
-        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, new Date().toISOString());
+        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString());
         await this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed);
       },
       listVerticals: async (actor) => {

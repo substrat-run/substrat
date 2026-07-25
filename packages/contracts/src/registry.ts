@@ -48,12 +48,20 @@ export const vertical = z.object({
   ownerGrants: z.array(permissionKey).optional(),
   provides: z.array(capability).optional(),
   requires: z.array(capability).optional(),
+  /**
+   * Published to the PUBLIC marketplace (marketplace-publish.md §2/§5). `false` = private to
+   * its `ownerTenant`. First-party verticals are seeded `true`; a builder vertical flips it via
+   * the staff-reviewed publish action (a later phase). Its own column adapter-side — set on
+   * insert, NEVER touched by a re-push refresh, so re-pushing a published vertical can't
+   * silently unpublish it (publish is a distinct action from push).
+   */
+  listed: z.boolean().default(false),
   createdAt: instant,
 });
 export type Vertical = z.infer<typeof vertical>;
 
 export const registerVerticalInput = vertical
-  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true })
+  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, listed: true })
   .extend({
   // Optional on input — a staff/platform push omits it (⇒ platform-owned).
   ownerTenant: tenantId.nullable().default(null),
