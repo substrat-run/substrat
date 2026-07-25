@@ -756,6 +756,17 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.scopeStub(scopeId).destroyStorage();
   }
 
+  /**
+   * Dump one scope's tables from THIS deployment — the data half of a governed
+   * `scope pull` (preview-and-snapshots.md §8/§9). Unlike the snapshot verb, this one
+   * DOES move scope bytes across the boundary — that is its purpose, and why the
+   * control-plane route in front of it is the gated, audited, masked-by-default
+   * path (§6). The vertical's platform-gated `/internal/export` route calls it.
+   */
+  async exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]> {
+    return this.scopeStub(scopeId).exportDump();
+  }
+
   registerModule(registration: ModuleRegistration): void {
     const manifest = moduleManifest.parse(registration.manifest);
     if (this.moduleIds.has(manifest.id)) {

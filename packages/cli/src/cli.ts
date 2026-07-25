@@ -23,6 +23,7 @@ import { printVersions } from './versions.js';
 import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
+import { pullScope, resolveTenantId } from './scope.js';
 
 const argv = process.argv.slice(2);
 
@@ -55,6 +56,10 @@ Usage:
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
+  substrat scope pull <scopeId> [--full] [--out <dir>]
+                                              pull a scope's data to a local SQLite file
+                                              (masked by default; --full is break-glass,
+                                              audited server-side; 'global' scopes only)
 
 'substrat push' defaults everything from the vertical's package.json — run it from inside the
 directory with no flags. Override any of: --slug, --name, --version. The slug/name come from a
@@ -196,6 +201,30 @@ async function cmdUnpublish(): Promise<void> {
   console.log(`✓ ${r.slug} unpublished`);
 }
 
+async function cmdScope(): Promise<void> {
+  const sub = argv[1];
+  const scope = argv[2];
+  if (sub !== 'pull' || !scope || scope.startsWith('--')) {
+    console.error('usage: substrat scope pull <scopeId> [--full] [--out <dir>] [--tenant <id-or-slug>]');
+    process.exit(1);
+  }
+  const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  console.log(`authenticating with ${as}`);
+  const tenantId = await resolveTenantId(
+    controlPlaneUrl,
+    header,
+    flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant,
+  );
+  await pullScope({
+    controlPlaneUrl,
+    header,
+    tenantId,
+    scopeId: scope,
+    full: argv.includes('--full'),
+    outDir: flag('out') ?? '.substrat',
+  });
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -225,6 +254,8 @@ async function main(): Promise<void> {
       return cmdUnpublish();
     case 'whoami':
       return cmdWhoami();
+    case 'scope':
+      return cmdScope();
     case 'help':
     case '--help':
     case '-h':

@@ -27,6 +27,7 @@ import type { VerticalClient } from './vertical-client.js';
 import { ControlPlaneError } from './client.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { mapError } from './errors.js';
+import { maskDump } from './mask.js';
 import { assertSandboxContract, deployManifest, deploymentRefFor } from './deploy.js';
 import type { DeployVerticalFn } from './deploy.js';
 
@@ -532,6 +533,49 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (vertical) await vertical.deleteScope({ scopeId });
       await options.host.deleteSnapshot(actor, tenantId, scopeId);
       return c.json({ deleted: scopeId });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
+  // The governed pull (preview-and-snapshots.md §6/§8) — the ONE route that
+  // deliberately hands scope BYTES to the caller, which is why every §6 layer sits
+  // on it: staff-only (not in BUILDER_ROUTES), K-3 cross-checked, K-24 audited (the
+  // exportScope access-log entry), jurisdiction-gated, and MASKED by default —
+  // `?full=true` is the explicit break-glass. Dumps are JSON-safe today (no BLOB
+  // columns exist in any schema); a vertical that adds one needs an encoding here.
+  app.get('/tenants/:tenantId/scopes/:scopeId/export', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    // Residency (K-7/K-32): jurisdiction pins EXECUTION, not just storage. A pull
+    // lands the data on a machine outside the platform's control, so anything
+    // pinned tighter than `global` is refused until a compliant path exists.
+    if (scope.jurisdiction !== 'global') {
+      return c.json(
+        {
+          error:
+            `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
+            `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`,
+        },
+        403,
+      );
+    }
+    const full = c.req.query('full') === 'true';
+    try {
+      // The canonical export first: it writes the K-24 access-log entry and is the
+      // bytes when the host is co-located. When the scope's data lives in a vertical
+      // deployment, its dump OVERLAYS the (placeholder) tables — audit stays on the
+      // one canonical path either way.
+      const dump = await admin.exportScope(actor, tenantId, scopeId);
+      const vertical = await verticalForScope(c, scope);
+      const tables = vertical ? await vertical.exportScope(scopeId) : dump.tables;
+      return c.json({ ...dump, tables: full ? tables : maskDump(tables), masked: !full });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);

@@ -1,6 +1,7 @@
 import type {
   PrincipalId,
   ReadScopeTableInput,
+  ScopeDumpTable,
   ScopeId,
   ScopeTable,
   ScopeTablePage,
@@ -136,6 +137,18 @@ export class VerticalClient {
    */
   async deleteScope(input: { scopeId: ScopeId }): Promise<void> {
     await this.postInternal<unknown>('/internal/delete-scope', input, 'delete-scope');
+  }
+
+  /**
+   * The scope's full dump — the ONE verb here that deliberately moves scope bytes
+   * across the boundary, for the governed `scope pull` (§8). The control-plane route
+   * in front of it is the gate: staff-only, audited, masked by default, jurisdiction-
+   * checked. Everything else on this surface stays byte-free by design.
+   */
+  async exportScope(scopeId: ScopeId): Promise<ScopeDumpTable[]> {
+    return this.getInternal<ScopeDumpTable[]>(
+      `/internal/export?scopeId=${encodeURIComponent(scopeId)}`,
+    );
   }
 
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
