@@ -56,3 +56,39 @@ export const readScopeTableInput = z.object({
   offset: z.number().int().nonnegative().default(0),
 });
 export type ReadScopeTableInput = z.infer<typeof readScopeTableInput>;
+
+/**
+ * A COMPLETE, byte-faithful dump of one scope's database — the deliberate opposite
+ * of `readScopeTable` above (bounded, blob-as-null, "not a dump"). This is the whole
+ * scope: every table, its DDL, and every row, so it can rebuild the scope elsewhere.
+ *
+ * It is the privileged primitive the preview/snapshot machinery is built on
+ * (docs/design/preview-and-snapshots.md §3) — the source a fork or a local pull
+ * reads. It KEEPS the `_substrat_*` spine (a fork must carry the event/migration
+ * state) and drops only SQLite's own `sqlite_*` internals (auto-managed, and
+ * `CREATE TABLE sqlite_*` is rejected on reload). Because it exfiltrates a whole
+ * scope, it is staff/audited like every `HostAdmin` read, never a UI affordance.
+ */
+export const scopeDumpTable = z.object({
+  /** Table name (a vertical table or a `_substrat_*` spine table). */
+  name: z.string().min(1),
+  /** The `CREATE TABLE` statement from `sqlite_master` — replayed to rebuild the schema. */
+  ddl: z.string().min(1),
+  /** Column order; each row in `rows` is a positional array aligned to it. */
+  columns: z.array(z.string()),
+  /**
+   * Every row, as positional arrays. Cells are SQLite text/int/real/null; blobs are
+   * preserved as bytes (never nulled as in a UI read) so the dump reloads faithfully.
+   */
+  rows: z.array(z.array(z.unknown())),
+});
+export type ScopeDumpTable = z.infer<typeof scopeDumpTable>;
+
+export const scopeDump = z.object({
+  tenantId: z.string().min(1),
+  scopeId: z.string().min(1),
+  /** ISO 8601 capture time — the fork's `forked_at`. */
+  capturedAt: z.string().min(1),
+  tables: z.array(scopeDumpTable),
+});
+export type ScopeDump = z.infer<typeof scopeDump>;

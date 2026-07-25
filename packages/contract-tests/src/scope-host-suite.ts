@@ -466,6 +466,58 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- scope export (preview-and-snapshots.md §3) ---------------------------
+    //
+    // The privileged sibling of introspection: not a bounded page but the WHOLE
+    // scope — every table, its DDL, every row — the source a fork/pull reads. What
+    // matters: it is complete (the vertical's tables AND the spine), it is faithful
+    // (rows + schema, not blob-as-null), it drops only the un-recreatable sqlite_*
+    // internals, and it fails closed on a mismatched pair exactly as the reads do.
+
+    describe('scope export (§3)', () => {
+      it('dumps every table — the vertical\'s own AND the spine — with DDL and rows', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/write-marker', { v: 'export-me' });
+
+        const dump = await host.admin.exportScope(staff, t1, s1);
+        expect(dump.tenantId).toBe(t1);
+        expect(dump.scopeId).toBe(s1);
+        expect(dump.capturedAt).toBeTruthy();
+
+        const byName = new Map(dump.tables.map((t) => [t.name, t]));
+        // The vertical's own table: dumped, with its CREATE statement and its rows.
+        const marker = byName.get('marker');
+        expect(marker).toBeDefined();
+        expect(marker!.ddl.toLowerCase()).toContain('create table');
+        const vCol = marker!.columns.indexOf('v');
+        expect(vCol).toBeGreaterThanOrEqual(0);
+        expect(marker!.rows.map((r) => r[vCol])).toContain('export-me');
+        // The `_substrat_*` spine is INCLUDED — a fork must carry event/migration state.
+        expect(byName.has('_substrat_outbox')).toBe(true);
+        expect(byName.has('_substrat_migrations')).toBe(true);
+        // SQLite's own internals are NOT dumped (auto-managed, un-recreatable).
+        expect(dump.tables.some((t) => t.name.startsWith('sqlite_'))).toBe(false);
+      });
+
+      it('is complete — every introspected table (minus sqlite internals) is present', async () => {
+        const tables = await host.admin.listScopeTables(staff, t1, s1);
+        const dump = await host.admin.exportScope(staff, t1, s1);
+        const dumped = new Set(dump.tables.map((t) => t.name));
+        for (const t of tables) {
+          if (t.name.startsWith('sqlite_')) continue;
+          expect(dumped.has(t.name)).toBe(true);
+        }
+        // The vertical table's rows are dumped in full (count matches introspection).
+        const marker = dump.tables.find((t) => t.name === 'marker')!;
+        const introMarker = tables.find((t) => t.name === 'marker')!;
+        expect(marker.rows.length).toBe(introMarker.rowCount);
+      });
+
+      it('fails closed on a mismatched (tenantId, scopeId) pair (K-3)', async () => {
+        await expect(host.admin.exportScope(staff, t2, s1)).rejects.toThrow();
+      });
+    });
+
     // -- the integrations hub: connections (#101) -----------------------------
     //
     // The store exists so a vertical's connector can reach a tenant's provider
