@@ -1,4 +1,4 @@
-import type { ConnectionId, PlatformActorId } from '@substrat-run/contracts';
+import type { ConnectionId, PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, ScopeHost } from './scope-host.js';
 
 // setTimeout/clearTimeout are web-standard (Node, Workers, browsers) but the
@@ -42,6 +42,14 @@ export interface PlatformSweepOptions {
    * `deleteSnapshot` refuses non-forks regardless. Set `false` to skip the phase.
    */
   gcSnapshots?: boolean;
+  /**
+   * How the GC phase deletes one expired fork. Defaults to `host.deleteSnapshot` —
+   * right whenever the host and the scope's storage share a deployment (self-host,
+   * a vertical's own sweep). The CONTROL-PLANE cron overrides it with the
+   * orchestrated delete (§9): wipe the fork's storage in the vertical deployment
+   * that actually holds it, then the in-process delete for directory row + audit.
+   */
+  deleteSnapshotFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
 }
 
 export interface PlatformSweepReport {
@@ -138,9 +146,13 @@ export async function runPlatformSweep(
     const expired = scopes.filter(
       (s) => s.forkedFrom !== null && s.expiresAt !== null && s.expiresAt <= now,
     );
+    const reap =
+      options.deleteSnapshotFn ??
+      ((tenantId: TenantId, scopeId: ScopeId) =>
+        host.deleteSnapshot(options.actor, tenantId, scopeId));
     await mapBounded(expired, concurrency, async (s) => {
       try {
-        await host.deleteSnapshot(options.actor, s.tenantId, s.id);
+        await reap(s.tenantId, s.id);
         report.snapshotsReaped += 1;
       } catch (err) {
         report.errors.push({ kind: 'gc', id: s.id, error: message(err) });

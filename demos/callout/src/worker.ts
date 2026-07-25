@@ -262,6 +262,36 @@ app.get('/internal/tables/:table', async (c) => {
   return c.json(await hostFor(c.env).introspectScopeTable(scope, input));
 });
 
+// Scope-storage lifecycle (preview-and-snapshots.md §9, the ratified trust line):
+// copy a scope into a sibling DO / wipe a reaped fork — both entirely inside this
+// deployment, so no scope bytes ever cross to the platform. The directory half
+// (provenance row, activation, bind; the fork-only refusal) lives on the control
+// plane's side of the call.
+app.post('/internal/snapshot', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const body = z
+    .object({ sourceScopeId: scopeId, newScopeId: scopeId })
+    .parse(await c.req.json());
+  return c.json(await hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId), 201);
+});
+
+app.post('/internal/delete-scope', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const body = z.object({ scopeId }).parse(await c.req.json());
+  await hostFor(c.env).deleteScopeLocal(body.scopeId);
+  return c.json({ deleted: body.scopeId });
+});
+
 // A protected data route resolves the caller across the mounted adapters, then
 // getScope for the router-asserted node. No adapter matched → 401 (fail closed).
 async function stub(c: { env: Env; req: { raw: Request } }) {

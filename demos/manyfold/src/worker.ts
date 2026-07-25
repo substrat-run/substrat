@@ -192,6 +192,21 @@ app.get('/internal/tables/:table', async (c) => {
   });
   return c.json(await hostFor(c.env).introspectScopeTable(scope, input));
 });
+// Scope-storage lifecycle (preview-and-snapshots.md §9): copy a scope into a sibling
+// DO / wipe a reaped fork — both inside this deployment; no bytes cross the boundary.
+app.post('/internal/snapshot', async (c) => {
+  gatePlatform(c);
+  const body = z
+    .object({ sourceScopeId: scopeId, newScopeId: scopeId })
+    .parse(await c.req.json());
+  return c.json(await hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId), 201);
+});
+app.post('/internal/delete-scope', async (c) => {
+  gatePlatform(c);
+  const body = z.object({ scopeId }).parse(await c.req.json());
+  await hostFor(c.env).deleteScopeLocal(body.scopeId);
+  return c.json({ deleted: body.scopeId });
+});
 
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.
 async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
