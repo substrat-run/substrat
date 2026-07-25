@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-handlebar",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "private": true,
   "license": "Apache-2.0",
   "description": "Handlebar demo vertical — the v2 bike-shop skin, see spec/concept.md",

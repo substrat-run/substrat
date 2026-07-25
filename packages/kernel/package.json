@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/kernel",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Substrat kernel contracts and services — pure TypeScript, no platform imports (D-14)",
   "license": "AGPL-3.0-only",
   "repository": {

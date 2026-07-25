@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-rally",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "private": true,
   "license": "Apache-2.0",
   "description": "RallyPoint demo vertical (padel/tennis club booking) — see spec/concept.md",

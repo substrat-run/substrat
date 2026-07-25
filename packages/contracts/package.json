@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/contracts",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Substrat kernel contract schemas — Zod is the source of truth (master plan D-22); OAS/JSON Schema are emitted artifacts",
   "license": "Apache-2.0",
   "repository": {

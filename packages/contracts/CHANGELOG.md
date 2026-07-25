@@ -1,5 +1,93 @@
 # @substrat-run/contracts
 
+## 0.14.0
+
+### Minor Changes
+
+- 6a7768a: Add a declarative environment surface to the module manifest, carried on the registry.
+
+  - **`envVarSpec` / `EnvVarSpec`** and an optional **`envSpec`** block on `moduleManifest`: a
+    vertical declares the environment it needs — key, label, description, placeholder,
+    `required`, `secret`, `default`, `group` — self-describing so a host or console can render a
+    config form and validate required keys before deploy. Additive-only (decision 28).
+  - **`resolveEnvSpec(spec, raw)`** resolves a declared spec against a raw environment (a Worker
+    `env`, `process.env`, …): it reads only the declared keys (so the manifest is the single
+    source of what an app consumes), applies each `default`, and reports absent `required` keys
+    without throwing.
+  - **The registry carries a vertical's `envSpec`.** A new `env_spec` column is added
+    additively to the vertical registry in both the SQLite and Cloudflare adapters;
+    `registerVertical` stores the spec and an otherwise-identical re-registration refreshes it.
+    This lets a host/console render a config form for any registered vertical — a bundled
+    builtin or a pushed builder vertical — without loading its code.
+  - **The push flow carries it.** The `deployManifest` accepts an optional `envSpec`, and the
+    `/verticals/:slug/deploy` handler passes it through `registerVertical` — so a pushed
+    vertical's declared config reaches the registry (and the dashboard form) like a builtin's.
+
+- 1022c15: **Registry-driven marketplace, phase 3b** (marketplace-publish.md §5) — request-to-publish in
+  place, so a builder can drive the whole loop.
+
+  - `HostAdmin.requestPublish(actor, slug)` — an owner records a pending publish request; sets the
+    registry `publish_requested_at` on the vertical (both adapters), audited (`requestPublish` admin
+    action). `setVerticalListed` now **clears** the request when staff reviews and lists it, so the
+    pending queue drains itself.
+  - Control-plane endpoint `POST /verticals/:slug/publish-request` — **owner-checked** and on the
+    builder allowlist, so an owner asks with a bare slug; staff listing stays the gate.
+  - CLI `substrat publish <slug>` now _requests_ listing ("✓ publish requested … an operator will
+    review it") instead of flipping it; `substrat unpublish` is the staff unlist.
+
+  The full loop — builder requests → `publishRequestedAt` set → staff lists → `listed` true + request
+  cleared — is covered end-to-end (contract-suite across both adapters + a control-plane API test).
+  The dashboard "Request to publish" button + a console pending-requests list are the remaining UX.
+
+- 1022c15: **Registry-driven marketplace, phase 1** (marketplace-publish.md) — carry a vertical's
+  install metadata to the registry on push, so a later phase can drop the dashboard's hardcoded
+  `CATALOG` map.
+
+  - `moduleManifest` gains additive fields: `ownerGrants: permissionKey[]` (the day-one owner
+    grant — the role _table_ stays vertical-owned + runtime-customizable), `entitlements`, and
+    `provides` / `requires` **capability** lists (`oidc-issuer` etc., wired tenant-side through
+    the connection store — no `kind` flag, no bundling). New `capability` contract type.
+  - The registry `vertical` + `registerVerticalInput` carry all four; stored as one
+    `install_spec` JSON column in both adapters (sqlite + cloudflare), via the existing
+    `ensureColumn`/`addColumn` helper, alongside `env_spec`.
+  - `substrat push` reads them from `package.json` `substrat.*` and the control-plane deploy
+    endpoint validates + stores them on `registerVertical` — exactly the rail `envSpec` rides.
+
+  No behaviour change yet: the dashboard still gates on `CATALOG`. Phase 2 makes
+  `availableCatalog`/`createApp` registry-driven.
+
+- 1022c15: **Registry-driven marketplace, phase 2** (marketplace-publish.md §3) — the dashboard's hardcoded
+  `CATALOG` map is no longer a gate, so a pushed → promoted → published vertical shows and installs
+  with **no dashboard change**.
+
+  - Registry `vertical` gains a `listed` flag (published to the public marketplace) — its own
+    column adapter-side (sqlite + cloudflare), set on insert and **never clobbered by a re-push**
+    (publish is a distinct action from push).
+  - `availableCatalog` is registry-driven: a vertical shows if it's `listed` **or** owned by the
+    caller's tenant (private to your team). Takes the caller's `tenantId`.
+  - `createApp`/retry read `entitlements`/`ownerGrants` from the registry row (via `installSpecFor`),
+    falling back to `CATALOG` for a first-party not yet re-seeded.
+  - `ensureCatalog` seeds first-party verticals with their specifics and `listed: connected !== false`,
+    so the `CATALOG` map is now just a first-party **seed**, not a visibility/install gate.
+
+  Removes the recurring "add a catalog entry + redeploy the dashboard" step. Phase 3 (the
+  staff-reviewed publish action) flips `listed` for builder verticals.
+
+- 1022c15: **Registry-driven marketplace, phase 3** (marketplace-publish.md §5) — the publish action.
+
+  - `HostAdmin.setVerticalListed(actor, slug, listed)` — a staff admission that flips the registry
+    `listed` flag (both adapters); idempotent, audited (`setVerticalListed` admin action). Once
+    `listed`, `availableCatalog` offers the vertical to every tenant.
+  - Control-plane endpoint `POST /verticals/:slug/listing` — **staff-only** (not on the builder
+    allowlist), so a builder is refused (the review gate), staff flips it. Mirrors admission (model B).
+  - CLI `substrat publish <slug>` / `substrat unpublish <slug>`.
+
+  The `listed` column is set on insert and by this action only — **never clobbered by a re-push**
+  (covered by a contract-suite test across both adapters). Any owner may _request_ publishing;
+  staff review is the gate (§5). The builder self-serve request surface (a dashboard "Request to
+  publish" button) is the remaining UX — the same open question as builder-plane's prod-promotion
+  request.
+
 ## 0.13.0
 
 ### Minor Changes
@@ -369,7 +457,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                          z.object({ facility: entityRef, unitPrice: money })
+                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

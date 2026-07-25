@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/boundary-lint",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "The Substrat layer rules, enforced mechanically — R1–R5 static analysis for module code, in this monorepo or in a standalone vertical",
   "license": "Apache-2.0",
   "repository": {

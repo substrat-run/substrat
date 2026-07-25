@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/router",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "private": true,
   "description": "The environment-wide router — hostname to (tenant, scope, surface), then dispatch (K-26)",
   "type": "module",

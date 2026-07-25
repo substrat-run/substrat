@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/adapter-cloudflare",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Cloudflare Durable-Object scope host (D-14): DO-per-scope, real kernel semantics on Workers",
   "license": "AGPL-3.0-only",
   "repository": {

@@ -1,5 +1,26 @@
 # @substrat-run/control-plane
 
+## 0.1.2
+
+### Patch Changes
+
+- e6f6f6c: ci: auto-deploy the platform apps — a changeset release deploys them to prod
+  (gated on `changesets.published`), and every green push to main deploys to a
+  shared test env (gated on `TEST_ENV_READY` until the test resources exist).
+  Adds `[env.test]` wrangler blocks + `cf:deploy:test` scripts and makes the
+  migration preflight `--env`-aware.
+- Updated dependencies [f4ad677]
+- Updated dependencies [6a7768a]
+- Updated dependencies [1022c15]
+- Updated dependencies [1022c15]
+- Updated dependencies [1022c15]
+- Updated dependencies [1022c15]
+- Updated dependencies [a1c7649]
+  - @substrat-run/control-plane-api@0.14.0
+  - @substrat-run/contracts@0.14.0
+  - @substrat-run/adapter-cloudflare@0.14.0
+  - @substrat-run/kernel@0.14.0
+
 ## 0.1.1
 
 ### Patch Changes

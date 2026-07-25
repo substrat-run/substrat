@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/engine-invoicing",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Substrat engine: invoice basis — consumes billable events, snapshots lines with provenance, immutable once exported",
   "license": "AGPL-3.0-only",
   "repository": {

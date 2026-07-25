@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/engine-test-kit",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "private": true,
   "description": "Kernel-backed fixture for testing engines directly — a real scope host, a real permission checker, and an event probe to drive consumers",
   "license": "AGPL-3.0-only",

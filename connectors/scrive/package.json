@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/connector-scrive",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Substrat connector: Scrive eSign (Swedish BankID). Turns a protocol.signatures-requested event into a Scrive signing flow (create → set file → parties → start) and records the completed signature back into the scope through the #97 authority seam. Host code — registered on a ScopeHost, never module code.",
   "license": "AGPL-3.0-only",
   "repository": {

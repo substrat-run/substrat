@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/adapter-sqlite",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Pure-SQLite scope host — real kernel semantics with no Cloudflare dependency (D-14): local dev, CI, self-host/escrow",
   "license": "AGPL-3.0-only",
   "repository": {

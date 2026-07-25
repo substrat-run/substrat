@@ -1,5 +1,61 @@
 # @substrat-run/cli
 
+## 0.3.0
+
+### Minor Changes
+
+- 1cbc2be: `substrat push` carries a vertical's declared env-spec to the registry. The CLI reads
+  `substrat.envSpec` from the vertical's `package.json` — the same static, code-free source it
+  already reads `slug`/`name` from — and includes it in the deploy manifest, so a pushed vertical
+  gets a Dashboard config form exactly like a builtin.
+- 1022c15: **Registry-driven marketplace, phase 3b** (marketplace-publish.md §5) — request-to-publish in
+  place, so a builder can drive the whole loop.
+
+  - `HostAdmin.requestPublish(actor, slug)` — an owner records a pending publish request; sets the
+    registry `publish_requested_at` on the vertical (both adapters), audited (`requestPublish` admin
+    action). `setVerticalListed` now **clears** the request when staff reviews and lists it, so the
+    pending queue drains itself.
+  - Control-plane endpoint `POST /verticals/:slug/publish-request` — **owner-checked** and on the
+    builder allowlist, so an owner asks with a bare slug; staff listing stays the gate.
+  - CLI `substrat publish <slug>` now _requests_ listing ("✓ publish requested … an operator will
+    review it") instead of flipping it; `substrat unpublish` is the staff unlist.
+
+  The full loop — builder requests → `publishRequestedAt` set → staff lists → `listed` true + request
+  cleared — is covered end-to-end (contract-suite across both adapters + a control-plane API test).
+  The dashboard "Request to publish" button + a console pending-requests list are the remaining UX.
+
+- 1022c15: **Registry-driven marketplace, phase 1** (marketplace-publish.md) — carry a vertical's
+  install metadata to the registry on push, so a later phase can drop the dashboard's hardcoded
+  `CATALOG` map.
+
+  - `moduleManifest` gains additive fields: `ownerGrants: permissionKey[]` (the day-one owner
+    grant — the role _table_ stays vertical-owned + runtime-customizable), `entitlements`, and
+    `provides` / `requires` **capability** lists (`oidc-issuer` etc., wired tenant-side through
+    the connection store — no `kind` flag, no bundling). New `capability` contract type.
+  - The registry `vertical` + `registerVerticalInput` carry all four; stored as one
+    `install_spec` JSON column in both adapters (sqlite + cloudflare), via the existing
+    `ensureColumn`/`addColumn` helper, alongside `env_spec`.
+  - `substrat push` reads them from `package.json` `substrat.*` and the control-plane deploy
+    endpoint validates + stores them on `registerVertical` — exactly the rail `envSpec` rides.
+
+  No behaviour change yet: the dashboard still gates on `CATALOG`. Phase 2 makes
+  `availableCatalog`/`createApp` registry-driven.
+
+- 1022c15: **Registry-driven marketplace, phase 3** (marketplace-publish.md §5) — the publish action.
+
+  - `HostAdmin.setVerticalListed(actor, slug, listed)` — a staff admission that flips the registry
+    `listed` flag (both adapters); idempotent, audited (`setVerticalListed` admin action). Once
+    `listed`, `availableCatalog` offers the vertical to every tenant.
+  - Control-plane endpoint `POST /verticals/:slug/listing` — **staff-only** (not on the builder
+    allowlist), so a builder is refused (the review gate), staff flips it. Mirrors admission (model B).
+  - CLI `substrat publish <slug>` / `substrat unpublish <slug>`.
+
+  The `listed` column is set on insert and by this action only — **never clobbered by a re-push**
+  (covered by a contract-suite test across both adapters). Any owner may _request_ publishing;
+  staff review is the gate (§5). The builder self-serve request surface (a dashboard "Request to
+  publish" button) is the remaining UX — the same open question as builder-plane's prod-promotion
+  request.
+
 ## 0.2.0
 
 ### Minor Changes
