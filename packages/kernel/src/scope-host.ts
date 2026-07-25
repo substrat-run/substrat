@@ -535,12 +535,19 @@ export interface HostAdmin {
    * **Refuses anything not admitted.** That refusal is the registry's reason to
    * exist: without it "push lands pending" is a convention, and a convention is what
    * D-30's lockstep-upgrade argument says we cannot afford to rely on.
+   *
+   * `opts.snapshot` opts into fork-before-promote (preview-and-snapshots.md §4): when
+   * the incoming version's `migration_digest` differs from the scope's current bound
+   * version's, an `archive` snapshot of the pre-migration data is captured first, so a
+   * bad upgrade has a rollback point. Gated on the digest change (a code-only rebind
+   * snapshots nothing) and opt-in until retention/GC ships.
    */
   bindScopeVersion(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     versionId: string,
+    opts?: { snapshot?: boolean },
   ): Promise<void>;
 
   // -- the hostname map (K-26; control-plane.md §4.7) -------------------------
@@ -1064,6 +1071,24 @@ export interface ScopeHost {
     input: ProvisionScopeInput,
     dump: ScopeDump,
   ): Promise<void>;
+
+  /**
+   * Snapshot a scope — fork its current data into a new scope and return that scope's
+   * id. A thin composition of `exportScope` + `importScope` (preview-and-snapshots.md
+   * §3): the new scope is `kind: 'archive'` by default, carries fork provenance
+   * (`forkedFrom`/`forkedAt`), and is bound to the SOURCE's current version so it is a
+   * runnable copy at the same frontier — a true "the scope as it was", not loose data.
+   *
+   * This is the primitive behind a manual "Snapshot" and behind `bindScopeVersion`'s
+   * `snapshot` option (the automatic fork-before-promote). It provisions a scope in the
+   * same tenant + jurisdiction as the source.
+   */
+  snapshotScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    opts?: { kind?: string },
+  ): Promise<ScopeId>;
 
   /** Enforcement-input writes: roles, assignments, grants, membership. */
   readonly admin: HostAdmin;
