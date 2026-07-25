@@ -18,10 +18,16 @@ import { ControlPlaneError } from './client.js';
  * because only the vertical can create a usable scope DO — the DO class bundles the
  * modules and lives in the vertical's own deployment.
  *
- * Deliberately tiny. The platform asks a vertical to do two kinds of thing: create an
- * instance (K-31), and — read-only — introspect a scope's own database (§5.4), because
- * the scope's data DO lives in the vertical's deployment, not the platform's. Every
- * other verb would be authority the platform holds over someone else's code.
+ * Deliberately tiny. The platform asks a vertical to do three kinds of thing: create an
+ * instance (K-31); — read-only — introspect a scope's own database (§5.4), because the
+ * scope's data DO lives in the vertical's deployment, not the platform's; and manage
+ * scope-STORAGE lifecycle — snapshot a scope into a sibling, wipe a reaped fork
+ * (preview-and-snapshots.md §9, the ratified trust line: infrastructure verbs over the
+ * DO's storage, extending the authority provisionInstance already asserts). Every other
+ * verb — anything that reads or writes DOMAIN data — would be authority the platform
+ * holds over someone else's code. Note the lifecycle verbs move no data across the
+ * boundary: a snapshot copies between two DOs inside the vertical's own deployment and
+ * returns only a table count.
  */
 
 export interface VerticalClientOptions {
@@ -107,6 +113,50 @@ export class VerticalClient {
     return this.getInternal<ScopeTablePage>(
       `/internal/tables/${encodeURIComponent(input.table)}?${q}`,
     );
+  }
+
+  /**
+   * Copy one scope's data into a fresh sibling scope DO, inside the vertical's own
+   * deployment (§9's data half). The platform names source and destination; the bytes
+   * never cross the boundary — the response is a table count, not a dump. The
+   * directory half (provenance row, activation, version bind) is the caller's job.
+   */
+  async snapshotScope(input: {
+    sourceScopeId: ScopeId;
+    newScopeId: ScopeId;
+  }): Promise<{ tables: number }> {
+    return this.postInternal<{ tables: number }>('/internal/snapshot', input, 'snapshot');
+  }
+
+  /**
+   * Wipe a reaped fork's storage (§9's reap half). The platform calls this before
+   * deleting the directory row — same storage-before-row ordering as the in-process
+   * deleteSnapshot, so a crash between the two converges on retry. The fork-only
+   * refusal lives with the directory record, on the platform's side.
+   */
+  async deleteScope(input: { scopeId: ScopeId }): Promise<void> {
+    await this.postInternal<unknown>('/internal/delete-scope', input, 'delete-scope');
+  }
+
+  /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
+  private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.options.fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const parsed = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new ControlPlaneError(
+        res.status,
+        parsed?.error ?? `vertical refused ${verb}: ${res.status} ${res.statusText}`,
+      );
+    }
+    return (await res.json()) as T;
   }
 
   /** A platform-authenticated GET to the vertical's `/internal/*` surface. */

@@ -728,6 +728,34 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeStub(scopeId).introspectTable(input.table, input.limit, input.offset);
   }
 
+  /**
+   * Copy one scope's data into a fresh scope DO, entirely within THIS deployment —
+   * the data half of an orchestrated snapshot (preview-and-snapshots.md §9). Like the
+   * introspection pair above it consults no control plane: the vertical's platform-
+   * gated `/internal/snapshot` route calls it, and the directory half (provenance row,
+   * activation, version bind) stays on the control plane's side. Because source and
+   * destination sit in the same SCOPE namespace, no scope bytes ever leave the
+   * deployment — the §9 property the trust line rests on.
+   */
+  async snapshotScopeLocal(
+    sourceScopeId: ScopeId,
+    destScopeId: ScopeId,
+  ): Promise<{ tables: number }> {
+    const tables = await this.scopeStub(sourceScopeId).exportDump();
+    await this.scopeStub(destScopeId).importDump(tables);
+    return { tables: tables.length };
+  }
+
+  /**
+   * Wipe one scope DO's storage in THIS deployment — the reap half of an orchestrated
+   * deleteSnapshot (§9). The fork-only refusal and the directory cleanup live on the
+   * control plane, which calls the vertical's `/internal/delete-scope` before deleting
+   * the row; this end just destroys its own bytes.
+   */
+  async deleteScopeLocal(scopeId: ScopeId): Promise<void> {
+    await this.scopeStub(scopeId).destroyStorage();
+  }
+
   registerModule(registration: ModuleRegistration): void {
     const manifest = moduleManifest.parse(registration.manifest);
     if (this.moduleIds.has(manifest.id)) {

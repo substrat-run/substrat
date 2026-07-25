@@ -2,6 +2,10 @@
 	"name": "substrat-control-plane",
 	"main": "src/worker.ts",
 	"compatibility_date": "2025-01-01",
+	// The platform's scheduled pass (worker.ts `scheduled`): snapshot GC — reap
+	// expired preview/archive forks (preview-and-snapshots.md §3/§9). Every 15
+	// minutes; the pass is cheap when nothing is expired (one directory read).
+	"triggers": { "crons": ["*/15 * * * *"] },
 	// Staff sign-in is OIDC against AuthHero (jose + Web Crypto) — no Node built-ins.
 	// OIDC config is entirely secrets, nothing checked in (locally: .dev.vars):
 	//   wrangler secret put OIDC_ISSUER          # e.g. https://auth.substrat.run

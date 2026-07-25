@@ -19,6 +19,7 @@
 import { Hono } from 'hono';
 import { platformActorId } from '@substrat-run/contracts';
 import type { PlatformActorId } from '@substrat-run/contracts';
+import { runPlatformSweep, type FetchLike } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   ControlPlaneDO,
@@ -154,6 +155,9 @@ function resolveVerticalVersionFor(
 
 // The actor a connected vertical acts as when it registers (a service, not staff).
 const SERVICE_ACTOR = platformActorId.parse('01JZ00000000000000000000SV');
+// The actor the scheduled sweep runs as (a machine pass, not staff): its directory
+// reads land in the access log and its reaps in the admin log under this id.
+const SWEEP_ACTOR = platformActorId.parse('01JZ00000000000000000000SW');
 
 /**
  * The verticals this control plane can provision into (K-31).
@@ -212,6 +216,45 @@ function authFor(env: Env): PlatformActorAuth {
 }
 
 export default {
+  /**
+   * The platform's scheduled pass (docs/design/scheduler.md; cron in wrangler.jsonc):
+   * `runPlatformSweep`, whose GC phase reaps expired snapshot forks (preview-and-
+   * snapshots.md §3/§9). Executor drains are skipped here — this deployment's SCOPE
+   * namespace is the module-less placeholder, so there is nothing to drain; verticals
+   * drain their own. The reap is the ORCHESTRATED delete: wipe the fork's storage in
+   * the vertical deployment that actually holds it (resolved by bound version, like
+   * introspection), then the in-process delete for the directory row + audit. Without
+   * DISPATCH/PLATFORM_SECRET the vertical hop is skipped and only co-located storage
+   * is wiped — correct for a single-deployment environment, and the directory row
+   * never outlives the bytes either way.
+   */
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const host = hostFor(env);
+    const resolveVersion = resolveVerticalVersionFor(env);
+    const report = await runPlatformSweep(host, {
+      actor: SWEEP_ACTOR,
+      // Handed to connector sweepers only — none are registered here, so this is a
+      // type bridge (kernel's FetchLike vs the workers RequestInit), never called.
+      fetch: globalThis.fetch as unknown as FetchLike,
+      sweepers: {},
+      drainRetries: false,
+      deleteSnapshotFn: async (tenantId, scopeId) => {
+        const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
+        if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+          const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
+          if (vertical) await vertical.deleteScope({ scopeId });
+        }
+        await host.deleteSnapshot(SWEEP_ACTOR, tenantId, scopeId);
+      },
+    });
+    if (report.snapshotsReaped > 0 || report.errors.length > 0) {
+      console.log('platform-sweep', {
+        snapshotsReaped: report.snapshotsReaped,
+        errors: report.errors,
+      });
+    }
+  },
+
   fetch(request: Request, env: Env): Response | Promise<Response> {
     const app = new Hono<{ Bindings: Env }>();
 

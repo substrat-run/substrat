@@ -19,7 +19,7 @@ import {
   tenantStatus,
   z,
 } from '@substrat-run/contracts';
-import type { PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { PlatformActorId, Scope, ScopeId, TenantId } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { ulid } from '@substrat-run/kernel';
 import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
@@ -166,7 +166,20 @@ const promoteVersionBody = z.object({
   acknowledge: promotionAcknowledgement.optional(),
 });
 
-const bindScopeVersionBody = z.object({ versionId: z.string().min(1) });
+const bindScopeVersionBody = z.object({
+  versionId: z.string().min(1),
+  // Fork-before-promote (preview-and-snapshots.md §4): snapshot the pre-migration
+  // data first when this bind crosses a migration-digest boundary. Optional and
+  // ignored on a code-only rebind — the digest compare is the gate, not the flag.
+  snapshot: z.boolean().optional(),
+});
+
+// A snapshot request (preview-and-snapshots.md §3/§9). `expiresAt` opts into the GC
+// sweep; absent = pinned until deliberately deleted. `kind` defaults to 'archive'.
+const snapshotScopeBody = z.object({
+  kind: z.string().min(1).optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
+});
 
 const listRolesQuery = z.object({
   tenantId: tenantIdSchema.optional(),
@@ -437,15 +450,132 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
   }
 
+  // -- snapshots (preview-and-snapshots.md §3/§9) -----------------------------
+  // The DATA half of a snapshot runs inside the vertical's own deployment (the
+  // scope's bytes never cross the boundary — the §9 property the trust line rests
+  // on); the DIRECTORY half — provenance row, activation, version bind — runs here.
+  // With no vertical client resolved (co-located host, tests, self-host) the host's
+  // in-process snapshotScope does both halves against its own SCOPE namespace.
+  const orchestratedSnapshot = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    tenantId: TenantId,
+    scope: Scope,
+    opts: { kind?: string; expiresAt?: string },
+  ): Promise<ScopeId> => {
+    const actor = c.get('actor');
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return options.host.snapshotScope(actor, tenantId, scope.id, opts);
+    const snapId = scopeIdSchema.parse(ulid());
+    // Directory row FIRST, as `provisioning` (K-31's two-phase shape, used as
+    // intended): a crash between the row and the data copy leaves an inert
+    // provisioning row — which, carrying provenance and an expiry, the GC sweep
+    // eventually reaps — never copied data with no record.
+    await options.host.provisionScope(actor, {
+      tenantId,
+      scopeId: snapId,
+      kind: opts.kind ?? 'archive',
+      vertical: scope.vertical,
+      jurisdiction: scope.jurisdiction,
+      forkedFrom: scope.id,
+      forkedAt: new Date().toISOString(),
+      expiresAt: opts.expiresAt,
+    });
+    await vertical.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId });
+    await admin.activateScope(actor, tenantId, snapId);
+    // Bound to the SOURCE's current version: source and fork share a deployment, so
+    // the fork resolves to the DO namespace its bytes actually live in.
+    if (scope.verticalVersionId) {
+      await admin.bindScopeVersion(actor, tenantId, snapId, scope.verticalVersionId);
+    }
+    return snapId;
+  };
+
+  app.post('/tenants/:tenantId/scopes/:scopeId/snapshots', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const body = snapshotScopeBody.parse(await c.req.json().catch(() => ({})));
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    try {
+      const snapId = await orchestratedSnapshot(c, tenantId, scope, body);
+      return c.json(await admin.getScopeRecord(c.get('actor'), tenantId, snapId), 201);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
+  // Reap a fork. The fork-only refusal is surfaced HERE, before any delegation —
+  // the vertical must never even be asked to wipe a primary scope — and re-checked
+  // below the seam by deleteSnapshot, which also wipes the co-located storage,
+  // removes hostnames + the directory row, and writes the audit entry.
+  app.delete('/tenants/:tenantId/scopes/:scopeId', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope.forkedFrom) {
+      return c.json(
+        { error: `scope ${scopeId} is not a fork — only snapshots may be deleted` },
+        409,
+      );
+    }
+    try {
+      // Vertical's storage first, then the in-process delete (refusal re-check,
+      // local/placeholder wipe, hostnames + directory row, audit) — the same
+      // storage-before-row ordering deleteSnapshot itself keeps, so a crash
+      // between the two converges on retry.
+      const vertical = await verticalForScope(c, scope);
+      if (vertical) await vertical.deleteScope({ scopeId });
+      await options.host.deleteSnapshot(actor, tenantId, scopeId);
+      return c.json({ deleted: scopeId });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a
   // non-admitted version below the seam — that refusal is the registry's reason to
-  // exist. A scope operation, so it keeps the scope route shape.
+  // exist. A scope operation, so it keeps the scope route shape. `snapshot: true`
+  // opts into fork-before-promote (§4): on a migration-digest-crossing bind the
+  // pre-migration data is snapshotted first — orchestrated through the vertical
+  // when one resolves, in-process otherwise.
   app.post('/tenants/:tenantId/scopes/:scopeId/version', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
-    const { versionId } = bindScopeVersionBody.parse(await c.req.json());
-    await admin.bindScopeVersion(c.get('actor'), tenantId, scopeId, versionId);
-    return c.json(await admin.getScopeRecord(c.get('actor'), tenantId, scopeId));
+    const { versionId, snapshot } = bindScopeVersionBody.parse(await c.req.json());
+    const actor = c.get('actor');
+    if (snapshot) {
+      const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+      if (!scope) {
+        return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+      }
+      const vertical = await verticalForScope(c, scope);
+      if (vertical) {
+        // Delegated path: the digest compare lives here (the in-process path does
+        // it below the seam). Snapshot only a migration-crossing bind.
+        if (scope.vertical && scope.verticalVersionId) {
+          const versions = await admin.listVersions(actor, scope.vertical);
+          const current = versions.find((v) => v.id === scope.verticalVersionId);
+          const incoming = versions.find((v) => v.id === versionId);
+          if (current && incoming && current.migrationDigest !== incoming.migrationDigest) {
+            await orchestratedSnapshot(c, tenantId, scope, {});
+          }
+        }
+        await admin.bindScopeVersion(actor, tenantId, scopeId, versionId);
+      } else {
+        await admin.bindScopeVersion(actor, tenantId, scopeId, versionId, { snapshot: true });
+      }
+      return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
+    }
+    await admin.bindScopeVersion(actor, tenantId, scopeId, versionId);
+    return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
   });
 
   // -- instances (K-31) -------------------------------------------------------

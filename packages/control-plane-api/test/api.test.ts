@@ -272,6 +272,121 @@ describe('control-plane API', () => {
     expect(calls).toEqual([`list:${sV}`, `read:${sV}:widget`]);
   });
 
+  // -- snapshots (preview-and-snapshots.md §3/§9) ----------------------------
+
+  it('snapshots and reaps in-process when no vertical is bound (co-located mode)', async () => {
+    const sP = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sP });
+    await host.admin.activateScope(staff, t1, sP);
+
+    const res = await json(`/tenants/${t1}/scopes/${sP}/snapshots`, 'POST', {});
+    expect(res.status).toBe(201);
+    const snap = (await res.json()) as { id: string; forkedFrom: string; kind: string; status: string };
+    expect(snap.forkedFrom).toBe(sP);
+    expect(snap.kind).toBe('archive');
+    expect(snap.status).toBe('active');
+
+    // The fork-only refusal surfaces as 409; the fork itself deletes.
+    expect((await json(`/tenants/${t1}/scopes/${sP}`, 'DELETE')).status).toBe(409);
+    expect((await json(`/tenants/${t1}/scopes/${snap.id}`, 'DELETE')).status).toBe(200);
+    expect((await req(`/tenants/${t1}/scopes/${snap.id}`)).status).toBe(404);
+  });
+
+  it('orchestrates snapshot + reap through the vertical; directory row lands here', async () => {
+    const sV2 = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sV2, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sV2);
+
+    const snaps: { sourceScopeId: string; newScopeId: string }[] = [];
+    const deletes: string[] = [];
+    const fakeVertical = {
+      snapshotScope: async (input: { sourceScopeId: string; newScopeId: string }) => {
+        snaps.push(input);
+        return { tables: 7 };
+      },
+      deleteScope: async (input: { scopeId: string }) => {
+        deletes.push(input.scopeId);
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    const djson = (path: string, method: string, body?: unknown) =>
+      delegated.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+    const res = await djson(`/tenants/${t1}/scopes/${sV2}/snapshots`, 'POST', { expiresAt });
+    expect(res.status).toBe(201);
+    const snap = (await res.json()) as {
+      id: string; forkedFrom: string; kind: string; status: string; expiresAt: string;
+    };
+    // The DATA hop went to the vertical, naming source and destination…
+    expect(snaps).toEqual([{ sourceScopeId: sV2, newScopeId: snap.id }]);
+    // …and the DIRECTORY row landed here: active, with provenance + expiry.
+    expect(snap.forkedFrom).toBe(sV2);
+    expect(snap.kind).toBe('archive');
+    expect(snap.status).toBe('active');
+    expect(snap.expiresAt).toBe(expiresAt);
+
+    // Reap: the primary is refused BEFORE any delegation; the fork's wipe reaches
+    // the vertical, then the row disappears here.
+    expect((await djson(`/tenants/${t1}/scopes/${sV2}`, 'DELETE')).status).toBe(409);
+    expect(deletes).toEqual([]);
+    expect((await djson(`/tenants/${t1}/scopes/${snap.id}`, 'DELETE')).status).toBe(200);
+    expect(deletes).toEqual([snap.id]);
+    expect((await delegated.request(`/tenants/${t1}/scopes/${snap.id}`, { headers: auth })).status).toBe(404);
+  });
+
+  it('bind-version with snapshot: true forks through the vertical only across a migration change', async () => {
+    await host.admin.registerVertical(staff, { slug: 'snap-vert', name: 'Snap Vert', source: 'builtin' });
+    const pub = async (version: string, mig: string) => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: 'snap-vert', version,
+        manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: mig,
+        deploymentRef: null,
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const vA = await pub('1.0.0', 'gA');
+    const vB = await pub('2.0.0', 'gB'); // migration change vs vA
+    const vB2 = await pub('2.0.1', 'gB'); // code-only vs vB
+
+    const sV3 = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sV3, vertical: 'snap-vert' });
+    await host.admin.activateScope(staff, t1, sV3);
+    await host.admin.bindScopeVersion(staff, t1, sV3, vA);
+
+    const snaps: unknown[] = [];
+    const fakeVertical = {
+      snapshotScope: async (input: unknown) => {
+        snaps.push(input);
+        return { tables: 1 };
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'snap-vert': fakeVertical },
+    });
+    const djson = (path: string, method: string, body?: unknown) =>
+      delegated.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    // gA → gB crosses a migration digest: snapshotted through the vertical, then bound.
+    const cross = await djson(`/tenants/${t1}/scopes/${sV3}/version`, 'POST', { versionId: vB, snapshot: true });
+    expect(cross.status).toBe(200);
+    expect(snaps).toHaveLength(1);
+    expect(((await cross.json()) as { verticalVersionId: string }).verticalVersionId).toBe(vB);
+
+    // gB → gB2 is code-only: the flag is set but the digest is unchanged — no snapshot.
+    const code = await djson(`/tenants/${t1}/scopes/${sV3}/version`, 'POST', { versionId: vB2, snapshot: true });
+    expect(code.status).toBe(200);
+    expect(snaps).toHaveLength(1);
+  });
+
   it('walks the lifecycle and maps an illegal transition to 409', async () => {
     const suspended = await json(`/tenants/${t1}/scopes/${s1}/suspend`, 'POST');
     expect(await suspended.json()).toMatchObject({ status: 'suspended' });
