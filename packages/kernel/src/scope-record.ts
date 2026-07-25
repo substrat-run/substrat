@@ -10,6 +10,8 @@ export interface ResolvedScopeRecord {
   vertical: string | null;
   storageShape: StorageShape;
   jurisdiction: Jurisdiction;
+  forkedFrom: string | null;
+  forkedAt: string | null;
 }
 
 /**
@@ -41,5 +43,8 @@ export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRec
     // also meant "nobody decided"; `global` is a decision, and the only one the
     // provisioning boundary accepts until `eu`/`us` enforcement exists.
     jurisdiction: input.jurisdiction ?? 'global',
+    // Provenance is set only by importScope; a normal provision leaves it null.
+    forkedFrom: input.forkedFrom ?? null,
+    forkedAt: input.forkedAt ?? null,
   };
 }

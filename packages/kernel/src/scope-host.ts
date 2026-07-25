@@ -956,6 +956,13 @@ export interface ProvisionScopeInput {
   vertical?: string | null;
   storageShape?: StorageShape;
   jurisdiction?: Jurisdiction;
+  /**
+   * Fork provenance (preview-and-snapshots.md §3): the scope this one was copied
+   * FROM, and WHEN. `importScope` sets both from the dump; a normal provision leaves
+   * them null. Recorded on the directory row — the kernel never branches on them.
+   */
+  forkedFrom?: ScopeId;
+  forkedAt?: string;
 }
 
 /**

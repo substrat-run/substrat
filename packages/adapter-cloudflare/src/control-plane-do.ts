@@ -86,6 +86,8 @@ export interface ScopeRow {
   migration_error: string | null;
   migration_attempts: number;
   migration_last_attempt_at: string | null;
+  forked_from: string | null;
+  forked_at: string | null;
   created_at: string;
 }
 
@@ -234,6 +236,8 @@ const DIRECTORY_DDL = `
     migration_error TEXT,
     migration_attempts INTEGER NOT NULL DEFAULT 0,
     migration_last_attempt_at TEXT,
+    forked_from TEXT,
+    forked_at TEXT,
     created_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS hostnames (
@@ -421,6 +425,8 @@ const SCOPE_COLUMNS_ADDED = [
   'migration_error TEXT',
   'migration_attempts INTEGER NOT NULL DEFAULT 0',
   'migration_last_attempt_at TEXT',
+  'forked_from TEXT',
+  'forked_at TEXT',
 ] as const;
 
 export class ControlPlaneDO extends DurableObject {
@@ -633,6 +639,8 @@ export class ControlPlaneDO extends DurableObject {
       vertical: string | null;
       storageShape: string;
       jurisdiction: string | null;
+      forkedFrom: string | null;
+      forkedAt: string | null;
     },
     createdAt: string,
   ): boolean {
@@ -667,8 +675,8 @@ export class ControlPlaneDO extends DurableObject {
       this.sql.exec(
         `INSERT INTO scopes
            (scope_id, tenant_id, parent_scope_id, slug, kind, name, vertical,
-            storage_shape, jurisdiction, status, created_at)
-         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?)`,
+            storage_shape, jurisdiction, status, forked_from, forked_at, created_at)
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?)`,
         scopeId,
         tenantId,
         record.slug,
@@ -677,6 +685,8 @@ export class ControlPlaneDO extends DurableObject {
         record.vertical,
         record.storageShape,
         record.jurisdiction,
+        record.forkedFrom,
+        record.forkedAt,
         createdAt,
       );
     }

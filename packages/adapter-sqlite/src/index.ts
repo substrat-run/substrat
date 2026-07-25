@@ -296,6 +296,8 @@ interface ScopeRow {
   migration_error: string | null;
   migration_attempts: number;
   migration_last_attempt_at: string | null;
+  forked_from: string | null;
+  forked_at: string | null;
   created_at: string;
 }
 
@@ -512,6 +514,10 @@ export class SqliteScopeHost implements ScopeHost {
         migration_error TEXT,
         migration_attempts INTEGER NOT NULL DEFAULT 0,
         migration_last_attempt_at TEXT,
+        -- Fork provenance (preview-and-snapshots.md §3): the scope this one was
+        -- copied from, and when. Both null for a normally-provisioned scope.
+        forked_from TEXT,
+        forked_at TEXT,
         created_at TEXT NOT NULL
       );
       -- The hostname map (K-26). A single environment-wide router resolves against
@@ -983,10 +989,10 @@ export class SqliteScopeHost implements ScopeHost {
         .prepare(
           `INSERT INTO scopes
              (scope_id, tenant_id, parent_scope_id, slug, kind, name, vertical,
-              storage_shape, jurisdiction, status, created_at)
+              storage_shape, jurisdiction, status, forked_from, forked_at, created_at)
            -- 'provisioning', not 'active' (K-31): the directory row exists before the
            -- vertical has created the scope DO, and only activateScope says it has.
-           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?)`,
+           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?)`,
         )
         .run(
           input.scopeId,
@@ -997,6 +1003,8 @@ export class SqliteScopeHost implements ScopeHost {
           record.vertical,
           record.storageShape,
           record.jurisdiction,
+          record.forkedFrom,
+          record.forkedAt,
           new Date().toISOString(),
         );
     }
@@ -1021,8 +1029,14 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<void> {
     // Create the destination scope (directory row + storage). Its migration step
     // creates some tables; the dump then replaces them wholesale, so the end state
-    // is the dump, not whatever the local module set would have built.
-    await this.provisionScope(actor, input);
+    // is the dump, not whatever the local module set would have built. Provenance is
+    // stamped from the dump unless the caller already set it (§3: a fork always
+    // records where it came from).
+    await this.provisionScope(actor, {
+      ...input,
+      forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
+      forkedAt: input.forkedAt ?? dump.capturedAt,
+    });
     const rt = this.runtime(input.tenantId, input.scopeId);
     const db = rt.db;
     const load = db.transaction((tables: ScopeDumpTable[]) => {
@@ -1700,6 +1714,8 @@ export class SqliteScopeHost implements ScopeHost {
         schemaVersion: r.schema_version,
         verticalVersionId: r.vertical_version_id,
         migrationFailure: mapMigrationFailure(r),
+        forkedFrom: r.forked_from,
+        forkedAt: r.forked_at,
         createdAt: r.created_at,
       });
 
@@ -3231,6 +3247,8 @@ export class SqliteScopeHost implements ScopeHost {
       ['migration_error', 'migration_error TEXT'],
       ['migration_attempts', 'migration_attempts INTEGER NOT NULL DEFAULT 0'],
       ['migration_last_attempt_at', 'migration_last_attempt_at TEXT'],
+      ['forked_from', 'forked_from TEXT'],
+      ['forked_at', 'forked_at TEXT'],
     ] as const) {
       if (!existing.has(column)) this.directory.exec(`ALTER TABLE scopes ADD COLUMN ${ddl}`);
     }
