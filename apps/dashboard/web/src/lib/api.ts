@@ -138,6 +138,8 @@ export interface SnapshotRow {
   expiresAt: string | null;
   verticalVersionId: string | null;
   createdAt: string;
+  /** The copy's preview hostname (`app--s1a2b.…`), when one is bound. */
+  url?: string | null;
 }
 
 /** One importable repo the tenant's GitHub connection can see (worker's github.ts shape). */
@@ -246,6 +248,9 @@ export const api = {
   /** Leave the current team (detaches your login); reload after — you'll land in another
    *  team or onboarding if it was your last. */
   leaveTeam: () => call<void>('/teams/leave', { method: 'POST' }),
+  /** Delete the current organization (owner-only; confirmed by retyping its name). */
+  deleteTeam: (confirm: string) =>
+    call<void>('/teams/delete', { method: 'POST', body: JSON.stringify({ confirm }) }),
   catalog: () => call<CatalogEntry[]>('/catalog'),
   /** The current team's roster (active members + outstanding invites). */
   listMembers: () => call<Member[]>('/members'),

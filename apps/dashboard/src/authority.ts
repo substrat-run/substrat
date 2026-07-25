@@ -57,6 +57,8 @@ export interface SnapshotRecord {
   expiresAt: string | null;
   verticalVersionId: string | null;
   createdAt: string;
+  /** The copy's preview hostname (`app--s1a2b.…`), when one is bound. Joined by the caller. */
+  url?: string | null;
 }
 
 export class TenantNarrowedControlPlane {
@@ -250,6 +252,12 @@ export class TenantNarrowedControlPlane {
   /** Reap one snapshot. The CP refuses anything that is not a fork (409). */
   deleteSnapshot(snapshotScopeId: ScopeId): Promise<void> {
     return this.call(`/tenants/${this.tenantId}/scopes/${snapshotScopeId}`, { method: 'DELETE' });
+  }
+
+  /** The hostnames bound to one scope (tenant-pinned) — the copy's preview URL. */
+  listHostnames(scopeId: ScopeId): Promise<Array<{ hostname: string; status: string }>> {
+    const q = new URLSearchParams({ tenantId: this.tenantId, scopeId });
+    return this.call<Array<{ hostname: string; status: string }>>(`/hostnames?${q}`);
   }
 
   /**

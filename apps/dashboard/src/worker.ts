@@ -31,7 +31,7 @@ import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, provisionDashboard, reconcileRoles, type DashboardNode } from './provision.js';
+import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, provisionDashboard, reconcileRoles, slugify, type DashboardNode } from './provision.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -270,7 +270,7 @@ async function listTeams(host: ScopeHost, tenants: readonly TenantId[]): Promise
   const teams: Team[] = [];
   for (const t of tenants) {
     const tenant = await host.admin.getTenant(STAFF, t);
-    if (tenant) teams.push({ id: t, name: tenant.name, slug: tenant.slug });
+    if (tenant && tenant.status === 'active') teams.push({ id: t, name: tenant.name, slug: tenant.slug });
   }
   return teams;
 }
@@ -288,7 +288,14 @@ async function resolveNode(
   userId: string,
   selectedTeamId: string | undefined,
 ): Promise<DashboardNode | null> {
-  const t = tenants.find((x) => x === selectedTeamId) ?? tenants[0];
+  // A non-active tenant (a deleted organization) never resolves — belt to the
+  // unlinkIdentity at delete time, so a lingering identity row can't land anyone
+  // in a dead team.
+  const active: TenantId[] = [];
+  for (const cand of tenants) {
+    if ((await host.admin.getTenant(STAFF, cand))?.status === 'active') active.push(cand);
+  }
+  const t = active.find((x) => x === selectedTeamId) ?? active[0];
   if (!t) return null;
   const mapped = await host.admin.resolveIdentity(t, PROVIDER, userId);
   const dash = (await host.admin.listScopes(STAFF, { tenantId: t, vertical: 'dashboard' }))[0];
@@ -495,6 +502,57 @@ app.post('/api/teams/leave', async (c) => {
   const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
   await scope.invoke('dashboard/leave-self', {});
   await host.admin.unlinkIdentity(STAFF, node.tenantId, node.principal);
+  deleteCookie(c, TEAM_COOKIE, { path: '/' });
+  return c.body(null, 204);
+});
+
+/**
+ * Delete the organization — the Settings danger zone. OWNER-ONLY (the in-scope op
+ * checks the roster) and confirmed by retyping the organization name, re-verified
+ * here so the UI gate is never the only gate. Tombstone-shaped end to end: every
+ * app is deprovisioned (scope archived, hostname off), the roster revoked, the
+ * tenant flipped to `deleting` (never hard-deleted — the audit trail stays), and
+ * every member's identity link severed so the team drops out of all switchers.
+ */
+app.post('/api/teams/delete', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const body = z.object({ confirm: z.string() }).parse(await c.req.json().catch(() => ({})));
+  const team = await host.admin.getTenant(STAFF, node.tenantId);
+  if (!team || body.confirm.trim().toLowerCase() !== team.name.trim().toLowerCase()) {
+    throw new HTTPException(400, { message: 'type the organization name to confirm deletion' });
+  }
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  // Owner check + roster revocation, in-scope, BEFORE any platform effect.
+  const { members } = (await dash.invoke('dashboard/delete-team', {})) as {
+    members: Array<{ principal: string; roleKey: string }>;
+  };
+  // Deprovision every app — the same per-app path as deleting one by hand, so
+  // shared-plane scopes archive and hostnames stop resolving. Best-effort per app:
+  // one stuck app must not leave the rest running.
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const cp = controlPlaneFor(c.env, node.tenantId) ?? undefined;
+  for (const a of apps) {
+    try {
+      await deprovisionApp(host, {
+        node,
+        appScopeId: scopeId.parse(a.app_scope_id),
+        hostname: a.hostname,
+        controlPlane: cp,
+      });
+    } catch {
+      // recorded on the app's own trail; the org delete proceeds
+    }
+  }
+  await host.admin.setTenantStatus(STAFF, node.tenantId, 'deleting');
+  for (const m of members) {
+    try {
+      await host.admin.unlinkIdentity(STAFF, node.tenantId, principalId.parse(m.principal));
+    } catch {
+      // an already-unlinked member (e.g. left earlier) is fine
+    }
+  }
   deleteCookie(c, TEAM_COOKIE, { path: '/' });
   return c.body(null, 204);
 });
@@ -904,6 +962,7 @@ app.post('/api/apps/:scopeId/snapshots', async (c) => {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     ttlDays: body.ttlDays,
+    appHostname: appRow.hostname,
     controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
   });
   return c.json(created, 201);
@@ -997,6 +1056,10 @@ app.post('/api/apps', async (c) => {
   // Connected (prod): provision on the shared control plane through the tenant-narrowed
   // seam so the app is reachable via the router. Absent the binding: the M0 embedded path.
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
+  // The team's human handle, suffixed into the default hostname
+  // (`callout-sesamy.global.substrat.run`). From the TEAM record, not the user.
+  const team = await host.admin.getTenant(STAFF, node.tenantId);
+  const teamHandle = team?.name ? slugify(team.name) : undefined;
   const appRow = await createApp(host, {
     node,
     appScopeId: scopeId.parse(ulid()),
@@ -1004,6 +1067,7 @@ app.post('/api/apps', async (c) => {
     name: body.name,
     appEntitlements: entitlements,
     appOwnerGrants: ownerGrants,
+    teamHandle,
     controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
     tenantName: user?.name ?? user?.email ?? 'Workspace',
   });

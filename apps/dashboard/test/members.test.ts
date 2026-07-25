@@ -55,6 +55,31 @@ describe('Dashboard teams — invite + accept', () => {
     return scope.invoke<DashboardMemberRow[]>('dashboard/list-members', {});
   };
 
+  it('delete-team is owner-only: revokes the roster and returns the members to unlink', async () => {
+    const acme = await makeTeam('acme', 'owner@acme.com');
+    const ownerScope = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+
+    // A non-owner principal (no roster row) is refused before anything changes.
+    const stranger = principalId.parse(ulid());
+    await host.admin.assignRole(staff, {
+      principalId: stranger,
+      roleKey: 'admin',
+      node: { tenantId: acme.tenantId, scopeId: null },
+    });
+    const strangerScope = await host.getScope(stranger, acme.tenantId, acme.scopeId);
+    await expect(strangerScope.invoke('dashboard/delete-team', {})).rejects.toThrow(
+      /only the owner/,
+    );
+    expect(await members(acme)).not.toHaveLength(0);
+
+    // The owner deletes: every roster row revoked, the member list returned.
+    const result = (await ownerScope.invoke('dashboard/delete-team', {})) as {
+      members: Array<{ principal: string; roleKey: string }>;
+    };
+    expect(result.members.some((m) => m.principal === acme.principal)).toBe(true);
+    expect((await members(acme)).filter((m) => m.status === 'active')).toHaveLength(0);
+  });
+
   it('owner invites, recipient accepts with the matching email, and the roster reflects it', async () => {
     const acme = await makeTeam('acme', 'owner@acme.com');
     const ownerScope = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);

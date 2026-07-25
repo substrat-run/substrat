@@ -1,5 +1,6 @@
 import {
   platformActorId,
+  scopeId as scopeIdSchema,
   type PermissionKey,
   type PlatformActorId,
   type PrincipalId,
@@ -133,9 +134,18 @@ export async function createApp(
     appOwnerGrants?: PermissionKey[];
     /**
      * The tenant-app base domain the default hostname is minted under. The bound
-     * hostname is `<slug>.<jurisdiction>.substrat.run` (K-30); overridable for tests.
+     * hostname is `<app>-<team>.<jurisdiction>.substrat.run` (K-30 + the tenant-suffix
+     * scheme); overridable for tests.
      */
     baseDomain?: string;
+    /**
+     * The team's human handle (slugified team name), suffixed into the default
+     * hostname — `callout-sesamy.global.substrat.run` — so two teams' same-named
+     * apps get distinct, legible URLs instead of first-come-first-served + a ULID
+     * tail. Absent (older callers, tests) falls back to the unsuffixed scheme.
+     * Existing bindings are never touched: the scheme applies to NEW apps only.
+     */
+    teamHandle?: string;
     /**
      * CONNECTED mode (production). When present, the app is provisioned on the
      * SHARED control plane through this tenant-narrowed seam (§4) — a directory
@@ -358,9 +368,11 @@ export async function snapshotApp(
     node: DashboardNode;
     appScopeId: ScopeId;
     ttlDays?: number;
+    /** The app's bound hostname — the preview URL is derived from its first label. */
+    appHostname?: string | null;
     controlPlane?: TenantNarrowedControlPlane;
   },
-): Promise<{ id: string; expiresAt: string | null }> {
+): Promise<{ id: string; expiresAt: string | null; url: string | null }> {
   const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
   const expiresAt =
     input.ttlDays && input.ttlDays > 0
@@ -370,13 +382,58 @@ export async function snapshotApp(
     appScopeId: input.appScopeId,
     detail: expiresAt ? `test copy, expires ${expiresAt.slice(0, 10)}` : 'test copy, kept until deleted',
   });
+  let snapId: ScopeId;
   if (input.controlPlane) {
     const created = await input.controlPlane.snapshotScope(input.appScopeId, { expiresAt });
-    return { id: created.id, expiresAt: expiresAt ?? null };
+    snapId = scopeIdSchema.parse(created.id);
+  } else {
+    const staff = platformActorId.parse(ulid());
+    snapId = await host.snapshotScope(staff, input.node.tenantId, input.appScopeId, { expiresAt });
   }
-  const staff = platformActorId.parse(ulid());
-  const id = await host.snapshotScope(staff, input.node.tenantId, input.appScopeId, { expiresAt });
-  return { id, expiresAt: expiresAt ?? null };
+  const url = await bindSnapshotHostname(host, input, snapId);
+  return { id: snapId, expiresAt: expiresAt ?? null, url };
+}
+
+/**
+ * Bind the copy's preview hostname: the app's own label plus a `--s<tail>` tag —
+ * `callout--s1a2b.global.substrat.run`. `--` is reserved by construction (slugify
+ * collapses runs), so a preview can never be mistaken for (or squat) an app's name.
+ * The fork's directory row is what the router resolves, so the URL serves the COPY,
+ * in the same deployment that holds its bytes; deleting/reaping the copy removes the
+ * binding with the row. Best-effort: a copy with no URL is still a valid copy.
+ *
+ * The served copy sits behind the app's own sign-in (the fork carries the source's
+ * users as of the fork). Tighter, dashboard-session gating for preview URLs is a
+ * stated follow-up (preview-and-snapshots.md §6).
+ */
+async function bindSnapshotHostname(
+  host: ScopeHost,
+  input: { node: DashboardNode; appHostname?: string | null; controlPlane?: TenantNarrowedControlPlane },
+  snapId: ScopeId,
+): Promise<string | null> {
+  if (!input.appHostname || !input.appHostname.includes('.')) return null;
+  const [label, ...rest] = input.appHostname.split('.');
+  const hostname = `${label}--s${snapId.toLowerCase().slice(-4)}.${rest.join('.')}`;
+  try {
+    if (input.controlPlane) {
+      await input.controlPlane.bindHostname({ hostname, scopeId: snapId, surface: 'app', canonical: true });
+      await input.controlPlane.setHostnameStatus(hostname, 'active');
+    } else {
+      const staff = platformActorId.parse(ulid());
+      await host.admin.bindHostname(staff, {
+        hostname,
+        tenantId: input.node.tenantId,
+        scopeId: snapId,
+        surface: 'app',
+        region: null,
+        canonical: true,
+      });
+      await host.admin.setHostnameStatus(staff, hostname, 'active');
+    }
+    return hostname;
+  } catch {
+    return null; // collision or transient — the copy stands without a URL
+  }
 }
 
 /** The forks of one app, newest first — the Snapshots tab's list. */
@@ -384,21 +441,41 @@ export async function listAppSnapshots(
   host: ScopeHost,
   input: { node: DashboardNode; appScopeId: ScopeId; controlPlane?: TenantNarrowedControlPlane },
 ): Promise<SnapshotRecord[]> {
-  if (input.controlPlane) return input.controlPlane.listSnapshots(input.appScopeId);
+  let records: SnapshotRecord[];
+  if (input.controlPlane) {
+    records = await input.controlPlane.listSnapshots(input.appScopeId);
+  } else {
+    const staff = platformActorId.parse(ulid());
+    const scopes = await host.admin.listScopes(staff, { tenantId: input.node.tenantId });
+    records = scopes
+      .filter((s) => s.forkedFrom === input.appScopeId)
+      .sort((a, b) => ((a.forkedAt ?? '') < (b.forkedAt ?? '') ? 1 : -1))
+      .map((s) => ({
+        id: s.id,
+        kind: s.kind,
+        forkedFrom: s.forkedFrom,
+        forkedAt: s.forkedAt,
+        expiresAt: s.expiresAt,
+        verticalVersionId: s.verticalVersionId,
+        createdAt: s.createdAt,
+      }));
+  }
+  // Join each copy's preview URL (active binding on the fork scope). Best-effort —
+  // a copy without one just renders URL-less.
   const staff = platformActorId.parse(ulid());
-  const scopes = await host.admin.listScopes(staff, { tenantId: input.node.tenantId });
-  return scopes
-    .filter((s) => s.forkedFrom === input.appScopeId)
-    .sort((a, b) => ((a.forkedAt ?? '') < (b.forkedAt ?? '') ? 1 : -1))
-    .map((s) => ({
-      id: s.id,
-      kind: s.kind,
-      forkedFrom: s.forkedFrom,
-      forkedAt: s.forkedAt,
-      expiresAt: s.expiresAt,
-      verticalVersionId: s.verticalVersionId,
-      createdAt: s.createdAt,
-    }));
+  return Promise.all(
+    records.map(async (r) => {
+      try {
+        const hosts = input.controlPlane
+          ? await input.controlPlane.listHostnames(scopeIdSchema.parse(r.id))
+          : await host.admin.listHostnames(staff, { scopeId: scopeIdSchema.parse(r.id) });
+        const active = hosts.find((h) => h.status === 'active');
+        return { ...r, url: active?.hostname ?? null };
+      } catch {
+        return { ...r, url: null };
+      }
+    }),
+  );
 }
 
 /** Delete one snapshot of an app. The platform refuses anything that is not a fork. */
@@ -460,8 +537,12 @@ async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: Cre
   if (prod) await cp.bindScopeVersion(input.appScopeId, prod.versionId);
 
   const domain = input.baseDomain ?? 'substrat.run';
-  // Prefer the clean name for the URL; fall back to the unique scope slug on a global collision.
-  for (const hostname of [`${nameSlug}.global.${domain}`, `${slug}.global.${domain}`]) {
+  // Tenant-suffixed by preference (`callout-sesamy`), the scope-tailed slug as the
+  // collision fallback; the unsuffixed ladder only for callers with no handle.
+  const labels = input.teamHandle
+    ? [`${nameSlug}-${input.teamHandle}`, `${slug}-${input.teamHandle}`]
+    : [nameSlug, slug];
+  for (const hostname of labels.map((l) => `${l}.global.${domain}`)) {
     try {
       await cp.bindHostname({ hostname, scopeId: input.appScopeId, surface: 'app', canonical: true });
       await cp.setHostnameStatus(hostname, 'active');
@@ -495,13 +576,14 @@ async function provisionEmbedded(host: ScopeHost, input: CreateAppInput): Promis
     tenantId,
     scopeId: input.appScopeId,
     name: input.name,
+    teamHandle: input.teamHandle,
     jurisdiction: 'global',
     baseDomain: input.baseDomain ?? 'substrat.run',
   });
 }
 
-/** A URL-safe slug from an app name. */
-function slugify(name: string): string {
+/** A URL-safe slug from an app or team name. */
+export function slugify(name: string): string {
   return (
     name
       .toLowerCase()
@@ -518,14 +600,15 @@ function slugify(name: string): string {
  */
 async function bindDefaultHostname(
   host: ScopeHost,
-  args: { staff: PlatformActorId; tenantId: TenantId; scopeId: ScopeId; name: string; jurisdiction: string; baseDomain: string },
+  args: { staff: PlatformActorId; tenantId: TenantId; scopeId: ScopeId; name: string; teamHandle?: string; jurisdiction: string; baseDomain: string },
 ): Promise<string | null> {
   const base = slugify(args.name);
   const tail = args.scopeId.toLowerCase().slice(-4);
-  const candidates = [
-    `${base}.${args.jurisdiction}.${args.baseDomain}`,
-    `${base}-${tail}.${args.jurisdiction}.${args.baseDomain}`,
-  ];
+  // Tenant-suffixed by preference (`callout-sesamy`), scope tail as collision belt.
+  const labels = args.teamHandle
+    ? [`${base}-${args.teamHandle}`, `${base}-${tail}-${args.teamHandle}`]
+    : [base, `${base}-${tail}`];
+  const candidates = labels.map((l) => `${l}.${args.jurisdiction}.${args.baseDomain}`);
   for (const hostname of candidates) {
     try {
       await host.admin.bindHostname(args.staff, {

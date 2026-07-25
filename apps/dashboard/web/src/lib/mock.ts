@@ -93,6 +93,7 @@ export const MOCK_SNAPSHOTS: SnapshotRow[] = [
     expiresAt: new Date(now + 5 * 86400e3).toISOString(),
     verticalVersionId: '01J2Q8Z3V9K4W7X2M5N6P7V200',
     createdAt: ago(26 * 3600e3),
+    url: 'acme-hr--ssn01.global.substrat.run',
   },
   {
     id: '01J2Q8Z3V9K4W7X2M5N6P7SN02',
