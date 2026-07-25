@@ -60,6 +60,8 @@ import {
   type RoleAssignment,
   type RoleDefinition,
   type Scope,
+  type ScopeDump,
+  type ScopeDumpTable,
   type ScopeId,
   type ScopeStatus,
   type ScopeTable,
@@ -406,6 +408,8 @@ interface ScopeStubRpc {
   /** Read-only introspection of this scope's DB (§5.4 admin-query RPC). */
   introspectTables(): Promise<ScopeTable[]>;
   introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage>;
+  /** Complete logical dump of this scope's DB (preview-and-snapshots.md §3). */
+  exportDump(): Promise<ScopeDumpTable[]>;
 }
 
 export interface CloudflareScopeHostOptions {
@@ -1601,6 +1605,17 @@ export class CloudflareScopeHost implements ScopeHost {
           page.rows.length,
         );
         return page;
+      },
+      exportScope: async (actor, tenantId, scopeId): Promise<ScopeDump> => {
+        // K-3 cross-check on the shared directory BEFORE reaching the scope DO, exactly
+        // as the introspection reads: an unresolved pair is unreachable, never another
+        // tenant's database. The DO returns the tables; the coordinator, which knows the
+        // scope's identity, stamps the dump.
+        const row = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        const tables = await this.scopeStub(scopeId).exportDump();
+        await this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
+        return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables };
       },
       activateScope: async (actor, tenantId, scopeId) => {
         // Idempotent on `active`, unaudited because nothing changed. Provisioning is

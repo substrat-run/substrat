@@ -12,6 +12,7 @@ import {
   type PermissionKey,
   type PrincipalId,
   type ScopeId,
+  type ScopeDumpTable,
   type ScopeTable,
   type ScopeTablePage,
   type TenantId,
@@ -725,6 +726,31 @@ export function defineScopeDO(
         (this.sql.exec(`SELECT COUNT(*) AS c FROM "${table}"`).toArray()[0] as { c: number }).c,
       );
       return { table, columns, rows, rowCount, limit: l, offset: o };
+    }
+
+    /**
+     * A COMPLETE dump of this scope's DB (preview-and-snapshots.md §3) — every table
+     * (incl. the `_substrat_*` spine), its DDL, and every row. No `.backup()` on DO
+     * SQLite, so this is the logical row-dump; safe because the DO is single-threaded
+     * (a consistent snapshot, no concurrent writer). The coordinator wraps these tables
+     * with the scope's identity after the K-3 check (host.ts admin.exportScope).
+     */
+    exportDump(): ScopeDumpTable[] {
+      const defs = this.sql
+        .exec(
+          `SELECT name, sql FROM sqlite_master
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+            ORDER BY name`,
+        )
+        .toArray() as unknown as { name: string; sql: string }[];
+      return defs.map(({ name, sql }) => {
+        // Raw positional rows, cells as-is (blobs kept as bytes, not nulled like a UI
+        // read) so the dump reloads faithfully. The name is from the live schema.
+        const cursor = this.sql.exec(`SELECT * FROM "${name}"`);
+        const columns = cursor.columnNames;
+        const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
+        return { name, ddl: sql, columns, rows };
+      });
     }
 
     // -- event dispatch (port of dispatch) ------------------------------------

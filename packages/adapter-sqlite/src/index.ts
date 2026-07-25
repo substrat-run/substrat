@@ -72,6 +72,8 @@ import {
   type RoleAssignment,
   type RoleDefinition,
   type Scope,
+  type ScopeDump,
+  type ScopeDumpTable,
   type ScopeId,
   type ScopeStatus,
   type ScopeTable,
@@ -2519,6 +2521,31 @@ export class SqliteScopeHost implements ScopeHost {
         ).c;
         this.recordAccess(actor, 'readScopeTable', { tenantId, scopeId }, { table: input.table, limit, offset }, rows.length);
         return { table: input.table, columns, rows, rowCount, limit, offset };
+      },
+      exportScope: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeDump> => {
+        // K-3: cross-check the pair before opening anything (same as the introspection reads).
+        const db = this.scopeDbFor(tenantId, scopeId);
+        // Every real table, keeping the `_substrat_*` spine but dropping SQLite's own
+        // `sqlite_*` internals — those are auto-managed and `CREATE TABLE sqlite_*` is
+        // rejected on reload. `sql` is the CREATE statement, replayed to rebuild the schema.
+        const defs = db
+          .prepare(
+            `SELECT name, sql FROM sqlite_master
+              WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+              ORDER BY name`,
+          )
+          .all() as { name: string; sql: string }[];
+        const tables: ScopeDumpTable[] = defs.map(({ name, sql }) => {
+          // `.raw(true)` gives positional rows; cells stay as-is (blobs are Buffers, not
+          // nulled as in a UI read) so the dump is byte-faithful. The name is from the live
+          // schema, never user input, so the quoted identifier is safe.
+          const stmt = db.prepare(`SELECT * FROM "${name}"`).raw(true);
+          const rows = stmt.all() as unknown[][];
+          const columns = stmt.columns().map((c) => c.name);
+          return { name, ddl: sql, columns, rows };
+        });
+        this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
+        return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables };
       },
       activateScope: async (actor, tenantId, scopeId) => {
         // Idempotent on `active`, unaudited because nothing changed. Provisioning is

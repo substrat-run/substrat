@@ -40,6 +40,7 @@ import type {
   RoleDefinition,
   ReadScopeTableInput,
   Scope,
+  ScopeDump,
   ScopeId,
   ScopeStatus,
   ScopeTable,
@@ -670,6 +671,20 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: ReadScopeTableInput,
   ): Promise<ScopeTablePage>;
+
+  /**
+   * A COMPLETE dump of the scope's database — every table (the vertical's own AND the
+   * `_substrat_*` spine), its DDL, and every row. This is the read side of the
+   * preview/snapshot primitive (docs/design/preview-and-snapshots.md §3): the source a
+   * fork copies into a new scope, or a governed `substrat scope pull` writes to a file.
+   *
+   * Unlike `readScopeTable` — bounded and blob-as-null, deliberately NOT a dump — this
+   * exfiltrates the whole scope, so it is the more privileged read: same `PlatformActorId`
+   * and K-24 access log, same (tenantId, scopeId) K-3 cross-check that fails closed on a
+   * mismatch. It drops only SQLite's own `sqlite_*` internals (auto-managed, un-recreatable);
+   * the spine is kept because a fork must carry the event/migration state to be faithful.
+   */
+  exportScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeDump>;
 
   // -- scope lifecycle (control-plane.md §4.2) -------------------------------
   // The §3.3 transitions that existed only on paper. Each fails closed on an
