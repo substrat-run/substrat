@@ -1,5 +1,18 @@
 # @substrat-run/dashboard
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [cb6131c]
+  - @substrat-run/contracts@0.14.1
+  - @substrat-run/kernel@0.14.1
+  - @substrat-run/adapter-cloudflare@0.14.1
+  - @substrat-run/engine-invites@0.0.11
+  - @substrat-run/engine-invoicing@0.3.12
+  - @substrat-run/engine-protocol@0.4.6
+  - @substrat-run/engine-workorder@0.3.12
+
 ## 0.3.0
 
 ### Minor Changes
