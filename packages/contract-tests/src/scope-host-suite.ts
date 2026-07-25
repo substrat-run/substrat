@@ -518,6 +518,66 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- scope import: the fork round-trip (preview-and-snapshots.md §3) -------
+    //
+    // The write side of exportScope. `importScope` provisions a NEW scope and loads
+    // a dump into it — a faithful, INDEPENDENT copy at the source's frontier. What
+    // matters: the copy has the source's tables + rows (fidelity), and the two do not
+    // share storage (a later write to one is invisible to the other).
+
+    describe('scope import — fork (§3)', () => {
+      it('round-trips: import a dump into a new scope, identical to the source', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/write-marker', { v: 'fork-me' });
+        const dump = await host.admin.exportScope(staff, t1, s1);
+
+        const copy = scopeId.parse(ulid());
+        await host.importScope(
+          staff,
+          { tenantId: t1, scopeId: copy, jurisdiction: 'eu', vertical: 'connector-vertical' },
+          dump,
+        );
+
+        // Same tables and row counts as the source (the spine came across too).
+        const src = (await host.admin.listScopeTables(staff, t1, s1))
+          .map((t) => `${t.name}:${t.rowCount}`)
+          .sort();
+        const dst = (await host.admin.listScopeTables(staff, t1, copy))
+          .map((t) => `${t.name}:${t.rowCount}`)
+          .sort();
+        expect(dst).toEqual(src);
+
+        // The vertical's data is present in the copy.
+        const page = await host.admin.readScopeTable(staff, t1, copy, {
+          table: 'marker',
+          limit: 200,
+          offset: 0,
+        });
+        const vCol = page.columns.indexOf('v');
+        expect(page.rows.map((r) => r[vCol])).toContain('fork-me');
+      });
+
+      it('is an independent copy — a later write to the source does not reach it', async () => {
+        const dump = await host.admin.exportScope(staff, t1, s1);
+        const copy = scopeId.parse(ulid());
+        await host.importScope(
+          staff,
+          { tenantId: t1, scopeId: copy, jurisdiction: 'eu', vertical: 'connector-vertical' },
+          dump,
+        );
+        const countMarker = async (sc: typeof copy) =>
+          (await host.admin.listScopeTables(staff, t1, sc)).find((t) => t.name === 'marker')
+            ?.rowCount ?? 0;
+        const before = await countMarker(copy);
+
+        // Write to the SOURCE after the fork; the copy is frozen at capture time.
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/write-marker', { v: 'after-fork' });
+
+        expect(await countMarker(copy)).toBe(before);
+      });
+    });
+
     // -- the integrations hub: connections (#101) -----------------------------
     //
     // The store exists so a vertical's connector can reach a tenant's provider

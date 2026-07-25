@@ -1037,6 +1037,27 @@ export interface ScopeHost {
    */
   provisionScope(actor: PlatformActorId, input: ProvisionScopeInput): Promise<void>;
 
+  /**
+   * Provision a NEW scope and load a `ScopeDump` into it — the write side of
+   * `exportScope` and the fork primitive (docs/design/preview-and-snapshots.md §3):
+   * a preview/snapshot is a fresh scope carrying a copy of another's data.
+   *
+   * The new scope's schema, rows, AND migration frontier come from the dump verbatim
+   * (drop-then-replay) — NOT from running the vertical's migrations. A fork must be a
+   * faithful copy at the *source's* frontier, which is the whole point: you can then
+   * bind a different version and roll ITS migrations forward on the copy, forward-only
+   * law intact (§4). Provisions → loads → activates, so the result is a ready scope.
+   *
+   * Same `PlatformActorId` and audit as `provisionScope`, and it inherits its
+   * fail-closed tenant gate (the dump's own `tenantId`/`scopeId` are provenance, never
+   * the authority — `input` says where the copy lands).
+   */
+  importScope(
+    actor: PlatformActorId,
+    input: ProvisionScopeInput,
+    dump: ScopeDump,
+  ): Promise<void>;
+
   /** Enforcement-input writes: roles, assignments, grants, membership. */
   readonly admin: HostAdmin;
 

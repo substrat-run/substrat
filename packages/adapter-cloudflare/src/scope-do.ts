@@ -753,6 +753,36 @@ export function defineScopeDO(
       });
     }
 
+    /**
+     * Load a dump into this (freshly-provisioned) scope — the write half of the fork
+     * (host.ts importScope). Drop-then-replay: the dump's schema is authoritative, so
+     * the provisioning schema is wiped and rebuilt from the dump verbatim.
+     */
+    importDump(tables: ScopeDumpTable[]): void {
+      // Wipe the provisioned schema (real tables only; `sqlite_*` internals are
+      // auto-managed and un-droppable).
+      const existing = this.sql
+        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+        .toArray() as unknown as { name: string }[];
+      for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+      for (const t of tables) {
+        this.sql.exec(t.ddl);
+        if (t.rows.length === 0) continue;
+        const cols = t.columns.map((c) => `"${c}"`).join(', ');
+        const placeholders = t.columns.map(() => '?').join(', ');
+        const insert = `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`;
+        for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
+      }
+      // The frontier arrived with the dump — refresh the in-memory applied set so a
+      // later migrate() builds on the imported state, not the provisioning state.
+      this.applied.clear();
+      for (const row of this.sql
+        .exec('SELECT module_id, version FROM _substrat_migrations')
+        .toArray() as unknown as { module_id: string; version: string }[]) {
+        this.applied.add(`${row.module_id}@${row.version}`);
+      }
+    }
+
     // -- event dispatch (port of dispatch) ------------------------------------
 
     private async dispatch(tenantId: TenantId, scopeId: ScopeId): Promise<void> {

@@ -410,6 +410,8 @@ interface ScopeStubRpc {
   introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage>;
   /** Complete logical dump of this scope's DB (preview-and-snapshots.md §3). */
   exportDump(): Promise<ScopeDumpTable[]>;
+  /** Load a dump into this (freshly-provisioned) scope — the fork write side. */
+  importDump(tables: ScopeDumpTable[]): Promise<void>;
 }
 
 export interface CloudflareScopeHostOptions {
@@ -810,6 +812,26 @@ export class CloudflareScopeHost implements ScopeHost {
         record,
       );
     }
+  }
+
+  async importScope(
+    actor: PlatformActorId,
+    input: ProvisionScopeInput,
+    dump: ScopeDump,
+  ): Promise<void> {
+    // Create the destination scope (directory row + DO + lazy migrate); the DO then
+    // replaces its provisioned schema with the dump wholesale (drop-then-replay), so
+    // the end state is the dump, at the source's frontier.
+    await this.provisionScope(actor, input);
+    await this.scopeStub(input.scopeId).importDump(dump.tables);
+    await this.admin.activateScope(actor, input.tenantId, input.scopeId);
+    await this.recordAdmin(
+      actor,
+      'importScope',
+      { tenantId: input.tenantId, scopeId: input.scopeId },
+      null,
+      { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
+    );
   }
 
   /**
