@@ -31,7 +31,7 @@ import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, updateApp, provisionDashboard, reconcileRoles, type DashboardNode } from './provision.js';
+import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, provisionDashboard, reconcileRoles, type DashboardNode } from './provision.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -851,13 +851,88 @@ app.post('/api/apps/:scopeId/update', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  // `snapshot` = fork-before-promote (§4): snapshot the data first when the update
+  // crosses a migration boundary. Body is optional — a bare POST updates as before.
+  const body = z
+    .object({ snapshot: z.boolean().optional() })
+    .parse(await c.req.json().catch(() => ({})));
   const result = await updateApp(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     verticalSlug: appRow.vertical_slug,
+    snapshot: body.snapshot,
     controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
   });
   return c.json(result);
+});
+
+/**
+ * The Snapshots tab (preview-and-snapshots.md §3): create a test copy of an app's
+ * data, list the copies, delete one. Same authority as managing the app
+ * (`dashboard:provision-app`, checked in-scope); the app must be the caller's own.
+ * A copy is an ARCHIVE fork — it never receives traffic, never runs consumers, and
+ * expires on the chosen TTL (the GC sweep reaps it) unless kept.
+ */
+app.get('/api/apps/:scopeId/snapshots', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const snapshots = await listAppSnapshots(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  return c.json(snapshots);
+});
+
+app.post('/api/apps/:scopeId/snapshots', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const body = z
+    .object({ ttlDays: z.number().int().positive().max(365).optional() })
+    .parse(await c.req.json().catch(() => ({})));
+  const created = await snapshotApp(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    ttlDays: body.ttlDays,
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  return c.json(created, 201);
+});
+
+app.delete('/api/apps/:scopeId/snapshots/:snapshotId', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  // The snapshot must be a fork OF THIS APP — a snapshot id belonging to another
+  // scope (or a non-fork) 404s here before any platform call.
+  const snapshots = await listAppSnapshots(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  const snap = snapshots.find((s) => s.id === c.req.param('snapshotId'));
+  if (!snap) throw new HTTPException(404, { message: 'snapshot not found' });
+  await deleteAppSnapshot(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    snapshotScopeId: scopeId.parse(snap.id),
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  return c.json({ deleted: snap.id });
 });
 
 /**

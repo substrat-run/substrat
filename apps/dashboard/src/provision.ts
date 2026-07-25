@@ -10,7 +10,7 @@ import {
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
 import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js';
-import { TenantNarrowedControlPlane } from './authority.js';
+import { TenantNarrowedControlPlane, type SnapshotRecord } from './authority.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
 export const VERTICAL = 'dashboard';
@@ -290,6 +290,8 @@ export async function updateApp(
     node: DashboardNode;
     appScopeId: ScopeId;
     verticalSlug: string;
+    /** Fork-before-promote (§4): snapshot pre-migration data before the rebind. */
+    snapshot?: boolean;
     controlPlane?: TenantNarrowedControlPlane;
   },
 ): Promise<UpdateAppResult> {
@@ -322,17 +324,104 @@ export async function updateApp(
 
   // Authorize in-scope + record the move (the assert gates the effect below), then
   // rebind the scope so the router dispatches on the new version's deploymentRef.
+  // `snapshot` is fork-before-promote (preview-and-snapshots.md §4): the platform
+  // snapshots the pre-migration data first when the rebind crosses a migration
+  // digest — and does nothing extra on a code-only update.
   await scope.invoke('dashboard/update-app', {
     appScopeId: input.appScopeId,
-    detail: `${fromLabel ?? '—'} → ${toLabel ?? prodVersionId}`,
+    detail: `${fromLabel ?? '—'} → ${toLabel ?? prodVersionId}${input.snapshot ? ' (snapshot first)' : ''}`,
   });
   if (input.controlPlane) {
-    await input.controlPlane.bindScopeVersion(input.appScopeId, prodVersionId);
+    await input.controlPlane.bindScopeVersion(input.appScopeId, prodVersionId, {
+      snapshot: input.snapshot,
+    });
   } else {
     const staff = platformActorId.parse(ulid());
-    await host.admin.bindScopeVersion(staff, input.node.tenantId, input.appScopeId, prodVersionId);
+    await host.admin.bindScopeVersion(staff, input.node.tenantId, input.appScopeId, prodVersionId, {
+      snapshot: input.snapshot,
+    });
   }
   return { updated: true, version: toLabel, previousVersion: fromLabel };
+}
+
+/**
+ * Snapshot an app's data into an archive fork (preview-and-snapshots.md §3) — the
+ * Snapshots tab's "Create test copy". Authorize in the caller's own dashboard scope
+ * (same authority as managing the app), then effect tenant-narrowed: the CP
+ * orchestrates the fork inside the app's own vertical deployment (connected), or the
+ * host forks in-process (embedded). `ttlDays` opts into the GC sweep; omitted =
+ * pinned until deleted.
+ */
+export async function snapshotApp(
+  host: ScopeHost,
+  input: {
+    node: DashboardNode;
+    appScopeId: ScopeId;
+    ttlDays?: number;
+    controlPlane?: TenantNarrowedControlPlane;
+  },
+): Promise<{ id: string; expiresAt: string | null }> {
+  const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
+  const expiresAt =
+    input.ttlDays && input.ttlDays > 0
+      ? new Date(Date.now() + input.ttlDays * 86_400_000).toISOString()
+      : undefined;
+  await scope.invoke('dashboard/snapshot-app', {
+    appScopeId: input.appScopeId,
+    detail: expiresAt ? `test copy, expires ${expiresAt.slice(0, 10)}` : 'test copy, kept until deleted',
+  });
+  if (input.controlPlane) {
+    const created = await input.controlPlane.snapshotScope(input.appScopeId, { expiresAt });
+    return { id: created.id, expiresAt: expiresAt ?? null };
+  }
+  const staff = platformActorId.parse(ulid());
+  const id = await host.snapshotScope(staff, input.node.tenantId, input.appScopeId, { expiresAt });
+  return { id, expiresAt: expiresAt ?? null };
+}
+
+/** The forks of one app, newest first — the Snapshots tab's list. */
+export async function listAppSnapshots(
+  host: ScopeHost,
+  input: { node: DashboardNode; appScopeId: ScopeId; controlPlane?: TenantNarrowedControlPlane },
+): Promise<SnapshotRecord[]> {
+  if (input.controlPlane) return input.controlPlane.listSnapshots(input.appScopeId);
+  const staff = platformActorId.parse(ulid());
+  const scopes = await host.admin.listScopes(staff, { tenantId: input.node.tenantId });
+  return scopes
+    .filter((s) => s.forkedFrom === input.appScopeId)
+    .sort((a, b) => ((a.forkedAt ?? '') < (b.forkedAt ?? '') ? 1 : -1))
+    .map((s) => ({
+      id: s.id,
+      kind: s.kind,
+      forkedFrom: s.forkedFrom,
+      forkedAt: s.forkedAt,
+      expiresAt: s.expiresAt,
+      verticalVersionId: s.verticalVersionId,
+      createdAt: s.createdAt,
+    }));
+}
+
+/** Delete one snapshot of an app. The platform refuses anything that is not a fork. */
+export async function deleteAppSnapshot(
+  host: ScopeHost,
+  input: {
+    node: DashboardNode;
+    appScopeId: ScopeId;
+    snapshotScopeId: ScopeId;
+    controlPlane?: TenantNarrowedControlPlane;
+  },
+): Promise<void> {
+  const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
+  await scope.invoke('dashboard/delete-app-snapshot', {
+    appScopeId: input.appScopeId,
+    detail: input.snapshotScopeId,
+  });
+  if (input.controlPlane) {
+    await input.controlPlane.deleteSnapshot(input.snapshotScopeId);
+    return;
+  }
+  const staff = platformActorId.parse(ulid());
+  await host.deleteSnapshot(staff, input.node.tenantId, input.snapshotScopeId);
 }
 
 /**

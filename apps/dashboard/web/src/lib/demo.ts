@@ -273,6 +273,7 @@ export const APP_TABS: Array<{ value: string; label: string; count?: number; fut
   { value: 'overview', label: 'Overview' },
   { value: 'data', label: 'Data' },
   { value: 'deployments', label: 'Deployments', future: true },
+  { value: 'snapshots', label: 'Snapshots' },
   { value: 'env', label: 'Environment Variables', count: 4 },
   { value: 'domains', label: 'Domains', count: 1 },
   { value: 'integrations', label: 'Integrations', count: 2 },

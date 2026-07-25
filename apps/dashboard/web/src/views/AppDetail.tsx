@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Button, Dialog, Input, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type Deployment, type ScopeTable, type ScopeTablePage, type AppEnvView } from '../lib/api';
+import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
+import { api, type AppRow, type AppEvent, type Deployment, type ScopeTable, type ScopeTablePage, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
-import { DEV_MOCK, MOCK_DEPLOYMENTS } from '../lib/mock';
+import { DEV_MOCK, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
@@ -55,6 +55,7 @@ export function AppDetail({
       {tab === 'overview' && <Overview app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} />}
       {tab === 'data' && <DataBrowser app={app} />}
       {tab === 'deployments' && <Deployments app={app} />}
+      {tab === 'snapshots' && <Snapshots app={app} />}
       {tab === 'env' && <EnvVars app={app} />}
       {tab === 'domains' && <AppDomains />}
       {tab === 'integrations' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 16 }}>{INTEGRATIONS.slice(0, 2).map((i) => <IntegrationCard key={i.name} integ={i} />)}</div>}
@@ -215,6 +216,10 @@ function Deployments({ app }: { app: AppRow }) {
   const [nonce, setNonce] = useState(0);
   const [updating, setUpdating] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // Fork-before-promote (default ON): snapshot the app's data before a migration-
+  // crossing update, so a bad upgrade has a rollback point. A code-only update
+  // snapshots nothing — the platform compares migration digests, not the checkbox.
+  const [snapFirst, setSnapFirst] = useState(true);
   useEffect(() => {
     if (DEV_MOCK) {
       setDep(MOCK_DEPLOYMENTS[0] ?? null);
@@ -249,7 +254,7 @@ function Deployments({ app }: { app: AppRow }) {
     setUpdating(true);
     setNote(null);
     try {
-      const r = await api.updateApp(app.app_scope_id);
+      const r = await api.updateApp(app.app_scope_id, { snapshot: snapFirst });
       setNote(r.updated ? `Updated ${r.previousVersion ?? '—'} → ${r.version ?? ''}` : 'Already on the latest version.');
       setNonce((n) => n + 1); // refetch so Running + the table reflect the rebind
     } catch (e) {
@@ -277,6 +282,10 @@ function Deployments({ app }: { app: AppRow }) {
         {updateAvailable && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {prodVersion && <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>Update available → <MonoTag>{prodVersion.version}</MonoTag></span>}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={snapFirst} onChange={(e) => setSnapFirst(e.target.checked)} />
+              Snapshot data first
+            </label>
             <Button onClick={doUpdate} disabled={updating}>{updating ? 'Updating…' : 'Update to latest'}</Button>
           </div>
         )}
@@ -306,6 +315,133 @@ function Deployments({ app }: { app: AppRow }) {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** "expires in 5d" / "expires today" — the countdown a TTL'd copy shows. */
+function expiresIn(expiresAt: string | null): string {
+  if (!expiresAt) return 'kept until deleted';
+  const days = Math.ceil((Date.parse(expiresAt) - Date.now()) / 86_400_000);
+  if (days <= 0) return 'expiring now';
+  if (days === 1) return 'expires in 1 day';
+  return `expires in ${days} days`;
+}
+
+const TTL_CHOICES = [
+  { value: '1', label: '1 day' },
+  { value: '7', label: '7 days' },
+  { value: '30', label: '30 days' },
+  { value: '0', label: 'Keep until deleted' },
+] as const;
+
+/**
+ * The Snapshots tab (preview-and-snapshots.md §3): create a test copy of the app's
+ * data, watch its expiry, delete it. A copy is unmistakably NOT the live app — it
+ * never receives traffic, integrations are off, and it expires unless kept; the
+ * banner says so in words.
+ */
+function Snapshots({ app }: { app: AppRow }) {
+  const [snaps, setSnaps] = useState<SnapshotRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const [ttl, setTtl] = useState('7');
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setSnaps(MOCK_SNAPSHOTS.filter((s) => s.forkedFrom === app.app_scope_id));
+      return;
+    }
+    let live = true;
+    api
+      .appSnapshots(app.app_scope_id)
+      .then((s) => live && setSnaps(s))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id, nonce]);
+
+  const doCreate = async () => {
+    setCreating(true);
+    setNote(null);
+    try {
+      if (DEV_MOCK) {
+        setNote('Test copy created (preview).');
+      } else {
+        const days = Number(ttl);
+        await api.createSnapshot(app.app_scope_id, days > 0 ? { ttlDays: days } : {});
+        setNote('Test copy created.');
+        setNonce((n) => n + 1);
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const doDelete = async (id: string) => {
+    setBusyId(id);
+    setNote(null);
+    try {
+      if (!DEV_MOCK) {
+        await api.deleteSnapshot(app.app_scope_id, id);
+        setNonce((n) => n + 1);
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load snapshots — {err}</div>;
+  if (!snaps) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading snapshots…</div>;
+
+  const COLS = '1.4fr 1.2fr 1.4fr 0.8fr';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ ...card, padding: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <Eyebrow>Test copies</Eyebrow>
+        <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          A snapshot is a full copy of this app’s data at a moment in time — try things on it without touching the live app.
+        </span>
+        <div style={{ flex: 1 }} />
+        <Select size="sm" value={ttl} onChange={(e) => setTtl(e.target.value)} options={TTL_CHOICES.map((t) => ({ value: t.value, label: t.label }))} style={{ width: 170 }} />
+        <Button onClick={doCreate} disabled={creating}>{creating ? 'Creating…' : 'Create test copy'}</Button>
+      </div>
+      {note && <div style={{ ...card, padding: '10px 16px', fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</div>}
+      <HonestyBanner>A copy is not the live app: it receives no traffic, integrations are off, and it is deleted automatically when it expires. Copies contain real data — the same access rules apply.</HonestyBanner>
+      {snaps.length === 0 ? (
+        <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No test copies yet.</div>
+      ) : (
+        <div style={{ ...card, overflow: 'hidden' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+            <span>Copy</span><span>Taken</span><span>Retention</span><span />
+          </div>
+          {snaps.map((s, i) => (
+            <div key={s.id} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 44, padding: '8px 16px', fontSize: 13, borderBottom: i === snaps.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <MonoTag>{shortId(s.id)}</MonoTag>
+                <Pill kind="neutral">{s.kind}</Pill>
+              </span>
+              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{s.forkedAt ? relativeTime(s.forkedAt) : '—'}</span>
+              <span style={{ fontSize: 12 }}>
+                <Pill kind={s.expiresAt ? 'warning' : 'neutral'}>{expiresIn(s.expiresAt)}</Pill>
+              </span>
+              <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <Button variant="ghost" onClick={() => doDelete(s.id)} disabled={busyId === s.id}>
+                  {busyId === s.id ? 'Deleting…' : 'Delete'}
+                </Button>
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>
