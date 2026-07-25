@@ -44,6 +44,15 @@ export const envVarSpec = z.object({
 });
 export type EnvVarSpec = z.infer<typeof envVarSpec>;
 
+/**
+ * A named capability a vertical **provides** or **requires** (e.g. `oidc-issuer`), wired
+ * tenant-side through the connection store (marketplace-publish.md §4). Lowercase kebab.
+ * Identity is per-tenant, so one provider (an auth-server) serves all a tenant's requiring
+ * verticals — the connection binds them, nothing is bundled into a consumer's manifest.
+ */
+export const capability = z.string().regex(/^[a-z][a-z0-9-]*$/);
+export type Capability = z.infer<typeof capability>;
+
 /** The runtime resolution of an `envSpec` against a raw environment. */
 export interface ResolvedEnv {
   /** Each declared key → its value (from `raw`, else the spec's `default`). */
@@ -140,6 +149,21 @@ export const moduleManifest = z.object({
   // tenants' scopes) delivers per-tenant config through the connection store instead,
   // never per-app worker secrets.
   envSpec: z.array(envVarSpec).optional(),
+  // MARKETPLACE / registry-driven install (marketplace-publish.md). All additive (D-28),
+  // carried on push so the dashboard installs a vertical without a hardcoded catalog entry.
+  //
+  // `ownerGrants` — the permissions a fresh install's OWNER is granted on day one. The role
+  // TABLE stays vertical-owned + runtime-customizable (three-layer rule); only this day-one
+  // grant is declared. Scope-provisioning verticals only; a pure capability provider omits it.
+  ownerGrants: z.array(permissionKey).optional(),
+  // The full entitlement set an install grants (the vertical's own + any it composes). Absent
+  // ⇒ derive from `entitlementKey`.
+  entitlements: z.array(z.string().regex(/^[a-z0-9-]+$/)).optional(),
+  // Capabilities this vertical PROVIDES (auth-server → `oidc-issuer`) and REQUIRES (an app that
+  // delegates auth → `oidc-issuer`). A consumer binds a provider tenant-side via the connection
+  // store (§4) — no `kind` flag, no bundling.
+  provides: z.array(capability).optional(),
+  requires: z.array(capability).optional(),
   api: z.string().optional(), // path to emitted OAS for the HTTP surface, if any (D-22)
   searchables: z
     .array(

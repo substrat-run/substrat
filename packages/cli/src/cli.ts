@@ -21,6 +21,7 @@ import { browserLogin } from './login.js';
 import { push, readVerticalMeta, nextVersion } from './push.js';
 import { printVersions } from './versions.js';
 import { promote } from './promote.js';
+import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
 
 const argv = process.argv.slice(2);
@@ -51,6 +52,8 @@ Usage:
   substrat push     [dir]                      push a vertical (slug/name/version default
                                                from package.json; version auto-bumps)
   substrat promote  <slug> --channel dev|staging --version <versionId>
+  substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
+  substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
 
 'substrat push' defaults everything from the vertical's package.json — run it from inside the
@@ -132,7 +135,15 @@ async function cmdPush(): Promise<void> {
   // Version defaults to the registry's latest, patch-bumped — no hand-tracking. --version wins.
   const version = flag('version') ?? (await nextVersion(controlPlaneUrl, header, slug, meta.versionSeed));
   console.log(`pushing ${slug}@${version}${name && name !== slug ? ` (${name})` : ''} …`);
-  const v = await push({ dir, slug, version, name, envSpec: meta.envSpec, controlPlaneUrl, authHeader: header });
+  const v = await push({
+    dir, slug, version, name,
+    envSpec: meta.envSpec,
+    ownerGrants: meta.ownerGrants,
+    entitlements: meta.entitlements,
+    provides: meta.provides,
+    requires: meta.requires,
+    controlPlaneUrl, authHeader: header,
+  });
   console.log(`✓ pushed. version ${v.id} (${version}) is ${v.admission}; deploymentRef=${v.deploymentRef}`);
   console.log('  admit it in the console to let a scope bind it.');
 }
@@ -161,6 +172,30 @@ async function cmdPromote(): Promise<void> {
   console.log(`✓ ${slug} → ${ch.channel} now points at ${ch.versionId}`);
 }
 
+async function cmdPublish(): Promise<void> {
+  const slug = argv[1];
+  if (!slug || slug.startsWith('--')) {
+    console.error('usage: substrat publish <slug>');
+    process.exit(1);
+  }
+  const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  console.log(`authenticating with ${as}`);
+  await requestPublish({ controlPlaneUrl, header, slug });
+  console.log(`✓ publish requested for ${slug} — a Substrat operator will review it`);
+}
+
+async function cmdUnpublish(): Promise<void> {
+  const slug = argv[1];
+  if (!slug || slug.startsWith('--')) {
+    console.error('usage: substrat unpublish <slug>');
+    process.exit(1);
+  }
+  const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  console.log(`authenticating with ${as}`);
+  const r = await setListing({ controlPlaneUrl, header, slug, listed: false });
+  console.log(`✓ ${r.slug} unpublished`);
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -184,6 +219,10 @@ async function main(): Promise<void> {
       return cmdPush();
     case 'promote':
       return cmdPromote();
+    case 'publish':
+      return cmdPublish();
+    case 'unpublish':
+      return cmdUnpublish();
     case 'whoami':
       return cmdWhoami();
     case 'help':

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { platformActorId, principalId, scopeId, tenantId, type PermissionKey } from '@substrat-run/contracts';
+import { platformActorId, principalId, scopeId, tenantId, type PermissionKey, type Vertical } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { protocolModule, PROTOCOL_PERM } from '@substrat-run/engine-protocol';
@@ -566,41 +566,42 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
  * The catalog only advertises verticals the running mode can actually provision — so the
  * marketplace never offers an install that always fails (the Meridian-in-connected-mode gap).
  */
-describe('catalog availability by mode', () => {
-  // The registry listing the catalog endpoint filters (CATALOG keys + one unknown vertical).
-  const registry = [
-    ...Object.entries(CATALOG).map(([slug, e]) => ({ slug, name: e.name })),
-    { slug: 'not-in-catalog', name: 'Mystery' },
+describe('catalog availability — registry-driven (marketplace-publish.md §3)', () => {
+  // availableCatalog reads the registry now: a vertical shows if it's PUBLISHED (`listed`) or
+  // OWNED by the caller's tenant (private). No hardcoded CATALOG gate.
+  const row = (slug: string, listed: boolean, ownerTenant: string | null): Vertical =>
+    ({ slug, name: slug, source: 'cli', ownerTenant, listed, createdAt: '2026-01-01T00:00:00.000Z' } as unknown as Vertical);
+  const registry: Vertical[] = [
+    row('published', true, null),
+    row('theirs-published', true, 'other'),
+    row('mine-private', false, 'me'),
+    row('theirs-private', false, 'other'),
   ];
 
-  it('embedded mode offers every bundled catalog vertical (incl. Meridian), never an unknown one', () => {
-    const slugs = availableCatalog(registry, { connected: false }).map((v) => v.slug);
-    expect(slugs).toContain('meridian');
-    expect(slugs).toContain('callout');
-    expect(slugs).toContain('protocol');
-    expect(slugs).not.toContain('not-in-catalog');
+  it('shows PUBLISHED verticals to anyone, regardless of owner', () => {
+    const slugs = availableCatalog(registry, { tenantId: 'me' }).map((v) => v.slug);
+    expect(slugs).toContain('published');
+    expect(slugs).toContain('theirs-published');
   });
 
-  it('connected mode offers deployed catalog verticals (incl. Meridian now), never an unknown one', () => {
-    const slugs = availableCatalog(registry, { connected: true }).map((v) => v.slug);
-    // Meridian is now deployed to the dispatch namespace + promoted (connected: true) → offered.
-    expect(slugs).toContain('meridian');
-    expect(slugs).toContain('callout');
-    expect(slugs).toContain('protocol');
-    expect(slugs).not.toContain('not-in-catalog');
+  it("shows the caller's OWN private vertical, hides another tenant's", () => {
+    const slugs = availableCatalog(registry, { tenantId: 'me' }).map((v) => v.slug);
+    expect(slugs).toContain('mine-private');
+    expect(slugs).not.toContain('theirs-private');
   });
 
-  it('the gating rule still HIDES a vertical explicitly flagged not-yet-connected', () => {
-    // The rule availableCatalog applies, pinned independent of any real entry's flag.
-    const shows = (entry: { connected?: boolean } | undefined, connected: boolean) =>
-      !!entry && (!connected || entry.connected !== false);
-    expect(shows({ connected: false }, true)).toBe(false); // undeployed → hidden in connected mode
-    expect(shows({ connected: false }, false)).toBe(true); // embedded → shown regardless
-    expect(shows({ connected: true }, true)).toBe(true); // deployed → shown
-    expect(shows(undefined, true)).toBe(false); // not in catalog → hidden
+  it('an anonymous caller (no tenant) sees only published verticals', () => {
+    const slugs = availableCatalog(registry, { tenantId: null }).map((v) => v.slug).sort();
+    expect(slugs).toEqual(['published', 'theirs-published']);
   });
 
-  it('Meridian is now connected (deployed + promoted to prod)', () => {
+  it('ensureCatalog seeds first-party as listed unless flagged not-yet-connected', () => {
+    // `listed: e.connected !== false` — a bundled-but-undeployed entry stays private (would 501
+    // on install in connected mode); a deployed one is published to everyone.
+    const listedFor = (connected?: boolean) => connected !== false;
+    expect(listedFor(false)).toBe(false);
+    expect(listedFor(true)).toBe(true);
+    expect(listedFor(undefined)).toBe(true);
     expect(CATALOG.meridian!.connected).toBe(true);
   });
 });

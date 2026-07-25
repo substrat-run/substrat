@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { instant, tenantId, verticalSlug } from './ids.js';
-import { envVarSpec } from './manifest.js';
+import { instant, permissionKey, tenantId, verticalSlug } from './ids.js';
+import { envVarSpec, capability } from './manifest.js';
 
 /**
  * The vertical + version registry (#31 step 1; D-33's milestone one).
@@ -37,11 +37,38 @@ export const vertical = z.object({
    * "opt into a settings form by declaring `envSpec` in your manifest" flow automatically.
    */
   envSpec: z.array(envVarSpec).optional(),
+  /**
+   * Registry-driven install (marketplace-publish.md §3) — carried on push from the manifest,
+   * so the dashboard installs a vertical without a hardcoded catalog entry. `entitlements` +
+   * `ownerGrants` are what an install grants (scope-provisioning verticals); `provides` /
+   * `requires` are the capabilities the connection store wires (§4). All additive (D-28);
+   * stored as one `install_spec` json column adapter-side.
+   */
+  entitlements: z.array(z.string()).optional(),
+  ownerGrants: z.array(permissionKey).optional(),
+  provides: z.array(capability).optional(),
+  requires: z.array(capability).optional(),
+  /**
+   * Published to the PUBLIC marketplace (marketplace-publish.md §2/§5). `false` = private to
+   * its `ownerTenant`. First-party verticals are seeded `true`; a builder vertical flips it via
+   * the staff-reviewed publish action (a later phase). Its own column adapter-side — set on
+   * insert, NEVER touched by a re-push refresh, so re-pushing a published vertical can't
+   * silently unpublish it (publish is a distinct action from push).
+   */
+  listed: z.boolean().default(false),
+  /**
+   * A builder's pending PUBLISH REQUEST (marketplace-publish.md §5) — when the owner asked for
+   * the vertical to be listed, awaiting staff review. `null` = no request (or already
+   * resolved). Set by `requestPublish`; cleared when staff `setVerticalListed`.
+   */
+  publishRequestedAt: instant.nullish(),
   createdAt: instant,
 });
 export type Vertical = z.infer<typeof vertical>;
 
-export const registerVerticalInput = vertical.pick({ slug: true, name: true, source: true, envSpec: true }).extend({
+export const registerVerticalInput = vertical
+  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, listed: true })
+  .extend({
   // Optional on input — a staff/platform push omits it (⇒ platform-owned).
   ownerTenant: tenantId.nullable().default(null),
 });

@@ -260,6 +260,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/deploy$/ },
+    // A builder REQUESTS publication of a vertical it owns (marketplace-publish.md §5); the
+    // `listing` flip stays staff-only. Ownership is checked in the handler.
+    { method: 'POST', re: /\/verticals\/[^/]+\/publish-request$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -583,6 +586,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json((await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id));
   });
 
+  // A builder REQUESTS publication of a vertical it owns (marketplace-publish.md §5) — any owner
+  // may ask; the staff `listing` flip below is the review gate. Owner-checked (like promote).
+  app.post('/verticals/:slug/publish-request', async (c) => {
+    const p = c.get('principal');
+    const slug = effectiveSlug(p, c.req.param('slug'));
+    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    await admin.requestPublish(c.get('actor'), slug);
+    return c.json({ slug, requested: true });
+  });
+
+  // Publish/unpublish a vertical to the PUBLIC marketplace (marketplace-publish.md §5). Staff
+  // admission of a publish request — NOT in BUILDER_ROUTES, so a builder is refused (the review
+  // gate). `listed` then makes `availableCatalog` offer it to every tenant + resolves the request.
+  app.post('/verticals/:slug/listing', async (c) => {
+    const slug = c.req.param('slug');
+    const { listed } = z.object({ listed: z.boolean() }).parse(await c.req.json());
+    await admin.setVerticalListed(c.get('actor'), slug, listed);
+    return c.json({ slug, listed });
+  });
+
   app.get('/verticals/:slug/channels', async (c) => {
     const p = c.get('principal');
     const slug = effectiveSlug(p, c.req.param('slug'));
@@ -688,6 +713,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // The vertical's declared config surface rides to the registry, so the dashboard
       // renders a settings form for a pushed vertical exactly like a builtin.
       ...(manifest.envSpec ? { envSpec: manifest.envSpec } : {}),
+      // Registry-driven install metadata (marketplace-publish.md §3) — so the dashboard
+      // installs a pushed vertical without a hardcoded catalog entry.
+      ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
+      ...(manifest.entitlements ? { entitlements: manifest.entitlements } : {}),
+      ...(manifest.provides ? { provides: manifest.provides } : {}),
+      ...(manifest.requires ? { requires: manifest.requires } : {}),
     });
     await admin.publishVersion(c.get('actor'), {
       id,

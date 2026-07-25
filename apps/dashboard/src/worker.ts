@@ -386,12 +386,30 @@ mountOidcRoutes(app);
  * module in-process, so it lists them all. Mode is detected exactly as provisioning is
  * (`controlPlaneFor`): both keys present ⇒ connected.
  */
+/**
+ * A vertical's install specifics — REGISTRY-DRIVEN (marketplace-publish.md §3): read
+ * `entitlements`/`ownerGrants` off the registry row (carried on push from the manifest), with
+ * the hardcoded `CATALOG` as the fallback for a first-party not yet re-seeded. Throws 400 if the
+ * vertical is unknown to both. This is what lets a pushed vertical install with no catalog edit.
+ */
+async function installSpecFor(host: ReturnType<typeof hostFor>, slug: string): Promise<{ entitlements: string[]; ownerGrants: PermissionKey[] }> {
+  await ensureCatalog(host, STAFF);
+  const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === slug);
+  const cat = CATALOG[slug];
+  if (!registered && !cat) throw new HTTPException(400, { message: `unknown vertical '${slug}'` });
+  return {
+    entitlements: registered?.entitlements ?? cat?.entitlements ?? [],
+    ownerGrants: (registered?.ownerGrants ?? cat?.ownerGrants ?? []) as PermissionKey[],
+  };
+}
+
 app.get('/api/catalog', async (c) => {
   const host = hostFor(c.env);
+  // Registry-driven (marketplace-publish.md §3): show published verticals + the caller's own.
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   await ensureCatalog(host, STAFF);
   const verticals = await host.admin.listVerticals(STAFF);
-  const connected = !!(c.env.CONTROL_PLANE_SVC && c.env.CP_SERVICE_TOKEN);
-  return c.json(availableCatalog(verticals, { connected }));
+  return c.json(availableCatalog(verticals, { tenantId: node?.tenantId ?? null }));
 });
 
 /**
@@ -900,8 +918,7 @@ app.post('/api/apps', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const body = createAppBody.parse(await c.req.json());
-  const entry = CATALOG[body.verticalSlug];
-  if (!entry) throw new HTTPException(400, { message: `unknown vertical '${body.verticalSlug}'` });
+  const { entitlements, ownerGrants } = await installSpecFor(host, body.verticalSlug);
   // Connected (prod): provision on the shared control plane through the tenant-narrowed
   // seam so the app is reachable via the router. Absent the binding: the M0 embedded path.
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
@@ -910,8 +927,8 @@ app.post('/api/apps', async (c) => {
     appScopeId: scopeId.parse(ulid()),
     verticalSlug: body.verticalSlug,
     name: body.name,
-    appEntitlements: entry.entitlements,
-    appOwnerGrants: entry.ownerGrants,
+    appEntitlements: entitlements,
+    appOwnerGrants: ownerGrants,
     controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
     tenantName: user?.name ?? user?.email ?? 'Workspace',
   });
@@ -956,8 +973,7 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   if (appRow.status !== 'failed') throw new HTTPException(409, { message: 'only a failed app can be retried' });
-  const entry = CATALOG[appRow.vertical_slug];
-  if (!entry) throw new HTTPException(400, { message: `unknown vertical '${appRow.vertical_slug}'` });
+  const { entitlements, ownerGrants } = await installSpecFor(host, appRow.vertical_slug);
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   const appRowNew = await retryApp(host, {
     node,
@@ -966,8 +982,8 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
     newScopeId: scopeId.parse(ulid()),
     verticalSlug: appRow.vertical_slug,
     name: appRow.name,
-    appEntitlements: entry.entitlements,
-    appOwnerGrants: entry.ownerGrants,
+    appEntitlements: entitlements,
+    appOwnerGrants: ownerGrants,
     controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
     tenantName: user?.name ?? user?.email ?? 'Workspace',
   });

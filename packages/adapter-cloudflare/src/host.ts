@@ -229,8 +229,10 @@ interface ControlPlaneStub {
   setHostnameStatus(hostname: string, status: string, note: string | null): Promise<void>;
   listHostnames(filter: { tenantId?: string; scopeId?: string }): Promise<HostnameRow[]>;
   readVertical(slug: string): Promise<VerticalRow | undefined>;
-  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, createdAt: string): Promise<void>;
-  updateVerticalEnvSpec(slug: string, envSpec: string | null): Promise<void>;
+  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
+  updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null): Promise<void>;
+  updateVerticalListed(slug: string, listed: number): Promise<void>;
+  updateVerticalPublishRequest(slug: string, requestedAt: string): Promise<void>;
   listVerticals(): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
   insertVersion(v: {
@@ -957,6 +959,9 @@ export class CloudflareScopeHost implements ScopeHost {
         source: r.source,
         ownerTenant: r.owner_tenant,
         ...(r.env_spec ? { envSpec: JSON.parse(r.env_spec) } : {}),
+        ...(r.install_spec ? (JSON.parse(r.install_spec) as Record<string, unknown>) : {}),
+        listed: !!r.listed,
+        ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         createdAt: r.created_at,
       });
     const mapVersion = (r: VersionRow): VerticalVersion =>
@@ -1304,6 +1309,13 @@ export class CloudflareScopeHost implements ScopeHost {
       registerVertical: async (actor, input: RegisterVerticalInput) => {
         const parsed = registerVerticalInput.parse(input);
         const envSpecJson = parsed.envSpec ? JSON.stringify(parsed.envSpec) : null;
+        // The four registry-driven-install fields ride as one JSON blob (marketplace-publish.md §3).
+        const installSpec: Record<string, unknown> = {};
+        if (parsed.entitlements) installSpec.entitlements = parsed.entitlements;
+        if (parsed.ownerGrants) installSpec.ownerGrants = parsed.ownerGrants;
+        if (parsed.provides) installSpec.provides = parsed.provides;
+        if (parsed.requires) installSpec.requires = parsed.requires;
+        const installSpecJson = Object.keys(installSpec).length ? JSON.stringify(installSpec) : null;
         const existing = await this.cp.readVertical(parsed.slug);
         if (existing) {
           // Idempotent on an identical registration; a changed source OR owner conflicts —
@@ -1315,7 +1327,7 @@ export class CloudflareScopeHost implements ScopeHost {
           ) {
             // The env-spec evolves with the manifest — refresh it on an otherwise-identical
             // re-registration so a declared config change propagates without a conflict.
-            await this.cp.updateVerticalEnvSpec(parsed.slug, envSpecJson);
+            await this.cp.updateVerticalManifestMeta(parsed.slug, envSpecJson, installSpecJson);
             return;
           }
           if (existing.owner_tenant !== parsed.ownerTenant) {
@@ -1325,7 +1337,7 @@ export class CloudflareScopeHost implements ScopeHost {
           }
           throw new Error(`vertical '${parsed.slug}' is already registered as ${existing.source}`);
         }
-        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, new Date().toISOString());
+        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString());
         await this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed);
       },
       listVerticals: async (actor) => {
@@ -1346,6 +1358,18 @@ export class CloudflareScopeHost implements ScopeHost {
         const rows = await this.cp.listVersions(verticalSlug);
         await this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
         return rows.map(mapVersion);
+      },
+      setVerticalListed: async (actor, slug: string, listed: boolean) => {
+        const existing = await this.cp.readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        await this.cp.updateVerticalListed(slug, listed ? 1 : 0); // also resolves any pending request
+        await this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: !!existing.listed }, { listed });
+      },
+      requestPublish: async (actor, slug: string) => {
+        const existing = await this.cp.readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        await this.cp.updateVerticalPublishRequest(slug, new Date().toISOString());
+        await this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug });
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);

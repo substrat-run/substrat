@@ -836,6 +836,68 @@ export function scopeHostContractSuite(
       ).rejects.toThrow(/owned by the platform/);
     });
 
+    it('carries registry-driven install metadata (marketplace-publish.md §3) and refreshes it', async () => {
+      // ownerGrants/entitlements/provides/requires ride the registry (one install_spec JSON
+      // column) so the dashboard installs a vertical without a hardcoded catalog entry.
+      await host.admin.registerVertical(staff, {
+        slug: 'authy',
+        name: 'Authy',
+        source: 'cli',
+        ownerTenant: t2,
+        entitlements: ['authy'],
+        ownerGrants: ['content:admin'],
+        provides: ['oidc-issuer'],
+      });
+      const first = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'authy');
+      expect(first?.entitlements).toEqual(['authy']);
+      expect(first?.ownerGrants).toEqual(['content:admin']);
+      expect(first?.provides).toEqual(['oidc-issuer']);
+      expect(first?.requires).toBeUndefined();
+
+      // Like envSpec, install metadata evolves with the manifest: an otherwise-identical
+      // re-registration refreshes it rather than conflicting.
+      await host.admin.registerVertical(staff, {
+        slug: 'authy',
+        name: 'Authy',
+        source: 'cli',
+        ownerTenant: t2,
+        entitlements: ['authy'],
+        ownerGrants: ['content:admin', 'content:publish'],
+        requires: ['oidc-issuer'],
+      });
+      const second = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'authy');
+      expect(second?.ownerGrants).toEqual(['content:admin', 'content:publish']);
+      expect(second?.requires).toEqual(['oidc-issuer']);
+      expect(second?.provides).toBeUndefined(); // dropped on refresh — the blob is replaced whole
+    });
+
+    it('publishes/unpublishes a vertical to the marketplace (setVerticalListed), preserved across re-push', async () => {
+      const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
+      await host.admin.registerVertical(staff, { slug: 'listtest', name: 'ListTest', source: 'cli', ownerTenant: t2 });
+      expect((await at('listtest'))?.listed).toBe(false); // private on push
+
+      await host.admin.setVerticalListed(staff, 'listtest', true);
+      expect((await at('listtest'))?.listed).toBe(true); // published
+
+      // The invariant: a re-push does NOT unpublish it — `listed` is its own column, untouched
+      // by the register refresh (publish is a distinct action from push).
+      await host.admin.registerVertical(staff, { slug: 'listtest', name: 'ListTest', source: 'cli', ownerTenant: t2 });
+      expect((await at('listtest'))?.listed).toBe(true);
+
+      await host.admin.setVerticalListed(staff, 'listtest', true); // idempotent
+      await host.admin.setVerticalListed(staff, 'listtest', false);
+      expect((await at('listtest'))?.listed).toBe(false); // unpublished
+
+      // A builder's publish REQUEST is recorded, and RESOLVED (cleared) by the staff listing.
+      await host.admin.requestPublish(staff, 'listtest');
+      expect((await at('listtest'))?.publishRequestedAt).toBeTruthy();
+      await host.admin.setVerticalListed(staff, 'listtest', true);
+      expect((await at('listtest'))?.publishRequestedAt).toBeUndefined(); // cleared on review
+
+      await expect(host.admin.setVerticalListed(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
+      await expect(host.admin.requestPublish(staff, 'no-such-vertical')).rejects.toThrow(/unknown vertical/);
+    });
+
     it('refuses to bind a rejected version, and rejection is terminal', async () => {
       const versionId = ulid();
       await host.admin.publishVersion(staff, {

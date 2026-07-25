@@ -491,6 +491,20 @@ export interface HostAdmin {
   admitVersion(actor: PlatformActorId, versionId: string): Promise<void>;
   /** Reject a pending version, with the reason. Rejected is terminal: publish a new one. */
   rejectVersion(actor: PlatformActorId, versionId: string, note: string): Promise<void>;
+  /**
+   * Publish/unpublish a vertical to the PUBLIC marketplace (marketplace-publish.md §5) — the
+   * staff admission of a publish request. Flips the registry `listed` flag; `availableCatalog`
+   * then offers it to every tenant (a private vertical shows only to its owner). Staff-only,
+   * idempotent, audited. Distinct from `admitVersion` (servable) and prod promotion.
+   */
+  setVerticalListed(actor: PlatformActorId, slug: string, listed: boolean): Promise<void>;
+  /**
+   * A builder REQUESTS that their vertical be published (marketplace-publish.md §5) — records
+   * a pending request for staff to review, without listing it. Ownership is checked at the
+   * control-plane edge (the owning tenant); this records the request + timestamp. Idempotent
+   * (re-requesting refreshes the timestamp). `setVerticalListed` resolves it either way.
+   */
+  requestPublish(actor: PlatformActorId, slug: string): Promise<void>;
 
   /**
    * Promote a version to a channel (#31 step 2) — the moment a change reaches

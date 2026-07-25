@@ -1,4 +1,4 @@
-import { z, envVarSpec } from '@substrat-run/contracts';
+import { z, envVarSpec, capability, permissionKey } from '@substrat-run/contracts';
 
 /**
  * The deploy seam (self-serve-deploy.md). A `substrat push` uploads a *built* worker
@@ -70,6 +70,12 @@ export const deployManifest = z.object({
   /** The vertical's declared env-spec (from its package.json `substrat.envSpec`), stored on
    *  the registry so a host/console renders a config form for it. Optional + validated here. */
   envSpec: z.array(envVarSpec).optional(),
+  /** Registry-driven install (marketplace-publish.md §3), from package.json `substrat.*` —
+   *  carried so the dashboard installs without a hardcoded catalog entry. Validated here. */
+  ownerGrants: z.array(permissionKey).optional(),
+  entitlements: z.array(z.string()).optional(),
+  provides: z.array(capability).optional(),
+  requires: z.array(capability).optional(),
   /** Computed by the builder's toolchain; what the promotion checkpoint compares. */
   digests: z.object({
     manifest: z.string().min(1),

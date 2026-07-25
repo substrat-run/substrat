@@ -354,6 +354,15 @@ interface VerticalRow {
   owner_tenant: string | null;
   /** The vertical's declared env-spec, as a JSON string (or null). */
   env_spec: string | null;
+  /** Registry-driven install (marketplace-publish.md): {entitlements, ownerGrants, provides,
+   *  requires} as one JSON string (or null). */
+  install_spec: string | null;
+  /** Published to the public marketplace (0/1). Set on insert; the publish action updates it;
+   *  a re-push refresh never touches it. */
+  listed: number;
+  /** A builder's pending publish request (ISO timestamp, or null). Set by requestPublish,
+   *  cleared by setVerticalListed. */
+  publish_requested_at: string | null;
   created_at: string;
 }
 
@@ -536,6 +545,17 @@ export class SqliteScopeHost implements ScopeHost {
         -- The vertical's declared env-spec (moduleManifest.envSpec) as JSON, so a host or
         -- console can render a config form for any registered vertical. NULL = declares none.
         env_spec     TEXT,
+        -- Registry-driven install (marketplace-publish.md §3): {entitlements, ownerGrants,
+        -- provides, requires} as one JSON blob, so the dashboard installs without a hardcoded
+        -- catalog entry. NULL = none declared.
+        install_spec TEXT,
+        -- Published to the public marketplace (marketplace-publish.md §2). 0 = private to
+        -- owner_tenant. Its own column: set on insert, updated by the publish action, never
+        -- clobbered by a re-push refresh.
+        listed       INTEGER NOT NULL DEFAULT 0,
+        -- A builder's pending publish request (marketplace-publish.md §5): ISO timestamp when
+        -- the owner asked to be listed, awaiting staff review. NULL = none / resolved.
+        publish_requested_at TEXT,
         created_at   TEXT NOT NULL
       );
       -- admission: 'pending' until the gates pass. A push is not a deploy, and
@@ -1544,6 +1564,9 @@ export class SqliteScopeHost implements ScopeHost {
         source: r.source,
         ownerTenant: r.owner_tenant,
         ...(r.env_spec ? { envSpec: JSON.parse(r.env_spec) } : {}),
+        ...(r.install_spec ? (JSON.parse(r.install_spec) as Record<string, unknown>) : {}),
+        listed: !!r.listed,
+        ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         createdAt: r.created_at,
       });
     const readVertical = (slugValue: string): Vertical | undefined => {
@@ -2048,6 +2071,13 @@ export class SqliteScopeHost implements ScopeHost {
       registerVertical: async (actor: PlatformActorId, input: RegisterVerticalInput) => {
         const parsed = registerVerticalInput.parse(input);
         const envSpecJson = parsed.envSpec ? JSON.stringify(parsed.envSpec) : null;
+        // The four registry-driven-install fields ride as one JSON blob (marketplace-publish.md §3).
+        const installSpec: Record<string, unknown> = {};
+        if (parsed.entitlements) installSpec.entitlements = parsed.entitlements;
+        if (parsed.ownerGrants) installSpec.ownerGrants = parsed.ownerGrants;
+        if (parsed.provides) installSpec.provides = parsed.provides;
+        if (parsed.requires) installSpec.requires = parsed.requires;
+        const installSpecJson = Object.keys(installSpec).length ? JSON.stringify(installSpec) : null;
         const existing = readVertical(parsed.slug);
         if (existing) {
           // Idempotent on an identical registration. A conflicting one throws:
@@ -2062,7 +2092,9 @@ export class SqliteScopeHost implements ScopeHost {
             // The env-spec is not identity — it evolves with the manifest, so refresh it
             // on an otherwise-identical re-registration (ensureCatalog runs each boot) so
             // a declared config change propagates without a conflict.
-            this.directory.prepare('UPDATE verticals SET env_spec = ? WHERE slug = ?').run(envSpecJson, parsed.slug);
+            this.directory
+              .prepare('UPDATE verticals SET env_spec = ?, install_spec = ? WHERE slug = ?')
+              .run(envSpecJson, installSpecJson, parsed.slug);
             return;
           }
           if (existing.ownerTenant !== parsed.ownerTenant) {
@@ -2076,9 +2108,9 @@ export class SqliteScopeHost implements ScopeHost {
         }
         this.directory
           .prepare(
-            'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+            'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           )
-          .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, new Date().toISOString());
+          .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString());
         this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed);
       },
       listVerticals: async (actor) => {
@@ -2120,6 +2152,21 @@ export class SqliteScopeHost implements ScopeHost {
           .all(verticalSlug) as VersionRow[];
         this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
         return rows.map(mapVersion);
+      },
+      setVerticalListed: async (actor, slug: string, listed: boolean) => {
+        const existing = readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        // Resolve any pending publish request either way, and set the flag.
+        this.directory
+          .prepare('UPDATE verticals SET listed = ?, publish_requested_at = NULL WHERE slug = ?')
+          .run(listed ? 1 : 0, slug);
+        this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: existing.listed }, { listed });
+      },
+      requestPublish: async (actor, slug: string) => {
+        const existing = readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        this.directory.prepare('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?').run(new Date().toISOString(), slug);
+        this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug });
       },
       admitVersion: async (actor, versionId: string) => {
         const v = readVersion(versionId);
@@ -3090,6 +3137,10 @@ export class SqliteScopeHost implements ScopeHost {
     // builder-plane.md Phase 1b: who owns a vertical (NULL = platform-owned).
     this.ensureColumn(this.directory, 'verticals', 'owner_tenant', 'owner_tenant TEXT');
     this.ensureColumn(this.directory, 'verticals', 'env_spec', 'env_spec TEXT');
+    // marketplace-publish.md §3: registry-driven install metadata (one JSON blob).
+    this.ensureColumn(this.directory, 'verticals', 'install_spec', 'install_spec TEXT');
+    this.ensureColumn(this.directory, 'verticals', 'listed', 'listed INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumn(this.directory, 'verticals', 'publish_requested_at', 'publish_requested_at TEXT');
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,
