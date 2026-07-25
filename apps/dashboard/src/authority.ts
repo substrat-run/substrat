@@ -48,6 +48,17 @@ export class ControlPlaneError extends Error {
   }
 }
 
+/** A fork's directory row, as the Snapshots tab needs it (a subset of the CP's Scope). */
+export interface SnapshotRecord {
+  id: string;
+  kind: string;
+  forkedFrom: string | null;
+  forkedAt: string | null;
+  expiresAt: string | null;
+  verticalVersionId: string | null;
+  createdAt: string;
+}
+
 export class TenantNarrowedControlPlane {
   private readonly baseUrl: string;
   private readonly actor: string;
@@ -212,8 +223,33 @@ export class TenantNarrowedControlPlane {
    * calling this only when a `prod` version exists keeps the dashboard identical
    * for both. Not tenant-narrowed in the wire shape beyond the pinned tenant path.
    */
-  bindScopeVersion(scopeId: ScopeId, versionId: string): Promise<void> {
-    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/version`, { versionId });
+  bindScopeVersion(scopeId: ScopeId, versionId: string, opts?: { snapshot?: boolean }): Promise<void> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/version`, {
+      versionId,
+      ...(opts?.snapshot ? { snapshot: true } : {}),
+    });
+  }
+
+  // -- snapshots (preview-and-snapshots.md §3/§9) -----------------------------
+  // Thin wrappers over the CP's orchestrated snapshot surface, tenant-pinned by
+  // construction like everything else here. The CP does the data hop into the
+  // app's own vertical deployment; the dashboard only ever sees directory rows.
+
+  /** Fork an app's data into an archive scope; `expiresAt` opts into the GC sweep. */
+  snapshotScope(scopeId: ScopeId, opts?: { expiresAt?: string }): Promise<{ id: string }> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/snapshots`, {
+      ...(opts?.expiresAt ? { expiresAt: opts.expiresAt } : {}),
+    });
+  }
+
+  /** The forks OF one scope — what the Snapshots tab lists. Newest first. */
+  listSnapshots(scopeId: ScopeId): Promise<SnapshotRecord[]> {
+    return this.call<SnapshotRecord[]>(`/tenants/${this.tenantId}/scopes/${scopeId}/snapshots`);
+  }
+
+  /** Reap one snapshot. The CP refuses anything that is not a fork (409). */
+  deleteSnapshot(snapshotScopeId: ScopeId): Promise<void> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${snapshotScopeId}`, { method: 'DELETE' });
   }
 
   /**

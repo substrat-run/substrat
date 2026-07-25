@@ -211,6 +211,29 @@ export const dashboardMigrations = [
       CREATE UNIQUE INDEX dashboard_app_env_key ON dashboard_app_env (app_scope_id, key);
     `,
   },
+  {
+    version: '0007-app-snapshot-events',
+    sql: `
+      -- Widen the event kinds again, for the Snapshots tab (preview-and-snapshots.md
+      -- §3): 'snapshotted' (a test copy of the app's data was taken) and
+      -- 'snapshot-deleted' (a copy was removed, by hand or by the GC sweep's expiry).
+      -- Same rebuild-and-copy shape as 0005 — SQLite can't ALTER a CHECK, and 0005
+      -- stays untouched (append-only).
+      CREATE TABLE dashboard_app_events_new (
+        id           TEXT PRIMARY KEY,
+        app_scope_id TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('created','active','failed','deleted','updated','snapshotted','snapshot-deleted')),
+        detail       TEXT,
+        actor        TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      INSERT INTO dashboard_app_events_new (id, app_scope_id, kind, detail, actor, created_at)
+        SELECT id, app_scope_id, kind, detail, actor, created_at FROM dashboard_app_events;
+      DROP TABLE dashboard_app_events;
+      ALTER TABLE dashboard_app_events_new RENAME TO dashboard_app_events;
+      CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
+    `,
+  },
 ];
 
 export interface DashboardAppRow {
@@ -251,7 +274,7 @@ export interface AppEnvValue {
 export interface DashboardAppEventRow {
   id: string;
   app_scope_id: string;
-  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated';
+  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted';
   detail: string | null;
   actor: string;
   created_at: string;
@@ -343,6 +366,33 @@ const updateAppOp: OperationHandler<z.infer<typeof updateAppInput>, { ok: true }
   assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
   const input = updateAppInput.parse(raw);
   recordAppEvent(ctx, input.appScopeId, 'updated', input.detail ?? null);
+  return { ok: true };
+};
+
+const snapshotAppInput = z.object({
+  appScopeId: z.string().min(1),
+  /** Readable for the activity trail — e.g. "test copy, expires in 7 days". */
+  detail: z.string().optional(),
+});
+
+/**
+ * Authorize + record a snapshot of an app's data (preview-and-snapshots.md §3).
+ * Same authority as managing the app; the platform effect (the fork itself)
+ * happens after this asserts, on the tenant-narrowed authority — the same
+ * check-then-effect split `dashboard/update-app` uses for a version rebind.
+ */
+const snapshotAppOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'snapshotted', input.detail ?? null);
+  return { ok: true };
+};
+
+/** The inverse record: a snapshot of this app was deleted (reaped or by hand). */
+const deleteAppSnapshotOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'snapshot-deleted', input.detail ?? null);
   return { ok: true };
 };
 
@@ -732,6 +782,8 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/provision-app': provisionAppOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-active': markAppActiveOp as OperationHandler<never, unknown>,
     'dashboard/update-app': updateAppOp as OperationHandler<never, unknown>,
+    'dashboard/snapshot-app': snapshotAppOp as OperationHandler<never, unknown>,
+    'dashboard/delete-app-snapshot': deleteAppSnapshotOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-failed': markAppFailedOp as OperationHandler<never, unknown>,
     'dashboard/app-events': appEventsOp as OperationHandler<never, unknown>,
     'dashboard/list-apps': listAppsOp as OperationHandler<never, unknown>,

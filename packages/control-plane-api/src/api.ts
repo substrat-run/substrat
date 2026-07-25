@@ -490,6 +490,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return snapId;
   };
 
+  // The forks OF one scope — what a Snapshots UI lists. A directory read (kind,
+  // provenance, expiry all live on the scope row); newest first.
+  app.get('/tenants/:tenantId/scopes/:scopeId/snapshots', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const scopes = await admin.listScopes(c.get('actor'), { tenantId });
+    return c.json(
+      scopes
+        .filter((s) => s.forkedFrom === scopeId)
+        .sort((a, b) => (a.forkedAt! < b.forkedAt! ? 1 : -1)),
+    );
+  });
+
   app.post('/tenants/:tenantId/scopes/:scopeId/snapshots', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));

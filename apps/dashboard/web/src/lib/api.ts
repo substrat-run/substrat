@@ -128,6 +128,18 @@ export interface UpdateResult {
   previousVersion: string | null;
 }
 
+/** One snapshot (test copy) of an app's data — a fork's directory row. */
+export interface SnapshotRow {
+  id: string;
+  kind: string;
+  forkedFrom: string | null;
+  forkedAt: string | null;
+  /** null = kept until deleted; otherwise the GC sweep reaps it past this instant. */
+  expiresAt: string | null;
+  verticalVersionId: string | null;
+  createdAt: string;
+}
+
 /** One importable repo the tenant's GitHub connection can see (worker's github.ts shape). */
 export interface GitRepo {
   fullName: string;
@@ -287,8 +299,27 @@ export const api = {
     );
   },
   /** Move the app to its vertical's current prod version (rebind the scope). No-op if already current. */
-  updateApp: (scopeId: string) =>
-    call<UpdateResult>(`/apps/${encodeURIComponent(scopeId)}/update`, { method: 'POST' }),
+  updateApp: (scopeId: string, opts?: { snapshot?: boolean }) =>
+    call<UpdateResult>(`/apps/${encodeURIComponent(scopeId)}/update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ snapshot: opts?.snapshot ?? false }),
+    }),
+  /** The app's snapshots (test copies), newest first. */
+  appSnapshots: (scopeId: string) =>
+    call<SnapshotRow[]>(`/apps/${encodeURIComponent(scopeId)}/snapshots`),
+  /** Create a test copy; ttlDays omitted = kept until deleted. */
+  createSnapshot: (scopeId: string, opts?: { ttlDays?: number }) =>
+    call<{ id: string; expiresAt: string | null }>(`/apps/${encodeURIComponent(scopeId)}/snapshots`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(opts ?? {}),
+    }),
+  deleteSnapshot: (scopeId: string, snapshotId: string) =>
+    call<{ deleted: string }>(
+      `/apps/${encodeURIComponent(scopeId)}/snapshots/${encodeURIComponent(snapshotId)}`,
+      { method: 'DELETE' },
+    ),
   /** The app's env-spec + current values (secrets masked). */
   appEnv: (scopeId: string) => call<AppEnvView>(`/apps/${encodeURIComponent(scopeId)}/env`),
   /** Upsert env values; an empty value leaves a key unchanged (untouched secret). */

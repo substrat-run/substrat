@@ -1,4 +1,4 @@
-import type { AppRow, CatalogEntry, Deployment, GitReposResult, Me, Member } from './api';
+import type { AppRow, CatalogEntry, Deployment, GitReposResult, Me, Member, SnapshotRow } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -82,6 +82,28 @@ export const MOCK_DEPLOYMENTS: Deployment[] = [
 
 const now = Date.parse('2026-07-22T18:00:00Z');
 const ago = (ms: number) => new Date(now - ms).toISOString();
+
+/** Snapshots of the first mock app: one expiring soon, one pinned. */
+export const MOCK_SNAPSHOTS: SnapshotRow[] = [
+  {
+    id: '01J2Q8Z3V9K4W7X2M5N6P7SN01',
+    kind: 'archive',
+    forkedFrom: '01J2Q8Z3V9K4W7X2M5N6P789AB',
+    forkedAt: ago(26 * 3600e3),
+    expiresAt: new Date(now + 5 * 86400e3).toISOString(),
+    verticalVersionId: '01J2Q8Z3V9K4W7X2M5N6P7V200',
+    createdAt: ago(26 * 3600e3),
+  },
+  {
+    id: '01J2Q8Z3V9K4W7X2M5N6P7SN02',
+    kind: 'archive',
+    forkedFrom: '01J2Q8Z3V9K4W7X2M5N6P789AB',
+    forkedAt: ago(9 * 86400e3),
+    expiresAt: null,
+    verticalVersionId: '01J2Q8Z3V9K4W7X2M5N6P7V100',
+    createdAt: ago(9 * 86400e3),
+  },
+];
 
 export const MOCK_APPS: AppRow[] = [
   { id: '1', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical_slug: 'protocol', name: 'Acme HR', status: 'active', hostname: 'acme-hr.substrat.run', created_by: 'dana@acme.com', created_at: ago(2 * 3600e3) },
