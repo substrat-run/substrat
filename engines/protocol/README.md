@@ -52,7 +52,7 @@ vertical's manifest instead — where dropping it shows up in a reviewable diff.
 
 ## Documentation
 
-**https://substrat.ahlstrand.es/engines/protocol/** — the domain model and invariants, the
+**https://substrat.net/engines** — the domain model and invariants, the
 signature/evidence model, the full operation and permission surface, event contracts, and how
 to compose or extend it.
 

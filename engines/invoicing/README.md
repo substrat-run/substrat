@@ -36,7 +36,7 @@ never import this engine to do it.
 
 ## Documentation
 
-**https://substrat.ahlstrand.es/engines/invoicing/** — the domain model and invariants, the
+**https://substrat.net/engines** — the domain model and invariants, the
 operation/permission surface, event contracts and versioning, and how to compose or extend it.
 
 The docs site is the single source of truth; this README deliberately doesn't restate it.

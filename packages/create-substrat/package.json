@@ -8,7 +8,7 @@
     "url": "git+https://github.com/substrat-run/substrat.git",
     "directory": "packages/create-substrat"
   },
-  "homepage": "https://substrat.ahlstrand.es",
+  "homepage": "https://substrat.net/guide/getting-started",
   "bugs": {
     "url": "https://github.com/substrat-run/substrat/issues"
   },

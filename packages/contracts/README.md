@@ -9,7 +9,7 @@ boundary. The schemas are written in [Zod](https://zod.dev), so the reviewed art
 *is* the runtime validator: OpenAPI and JSON Schema documents are emitted from this
 package, never hand-maintained beside it.
 
-**Full documentation: https://substrat.ahlstrand.es/reference/contracts**
+**Full documentation: https://substrat.net/reference/contracts**
 
 ## What's inside
 

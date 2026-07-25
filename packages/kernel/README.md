@@ -9,7 +9,7 @@ imports no platform APIs — Cloudflare specifics live only in adapters, and eve
 adapter must pass the same conformance suite
 ([`@substrat-run/contract-tests`](https://npmjs.com/package/@substrat-run/contract-tests)).
 
-**Full documentation: https://substrat.ahlstrand.es/reference/kernel**
+**Full documentation: https://substrat.net/reference/kernel**
 
 ## The scope-host contract
 

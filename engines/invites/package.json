@@ -8,7 +8,7 @@
     "url": "git+https://github.com/substrat-run/substrat.git",
     "directory": "engines/invites"
   },
-  "homepage": "https://github.com/substrat-run/substrat",
+  "homepage": "https://substrat.net/engines",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
