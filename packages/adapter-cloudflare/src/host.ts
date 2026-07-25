@@ -821,8 +821,13 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<void> {
     // Create the destination scope (directory row + DO + lazy migrate); the DO then
     // replaces its provisioned schema with the dump wholesale (drop-then-replay), so
-    // the end state is the dump, at the source's frontier.
-    await this.provisionScope(actor, input);
+    // the end state is the dump, at the source's frontier. Provenance is stamped from
+    // the dump unless the caller set it (§3: a fork always records its origin).
+    await this.provisionScope(actor, {
+      ...input,
+      forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
+      forkedAt: input.forkedAt ?? dump.capturedAt,
+    });
     await this.scopeStub(input.scopeId).importDump(dump.tables);
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     await this.recordAdmin(
@@ -1049,6 +1054,8 @@ export class CloudflareScopeHost implements ScopeHost {
                 lastAttemptAt: r.migration_last_attempt_at,
               }
             : null,
+        forkedFrom: r.forked_from,
+        forkedAt: r.forked_at,
         createdAt: r.created_at,
       });
 

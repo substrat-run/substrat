@@ -576,6 +576,33 @@ export function scopeHostContractSuite(
 
         expect(await countMarker(copy)).toBe(before);
       });
+
+      it('records fork provenance (forked_from/at + kind) on the new scope', async () => {
+        const dump = await host.admin.exportScope(staff, t1, s1);
+        const copy = scopeId.parse(ulid());
+        await host.importScope(
+          staff,
+          {
+            tenantId: t1,
+            scopeId: copy,
+            jurisdiction: 'eu',
+            vertical: 'connector-vertical',
+            kind: 'preview',
+          },
+          dump,
+        );
+
+        const rec = await host.admin.getScopeRecord(staff, t1, copy);
+        expect(rec?.kind).toBe('preview');
+        expect(rec?.forkedFrom).toBe(s1); // stamped from the dump's source scope
+        expect(rec?.forkedAt).toBe(dump.capturedAt);
+
+        // A normally-provisioned scope carries no provenance — the fields are what
+        // set a fork apart.
+        const src = await host.admin.getScopeRecord(staff, t1, s1);
+        expect(src?.forkedFrom).toBeNull();
+        expect(src?.forkedAt).toBeNull();
+      });
     });
 
     // -- the integrations hub: connections (#101) -----------------------------

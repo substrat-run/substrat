@@ -144,6 +144,15 @@ export const scope = z.object({
   // registered migration total is what answers §5.4's "which scopes are behind".
   schemaVersion: z.string(),
   migrationFailure,
+  /**
+   * Fork provenance (preview-and-snapshots.md §3). A scope created by `importScope`
+   * records the scope it was copied FROM and WHEN; both null for a normally-
+   * provisioned scope. `forkedFrom` being set is what marks a scope a fork (a
+   * preview/archive) for the Snapshots view and TTL/GC — `kind` carries the
+   * retention vocabulary, this carries the lineage.
+   */
+  forkedFrom: scopeId.nullable(),
+  forkedAt: instant.nullable(),
   createdAt: instant,
 });
 export type Scope = z.infer<typeof scope>;
