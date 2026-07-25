@@ -1,5 +1,15 @@
 # @substrat-run/contracts
 
+## 0.14.1
+
+### Patch Changes
+
+- cb6131c: docs: point every published package's `homepage` at its substrat.net page and
+  swap the stale `substrat.ahlstrand.es` doc links in READMEs for `substrat.net`.
+  Add the three missing READMEs (`engine-booking`, `cli`, `control-plane-api`).
+  Metadata/docs only — no code or API change; a republish is needed for the
+  updated README + homepage to render on npm.
+
 ## 0.14.0
 
 ### Minor Changes
@@ -457,7 +467,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                            z.object({ facility: entityRef, unitPrice: money })
+                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
