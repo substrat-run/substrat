@@ -1014,6 +1014,53 @@ export class SqliteScopeHost implements ScopeHost {
     }
   }
 
+  async importScope(
+    actor: PlatformActorId,
+    input: ProvisionScopeInput,
+    dump: ScopeDump,
+  ): Promise<void> {
+    // Create the destination scope (directory row + storage). Its migration step
+    // creates some tables; the dump then replaces them wholesale, so the end state
+    // is the dump, not whatever the local module set would have built.
+    await this.provisionScope(actor, input);
+    const rt = this.runtime(input.tenantId, input.scopeId);
+    const db = rt.db;
+    const load = db.transaction((tables: ScopeDumpTable[]) => {
+      // Drop the provisioned schema — the dump's schema is authoritative. Only real
+      // tables (never `sqlite_*` internals, which are auto-managed and un-droppable).
+      const existing = db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+        .all() as { name: string }[];
+      for (const { name } of existing) db.exec(`DROP TABLE IF EXISTS "${name}"`);
+      for (const t of tables) {
+        db.exec(t.ddl);
+        if (t.rows.length === 0) continue;
+        const cols = t.columns.map((c) => `"${c}"`).join(', ');
+        const placeholders = t.columns.map(() => '?').join(', ');
+        const stmt = db.prepare(`INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`);
+        for (const row of t.rows) stmt.run(...(row as unknown[]));
+      }
+    });
+    load(dump.tables);
+    // The frontier came in with the dump — refresh the cached applied-migration set so
+    // a later bind/migrate builds on the imported state, not the provisioning state.
+    rt.appliedMigrations.clear();
+    for (const r of db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {
+      module_id: string;
+      version: string;
+    }[]) {
+      rt.appliedMigrations.add(`${r.module_id}@${r.version}`);
+    }
+    await this.admin.activateScope(actor, input.tenantId, input.scopeId);
+    this.recordAdmin(
+      actor,
+      'importScope',
+      { tenantId: input.tenantId, scopeId: input.scopeId },
+      null,
+      { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
+    );
+  }
+
   async getScope(
     principal: PrincipalId,
     tenantId: TenantId,
