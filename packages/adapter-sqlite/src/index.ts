@@ -360,6 +360,9 @@ interface VerticalRow {
   /** Published to the public marketplace (0/1). Set on insert; the publish action updates it;
    *  a re-push refresh never touches it. */
   listed: number;
+  /** A builder's pending publish request (ISO timestamp, or null). Set by requestPublish,
+   *  cleared by setVerticalListed. */
+  publish_requested_at: string | null;
   created_at: string;
 }
 
@@ -550,6 +553,9 @@ export class SqliteScopeHost implements ScopeHost {
         -- owner_tenant. Its own column: set on insert, updated by the publish action, never
         -- clobbered by a re-push refresh.
         listed       INTEGER NOT NULL DEFAULT 0,
+        -- A builder's pending publish request (marketplace-publish.md §5): ISO timestamp when
+        -- the owner asked to be listed, awaiting staff review. NULL = none / resolved.
+        publish_requested_at TEXT,
         created_at   TEXT NOT NULL
       );
       -- admission: 'pending' until the gates pass. A push is not a deploy, and
@@ -1560,6 +1566,7 @@ export class SqliteScopeHost implements ScopeHost {
         ...(r.env_spec ? { envSpec: JSON.parse(r.env_spec) } : {}),
         ...(r.install_spec ? (JSON.parse(r.install_spec) as Record<string, unknown>) : {}),
         listed: !!r.listed,
+        ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         createdAt: r.created_at,
       });
     const readVertical = (slugValue: string): Vertical | undefined => {
@@ -2149,9 +2156,17 @@ export class SqliteScopeHost implements ScopeHost {
       setVerticalListed: async (actor, slug: string, listed: boolean) => {
         const existing = readVertical(slug);
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
-        if (existing.listed === listed) return; // idempotent
-        this.directory.prepare('UPDATE verticals SET listed = ? WHERE slug = ?').run(listed ? 1 : 0, slug);
+        // Resolve any pending publish request either way, and set the flag.
+        this.directory
+          .prepare('UPDATE verticals SET listed = ?, publish_requested_at = NULL WHERE slug = ?')
+          .run(listed ? 1 : 0, slug);
         this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: existing.listed }, { listed });
+      },
+      requestPublish: async (actor, slug: string) => {
+        const existing = readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        this.directory.prepare('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?').run(new Date().toISOString(), slug);
+        this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug });
       },
       admitVersion: async (actor, versionId: string) => {
         const v = readVersion(versionId);
@@ -3125,6 +3140,7 @@ export class SqliteScopeHost implements ScopeHost {
     // marketplace-publish.md §3: registry-driven install metadata (one JSON blob).
     this.ensureColumn(this.directory, 'verticals', 'install_spec', 'install_spec TEXT');
     this.ensureColumn(this.directory, 'verticals', 'listed', 'listed INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumn(this.directory, 'verticals', 'publish_requested_at', 'publish_requested_at TEXT');
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,

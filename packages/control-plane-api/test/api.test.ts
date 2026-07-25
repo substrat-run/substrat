@@ -1036,6 +1036,31 @@ describe('control-plane API — builder authz', () => {
     expect((await staffReq(`/verticals/${full}/listing`, 'POST', { listed: false })).status).toBe(200);
   });
 
+  it('runs the whole publish flow — builder requests, staff reviews and lists (marketplace-publish.md §5)', async () => {
+    const full = `${acmeSlug}/helpdesk`;
+    const find = async () =>
+      (await (await staffReq('/verticals')).json()).find((v: { slug: string }) => v.slug === full) as {
+        listed: boolean;
+        publishRequestedAt?: string | null;
+      };
+
+    // The owner requests publishing its OWN vertical with a BARE slug (control plane forms the id).
+    expect((await acmeReq('/verticals/helpdesk/publish-request', 'POST', {})).status).toBe(200);
+    const requested = await find();
+    expect(requested.publishRequestedAt).toBeTruthy();
+    expect(requested.listed).toBe(false); // still private — awaiting review
+
+    // The owner still cannot flip the listing itself (the staff review gate).
+    expect((await acmeReq('/verticals/helpdesk/listing', 'POST', { listed: true })).status).toBe(403);
+
+    // Staff reviews and lists it → published, and the pending request is resolved.
+    const res = await staffReq(`/verticals/${encodeURIComponent(full)}/listing`, 'POST', { listed: true });
+    expect(res.status).toBe(200);
+    const after = await find();
+    expect(after.listed).toBe(true);
+    expect(after.publishRequestedAt).toBeFalsy();
+  });
+
   it('lets the owner self-serve non-prod, but keeps prod a staff decision', async () => {
     // dev/staging: the builder promotes its own admitted version.
     expect((await acmeReq('/verticals/helpdesk/channels/dev/promote', 'POST', { versionId: v1 })).status).toBe(200);

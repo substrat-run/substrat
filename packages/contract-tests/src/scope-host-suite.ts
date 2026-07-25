@@ -888,7 +888,14 @@ export function scopeHostContractSuite(
       await host.admin.setVerticalListed(staff, 'listtest', false);
       expect((await at('listtest'))?.listed).toBe(false); // unpublished
 
+      // A builder's publish REQUEST is recorded, and RESOLVED (cleared) by the staff listing.
+      await host.admin.requestPublish(staff, 'listtest');
+      expect((await at('listtest'))?.publishRequestedAt).toBeTruthy();
+      await host.admin.setVerticalListed(staff, 'listtest', true);
+      expect((await at('listtest'))?.publishRequestedAt).toBeUndefined(); // cleared on review
+
       await expect(host.admin.setVerticalListed(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
+      await expect(host.admin.requestPublish(staff, 'no-such-vertical')).rejects.toThrow(/unknown vertical/);
     });
 
     it('refuses to bind a rejected version, and rejection is terminal', async () => {

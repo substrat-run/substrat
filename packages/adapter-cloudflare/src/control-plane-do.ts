@@ -114,6 +114,8 @@ export interface VerticalRow {
   install_spec: string | null;
   /** Published to the public marketplace (0/1); set on insert, never touched by a re-push. */
   listed: number;
+  /** A builder's pending publish request (ISO timestamp, or null). */
+  publish_requested_at: string | null;
   created_at: string;
 }
 
@@ -261,6 +263,9 @@ const DIRECTORY_DDL = `
     -- Published to the public marketplace (marketplace-publish.md §2). Own column: set on
     -- insert, updated by the publish action, never clobbered by a re-push refresh.
     listed       INTEGER NOT NULL DEFAULT 0,
+    -- A builder's pending publish request (marketplace-publish.md §5): ISO timestamp, awaiting
+    -- staff review. NULL = none / resolved.
+    publish_requested_at TEXT,
     created_at   TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS vertical_versions (
@@ -535,6 +540,7 @@ export class ControlPlaneDO extends DurableObject {
     // marketplace-publish.md §3: registry-driven install metadata (one JSON blob).
     this.addColumn('verticals', 'install_spec TEXT');
     this.addColumn('verticals', 'listed INTEGER NOT NULL DEFAULT 0');
+    this.addColumn('verticals', 'publish_requested_at TEXT');
     this.sql.exec("UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL");
     this.sql.exec("UPDATE scopes SET kind = 'scope' WHERE kind IS NULL");
     this.sql.exec('UPDATE scopes SET name = slug WHERE name IS NULL');
@@ -976,9 +982,14 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE verticals SET env_spec = ?, install_spec = ? WHERE slug = ?', envSpec, installSpec, slug);
   }
 
-  /** Publish/unpublish a vertical to the public marketplace (marketplace-publish.md §5). */
+  /** Publish/unpublish a vertical to the public marketplace + resolve any pending request. */
   updateVerticalListed(slug: string, listed: number): void {
-    this.sql.exec('UPDATE verticals SET listed = ? WHERE slug = ?', listed, slug);
+    this.sql.exec('UPDATE verticals SET listed = ?, publish_requested_at = NULL WHERE slug = ?', listed, slug);
+  }
+
+  /** Record a builder's pending publish request (marketplace-publish.md §5). */
+  updateVerticalPublishRequest(slug: string, requestedAt: string): void {
+    this.sql.exec('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?', requestedAt, slug);
   }
 
   listVerticals(): VerticalRow[] {

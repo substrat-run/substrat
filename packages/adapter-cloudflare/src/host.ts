@@ -232,6 +232,7 @@ interface ControlPlaneStub {
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null): Promise<void>;
   updateVerticalListed(slug: string, listed: number): Promise<void>;
+  updateVerticalPublishRequest(slug: string, requestedAt: string): Promise<void>;
   listVerticals(): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
   insertVersion(v: {
@@ -960,6 +961,7 @@ export class CloudflareScopeHost implements ScopeHost {
         ...(r.env_spec ? { envSpec: JSON.parse(r.env_spec) } : {}),
         ...(r.install_spec ? (JSON.parse(r.install_spec) as Record<string, unknown>) : {}),
         listed: !!r.listed,
+        ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         createdAt: r.created_at,
       });
     const mapVersion = (r: VersionRow): VerticalVersion =>
@@ -1360,9 +1362,14 @@ export class CloudflareScopeHost implements ScopeHost {
       setVerticalListed: async (actor, slug: string, listed: boolean) => {
         const existing = await this.cp.readVertical(slug);
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
-        if (!!existing.listed === listed) return; // idempotent
-        await this.cp.updateVerticalListed(slug, listed ? 1 : 0);
+        await this.cp.updateVerticalListed(slug, listed ? 1 : 0); // also resolves any pending request
         await this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: !!existing.listed }, { listed });
+      },
+      requestPublish: async (actor, slug: string) => {
+        const existing = await this.cp.readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        await this.cp.updateVerticalPublishRequest(slug, new Date().toISOString());
+        await this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug });
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);

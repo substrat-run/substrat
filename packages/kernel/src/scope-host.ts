@@ -498,6 +498,13 @@ export interface HostAdmin {
    * idempotent, audited. Distinct from `admitVersion` (servable) and prod promotion.
    */
   setVerticalListed(actor: PlatformActorId, slug: string, listed: boolean): Promise<void>;
+  /**
+   * A builder REQUESTS that their vertical be published (marketplace-publish.md §5) — records
+   * a pending request for staff to review, without listing it. Ownership is checked at the
+   * control-plane edge (the owning tenant); this records the request + timestamp. Idempotent
+   * (re-requesting refreshes the timestamp). `setVerticalListed` resolves it either way.
+   */
+  requestPublish(actor: PlatformActorId, slug: string): Promise<void>;
 
   /**
    * Promote a version to a channel (#31 step 2) — the moment a change reaches

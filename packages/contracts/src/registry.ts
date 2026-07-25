@@ -56,6 +56,12 @@ export const vertical = z.object({
    * silently unpublish it (publish is a distinct action from push).
    */
   listed: z.boolean().default(false),
+  /**
+   * A builder's pending PUBLISH REQUEST (marketplace-publish.md §5) — when the owner asked for
+   * the vertical to be listed, awaiting staff review. `null` = no request (or already
+   * resolved). Set by `requestPublish`; cleared when staff `setVerticalListed`.
+   */
+  publishRequestedAt: instant.nullish(),
   createdAt: instant,
 });
 export type Vertical = z.infer<typeof vertical>;
