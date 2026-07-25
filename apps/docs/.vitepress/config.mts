@@ -90,6 +90,7 @@ function guideSidebar() {
         { text: 'Permissions', link: '/concepts/permissions' },
         { text: 'Authentication & identity', link: '/concepts/identity' },
         { text: 'Events & audit', link: '/concepts/events' },
+        { text: 'Snapshots & test copies', link: '/concepts/snapshots' },
         { text: 'Reads & scaling', link: '/concepts/reads' },
         { text: 'Modules & the manifest', link: '/concepts/modules' },
         { text: 'Money', link: '/concepts/money' },

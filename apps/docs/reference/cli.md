@@ -30,6 +30,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 | `substrat push <dir> --slug <s> --version <v>` | Build the vertical in `<dir>` and push a **pending** version. |
 | `substrat promote <slug> --channel dev\|staging --version <id>` | Point a non-prod channel at a version. |
 | `substrat versions <slug>` | List a vertical's versions + which channels point where. |
+| `substrat scope pull <scopeId>` | Pull a scope's data to a local SQLite file — masked by default, `--full` is break-glass. |
 
 Options on any command: `--cp <url>` (control-plane API base), `--token <tok>` (a service
 credential), `--tenant <id-or-slug>` (which workspace to act for).
@@ -68,6 +69,30 @@ substrat promote helpdesk --channel staging --version 01J…
 
 Moves an **admitted** version onto a channel. You self-serve `dev` and `staging`; `prod` is
 refused — production promotion and admission stay a platform decision (model B).
+
+### `scope pull`
+
+```bash
+substrat scope pull <scopeId> [--full] [--out <dir>] [--tenant <id-or-slug>]
+```
+
+Brings a scope's data to your local inner loop ([snapshots](/concepts/snapshots)): downloads
+the scope's dump from the control plane and writes a **real SQLite file** —
+`.substrat/<tenant>__<scope>.sqlite`, the exact file shape
+[`adapter-sqlite`](/reference/adapter-sqlite) stores scopes in, so a local harness runs the
+identical vertical against it. On node < 22.13 (no `node:sqlite`) the dump lands as JSON with
+a notice instead.
+
+The pull crosses the platform's trust boundary on purpose, so the server side is the gate:
+
+- **Masked by default** — PII-named columns and payload fields are redacted; ids and numbers
+  pass through, which is what keeps the copy debuggable. `--full` is the explicit break-glass
+  for full fidelity, and the CLI prints a treat-as-production warning.
+- **Audited** — every pull writes an access-log entry against your actor.
+- **Jurisdiction-checked** — a scope pinned tighter than `global` is refused: pulling would
+  move its data outside the pin.
+
+One-way by design: you pull and diverge; nothing syncs back.
 
 ## Auth resolution
 

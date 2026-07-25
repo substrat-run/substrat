@@ -44,6 +44,24 @@ const cannots = [
   ],
 ];
 
+const ops = [
+  [
+    'Test copies of any app',
+    'Snapshot a running app’s data into an independent copy — try the risky thing on real data, then throw the copy away. Copies expire on a TTL and are reaped automatically.',
+    '/concepts/snapshots',
+  ],
+  [
+    'Fearless upgrades',
+    'An update that changes the schema snapshots the data first, automatically — so a bad migration has a rollback point. A code-only update just rebinds.',
+    '/concepts/snapshots#the-one-rule-everything-follows',
+  ],
+  [
+    'Real data on your laptop, governed',
+    'substrat scope pull writes a real SQLite file your local harness runs unchanged — audited, jurisdiction-checked, and masked by default. Full fidelity is an explicit break-glass.',
+    '/concepts/snapshots#where-the-data-goes-and-doesn-t',
+  ],
+];
+
 const demos = [
   ['RallyPoint', 'Padel club', 'engine', 'Court booking as allocation over an interval rather than a state machine — the lost race rejected with no locking code anywhere, multi-venue tenancy, and a player who holds no role at all reaching their own booking through an entity-narrowed grant.', '/verticals/rallypoint'],
   ['Meridian', 'HR', 'kernel', 'The shape-breaker: no engine exists for its core domain, so leave, time and expenses are vertical code on the kernel alone. Multi-country scopes diverging from one codebase, and one role-adaptive app serving employee and manager in the same surface.', '/verticals/meridian'],
@@ -123,6 +141,25 @@ const repo = 'https://github.com/substrat-run/substrat';
             </div>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- Day-2 operations -->
+    <section class="wrap section">
+      <div class="kicker">Day-2 operations, day one</div>
+      <h2>The ops a platform team would build — built in.</h2>
+      <p class="muted lede-narrow">
+        Every app is one tenant’s scope with its own database, so the operations
+        story is a platform primitive, not a runbook.
+      </p>
+      <div class="grid-2">
+        <a v-for="([title, desc, href]) in ops" :key="title" class="cannot op" :href="href">
+          <span class="check">✓</span>
+          <div>
+            <div class="cannot-title">{{ title }}</div>
+            <div class="muted sm">{{ desc }}</div>
+          </div>
+        </a>
       </div>
     </section>
 
@@ -425,6 +462,21 @@ h2 {
   color: var(--status-danger-fg);
   font-weight: var(--weight-medium);
   margin-top: 1px;
+}
+.check {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--status-success-fg);
+  font-weight: var(--weight-medium);
+  margin-top: 1px;
+}
+.op {
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease;
+}
+.op:hover {
+  border-color: var(--border-strong);
 }
 .cannot-title {
   font-weight: var(--weight-semibold);
