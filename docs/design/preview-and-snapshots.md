@@ -155,11 +155,93 @@ substrat dev --scope ./.substrat/<tenant>__<scope>.sqlite
 
 Mirrors `vercel env pull` / `wrangler d1 export` / `planetscale connect`.
 
-## 9. Open questions
+## 9. Execution topology — where the data ops run (the control-plane ↔ vertical split)
+
+§3–§8 describe the primitives as if one process owned both the directory and the scope's
+SQLite. Production splits them, and that split decides where every data op executes.
+
+**The invariant.** A scope's data DO lives in the **vertical's own WfP deployment**, addressed
+by its **bound version's** `deploymentRef` (each `substrat push` is a separate script = its own
+DO namespace). The control-plane worker holds the **directory** (the singleton `ControlPlaneDO`:
+scope/version/hostname rows) plus a **module-less placeholder** ScopeDO that exists only so
+`provisionScope` has something to instantiate. Two tiers:
+
+- **Directory tier** (control plane): scope rows (incl. `kind`/`forkedFrom`/`forkedAt`/`expiresAt`),
+  `bindScopeVersion` (a pointer flip), enumerate-expired. Reached via `HostAdmin`.
+- **Data tier** (vertical deployment): the real SQLite, reachable only from inside that
+  deployment's own `CloudflareScopeHost` (its `env.SCOPE` is the real namespace).
+
+The platform already crosses the split for exactly two things, via the deliberately tiny
+**`VerticalClient`** (`/internal/*`, `PLATFORM_SECRET`-gated): `provisionInstance` (create a scope
+DO) and read-only introspection (`listScopeTables`/`readScopeTable`, routed to the scope's
+**bound-version** deployment by `resolveVerticalVersion`). Its minimalism is a stated trust rule —
+every other verb "would be authority the platform holds over someone else's code."
+
+**Why §3–§4's primitives are in-process only.** `exportScope`/`importScope`/`snapshotScope`/
+`deleteSnapshot` all reach the DO via `this.scopeStub` = the host's *own* `env.SCOPE`. That is
+correct inside a deployment (a vertical's own; the contract tests) but from the **control plane**
+resolves to the empty placeholder — so they have no production reach today. They are sound
+building blocks; production needs them **routed to the vertical deployment**, exactly as
+introspection is.
+
+### The resolving observation: snapshot & GC never move data
+
+The trust worry — the platform gaining dump/clone/wipe power over a builder's vertical — mostly
+dissolves once you track **where the bytes go**. A **rollback snapshot** binds the fork to the
+*source's current version*, so source DO and fork DO sit in the **same** deployment: the whole
+export→import runs **inside that one vertical**, the platform only says "snapshot X → Y", and **no
+scope bytes ever reach the control plane**. Same for `deleteSnapshot` ("wipe Y", run in Y's
+deployment). Only the local pull (§8) and a cross-version preview move a dump out — and those are
+what §6 already gates.
+
+| op | topology | bytes leave the vertical deployment? |
+|---|---|---|
+| rollback snapshot (fork bound to **source's** version) | one vertical call: local export+import | **no** |
+| auto-snapshot on migration-bind | same, before the pointer flip | **no** |
+| `deleteSnapshot` / GC reap | one vertical call to the fork's deployment | **no** |
+| **cross-version preview** (fork bound to a **new** version) | export in source's deployment → dump via control plane → import in the new version's deployment | **yes** — gated (§6) |
+| `scope pull` to a laptop (§8) | export → out of the platform | **yes** — break-glass (§6) |
+
+The first three are the safe common core: they add only "do this locally" verbs to the vertical
+harness, and the platform orchestrates without seeing data. The **cross-version preview** — the
+"run a NEW version against a snapshot" killer feature (§2) — genuinely needs a cross-deployment
+dump move, because the fork's code must run in the new version's namespace; it inherits §6's
+exfiltration gates and is a later, harder slice.
+
+### What this makes the build
+
+- **New vertical-harness `/internal/*` verbs** (mirroring `provisionInstance`): `snapshot
+  {sourceScopeId, newScopeId}` (local export+import; returns a summary, no data) and `delete-scope
+  {scopeId}` (wipe the DO). Added to `VerticalClient` and each vertical's server harness.
+- **Orchestration in control-plane-api** (mirroring the introspection branch): resolve the scope's
+  bound-version deployment, delegate the data op, then do the directory writes (provision the fork
+  row + provenance/expiry and bind it; or delete the row + hostnames). Vertical-then-directory,
+  like `provisionInstance`.
+- **`bindScopeVersion`'s `opts.snapshot`** moves from an in-process `snapshotScope` to this
+  orchestrated one.
+- **GC** runs at the control plane: enumerate expired forks (directory), delegate each DO-wipe to
+  its deployment, then delete the row. The **CF cron then belongs in the control-plane worker and
+  is correct** — the placeholder-orphan hazard is gone because the wipe is routed, not local.
+
+### The remaining trust line
+
+Even with no data crossing the boundary, the platform gains two new lifecycle verbs over a
+vertical's scopes (`snapshot`, `delete-scope`). These are **infrastructure, not domain** — they
+touch the DO's storage lifecycle, never the vertical's operations — and they extend the authority
+`provisionInstance` already asserts (the platform creates scope DOs; now it may also snapshot and
+reap them). That is the line to ratify: the platform holds **scope-storage lifecycle** authority
+over verticals, but reads/writes domain data across the boundary only through §6's gated paths.
+
+## 10. Open questions
 
 1. Retention/GC policy for preview vs. archive scopes (ephemeral-on-merge vs. deliberately kept).
 2. Masking: declarative per-vertical redaction rules, or a generic PII-column sweep?
 3. Does a same-scope **code-only canary** (§2, top row) earn a `hostnames.vertical_version_id`
    override, or do we always fork? (Override reintroduces the "code B on data A" hazard unless
    guarded on `migration_digest` equality — leaning: always fork.)
-4. Needs a decision-log number in [master-plan.md](../master-plan.md).
+4. §9 trust line: is platform scope-storage-lifecycle authority (`snapshot`/`delete-scope` over
+   `/internal`) acceptable as an extension of `provisionInstance`, or does it need per-vertical
+   opt-in / builder consent?
+5. Cross-version preview: the dump transits the control plane between deployments — encrypted in
+   flight, never at rest? Its own residency review under §6.
+6. Needs a decision-log number in [master-plan.md](../master-plan.md).
