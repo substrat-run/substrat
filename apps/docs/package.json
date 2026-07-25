@@ -8,6 +8,7 @@
     "build": "vitepress build",
     "preview": "vitepress preview",
     "cf:deploy": "vitepress build && wrangler pages deploy",
+    "cf:deploy:test": "vitepress build && wrangler pages deploy --branch test",
     "typecheck": "exit 0",
     "test": "exit 0"
   },

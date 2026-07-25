@@ -9,6 +9,7 @@
     "test": "vitest run",
     "dev": "wrangler dev",
     "cf:deploy": "wrangler deploy",
+    "cf:deploy:test": "wrangler deploy --env test",
     "dry-run": "wrangler deploy --dry-run --outdir dist-worker"
   },
   "dependencies": {

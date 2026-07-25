@@ -61,4 +61,35 @@
 	//   wrangler secret put SESSION_SECRET       # random 32+ bytes; signs the cookies
 	// The AuthHero client must allow the redirect URI
 	//   https://app.substrat.net/api/auth/callback   (and http://localhost:8890/api/auth/callback for dev).
+
+	// Shared TEST environment (ci.yml). Named `substrat-dashboard-test`. Bindings are
+	// not inherited into a named env, so all non-inheritable keys are repeated; only the
+	// marked lines differ. FIRST-level host (app-test.substrat.net) → Universal SSL, no
+	// ACM. The AuthHero client must also allow https://app-test.substrat.net/api/auth/callback,
+	// and this worker gets its own OIDC_*/SESSION_SECRET/CP_SERVICE_TOKEN secrets
+	// (`wrangler secret put … --env test`) — secrets are per-worker, never inherited.
+	"env": {
+		"test": {
+			"workers_dev": false,
+			"routes": [{ "pattern": "app-test.substrat.net", "custom_domain": true }], // differs
+			"assets": {
+				"directory": "./web/dist",
+				"not_found_handling": "single-page-application",
+				"run_worker_first": ["/api/*"]
+			},
+			"durable_objects": {
+				"bindings": [
+					{ "name": "SCOPE", "class_name": "ScopeDO" },
+					{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" }
+				]
+			},
+			"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ScopeDO", "ControlPlaneDO"] }],
+			// Provision against the TEST control plane, not prod.
+			"services": [
+				{ "binding": "CONTROL_PLANE_SVC", "service": "substrat-control-plane-test" } // differs
+			],
+			"send_email": [{ "name": "EMAIL" }],
+			"observability": { "enabled": true }
+		}
+	}
 }

@@ -31,3 +31,45 @@ jobs:
       # green in CI forever (master plan D-14). Contract tests + the FSM
       # demo's nine-step scenario.
       - run: pnpm -r test
+
+  # Deploy the prod apps to the shared TEST environment on every green push to
+  # main. Prod itself is deployed separately, only on an actual changeset
+  # release (see release.yml) — main → test, changeset → prod.
+  #
+  # GATED OFF until the test environment exists. Set the repository VARIABLE
+  # TEST_ENV_READY=true to enable. Prerequisites before flipping it on:
+  #   1. `wrangler d1 create substrat-control-plane-auth-test` — paste its id into
+  #      apps/control-plane/wrangler.jsonc `env.test.d1_databases` (replaces the
+  #      REPLACE_WITH_… placeholder; deploy fails on the placeholder on purpose).
+  #      `wrangler dispatch-namespace create substrat-verticals-test`
+  #   2. `[env.test]` blocks in each app's wrangler.jsonc — already added; they
+  #      override routes + the D1 / dispatch / service bindings so test never binds
+  #      prod. The two-level router host `*.global.test.substrat.run` also needs an
+  #      ACM advanced cert + proxied DNS (see that block's comment).
+  #   3. per-worker test secrets (OIDC_*/SESSION_SECRET/CP_SERVICE_TOKEN via
+  #      `wrangler secret put … --env test`) — secrets are never inherited.
+  # The `cf:deploy:test` scripts each app calls below already exist.
+  deploy-test:
+    needs: test
+    if: ${{ github.ref == 'refs/heads/main' && vars.TEST_ENV_READY == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency: deploy-test # never overlap two test deploys
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Workers bundle the built @substrat-run/* dist, so build the workspace first.
+      - run: pnpm -r build
+      # control-plane owns the dispatch namespace the router/dashboard read, so it
+      # deploys first; each step fails fast (no continue-on-error) on a bad deploy.
+      - run: pnpm --filter @substrat-run/control-plane cf:deploy:test
+      - run: pnpm --filter @substrat-run/router cf:deploy:test
+      - run: pnpm --filter @substrat-run/dashboard cf:deploy:test
+      - run: pnpm --filter @substrat-run/docs cf:deploy:test

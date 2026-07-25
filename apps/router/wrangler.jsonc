@@ -54,5 +54,32 @@
 	// tenant hostname resolves); the router holds no data, so its exposure is a 404 surface.
 	"workers_dev": true,
 
-	"observability": { "enabled": true }
+	"observability": { "enabled": true },
+
+	// Shared TEST environment (ci.yml). Named `substrat-router-test`. The two
+	// cross-worker references below MUST target the TEST control plane, or the test
+	// router borrows prod's DO + dispatch namespace — the split-brain the prod config
+	// warns about. Bindings are not inherited into a named env, so all are repeated.
+	"env": {
+		"test": {
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "CONTROL_PLANE",
+						"class_name": "ControlPlaneDO",
+						"script_name": "substrat-control-plane-test" // differs: test CP, not prod
+					}
+				]
+			},
+			"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals-test" }], // differs
+			// Test tenant hostnames: <slug>.global.test.substrat.run. This two-level
+			// wildcard needs an ACM advanced cert for `*.global.test.substrat.run` + a
+			// proxied `*.global.test` DNS record on substrat.run (same setup prod's
+			// `*.global.substrat.run` has). Until that exists the route deploys but
+			// won't serve TLS — reach the test router by its workers.dev URL meanwhile.
+			"routes": [{ "pattern": "*.global.test.substrat.run/*", "zone_name": "substrat.run" }], // differs
+			"workers_dev": true,
+			"observability": { "enabled": true }
+		}
+	}
 }

@@ -65,5 +65,43 @@
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
 		"run_worker_first": true
+	},
+
+	// The shared TEST environment (deployed by ci.yml on every green push to main).
+	// `wrangler deploy --env test` names this worker `substrat-control-plane-test`
+	// automatically (<name>-<env>) — the router's and dashboard's test bindings point
+	// at that name. Wrangler does NOT inherit bindings into a named env, so every
+	// non-inheritable key below is repeated; only the marked lines differ from prod.
+	// Hostname is FIRST-level (console-test.substrat.net) so Universal SSL covers it —
+	// no ACM (a two-level console.test.substrat.net would need an advanced cert).
+	"env": {
+		"test": {
+			"routes": [{ "pattern": "console-test.substrat.net", "custom_domain": true }], // differs
+			"durable_objects": {
+				"bindings": [
+					{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+					{ "name": "SCOPE", "class_name": "ScopeDO" }
+				]
+			},
+			"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ControlPlaneDO", "ScopeDO"] }],
+			// Own dispatch namespace — a test control plane must never push verticals
+			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test
+			"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals-test" }], // differs
+			// Own D1 — create with `wrangler d1 create substrat-control-plane-auth-test`
+			// and paste its id below (deploy fails on the placeholder, on purpose).
+			"d1_databases": [
+				{
+					"binding": "AUTH_DB",
+					"database_name": "substrat-control-plane-auth-test",
+					"database_id": "REPLACE_WITH_substrat-control-plane-auth-test_ID"
+				}
+			],
+			"assets": {
+				"directory": "../console/dist",
+				"binding": "ASSETS",
+				"not_found_handling": "single-page-application",
+				"run_worker_first": true
+			}
+		}
 	}
 }

@@ -15,13 +15,21 @@
  * thing that checkpoint exists to prevent. It turns a silent 500 into a loud message
  * at deploy time, and leaves the decision where it belongs.
  *
- * Usage:  node tools/preflight-migrations.mjs [packageDir]
+ * Usage:  node tools/preflight-migrations.mjs [packageDir] [--env <name>]
+ *
+ * With `--env test`, the check reads the D1 bindings from that wrangler
+ * environment (`env.test.d1_databases`) instead of the top-level ones, so a
+ * `--env test` deploy is gated on the TEST database's migration state, not prod's.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-const pkgDir = resolve(process.argv[2] ?? process.cwd());
+const argv = process.argv.slice(2);
+const envIdx = argv.indexOf('--env');
+const envName = envIdx !== -1 ? argv[envIdx + 1] : undefined;
+const positional = argv.filter((a, i) => a !== '--env' && i !== envIdx + 1);
+const pkgDir = resolve(positional[0] ?? process.cwd());
 
 /**
  * Strip JSONC comments without destroying strings.
@@ -67,7 +75,14 @@ if (!configPath) {
 }
 
 const config = parseJsonc(readFileSync(configPath, 'utf8'));
-const databases = config.d1_databases ?? [];
+// A named environment redefines bindings (wrangler does not inherit d1_databases
+// into `env.<name>`), so gate on that environment's databases when one is given.
+const scope = envName ? (config.env?.[envName] ?? {}) : config;
+if (envName && !config.env?.[envName]) {
+  console.log(`preflight-migrations: no [env.${envName}] in ${configPath} — nothing to check.`);
+  process.exit(0);
+}
+const databases = scope.d1_databases ?? [];
 if (databases.length === 0) {
   console.log('preflight-migrations: no D1 databases bound — nothing to check.');
   process.exit(0);

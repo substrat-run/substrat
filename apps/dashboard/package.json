@@ -10,7 +10,8 @@
     "test": "vitest run",
     "build:web": "pnpm --filter @substrat-run/dashboard-web build",
     "cf:dev": "wrangler dev --var STANDALONE:true --port 8890",
-    "cf:deploy": "pnpm run build:web && node ../../tools/preflight-migrations.mjs && wrangler deploy"
+    "cf:deploy": "pnpm run build:web && node ../../tools/preflight-migrations.mjs && wrangler deploy",
+    "cf:deploy:test": "pnpm run build:web && node ../../tools/preflight-migrations.mjs --env test && wrangler deploy --env test"
   },
   "dependencies": {
     "@substrat-run/adapter-cloudflare": "workspace:^",
