@@ -839,6 +839,36 @@ export class CloudflareScopeHost implements ScopeHost {
     );
   }
 
+  async snapshotScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    opts?: { kind?: string },
+  ): Promise<ScopeId> {
+    const source = await this.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!source) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+    const dump = await this.admin.exportScope(actor, tenantId, scopeId);
+    const snapshotId = ulid() as ScopeId;
+    await this.importScope(
+      actor,
+      {
+        tenantId,
+        scopeId: snapshotId,
+        kind: opts?.kind ?? 'archive',
+        vertical: source.vertical,
+        jurisdiction: source.jurisdiction,
+        // forkedFrom/forkedAt are stamped from the dump by importScope.
+      },
+      dump,
+    );
+    // Bind the snapshot to the source's current version so it is a runnable copy at the
+    // same frontier (a fresh bind, so it never re-triggers the snapshot path).
+    if (source.verticalVersionId) {
+      await this.admin.bindScopeVersion(actor, tenantId, snapshotId, source.verticalVersionId);
+    }
+    return snapshotId;
+  }
+
   /**
    * Migrate a scope and project its resulting migration count into the directory
    * (§5.4: fleet questions never fan out). The ScopeDO reports null when nothing
@@ -1483,7 +1513,7 @@ export class CloudflareScopeHost implements ScopeHost {
           }),
         );
       },
-      bindScopeVersion: async (actor, tenantId, scopeId, versionId: string) => {
+      bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const v = await this.cp.readVersion(versionId);
         if (!v) throw new Error(`unknown version ${versionId}`);
         // The refusal the registry exists for.
@@ -1494,6 +1524,14 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        // Fork-before-promote (§4): snapshot the pre-migration data if this rebind
+        // crosses a migration boundary. Gated on a real digest change and on opt-in.
+        if (opts?.snapshot && scope.vertical_version_id) {
+          const outgoing = await this.cp.readVersion(scope.vertical_version_id);
+          if (outgoing && outgoing.migration_digest !== v.migration_digest) {
+            await this.snapshotScope(actor, tenantId, scopeId);
+          }
+        }
         await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug);
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId, vertical: v.vertical_slug, version: v.version,

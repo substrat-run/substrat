@@ -1075,6 +1075,36 @@ export class SqliteScopeHost implements ScopeHost {
     );
   }
 
+  async snapshotScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    opts?: { kind?: string },
+  ): Promise<ScopeId> {
+    const source = await this.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!source) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+    const dump = await this.admin.exportScope(actor, tenantId, scopeId);
+    const snapshotId = ulid() as ScopeId;
+    await this.importScope(
+      actor,
+      {
+        tenantId,
+        scopeId: snapshotId,
+        kind: opts?.kind ?? 'archive',
+        vertical: source.vertical,
+        jurisdiction: source.jurisdiction,
+        // forkedFrom/forkedAt are stamped from the dump by importScope.
+      },
+      dump,
+    );
+    // Bind the snapshot to the source's current version so it is a runnable copy at the
+    // same frontier (a fresh bind, so it never re-triggers the snapshot path).
+    if (source.verticalVersionId) {
+      await this.admin.bindScopeVersion(actor, tenantId, snapshotId, source.verticalVersionId);
+    }
+    return snapshotId;
+  }
+
   async getScope(
     principal: PrincipalId,
     tenantId: TenantId,
@@ -2335,7 +2365,7 @@ export class SqliteScopeHost implements ScopeHost {
           }),
         );
       },
-      bindScopeVersion: async (actor, tenantId, scopeId, versionId: string) => {
+      bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const v = readVersion(versionId);
         if (!v) throw new Error(`unknown version ${versionId}`);
         // The refusal this registry exists for. Without it, "a push lands pending"
@@ -2347,10 +2377,19 @@ export class SqliteScopeHost implements ScopeHost {
           );
         }
         const scope = this.directory
-          .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
-          .get(scopeId) as { tenant_id: string } | undefined;
+          .prepare('SELECT tenant_id, vertical_version_id FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string; vertical_version_id: string | null } | undefined;
         if (!scope || scope.tenant_id !== tenantId) {
           throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
+        // Fork-before-promote (§4): snapshot the pre-migration data if this rebind
+        // crosses a migration boundary. Gated on a real digest change — a code-only
+        // rebind snapshots nothing — and on the caller opting in (until GC ships).
+        if (opts?.snapshot && scope.vertical_version_id) {
+          const outgoing = readVersion(scope.vertical_version_id);
+          if (outgoing && outgoing.migrationDigest !== v.migrationDigest) {
+            await this.snapshotScope(actor, tenantId, scopeId);
+          }
         }
         this.directory
           .prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')

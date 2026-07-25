@@ -605,6 +605,93 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- snapshot & auto-snapshot on bind (preview-and-snapshots.md §3/§4) -----
+    //
+    // snapshotScope forks an `archive` copy at the source's frontier. bindScopeVersion,
+    // opted in, does it automatically before a MIGRATION-changing rebind — and only
+    // then: a code-only rebind (same migration digest) snapshots nothing, and opting
+    // out never snapshots.
+
+    describe('scope snapshot (§3/§4)', () => {
+      const countForks = async (of: typeof s1) =>
+        (await host.admin.listScopes(staff, { tenantId: t1 })).filter((sc) => sc.forkedFrom === of)
+          .length;
+
+      it('snapshotScope forks an archive copy at the source frontier', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/write-marker', { v: 'snap-me' });
+
+        const snapId = await host.snapshotScope(staff, t1, s1);
+        const rec = await host.admin.getScopeRecord(staff, t1, snapId);
+        expect(rec?.kind).toBe('archive');
+        expect(rec?.forkedFrom).toBe(s1);
+
+        const page = await host.admin.readScopeTable(staff, t1, snapId, {
+          table: 'marker',
+          limit: 200,
+          offset: 0,
+        });
+        const vCol = page.columns.indexOf('v');
+        expect(page.rows.map((r) => r[vCol])).toContain('snap-me');
+      });
+
+      it('bindScopeVersion snapshots a migration-changing rebind, and only that', async () => {
+        // A fresh scope + a vertical with two admitted versions of differing migration
+        // digest, plus a third that is a code-only change (same migration digest).
+        const sb = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: sb,
+          jurisdiction: 'eu',
+          vertical: 'snaptest',
+        });
+        await host.admin.activateScope(staff, t1, sb);
+        await host.admin.registerVertical(staff, {
+          slug: 'snaptest',
+          name: 'Snap Test',
+          source: 'builtin',
+        });
+        const publish = async (version: string, mig: string) => {
+          const id = ulid();
+          await host.admin.publishVersion(staff, {
+            id,
+            verticalSlug: 'snaptest',
+            version,
+            manifestDigest: `man-${version}`,
+            permissionDigest: 'p',
+            migrationDigest: mig,
+            deploymentRef: null,
+          });
+          await host.admin.admitVersion(staff, id);
+          return id;
+        };
+        const vA = await publish('1.0.0', 'gA');
+        const vB = await publish('2.0.0', 'gB'); // migration change vs vA
+        const vBcode = await publish('2.0.1', 'gB'); // code-only vs vB
+
+        const before = await countForks(sb);
+        await host.admin.bindScopeVersion(staff, t1, sb, vA); // first bind — no prior version
+        await host.admin.bindScopeVersion(staff, t1, sb, vB, { snapshot: true }); // gA→gB — snapshot
+        expect(await countForks(sb)).toBe(before + 1);
+
+        // The snapshot is an archive bound to the OUTGOING version (vA) — the frontier
+        // it froze at.
+        const forks = (await host.admin.listScopes(staff, { tenantId: t1 })).filter(
+          (sc) => sc.forkedFrom === sb,
+        );
+        expect(forks.every((f) => f.kind === 'archive')).toBe(true);
+        expect(forks.some((f) => f.verticalVersionId === vA)).toBe(true);
+
+        // A code-only rebind (same migration digest), even opted in, snapshots nothing.
+        await host.admin.bindScopeVersion(staff, t1, sb, vBcode, { snapshot: true });
+        expect(await countForks(sb)).toBe(before + 1);
+
+        // Opting out never snapshots, even across a migration boundary.
+        await host.admin.bindScopeVersion(staff, t1, sb, vA); // gB→gA, no opts
+        expect(await countForks(sb)).toBe(before + 1);
+      });
+    });
+
     // -- the integrations hub: connections (#101) -----------------------------
     //
     // The store exists so a vertical's connector can reach a tenant's provider
