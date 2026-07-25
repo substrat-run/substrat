@@ -245,6 +245,7 @@ interface ControlPlaneStub {
   listVersions(verticalSlug: string): Promise<VersionRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
+  deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): Promise<void>;
   listChannels(verticalSlug: string): Promise<ChannelRow[]>;
@@ -412,6 +413,8 @@ interface ScopeStubRpc {
   exportDump(): Promise<ScopeDumpTable[]>;
   /** Load a dump into this (freshly-provisioned) scope — the fork write side. */
   importDump(tables: ScopeDumpTable[]): Promise<void>;
+  /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
+  destroyStorage(): Promise<void>;
 }
 
 export interface CloudflareScopeHostOptions {
@@ -843,7 +846,7 @@ export class CloudflareScopeHost implements ScopeHost {
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    opts?: { kind?: string },
+    opts?: { kind?: string; expiresAt?: string },
   ): Promise<ScopeId> {
     const source = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!source) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
@@ -857,6 +860,7 @@ export class CloudflareScopeHost implements ScopeHost {
         kind: opts?.kind ?? 'archive',
         vertical: source.vertical,
         jurisdiction: source.jurisdiction,
+        expiresAt: opts?.expiresAt,
         // forkedFrom/forkedAt are stamped from the dump by importScope.
       },
       dump,
@@ -867,6 +871,30 @@ export class CloudflareScopeHost implements ScopeHost {
       await this.admin.bindScopeVersion(actor, tenantId, snapshotId, source.verticalVersionId);
     }
     return snapshotId;
+  }
+
+  async deleteSnapshot(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    // The refusal that keeps this narrow: only a FORK may be hard-deleted. Everything
+    // else keeps the platform's tombstone-only rule.
+    const rec = await this.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!rec) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+    if (!rec.forkedFrom) {
+      throw new Error(
+        `scope ${scopeId} is not a fork (forkedFrom is null) — only snapshots may be deleted; ` +
+          `archive a primary scope instead`,
+      );
+    }
+    // Storage BEFORE the directory row: a crash between the two leaves a visible row
+    // over empty storage — re-running deleteSnapshot converges — never orphaned bytes
+    // with no record (the §9 hazard). Hostname rows go with the directory delete.
+    await this.scopeStub(scopeId).destroyStorage();
+    await this.cp.deleteScopeDirectory(scopeId);
+    await this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
+      forkedFrom: rec.forkedFrom,
+      forkedAt: rec.forkedAt,
+      expiresAt: rec.expiresAt,
+      kind: rec.kind,
+    });
   }
 
   /**
@@ -1086,6 +1114,7 @@ export class CloudflareScopeHost implements ScopeHost {
             : null,
         forkedFrom: r.forked_from,
         forkedAt: r.forked_at,
+        expiresAt: r.expires_at,
         createdAt: r.created_at,
       });
 

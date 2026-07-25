@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
@@ -298,6 +298,7 @@ interface ScopeRow {
   migration_last_attempt_at: string | null;
   forked_from: string | null;
   forked_at: string | null;
+  expires_at: string | null;
   created_at: string;
 }
 
@@ -518,6 +519,9 @@ export class SqliteScopeHost implements ScopeHost {
         -- copied from, and when. Both null for a normally-provisioned scope.
         forked_from TEXT,
         forked_at TEXT,
+        -- Retention horizon for forks (preview-and-snapshots.md §3): the GC sweep
+        -- reaps a fork past this instant. Null = no expiry.
+        expires_at TEXT,
         created_at TEXT NOT NULL
       );
       -- The hostname map (K-26). A single environment-wide router resolves against
@@ -989,10 +993,10 @@ export class SqliteScopeHost implements ScopeHost {
         .prepare(
           `INSERT INTO scopes
              (scope_id, tenant_id, parent_scope_id, slug, kind, name, vertical,
-              storage_shape, jurisdiction, status, forked_from, forked_at, created_at)
+              storage_shape, jurisdiction, status, forked_from, forked_at, expires_at, created_at)
            -- 'provisioning', not 'active' (K-31): the directory row exists before the
            -- vertical has created the scope DO, and only activateScope says it has.
-           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?)`,
+           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?)`,
         )
         .run(
           input.scopeId,
@@ -1005,6 +1009,7 @@ export class SqliteScopeHost implements ScopeHost {
           record.jurisdiction,
           record.forkedFrom,
           record.forkedAt,
+          record.expiresAt,
           new Date().toISOString(),
         );
     }
@@ -1079,7 +1084,7 @@ export class SqliteScopeHost implements ScopeHost {
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    opts?: { kind?: string },
+    opts?: { kind?: string; expiresAt?: string },
   ): Promise<ScopeId> {
     const source = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!source) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
@@ -1093,6 +1098,7 @@ export class SqliteScopeHost implements ScopeHost {
         kind: opts?.kind ?? 'archive',
         vertical: source.vertical,
         jurisdiction: source.jurisdiction,
+        expiresAt: opts?.expiresAt,
         // forkedFrom/forkedAt are stamped from the dump by importScope.
       },
       dump,
@@ -1103,6 +1109,40 @@ export class SqliteScopeHost implements ScopeHost {
       await this.admin.bindScopeVersion(actor, tenantId, snapshotId, source.verticalVersionId);
     }
     return snapshotId;
+  }
+
+  async deleteSnapshot(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    // The refusal that keeps this narrow: only a FORK may be hard-deleted. Everything
+    // else keeps the platform's tombstone-only rule.
+    const rec = await this.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!rec) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+    if (!rec.forkedFrom) {
+      throw new Error(
+        `scope ${scopeId} is not a fork (forkedFrom is null) — only snapshots may be deleted; ` +
+          `archive a primary scope instead`,
+      );
+    }
+    // Close and evict the runtime handle before touching the file.
+    const key = `${tenantId}/${scopeId}`;
+    const rt = this.scopes.get(key);
+    if (rt) {
+      rt.db.close();
+      this.scopes.delete(key);
+      this.scopesById.delete(scopeId);
+    }
+    // Order is the retry story: hostnames first (a reaped preview URL must stop
+    // resolving), then the STORAGE, then the directory row — so a crash mid-way leaves
+    // a visible row over empty storage (re-running deleteSnapshot converges), never
+    // orphaned bytes with no record (the §9 hazard).
+    this.directory.prepare('DELETE FROM hostnames WHERE scope_id = ?').run(scopeId);
+    rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
+    this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
+    this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
+      forkedFrom: rec.forkedFrom,
+      forkedAt: rec.forkedAt,
+      expiresAt: rec.expiresAt,
+      kind: rec.kind,
+    });
   }
 
   async getScope(
@@ -1746,6 +1786,7 @@ export class SqliteScopeHost implements ScopeHost {
         migrationFailure: mapMigrationFailure(r),
         forkedFrom: r.forked_from,
         forkedAt: r.forked_at,
+        expiresAt: r.expires_at,
         createdAt: r.created_at,
       });
 
@@ -3288,6 +3329,7 @@ export class SqliteScopeHost implements ScopeHost {
       ['migration_last_attempt_at', 'migration_last_attempt_at TEXT'],
       ['forked_from', 'forked_from TEXT'],
       ['forked_at', 'forked_at TEXT'],
+      ['expires_at', 'expires_at TEXT'],
     ] as const) {
       if (!existing.has(column)) this.directory.exec(`ALTER TABLE scopes ADD COLUMN ${ddl}`);
     }

@@ -88,6 +88,7 @@ export interface ScopeRow {
   migration_last_attempt_at: string | null;
   forked_from: string | null;
   forked_at: string | null;
+  expires_at: string | null;
   created_at: string;
 }
 
@@ -238,6 +239,7 @@ const DIRECTORY_DDL = `
     migration_last_attempt_at TEXT,
     forked_from TEXT,
     forked_at TEXT,
+    expires_at TEXT,
     created_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS hostnames (
@@ -427,6 +429,7 @@ const SCOPE_COLUMNS_ADDED = [
   'migration_last_attempt_at TEXT',
   'forked_from TEXT',
   'forked_at TEXT',
+  'expires_at TEXT',
 ] as const;
 
 export class ControlPlaneDO extends DurableObject {
@@ -641,6 +644,7 @@ export class ControlPlaneDO extends DurableObject {
       jurisdiction: string | null;
       forkedFrom: string | null;
       forkedAt: string | null;
+      expiresAt: string | null;
     },
     createdAt: string,
   ): boolean {
@@ -675,8 +679,8 @@ export class ControlPlaneDO extends DurableObject {
       this.sql.exec(
         `INSERT INTO scopes
            (scope_id, tenant_id, parent_scope_id, slug, kind, name, vertical,
-            storage_shape, jurisdiction, status, forked_from, forked_at, created_at)
-         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?)`,
+            storage_shape, jurisdiction, status, forked_from, forked_at, expires_at, created_at)
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?)`,
         scopeId,
         tenantId,
         record.slug,
@@ -687,6 +691,7 @@ export class ControlPlaneDO extends DurableObject {
         record.jurisdiction,
         record.forkedFrom,
         record.forkedAt,
+        record.expiresAt,
         createdAt,
       );
     }
@@ -1045,6 +1050,16 @@ export class ControlPlaneDO extends DurableObject {
       'UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?',
       versionId, verticalSlug, scopeId,
     );
+  }
+
+  /**
+   * Remove a reaped fork's directory presence: hostname bindings + the scope row
+   * (preview-and-snapshots.md §9). The coordinator's deleteSnapshot calls this AFTER
+   * wiping the scope DO's storage — the fork-only refusal lives there, not here.
+   */
+  deleteScopeDirectory(scopeId: string): void {
+    this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
+    this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
   }
 
   readChannel(verticalSlug: string, channel: string): ChannelRow | undefined {
