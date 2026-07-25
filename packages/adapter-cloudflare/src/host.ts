@@ -231,6 +231,7 @@ interface ControlPlaneStub {
   readVertical(slug: string): Promise<VerticalRow | undefined>;
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null): Promise<void>;
+  updateVerticalListed(slug: string, listed: number): Promise<void>;
   listVerticals(): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
   insertVersion(v: {
@@ -1355,6 +1356,13 @@ export class CloudflareScopeHost implements ScopeHost {
         const rows = await this.cp.listVersions(verticalSlug);
         await this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
         return rows.map(mapVersion);
+      },
+      setVerticalListed: async (actor, slug: string, listed: boolean) => {
+        const existing = await this.cp.readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        if (!!existing.listed === listed) return; // idempotent
+        await this.cp.updateVerticalListed(slug, listed ? 1 : 0);
+        await this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: !!existing.listed }, { listed });
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);

@@ -21,6 +21,7 @@ import { browserLogin } from './login.js';
 import { push, readVerticalMeta, nextVersion } from './push.js';
 import { printVersions } from './versions.js';
 import { promote } from './promote.js';
+import { setListing } from './listing.js';
 import { fetchWhoami } from './whoami.js';
 
 const argv = process.argv.slice(2);
@@ -51,6 +52,8 @@ Usage:
   substrat push     [dir]                      push a vertical (slug/name/version default
                                                from package.json; version auto-bumps)
   substrat promote  <slug> --channel dev|staging --version <versionId>
+  substrat publish  <slug>                    list on the public marketplace (staff-gated)
+  substrat unpublish <slug>                   remove from the public marketplace
   substrat versions <slug>                    list a vertical's versions + channels
 
 'substrat push' defaults everything from the vertical's package.json — run it from inside the
@@ -169,6 +172,18 @@ async function cmdPromote(): Promise<void> {
   console.log(`✓ ${slug} → ${ch.channel} now points at ${ch.versionId}`);
 }
 
+async function cmdPublish(listed: boolean): Promise<void> {
+  const slug = argv[1];
+  if (!slug || slug.startsWith('--')) {
+    console.error(`usage: substrat ${listed ? 'publish' : 'unpublish'} <slug>`);
+    process.exit(1);
+  }
+  const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  console.log(`authenticating with ${as}`);
+  const r = await setListing({ controlPlaneUrl, header, slug, listed });
+  console.log(`✓ ${r.slug} is ${r.listed ? 'published to the marketplace' : 'unpublished'}`);
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -192,6 +207,10 @@ async function main(): Promise<void> {
       return cmdPush();
     case 'promote':
       return cmdPromote();
+    case 'publish':
+      return cmdPublish(true);
+    case 'unpublish':
+      return cmdPublish(false);
     case 'whoami':
       return cmdWhoami();
     case 'help':

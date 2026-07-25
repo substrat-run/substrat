@@ -583,6 +583,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json((await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id));
   });
 
+  // Publish/unpublish a vertical to the PUBLIC marketplace (marketplace-publish.md §5). Staff
+  // admission of a publish request — NOT in BUILDER_ROUTES, so a builder is refused (the review
+  // gate). `listed` then makes `availableCatalog` offer it to every tenant.
+  app.post('/verticals/:slug/listing', async (c) => {
+    const slug = c.req.param('slug');
+    const { listed } = z.object({ listed: z.boolean() }).parse(await c.req.json());
+    await admin.setVerticalListed(c.get('actor'), slug, listed);
+    return c.json({ slug, listed });
+  });
+
   app.get('/verticals/:slug/channels', async (c) => {
     const p = c.get('principal');
     const slug = effectiveSlug(p, c.req.param('slug'));

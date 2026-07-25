@@ -2146,6 +2146,13 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
         return rows.map(mapVersion);
       },
+      setVerticalListed: async (actor, slug: string, listed: boolean) => {
+        const existing = readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        if (existing.listed === listed) return; // idempotent
+        this.directory.prepare('UPDATE verticals SET listed = ? WHERE slug = ?').run(listed ? 1 : 0, slug);
+        this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: existing.listed }, { listed });
+      },
       admitVersion: async (actor, versionId: string) => {
         const v = readVersion(versionId);
         if (!v) throw new Error(`unknown version ${versionId}`);

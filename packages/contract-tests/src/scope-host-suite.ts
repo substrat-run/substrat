@@ -871,6 +871,26 @@ export function scopeHostContractSuite(
       expect(second?.provides).toBeUndefined(); // dropped on refresh — the blob is replaced whole
     });
 
+    it('publishes/unpublishes a vertical to the marketplace (setVerticalListed), preserved across re-push', async () => {
+      const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
+      await host.admin.registerVertical(staff, { slug: 'listtest', name: 'ListTest', source: 'cli', ownerTenant: t2 });
+      expect((await at('listtest'))?.listed).toBe(false); // private on push
+
+      await host.admin.setVerticalListed(staff, 'listtest', true);
+      expect((await at('listtest'))?.listed).toBe(true); // published
+
+      // The invariant: a re-push does NOT unpublish it — `listed` is its own column, untouched
+      // by the register refresh (publish is a distinct action from push).
+      await host.admin.registerVertical(staff, { slug: 'listtest', name: 'ListTest', source: 'cli', ownerTenant: t2 });
+      expect((await at('listtest'))?.listed).toBe(true);
+
+      await host.admin.setVerticalListed(staff, 'listtest', true); // idempotent
+      await host.admin.setVerticalListed(staff, 'listtest', false);
+      expect((await at('listtest'))?.listed).toBe(false); // unpublished
+
+      await expect(host.admin.setVerticalListed(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
+    });
+
     it('refuses to bind a rejected version, and rejection is terminal', async () => {
       const versionId = ulid();
       await host.admin.publishVersion(staff, {

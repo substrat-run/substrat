@@ -1024,6 +1024,18 @@ describe('control-plane API — builder authz', () => {
     expect((await staffReq(`/verticals/helpdesk/versions/${v1}/admit`, 'POST')).status).toBe(200);
   });
 
+  it('keeps publish staff-only — a builder cannot list its own vertical; staff can (marketplace-publish.md §5)', async () => {
+    const full = encodeURIComponent(`${acmeSlug}/helpdesk`);
+    // /listing is not on the builder allowlist → 403 (the review gate, not an ownership check).
+    expect((await acmeReq('/verticals/helpdesk/listing', 'POST', { listed: true })).status).toBe(403);
+    // Staff publish it (by the full registry id) → listed.
+    const res = await staffReq(`/verticals/${full}/listing`, 'POST', { listed: true });
+    expect(res.status).toBe(200);
+    expect((await res.json()).listed).toBe(true);
+    // Staff can unpublish too.
+    expect((await staffReq(`/verticals/${full}/listing`, 'POST', { listed: false })).status).toBe(200);
+  });
+
   it('lets the owner self-serve non-prod, but keeps prod a staff decision', async () => {
     // dev/staging: the builder promotes its own admitted version.
     expect((await acmeReq('/verticals/helpdesk/channels/dev/promote', 'POST', { versionId: v1 })).status).toBe(200);

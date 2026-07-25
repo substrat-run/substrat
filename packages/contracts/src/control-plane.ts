@@ -30,6 +30,7 @@ export const adminAction = z.enum([
   'publishVersion',
   'admitVersion',
   'rejectVersion',
+  'setVerticalListed', // marketplace-publish.md §5 — publish/unpublish to the public marketplace
   'bindScopeVersion',
   'promoteVersion',
   'bindHostname', // K-26 — the hostname map

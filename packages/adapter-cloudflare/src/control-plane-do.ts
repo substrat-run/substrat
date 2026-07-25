@@ -976,6 +976,11 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE verticals SET env_spec = ?, install_spec = ? WHERE slug = ?', envSpec, installSpec, slug);
   }
 
+  /** Publish/unpublish a vertical to the public marketplace (marketplace-publish.md §5). */
+  updateVerticalListed(slug: string, listed: number): void {
+    this.sql.exec('UPDATE verticals SET listed = ? WHERE slug = ?', listed, slug);
+  }
+
   listVerticals(): VerticalRow[] {
     return this.sql.exec('SELECT * FROM verticals ORDER BY slug').toArray() as unknown as VerticalRow[];
   }
