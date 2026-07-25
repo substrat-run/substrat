@@ -1,5 +1,7 @@
 {
   "name": "substrat-docs",
-  "account_id": "8cbb7553a78d4d4bc4159906c77214a3",
+  // No "account_id" here — wrangler's Pages config validation rejects the key.
+  // The account comes from CLOUDFLARE_ACCOUNT_ID (repo Actions variable in CI,
+  // or the logged-in wrangler session locally).
   "pages_build_output_dir": ".vitepress/dist"
 }
