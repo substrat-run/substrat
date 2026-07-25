@@ -25,6 +25,7 @@ instead of being re-invented. The Vercel analogy maps almost one-to-one:
 | Domains | **hostname bindings** |
 | Integrations | **connections** (Scrive, Fortnox) |
 | "New Project from a template" | **create instance** (catalog → provision) |
+| Preview / staging data | **[snapshot](/concepts/snapshots)** — a test copy of an app's data |
 
 Concretely: a customer *is* a tenant; sign-up bootstraps that tenant, one **dashboard scope** (the
 customer's home), and the signer as its **owner**. A customer's apps are **scopes** in that same
@@ -53,6 +54,24 @@ which channel points where. A builder self-serves `dev`/`staging` promotion righ
 (model B). The tenant is ambient from the session, and every read and promotion is checked to
 be one of the caller's own verticals — the dashboard's shared-plane credential can't be turned
 into a lever on another tenant's deployment.
+
+## Snapshots
+
+Each app has a **Snapshots** tab — [test copies](/concepts/snapshots) of the app's data.
+**Create test copy** forks the app's entire database into an independent copy with a retention
+choice (1/7/30 days, or keep until deleted); the list shows each copy's provenance and a live
+expiry countdown; expired copies are reaped by the platform's scheduled sweep. A copy is
+unmistakably *not* the live app: it receives no traffic, integrations are off, and deleting it
+is safe by construction — the platform refuses to hard-delete anything that isn't a copy.
+
+The same machinery backs the **"Snapshot data first"** checkbox (on by default) next to
+*Update to latest* in the Deployments tab: an update whose migrations changed takes a copy
+before the rebind, so a bad upgrade has a rollback point. A code-only update skips the copy —
+the platform compares migration digests, not the checkbox.
+
+Authorization is the same key that manages apps (`dashboard:provision-app`), checked in-scope
+before any platform effect; the fork itself runs inside the app's own deployment, so
+[no app data crosses to the platform](/concepts/snapshots#where-the-data-goes-and-doesn-t).
 
 ## App configuration (the Env tab)
 
