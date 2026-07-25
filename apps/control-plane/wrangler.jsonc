@@ -97,7 +97,7 @@
 				{
 					"binding": "AUTH_DB",
 					"database_name": "substrat-control-plane-auth-test",
-					"database_id": "REPLACE_WITH_substrat-control-plane-auth-test_ID"
+					"database_id": "bcb791f3-f136-43de-b4e6-3739328cada3"
 				}
 			],
 			"assets": {
