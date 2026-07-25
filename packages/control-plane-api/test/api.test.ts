@@ -387,6 +387,74 @@ describe('control-plane API', () => {
     expect(snaps).toHaveLength(1);
   });
 
+  // -- the governed pull (preview-and-snapshots.md §6/§8) --------------------
+
+  it('exports a scope masked by default; ?full=true is the break-glass', async () => {
+    const sE = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sE });
+    await host.admin.activateScope(staff, t1, sE);
+
+    const masked = await req(`/tenants/${t1}/scopes/${sE}/export`);
+    expect(masked.status).toBe(200);
+    const dump = (await masked.json()) as { masked: boolean; tables: { name: string }[]; scopeId: string };
+    expect(dump.masked).toBe(true);
+    expect(dump.scopeId).toBe(sE);
+    // The spine came along — the dump is the whole scope.
+    expect(dump.tables.some((t) => t.name === '_substrat_migrations')).toBe(true);
+
+    const full = await req(`/tenants/${t1}/scopes/${sE}/export?full=true`);
+    expect(((await full.json()) as { masked: boolean }).masked).toBe(false);
+  });
+
+  it('masks PII columns and JSON payload keys in a delegated export', async () => {
+    const sM = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sM, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sM);
+
+    const customerRows = [['c1', 'anna@example.com', 'Anna Ek', 7]];
+    const outboxRows = [['e1', JSON.stringify({ customerEmail: 'anna@example.com', total: '120.00' })]];
+    const fakeVertical = {
+      exportScope: async () => [
+        { name: 'customers', ddl: 'CREATE TABLE customers (id TEXT, email TEXT, name TEXT, visits INTEGER)', columns: ['id', 'email', 'name', 'visits'], rows: customerRows },
+        { name: '_substrat_outbox', ddl: 'CREATE TABLE _substrat_outbox (id TEXT, payload TEXT)', columns: ['id', 'payload'], rows: outboxRows },
+      ],
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+
+    const res = await delegated.request(`/tenants/${t1}/scopes/${sM}/export`, { headers: auth });
+    expect(res.status).toBe(200);
+    const dump = (await res.json()) as { masked: boolean; tables: { name: string; rows: unknown[][] }[] };
+    expect(dump.masked).toBe(true);
+    const customers = dump.tables.find((t) => t.name === 'customers')!;
+    // email + name masked; id and the count untouched (ids keep the copy debuggable).
+    expect(customers.rows[0]).toEqual(['c1', '[masked]', '[masked]', 7]);
+    // The fat event payload keeps its SHAPE; the PII key inside is masked.
+    const outbox = dump.tables.find((t) => t.name === '_substrat_outbox')!;
+    expect(JSON.parse(outbox.rows[0]![1] as string)).toEqual({
+      customerEmail: '[masked]',
+      total: '120.00',
+    });
+
+    // Break-glass: full fidelity, verbatim.
+    const full = await delegated.request(`/tenants/${t1}/scopes/${sM}/export?full=true`, { headers: auth });
+    const fullDump = (await full.json()) as { masked: boolean; tables: { name: string; rows: unknown[][] }[] };
+    expect(fullDump.masked).toBe(false);
+    expect(fullDump.tables.find((t) => t.name === 'customers')!.rows).toEqual(customerRows);
+  });
+
+  it('refuses to export a jurisdiction-pinned scope (K-32)', async () => {
+    const sJ = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sJ, jurisdiction: 'eu' });
+    await host.admin.activateScope(staff, t1, sJ);
+    const res = await req(`/tenants/${t1}/scopes/${sJ}/export`);
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toMatch(/jurisdiction/);
+  });
+
   it('walks the lifecycle and maps an illegal transition to 409', async () => {
     const suspended = await json(`/tenants/${t1}/scopes/${s1}/suspend`, 'POST');
     expect(await suspended.json()).toMatchObject({ status: 'suspended' });

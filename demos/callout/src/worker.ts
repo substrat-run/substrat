@@ -292,6 +292,20 @@ app.post('/internal/delete-scope', async (c) => {
   return c.json({ deleted: body.scopeId });
 });
 
+// The full dump behind a governed `scope pull` (preview-and-snapshots.md §8): the one
+// /internal verb that deliberately moves scope bytes out — the control plane in front
+// of it is the gate (staff-only, audited, masked by default, jurisdiction-checked).
+app.get('/internal/export', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const scope = scopeId.parse(c.req.query('scopeId'));
+  return c.json(await hostFor(c.env).exportScopeLocal(scope));
+});
+
 // A protected data route resolves the caller across the mounted adapters, then
 // getScope for the router-asserted node. No adapter matched → 401 (fail closed).
 async function stub(c: { env: Env; req: { raw: Request } }) {

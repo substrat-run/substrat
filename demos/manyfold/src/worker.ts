@@ -207,6 +207,12 @@ app.post('/internal/delete-scope', async (c) => {
   await hostFor(c.env).deleteScopeLocal(body.scopeId);
   return c.json({ deleted: body.scopeId });
 });
+// The full dump behind a governed `scope pull` (preview-and-snapshots.md §8): the one
+// /internal verb that deliberately moves scope bytes out; the control plane is the gate.
+app.get('/internal/export', async (c) => {
+  gatePlatform(c);
+  return c.json(await hostFor(c.env).exportScopeLocal(scopeId.parse(c.req.query('scopeId'))));
+});
 
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.
 async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
