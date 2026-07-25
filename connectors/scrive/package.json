@@ -8,7 +8,7 @@
     "url": "git+https://github.com/substrat-run/substrat.git",
     "directory": "connectors/scrive"
   },
-  "homepage": "https://github.com/substrat-run/substrat",
+  "homepage": "https://substrat.net/connectors/scrive",
   "publishConfig": {
     "access": "public"
   },

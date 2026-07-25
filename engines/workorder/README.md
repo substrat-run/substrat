@@ -41,7 +41,7 @@ host.defineOperation('acme/ticket-to-order', async (ctx, input) => {
 
 ## Documentation
 
-**https://substrat.ahlstrand.es/engines/workorder/** — the domain model and invariants, the
+**https://substrat.net/engines** — the domain model and invariants, the
 full operation/permission surface, event contracts, and how to compose or extend it.
 
 The docs site is the single source of truth; this README deliberately doesn't restate it.

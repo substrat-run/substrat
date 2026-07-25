@@ -8,7 +8,7 @@ modified, the contract changed, and that is a decision, not a patch.
 This package exports test *suites* (built on [Vitest](https://vitest.dev)); it runs
 nothing itself. Each adapter runs the suite from its own `test/` folder.
 
-**Full documentation: https://substrat.ahlstrand.es/reference/contract-tests**
+**Full documentation: https://substrat.net/reference/contract-tests**
 
 ## Usage
 

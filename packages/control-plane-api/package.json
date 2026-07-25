@@ -8,7 +8,7 @@
     "url": "git+https://github.com/substrat-run/substrat.git",
     "directory": "packages/control-plane-api"
   },
-  "homepage": "https://github.com/substrat-run/substrat",
+  "homepage": "https://substrat.net/platform/control-plane",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

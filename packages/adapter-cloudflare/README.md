@@ -10,7 +10,7 @@ and a stateless coordinator that mints capability stubs. Both adapters pass the 
 (decision 14), so a vertical developed and CI-tested on pure SQLite runs on Cloudflare with
 no code change.
 
-**Full documentation: https://substrat.ahlstrand.es/reference/adapter-cloudflare**
+**Full documentation: https://substrat.net/reference/adapter-cloudflare**
 
 ```sh
 pnpm add @substrat-run/adapter-cloudflare

@@ -8,7 +8,7 @@
     "url": "git+https://github.com/substrat-run/substrat.git",
     "directory": "packages/boundary-lint"
   },
-  "homepage": "https://github.com/substrat-run/substrat",
+  "homepage": "https://substrat.net/concepts/modules",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

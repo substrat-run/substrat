@@ -8,7 +8,7 @@ database for fail-closed scope addressing, and a kernel-stamped event outbox. It
 a mock: it is the adapter that local development and CI run on, and the reason the
 self-host/escrow story is literally true (single-node, but runnable).
 
-**Full documentation: https://substrat.ahlstrand.es/reference/adapter-sqlite**
+**Full documentation: https://substrat.net/reference/adapter-sqlite**
 
 ## Usage
 

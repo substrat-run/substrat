@@ -6,7 +6,7 @@ Reserves `npm create substrat` for the Substrat initializer.
 exits. It does not scaffold anything, because a stub that pretended to would be worse than
 nothing.
 
-To start a vertical today, follow the [getting started guide](https://substrat.ahlstrand.es/guide/getting-started).
+To start a vertical today, follow the [getting started guide](https://substrat.net/guide/getting-started).
 The packages are published and usable:
 
 ```sh
@@ -21,5 +21,5 @@ scope. Never `npm install substrat`.
 
 ---
 
-[Docs](https://substrat.ahlstrand.es) · [Repo](https://github.com/substrat-run/substrat) ·
+[Docs](https://substrat.net) · [Repo](https://github.com/substrat-run/substrat) ·
 Apache-2.0
