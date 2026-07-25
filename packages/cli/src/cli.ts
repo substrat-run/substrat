@@ -132,7 +132,7 @@ async function cmdPush(): Promise<void> {
   // Version defaults to the registry's latest, patch-bumped — no hand-tracking. --version wins.
   const version = flag('version') ?? (await nextVersion(controlPlaneUrl, header, slug, meta.versionSeed));
   console.log(`pushing ${slug}@${version}${name && name !== slug ? ` (${name})` : ''} …`);
-  const v = await push({ dir, slug, version, name, controlPlaneUrl, authHeader: header });
+  const v = await push({ dir, slug, version, name, envSpec: meta.envSpec, controlPlaneUrl, authHeader: header });
   console.log(`✓ pushed. version ${v.id} (${version}) is ${v.admission}; deploymentRef=${v.deploymentRef}`);
   console.log('  admit it in the console to let a scope bind it.');
 }

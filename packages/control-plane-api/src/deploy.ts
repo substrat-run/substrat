@@ -1,4 +1,4 @@
-import { z } from '@substrat-run/contracts';
+import { z, envVarSpec } from '@substrat-run/contracts';
 
 /**
  * The deploy seam (self-serve-deploy.md). A `substrat push` uploads a *built* worker
@@ -67,6 +67,9 @@ export const deployManifest = z.object({
   compatibilityFlags: z.array(z.string().min(1)).default([]),
   doClasses: z.array(z.string().min(1)).default([]),
   bindings: z.array(declaredBinding).default([]),
+  /** The vertical's declared env-spec (from its package.json `substrat.envSpec`), stored on
+   *  the registry so a host/console renders a config form for it. Optional + validated here. */
+  envSpec: z.array(envVarSpec).optional(),
   /** Computed by the builder's toolchain; what the promotion checkpoint compares. */
   digests: z.object({
     manifest: z.string().min(1),

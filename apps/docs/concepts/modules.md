@@ -101,6 +101,11 @@ code. That is what makes opt-in a single edit in the manifest: declare `envSpec`
 [Dashboard](/platform/dashboard) shows a settings form for the app automatically. It evolves
 with the manifest — re-registering a vertical refreshes its spec.
 
+For a **pushed** vertical, `substrat push` reads `envSpec` from the vertical's `package.json`
+`substrat` block (the same static, code-free source it reads `slug`/`name` from) and carries
+it in the deploy manifest — the CLI never loads the built module, so the declaration must be
+readable as data at push time.
+
 ::: tip Delivery depends on the app's shape
 A **standalone** app (its own worker script) receives these as worker secrets/vars at deploy.
 A **hosted** vertical (one script serving many tenants' scopes) can't use per-app worker

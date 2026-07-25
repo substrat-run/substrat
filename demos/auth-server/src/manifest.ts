@@ -7,8 +7,10 @@ import type { EnvVarSpec } from '@substrat-run/contracts';
  * its own secrets are per-deployment (unlike a hosted dispatch vertical, whose one script
  * serves many tenants and so takes per-tenant config through the connection store).
  *
- * Kept as the single source of truth for the auth server's config surface — the same keys
- * the DO reads off `this.env` (src/auth-do.ts) and the Node dev server reads from process.env.
+ * The runtime source for the auth server's config surface — the same keys the DO reads off
+ * `this.env` (src/auth-do.ts) and the Node dev server reads from process.env. It is MIRRORED
+ * in `package.json` `substrat.envSpec` (what `substrat push` carries to the registry, since it
+ * reads JSON not TS); `test/envspec.test.ts` fails the build if the two ever drift.
  */
 export const AUTH_SERVER_ENV: EnvVarSpec[] = [
   {

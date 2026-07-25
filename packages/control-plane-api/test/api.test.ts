@@ -803,6 +803,21 @@ describe('control-plane API — deploy', () => {
     expect(deployed.at(-1)!.bundle.compatibilityFlags).toEqual(['nodejs_compat']);
   });
 
+  it('carries a pushed vertical’s declared envSpec into the registry', async () => {
+    const envSpec = [
+      { key: 'API_TOKEN', description: 'Upstream API credential', secret: true, required: true },
+      { key: 'PUBLIC_ORIGIN', description: 'The public URL', required: false, secret: false },
+    ];
+    const res = await push('cfgdemo', form(manifest({ envSpec })));
+    expect(res.status).toBe(201);
+    // The registry now carries the spec — a defaulted, validated round-trip — so the
+    // dashboard renders a config form for this pushed vertical exactly like a builtin.
+    const registered = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'cfgdemo');
+    expect(registered?.envSpec).toBeDefined();
+    expect(registered?.envSpec?.map((s) => s.key)).toEqual(['API_TOKEN', 'PUBLIC_ORIGIN']);
+    expect(registered?.envSpec?.find((s) => s.key === 'API_TOKEN')?.secret).toBe(true);
+  });
+
   it('surfaces an upload failure as a 502 with detail, not a blank 500', async () => {
     const boom = createControlPlaneApi({
       host,

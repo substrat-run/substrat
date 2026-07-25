@@ -685,6 +685,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       name: manifest.name ?? slug,
       source: 'cli',
       ownerTenant: p.kind === 'builder' ? p.tenantId : (existingOwner ?? null),
+      // The vertical's declared config surface rides to the registry, so the dashboard
+      // renders a settings form for a pushed vertical exactly like a builtin.
+      ...(manifest.envSpec ? { envSpec: manifest.envSpec } : {}),
     });
     await admin.publishVersion(c.get('actor'), {
       id,

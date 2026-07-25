@@ -30,6 +30,9 @@ export interface PushOptions {
   slug: string;
   version: string;
   name?: string;
+  /** The vertical's declared env-spec (from package.json `substrat.envSpec`), carried to the
+   *  registry so the platform can render a config form for it. Validated control-plane-side. */
+  envSpec?: readonly unknown[];
   controlPlaneUrl: string;
   /** The auth header to send — a bearer session or an x-service-token (see config.resolveAuth). */
   authHeader: Record<string, string>;
@@ -93,6 +96,10 @@ export async function push(opts: PushOptions): Promise<{ id: string; admission: 
     compatibilityFlags,
     doClasses,
     bindings,
+    // The vertical's declared config surface, carried to the registry (control-plane-side
+    // validated) so the platform renders a settings form for it. Not part of any admission
+    // digest — it's metadata, not code.
+    ...(opts.envSpec ? { envSpec: opts.envSpec } : {}),
     digests: {
       manifest: await sha256(concat),
       permission: await sha256(Buffer.from(JSON.stringify(bindings))),
@@ -128,6 +135,9 @@ export interface VerticalMeta {
   name: string;
   /** package.json `version` — only a seed for the FIRST push of a brand-new slug. */
   versionSeed: string | undefined;
+  /** The vertical's declared env-spec, from package.json `substrat.envSpec` — the static,
+   *  code-free source the CLI can read at push time (like slug/name). Undefined if none. */
+  envSpec: readonly unknown[] | undefined;
 }
 
 /**
@@ -138,7 +148,7 @@ export interface VerticalMeta {
  * Returns empty strings when there is no package.json — the caller then requires flags.
  */
 export function readVerticalMeta(dir: string): VerticalMeta {
-  let pkg: { name?: string; version?: string; substrat?: { slug?: string; name?: string } } = {};
+  let pkg: { name?: string; version?: string; substrat?: { slug?: string; name?: string; envSpec?: unknown[] } } = {};
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg;
   } catch {
@@ -147,7 +157,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   const bare = (pkg.name ?? '').split('/').pop()?.replace(/^demo-/, '') ?? '';
   const slug = pkg.substrat?.slug ?? bare;
   const title = slug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  return { slug, name: pkg.substrat?.name ?? title, versionSeed: pkg.version };
+  return { slug, name: pkg.substrat?.name ?? title, versionSeed: pkg.version, envSpec: pkg.substrat?.envSpec };
 }
 
 function parseSemver(v: string): [number, number, number] | null {
