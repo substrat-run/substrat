@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/contract-tests",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "The suite every scope-host adapter must pass, forever (D-14)",
   "license": "AGPL-3.0-only",
   "repository": {

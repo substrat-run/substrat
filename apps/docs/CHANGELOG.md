@@ -1,5 +1,15 @@
 # @substrat-run/docs
 
+## 0.1.2
+
+### Patch Changes
+
+- e6f6f6c: ci: auto-deploy the platform apps — a changeset release deploys them to prod
+  (gated on `changesets.published`), and every green push to main deploys to a
+  shared test env (gated on `TEST_ENV_READY` until the test resources exist).
+  Adds `[env.test]` wrangler blocks + `cf:deploy:test` scripts and makes the
+  migration preflight `--env`-aware.
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/control-plane-api",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "HTTP surface over HostAdmin — the audited control-plane transport (control-plane.md §4.5)",
   "license": "AGPL-3.0-only",
   "repository": {

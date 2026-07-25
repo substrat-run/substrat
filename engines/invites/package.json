@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/engine-invites",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "Substrat engine: invitations — invite by verified hashed identifier, accept-required, non-enumerable",
   "license": "AGPL-3.0-only",
   "repository": {

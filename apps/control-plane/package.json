@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/control-plane",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "The shared control-plane deployment — ControlPlaneDO + the audited HTTP surface (first-flow.md §4, slice 1)",
   "type": "module",

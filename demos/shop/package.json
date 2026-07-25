@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-shop",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "private": true,
   "license": "Apache-2.0",
   "description": "E-commerce demo vertical (Kallkälla Kaffe) — see spec/concept.md",

@@ -1,5 +1,80 @@
 # @substrat-run/control-plane-api
 
+## 0.14.0
+
+### Minor Changes
+
+- 6a7768a: Add a declarative environment surface to the module manifest, carried on the registry.
+
+  - **`envVarSpec` / `EnvVarSpec`** and an optional **`envSpec`** block on `moduleManifest`: a
+    vertical declares the environment it needs — key, label, description, placeholder,
+    `required`, `secret`, `default`, `group` — self-describing so a host or console can render a
+    config form and validate required keys before deploy. Additive-only (decision 28).
+  - **`resolveEnvSpec(spec, raw)`** resolves a declared spec against a raw environment (a Worker
+    `env`, `process.env`, …): it reads only the declared keys (so the manifest is the single
+    source of what an app consumes), applies each `default`, and reports absent `required` keys
+    without throwing.
+  - **The registry carries a vertical's `envSpec`.** A new `env_spec` column is added
+    additively to the vertical registry in both the SQLite and Cloudflare adapters;
+    `registerVertical` stores the spec and an otherwise-identical re-registration refreshes it.
+    This lets a host/console render a config form for any registered vertical — a bundled
+    builtin or a pushed builder vertical — without loading its code.
+  - **The push flow carries it.** The `deployManifest` accepts an optional `envSpec`, and the
+    `/verticals/:slug/deploy` handler passes it through `registerVertical` — so a pushed
+    vertical's declared config reaches the registry (and the dashboard form) like a builtin's.
+
+- a1c7649: **A read-only "Data" tab: browse an app's own database from the dashboard.**
+
+  Cashes in the seam kernel-design §5.4 reserved as the _admin-query RPC_ — a grant "is a
+  tuple in the scope's own database and needs an admin-query RPC" — as two narrow,
+  read-only `HostAdmin` primitives, `listScopeTables` and `readScopeTable`, and surfaces
+  them as a **Data** tab on the app detail view (list tables, page through rows).
+
+  Read-only and table-shaped **by construction**: the caller picks a table from the live
+  schema plus a bounded page — there is no user-supplied SQL, so there is no write path to
+  forge the spine and no injection surface. The `_substrat_*` spine reads back too, flagged
+  `system` so the UI groups it apart from the vertical's own tables. Every read is audited
+  (K-24) and fails closed on a mismatched `(tenantId, scopeId)` pair (K-3).
+
+  **Reaches the data where it actually lives.** One dashboard app = one scope = one
+  Durable Object = one database. In embedded mode the dashboard's own host owns that DO, so
+  it reads directly. In connected/prod the scope's data DO lives in the _vertical's own WfP
+  deployment_ (K-31), not the control plane's own (empty-module) scope host — so the
+  control-plane `/tables` route **delegates to the vertical** through `VerticalClient`
+  (`GET /internal/tables`), the mirror of `provisionInstance`. `getScopeRecord` does the
+  K-3 check + audit and names the backing vertical; the same `verticals[slug] ??
+resolveVertical` resolution provisioning uses reaches it; a co-located host falls back to
+  reading its own scope DB. The dashboard never emits an empty `200` — a null from the
+  platform surfaces as a clear `502` instead of an "Unexpected end of JSON input".
+
+  Additive throughout: new optional `HostAdmin` methods implemented by both adapters (with
+  a shared contract-tests suite), new `contracts` introspection schemas, and
+  `/internal/tables[/:table]` on the vertical workers (Meridian, Callout). Editing rows and
+  an arbitrary read-only SQL console are deliberately out of scope (fast-follows).
+
+### Patch Changes
+
+- f4ad677: **Data view: read a scope's BOUND version, not the prod channel.** The connected-mode
+  `/tenants/:t/scopes/:s/tables` introspection route delegated to the vertical resolved by
+  the vertical's `prod` channel. But each `substrat push` is a separate Workers-for-
+  Platforms script with its own Durable Object namespace, so a scope's data DO lives in the
+  deployment of the version it was **bound** to (`scope.verticalVersionId`) — the same one
+  the router serves it from. Once an installed app lagged prod, introspection resolved to
+  the prod deployment and read an empty DO.
+
+  Adds an optional `resolveVerticalVersion(slug, versionId, actor)` to `ControlPlaneApiOptions`;
+  the route now prefers it (keyed by the scope's bound version), falling back to the
+  prod-channel `resolveVertical` for a scope with no bound version, then to the host's own
+  scope DB. Behaviour is unchanged for a freshly-installed app (bound == prod). Closes #220.
+
+- Updated dependencies [6a7768a]
+- Updated dependencies [1022c15]
+- Updated dependencies [1022c15]
+- Updated dependencies [1022c15]
+- Updated dependencies [1022c15]
+  - @substrat-run/contracts@0.14.0
+  - @substrat-run/kernel@0.14.0
+
 ## 0.13.0
 
 ### Patch Changes

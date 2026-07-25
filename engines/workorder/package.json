@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/engine-workorder",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Substrat engine: work orders + time + material — one engine, one state machine, append-only reporting",
   "license": "AGPL-3.0-only",
   "repository": {
