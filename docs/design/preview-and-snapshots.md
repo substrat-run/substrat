@@ -239,9 +239,9 @@ over verticals, but reads/writes domain data across the boundary only through §
 3. Does a same-scope **code-only canary** (§2, top row) earn a `hostnames.vertical_version_id`
    override, or do we always fork? (Override reintroduces the "code B on data A" hazard unless
    guarded on `migration_digest` equality — leaning: always fork.)
-4. §9 trust line: is platform scope-storage-lifecycle authority (`snapshot`/`delete-scope` over
-   `/internal`) acceptable as an extension of `provisionInstance`, or does it need per-vertical
-   opt-in / builder consent?
+4. ~~§9 trust line~~ **Decided (2026-07-25):** platform scope-storage-lifecycle authority
+   (`snapshot`/`delete-scope` over `/internal`) is accepted as an extension of
+   `provisionInstance` — infrastructure, not domain; no per-vertical opt-in.
 5. Cross-version preview: the dump transits the control plane between deployments — encrypted in
    flight, never at rest? Its own residency review under §6.
 6. Needs a decision-log number in [master-plan.md](../master-plan.md).
