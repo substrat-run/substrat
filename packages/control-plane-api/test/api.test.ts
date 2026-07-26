@@ -239,6 +239,26 @@ describe('control-plane API', () => {
     expect((await req(`/tenants/${t2}/scopes/${s1}/tables`)).status).toBe(404);
   });
 
+  it('runs a read-only console query and maps the gate refusal to 400 (#219)', async () => {
+    const queryRes = await json(`/tenants/${t1}/scopes/${s1}/query`, 'POST', {
+      sql: 'SELECT version FROM _substrat_migrations ORDER BY version',
+    });
+    expect(queryRes.status).toBe(200);
+    const result = (await queryRes.json()) as { columns: string[]; rows: unknown[][]; truncated: boolean };
+    expect(result.columns).toEqual(['version']);
+    expect(result.truncated).toBe(false);
+
+    // A write shape is the GATE's refusal — a 400 naming the console, never a 500.
+    const writeRes = await json(`/tenants/${t1}/scopes/${s1}/query`, 'POST', {
+      sql: 'DELETE FROM _substrat_migrations',
+    });
+    expect(writeRes.status).toBe(400);
+    expect(((await writeRes.json()) as { error: string }).error).toContain('read-only console');
+
+    // Cross-tenant fails closed (K-3), same as the table reads.
+    expect((await json(`/tenants/${t2}/scopes/${s1}/query`, 'POST', { sql: 'SELECT 1' })).status).toBe(404);
+  });
+
   it('delegates introspection to the vertical that owns the scope (connected mode)', async () => {
     // A scope whose data lives in a VERTICAL's deployment, not this control plane's own
     // (empty-module) scope host — the real prod shape (K-31). The route must ask the vertical.

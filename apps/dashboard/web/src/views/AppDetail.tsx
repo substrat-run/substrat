@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type Deployment, type ScopeTable, type ScopeTablePage, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppEvent, type Deployment, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
 import { DEV_MOCK, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -540,18 +540,132 @@ function DataBrowser({ app }: { app: AppRow }) {
           <TableGroup label="Tables" tables={own} selected={selected} onPick={pickTable} />
           {system.length > 0 && <TableGroup label="System" tables={system} selected={selected} onPick={pickTable} />}
         </div>
-        <div style={{ ...card, overflow: 'hidden' }}>
-          {!selected ? (
-            <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Select a table.</div>
-          ) : pageErr ? (
-            <div style={{ padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load {selected} — {pageErr}</div>
-          ) : !page ? (
-            <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading {selected}…</div>
-          ) : (
-            <TablePage page={page} onPrev={() => setOffset((o) => Math.max(0, o - DATA_PAGE))} onNext={() => setOffset((o) => o + DATA_PAGE)} />
-          )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+          <SqlConsole app={app} />
+          <div style={{ ...card, overflow: 'hidden' }}>
+            {!selected ? (
+              <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Select a table.</div>
+            ) : pageErr ? (
+              <div style={{ padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load {selected} — {pageErr}</div>
+            ) : !page ? (
+              <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading {selected}…</div>
+            ) : (
+              <TablePage page={page} onPrev={() => setOffset((o) => Math.max(0, o - DATA_PAGE))} onNext={() => setOffset((o) => o + DATA_PAGE)} />
+            )}
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The SQL console (#219) — one read-only statement against the app's live database.
+ * Collapsed by default: the table browser answers most questions; the console is for
+ * the join or filter it can't. Read-only is ENFORCED below the seam (the platform
+ * rejects any write shape and rolls back regardless), so the worst a query can do here
+ * is come back truncated or refused with the gate's message.
+ */
+function SqlConsole({ app }: { app: AppRow }) {
+  const [open, setOpen] = useState(false);
+  const [sql, setSql] = useState('');
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<ScopeQueryResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const run = () => {
+    if (!sql.trim() || running) return;
+    if (DEV_MOCK) {
+      setErr(null);
+      setResult({ columns: ['note'], rows: [['The mock preview has no live database — run against a real app.']], truncated: false });
+      return;
+    }
+    setRunning(true);
+    setErr(null);
+    api
+      .appQuery(app.app_scope_id, sql)
+      .then((r) => setResult(r))
+      .catch((e) => {
+        setResult(null);
+        setErr(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setRunning(false));
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        style={{ ...card, border: '1px dashed var(--border-default)', background: 'transparent', padding: '10px 14px', fontSize: 12.5, color: 'var(--text-secondary)', cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font-mono)' }}
+      >
+        &gt;_ SQL console — run a read-only SELECT…
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ ...card, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-primary)' }}>SQL console</span>
+        <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>read-only · one SELECT · audited</span>
+        <div style={{ flex: 1 }} />
+        <button type="button" onClick={() => setOpen(false)} style={pagerBtn(true)}>Hide</button>
+      </div>
+      <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <textarea
+          value={sql}
+          onChange={(e) => setSql(e.target.value)}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault();
+              run();
+            }
+          }}
+          placeholder="SELECT … FROM … WHERE …"
+          rows={3}
+          spellCheck={false}
+          style={{ width: '100%', resize: 'vertical', border: '1px solid var(--border-default)', borderRadius: 6, background: 'var(--surface-card)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 12.5, padding: '8px 10px', boxSizing: 'border-box' }}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button type="button" onClick={run} disabled={!sql.trim() || running} style={{ ...pagerBtn(Boolean(sql.trim()) && !running), fontWeight: 600 }}>
+            {running ? 'Running…' : 'Run'}
+          </button>
+          <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>⌘⏎ to run</span>
+          {result?.truncated && (
+            <span style={{ fontSize: 11.5, color: 'var(--status-warning-fg, var(--text-secondary))' }}>Showing the first {result.rows.length} rows — narrow the query for the rest.</span>
+          )}
+        </div>
+        {err && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)', fontFamily: 'var(--font-mono)' }}>{err}</div>}
+      </div>
+      {result && !err && (
+        result.columns.length === 0 || result.rows.length === 0 ? (
+          <div style={{ padding: '0 14px 14px', fontSize: 13, color: 'var(--text-tertiary)' }}>No rows.</div>
+        ) : (
+          <div style={{ overflowX: 'auto', borderTop: '1px solid var(--border-subtle)' }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {result.columns.map((col, ci) => (
+                    <th key={ci} style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: 10.5, color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)', whiteSpace: 'nowrap' }}>{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {result.rows.map((row, i) => (
+                  <tr key={i}>
+                    {row.map((cell, j) => (
+                      <td key={j} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', color: cell == null ? 'var(--text-tertiary)' : 'var(--text-primary)', whiteSpace: 'nowrap', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={cell == null ? 'null' : String(cell)}>
+                        {cell == null ? 'null' : String(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
     </div>
   );
 }

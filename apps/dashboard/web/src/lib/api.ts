@@ -207,6 +207,13 @@ export interface ScopeTablePage {
   offset: number;
 }
 
+/** A read-only console query's result (mirrors ScopeQueryResult). `truncated` = row cap hit. */
+export interface ScopeQueryResult {
+  columns: string[];
+  rows: unknown[][];
+  truncated: boolean;
+}
+
 /** A declared env var for a vertical — drives the Env form (placeholder + description). */
 export interface EnvVarSpec {
   key: string;
@@ -353,6 +360,13 @@ export const api = {
       `/apps/${encodeURIComponent(scopeId)}/tables/${encodeURIComponent(table)}${qs ? `?${qs}` : ''}`,
     );
   },
+  /** One read-only SQL statement against the app's database (the Data tab's console). */
+  appQuery: (scopeId: string, sql: string) =>
+    call<ScopeQueryResult>(`/apps/${encodeURIComponent(scopeId)}/query`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sql }),
+    }),
   /** Move the app to its vertical's current prod version (rebind the scope). No-op if already current. */
   updateApp: (scopeId: string, opts?: { snapshot?: boolean }) =>
     call<UpdateResult>(`/apps/${encodeURIComponent(scopeId)}/update`, {

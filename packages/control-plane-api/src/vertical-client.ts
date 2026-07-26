@@ -1,8 +1,10 @@
 import type {
   PrincipalId,
+  QueryScopeInput,
   ReadScopeTableInput,
   ScopeDumpTable,
   ScopeId,
+  ScopeQueryResult,
   ScopeTable,
   ScopeTablePage,
   TenantId,
@@ -142,6 +144,17 @@ export class VerticalClient {
     return this.getInternal<ScopeTablePage>(
       `/internal/tables/${encodeURIComponent(input.table)}?${q}`,
     );
+  }
+
+  /**
+   * One read-only SQL statement against the scope's DB — the console (#219). The
+   * vertical enforces read-only-ness in its own deployment (the kernel gate + the
+   * DO's rolled-back transaction); a vertical that cannot answer safely (e.g. one
+   * that redacts secret columns on table reads) refuses with its own status, which
+   * the ControlPlaneError relays verbatim.
+   */
+  async queryScope(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
+    return this.postInternal<ScopeQueryResult>('/internal/query', { scopeId, sql: input.sql }, 'query');
   }
 
   /**

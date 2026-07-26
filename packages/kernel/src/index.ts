@@ -41,6 +41,7 @@ export {
 export { asPrincipal } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
 export { ulid } from './ulid.js';
+export { assertReadOnlyQuery } from './read-only-sql.js';
 export { readRoutedNode, RouterAssertionError } from './routed-node.js';
 export type { RoutedNode, HeaderReader } from './routed-node.js';
 export {

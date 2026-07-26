@@ -1,7 +1,9 @@
 import type {
+  QueryScopeInput,
   ReadScopeTableInput,
   Scope,
   ScopeId,
+  ScopeQueryResult,
   ScopeTable,
   ScopeTablePage,
   Tenant,
@@ -164,6 +166,18 @@ export class ControlPlaneClient {
     return this.call(
       `/tenants/${tenantId}/scopes/${scopeId}/tables/${encodeURIComponent(input.table)}?${q}`,
     );
+  }
+
+  /** One read-only SQL statement against the scope's database — the console (#219). */
+  queryScope(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: QueryScopeInput,
+  ): Promise<ScopeQueryResult> {
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/query`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 
   /**

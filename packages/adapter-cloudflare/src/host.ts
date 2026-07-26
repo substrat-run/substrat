@@ -56,6 +56,7 @@ import {
   type Vertical,
   type VerticalVersion,
   type ResolvedIdentity,
+  type QueryScopeInput,
   type ReadScopeTableInput,
   type RoleAssignment,
   type RoleDefinition,
@@ -65,6 +66,7 @@ import {
   type ScopeId,
   type ScopeStatus,
   type ScopeTable,
+  type ScopeQueryResult,
   type ScopeTablePage,
   type Tenant,
   type TenantId,
@@ -413,6 +415,8 @@ interface ScopeStubRpc {
   /** Read-only introspection of this scope's DB (§5.4 admin-query RPC). */
   introspectTables(): Promise<ScopeTable[]>;
   introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage>;
+  /** One read-only SQL statement, gated + rolled back inside the DO (#219). */
+  introspectQuery(sql: string): Promise<ScopeQueryResult>;
   /** Complete logical dump of this scope's DB (preview-and-snapshots.md §3). */
   exportDump(): Promise<ScopeDumpTable[]>;
   /** Load a dump into this (freshly-provisioned) scope — the fork write side. */
@@ -730,6 +734,11 @@ export class CloudflareScopeHost implements ScopeHost {
 
   async introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
     return this.scopeStub(scopeId).introspectTable(input.table, input.limit, input.offset);
+  }
+
+  /** The SQL console's CP-less path (#219) — same trust line as the pair above. */
+  async introspectScopeQuery(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
+    return this.scopeStub(scopeId).introspectQuery(input.sql);
   }
 
   /**
@@ -1794,6 +1803,20 @@ export class CloudflareScopeHost implements ScopeHost {
           page.rows.length,
         );
         return page;
+      },
+      queryScope: async (
+        actor,
+        tenantId,
+        scopeId,
+        input: QueryScopeInput,
+      ): Promise<ScopeQueryResult> => {
+        const row = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        const result = await this.scopeStub(scopeId).introspectQuery(input.sql);
+        // The statement is the logged argument: the access log is the evidence trail,
+        // and for a console read the SQL is the whole story.
+        await this.recordAccess(actor, 'queryScope', { tenantId, scopeId }, { sql: input.sql }, result.rows.length);
+        return result;
       },
       exportScope: async (actor, tenantId, scopeId): Promise<ScopeDump> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO, exactly

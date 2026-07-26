@@ -16,7 +16,7 @@
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, readScopeTableInput, z } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, z } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import {
   assertPlatformCall,
@@ -323,6 +323,27 @@ app.get('/internal/tables/:table', async (c) => {
     offset: c.req.query('offset') ? Number(c.req.query('offset')) : undefined,
   });
   return c.json(await hostFor(c.env).introspectScopeTable(scope, input));
+});
+
+// The SQL console (#219): one read-only statement, enforced in the DO (the kernel's
+// textual gate + a transaction that always rolls back). The gate's refusal is the
+// caller's mistake, not this worker's fault — 400, relayed verbatim by the platform.
+app.post('/internal/query', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const body = queryScopeInput.extend({ scopeId }).parse(await c.req.json());
+  try {
+    return c.json(await hostFor(c.env).introspectScopeQuery(body.scopeId, { sql: body.sql }));
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('read-only console')) {
+      throw new HTTPException(400, { message: e.message });
+    }
+    throw e;
+  }
 });
 
 // Scope-storage lifecycle (preview-and-snapshots.md §9): copy a scope into a sibling

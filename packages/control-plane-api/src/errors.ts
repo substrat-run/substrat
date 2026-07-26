@@ -59,6 +59,9 @@ const STATUS_PATTERNS: readonly [RegExp, ContentfulStatusCode][] = [
   [/unknown scope /, 404],
   // A read-only introspection read (§5.4) for a table the scope's schema does not have.
   [/unknown table /, 404],
+  // The SQL console's gate (#219) refused the statement — a malformed request, not a
+  // server fault. The prefix is pinned by the contract suite against both adapters.
+  [/read-only console/, 400],
   [/unknown vertical /, 404],
   [/unknown version /, 404],
   [/scope has no tenant record/, 404],

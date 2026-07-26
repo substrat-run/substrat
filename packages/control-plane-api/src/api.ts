@@ -9,6 +9,7 @@ import {
   promotionAcknowledgement,
   provisionableJurisdiction,
   publishVersionInput,
+  queryScopeInput,
   readScopeTableInput,
   registerVerticalInput,
   scopeId as scopeIdSchema,
@@ -451,6 +452,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       vertical
         ? await vertical.readScopeTable(scopeId, input)
         : await admin.readScopeTable(c.get('actor'), tenantId, scopeId, input),
+    );
+  });
+
+  // The SQL console (#219): one read-only statement, POSTed because SQL does not
+  // belong in a URL. Same delegation as the table reads; the gate's refusal maps to
+  // 400 (errors.ts), and a vertical that cannot answer safely (auth-server, whose
+  // DO redacts secret columns on table reads — arbitrary SQL would walk around the
+  // redaction) refuses via its own 501, relayed verbatim.
+  app.post('/tenants/:tenantId/scopes/:scopeId/query', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = queryScopeInput.parse(await c.req.json());
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.queryScope(scopeId, input)
+        : await admin.queryScope(c.get('actor'), tenantId, scopeId, input),
     );
   });
 
