@@ -12,6 +12,7 @@ export {
   updateApp,
   type UpdateAppResult,
   reconcileRoles,
+  ensureRosterSeeded,
   MODULES,
   ROLES,
   VERTICAL,

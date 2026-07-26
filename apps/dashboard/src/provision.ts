@@ -1,4 +1,5 @@
 import {
+  orgId as orgIdSchema,
   platformActorId,
   scopeId as scopeIdSchema,
   type PermissionKey,
@@ -61,6 +62,60 @@ export interface DashboardNode {
   tenantId: TenantId;
   scopeId: ScopeId;
   principal: PrincipalId;
+}
+
+/**
+ * Teams created after this instant (ULID time prefix, 2026-07-27T00:00Z) were seeded
+ * at creation (`createTeam` invokes `dashboard/init-team`), so `ensureRosterSeeded`
+ * skips them on the tenant id alone — no reads. Tenant ids are ULIDs, so creation
+ * time is lexically comparable.
+ */
+const ROSTER_EPOCH = '01KYGDY300';
+
+/** Tenants already checked (or healed) by this isolate — one roster read per team. */
+const rosterChecked = new Set<string>();
+
+/**
+ * Seed a pre-roster team's `dashboard_members` on its next resolve. Teams provisioned
+ * before the roster existed (#191, 2026-07-23) have the tables (migrations ran) but
+ * no rows — no owner row — so every roster-gated move (delete the organization, the
+ * Members tab, invites) refuses its own owner with "permission denied". Same
+ * self-heal shape as `reconcileRoles` above: run on the resolve path, gated so it is
+ * a no-op everywhere except the legacy teams it exists for.
+ *
+ * The resolving caller becomes the owner row. That is safe because pre-roster teams
+ * were single-user by construction (multi-team + invites shipped WITH the roster),
+ * and `init-team` is a guarded singleton — a team that already has a `dashboard_team`
+ * row is left untouched, so a roster that is empty because everyone LEFT is never
+ * resurrected. Legacy teams also predate the invites composition, so the (idempotent)
+ * entitlement + org are brought along — healing invites, not just deletion.
+ *
+ * Best-effort: a heal failure never breaks the resolve; the memo is dropped so the
+ * next request retries.
+ */
+export async function ensureRosterSeeded(
+  host: ScopeHost,
+  staff: PlatformActorId,
+  node: DashboardNode,
+  ownerEmail: string,
+): Promise<void> {
+  if (node.tenantId >= ROSTER_EPOCH || rosterChecked.has(node.tenantId)) return;
+  rosterChecked.add(node.tenantId);
+  try {
+    const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
+    const members = (await scope.invoke('dashboard/list-members', {})) as unknown[];
+    if (members.length > 0) return;
+    await host.admin.grantEntitlement(staff, node.tenantId, 'invites');
+    let org = (await host.admin.listOrgs(staff, node.tenantId))[0]?.id;
+    if (!org) {
+      org = orgIdSchema.parse(ulid());
+      const tenant = await host.admin.getTenant(staff, node.tenantId);
+      await host.admin.createOrg(staff, { id: org, tenantId: node.tenantId, slug: 'team', name: tenant?.name ?? 'team' });
+    }
+    await scope.invoke('dashboard/init-team', { orgId: org, ownerEmail });
+  } catch {
+    rosterChecked.delete(node.tenantId);
+  }
 }
 
 /**
