@@ -112,4 +112,88 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}/scopes/${S}/version`);
     expect((calls[0]!.body as { versionId: string }).versionId).toBe('01JVERSION');
   });
+
+  // -- observability narrowing (design/observability.md §5, view 2) ----------
+  // The plane's observability routes are staff-wide over the service token, so the
+  // owner filter HERE is the entire tenant boundary for metrics and logs.
+
+  const OTHER = tenantId.parse(ulid());
+
+  /** A fetch harness with per-path payloads, for reads that fan out. */
+  function routedHarness(routes: Record<string, unknown>) {
+    const calls: string[] = [];
+    const fetch = (async (url: string | URL | Request) => {
+      const u = String(url);
+      calls.push(u);
+      const path = u.replace('https://cp/api', '');
+      const hit = Object.entries(routes).find(([p]) => path === p || path.startsWith(`${p}?`));
+      return new Response(JSON.stringify(hit ? hit[1] : []), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const cp = new TenantNarrowedControlPlane({
+      baseUrl: 'https://cp/api',
+      actor: '01JZ000000000000000000TEST',
+      serviceToken: 'secret-token',
+      tenantId: T,
+      fetch,
+    });
+    return { cp, calls };
+  }
+
+  const registry = {
+    '/verticals': [
+      { slug: 'acme/helpdesk', name: 'Helpdesk', source: 'cli', ownerTenant: T },
+      { slug: 'rival/crm', name: 'CRM', source: 'cli', ownerTenant: OTHER },
+    ],
+    '/verticals/acme%2Fhelpdesk/versions': [
+      { id: 'v1', version: '0.1.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-v1', createdAt: 'now' },
+      { id: 'v0', version: '0.0.9', admission: 'admitted', admissionNote: null, deploymentRef: null, createdAt: 'now' },
+    ],
+  };
+
+  it('observabilityMetrics keeps only rows for OWNED services, mapped back to (vertical, version)', async () => {
+    const { cp, calls } = routedHarness({
+      ...registry,
+      '/observability/metrics': [
+        { service: 'acme-helpdesk-v1', requests: 10, errors: 1, subrequests: 20, cpuTimeP50: 900, cpuTimeP99: 4000 },
+        // Another tenant's service in the staff-wide answer — must be dropped, and
+        // never surfaced even as an opaque ref.
+        { service: 'rival-crm-v9', requests: 99, errors: 0, subrequests: 0, cpuTimeP50: 1, cpuTimeP99: 2 },
+      ],
+    });
+    const rows = await cp.observabilityMetrics(24);
+    expect(rows).toEqual([
+      {
+        service: 'acme-helpdesk-v1',
+        vertical: 'acme/helpdesk',
+        version: '0.1.0',
+        requests: 10,
+        errors: 1,
+        subrequests: 20,
+        cpuTimeP50: 900,
+        cpuTimeP99: 4000,
+      },
+    ]);
+    // Only the OWN verticals' versions were enumerated — never the rival's.
+    expect(calls.some((u) => u.includes('rival'))).toBe(false);
+  });
+
+  it('observabilityLogs answers [] for an unowned service WITHOUT asking the plane', async () => {
+    const { cp, calls } = routedHarness(registry);
+    expect(await cp.observabilityLogs({ service: 'rival-crm-v9' })).toEqual([]);
+    // The ownership check runs first — the staff-wide log query was never issued.
+    expect(calls.some((u) => u.includes('/observability/logs'))).toBe(false);
+  });
+
+  it('observabilityLogs queries an owned service with the narrowing params', async () => {
+    const { cp, calls } = routedHarness({ ...registry, '/observability/logs': [] });
+    await cp.observabilityLogs({ service: 'acme-helpdesk-v1', level: 'error', hours: 24, limit: 50 });
+    const logCall = calls.find((u) => u.includes('/observability/logs'));
+    expect(logCall).toContain('service=acme-helpdesk-v1');
+    expect(logCall).toContain('level=error');
+    expect(logCall).toContain('hours=24');
+    expect(logCall).toContain('limit=50');
+  });
 });

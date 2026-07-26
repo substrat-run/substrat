@@ -257,6 +257,28 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
 
+/** Invocation aggregates for one deployed version of a team vertical (last N hours). */
+export interface ObservabilityRow {
+  vertical: string;
+  version: string;
+  service: string;
+  requests: number;
+  errors: number;
+  subrequests: number;
+  /** Per-request CPU time quantiles, microseconds. */
+  cpuTimeP50: number;
+  cpuTimeP99: number;
+}
+
+/** One recent log event from a team vertical's deployed service. */
+export interface ObservabilityLogEvent {
+  timestamp: number | null;
+  level: string | null;
+  message: string | null;
+  service: string | null;
+  outcome: string | null;
+}
+
 export const api = {
   /** `null` when there is no session (the worker answers 401); onboarding when teamless. */
   me: async (): Promise<MeResult | null> => {
@@ -365,6 +387,18 @@ export const api = {
   deleteAppEnv: (scopeId: string, key: string) =>
     call<void>(`/apps/${encodeURIComponent(scopeId)}/env/${encodeURIComponent(key)}`, { method: 'DELETE' }),
   listDeployments: () => call<Deployment[]>('/deployments'),
+
+  // -- observability (design/observability.md §5, view 2) -------------------
+  // Metrics/logs for THIS team's pushed verticals only — the worker narrows by
+  // owned deployment refs. 501 = the platform has no observability backend.
+  observabilityMetrics: (hours = 24) => call<ObservabilityRow[]>(`/observability/metrics?hours=${hours}`),
+  observabilityLogs: (q: { service: string; level?: string; hours?: number; limit?: number }) => {
+    const p = new URLSearchParams({ service: q.service });
+    if (q.level) p.set('level', q.level);
+    if (q.hours) p.set('hours', String(q.hours));
+    if (q.limit) p.set('limit', String(q.limit));
+    return call<ObservabilityLogEvent[]>(`/observability/logs?${p.toString()}`);
+  },
   /** The tenant's GitHub-import state — connection status + the repos it can see. */
   gitRepos: () => call<GitReposResult>('/github/repos'),
   /** A repo's branches, for the import step's branch picker. */

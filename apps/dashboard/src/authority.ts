@@ -244,6 +244,74 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * Every deployed service ref belonging to THIS tenant's verticals, mapped back to
+   * (vertical, version). The ownership universe for the observability reads below:
+   * a ref outside this map does not exist as far as this tenant is concerned.
+   */
+  private async ownedServiceRefs(): Promise<Map<string, { vertical: string; version: string }>> {
+    const owned = new Map<string, { vertical: string; version: string }>();
+    for (const v of await this.listVerticals()) {
+      for (const ver of await this.listVersions(v.slug)) {
+        if (ver.deploymentRef) owned.set(ver.deploymentRef, { vertical: v.slug, version: ver.version });
+      }
+    }
+    return owned;
+  }
+
+  /**
+   * Invocation metrics for this tenant's pushed verticals (design/observability.md §5,
+   * view 2). The plane's `/observability/metrics` is staff-wide over the service token,
+   * so the owner-narrowing is here — same posture as `listVerticals`: rows are kept only
+   * for services that are a version of a vertical this tenant owns, and each is mapped
+   * back to (vertical, version) so the UI never shows a bare deployment ref.
+   * Throws `ControlPlaneError(501)` when the plane has no observability backend —
+   * callers surface "not available", never an empty chart pretending to be zero traffic.
+   */
+  async observabilityMetrics(hours: number): Promise<
+    Array<{
+      vertical: string;
+      version: string;
+      service: string;
+      requests: number;
+      errors: number;
+      subrequests: number;
+      cpuTimeP50: number;
+      cpuTimeP99: number;
+    }>
+  > {
+    const owned = await this.ownedServiceRefs();
+    if (owned.size === 0) return [];
+    const all =
+      (await this.call<
+        Array<{ service: string; requests: number; errors: number; subrequests: number; cpuTimeP50: number; cpuTimeP99: number }>
+      >(`/observability/metrics?hours=${hours}`)) ?? [];
+    return all.filter((r) => owned.has(r.service)).map((r) => ({ ...r, ...owned.get(r.service)! }));
+  }
+
+  /**
+   * Recent log events for ONE owned service. Ownership is checked BEFORE the plane is
+   * asked — an unowned ref must never reach the staff-wide log query, and the answer
+   * for one is `[]`, indistinguishable from a service with no logs (existence hiding,
+   * the same property `listVerticals` narrowing gives the registry).
+   */
+  async observabilityLogs(input: {
+    service: string;
+    level?: string;
+    hours?: number;
+    limit?: number;
+  }): Promise<
+    Array<{ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null }>
+  > {
+    const owned = await this.ownedServiceRefs();
+    if (!owned.has(input.service)) return [];
+    const q = new URLSearchParams({ service: input.service });
+    if (input.level) q.set('level', input.level);
+    if (input.hours) q.set('hours', String(input.hours));
+    if (input.limit) q.set('limit', String(input.limit));
+    return (await this.call(`/observability/logs?${q.toString()}`)) ?? [];
+  }
+
+  /**
    * Point a channel at a version (builder-plane.md Phase 4). The dashboard only ever calls
    * this for `dev`/`staging` — `prod` stays a staff decision (model B), enforced at the
    * worker endpoint. Over the service token the shared plane treats this as a staff

@@ -31,6 +31,7 @@ import { maskDump } from './mask.js';
 import { assertSandboxContract, deployManifest, deploymentRefFor } from './deploy.js';
 import type { DeployVerticalFn } from './deploy.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
+import type { ObservabilityReader } from './observability.js';
 
 export interface ControlPlaneApiOptions {
   host: ScopeHost;
@@ -94,6 +95,16 @@ export interface ControlPlaneApiOptions {
    * token; set once, out of routine rotation (rotating it revokes every issued token).
    */
   pushTokenSecret?: string;
+  /**
+   * Cloudflare-native observability reads (design/observability.md §4.1) —
+   * host-injected like `deployVertical`, so this package holds no credential and the
+   * Cloudflare token never leaves the platform (D-34). Absent ⇒ the observability
+   * routes 501. Staff-only for now: the routes are deliberately NOT in
+   * `BUILDER_ROUTES` — the builder view needs owner-narrowing (only scripts whose
+   * registry `ownerTenant` is the caller's) before it can be opened, and default-deny
+   * means forgetting that costs a feature, never a leak.
+   */
+  observability?: ObservabilityReader;
 }
 
 // `actor` is the audited subject for every HostAdmin call (staff or builder alike).
@@ -986,6 +997,42 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     const version = (await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id);
     return c.json(version, 201);
+  });
+
+  // -- observability (design/observability.md §4.1) --------------------------
+  // Proxied Cloudflare-native reads: the console's fleet view and (later, owner-
+  // narrowed) the dashboard's builder view. STAFF-ONLY — not in BUILDER_ROUTES; see
+  // the option's doc for why. Tier-3 numbers (master-plan §5.3): sampled, approximate,
+  // never money.
+
+  app.get('/observability/metrics', async (c) => {
+    if (!options.observability) {
+      return c.json({ error: 'observability is not configured on this control plane' }, 501);
+    }
+    const { hours } = z
+      .object({ hours: z.coerce.number().int().min(1).max(72).default(24) })
+      .parse({ hours: c.req.query('hours') });
+    return c.json(await options.observability.serviceMetrics({ hours }));
+  });
+
+  app.get('/observability/logs', async (c) => {
+    if (!options.observability) {
+      return c.json({ error: 'observability is not configured on this control plane' }, 501);
+    }
+    const input = z
+      .object({
+        service: z.string().min(1).max(200).optional(),
+        level: z.enum(['log', 'info', 'warn', 'error', 'debug']).optional(),
+        hours: z.coerce.number().int().min(1).max(72).default(1),
+        limit: z.coerce.number().int().min(1).max(500).default(100),
+      })
+      .parse({
+        service: c.req.query('service') || undefined,
+        level: c.req.query('level') || undefined,
+        hours: c.req.query('hours'),
+        limit: c.req.query('limit'),
+      });
+    return c.json(await options.observability.recentLogs(input));
   });
 
   // -- push tokens (push-token.ts) -------------------------------------------

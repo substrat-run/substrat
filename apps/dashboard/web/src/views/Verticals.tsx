@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
-import { api, connectGithub, type Deployment, type DeploymentVersion, type GitReposResult, type WorkflowPreview } from '../lib/api';
+import {
+  api,
+  connectGithub,
+  ApiError,
+  type Deployment,
+  type DeploymentVersion,
+  type GitReposResult,
+  type ObservabilityLogEvent,
+  type ObservabilityRow,
+  type WorkflowPreview,
+} from '../lib/api';
 import { Ic } from '../lib/icons';
+import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
 import { card, CopyButton, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 
@@ -130,6 +141,149 @@ function VerticalCard({
   );
 }
 
+const fmtCpu = (us: number) => (us >= 100_000 ? `${Math.round(us / 1000)} ms` : `${(us / 1000).toFixed(1)} ms`);
+
+/**
+ * Traffic for the team's deployed versions (design/observability.md §5, view 2) —
+ * requests/errors/CPU per (vertical, version), owner-narrowed by the worker. Row click
+ * shows recent logs for that service. Renders nothing on 501: an absent platform
+ * capability is not this page's news to break. Tier-3 numbers — sampled, approximate.
+ */
+function TrafficPanel() {
+  const [rows, setRows] = useState<ObservabilityRow[] | null>(null);
+  const [state, setState] = useState<'loading' | 'ready' | 'absent' | 'error'>('loading');
+  const [selected, setSelected] = useState<ObservabilityRow | null>(null);
+  const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
+  const [logsFailed, setLogsFailed] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const r = DEV_MOCK ? MOCK_OBSERVABILITY : await api.observabilityMetrics(24);
+        if (!live) return;
+        setRows(r);
+        setState('ready');
+      } catch (e) {
+        if (!live) return;
+        setState(e instanceof ApiError && e.status === 501 ? 'absent' : 'error');
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    let live = true;
+    setLogs(null);
+    setLogsFailed(false);
+    void (async () => {
+      try {
+        const events = DEV_MOCK
+          ? MOCK_OBSERVABILITY_LOGS.filter((l) => l.service === selected.service)
+          : await api.observabilityLogs({ service: selected.service, hours: 24, limit: 50 });
+        if (live) setLogs(events);
+      } catch {
+        if (live) setLogsFailed(true);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [selected]);
+
+  if (state === 'absent') return null;
+
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Traffic</h3>
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          last 24 hours, per deployed version — sampled, approximate
+        </span>
+      </div>
+      {state === 'error' ? (
+        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
+          Traffic data is unavailable right now.
+        </div>
+      ) : state === 'loading' ? (
+        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>Loading…</div>
+      ) : rows && rows.length === 0 ? (
+        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
+          No traffic recorded yet — it appears here once a deployed version serves requests.
+        </div>
+      ) : (
+        <GridTable
+          columns="1.4fr 0.8fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr"
+          header={['Vertical', 'Version', 'Requests', 'Errors', 'Error rate', 'CPU P50', 'CPU P99']}
+        >
+          {(rows ?? []).map((r, i) => (
+            <Row
+              key={r.service}
+              columns="1.4fr 0.8fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr"
+              last={i === (rows?.length ?? 0) - 1}
+              onClick={() => setSelected(selected?.service === r.service ? null : r)}
+            >
+              <span style={{ fontWeight: 500 }}>{r.vertical}</span>
+              <MonoTag>{r.version}</MonoTag>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{r.requests.toLocaleString('en-US')}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: r.errors > 0 ? 'var(--status-danger-fg)' : undefined }}>
+                {r.errors.toLocaleString('en-US')}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>
+                {r.requests === 0 ? '—' : `${((r.errors / r.requests) * 100).toFixed(2)}%`}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{fmtCpu(r.cpuTimeP50)}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{fmtCpu(r.cpuTimeP99)}</span>
+            </Row>
+          ))}
+        </GridTable>
+      )}
+
+      {selected && (
+        <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)' }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{selected.vertical}</span>
+            <MonoTag>{selected.version}</MonoTag>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>recent logs (24h)</span>
+            <span style={{ marginLeft: 'auto' }}>
+              <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
+                Close
+              </Button>
+            </span>
+          </div>
+          {logsFailed ? (
+            <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>Logs are unavailable right now.</div>
+          ) : logs === null ? (
+            <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading…</div>
+          ) : logs.length === 0 ? (
+            <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>No log events in the last 24 hours.</div>
+          ) : (
+            <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+              {logs.map((l, i) => (
+                <div
+                  key={i}
+                  style={{ display: 'flex', gap: 12, padding: '8px 14px', borderBottom: i === logs.length - 1 ? 'none' : '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', fontSize: 12 }}
+                >
+                  <span style={{ color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                    {l.timestamp ? new Date(l.timestamp).toISOString().slice(5, 19).replace('T', ' ') : '—'}
+                  </span>
+                  <span style={{ width: 44, color: l.level === 'error' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)' }}>
+                    {l.level ?? '—'}
+                  </span>
+                  <span style={{ flex: 1, wordBreak: 'break-all', color: 'var(--text-primary)' }}>{l.message ?? '(no message)'}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Verticals({
   deployments,
   onPromote,
@@ -176,6 +330,7 @@ export function Verticals({
           {sorted.map((d) => (
             <VerticalCard key={d.slug} d={d} busy={busy} onPromote={(vid, ch) => onPromote(d.slug, vid, ch)} />
           ))}
+          <TrafficPanel />
         </div>
       )}
 

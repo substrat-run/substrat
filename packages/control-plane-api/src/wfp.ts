@@ -42,6 +42,10 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       bindings: [...bundle.bindings, ...injected],
       // Every Substrat scope DO is SQLite-backed (new_sqlite_classes, not new_classes).
       migrations: { new_tag: 'v1', new_sqlite_classes: bundle.doClasses },
+      // Builder logs exist to query (design/observability.md §4.4): without this the
+      // pushed script's console output and exceptions are simply not recorded, and the
+      // builder's only debugging tool is asking staff to redeploy with it on.
+      observability: { enabled: true },
     };
 
     const form = new FormData();

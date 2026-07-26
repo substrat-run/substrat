@@ -1,4 +1,4 @@
-import type { AppRow, CatalogEntry, Deployment, GitReposResult, Me, Member, SnapshotRow } from './api';
+import type { AppRow, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -115,4 +115,16 @@ export const MOCK_APPS: AppRow[] = [
   { id: '2', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7LEGA', vertical_slug: 'protocol', name: 'Acme Legal', status: 'active', hostname: 'acme-legal.substrat.run', created_by: 'dana@acme.com', created_at: ago(30 * 3600e3) },
   { id: '3', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7FIEL', vertical_slug: 'workorder', name: 'Acme Field Ops', status: 'provisioning', hostname: null, created_by: 'dana@acme.com', created_at: ago(20e3) },
   { id: '4', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7FINA', vertical_slug: 'invoicing', name: 'Acme Finance', status: 'failed', hostname: null, created_by: 'dana@acme.com', created_at: ago(3 * 86400e3) },
+];
+
+/** Traffic for the mock deployments' deployed versions (matches MOCK_DEPLOYMENTS refs). */
+export const MOCK_OBSERVABILITY: ObservabilityRow[] = [
+  { vertical: 'acme/helpdesk', version: '0.3.0', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', requests: 12840, errors: 23, subrequests: 31200, cpuTimeP50: 2400, cpuTimeP99: 18200 },
+  { vertical: 'acme/helpdesk', version: '0.2.0', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', requests: 3120, errors: 1, subrequests: 7400, cpuTimeP50: 2100, cpuTimeP99: 15400 },
+];
+
+export const MOCK_OBSERVABILITY_LOGS: ObservabilityLogEvent[] = [
+  { timestamp: now - 4 * 60e3, level: 'error', message: 'TypeError: cannot read properties of undefined (reading "status") at /operations/close-ticket', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', outcome: 'exception' },
+  { timestamp: now - 11 * 60e3, level: 'log', message: '{"op":"createTicket","durationMs":34}', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', outcome: 'ok' },
+  { timestamp: now - 26 * 60e3, level: 'warn', message: 'retrying webhook delivery (attempt 2)', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', outcome: 'ok' },
 ];

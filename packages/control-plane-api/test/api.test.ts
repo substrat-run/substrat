@@ -1380,3 +1380,94 @@ describe('control-plane API — builder authz', () => {
     ]);
   });
 });
+
+describe('control-plane API — observability proxy', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+
+  const staff = platformActorId.parse(ulid());
+  const builderTenant = tenantId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+
+  // A stub reader that records what the routes hand it — the proxy's job is the Zod
+  // boundary + the staff gate, not Cloudflare's answers.
+  const seen: { metrics: unknown[]; logs: unknown[] } = { metrics: [], logs: [] };
+  const reader = {
+    serviceMetrics: async (input: unknown) => {
+      seen.metrics.push(input);
+      return [
+        {
+          service: 'substrat-router',
+          namespace: null,
+          requests: 120,
+          errors: 3,
+          subrequests: 240,
+          cpuTimeP50: 900,
+          cpuTimeP99: 4200,
+        },
+      ];
+    },
+    recentLogs: async (input: unknown) => {
+      seen.logs.push(input);
+      return [];
+    },
+  };
+
+  const BUILDER_HEADER = 'x-test-builder';
+  const appWith = (observability?: typeof reader) =>
+    createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      authenticateBuilder: (req: Request) =>
+        req.headers.get(BUILDER_HEADER)
+          ? { actor: platformActorId.parse(ulid()), tenantId: builderTenant, tenantSlug: 'builder-co' }
+          : null,
+      observability,
+    });
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-obs-'));
+    host = new SqliteScopeHost({ dir });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('501s when no reader is configured — absent capability, not a crash', async () => {
+    const app = appWith(undefined);
+    expect((await app.request('/observability/metrics', { headers: asStaff })).status).toBe(501);
+    expect((await app.request('/observability/logs', { headers: asStaff })).status).toBe(501);
+  });
+
+  it('proxies metrics for staff, with the hours window parsed and bounded', async () => {
+    const app = appWith(reader);
+    const res = await app.request('/observability/metrics?hours=48', { headers: asStaff });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject([{ service: 'substrat-router', requests: 120 }]);
+    expect(seen.metrics.at(-1)).toEqual({ hours: 48 });
+
+    // Defaulted when omitted; refused (400 at the Zod boundary) when out of range.
+    await app.request('/observability/metrics', { headers: asStaff });
+    expect(seen.metrics.at(-1)).toEqual({ hours: 24 });
+    expect((await app.request('/observability/metrics?hours=9000', { headers: asStaff })).status).toBe(400);
+  });
+
+  it('proxies logs with service/level narrowing passed through', async () => {
+    const app = appWith(reader);
+    const res = await app.request('/observability/logs?service=my-worker&level=error&limit=50', {
+      headers: asStaff,
+    });
+    expect(res.status).toBe(200);
+    expect(seen.logs.at(-1)).toEqual({ service: 'my-worker', level: 'error', hours: 1, limit: 50 });
+  });
+
+  it('refuses a builder — staff-only until owner-narrowing exists (default-deny)', async () => {
+    // The observability routes are NOT in BUILDER_ROUTES: without narrowing to owned
+    // scripts, a builder reading fleet metrics would see every tenant's traffic.
+    const app = appWith(reader);
+    const asBuilder = { [BUILDER_HEADER]: builderTenant, 'content-type': 'application/json' };
+    expect((await app.request('/observability/metrics', { headers: asBuilder })).status).toBe(403);
+    expect((await app.request('/observability/logs', { headers: asBuilder })).status).toBe(403);
+  });
+});

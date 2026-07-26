@@ -45,6 +45,11 @@
 	// nothing to forward to, there is no secret to match.
 	"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals" }],
 
+	// Tenant-keyed request metering (design/observability.md §4.2): one datapoint per
+	// resolved request, index = tenantId. ONE shared dataset, not per-tenant/-namespace —
+	// isolation lives in the read proxy's WHERE, and AE samples fairly per index value.
+	"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_router" }],
+
 	// Tenant hostnames route here: `<slug>.<jurisdiction>.substrat.run`. The wildcard
 	// is one route per jurisdiction (a route wildcard matches one level), backed by the
 	// ACM advanced cert + a proxied `*.<jurisdiction>` DNS record (K-30/D-35). Only
@@ -72,6 +77,7 @@
 				]
 			},
 			"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals-test" }], // differs
+			"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_router_test" }], // differs: test data stays out of prod charts
 			// Test tenant hostnames: <slug>.global.test.substrat.run. This two-level
 			// wildcard needs an ACM advanced cert for `*.global.test.substrat.run` + a
 			// proxied `*.global.test` DNS record on substrat.run (same setup prod's
