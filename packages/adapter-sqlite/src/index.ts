@@ -2248,6 +2248,15 @@ export class SqliteScopeHost implements ScopeHost {
             this.directory
               .prepare('UPDATE verticals SET env_spec = ?, install_spec = ? WHERE slug = ?')
               .run(envSpecJson, installSpecJson, parsed.slug);
+            // For BUILTIN verticals `listed` is seed metadata too (derived from the catalog's
+            // `connected` flag), so it refreshes alongside — without this, rows registered
+            // before they were listable stay unlisted forever (the empty-marketplace bug).
+            // A pushed vertical's `listed` is the staff publish decision — never touched.
+            if (parsed.source === 'builtin') {
+              this.directory
+                .prepare('UPDATE verticals SET listed = ? WHERE slug = ?')
+                .run(parsed.listed ? 1 : 0, parsed.slug);
+            }
             return;
           }
           if (existing.ownerTenant !== parsed.ownerTenant) {

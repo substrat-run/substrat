@@ -9,7 +9,7 @@ import { NotificationsPopover } from './components/NotificationsPopover';
 import { SignIn, Interstitial, InviteBlocked } from './views/SignIn';
 import { Onboarding } from './views/Onboarding';
 import { Apps } from './views/Apps';
-import { Deployments } from './views/Deployments';
+import { Verticals } from './views/Verticals';
 import { CreateApp } from './views/CreateApp';
 import { AppDetail } from './views/AppDetail';
 import { Team } from './views/Team';
@@ -31,7 +31,9 @@ function parseHash(): Route {
   const parts = h.split('/').filter(Boolean);
   if (parts[0] === 'apps' && parts[1] === 'new') return { section: 'new' };
   if (parts[0] === 'apps' && parts[1]) return { section: 'apps', app: parts[1], tab: parts[2] ?? 'overview' };
-  const known: NavKey[] = ['overview', 'apps', 'deployments', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
+  // Legacy alias: the page was called "Deployments" before the apps/verticals split.
+  if (parts[0] === 'deployments') return { section: 'verticals' };
+  const known: NavKey[] = ['overview', 'apps', 'verticals', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
   const section = (known.includes(parts[0] as NavKey) ? parts[0] : 'overview') as NavKey;
   return { section };
 }
@@ -472,7 +474,7 @@ export function App() {
   if (route.section === 'apps' || route.section === 'new') crumbs.push({ label: 'Apps', onClick: () => go('#/apps') });
   if (route.section === 'new') crumbs.push({ label: 'New app' });
   if (route.section === 'apps' && openApp) crumbs.push({ label: openApp.name });
-  if (['deployments', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'].includes(route.section)) {
+  if (['verticals', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'].includes(route.section)) {
     crumbs.push({ label: route.section.charAt(0).toUpperCase() + route.section.slice(1) });
   }
 
@@ -495,7 +497,7 @@ export function App() {
       onSignOut={signOut}
     >
       {route.section === 'new' ? (
-        <CreateApp catalog={catalog} loadGitRepos={loadGitRepos} onCancel={() => go('#/apps')} onCreate={createApp} />
+        <CreateApp catalog={catalog} onCancel={() => go('#/apps')} onCreate={createApp} />
       ) : route.section === 'apps' && openApp ? (
         <AppDetail
           app={openApp}
@@ -507,8 +509,8 @@ export function App() {
         <NotFound label="That app could not be found." onBack={() => go('#/apps')} />
       ) : route.section === 'overview' || route.section === 'apps' ? (
         <Apps apps={apps} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} />
-      ) : route.section === 'deployments' ? (
-        <Deployments deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} busy={promoting} />
+      ) : route.section === 'verticals' ? (
+        <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (
         <Team
           members={members}

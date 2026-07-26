@@ -233,7 +233,7 @@ interface ControlPlaneStub {
   listHostnames(filter: { tenantId?: string; scopeId?: string }): Promise<HostnameRow[]>;
   readVertical(slug: string): Promise<VerticalRow | undefined>;
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
-  updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null): Promise<void>;
+  updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null, listed?: number | null): Promise<void>;
   updateVerticalListed(slug: string, listed: number): Promise<void>;
   updateVerticalPublishRequest(slug: string, requestedAt: string): Promise<void>;
   listVerticals(): Promise<VerticalRow[]>;
@@ -1472,7 +1472,16 @@ export class CloudflareScopeHost implements ScopeHost {
           ) {
             // The env-spec evolves with the manifest — refresh it on an otherwise-identical
             // re-registration so a declared config change propagates without a conflict.
-            await this.cp.updateVerticalManifestMeta(parsed.slug, envSpecJson, installSpecJson);
+            // For BUILTIN verticals `listed` is seed metadata too (derived from the catalog's
+            // `connected` flag), so it refreshes alongside — without this, rows registered
+            // before they were listable stay unlisted forever (the empty-marketplace bug).
+            // A pushed vertical's `listed` is the staff publish decision — never touched.
+            await this.cp.updateVerticalManifestMeta(
+              parsed.slug,
+              envSpecJson,
+              installSpecJson,
+              parsed.source === 'builtin' ? (parsed.listed ? 1 : 0) : null,
+            );
             return;
           }
           if (existing.owner_tenant !== parsed.ownerTenant) {

@@ -32,6 +32,8 @@ export interface Deployment {
   displaySlug: string;
   name: string;
   source: string;
+  /** Published to the public marketplace (marketplace-publish.md §2) vs private to this team. */
+  listed: boolean;
   /** Newest-first (the id is a ULID — lexicographic order is chronological). */
   versions: DeploymentVersion[];
   channels: Array<{ channel: string; versionId: string }>;
@@ -42,6 +44,7 @@ interface RawVertical {
   name: string;
   source: string;
   ownerTenant: TenantId | null;
+  listed?: boolean;
 }
 interface RawVersion {
   id: string;
@@ -63,6 +66,7 @@ function shape(
     displaySlug: i >= 0 ? v.slug.slice(i + 1) : v.slug,
     name: v.name,
     source: v.source,
+    listed: !!v.listed,
     versions: [...versions]
       .sort((a, b) => (a.id < b.id ? 1 : -1))
       .map((r) => ({

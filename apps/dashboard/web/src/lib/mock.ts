@@ -27,8 +27,12 @@ export const MOCK_ME: Me = {
 // Mirror the worker's CATALOG map (apps/dashboard/src/worker.ts) — the first-party
 // templates a tenant can instantiate, which the live Create App marketplace lists.
 export const MOCK_CATALOG: CatalogEntry[] = [
-  { slug: 'protocol', name: 'Documents' },
-  { slug: 'callout', name: 'Callout' },
+  { slug: 'protocol', name: 'Documents', owned: false, listed: true, source: 'builtin', installable: true },
+  { slug: 'callout', name: 'Callout', owned: false, listed: true, source: 'builtin', installable: true },
+  // The dev-preview's own pushed verticals (mirrors MOCK_DEPLOYMENTS): one with a prod
+  // version (installable), one still pending — so the New-app groups render both states.
+  { slug: 'acme/helpdesk', name: 'Helpdesk', owned: true, listed: false, source: 'cli', installable: true },
+  { slug: 'acme/reports', name: 'Reports', owned: true, listed: false, source: 'cli', installable: false },
 ];
 
 // A connected GitHub account so the dev-preview shows the live Git-import card shape

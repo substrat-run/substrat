@@ -53,6 +53,13 @@ export interface Me {
 export interface CatalogEntry {
   slug: string;
   name: string;
+  /** Owned by my team — the New-app page's "Your verticals" group. */
+  owned: boolean;
+  /** Published to the public marketplace (the "Marketplace" group). */
+  listed: boolean;
+  source: string;
+  /** False until a pushed vertical has a prod-promoted version — shown but not installable. */
+  installable: boolean;
 }
 
 /** A team roster entry — an active member or an outstanding invite. Mirrors the worker's row. */
@@ -105,12 +112,14 @@ export interface DeploymentVersion {
   createdAt: string;
 }
 
-/** A vertical this tenant pushed — the Deployments view's row (builder-plane.md Phase 4). */
+/** A vertical this tenant pushed — the Verticals view's row (builder-plane.md Phase 4). */
 export interface Deployment {
   slug: string; // full registry id, e.g. `acme-co/helpdesk`
   displaySlug: string; // bare name for display, `helpdesk`
   name: string;
   source: string;
+  /** Published to the public marketplace (vs private to this team). */
+  listed?: boolean;
   versions: DeploymentVersion[];
   channels: Array<{ channel: string; versionId: string }>;
   /**

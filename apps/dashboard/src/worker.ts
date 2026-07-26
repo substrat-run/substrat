@@ -412,14 +412,28 @@ mountOidcRoutes(app);
  * the hardcoded `CATALOG` as the fallback for a first-party not yet re-seeded. Throws 400 if the
  * vertical is unknown to both. This is what lets a pushed vertical install with no catalog edit.
  */
-async function installSpecFor(host: ReturnType<typeof hostFor>, slug: string): Promise<{ entitlements: string[]; ownerGrants: PermissionKey[] }> {
+async function installSpecFor(
+  host: ReturnType<typeof hostFor>,
+  slug: string,
+  cp?: TenantNarrowedControlPlane | null,
+): Promise<{ entitlements: string[]; ownerGrants: PermissionKey[] }> {
   await ensureCatalog(host, STAFF);
   const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === slug);
   const cat = CATALOG[slug];
-  if (!registered && !cat) throw new HTTPException(400, { message: `unknown vertical '${slug}'` });
+  if (registered || cat) {
+    return {
+      entitlements: registered?.entitlements ?? cat?.entitlements ?? [],
+      ownerGrants: (registered?.ownerGrants ?? cat?.ownerGrants ?? []) as PermissionKey[],
+    };
+  }
+  // Connected mode: a pushed vertical registers on the SHARED plane, not this deployment's
+  // own registry — read its install spec from there (visibility-filtered to published + the
+  // caller's own, so a private slug from another tenant stays unknown here).
+  const remote = cp ? (await cp.listCatalog()).find((v) => v.slug === slug) : undefined;
+  if (!remote) throw new HTTPException(400, { message: `unknown vertical '${slug}'` });
   return {
-    entitlements: registered?.entitlements ?? cat?.entitlements ?? [],
-    ownerGrants: (registered?.ownerGrants ?? cat?.ownerGrants ?? []) as PermissionKey[],
+    entitlements: remote.entitlements ?? [],
+    ownerGrants: (remote.ownerGrants ?? []) as PermissionKey[],
   };
 }
 
@@ -428,8 +442,31 @@ app.get('/api/catalog', async (c) => {
   // Registry-driven (marketplace-publish.md §3): show published verticals + the caller's own.
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   await ensureCatalog(host, STAFF);
-  const verticals = await host.admin.listVerticals(STAFF);
-  return c.json(availableCatalog(verticals, { tenantId: node?.tenantId ?? null }));
+  const rows = availableCatalog(await host.admin.listVerticals(STAFF), { tenantId: node?.tenantId ?? null });
+  // Connected mode: pushed verticals live in the SHARED plane's registry, not this
+  // deployment's own — merge the caller's own + published ones in. Local wins on a shared
+  // slug: the builtin seed here is refreshed each boot, the plane's copy may lag.
+  const cp = node ? controlPlaneFor(c.env, node.tenantId) : null;
+  if (cp) {
+    for (const v of await cp.listCatalog()) {
+      if (!rows.some((r) => r.slug === v.slug)) {
+        rows.push({ slug: v.slug, name: v.name, owned: v.owned, listed: v.listed, source: v.source });
+      }
+    }
+  }
+  // Installability: a builtin is bundled (embedded) or statically bound/promoted on the
+  // plane; a pushed vertical is installable only once a version is PROMOTED TO PROD —
+  // offering it earlier would sell an install that fails at provision time. The UI shows
+  // a not-yet-promoted owned vertical disabled, pointing at the Verticals page.
+  const catalog = await Promise.all(
+    rows.map(async (v) => ({
+      ...v,
+      installable:
+        v.source === 'builtin' ||
+        (cp ? await cp.listChannels(v.slug) : await host.admin.listChannels(STAFF, v.slug)).some((ch) => ch.channel === 'prod'),
+    })),
+  );
+  return c.json(catalog);
 });
 
 /**
@@ -1065,9 +1102,10 @@ app.post('/api/apps', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const body = createAppBody.parse(await c.req.json());
-  const { entitlements, ownerGrants } = await installSpecFor(host, body.verticalSlug);
   // Connected (prod): provision on the shared control plane through the tenant-narrowed
   // seam so the app is reachable via the router. Absent the binding: the M0 embedded path.
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const { entitlements, ownerGrants } = await installSpecFor(host, body.verticalSlug, cp);
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   // The team's human handle, suffixed into the default hostname
   // (`callout-sesamy.global.substrat.run`). From the TEAM record, not the user.
@@ -1081,7 +1119,7 @@ app.post('/api/apps', async (c) => {
     appEntitlements: entitlements,
     appOwnerGrants: ownerGrants,
     teamHandle,
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: cp ?? undefined,
     tenantName: user?.name ?? user?.email ?? 'Workspace',
   });
   return c.json(appRow, 201);
@@ -1125,7 +1163,8 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   if (appRow.status !== 'failed') throw new HTTPException(409, { message: 'only a failed app can be retried' });
-  const { entitlements, ownerGrants } = await installSpecFor(host, appRow.vertical_slug);
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const { entitlements, ownerGrants } = await installSpecFor(host, appRow.vertical_slug, cp);
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   const appRowNew = await retryApp(host, {
     node,
@@ -1136,7 +1175,7 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
     name: appRow.name,
     appEntitlements: entitlements,
     appOwnerGrants: ownerGrants,
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: cp ?? undefined,
     tenantName: user?.name ?? user?.email ?? 'Workspace',
   });
   return c.json(appRowNew, 201);

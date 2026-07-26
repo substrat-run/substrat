@@ -168,13 +168,39 @@ export class TenantNarrowedControlPlane {
    * the dashboard's Deployments view shows a customer only their own pushed verticals.
    */
   async listVerticals(): Promise<
-    Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null }>
+    Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean }>
   > {
     const all =
-      (await this.call<Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null }>>(
+      (await this.call<Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean }>>(
         '/verticals',
       )) ?? [];
     return all.filter((v) => v.ownerTenant === this.tenantId);
+  }
+
+  /**
+   * The shared plane's INSTALL catalog for this tenant (marketplace-publish.md §2): every
+   * PUBLISHED vertical + this tenant's own, with the install-spec fields `createApp` needs.
+   * The registry is staff-wide over the service token, so the visibility filter is here —
+   * same posture as `listVerticals` above, plus the public (`listed`) tier.
+   */
+  async listCatalog(): Promise<
+    Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[] }>
+  > {
+    const all =
+      (await this.call<
+        Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[] }>
+      >('/verticals')) ?? [];
+    return all
+      .filter((v) => v.listed || v.ownerTenant === this.tenantId)
+      .map((v) => ({
+        slug: v.slug,
+        name: v.name,
+        source: v.source,
+        owned: v.ownerTenant === this.tenantId,
+        listed: !!v.listed,
+        entitlements: v.entitlements,
+        ownerGrants: v.ownerGrants,
+      }));
   }
 
   /** A vertical's versions (admission state + deploymentRef). `[]` if it has none/unknown. */

@@ -1201,6 +1201,22 @@ export function scopeHostContractSuite(
       await expect(host.admin.requestPublish(staff, 'no-such-vertical')).rejects.toThrow(/unknown vertical/);
     });
 
+    it('refreshes `listed` on builtin re-registration (the catalog re-seed can list a row)', async () => {
+      const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
+      // A builtin first registered UNLISTED (bundled but not yet deployable, or a row
+      // predating the `listed` column) must become listed when the seed says so —
+      // `ensureCatalog` re-registers each boot, and for builtins `listed` is seed metadata.
+      await host.admin.registerVertical(staff, { slug: 'seeded', name: 'Seeded', source: 'builtin' });
+      expect((await at('seeded'))?.listed).toBe(false);
+
+      await host.admin.registerVertical(staff, { slug: 'seeded', name: 'Seeded', source: 'builtin', listed: true });
+      expect((await at('seeded'))?.listed).toBe(true);
+
+      // And back: flipping the seed to `connected: false` delists on the next re-seed.
+      await host.admin.registerVertical(staff, { slug: 'seeded', name: 'Seeded', source: 'builtin' });
+      expect((await at('seeded'))?.listed).toBe(false);
+    });
+
     it('refuses to bind a rejected version, and rejection is terminal', async () => {
       const versionId = ulid();
       await host.admin.publishVersion(staff, {

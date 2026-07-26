@@ -7,7 +7,7 @@ import type { Team } from '../lib/api';
 export type NavKey =
   | 'overview'
   | 'apps'
-  | 'deployments'
+  | 'verticals'
   | 'domains'
   | 'team'
   | 'integrations'
@@ -24,7 +24,7 @@ interface NavItem {
 const MAIN: NavItem[] = [
   { key: 'overview', label: 'Overview', icon: 'grid' },
   { key: 'apps', label: 'Apps', icon: 'box', count: 4 },
-  { key: 'deployments', label: 'Deployments', icon: 'layers' },
+  { key: 'verticals', label: 'Verticals', icon: 'layers' },
   { key: 'domains', label: 'Domains', icon: 'globe', count: 3 },
   { key: 'team', label: 'Team', icon: 'users', count: 4 },
   { key: 'integrations', label: 'Integrations', icon: 'plug' },
