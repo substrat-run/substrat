@@ -1,5 +1,12 @@
 # @substrat-run/console
 
+## 0.3.1
+
+### Patch Changes
+
+- @substrat-run/contracts@0.17.0
+- @substrat-run/kernel@0.17.0
+
 ## 0.3.0
 
 ### Minor Changes

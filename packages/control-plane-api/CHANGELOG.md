@@ -1,5 +1,19 @@
 # @substrat-run/control-plane-api
 
+## 0.17.0
+
+### Minor Changes
+
+- 983c06d: Identity-mirror routes (`PUT`/`DELETE /tenants/:tenantId/identities`): the seam the
+  Dashboard writes builder identity links through, so the shared plane's whoami/builder
+  auth can resolve a CLI session to its workspaces. Service/staff only — not in the
+  builder allowlist.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.17.0
+- @substrat-run/kernel@0.17.0
+
 ## 0.16.0
 
 ### Minor Changes

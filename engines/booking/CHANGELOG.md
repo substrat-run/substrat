@@ -1,5 +1,12 @@
 # @substrat-run/engine-booking
 
+## 0.1.12
+
+### Patch Changes
+
+- @substrat-run/contracts@0.17.0
+- @substrat-run/kernel@0.17.0
+
 ## 0.1.11
 
 ### Patch Changes
