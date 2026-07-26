@@ -35,10 +35,13 @@ const TEMPLATE_BLURBS: Record<string, string> = {
  */
 export function CreateApp({
   catalog,
+  teamName,
   onCancel,
   onCreate,
 }: {
   catalog: CatalogEntry[];
+  /** The current team's display name — slugified into the hostname preview, mirroring the worker. */
+  teamName?: string;
   onCancel: () => void;
   onCreate: (input: { verticalSlug: string; name: string }) => Promise<void>;
 }) {
@@ -47,7 +50,7 @@ export function CreateApp({
   if (!source) {
     return <ChooseVertical catalog={catalog} onCancel={onCancel} onPick={setSource} />;
   }
-  return <Configure source={source} onBack={() => setSource(null)} onCancel={onCancel} onCreate={onCreate} disabled={catalog.length === 0} />;
+  return <Configure source={source} teamName={teamName} onBack={() => setSource(null)} onCancel={onCancel} onCreate={onCreate} disabled={catalog.length === 0} />;
 }
 
 function Stepper({ step }: { step: 1 | 2 }) {
@@ -167,11 +170,14 @@ function ChooseVertical({
   );
 }
 
-function Configure({ source, onBack, onCancel, onCreate, disabled }: { source: Source; onBack: () => void; onCancel: () => void; onCreate: (i: { verticalSlug: string; name: string }) => Promise<void>; disabled: boolean }) {
+function Configure({ source, teamName, onBack, onCancel, onCreate, disabled }: { source: Source; teamName?: string; onBack: () => void; onCancel: () => void; onCreate: (i: { verticalSlug: string; name: string }) => Promise<void>; disabled: boolean }) {
   const [name, setName] = useState(source.defaultName);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const host = slugify(name);
+  // The default hostname is `<app>-<team>.global.substrat.run` (provision.ts's
+  // tenant-suffix scheme); teamless sessions fall back to the unsuffixed form.
+  const suffix = `${teamName ? `-${slugify(teamName)}` : ''}.global.substrat.run`;
 
   const submit = async () => {
     setBusy(true);
@@ -207,7 +213,7 @@ function Configure({ source, onBack, onCancel, onCreate, disabled }: { source: S
           <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-secondary)' }}>URL</div>
           <div style={{ display: 'flex', alignItems: 'center', height: 32, border: '1px solid var(--border-default)', borderRadius: 6, overflow: 'hidden', fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>
             <span style={{ padding: '0 10px', lineHeight: '30px', color: 'var(--text-primary)', background: 'var(--surface-card)' }}>{host}</span>
-            <span style={{ padding: '0 10px', lineHeight: '30px', color: 'var(--text-tertiary)', background: 'var(--surface-inset)', borderLeft: '1px solid var(--border-subtle)', flex: 1 }}>.global.substrat.run</span>
+            <span style={{ padding: '0 10px', lineHeight: '30px', color: 'var(--text-tertiary)', background: 'var(--surface-inset)', borderLeft: '1px solid var(--border-subtle)', flex: 1 }}>{suffix}</span>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Live as soon as provisioning completes. Custom domains attach later.</div>
         </div>

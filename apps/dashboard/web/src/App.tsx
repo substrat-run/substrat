@@ -497,7 +497,7 @@ export function App() {
       onSignOut={signOut}
     >
       {route.section === 'new' ? (
-        <CreateApp catalog={catalog} onCancel={() => go('#/apps')} onCreate={createApp} />
+        <CreateApp catalog={catalog} teamName={currentTeam?.name} onCancel={() => go('#/apps')} onCreate={createApp} />
       ) : route.section === 'apps' && openApp ? (
         <AppDetail
           app={openApp}
