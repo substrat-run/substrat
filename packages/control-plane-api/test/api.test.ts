@@ -7,6 +7,7 @@ import { ulid } from '@substrat-run/kernel';
 import { permissionKey, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
+  ControlPlaneError,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
@@ -270,6 +271,75 @@ describe('control-plane API', () => {
     expect((await (await dreq(`/tenants/${t1}/scopes/${sV}/tables/widget`)).json()).rows).toEqual([['a'], ['b']]);
     // Proof the read went to the VERTICAL, not this host's own (empty) scope DB.
     expect(calls).toEqual([`list:${sV}`, `read:${sV}:widget`]);
+  });
+
+  // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------
+
+  it('delivers per-instance config through the vertical that owns the scope', async () => {
+    const sC = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sC, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sC);
+
+    const configured: unknown[] = [];
+    const fakeVertical = {
+      configureInstance: async (input: unknown) => {
+        configured.push(input);
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    const entries = [
+      { key: 'ADMIN_EMAIL', value: 'root@acme.test' },
+      { key: 'PUBLIC_ORIGIN', value: 'https://auth.acme.test' },
+    ];
+    const res = await delegated.request(`/tenants/${t1}/scopes/${sC}/configure`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ entries }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ applied: 2 });
+    // The delivery went to the VERTICAL's deployment, addressed by tenant + scope
+    // (tenant rides along for CP-less verticals that shard storage per tenant).
+    expect(configured).toEqual([{ tenantId: t1, scopeId: sC, entries }]);
+  });
+
+  it('answers 501 when the scope has no reachable vertical deployment', async () => {
+    // Co-located/contract-test hosts run no vertical code — "authored but not
+    // delivered" must be distinguishable from a failure, so: 501, not 500.
+    const sN = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sN });
+    await host.admin.activateScope(staff, t1, sN);
+    const res = await json(`/tenants/${t1}/scopes/${sN}/configure`, 'POST', {
+      entries: [{ key: 'A', value: '1' }],
+    });
+    expect(res.status).toBe(501);
+  });
+
+  it("propagates the vertical's own refusal status instead of collapsing to 500", async () => {
+    const sR = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sR, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sR);
+    const refusing = {
+      configureInstance: async () => {
+        throw new ControlPlaneError(501, 'demo-vert does not implement POST /internal/configure');
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': refusing },
+    });
+    const res = await delegated.request(`/tenants/${t1}/scopes/${sR}/configure`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ entries: [{ key: 'A', value: '1' }] }),
+    });
+    expect(res.status).toBe(501);
+    expect(((await res.json()) as { error: string }).error).toContain('does not implement');
   });
 
   // -- snapshots (preview-and-snapshots.md §3/§9) ----------------------------

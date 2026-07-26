@@ -8,5 +8,17 @@
     "rootDir": "."
   },
   "include": ["src", "db", "test", "vitest.config.ts"],
-  "exclude": ["src/worker.ts", "src/auth-do.ts", "src/assets.ts", "src/assets.generated.ts"]
+  // Worker-shaped files typecheck under tsconfig.worker.json (workers-types' coherent
+  // Request/Response); including them here collides undici's fetch types with hono's.
+  // That covers app.ts + its test too — vitest still RUNS the test (vitest ignores tsconfig
+  // excludes); this split is about which type universe checks it.
+  "exclude": [
+    "src/worker.ts",
+    "src/routes.ts",
+    "src/do-contract.ts",
+    "src/auth-do.ts",
+    "src/assets.ts",
+    "src/assets.generated.ts",
+    "test/internal-surface.test.ts"
+  ]
 }

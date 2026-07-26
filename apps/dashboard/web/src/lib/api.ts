@@ -80,6 +80,14 @@ export interface Member {
 export type InviteRole = 'admin' | 'member' | 'viewer';
 
 /** One provisioned app — mirrors the worker's `DashboardAppRow` (module.ts). */
+/** The install form's Identity choice — which issuer the new app authenticates against.
+ *  Absent ⇒ the vertical's builtin auth. `auth-server` names one of the team's own Auth
+ *  Server apps (the client is registered there automatically); `external` is any OIDC
+ *  issuer the user configured by hand. */
+export type AppAuthChoice =
+  | { source: 'auth-server'; scopeId: string }
+  | { source: 'external'; issuer: string; clientId: string; clientSecret?: string; audience?: string };
+
 export interface AppRow {
   id: string;
   app_scope_id: string;
@@ -304,7 +312,7 @@ export const api = {
       body: JSON.stringify({ token }),
     }),
   listApps: () => call<AppRow[]>('/apps'),
-  createApp: (input: { verticalSlug: string; name: string }) =>
+  createApp: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice }) =>
     call<AppRow>('/apps', { method: 'POST', body: JSON.stringify(input) }),
   deleteApp: (id: string) => call<void>(`/apps/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   retryApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/retry`, { method: 'POST' }),

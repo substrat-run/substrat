@@ -9,12 +9,15 @@
   },
   "include": [
     "src/worker.ts",
+    "src/routes.ts",
+    "src/do-contract.ts",
     "src/auth-do.ts",
     "src/auth.ts",
     "src/auth-schema.ts",
     "src/email.ts",
     "src/assets.ts",
     "src/assets.generated.ts",
-    "db/ddl.ts"
+    "db/ddl.ts",
+    "test/internal-surface.test.ts"
   ]
 }

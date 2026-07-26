@@ -124,8 +124,21 @@ export class TenantNarrowedControlPlane {
   }
 
   /** Have the control plane call the vertical (K-31) to create the scope's data. */
-  provisionInstance(verticalSlug: string, input: { scopeId: ScopeId; owner: PrincipalId; slug: string; name: string }): Promise<void> {
+  provisionInstance(
+    verticalSlug: string,
+    input: { scopeId: ScopeId; owner: PrincipalId; slug: string; name: string; config?: Record<string, string> },
+  ): Promise<void> {
     return this.post(`/verticals/${encodeURIComponent(verticalSlug)}/instances`, { tenantId: this.tenantId, ...input });
+  }
+
+  /**
+   * Deliver per-instance config to the app's running scope (vertical-auth-detach.md
+   * §2.2) — the delivery half of the Env tab. The control plane routes it to the
+   * deployment holding the scope's DO. 501 means "this app has no live-config support";
+   * the caller treats that as authored-but-not-delivered, not as a failure.
+   */
+  configureInstance(scopeId: ScopeId, entries: Array<{ key: string; value: string }>): Promise<void> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/configure`, { entries });
   }
 
   /** provisioning → active, once the vertical has confirmed the scope exists. */

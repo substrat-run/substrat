@@ -29,7 +29,13 @@ import type { PrincipalId } from '@substrat-run/contracts';
 import { MODULES, ROLES } from './provision.js';
 import { serveAsset } from './assets.js';
 import type { CompanyNode } from './auth-adapters.js';
-import { IdentityDO, doAuthProvider, oidcAuthProvider, type AuthProvider } from '@substrat-run/vertical-auth';
+import {
+  IdentityDO,
+  doAuthProvider,
+  oidcAuthProvider,
+  oidcRpAuthProvider,
+  type AuthProvider,
+} from '@substrat-run/vertical-auth';
 
 /** The scope-DO class = the app binary: kernel + protocol + Meridian, bundled. */
 export const ScopeDO = defineScopeDO(MODULES, {});
@@ -117,17 +123,68 @@ function identityDo(env: Env, node: CompanyNode) {
 }
 
 /**
- * The `AuthProvider` for this request, chosen by CONFIG — the whole point of the contract.
- * `oidc` verifies a bearer token against the configured issuer (Supabase / Auth0 / AuthHero
- * / Keycloak); default `better-auth-do` runs Better Auth in the tenant's AUTH DO. The app
- * never learns which; it only ever holds an `AuthProvider`.
+ * The scope's DELIVERED auth choice (vertical-auth-detach.md §2.2/§2.3) — the
+ * `substrat:auth` entry the dashboard configured at install or in Settings, stored in the
+ * tenant's identity DO. Parsed leniently: an absent or malformed entry means "no choice
+ * delivered" and the deployment-level default below applies, so a bad delivery can never
+ * lock an instance out.
  */
-function authProviderFor(env: Env, req: Request): AuthProvider {
+const authChoice = z.object({
+  mode: z.enum(['oidc', 'builtin']),
+  issuer: z.string().url().optional(),
+  clientId: z.string().min(1).optional(),
+  clientSecret: z.string().optional(),
+  audience: z.string().optional(),
+});
+export const AUTH_CONFIG_KEY = 'substrat:auth';
+
+/** The scope's auth wiring, in one DO hop: delivered config + the tenant's session secret. */
+async function authWiringFor(env: Env, node: CompanyNode) {
+  const wiring = await identityDo(env, node).authWiring(node.scopeId);
+  const raw = wiring.config[AUTH_CONFIG_KEY];
+  let choice: z.infer<typeof authChoice> | null = null;
+  if (raw) {
+    try {
+      const parsed = authChoice.safeParse(JSON.parse(raw));
+      choice = parsed.success ? parsed.data : null;
+    } catch {
+      choice = null;
+    }
+  }
+  return { choice, sessionSecret: wiring.sessionSecret };
+}
+
+/**
+ * The `AuthProvider` for this request, chosen by CONFIG — the whole point of the contract.
+ *
+ * Per-SCOPE first (hosted): a delivered `substrat:auth` with `mode: 'oidc'` builds the
+ * full relying-party provider (browser login at the issuer, cookie sessions signed with
+ * the tenant's DO-minted secret, bearer fallback for API clients) — one script, many
+ * issuers. `mode: 'builtin'` (or nothing delivered) falls through to the DEPLOYMENT
+ * default: `AUTH_PROVIDER=oidc` env verifies bearer tokens against a fixed issuer
+ * (standalone deploys), else Better Auth in the tenant's AUTH DO. The app never learns
+ * which; it only ever holds an `AuthProvider`.
+ */
+async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
+  const node = nodeFor(req, env);
+  const { choice, sessionSecret } = await authWiringFor(env, node);
+  if (choice?.mode === 'oidc') {
+    if (!choice.issuer || !choice.clientId) {
+      throw new HTTPException(503, { message: "this instance's OIDC configuration is incomplete — set issuer and clientId" });
+    }
+    return oidcRpAuthProvider({
+      issuer: choice.issuer,
+      clientId: choice.clientId,
+      clientSecret: choice.clientSecret ?? '',
+      sessionSecret,
+      ...(choice.audience ? { audience: choice.audience } : {}),
+    });
+  }
   if ((env.AUTH_PROVIDER ?? 'better-auth-do') === 'oidc') {
     if (!env.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
     return oidcAuthProvider({ issuer: env.OIDC_ISSUER, ...(env.OIDC_AUDIENCE ? { audience: env.OIDC_AUDIENCE } : {}) });
   }
-  return doAuthProvider(identityDo(env, nodeFor(req, env)), originOf(req));
+  return doAuthProvider(identityDo(env, node), originOf(req));
 }
 
 /**
@@ -142,7 +199,7 @@ async function principalFor(env: Env, req: Request): Promise<PrincipalId | null>
     const parsed = raw ? principalId.safeParse(raw) : null;
     if (parsed?.success) return parsed.data;
   }
-  const subject = await authProviderFor(env, req).resolve(req.headers);
+  const subject = await (await authProviderFor(env, req)).resolve(req.headers);
   if (!subject) return null;
   const node = nodeFor(req, env);
   const principal = await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub);
@@ -167,6 +224,12 @@ const app = new Hono<{ Bindings: Env }>();
  */
 app.post('/api/auth/sign-up/email', async (c) => {
   const node = nodeFor(c.req.raw, c.env);
+  // In OIDC mode there is nothing to sign up to HERE — accounts live at the issuer. The
+  // provider's own handle would 404 anyway; answering before the gate keeps the error honest.
+  const { choice } = await authWiringFor(c.env, node);
+  if (choice?.mode === 'oidc') {
+    return c.json({ error: 'accounts are managed at this workspace’s identity provider' }, 404);
+  }
   const id = identityDo(c.env, node);
   // Allowed during first-run setup (creates the admin), OR when the request carries a valid
   // unclaimed invite token (`?invite=<token>`) — that's how an invited teammate registers
@@ -177,15 +240,27 @@ app.post('/api/auth/sign-up/email', async (c) => {
   if (!allowed) {
     return c.json({ error: 'Sign-up is closed for this workspace — ask an admin to invite you.' }, 403);
   }
-  return authProviderFor(c.env, c.req.raw).handle(c.req.raw);
+  return (await authProviderFor(c.env, c.req.raw)).handle(c.req.raw);
 });
 
-// Identity/credentials/sessions live in the tenant's own AuthDO — the worker just forwards
-// the /api/auth/* surface to it through the AuthProvider contract (it never runs Better Auth).
-app.on(['GET', 'POST'], '/api/auth/*', (c) => authProviderFor(c.env, c.req.raw).handle(c.req.raw));
+/**
+ * Which auth this instance runs — the SPA's sign-in screen branches on it: `builtin`
+ * renders the email/password forms, `oidc` a "continue with your identity provider"
+ * redirect. Deliberately tiny and unauthenticated (it gates nothing; the providers do).
+ */
+app.get('/api/auth-mode', async (c) => {
+  const node = nodeFor(c.req.raw, c.env);
+  const { choice } = await authWiringFor(c.env, node);
+  const oidc = choice?.mode === 'oidc' || (!choice && (c.env.AUTH_PROVIDER ?? 'better-auth-do') === 'oidc');
+  return c.json({ mode: oidc ? 'oidc' : 'builtin' });
+});
+
+// Identity/credentials/sessions live behind the AuthProvider contract — Better Auth in the
+// tenant's own AuthDO, or the OIDC relying-party flow — the worker only forwards.
+app.on(['GET', 'POST'], '/api/auth/*', async (c) => (await authProviderFor(c.env, c.req.raw)).handle(c.req.raw));
 
 /** The verified subject behind the current session, or null — the contract's `resolve`. */
-app.get('/api/session', async (c) => c.json(await authProviderFor(c.env, c.req.raw).resolve(c.req.raw.headers)));
+app.get('/api/session', async (c) => c.json(await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers)));
 
 /**
  * Provision ONE instance on the platform's instruction (K-31), CP-less. The shared
@@ -290,6 +365,38 @@ app.get('/internal/export', async (c) => {
   return c.json(await hostFor(c.env).exportScopeLocal(scope));
 });
 
+/**
+ * Upsert per-instance config on the platform's instruction (vertical-auth-detach.md
+ * §2.2) — the delivery half of the dashboard's Env tab, and how a scope's
+ * `substrat:auth` issuer choice arrives. Stored in the tenant's identity DO (the
+ * vertical's harness store), keyed by scope; the body carries the tenant id because a
+ * platform call has no router assertion to derive it from. Idempotent upserts.
+ */
+app.post('/internal/configure', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const body = z
+    .object({
+      tenantId,
+      scopeId,
+      entries: z.array(z.object({ key: z.string().min(1), value: z.string() })).min(1),
+    })
+    .parse(await c.req.json());
+  await identityDo(c.env, { tenantId: body.tenantId, scopeId: body.scopeId }).setScopeConfig(body.scopeId, body.entries);
+  return c.json({ applied: body.entries.length });
+});
+
+// Any OTHER platform verb is honestly unimplemented: JSON 501, never the SPA fallback —
+// an /internal/* request that reaches the SPA returns 200 text/html, which the platform's
+// JSON parse turns into an opaque "internal error" (the auth-server incident, 2026-07-25).
+app.all('/internal/*', (c) =>
+  c.json({ error: `meridian does not implement ${c.req.method} ${new URL(c.req.url).pathname}` }, 501),
+);
+
 /** Resolve the caller (any provider) → the routed node → a scope stub. 401 if nobody. */
 async function stub(c: { env: Env; req: { raw: Request } }) {
   const node = nodeFor(c.req.raw, c.env);
@@ -344,7 +451,9 @@ app.get('/api/me', async (c) => {
   };
   // A display name when the provider carries one (the dev-header path carries none) — the
   // subject is cheap to re-resolve and keeps the SPA shape total.
-  const subject = await authProviderFor(c.env, c.req.raw).resolve(c.req.raw.headers).catch(() => null);
+  const subject = await authProviderFor(c.env, c.req.raw)
+    .then((p) => p.resolve(c.req.raw.headers))
+    .catch(() => null);
   return c.json({
     key: principal,
     display: subject?.name ?? subject?.email ?? 'You',
@@ -402,7 +511,7 @@ app.post('/api/invites/:principal/revoke', async (c) => {
  */
 app.post('/api/accept-invite', async (c) => {
   const node = nodeFor(c.req.raw, c.env);
-  const subject = await authProviderFor(c.env, c.req.raw).resolve(c.req.raw.headers);
+  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
   if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const principal = await identityDo(c.env, node).claimInvite(node.scopeId, subject.sub, await sha256Hex(token));
