@@ -404,7 +404,7 @@ function Snapshots({ app }: { app: AppRow }) {
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load snapshots — {err}</div>;
   if (!snaps) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading snapshots…</div>;
 
-  const COLS = '1.4fr 1.2fr 1.4fr 0.8fr';
+  const COLS = '1.2fr 2fr 1fr 1.2fr 1fr';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ ...card, padding: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -423,13 +423,22 @@ function Snapshots({ app }: { app: AppRow }) {
       ) : (
         <div style={{ ...card, overflow: 'hidden' }}>
           <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
-            <span>Copy</span><span>Taken</span><span>Retention</span><span />
+            <span>Copy</span><span>URL</span><span>Taken</span><span>Retention</span><span />
           </div>
           {snaps.map((s, i) => (
             <div key={s.id} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 44, padding: '8px 16px', fontSize: 13, borderBottom: i === snaps.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <MonoTag>{shortId(s.id)}</MonoTag>
                 <Pill kind="neutral">{s.kind}</Pill>
+              </span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {s.url ? (
+                  <a href={`https://${s.url}`} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-brand)', textDecoration: 'none' }}>
+                    {s.url} ↗
+                  </a>
+                ) : (
+                  <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>—</span>
+                )}
               </span>
               <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{s.forkedAt ? relativeTime(s.forkedAt) : '—'}</span>
               <span style={{ fontSize: 12 }}>

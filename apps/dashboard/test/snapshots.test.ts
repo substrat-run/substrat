@@ -6,7 +6,7 @@ import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/c
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, type DashboardNode } from '../src/index.js';
-import { snapshotApp, listAppSnapshots, deleteAppSnapshot } from '../src/provision.js';
+import { createApp, snapshotApp, listAppSnapshots, deleteAppSnapshot } from '../src/provision.js';
 
 /**
  * The Snapshots tab's backend, embedded mode (preview-and-snapshots.md §3): the
@@ -68,6 +68,47 @@ describe('Dashboard snapshots — create, list, expire, delete', () => {
     });
     expect(await listAppSnapshots(host, { node, appScopeId: appScope })).toHaveLength(0);
     expect(await host.admin.getScopeRecord(staff, node.tenantId, scopeId.parse(created.id))).toBeUndefined();
+  });
+
+  it('binds a `--s` preview URL to the copy, and delete removes it', async () => {
+    const { node, appScope } = await makeTeamWithApp();
+    const created = await snapshotApp(host, {
+      node,
+      appScopeId: appScope,
+      ttlDays: 7,
+      appHostname: 'acme-hr.global.substrat.run',
+    });
+    // The copy's URL: the app's own label + a `--s<tail>` tag — never the bare label.
+    expect(created.url).toMatch(/^acme-hr--s[a-z0-9]{4}\.global\.substrat\.run$/);
+
+    const listed = await listAppSnapshots(host, { node, appScopeId: appScope });
+    expect(listed[0]!.url).toBe(created.url);
+
+    await deleteAppSnapshot(host, {
+      node,
+      appScopeId: appScope,
+      snapshotScopeId: scopeId.parse(created.id),
+    });
+    // The binding went with the copy — the preview URL stops resolving.
+    expect(await host.admin.listHostnames(staff, { scopeId: scopeId.parse(created.id) })).toHaveLength(0);
+  });
+
+  it('new apps get team-suffixed hostnames (`<app>-<team>`)', async () => {
+    const node = await provisionDashboard(host, {
+      tenantId: tenantId.parse(ulid()),
+      scopeId: scopeId.parse(ulid()),
+      owner: principalId.parse(ulid()),
+      slug: 'sesamy-x1',
+      name: 'Sesamy',
+    });
+    const appRow = await createApp(host, {
+      node,
+      appScopeId: scopeId.parse(ulid()),
+      verticalSlug: 'callout',
+      name: 'Callout',
+      teamHandle: 'sesamy',
+    });
+    expect(appRow.hostname).toBe('callout-sesamy.global.substrat.run');
   });
 
   it('a copy with no TTL is pinned (expiresAt null)', async () => {

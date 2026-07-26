@@ -738,6 +738,31 @@ const leaveSelfOp: OperationHandler<Record<string, never>, void> = async (ctx) =
   ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE principal = ? AND status = 'active'`, [ctx.principal]);
 };
 
+/**
+ * Delete the organization — the roster half. OWNER-ONLY: `manage-members` is the base
+ * gate, and the roster (not a new permission key) is the owner check, mirroring how
+ * `remove-member` protects the owner row. Revokes every roster row and returns the
+ * active members so the worker can sever their identity links — the platform effects
+ * (deprovision apps, tenant → `deleting`) happen host-side after this asserts.
+ */
+const deleteTeamOp: OperationHandler<Record<string, never>, { members: Array<{ principal: string; roleKey: string }> }> = async (ctx) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.manageMembers));
+  const me = ctx.sql.query<DashboardMemberRow>(
+    `SELECT * FROM dashboard_members WHERE principal = ? AND status = 'active'`,
+    [ctx.principal],
+  )[0];
+  if (!me || me.role_key !== 'owner') {
+    throw new Error('permission denied: only the owner can delete the organization');
+  }
+  const active = ctx.sql.query<DashboardMemberRow>(`SELECT * FROM dashboard_members WHERE status = 'active'`);
+  ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE status = 'active'`);
+  return {
+    members: active
+      .filter((m) => m.principal)
+      .map((m) => ({ principal: m.principal!, roleKey: m.role_key })),
+  };
+};
+
 const removeMemberInput = z.object({ memberId: z.string().min(1) });
 
 /**
@@ -800,6 +825,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/list-members': listMembersOp as OperationHandler<never, unknown>,
     'dashboard/remove-member': removeMemberOp as OperationHandler<never, unknown>,
     'dashboard/leave-self': leaveSelfOp as OperationHandler<never, unknown>,
+    'dashboard/delete-team': deleteTeamOp as OperationHandler<never, unknown>,
     'dashboard/begin-connection': beginConnectionOp as OperationHandler<never, unknown>,
   },
 };
