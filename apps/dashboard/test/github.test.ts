@@ -10,9 +10,11 @@ import { githubConfig, installUrl, installationAccount, listInstallationRepos } 
  * against the public key — proving the PEM import + sign path works, without a network.
  */
 describe('GitHub App client', () => {
-  // A real 2048-bit RSA key, exported exactly as GitHub hands one out: PKCS#8 PEM.
+  // A real 2048-bit RSA key. NOTE: GitHub's App-key download is PKCS#1
+  // ("BEGIN RSA PRIVATE KEY"), not PKCS#8 — both formats are covered below.
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+  const pkcs1Pem = privateKey.export({ type: 'pkcs1', format: 'pem' }) as string;
 
   interface Call {
     url: string;
@@ -87,6 +89,33 @@ describe('GitHub App client', () => {
     const { calls, fetchImpl } = fakeGithub();
     const cfg = githubConfig(
       { GITHUB_APP_ID: '123456', GITHUB_APP_SLUG: 'substrat-import', GITHUB_APP_PRIVATE_KEY: singleLinePem },
+      fetchImpl,
+    )!;
+    const account = await installationAccount(cfg, '987');
+    expect(account).toBe('acme-inc');
+    const verdict = await jwtIsValidRs256(calls[0]!.authorization!.slice('Bearer '.length));
+    expect(verdict.ok).toBe(true);
+  });
+
+  it('accepts a PKCS#1 key exactly as GitHub downloads it (BEGIN RSA PRIVATE KEY)', async () => {
+    // The real-world failure mode this guards: the downloaded .private-key.pem pasted
+    // straight into the secret. Web Crypto only imports PKCS#8, so the client must
+    // wrap the PKCS#1 DER — a raw import would throw DataError on every call.
+    const { calls, fetchImpl } = fakeGithub();
+    const cfg = githubConfig(
+      { GITHUB_APP_ID: '123456', GITHUB_APP_SLUG: 'substrat-import', GITHUB_APP_PRIVATE_KEY: pkcs1Pem },
+      fetchImpl,
+    )!;
+    const account = await installationAccount(cfg, '987');
+    expect(account).toBe('acme-inc');
+    const verdict = await jwtIsValidRs256(calls[0]!.authorization!.slice('Bearer '.length));
+    expect(verdict.ok).toBe(true);
+  });
+
+  it('accepts a single-line PKCS#1 key with literal \\n escapes', async () => {
+    const { calls, fetchImpl } = fakeGithub();
+    const cfg = githubConfig(
+      { GITHUB_APP_ID: '123456', GITHUB_APP_SLUG: 'substrat-import', GITHUB_APP_PRIVATE_KEY: pkcs1Pem.replace(/\n/g, '\\n') },
       fetchImpl,
     )!;
     const account = await installationAccount(cfg, '987');
