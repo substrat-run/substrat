@@ -690,6 +690,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.post('/verticals/:slug/instances', async (c) => {
     const slug = c.req.param('slug');
+    // The install kill-switch: a blocked vertical takes no NEW instances, for anyone
+    // including its owner. Refused before deployment resolution so the answer is
+    // uniform whether or not anything is deployed. Existing scopes keep serving.
+    const registered = (await admin.listVerticals(c.get('actor'))).find((v) => v.slug === slug);
+    if (registered?.installsBlocked) {
+      return c.json({ error: `new installs of vertical '${slug}' are blocked` }, 403);
+    }
     // Static binding first (milestone-one shape), then the dispatch resolver for a
     // pushed vertical — the provisioning mirror of the router's verticalFor.
     const vertical =
@@ -835,6 +842,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { listed } = z.object({ listed: z.boolean() }).parse(await c.req.json());
     await admin.setVerticalListed(c.get('actor'), slug, listed);
     return c.json({ slug, listed });
+  });
+
+  // The install kill-switch (staff-only — not in BUILDER_ROUTES, so a builder is
+  // refused by the confinement middleware). Blocks NEW installs; existing scopes
+  // keep serving. Orthogonal to /listing (visibility).
+  app.post('/verticals/:slug/install-block', async (c) => {
+    const slug = c.req.param('slug');
+    const { blocked } = z.object({ blocked: z.boolean() }).parse(await c.req.json());
+    await admin.setVerticalInstallsBlocked(c.get('actor'), slug, blocked);
+    return c.json({ slug, installsBlocked: blocked });
+  });
+
+  // Delete a vertical + its versions and channels (staff-only, same confinement).
+  // Refused below the seam while any scope is still bound — surfaces as a 4xx via
+  // mapError, naming the count. Dispatch scripts become orphans for cleanup (#248).
+  app.delete('/verticals/:slug', async (c) => {
+    const slug = c.req.param('slug');
+    await admin.deleteVertical(c.get('actor'), slug);
+    return c.json({ slug, deleted: true });
   });
 
   app.get('/verticals/:slug/channels', async (c) => {

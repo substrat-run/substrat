@@ -508,6 +508,28 @@ export interface HostAdmin {
   requestPublish(actor: PlatformActorId, slug: string): Promise<void>;
 
   /**
+   * Block (or unblock) NEW installs of a vertical — the staff kill-switch for one
+   * that should take no more instances. Orthogonal to `setVerticalListed`
+   * (visibility): a blocked vertical is hidden from the install catalog and
+   * provisioning an instance of it is refused, for everyone including its owner.
+   * Existing scopes keep running untouched — this gates provisioning, not serving.
+   * Staff-only, idempotent, audited.
+   */
+  setVerticalInstallsBlocked(actor: PlatformActorId, slug: string, blocked: boolean): Promise<void>;
+
+  /**
+   * Delete a vertical from the registry — its row, its versions, its channels.
+   *
+   * **Refuses while any scope is still bound to it** (`scopes.vertical`), because a
+   * deleted registry row would strand those scopes' version pins and routing. Delete
+   * or rebind the scopes first; the refusal names the count. Deployed dispatch
+   * scripts are NOT reaped here — they become orphans for the cleanup script (#248),
+   * so a mistaken delete never destroys a deployment that scopes may still need
+   * while the refusal above is being raced. Staff-only, audited.
+   */
+  deleteVertical(actor: PlatformActorId, slug: string): Promise<void>;
+
+  /**
    * Promote a version to a channel (#31 step 2) — the moment a change reaches
    * anyone, and therefore where §4's two human checkpoints belong.
    *

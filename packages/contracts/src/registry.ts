@@ -65,6 +65,15 @@ export const vertical = z.object({
    * resolved). Set by `requestPublish`; cleared when staff `setVerticalListed`.
    */
   publishRequestedAt: instant.nullish(),
+  /**
+   * New installs BLOCKED — the staff kill-switch for a vertical that should take no
+   * more instances (deprecated, misbehaving, or being retired). Orthogonal to
+   * `listed` (visibility): a blocked vertical is hidden from the install catalog AND
+   * the control plane refuses to provision an instance of it, for everyone including
+   * its owner. Existing scopes keep running untouched — this gates provisioning, not
+   * serving. Never set at registration; flipped by staff (`setVerticalInstallsBlocked`).
+   */
+  installsBlocked: z.boolean().default(false),
   createdAt: instant,
 });
 export type Vertical = z.infer<typeof vertical>;
