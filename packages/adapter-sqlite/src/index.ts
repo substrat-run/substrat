@@ -20,8 +20,10 @@ import {
   createOrgInput,
   promotionAcknowledgement,
   bindHostnameInput,
+  channelHistoryEntry,
   hostnameBinding,
   publishVersionInput,
+  AUTO_ADMISSION_NOTE,
   routeTarget,
   registerVerticalInput,
   vertical as verticalSchema,
@@ -397,6 +399,16 @@ interface ChannelRow {
   updated_at: string;
 }
 
+interface ChannelHistoryRow {
+  id: string;
+  vertical_slug: string;
+  channel: string;
+  version_id: string;
+  from_version_id: string | null;
+  actor: string;
+  at: string;
+}
+
 interface OrgRow {
   org_id: string;
   tenant_id: string;
@@ -606,6 +618,22 @@ export class SqliteScopeHost implements ScopeHost {
         updated_at    TEXT NOT NULL,
         PRIMARY KEY (vertical_slug, channel)
       );
+      -- The promotion timeline (append-only). The channel row remembers only where it
+      -- points now; this remembers every move — what went live, what it replaced, who
+      -- and exactly when. "at" is the PITR anchor a data rollback would rewind to
+      -- (preview-and-snapshots.md §7). Never updated, never deleted except with the
+      -- vertical itself.
+      CREATE TABLE IF NOT EXISTS vertical_channel_history (
+        id              TEXT PRIMARY KEY,
+        vertical_slug   TEXT NOT NULL,
+        channel         TEXT NOT NULL,
+        version_id      TEXT NOT NULL,
+        from_version_id TEXT,
+        actor           TEXT NOT NULL,
+        at              TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS vch_vertical_channel
+        ON vertical_channel_history (vertical_slug, channel);
       -- Organizations inside a tenant (K-22). Membership tuples point at these and
       -- grantToOrg targets them. Before this the id was a free-form string with no
       -- record, so a typo addressed a phantom org. The tenant_id column is also
@@ -2295,17 +2323,21 @@ export class SqliteScopeHost implements ScopeHost {
       },
       publishVersion: async (actor: PlatformActorId, input: PublishVersionInput) => {
         const parsed = publishVersionInput.parse(input);
-        if (!readVertical(parsed.verticalSlug)) {
+        const owning = readVertical(parsed.verticalSlug);
+        if (!owning) {
           throw new Error(`unknown vertical '${parsed.verticalSlug}'`);
         }
-        // Lands PENDING. A push is not a deploy — the gates decide, and binding a
-        // scope is a separate, reviewable step.
+        // Lands PENDING — a push is not a deploy — except for a PRIVATE vertical
+        // (tenant-owned, not listed), whose blast radius is its own tenant: there the
+        // sandbox contract is the gate and the version self-admits, noted so the
+        // publish seam can tell a staff vouch from this shortcut.
+        const selfAdmits = owning.ownerTenant !== null && !owning.listed;
         this.directory
           .prepare(
             `INSERT INTO vertical_versions
                (id, vertical_slug, version, manifest_digest, permission_digest,
                 migration_digest, deployment_ref, admission, admission_note, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             parsed.id,
@@ -2315,9 +2347,14 @@ export class SqliteScopeHost implements ScopeHost {
             parsed.permissionDigest,
             parsed.migrationDigest,
             parsed.deploymentRef,
+            selfAdmits ? 'admitted' : 'pending',
+            selfAdmits ? AUTO_ADMISSION_NOTE : null,
             new Date().toISOString(),
           );
-        this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, parsed);
+        this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
+          ...parsed,
+          admission: selfAdmits ? 'admitted' : 'pending',
+        });
       },
       listVersions: async (actor, verticalSlug: string) => {
         const rows = this.directory
@@ -2329,6 +2366,21 @@ export class SqliteScopeHost implements ScopeHost {
       setVerticalListed: async (actor, slug: string, listed: boolean) => {
         const existing = readVertical(slug);
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        // Listing is the moment other tenants start trusting this code, so the
+        // version they would install must carry a real staff vouch — an auto-admitted
+        // prod version has never been read by anyone but its author.
+        if (listed) {
+          const prod = this.directory
+            .prepare("SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = 'prod'")
+            .get(slug) as { version_id: string } | undefined;
+          const prodVersion = prod ? readVersion(prod.version_id) : undefined;
+          if (prodVersion?.admissionNote === AUTO_ADMISSION_NOTE) {
+            throw new Error(
+              `vertical '${slug}' prod version ${prodVersion.id} is auto-admitted (private self-serve) — ` +
+                `a staff admit must vouch for it before listing`,
+            );
+          }
+        }
         // Resolve any pending publish request either way, and set the flag.
         this.directory
           .prepare('UPDATE verticals SET listed = ?, publish_requested_at = NULL WHERE slug = ?')
@@ -2365,6 +2417,7 @@ export class SqliteScopeHost implements ScopeHost {
         // Deployed dispatch scripts are NOT reaped here — they become orphans for the
         // cleanup script (#248), never destroyed alongside a registry row.
         this.directory.prepare('DELETE FROM vertical_channels WHERE vertical_slug = ?').run(slug);
+        this.directory.prepare('DELETE FROM vertical_channel_history WHERE vertical_slug = ?').run(slug);
         this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
         this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug);
         this.recordAdmin(
@@ -2378,7 +2431,19 @@ export class SqliteScopeHost implements ScopeHost {
       admitVersion: async (actor, versionId: string) => {
         const v = readVersion(versionId);
         if (!v) throw new Error(`unknown version ${versionId}`);
-        if (v.admission === 'admitted') return; // idempotent
+        if (v.admission === 'admitted') {
+          // Idempotent — except an AUTO-admitted version, which this upgrades to a
+          // manual vouch by clearing the note (what the publish seam requires).
+          if (v.admissionNote !== AUTO_ADMISSION_NOTE) return;
+          this.directory
+            .prepare('UPDATE vertical_versions SET admission_note = NULL WHERE id = ?')
+            .run(versionId);
+          this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission, note: v.admissionNote }, {
+            admission: 'admitted',
+            note: null,
+          });
+          return;
+        }
         if (v.admission === 'rejected') {
           throw new Error(`version ${versionId} was rejected — publish a new one`);
         }
@@ -2445,13 +2510,63 @@ export class SqliteScopeHost implements ScopeHost {
           }
         }
 
+        const promotedAt = new Date().toISOString();
         this.directory
           .prepare(
             `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
              VALUES (?, ?, ?, ?)
              ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
           )
-          .run(verticalSlug, channel, versionId, new Date().toISOString(), versionId, new Date().toISOString());
+          .run(verticalSlug, channel, versionId, promotedAt, versionId, promotedAt);
+        // The timeline row: what makes rollback a choice among recorded moments, and
+        // `at` the PITR anchor a data rollback would rewind to.
+        this.directory
+          .prepare(
+            `INSERT INTO vertical_channel_history
+               (id, vertical_slug, channel, version_id, from_version_id, actor, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(ulid(), verticalSlug, channel, versionId, outgoing?.id ?? null, actor, promotedAt);
+
+        // For a PRIVATE vertical, prod IS what the owner's apps run: re-point the
+        // owning tenant's live scopes in the same act, so merge-to-main (push +
+        // promote) is a complete deploy and a rollback promote reaches the running
+        // app. D-30's lockstep concern is a SHARED vertical's many tenants, which a
+        // private vertical cannot have — this fires for no one else. Snapshots and
+        // forks (forked_from set) keep their frontier untouched, and a rebind that
+        // crosses a migration digest snapshots first (fork-before-promote, §4).
+        if (channel === 'prod') {
+          const owning = readVertical(verticalSlug);
+          if (owning && owning.ownerTenant !== null && !owning.listed) {
+            const bound = this.directory
+              .prepare(
+                `SELECT scope_id, tenant_id, vertical_version_id FROM scopes
+                 WHERE vertical = ? AND tenant_id = ? AND status = 'active' AND forked_from IS NULL`,
+              )
+              .all(verticalSlug, owning.ownerTenant) as {
+              scope_id: string;
+              tenant_id: string;
+              vertical_version_id: string | null;
+            }[];
+            for (const s of bound) {
+              if (s.vertical_version_id === versionId) continue;
+              const prev = s.vertical_version_id ? readVersion(s.vertical_version_id) : undefined;
+              if (prev && prev.migrationDigest !== incoming.migrationDigest) {
+                await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
+              }
+              this.directory
+                .prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')
+                .run(versionId, verticalSlug, s.scope_id);
+              this.recordAdmin(
+                actor,
+                'bindScopeVersion',
+                { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
+                prev ? { versionId: prev.id, version: prev.version } : null,
+                { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
+              );
+            }
+          }
+        }
 
         // The acknowledgement is recorded, not just enforced: that is what turns
         // "someone reviewed the permission change" into evidence.
@@ -2474,6 +2589,31 @@ export class SqliteScopeHost implements ScopeHost {
             channel: r.channel,
             versionId: r.version_id,
             updatedAt: r.updated_at,
+          }),
+        );
+      },
+      listChannelHistory: async (actor, verticalSlug: string, channel?) => {
+        const rows = (
+          channel
+            ? this.directory
+                .prepare(
+                  'SELECT * FROM vertical_channel_history WHERE vertical_slug = ? AND channel = ? ORDER BY id DESC',
+                )
+                .all(verticalSlug, channel)
+            : this.directory
+                .prepare('SELECT * FROM vertical_channel_history WHERE vertical_slug = ? ORDER BY id DESC')
+                .all(verticalSlug)
+        ) as ChannelHistoryRow[];
+        this.recordAccess(actor, 'listChannelHistory', {}, { verticalSlug, channel }, rows.length);
+        return rows.map((r) =>
+          channelHistoryEntry.parse({
+            id: r.id,
+            verticalSlug: r.vertical_slug,
+            channel: r.channel,
+            versionId: r.version_id,
+            fromVersionId: r.from_version_id,
+            actor: r.actor,
+            at: r.at,
           }),
         );
       },

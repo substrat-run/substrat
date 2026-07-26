@@ -138,6 +138,19 @@ export interface Deployment {
   boundVersionId?: string | null;
 }
 
+/**
+ * One recorded go-live: what a channel started serving, what it replaced, who moved the
+ * pointer and exactly when — the rollback picker's row. `at` is also the instant a
+ * point-in-time data restore would rewind to.
+ */
+export interface ChannelHistoryEntry {
+  id: string;
+  versionId: string;
+  fromVersionId: string | null;
+  actor: string;
+  at: string;
+}
+
 /** The result of updating an app to its vertical's prod version. */
 export interface UpdateResult {
   updated: boolean;
@@ -426,11 +439,21 @@ export const api = {
     call<WorkflowPreview>(
       `/github/workflow-preview?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`,
     ),
-  promoteDeployment: (slug: string, channel: 'dev' | 'staging', versionId: string) =>
+  promoteDeployment: (
+    slug: string,
+    channel: 'dev' | 'staging' | 'prod',
+    versionId: string,
+    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean },
+  ) =>
     call<void>(`/deployments/${encodeURIComponent(slug)}/promote`, {
       method: 'POST',
-      body: JSON.stringify({ channel, versionId }),
+      body: JSON.stringify({ channel, versionId, ...(acknowledge ? { acknowledge } : {}) }),
     }),
+  /** One channel's promotion timeline (newest first) — the rollback picker's data. */
+  channelHistory: (slug: string, channel: 'dev' | 'staging' | 'prod') =>
+    call<ChannelHistoryEntry[]>(
+      `/deployments/${encodeURIComponent(slug)}/channels/${encodeURIComponent(channel)}/history`,
+    ),
 };
 
 /**

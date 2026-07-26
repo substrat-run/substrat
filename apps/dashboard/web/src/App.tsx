@@ -300,7 +300,7 @@ export function App() {
   );
 
   const promoteDeployment = useCallback(
-    async (slug: string, versionId: string, channel: 'dev' | 'staging') => {
+    async (slug: string, versionId: string, channel: 'dev' | 'staging' | 'prod') => {
       if (promoting) return;
       setPromoting(true);
       try {
@@ -313,7 +313,18 @@ export function App() {
             ),
           );
         } else {
-          await api.promoteDeployment(slug, channel, versionId);
+          try {
+            await api.promoteDeployment(slug, channel, versionId);
+          } catch (e) {
+            // The registry refuses a promotion that changes the permission or migration
+            // surface until the change is acknowledged (the §4 checkpoint). Surface the
+            // refusal verbatim and let the person acknowledge it deliberately — the same
+            // dialog the staff console shows, one confirm instead of a silent flag.
+            const msg = e instanceof Error ? e.message : String(e);
+            if (!msg.includes('acknowledge it explicitly')) throw e;
+            if (!window.confirm(`${msg}\n\nPromote anyway?`)) throw new Error('Promotion cancelled — the change was not acknowledged.');
+            await api.promoteDeployment(slug, channel, versionId, { permissionChange: true, migrationChange: true });
+          }
           await reloadDeployments();
         }
         setToast({ status: 'success', title: `Promoted to ${channel}`, detail: `${slug} now serves ${channel} from this version.` });

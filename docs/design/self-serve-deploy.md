@@ -37,6 +37,16 @@ builder, the artifact is an **opaque, minified bundle** — you cannot boundary-
 cannot recover its permission or migration surface from it. Admission degrades from *verified*
 to *guessed*.
 
+> **Revised (builder-plane.md §4-revised):** a *guessed* admission gates nothing, so its
+> scope shrank to where a human read can matter. A **private** vertical (tenant-owned, not
+> listed) **self-admits on push** — its blast radius is its own tenant, and the sandbox
+> contract is the actual protection; the owner self-serves prod, and prod promotion re-points
+> the owner's live scopes (with channel history + fork-before-promote as the rollback story).
+> Human admission remains mandatory exactly where the audience widens: publishing to the
+> marketplace requires a staff-vouched (manually admitted) prod version, and a **listed**
+> vertical's pushes land pending with prod staff-gated. The rest of this doc's admission
+> analysis applies to that listed tier.
+
 So the fork is: **do we ever accept an opaque bundle, or must untrusted code arrive as source
 we build ourselves?**
 

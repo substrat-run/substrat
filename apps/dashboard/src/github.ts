@@ -244,6 +244,13 @@ export async function setupRepoCi(
  * expects. The install step is load-bearing: `substrat push` runs the repo's own
  * build (wrangler custom build), which needs the repo's devDependencies on disk —
  * the lockfile picks the package manager, via corepack for pnpm/yarn.
+ *
+ * `--promote prod` makes merging the deploy: a private vertical's push lands admitted
+ * and its prod channel is self-serve, so the same run points prod at the new version.
+ * Rollback is the dashboard's go-live history. The step fails loudly in exactly two
+ * cases — the vertical got LISTED (prod is a staff decision again), or the version
+ * changes the permission/migration surface (promote from the dashboard, which shows
+ * the diff to acknowledge).
  */
 export function deployWorkflowYaml(branch: string, slug: string, cpUrl: string): string {
   return `name: Deploy to Substrat
@@ -269,7 +276,7 @@ jobs:
           elif [ -f package-lock.json ]; then npm ci
           else npm install
           fi
-      - run: npx @substrat-run/cli push . --slug ${slug} --version 0.1.\${{ github.run_number }}
+      - run: npx @substrat-run/cli push . --slug ${slug} --version 0.1.\${{ github.run_number }} --promote prod
         env:
           SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: ${cpUrl}

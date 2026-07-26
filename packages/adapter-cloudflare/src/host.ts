@@ -7,8 +7,10 @@ import {
   createOrgInput,
   promotionAcknowledgement,
   bindHostnameInput,
+  channelHistoryEntry,
   hostnameBinding,
   publishVersionInput,
+  AUTO_ADMISSION_NOTE,
   registerVerticalInput,
   vertical as verticalSchema,
   verticalChannel,
@@ -104,6 +106,7 @@ import {
 import type {
   AccessLogRow,
   AuditLogQuery,
+  ChannelHistoryRow,
   ChannelRow,
   ConnectionDoRow,
   HostnameRow,
@@ -246,7 +249,7 @@ interface ControlPlaneStub {
   insertVersion(v: {
     id: string; verticalSlug: string; version: string; manifestDigest: string;
     permissionDigest: string; migrationDigest: string; deploymentRef: string | null;
-    createdAt: string;
+    admission: string; admissionNote: string | null; createdAt: string;
   }): Promise<void>;
   listVersions(verticalSlug: string): Promise<VersionRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
@@ -255,6 +258,8 @@ interface ControlPlaneStub {
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): Promise<void>;
   listChannels(verticalSlug: string): Promise<ChannelRow[]>;
+  insertChannelHistory(h: ChannelHistoryRow): Promise<void>;
+  listChannelHistory(verticalSlug: string, channel?: string): Promise<ChannelHistoryRow[]>;
   readOrg(tenantId: string, orgId: string): Promise<OrgRow | undefined>;
   createOrg(
     orgId: string,
@@ -1514,12 +1519,25 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       publishVersion: async (actor, input: PublishVersionInput) => {
         const parsed = publishVersionInput.parse(input);
-        if (!(await this.cp.readVertical(parsed.verticalSlug))) {
+        const owning = await this.cp.readVertical(parsed.verticalSlug);
+        if (!owning) {
           throw new Error(`unknown vertical '${parsed.verticalSlug}'`);
         }
-        // Lands PENDING — a push is not a deploy.
-        await this.cp.insertVersion({ ...parsed, createdAt: new Date().toISOString() });
-        await this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, parsed);
+        // Lands PENDING — a push is not a deploy — except for a PRIVATE vertical
+        // (tenant-owned, not listed), whose blast radius is its own tenant: there the
+        // sandbox contract is the gate and the version self-admits, noted so the
+        // publish seam can tell a staff vouch from this shortcut.
+        const selfAdmits = owning.owner_tenant !== null && !owning.listed;
+        await this.cp.insertVersion({
+          ...parsed,
+          admission: selfAdmits ? 'admitted' : 'pending',
+          admissionNote: selfAdmits ? AUTO_ADMISSION_NOTE : null,
+          createdAt: new Date().toISOString(),
+        });
+        await this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
+          ...parsed,
+          admission: selfAdmits ? 'admitted' : 'pending',
+        });
       },
       listVersions: async (actor, verticalSlug: string) => {
         const rows = await this.cp.listVersions(verticalSlug);
@@ -1529,6 +1547,19 @@ export class CloudflareScopeHost implements ScopeHost {
       setVerticalListed: async (actor, slug: string, listed: boolean) => {
         const existing = await this.cp.readVertical(slug);
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        // Listing is the moment other tenants start trusting this code, so the
+        // version they would install must carry a real staff vouch — an auto-admitted
+        // prod version has never been read by anyone but its author.
+        if (listed) {
+          const prod = await this.cp.readChannel(slug, 'prod');
+          const prodVersion = prod ? await this.cp.readVersion(prod.version_id) : undefined;
+          if (prodVersion?.admission_note === AUTO_ADMISSION_NOTE) {
+            throw new Error(
+              `vertical '${slug}' prod version ${prodVersion.id} is auto-admitted (private self-serve) — ` +
+                `a staff admit must vouch for it before listing`,
+            );
+          }
+        }
         await this.cp.updateVerticalListed(slug, listed ? 1 : 0); // also resolves any pending request
         await this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: !!existing.listed }, { listed });
       },
@@ -1568,7 +1599,14 @@ export class CloudflareScopeHost implements ScopeHost {
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);
         if (!v) throw new Error(`unknown version ${versionId}`);
-        if (v.admission === 'admitted') return;
+        if (v.admission === 'admitted') {
+          // Idempotent — except an AUTO-admitted version, which this upgrades to a
+          // manual vouch by clearing the note (what the publish seam requires).
+          if (v.admission_note !== AUTO_ADMISSION_NOTE) return;
+          await this.cp.setAdmission(versionId, 'admitted', null);
+          await this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission, note: v.admission_note }, { admission: 'admitted', note: null });
+          return;
+        }
         if (v.admission === 'rejected') {
           throw new Error(`version ${versionId} was rejected — publish a new one`);
         }
@@ -1623,7 +1661,49 @@ export class CloudflareScopeHost implements ScopeHost {
           }
         }
 
-        await this.cp.setChannel(verticalSlug, channel, versionId, new Date().toISOString());
+        const promotedAt = new Date().toISOString();
+        await this.cp.setChannel(verticalSlug, channel, versionId, promotedAt);
+        // The timeline row: what makes rollback a choice among recorded moments, and
+        // `at` the PITR anchor a data rollback would rewind to.
+        await this.cp.insertChannelHistory({
+          id: ulid(),
+          vertical_slug: verticalSlug,
+          channel,
+          version_id: versionId,
+          from_version_id: outgoing?.id ?? null,
+          actor,
+          at: promotedAt,
+        });
+        // For a PRIVATE vertical, prod IS what the owner's apps run: re-point the
+        // owning tenant's live scopes in the same act, so merge-to-main (push +
+        // promote) is a complete deploy and a rollback promote reaches the running
+        // app. D-30's lockstep concern is a SHARED vertical's many tenants, which a
+        // private vertical cannot have — this fires for no one else. Snapshots and
+        // forks (forked_from set) keep their frontier untouched, and a rebind that
+        // crosses a migration digest snapshots first (fork-before-promote, §4).
+        if (channel === 'prod') {
+          const owning = await this.cp.readVertical(verticalSlug);
+          if (owning && owning.owner_tenant !== null && !owning.listed) {
+            const bound = (
+              await this.cp.listScopes({ tenantId: owning.owner_tenant, vertical: verticalSlug, status: ['active'] })
+            ).filter((s) => !s.forked_from);
+            for (const s of bound) {
+              if (s.vertical_version_id === versionId) continue;
+              const prev = s.vertical_version_id ? await this.cp.readVersion(s.vertical_version_id) : undefined;
+              if (prev && prev.migration_digest !== incoming.migration_digest) {
+                await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
+              }
+              await this.cp.bindScopeVersion(s.scope_id, versionId, verticalSlug);
+              await this.recordAdmin(
+                actor,
+                'bindScopeVersion',
+                { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
+                prev ? { versionId: prev.id, version: prev.version } : null,
+                { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
+              );
+            }
+          }
+        }
         await this.recordAdmin(
           actor,
           'promoteVersion',
@@ -1641,6 +1721,21 @@ export class CloudflareScopeHost implements ScopeHost {
             channel: r.channel,
             versionId: r.version_id,
             updatedAt: r.updated_at,
+          }),
+        );
+      },
+      listChannelHistory: async (actor, verticalSlug: string, channel?) => {
+        const rows = await this.cp.listChannelHistory(verticalSlug, channel);
+        await this.recordAccess(actor, 'listChannelHistory', {}, { verticalSlug, channel }, rows.length);
+        return rows.map((r) =>
+          channelHistoryEntry.parse({
+            id: r.id,
+            verticalSlug: r.vertical_slug,
+            channel: r.channel,
+            versionId: r.version_id,
+            fromVersionId: r.from_version_id,
+            actor: r.actor,
+            at: r.at,
           }),
         );
       },

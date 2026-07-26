@@ -313,16 +313,39 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
-   * Point a channel at a version (builder-plane.md Phase 4). The dashboard only ever calls
-   * this for `dev`/`staging` — `prod` stays a staff decision (model B), enforced at the
-   * worker endpoint. Over the service token the shared plane treats this as a staff
-   * promotion, so the caller's ownership of the slug must be checked FIRST (`assertOwned`).
+   * Point a channel at a version (builder-plane.md Phase 4). dev/staging always; `prod`
+   * only for a PRIVATE vertical — the worker endpoint enforces that split (a listed
+   * vertical's prod is staff again). Over the service token the shared plane treats this
+   * as a staff promotion, so the caller's ownership of the slug must be checked FIRST
+   * (`assertOwned`). `acknowledge` carries the digest-change confirmations the registry
+   * demands when the permission/migration surface differs from what the channel serves.
    */
-  promote(verticalSlug: string, channel: string, versionId: string): Promise<void> {
+  promote(
+    verticalSlug: string,
+    channel: string,
+    versionId: string,
+    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean },
+  ): Promise<void> {
     return this.post(
       `/verticals/${encodeURIComponent(verticalSlug)}/channels/${encodeURIComponent(channel)}/promote`,
-      { versionId },
+      { versionId, ...(acknowledge ? { acknowledge } : {}) },
     );
+  }
+
+  /** One channel's promotion timeline, newest first — the rollback picker's data. */
+  async channelHistory(
+    verticalSlug: string,
+    channel: string,
+  ): Promise<Array<{ id: string; versionId: string; fromVersionId: string | null; actor: string; at: string }>> {
+    try {
+      return (
+        (await this.call(
+          `/verticals/${encodeURIComponent(verticalSlug)}/channels/${encodeURIComponent(channel)}/history`,
+        )) ?? []
+      );
+    } catch {
+      return [];
+    }
   }
 
   /**

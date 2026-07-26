@@ -28,6 +28,7 @@ import type {
   PermissionKey,
   PlatformActorId,
   ChannelName,
+  ChannelHistoryEntry,
   HostnameBinding,
   HostnameStatus,
   PromotionAcknowledgement,
@@ -480,7 +481,14 @@ export interface HostAdmin {
   listVerticals(actor: PlatformActorId): Promise<Vertical[]>;
 
   /**
-   * Publish a version. It lands **pending** — a push is not a deploy.
+   * Publish a version. It lands **pending** — a push is not a deploy — with ONE
+   * exception: a **private** vertical's version (owned by a tenant, not `listed`)
+   * lands **admitted**, noted `AUTO_ADMISSION_NOTE`. Its blast radius is the owning
+   * tenant alone, and the sandbox contract — not a staff read of an opaque digest —
+   * is what protects the platform, so staff admission there gated nothing dev/staging
+   * didn't already concede. Staff review holds where the audience widens: a listed
+   * vertical's pushes land pending, and `setVerticalListed` refuses an auto-admitted
+   * prod version.
    *
    * The digests are what promotion compares. `boundary-lint` and the migration and
    * permission diffs are the admission gates, and binding a scope is a separate step
@@ -490,7 +498,11 @@ export interface HostAdmin {
   publishVersion(actor: PlatformActorId, input: PublishVersionInput): Promise<void>;
   listVersions(actor: PlatformActorId, verticalSlug: string): Promise<VerticalVersion[]>;
 
-  /** Admit a pending version — the gates passed. Idempotent on an already-admitted one. */
+  /**
+   * Admit a pending version — the gates passed. Idempotent on an already-admitted one,
+   * EXCEPT an auto-admitted one (`AUTO_ADMISSION_NOTE`), which it upgrades to a manual
+   * vouch by clearing the note — the recorded human decision `setVerticalListed` requires.
+   */
   admitVersion(actor: PlatformActorId, versionId: string): Promise<void>;
   /** Reject a pending version, with the reason. Rejected is terminal: publish a new one. */
   rejectVersion(actor: PlatformActorId, versionId: string, note: string): Promise<void>;
@@ -499,6 +511,11 @@ export interface HostAdmin {
    * staff admission of a publish request. Flips the registry `listed` flag; `availableCatalog`
    * then offers it to every tenant (a private vertical shows only to its owner). Staff-only,
    * idempotent, audited. Distinct from `admitVersion` (servable) and prod promotion.
+   *
+   * **Refuses `listed: true` while the prod channel points at an auto-admitted version**
+   * (`AUTO_ADMISSION_NOTE`): listing is the moment other tenants start trusting this code,
+   * so the version they would install must carry a real staff vouch — `admitVersion` it
+   * first (which clears the note), then list.
    */
   setVerticalListed(actor: PlatformActorId, slug: string, listed: boolean): Promise<void>;
   /**
@@ -552,6 +569,18 @@ export interface HostAdmin {
     acknowledge?: PromotionAcknowledgement,
   ): Promise<void>;
   listChannels(actor: PlatformActorId, verticalSlug: string): Promise<VerticalChannel[]>;
+
+  /**
+   * The promotion timeline (append-only, newest first) — every pointer move
+   * `promoteVersion` ever made for the vertical, optionally narrowed to one channel.
+   * Rollback UIs pick a target from it, and each entry's `at` is the instant a PITR
+   * restore would rewind the data to (preview-and-snapshots.md §7).
+   */
+  listChannelHistory(
+    actor: PlatformActorId,
+    verticalSlug: string,
+    channel?: ChannelName,
+  ): Promise<ChannelHistoryEntry[]>;
 
   /**
    * Point a scope at a version.

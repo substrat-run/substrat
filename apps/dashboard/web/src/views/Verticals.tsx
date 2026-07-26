@@ -4,6 +4,7 @@ import {
   api,
   connectGithub,
   ApiError,
+  type ChannelHistoryEntry,
   type Deployment,
   type DeploymentVersion,
   type GitReposResult,
@@ -20,10 +21,12 @@ import { card, CopyButton, Pill, PageTitle, MonoTag, type PillKind } from '../co
  * Verticals (builder-plane.md Phase 4; formerly "Deployments") — the supply side of the
  * marketplace split. An APP is an installed instance with its own data; a VERTICAL is the
  * software it runs: pushed versions, admission state, channels, and (later) marketplace
- * publishing. This page owns everything vertical-level: the pushed list, dev/staging
- * promotion (`prod` stays a staff decision, model B), and the ways a vertical comes into
- * existence — the GitHub import + one-click CI scaffold (moved here from Create-app: a
- * repo import produces a pushed VERSION, not a running app) and the CLI push.
+ * publishing. This page owns everything vertical-level: the pushed list, channel
+ * promotion — every channel of a PRIVATE vertical including prod (rollback = promote an
+ * older version; prod of a LISTED vertical stays a staff decision), the prod go-live
+ * history, and the ways a vertical comes into existence — the GitHub import + one-click
+ * CI scaffold (moved here from Create-app: a repo import produces a pushed VERSION, not
+ * a running app) and the CLI push.
  */
 
 const ADMISSION_PILL: Record<string, PillKind> = {
@@ -50,10 +53,14 @@ function VersionRow({
   v: DeploymentVersion;
   last: boolean;
   busy: boolean;
-  onPromote: (channel: 'dev' | 'staging') => void;
+  onPromote: (channel: 'dev' | 'staging' | 'prod') => void;
 }) {
   const here = channelsFor(d, v.id);
   const admitted = v.admission === 'admitted';
+  // Every channel of a PRIVATE vertical is self-serve — prod included, which is also
+  // how rollback works (promote the older version). A listed vertical's prod is a
+  // staff decision again, so the button doesn't render.
+  const channels = d.listed ? (['dev', 'staging'] as const) : (['dev', 'staging', 'prod'] as const);
   return (
     <Row columns="1.2fr 1fr 1.4fr 1.6fr" last={last}>
       <span style={{ fontWeight: 500 }}>{v.version}</span>
@@ -72,8 +79,8 @@ function VersionRow({
         )}
       </span>
       <span style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        {/* A builder self-serves non-prod. Only an ADMITTED version can be promoted. */}
-        {(['dev', 'staging'] as const).map((ch) =>
+        {/* Only an ADMITTED version can be promoted. */}
+        {channels.map((ch) =>
           here.includes(ch) ? null : (
             <Button
               key={ch}
@@ -91,6 +98,89 @@ function VersionRow({
   );
 }
 
+/**
+ * The prod go-live timeline — every promotion ever made, newest first, with who and
+ * exactly when. Rolling back is promoting the older version again (a new history entry,
+ * never a rewrite); the recorded instant is also what a point-in-time data restore
+ * would rewind to, which is why it is kept here and not reconstructed later.
+ */
+function ProdHistory({
+  d,
+  busy,
+  onPromote,
+}: {
+  d: Deployment;
+  busy: boolean;
+  onPromote: (versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState<ChannelHistoryEntry[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const prod = d.channels.find((c) => c.channel === 'prod');
+
+  useEffect(() => {
+    if (!open || DEV_MOCK) return;
+    let live = true;
+    setFailed(false);
+    api
+      .channelHistory(d.slug, 'prod')
+      .then((h) => live && setEntries(h))
+      .catch(() => live && setFailed(true));
+    return () => {
+      live = false;
+    };
+    // Re-fetch when the pointer moves (a promote just happened).
+  }, [open, d.slug, prod?.versionId]);
+
+  if (!prod) return null; // never went live — nothing to roll back to
+  const label = (id: string) => d.versions.find((v) => v.id === id)?.version ?? id;
+
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <a
+        href="#"
+        onClick={(e) => {
+          e.preventDefault();
+          setOpen(!open);
+        }}
+        style={{ fontSize: 12, color: 'var(--text-tertiary)', width: 'fit-content' }}
+      >
+        {open ? 'Hide go-live history' : 'Go-live history'}
+      </a>
+      {open &&
+        (failed ? (
+          <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>History is unavailable right now.</div>
+        ) : entries === null ? (
+          <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading…</div>
+        ) : entries.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>No promotions recorded yet.</div>
+        ) : (
+          <GridTable columns="1fr 1fr 1.4fr 1fr" header={['Went live', 'Replaced', 'When', '~']}>
+            {entries.map((h, i) => (
+              <Row key={h.id} columns="1fr 1fr 1.4fr 1fr" last={i === entries.length - 1}>
+                <MonoTag>{label(h.versionId)}</MonoTag>
+                <span style={{ color: 'var(--text-tertiary)', fontSize: 12.5 }}>
+                  {h.fromVersionId ? label(h.fromVersionId) : '—'}
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                  {new Date(h.at).toLocaleString()}
+                </span>
+                <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  {/* Current prod gets no button; anything older can come back. */}
+                  {h.versionId === prod.versionId || d.listed ? null : (
+                    <Button variant="ghost" size="sm" disabled={busy} onClick={() => onPromote(h.versionId, 'prod')}>
+                      Roll back
+                    </Button>
+                  )}
+                </span>
+              </Row>
+            ))}
+          </GridTable>
+        ))}
+    </div>
+  );
+}
+
 function VerticalCard({
   d,
   busy,
@@ -98,7 +188,7 @@ function VerticalCard({
 }: {
   d: Deployment;
   busy: boolean;
-  onPromote: (versionId: string, channel: 'dev' | 'staging') => void;
+  onPromote: (versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
 }) {
   const prod = d.channels.find((c) => c.channel === 'prod');
   return (
@@ -124,18 +214,21 @@ function VerticalCard({
           No versions yet — <code>substrat push</code> one.
         </div>
       ) : (
-        <GridTable columns="1.2fr 1fr 1.4fr 1.6fr" header={['Version', 'Admission', 'Channels', '~Promote']}>
-          {d.versions.map((v, i) => (
-            <VersionRow
-              key={v.id}
-              d={d}
-              v={v}
-              last={i === d.versions.length - 1}
-              busy={busy}
-              onPromote={(ch) => onPromote(v.id, ch)}
-            />
-          ))}
-        </GridTable>
+        <>
+          <GridTable columns="1.2fr 1fr 1.4fr 1.6fr" header={['Version', 'Admission', 'Channels', '~Promote']}>
+            {d.versions.map((v, i) => (
+              <VersionRow
+                key={v.id}
+                d={d}
+                v={v}
+                last={i === d.versions.length - 1}
+                busy={busy}
+                onPromote={(ch) => onPromote(v.id, ch)}
+              />
+            ))}
+          </GridTable>
+          <ProdHistory d={d} busy={busy} onPromote={onPromote} />
+        </>
       )}
     </div>
   );
@@ -291,7 +384,7 @@ export function Verticals({
   loadGitRepos,
 }: {
   deployments: Deployment[];
-  onPromote: (slug: string, versionId: string, channel: 'dev' | 'staging') => void;
+  onPromote: (slug: string, versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
   busy: boolean;
   loadGitRepos: () => Promise<GitReposResult>;
 }) {
@@ -319,7 +412,7 @@ export function Verticals({
     <Page>
       <PageTitle
         title="Verticals"
-        subtitle="The software your team builds — every app is an install of a vertical. Promote dev and staging yourself; production and marketplace listing are reviewed by the Substrat team."
+        subtitle="The software your team builds — every app is an install of a vertical. A private vertical is yours end to end: promote any channel, prod included, and roll back from the go-live history. Marketplace listing — and prod of a listed vertical — is reviewed by the Substrat team."
       />
       {sorted.length === 0 ? (
         <div style={{ padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
@@ -360,7 +453,7 @@ function CliPushPanel() {
         <span style={{ flex: 1 }}>{cmd}</span>
         <CopyButton text={cmd} />
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Run <span style={{ fontFamily: 'var(--font-mono)' }}>login</span> first. A push lands a pending version — promote it to a channel to go live.</div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Run <span style={{ fontFamily: 'var(--font-mono)' }}>login</span> first. A private vertical's push is ready to promote immediately — add <span style={{ fontFamily: 'var(--font-mono)' }}>--promote prod</span> to go live in one step.</div>
     </div>
   );
 }
@@ -510,9 +603,10 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
               workspace as the repository secret <span style={{ fontFamily: 'var(--font-mono)' }}>SUBSTRAT_SERVICE_TOKEN</span>.
             </span>
             <span>
-              Every push to <span style={{ fontFamily: 'var(--font-mono)' }}>{branch}</span> now builds and pushes a version of{' '}
-              <span style={{ fontFamily: 'var(--font-mono)' }}>{done.vertical}</span>. Versions land <em>pending</em> above.
-              Prod promotion + admission stay a Substrat-team decision.
+              Every push to <span style={{ fontFamily: 'var(--font-mono)' }}>{branch}</span> now builds, pushes and promotes a
+              version of <span style={{ fontFamily: 'var(--font-mono)' }}>{done.vertical}</span> to prod — merge to{' '}
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{branch}</span> is the deploy. Roll back any time from the
+              go-live history above.
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
@@ -523,7 +617,8 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
         <>
           <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
             Substrat commits a deploy workflow to your repo and stores a workspace-scoped deploy credential as a repository
-            secret. Each push then builds and pushes a version; the first lands <em>pending</em> — promote it to a channel above.
+            secret. Each push to the branch then builds a version and promotes it to prod — merging is the deploy, and the
+            go-live history above is the rollback.
           </div>
 
           <Select

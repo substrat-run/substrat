@@ -395,10 +395,17 @@ const createAppBody = z.object({
     .optional(),
 });
 
-// A builder self-serves dev/staging only; prod is refused in the handler (model B).
+// A builder self-serves every channel of a PRIVATE vertical — prod included, which is
+// what makes rollback (promote an older version) a dashboard action. Prod on a LISTED
+// vertical is refused in the handler: publishing widened the audience, so that gate is
+// staff again (marketplace-publish.md §2). `acknowledge` carries the digest-change
+// confirmations the registry demands when permissions/migrations differ.
 const promoteBody = z.object({
   channel: z.enum(['dev', 'staging', 'prod']),
   versionId: z.string().min(1),
+  acknowledge: z
+    .object({ permissionChange: z.boolean().optional(), migrationChange: z.boolean().optional() })
+    .optional(),
 });
 
 const app = new Hono<{ Bindings: Env }>();
@@ -1342,28 +1349,54 @@ app.get('/api/observability/logs', async (c) => {
 });
 
 /**
- * Promote one of MY verticals to a NON-PROD channel. `prod` is refused here — production
- * promotion + admission stay a staff decision (model B, self-serve-deploy.md §3). The slug
- * is verified to be one of the caller's own deployments before anything is promoted.
+ * Promote one of MY verticals. dev/staging always; `prod` while the vertical is PRIVATE
+ * (its blast radius is this tenant alone — merge-to-main deploys and dashboard rollback
+ * both land here). Prod on a LISTED vertical is refused: publishing widened the audience,
+ * so that promotion is a staff decision again. The slug is verified to be one of the
+ * caller's own deployments before anything is promoted; the registry additionally
+ * refuses non-admitted versions and unacknowledged digest changes below the seam.
  */
 app.post('/api/deployments/:slug/promote', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const body = promoteBody.parse(await c.req.json());
-  if (body.channel === 'prod') {
-    throw new HTTPException(403, { message: 'production is promoted by the Substrat team' });
-  }
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
+  const deployments = cp
+    ? await listDeploymentsFromCp(cp)
+    : await listDeploymentsFromHost(host, STAFF, node.tenantId);
+  assertOwned(deployments, slug); // your vertical, or 4xx
+  const target = deployments.find((d) => d.slug === slug);
+  if (body.channel === 'prod' && target?.listed) {
+    throw new HTTPException(403, { message: 'production for a published vertical is promoted by the Substrat team' });
+  }
   if (cp) {
-    assertOwned(await listDeploymentsFromCp(cp), slug); // your vertical, or 4xx
-    await cp.promote(slug, body.channel, body.versionId);
+    await cp.promote(slug, body.channel, body.versionId, body.acknowledge);
   } else {
-    assertOwned(await listDeploymentsFromHost(host, STAFF, node.tenantId), slug);
-    await host.admin.promoteVersion(STAFF, slug, body.channel, body.versionId);
+    await host.admin.promoteVersion(STAFF, slug, body.channel, body.versionId, body.acknowledge);
   }
   return c.body(null, 204);
+});
+
+/**
+ * One channel's promotion timeline (newest first) — the rollback picker. Each entry is a
+ * recorded go-live moment: version, what it replaced, who, and exactly when (the instant
+ * a PITR restore would rewind the data to). Owned-slug-checked like promote above.
+ */
+app.get('/api/deployments/:slug/channels/:channel/history', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const channel = z.enum(['dev', 'staging', 'prod']).parse(c.req.param('channel'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (cp) {
+    assertOwned(await listDeploymentsFromCp(cp), slug);
+    return c.json(await cp.channelHistory(slug, channel));
+  }
+  assertOwned(await listDeploymentsFromHost(host, STAFF, node.tenantId), slug);
+  return c.json(await host.admin.listChannelHistory(STAFF, slug, channel));
 });
 
 // -- Git import (GitHub App) — connections.md §3.5.1 -------------------------

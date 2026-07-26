@@ -145,6 +145,16 @@ export interface ChannelRow {
   updated_at: string;
 }
 
+export interface ChannelHistoryRow {
+  id: string;
+  vertical_slug: string;
+  channel: string;
+  version_id: string;
+  from_version_id: string | null;
+  actor: string;
+  at: string;
+}
+
 export interface OrgRow {
   org_id: string;
   tenant_id: string;
@@ -302,6 +312,20 @@ const DIRECTORY_DDL = `
     updated_at    TEXT NOT NULL,
     PRIMARY KEY (vertical_slug, channel)
   );
+  -- The promotion timeline (append-only). The channel row remembers only where it
+  -- points now; this remembers every move. "at" is the PITR anchor a data rollback
+  -- would rewind to (preview-and-snapshots.md §7).
+  CREATE TABLE IF NOT EXISTS vertical_channel_history (
+    id              TEXT PRIMARY KEY,
+    vertical_slug   TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    version_id      TEXT NOT NULL,
+    from_version_id TEXT,
+    actor           TEXT NOT NULL,
+    at              TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS vch_vertical_channel
+    ON vertical_channel_history (vertical_slug, channel);
   CREATE TABLE IF NOT EXISTS orgs (
     org_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
@@ -1043,6 +1067,7 @@ export class ControlPlaneDO extends DurableObject {
    */
   deleteVertical(slug: string): void {
     this.sql.exec('DELETE FROM vertical_channels WHERE vertical_slug = ?', slug);
+    this.sql.exec('DELETE FROM vertical_channel_history WHERE vertical_slug = ?', slug);
     this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
     this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug);
   }
@@ -1060,15 +1085,15 @@ export class ControlPlaneDO extends DurableObject {
   insertVersion(v: {
     id: string; verticalSlug: string; version: string; manifestDigest: string;
     permissionDigest: string; migrationDigest: string; deploymentRef: string | null;
-    createdAt: string;
+    admission: string; admissionNote: string | null; createdAt: string;
   }): void {
     this.sql.exec(
       `INSERT INTO vertical_versions
          (id, vertical_slug, version, manifest_digest, permission_digest,
           migration_digest, deployment_ref, admission, admission_note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       v.id, v.verticalSlug, v.version, v.manifestDigest, v.permissionDigest,
-      v.migrationDigest, v.deploymentRef, v.createdAt,
+      v.migrationDigest, v.deploymentRef, v.admission, v.admissionNote, v.createdAt,
     );
   }
 
@@ -1124,6 +1149,29 @@ export class ControlPlaneDO extends DurableObject {
     return this.sql
       .exec('SELECT * FROM vertical_channels WHERE vertical_slug = ? ORDER BY channel', verticalSlug)
       .toArray() as unknown as ChannelRow[];
+  }
+
+  insertChannelHistory(h: ChannelHistoryRow): void {
+    this.sql.exec(
+      `INSERT INTO vertical_channel_history
+         (id, vertical_slug, channel, version_id, from_version_id, actor, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      h.id, h.vertical_slug, h.channel, h.version_id, h.from_version_id, h.actor, h.at,
+    );
+  }
+
+  listChannelHistory(verticalSlug: string, channel?: string): ChannelHistoryRow[] {
+    return (
+      channel
+        ? this.sql.exec(
+            'SELECT * FROM vertical_channel_history WHERE vertical_slug = ? AND channel = ? ORDER BY id DESC',
+            verticalSlug, channel,
+          )
+        : this.sql.exec(
+            'SELECT * FROM vertical_channel_history WHERE vertical_slug = ? ORDER BY id DESC',
+            verticalSlug,
+          )
+    ).toArray() as unknown as ChannelHistoryRow[];
   }
 
   // -- organizations (K-22) ---------------------------------------------------
