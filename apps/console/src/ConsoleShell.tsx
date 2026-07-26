@@ -59,14 +59,15 @@ export function ConsoleShell({
         onSelect={(v) => onNav(v as ViewKey)}
         header={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px 8px' }}>
-            {/* The three strata: vertical over engine over kernel, bottom-up. */}
+            {/* The three strata in the console's rose palette — must match public/strata-glyph.svg,
+                the privileged-surface signal that distinguishes the console from the dashboard. */}
             <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
-              <rect x="3" y="4.5" width="18" height="4.5" rx="2.25" fill="var(--layer-vertical)" />
-              <rect x="3" y="9.75" width="18" height="4.5" rx="2.25" fill="var(--layer-engine)" />
-              <rect x="3" y="15" width="18" height="4.5" rx="2.25" fill="var(--layer-kernel)" />
+              <rect x="3" y="4.5" width="18" height="4.5" rx="2.25" fill="#FB7185" />
+              <rect x="3" y="9.75" width="18" height="4.5" rx="2.25" fill="#E11D48" />
+              <rect x="3" y="15" width="18" height="4.5" rx="2.25" fill="#9F1239" />
             </svg>
             <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>
-              substrat
+              substrat.console
             </span>
           </div>
         }
