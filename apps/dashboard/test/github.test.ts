@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import nacl from 'tweetnacl';
 import { blake2b } from '@noble/hashes/blake2b';
-import { githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from '../src/github.js';
+import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from '../src/github.js';
 import { sealForGithub } from '../src/github-seal.js';
 
 /**
@@ -237,6 +237,24 @@ describe('GitHub App client', () => {
       expect(result).toEqual({ workflowUpdated: true });
       const wf = writes[1]!.body as { sha?: string };
       expect(wf.sha).toBe('abc123');
+    });
+
+    it('generates a workflow that installs dependencies before the push', () => {
+      const yaml = deployWorkflowYaml('main', 'hr-portal', 'https://console.example/api');
+      // `substrat push` runs the repo's own build (wrangler custom build), so the
+      // repo's devDependencies must be on disk before the push step — regression
+      // guard: the first generated workflow had no install step at all.
+      const install = yaml.indexOf('pnpm install --frozen-lockfile');
+      const push = yaml.indexOf('npx @substrat-run/cli push . --slug hr-portal --version 0.1.${{ github.run_number }}');
+      expect(install).toBeGreaterThan(-1);
+      expect(push).toBeGreaterThan(install);
+      // Every common lockfile has a branch; bare repos fall back to npm install.
+      for (const line of ['pnpm-lock.yaml', 'yarn.lock', 'package-lock.json', 'else npm install']) {
+        expect(yaml).toContain(line);
+      }
+      expect(yaml).toContain('branches: [main]');
+      expect(yaml).toContain('SUBSTRAT_CP_URL: https://console.example/api');
+      expect(yaml).toContain('SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}');
     });
 
     it('surfaces missing App write-permissions as needsPermissions, before any write', async () => {
