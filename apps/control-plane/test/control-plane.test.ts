@@ -238,11 +238,19 @@ describe('builder auth — live self-serve path', () => {
     ).json()) as { slug: string }[];
     expect(list.map((v) => v.slug)).toContain('acme-co/helpdesk');
 
-    // Staff-only surfaces stay closed to a builder (default-deny confinement).
+    // Staff-only surfaces stay closed to a builder (default-deny confinement) —
+    // including the identity mirror: a builder must not write the directory
+    // that authenticates builders.
     const tenants = await SELF.fetch('https://cp.test/api/tenants', {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(tenants.status).toBe(403);
+    const mirror = await SELF.fetch(`https://cp.test/api/tenants/${ulid()}/identities`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'authhero', externalId: 'auth0|self', principal: ulid() }),
+    });
+    expect(mirror.status).toBe(403);
   });
 
   it('declines a signed-in user who has no workspace yet (fail closed)', async () => {

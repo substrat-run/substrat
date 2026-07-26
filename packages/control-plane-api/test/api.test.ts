@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { permissionKey, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -137,6 +137,29 @@ describe('control-plane API', () => {
 
     const revoked = await json(`/tenants/${t1}/entitlements/workorder`, 'DELETE');
     expect(await revoked.json()).toEqual([]);
+  });
+
+  // -- identity mirror (builder-plane.md §4) --------------------------------
+
+  it('mirrors an identity link in and out — the builder-plane whoami feed', async () => {
+    const principal = principalId.parse(ulid());
+    const link = { provider: 'authhero', externalId: 'auth0|mirror-user', principal };
+    const put = await json(`/tenants/${t1}/identities`, 'PUT', link);
+    expect(put.status).toBe(204);
+    // Idempotent: the dashboard re-mirrors on every load.
+    expect((await json(`/tenants/${t1}/identities`, 'PUT', link)).status).toBe(204);
+
+    // The link now answers exactly the read builder auth performs (userId → tenants).
+    expect(await host.admin.listIdentityTenants(staff, 'authhero', 'auth0|mirror-user')).toEqual([t1]);
+
+    const del = await json(`/tenants/${t1}/identities/${principal}`, 'DELETE');
+    expect(del.status).toBe(204);
+    expect(await host.admin.listIdentityTenants(staff, 'authhero', 'auth0|mirror-user')).toEqual([]);
+  });
+
+  it('rejects a malformed identity link at the Zod boundary with 400', async () => {
+    const res = await json(`/tenants/${t1}/identities`, 'PUT', { provider: 'authhero' });
+    expect(res.status).toBe(400);
   });
 
   // -- the scope directory (§3.2/§4.2) --------------------------------------

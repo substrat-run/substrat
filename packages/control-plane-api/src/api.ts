@@ -6,6 +6,8 @@ import {
   hostname as hostnameSchema,
   hostnameRegion,
   hostnameStatus,
+  identityLink,
+  principalId as principalIdSchema,
   promotionAcknowledgement,
   provisionableJurisdiction,
   publishVersionInput,
@@ -245,9 +247,13 @@ const auditLogQuery = z.object({
  *    retrofitted (K-20). Note there is no route here that accepts an `actor`
  *    field at all — it is unrepresentable, not merely ignored.
  * 2. **Reads are exposed; enforcement writes are not.** defineRole / assignRole /
- *    grant / grantToOrg / addMember / linkIdentity are on `HostAdmin` but get no
- *    route: the console's v1 job is the tenant registry, lifecycle, entitlements
- *    and history. `resolveIdentity` especially stays off — it is the auth
+ *    grant / grantToOrg / addMember are on `HostAdmin` but get no route: the
+ *    console's v1 job is the tenant registry, lifecycle, entitlements and
+ *    history. The ONE exception is the identity-mirror pair under
+ *    `/tenants/:tenantId/identities` (service/staff only): builder auth resolves
+ *    a CLI session against THIS deployment's directory, but identity links are
+ *    born in the Dashboard's own deployment — a different DO — so the dashboard
+ *    mirrors them here. `resolveIdentity` especially stays off — it is the auth
  *    adapter's read path, not an admin surface.
  */
 export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ Variables: Vars }> {
@@ -368,6 +374,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     await admin.revokeEntitlement(c.get('actor'), tenantId, c.req.param('key'));
     return c.json(await admin.listEntitlements(c.get('actor'), tenantId));
+  });
+
+  // -- identity mirror (builder-plane.md §4) ---------------------------------
+  // Builder auth (`whoami`, the CLI session reader) resolves `userId → tenants`
+  // against THIS deployment's identity directory, but the links are created at
+  // dashboard sign-up in the Dashboard's OWN deployment — a different DO. This
+  // pair is the mirror seam the dashboard writes through (idempotent, keyed the
+  // same as its local links). Not in BUILDER_ROUTES: a builder cannot write the
+  // directory that authenticates builders — service/staff only, fail-closed.
+
+  const mirrorIdentityBody = identityLink.omit({ tenantId: true });
+  app.put('/tenants/:tenantId/identities', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const link = mirrorIdentityBody.parse(await c.req.json());
+    // The pool must exist before a link can land in it (central topology, K-23);
+    // registering an existing pool is a no-op.
+    await admin.registerIdentityPool(c.get('actor'), { provider: link.provider, topology: 'central', tenantId: null });
+    await admin.linkIdentity(c.get('actor'), { ...link, tenantId });
+    return c.body(null, 204);
+  });
+
+  app.delete('/tenants/:tenantId/identities/:principal', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    await admin.unlinkIdentity(c.get('actor'), tenantId, principalIdSchema.parse(c.req.param('principal')));
+    return c.body(null, 204);
   });
 
   // -- the scope directory (§3.2/§4.2) ---------------------------------------

@@ -375,6 +375,26 @@ export class TenantNarrowedControlPlane {
     return this.post('/push-tokens', { tenantId: this.tenantId });
   }
 
+  /**
+   * Mirror a member's identity link into the shared directory (tenant-pinned).
+   * The builder plane — `substrat login`'s whoami and the CLI push's session
+   * auth — resolves `userId → tenants` against the SHARED plane's directory,
+   * not this deployment's, so without this mirror an interactive push never
+   * finds a workspace. Idempotent: re-linking the same member is a no-op.
+   */
+  linkIdentity(input: { provider: string; externalId: string; principal: PrincipalId; scopeId?: ScopeId }): Promise<void> {
+    return this.call(`/tenants/${this.tenantId}/identities`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+      idempotent: true,
+    });
+  }
+
+  /** Sever the mirrored link (leave/remove/delete-team) — the inverse of `linkIdentity`. */
+  unlinkIdentity(principal: PrincipalId): Promise<void> {
+    return this.call(`/tenants/${this.tenantId}/identities/${principal}`, { method: 'DELETE', idempotent: true });
+  }
+
   // -- snapshots (preview-and-snapshots.md §3/§9) -----------------------------
   // Thin wrappers over the CP's orchestrated snapshot surface, tenant-pinned by
   // construction like everything else here. The CP does the data hop into the
