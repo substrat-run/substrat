@@ -4,6 +4,7 @@ import {
   connectionId,
   moduleManifest,
   orgId,
+  AUTO_ADMISSION_NOTE,
   platformActorId,
   principalId,
   scopeId,
@@ -1495,6 +1496,121 @@ export function scopeHostContractSuite(
       await expect(host.admin.promoteVersion(staff, 'callout', 'dev', pending)).rejects.toThrow(
         /pending, not admitted/,
       );
+    });
+
+    // -- private verticals: self-serve prod (builder-plane.md §4-revised) ----
+    // A private vertical's blast radius is its own tenant — dev/staging already
+    // run the same bundle in the same sandbox — so its versions self-admit on
+    // push and prod is the owner's to move. The staff seam moves to publish,
+    // where the audience actually widens.
+
+    const publishPrivate = async (slug: string, version: string, digests?: { perm: string; mig: string }) => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id,
+        verticalSlug: slug,
+        version,
+        manifestDigest: `man-${version}`,
+        permissionDigest: digests?.perm ?? 'pp',
+        migrationDigest: digests?.mig ?? 'gg',
+        deploymentRef: null,
+      });
+      return id;
+    };
+
+    it('a private vertical version lands ADMITTED on push, noted as auto-admission', async () => {
+      await host.admin.registerVertical(staff, {
+        slug: 'egeryds/crm',
+        name: 'Egeryds CRM',
+        source: 'cli',
+        ownerTenant: t2,
+      });
+      const vid = await publishPrivate('egeryds/crm', '0.1.0');
+      const [v] = await host.admin.listVersions(staff, 'egeryds/crm');
+      expect(v?.admission).toBe('admitted');
+      expect(v?.admissionNote).toBe(AUTO_ADMISSION_NOTE);
+      // Promotable immediately — for a private vertical, push + promote IS the deploy.
+      await host.admin.promoteVersion(staff, 'egeryds/crm', 'prod', vid);
+      expect(
+        (await host.admin.listChannels(staff, 'egeryds/crm')).find((c) => c.channel === 'prod')?.versionId,
+      ).toBe(vid);
+    });
+
+    it('a platform vertical still lands pending — auto-admission is scoped to private ownership', async () => {
+      // 'callout' is platform-owned (ownerTenant null): the 9.9.9 push in the test
+      // above landed pending. The distinction is the whole design: self-admission
+      // exists only where the author and the audience are the same tenant.
+      const versions = await host.admin.listVersions(staff, 'callout');
+      expect(versions.find((v) => v.version === '9.9.9')?.admission).toBe('pending');
+    });
+
+    it('promotion appends to the channel history — the go-live timeline rollback picks from', async () => {
+      const first = (await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod'))!;
+      expect(first).toHaveLength(1);
+      expect(first[0]!.fromVersionId).toBeNull(); // nothing before the first go-live
+
+      const v2 = await publishPrivate('egeryds/crm', '0.2.0');
+      await host.admin.promoteVersion(staff, 'egeryds/crm', 'prod', v2);
+      // Rollback is a NEW promotion of the older version — the timeline only grows.
+      const v1 = first[0]!.versionId;
+      await host.admin.promoteVersion(staff, 'egeryds/crm', 'prod', v1);
+
+      const timeline = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod');
+      expect(timeline.map((h) => h.versionId)).toEqual([v1, v2, v1]); // newest first
+      expect(timeline[0]!.fromVersionId).toBe(v2);
+      expect(timeline[1]!.fromVersionId).toBe(v1);
+      // Each entry records who and exactly when — `at` is the PITR anchor a data
+      // rollback would rewind to (preview-and-snapshots.md §7).
+      expect(timeline[0]!.actor).toBe(staff);
+      expect(new Date(timeline[0]!.at).getTime()).toBeGreaterThan(0);
+      // Narrowing by channel works: dev never moved, so its timeline is empty.
+      expect(await host.admin.listChannelHistory(staff, 'egeryds/crm', 'dev')).toHaveLength(0);
+    });
+
+    it("prod promote of a private vertical re-points the owner's live scopes (merge IS the deploy)", async () => {
+      // A fresh app scope in the owning tenant, bound to the current prod version.
+      // Promoting a new one re-points it without a separate update step — that is
+      // what makes merge-to-main a complete deploy, and a rollback promote reach
+      // the running app.
+      const appScope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t2, scopeId: appScope });
+      await host.admin.activateScope(staff, t2, appScope);
+      const prodNow = (await host.admin.listChannels(staff, 'egeryds/crm')).find((c) => c.channel === 'prod')!
+        .versionId;
+      await host.admin.bindScopeVersion(staff, t2, appScope, prodNow);
+
+      const v3 = await publishPrivate('egeryds/crm', '0.3.0');
+      await host.admin.promoteVersion(staff, 'egeryds/crm', 'prod', v3);
+      expect((await host.admin.getScopeRecord(staff, t2, appScope))?.verticalVersionId).toBe(v3);
+    });
+
+    it('publish refuses an auto-admitted prod version until a staff admit vouches for it', async () => {
+      // Listing is the moment OTHER tenants start trusting this code, so the version
+      // they would install needs a recorded human decision — the auto-admission note
+      // is exactly what marks its absence.
+      await expect(host.admin.setVerticalListed(staff, 'egeryds/crm', true)).rejects.toThrow(
+        /auto-admitted.*staff admit/,
+      );
+
+      // A staff admit of the already-admitted version upgrades it to a manual vouch
+      // (clears the note, audited) — then listing passes.
+      const prodNow = (await host.admin.listChannels(staff, 'egeryds/crm')).find((c) => c.channel === 'prod')!
+        .versionId;
+      await host.admin.admitVersion(staff, prodNow);
+      const upgraded = (await host.admin.listVersions(staff, 'egeryds/crm')).find((v) => v.id === prodNow);
+      expect(upgraded?.admission).toBe('admitted');
+      expect(upgraded?.admissionNote).toBeNull();
+      await host.admin.setVerticalListed(staff, 'egeryds/crm', true);
+
+      // Listed now: the next push lands PENDING — staff admission is back in the
+      // path exactly when the audience widened.
+      const v4 = await publishPrivate('egeryds/crm', '0.4.0');
+      expect((await host.admin.listVersions(staff, 'egeryds/crm')).find((v) => v.id === v4)?.admission).toBe(
+        'pending',
+      );
+
+      // Unlist again so later suites see the vertical private (and pushes self-admit).
+      await host.admin.setVerticalListed(staff, 'egeryds/crm', false);
     });
 
     // -- the provisioning state (K-31) ---------------------------------------

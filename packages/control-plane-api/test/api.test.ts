@@ -1357,11 +1357,13 @@ describe('control-plane API — builder authz', () => {
     expect(after.publishRequestedAt).toBeFalsy();
   });
 
-  it('lets the owner self-serve non-prod, but keeps prod a staff decision', async () => {
+  it('lets the owner self-serve non-prod; prod of a LISTED vertical is a staff decision', async () => {
     // dev/staging: the builder promotes its own admitted version.
     expect((await acmeReq('/verticals/helpdesk/channels/dev/promote', 'POST', { versionId: v1 })).status).toBe(200);
     expect((await acmeReq('/verticals/helpdesk/channels/staging/promote', 'POST', { versionId: v1 })).status).toBe(200);
-    // prod: staff-only, even for the owner.
+    // prod: helpdesk was LISTED by the publish-flow test above, so its audience is
+    // every tenant and prod promotion is staff-only again — even for the owner. (A
+    // PRIVATE vertical's owner self-serves prod; the deploy-path test below covers it.)
     expect((await acmeReq('/verticals/helpdesk/channels/prod/promote', 'POST', { versionId: v1 })).status).toBe(403);
     // Staff promote to prod — but by the FULL id, since staff address a vertical by its
     // real registry id, not a bare name (they have no tenant prefix to apply).
@@ -1398,6 +1400,25 @@ describe('control-plane API — builder authz', () => {
     expect((await (await otherReq('/verticals')).json()).map((v: { slug: string }) => v.slug).sort()).toEqual([
       `${otherSlug}/helpdesk`, `${otherSlug}/reports`,
     ]);
+  });
+
+  it("a PRIVATE vertical is the owner's end to end: push lands admitted, prod self-serves, history reads back", async () => {
+    // `reports` was pushed through the deploy path above and never listed, so its
+    // version self-admitted (builder-plane.md §4-revised) — no staff step anywhere.
+    const [pushed] = await (await acmeReq('/verticals/reports/versions')).json();
+    expect(pushed.admission).toBe('admitted');
+
+    // The owner promotes prod itself — merge-to-main's shape (`push --promote prod`).
+    expect((await acmeReq('/verticals/reports/channels/prod/promote', 'POST', { versionId: pushed.id })).status).toBe(200);
+
+    // The go-live timeline reads back, owner-narrowed: acme sees its promotion...
+    const history = await (await acmeReq('/verticals/reports/channels/prod/history')).json();
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ versionId: pushed.id, fromVersionId: null });
+    // ...`other`'s own `reports` timeline is its own (empty), and a slug it does not
+    // own 404s indistinguishably from an absent one.
+    expect(await (await otherReq('/verticals/reports/channels/prod/history')).json()).toEqual([]);
+    expect((await otherReq('/verticals/nonexistent/channels/prod/history')).status).toBe(404);
   });
 });
 

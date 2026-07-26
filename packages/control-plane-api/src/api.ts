@@ -297,6 +297,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/verticals\/[^/]+\/versions$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/versions$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
+    { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/deploy$/ },
     // A builder REQUESTS publication of a vertical it owns (marketplace-publish.md §5); the
@@ -771,6 +772,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return v ? v.ownerTenant : undefined;
   };
 
+  // The full registry row, for the checks that need more than the owner — whether the
+  // vertical is PRIVATE (owned + not listed), which is what scopes a builder's prod
+  // self-serve below.
+  const verticalOf = async (actor: PlatformActorId, slug: string) =>
+    (await admin.listVerticals(actor)).find((x) => x.slug === slug);
+
   // The vertical id a request actually addresses. For a BUILDER it is `<tenantSlug>/<name>`
   // (builder-plane.md §5): they send a bare `--slug`, the control plane forms the prefix
   // from their authenticated tenant — so two builders can each own a `helpdesk` with no
@@ -903,16 +910,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(await admin.listChannels(c.get('actor'), slug));
   });
 
+  // The promotion timeline (newest first) — what a rollback UI picks a target from.
+  // Owner-narrowed like the channel read above: a builder sees only its own verticals'
+  // history, and a foreign slug 404s indistinguishably from an absent one.
+  app.get('/verticals/:slug/channels/:channel/history', async (c) => {
+    const p = c.get('principal');
+    const slug = effectiveSlug(p, c.req.param('slug'));
+    const channel = channelName.parse(c.req.param('channel'));
+    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    return c.json(await admin.listChannelHistory(c.get('actor'), slug, channel));
+  });
+
   app.post('/verticals/:slug/channels/:channel/promote', async (c) => {
     const p = c.get('principal');
     const slug = effectiveSlug(p, c.req.param('slug'));
     const channel = channelName.parse(c.req.param('channel'));
     if (p.kind === 'builder') {
-      // Staff keep the prod gate (model B, §2/§4): a builder self-serves dev/staging;
-      // admission and prod promotion stay a human staff decision (the trust boundary
-      // self-serve-deploy.md §3 is explicit about). And only on verticals it owns.
-      if (channel === 'prod') return c.json({ error: 'promotion to prod is staff-only' }, 403);
-      if ((await ownerOf(p.actor, slug)) !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
+      // A builder promotes only verticals it owns — and prod only while the vertical
+      // is PRIVATE (not listed). A private vertical's blast radius is the owning
+      // tenant itself, and dev/staging already run the same bundle in the same
+      // sandbox, so a staff prod gate there protected nothing; it returns the moment
+      // the audience widens (publish flips `listed`, and prod becomes staff-only
+      // again — the trust boundary marketplace-publish.md §2 draws).
+      const v = await verticalOf(p.actor, slug);
+      if (!v || v.ownerTenant !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
+      if (channel === 'prod' && v.listed) {
+        return c.json({ error: 'promotion to prod is staff-only for a listed vertical' }, 403);
+      }
     }
     const { versionId, acknowledge } = promoteVersionBody.parse(await c.req.json());
     // The blast-radius moment: refuses a changed digest without the acknowledgement,
@@ -925,8 +951,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // The deploy seam (self-serve-deploy.md): a `substrat push` uploads a built bundle
   // here. The order is upload → record, deliberately: a failed record leaves an
   // orphaned namespace script (invisible, GC'able) rather than a directory row
-  // pointing at a deployment that is not there. The version lands PENDING — a push
-  // is not a deploy; admission still gates serving.
+  // pointing at a deployment that is not there. The version lands PENDING — except a
+  // PRIVATE vertical's, which self-admits below the seam (its blast radius is its own
+  // tenant); for everything else admission still gates serving.
   app.post('/verticals/:slug/deploy', async (c) => {
     if (!options.deployVertical) {
       return c.json({ error: 'deploy is not configured on this control plane' }, 501);

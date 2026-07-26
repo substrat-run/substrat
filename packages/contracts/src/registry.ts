@@ -101,6 +101,18 @@ export const admissionStatus = z.enum(['pending', 'admitted', 'rejected']);
 export type AdmissionStatus = z.infer<typeof admissionStatus>;
 
 /**
+ * The `admissionNote` a PRIVATE vertical's version carries when it lands admitted
+ * straight from a push (builder-plane.md §4-revised). A private vertical's blast
+ * radius is its own tenant — the sandbox contract, not a staff read of an opaque
+ * digest, is what protects the platform — so its versions self-admit. The note is
+ * the distinction that matters at the ONE remaining staff seam: publish. Listing a
+ * vertical exposes it to every tenant, so `setVerticalListed` refuses while prod
+ * points at a version whose admission is only this note, and a staff `admitVersion`
+ * clears it (the human vouch, recorded).
+ */
+export const AUTO_ADMISSION_NOTE = 'auto-admitted: private vertical';
+
+/**
  * One published version of a vertical.
  *
  * The three digests are what make promotion answerable. "Has the permission surface
@@ -152,6 +164,29 @@ export const verticalChannel = z.object({
   updatedAt: instant,
 });
 export type VerticalChannel = z.infer<typeof verticalChannel>;
+
+/**
+ * One promotion, kept forever (append-only). The channel row is a pointer — it
+ * remembers only where it points now. History is what makes rollback a *choice
+ * among moments* rather than an archaeology dig through the admin log: each entry
+ * names what went live, what it replaced, who moved the pointer and exactly when.
+ *
+ * `at` doubles as the data-recovery anchor: it is the instant to hand to the DO
+ * storage PITR API (`getBookmarkForTime`, preview-and-snapshots.md §7) when a
+ * rollback needs the database as it was *before* this go-live — which is why the
+ * moment is recorded here, at promotion, and not reconstructed later.
+ */
+export const channelHistoryEntry = z.object({
+  id: z.string().min(1), // ULID — orders the timeline
+  verticalSlug,
+  channel: channelName,
+  versionId: z.string().min(1),
+  /** What the channel pointed at before this promotion. Null on the first one. */
+  fromVersionId: z.string().min(1).nullable(),
+  actor: z.string().min(1),
+  at: instant,
+});
+export type ChannelHistoryEntry = z.infer<typeof channelHistoryEntry>;
 
 /**
  * What a promoter must acknowledge, per §4's two human checkpoints.

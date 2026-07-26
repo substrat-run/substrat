@@ -55,9 +55,13 @@ Usage:
   substrat login    --token <serviceToken>    store a service credential (CI)
   substrat whoami                             show who you are + your workspaces
   substrat workspaces                         list your workspaces (alias of whoami)
-  substrat push     [dir]                      push a vertical (slug/name/version default
-                                               from package.json; version auto-bumps)
-  substrat promote  <slug> --channel dev|staging --version <versionId>
+  substrat push     [dir] [--promote <channel>] push a vertical (slug/name/version default
+                                               from package.json; version auto-bumps);
+                                               --promote points the channel at it in the
+                                               same run (merge-to-main deploys with
+                                               --promote prod)
+  substrat promote  <slug> --channel dev|staging|prod --version <versionId>
+                    [--ack-permissions] [--ack-migrations]
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
@@ -81,9 +85,12 @@ Options (any command):
                    since the first push of a slug claims it for a workspace. Other
                    commands fall back to the workspace stored at login.
 
-A builder pushes a BARE --slug; the control plane forms '<tenantSlug>/<slug>' (§5). A push
-lands a version PENDING; a builder self-serves dev/staging with 'promote', but prod
-promotion + admission stay a staff decision (model B).
+A builder pushes a BARE --slug; the control plane forms '<tenantSlug>/<slug>' (§5). A
+PRIVATE vertical's push lands ADMITTED and every channel is self-serve — prod included —
+so '--promote prod' is a complete deploy. Once a vertical is LISTED on the marketplace its
+pushes land PENDING and prod promotion + admission are a staff decision again. A promotion
+that changes the permission or migration surface is refused until the change is
+acknowledged (--ack-permissions / --ack-migrations) — read the diff it names first.
 
 Auth resolves: explicit --token/SUBSTRAT_SERVICE_TOKEN → stored browser session →
 stored service token. URL resolves flag → SUBSTRAT_CP_URL → ~/.substrat/config.json.
@@ -218,7 +225,18 @@ async function cmdPush(): Promise<void> {
     controlPlaneUrl, authHeader: header,
   });
   console.log(`✓ pushed. version ${v.id} (${version}) is ${v.admission}; deploymentRef=${v.deploymentRef}`);
-  console.log('  admit it in the console to let a scope bind it.');
+  // `--promote <channel>` completes the deploy in the same run — the merge-to-main
+  // workflow's shape. A private vertical's push is already admitted, so this succeeds
+  // immediately; a listed vertical's lands pending and the refusal below names why.
+  const promoteTo = flag('promote');
+  if (promoteTo) {
+    const ch = await promote({ controlPlaneUrl, header, slug, channel: promoteTo, versionId: v.id });
+    console.log(`✓ ${slug} → ${ch.channel} now points at ${version}`);
+  } else if (v.admission === 'admitted') {
+    console.log('  promote it to a channel to go live (or push with --promote prod).');
+  } else {
+    console.log('  admit it in the console to let a scope bind it.');
+  }
 }
 
 async function cmdVersions(): Promise<void> {
@@ -236,12 +254,19 @@ async function cmdPromote(): Promise<void> {
   const channel = flag('channel');
   const version = flag('version');
   if (!slug || slug.startsWith('--') || !channel || !version) {
-    console.error('usage: substrat promote <slug> --channel dev|staging --version <versionId>');
+    console.error('usage: substrat promote <slug> --channel dev|staging|prod --version <versionId> [--ack-permissions] [--ack-migrations]');
     process.exit(1);
   }
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   console.log(`authenticating with ${as}`);
-  const ch = await promote({ controlPlaneUrl, header, slug, channel, versionId: version });
+  const acknowledge =
+    argv.includes('--ack-permissions') || argv.includes('--ack-migrations')
+      ? {
+          ...(argv.includes('--ack-permissions') ? { permissionChange: true } : {}),
+          ...(argv.includes('--ack-migrations') ? { migrationChange: true } : {}),
+        }
+      : undefined;
+  const ch = await promote({ controlPlaneUrl, header, slug, channel, versionId: version, acknowledge });
   console.log(`✓ ${slug} → ${ch.channel} now points at ${ch.versionId}`);
 }
 

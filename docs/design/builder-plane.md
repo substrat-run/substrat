@@ -30,11 +30,30 @@ unique *by construction* — no claim race on the bare name. Crucially this pref
 (`<appName>.<jurisdiction>.substrat.run`, chosen at create-instance), so prefixing the vertical
 does not touch URLs.
 
-**Staff keep the prod gate (model B).** A builder pushes, views, and manages **non-prod**
-channels (`dev`/`staging`) themselves; **admission and promotion to `prod` remain a human staff
-decision** — the trust boundary self-serve-deploy.md §3 is explicit about. Model A (an inspecting
-build pipeline that makes admission mechanical) is the later evolution; only then does the staff
-gate relax.
+**The staff gate sits at the audience boundary, not at prod (§4-revised).** The original model
+B kept admission + prod promotion staff-side for everyone. That conflated two trust boundaries:
+*"may this code run on our infrastructure?"* (answered by the sandbox contract — declared
+bindings, WfP isolation, quotas — mechanically) and *"may other tenants run this code against
+their data?"* (a human decision). For a **private** vertical (tenant-owned, not `listed`) only
+the first applies — the author and the audience are the same tenant, and dev/staging already
+ran the same bundle in the same sandbox — so a staff prod gate protected nothing. Revised
+split:
+
+- **Private vertical: self-serve end to end.** A push lands **admitted** (noted
+  `AUTO_ADMISSION_NOTE`), every channel including `prod` is the owner's to promote (
+  `substrat push --promote prod` = merge-to-main deploys), and a prod promote re-points the
+  owner's live scopes in the same act — D-30's lockstep concern is a shared vertical's many
+  tenants, which a private vertical cannot have. Every promotion appends to
+  `vertical_channel_history` (what/replaced/who/when — the rollback picker, and the `at` a
+  PITR restore would rewind to); a migration-crossing rebind snapshots first (§4 fork-before-
+  promote). The promotion-time digest acknowledgements still fire — the owner is the human.
+- **Listed vertical: the staff gate returns, exactly where the audience widened.** Publishing
+  (`setVerticalListed`) refuses while prod points at an auto-admitted version — a staff
+  `admitVersion` upgrades it to a recorded manual vouch first. Once listed, pushes land
+  **pending** again and prod promotion is staff-only.
+
+Model A (an inspecting build pipeline that makes admission mechanical) remains the later
+evolution for the *listed* tier.
 
 ## 3. Ownership & the claim
 
@@ -111,7 +130,8 @@ the endpoints are builder-scoped.
 - **Reserved platform prefix** — name, and whether platform verticals render bare (§6).
 - **Tenant slug source** — the prefix is the tenant's slug; is it stable/unique enough, or do we
   mint a separate publisher handle?
-- **Prod promotion request** — is staff admission a pure out-of-band action, or does a builder
-  file a "promote to prod" request the console surfaces? (The latter is nicer UX; more surface.)
+- ~~**Prod promotion request**~~ — resolved by §4-revised: a private vertical's owner promotes
+  prod directly; staff admission applies only to listed verticals (where the publish request is
+  already the console-surfaced handoff).
 - **Vetting** — model B is "vetted builders." What gates a tenant becoming a *builder* at all
   (allowed to claim slugs)? An entitlement flag, presumably.
