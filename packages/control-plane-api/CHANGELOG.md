@@ -1,5 +1,21 @@
 # @substrat-run/control-plane-api
 
+## 0.18.0
+
+### Minor Changes
+
+- d18a247: `HostAdmin.setTenantName` + `PATCH /tenants/:tenantId` — a display-only rename (the
+  slug, which registry ids key on, never moves). The dashboard's identity mirror uses
+  it to keep the shared directory's tenant names in step with team names, so the CLI's
+  workspace picker shows the organization, not a placeholder; the CLI now lists
+  workspaces name-first.
+
+### Patch Changes
+
+- Updated dependencies [d18a247]
+  - @substrat-run/contracts@0.18.0
+  - @substrat-run/kernel@0.18.0
+
 ## 0.17.0
 
 ### Minor Changes
