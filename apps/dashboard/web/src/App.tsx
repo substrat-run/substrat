@@ -54,6 +54,13 @@ export function App() {
   const [newTeamName, setNewTeamName] = useState('');
   const [creatingTeam, setCreatingTeam] = useState(false);
   const [apps, setApps] = useState<AppRow[]>([]);
+  // True until the FIRST listApps() lands. `apps` starting as [] is indistinguishable
+  // from "no apps yet", and rendering on that guess flashed the "Create your first
+  // app" onboarding at everyone (and a 404 at app deep-links) on every load. In the
+  // dev preview `?loading=1` pins it, so the skeleton is previewable like `?onboarding=1`.
+  const [appsLoading, setAppsLoading] = useState(
+    () => !DEV_MOCK || new URLSearchParams(window.location.search).get('loading') === '1',
+  );
   const [members, setMembers] = useState<Member[]>([]);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
@@ -191,6 +198,7 @@ export function App() {
         setCatalog(c);
         setDeployments(d);
       }
+      setAppsLoading(false);
     })();
     return () => {
       live = false;
@@ -512,9 +520,15 @@ export function App() {
           onDeleted={() => void deleteApp(openApp)}
         />
       ) : route.section === 'apps' && route.app ? (
-        <NotFound label="That app could not be found." onBack={() => go('#/apps')} />
+        // While the first listApps() is in flight the deep-linked app is merely
+        // unresolved, not missing — the skeleton, never a flashed 404.
+        appsLoading ? (
+          <Apps apps={apps} loading onCreate={() => go('#/apps/new')} onOpen={() => {}} onRetry={() => {}} />
+        ) : (
+          <NotFound label="That app could not be found." onBack={() => go('#/apps')} />
+        )
       ) : route.section === 'overview' || route.section === 'apps' ? (
-        <Apps apps={apps} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} />
+        <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} />
       ) : route.section === 'verticals' ? (
         <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (

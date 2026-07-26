@@ -26,16 +26,20 @@ export function toCard(a: AppRow): AppCardData & { scopeId: string } {
 type Mode = 'grid' | 'list';
 
 /**
- * Overview / My Apps (screens 1d, 1e, 1f). Real data from the worker. Empty →
- * the onboarding state; otherwise the grid or list, filtered by search + status.
+ * Overview / My Apps (screens 1d, 1e, 1f). Real data from the worker. Loading →
+ * the skeleton (never the empty state: flashing "Create your first app" at someone
+ * who HAS apps reads as data loss); empty → the onboarding state; otherwise the
+ * grid or list, filtered by search + status.
  */
 export function Apps({
   apps,
+  loading,
   onCreate,
   onOpen,
   onRetry,
 }: {
   apps: AppRow[];
+  loading?: boolean;
   onCreate: () => void;
   onOpen: (scopeId: string) => void;
   onRetry: (scopeId: string) => void;
@@ -55,6 +59,7 @@ export function Apps({
     [cards, q, status],
   );
 
+  if (loading) return <AppsSkeleton />;
   if (apps.length === 0) return <Onboarding onCreate={onCreate} />;
 
   return (
@@ -139,6 +144,59 @@ function SegBtn({ on, onClick, label, children, divider }: { on: boolean; onClic
     >
       {children}
     </button>
+  );
+}
+
+/** One skeleton block. Static — the pulse lives on each card's content wrapper. */
+function Sk({ w, h = 12, r = 6, style }: { w: number | string; h?: number; r?: number; style?: React.CSSProperties }) {
+  return <span aria-hidden style={{ display: 'block', width: w, height: h, borderRadius: r, background: 'var(--surface-active)', ...style }} />;
+}
+
+/**
+ * The loading Overview — same geometry as the loaded page (title row, toolbar,
+ * 3-column card grid) so nothing jumps when data lands. Cards pulse with a small
+ * stagger; borders stay static so the layout reads as settled, not busy.
+ */
+function AppsSkeleton() {
+  return (
+    <Page>
+      <div role="status" aria-label="Loading apps…" aria-busy style={{ display: 'contents' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Sk w={92} h={22} />
+            <Sk w={330} h={12} />
+          </div>
+          <div style={{ flex: 1 }} />
+          <Sk w={112} h={32} r={8} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Sk w={260} h={32} r={8} />
+          <Sk w={150} h={32} r={8} />
+          <div style={{ flex: 1 }} />
+          <Sk w={62} h={30} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} style={{ background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, padding: 16, boxShadow: 'var(--shadow-sm)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, animation: 'sub-pulse 1.8s ease-in-out infinite', animationDelay: `${i * 120}ms` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Sk w={8} h={8} r={4} />
+                  <Sk w="55%" h={14} />
+                </div>
+                <Sk w="40%" h={11} style={{ marginLeft: 16 }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, minHeight: 22 }}>
+                  <Sk w={64} h={20} r={999} />
+                  <Sk w="45%" h={11} />
+                </div>
+                <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: 10, paddingTop: 8 }}>
+                  <Sk w={96} h={10} />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Page>
   );
 }
 
