@@ -1,5 +1,20 @@
 # @substrat-run/dashboard
 
+## 0.5.1
+
+### Patch Changes
+
+- @substrat-run/demo-callout@0.1.5
+- @substrat-run/demo-meridian@0.2.2
+- @substrat-run/contracts@0.17.0
+- @substrat-run/kernel@0.17.0
+- @substrat-run/adapter-cloudflare@0.17.0
+- @substrat-run/demo-manyfold@0.1.3
+- @substrat-run/engine-invites@0.0.14
+- @substrat-run/engine-invoicing@0.3.15
+- @substrat-run/engine-protocol@0.4.9
+- @substrat-run/engine-workorder@0.3.15
+
 ## 0.5.0
 
 ### Minor Changes
