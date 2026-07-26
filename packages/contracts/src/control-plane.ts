@@ -42,6 +42,7 @@ export const adminAction = z.enum([
   'pruneAccessLog', // K-24 — deleting drained access rows is itself a mutation // K-23 — a provider declares its topology before it may link
   'createTenant', // §4.1
   'setTenantStatus', // §4.1 — before/after carry the transitioned status
+  'setTenantName', // §4.1 — display rename only; the slug (in registry ids) never moves
   'provisionScope', // §4.2 — the first scope-lifecycle transition (→ active)
   'importScope', // preview-and-snapshots.md §3 — provision a scope + load a dump (fork)
   'deleteSnapshot', // preview-and-snapshots.md §9 — reap an expired fork: storage + directory row

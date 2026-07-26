@@ -126,7 +126,7 @@ async function cmdLogin(): Promise<void> {
     console.log(`  workspace: ${defaultTenant}`);
   } else if (tenants.length > 1) {
     console.log('  you belong to several workspaces:');
-    tenants.forEach((t, i) => console.log(`    ${i + 1}. ${t.slug}  (${t.name})`));
+    tenants.forEach((t, i) => console.log(`    ${i + 1}. ${t.name}  [${t.slug}]`));
     const pick = await ask(`  default workspace [1-${tenants.length}, or a slug]: `);
     defaultTenant =
       tenants[Number(pick) - 1]?.slug ??
@@ -161,7 +161,7 @@ async function pickWorkspace(auth: { controlPlaneUrl: string; header: Record<str
     console.log(`workspace: ${tenant} (your only one)`);
   } else {
     console.log('this project has no pinned workspace. you belong to:');
-    tenants.forEach((t, i) => console.log(`  ${i + 1}. ${t.slug}  (${t.name})`));
+    tenants.forEach((t, i) => console.log(`  ${i + 1}. ${t.name}  [${t.slug}]`));
     const suggested = loadConfig().defaultTenant;
     const def = tenants.findIndex((t) => t.slug === suggested) + 1; // 0 = no login default among them
     const pick = await ask(`push as [1-${tenants.length}${def ? `, enter = ${def}` : ''}]: `);
@@ -327,7 +327,7 @@ async function cmdWhoami(): Promise<void> {
   }
   console.log(`signed in as ${user.email ?? user.id}`);
   if (tenants.length === 0) console.log('  no workspaces yet.');
-  for (const t of tenants) console.log(`  ${t.slug}  (${t.name})`);
+  for (const t of tenants) console.log(`  ${t.name}  [${t.slug}]`);
 }
 
 async function main(): Promise<void> {

@@ -348,6 +348,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(tenant);
   });
 
+  // Display rename only — the slug stays put (registry ids `<tenantSlug>/<name>` and
+  // pinned workspaces key on it). The dashboard's identity mirror uses this to keep
+  // the shared directory's names in step with team renames (and to repair tenants
+  // created at app-provision time with a placeholder name).
+  app.patch('/tenants/:tenantId', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const { name } = z.object({ name: z.string().trim().min(1).max(100) }).parse(await c.req.json());
+    await admin.setTenantName(c.get('actor'), tenantId, name);
+    return c.json(await admin.getTenant(c.get('actor'), tenantId));
+  });
+
   app.patch('/tenants/:tenantId/status', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const { status } = setTenantStatusBody.parse(await c.req.json());

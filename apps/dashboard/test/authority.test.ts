@@ -106,6 +106,21 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     await expect(cp.listChannels('callout')).resolves.toEqual([]);
   });
 
+  it('reads and renames the pinned tenant at its own directory row', async () => {
+    const { cp, calls } = harness();
+    await cp.getTenant();
+    await cp.setTenantName('Egeryds');
+    expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[1]!.url).toBe(`https://cp/api/tenants/${T}`);
+    expect(calls[1]!.method).toBe('PATCH');
+    expect(calls[1]!.body).toEqual({ name: 'Egeryds' });
+
+    // Not yet mirrored (404) reads as null, not a throw.
+    const missing = harness(404, { error: 'unknown tenant' });
+    await expect(missing.cp.getTenant()).resolves.toBeNull();
+  });
+
   it('bindScopeVersion pins the scope under the pinned tenant', async () => {
     const { cp, calls } = harness();
     await cp.bindScopeVersion(S, '01JVERSION');

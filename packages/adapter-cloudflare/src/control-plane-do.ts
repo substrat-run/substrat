@@ -647,6 +647,14 @@ export class ControlPlaneDO extends DurableObject {
     return before.status;
   }
 
+  /** Rename the DISPLAY name (never the slug); throw if absent; return the previous name. */
+  setTenantName(tenantId: string, name: string): string {
+    const before = this.readTenant(tenantId);
+    if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+    this.sql.exec('UPDATE tenants SET name = ? WHERE tenant_id = ?', name, tenantId);
+    return before.name;
+  }
+
   getTenant(tenantId: string): Tenant | undefined {
     return this.readTenant(tenantId);
   }

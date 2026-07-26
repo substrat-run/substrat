@@ -170,6 +170,12 @@ async function mirrorBuilderIdentity(env: Env, host: ScopeHost, userId: string, 
     const mapped = await host.admin.resolveIdentity(t, PROVIDER, userId);
     if (!mapped) return;
     await cp.ensureTenant(team.slug, team.name);
+    // `ensureTenant` is a no-op for an existing row, so a tenant first mirrored at
+    // app-provision time keeps its placeholder name (historically the login's email)
+    // forever — sync the display name so the CLI's workspace picker shows the team.
+    // Read-then-patch to keep the quiet path writeless (this runs on every /api/me).
+    const shared = await cp.getTenant();
+    if (shared && shared.name !== team.name) await cp.setTenantName(team.name);
     await cp.linkIdentity({
       provider: PROVIDER,
       externalId: userId,
@@ -1267,7 +1273,9 @@ app.post('/api/apps', async (c) => {
     appOwnerGrants: ownerGrants,
     teamHandle,
     controlPlane: cp ?? undefined,
-    tenantName: user?.name ?? user?.email ?? 'Workspace',
+    // The TEAM's name, never the login's — this seeds the shared directory's tenant
+    // row, which the CLI's workspace picker displays.
+    tenantName: team?.name ?? 'Workspace',
     ...(appAuth ? { appAuth } : {}),
   });
   return c.json(appRow, 201);
@@ -1313,7 +1321,7 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
   if (appRow.status !== 'failed') throw new HTTPException(409, { message: 'only a failed app can be retried' });
   const cp = controlPlaneFor(c.env, node.tenantId);
   const { entitlements, ownerGrants } = await installSpecFor(host, appRow.vertical_slug, cp);
-  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
+  const team = await host.admin.getTenant(STAFF, node.tenantId);
   const appRowNew = await retryApp(host, {
     node,
     failedScopeId: scopeId.parse(appRow.app_scope_id),
@@ -1324,7 +1332,8 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
     appEntitlements: entitlements,
     appOwnerGrants: ownerGrants,
     controlPlane: cp ?? undefined,
-    tenantName: user?.name ?? user?.email ?? 'Workspace',
+    // The TEAM's name, never the login's (same as create).
+    tenantName: team?.name ?? 'Workspace',
   });
   return c.json(appRowNew, 201);
 });
