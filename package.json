@@ -18,7 +18,7 @@
     "callout-demo": "pnpm --filter @substrat-run/demo-callout",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "pnpm -r build && pnpm publish -r --access public --no-git-checks",
+    "release": "pnpm -r build && pnpm publish -r --access public --no-git-checks && changeset tag",
     "secrets:platform": "tools/set-platform-secrets.sh"
   },
   "devDependencies": {

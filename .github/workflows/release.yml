@@ -33,6 +33,12 @@ jobs:
       # `changeset publish`: with OIDC available, changesets publishes through npm
       # but still passes pnpm's --git-checks flag, which npm 11 rejects outright
       # (EUNKNOWNCONFIG). pnpm skips already-published versions on its own.
+      #
+      # The trailing `changeset tag` in `pnpm release` is LOAD-BEARING for the prod
+      # deploys below: the action decides `outputs.published` by parsing `New tag:`
+      # lines, which `pnpm publish -r` never prints — without the tag step the gate
+      # is permanently false and prod is never deployed (the bug that kept stale
+      # bundles on console/app.substrat.net through several releases).
       - uses: changesets/action@v1
         id: changesets
         with:
