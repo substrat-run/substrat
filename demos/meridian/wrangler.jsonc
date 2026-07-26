@@ -40,6 +40,9 @@
 	//   PLATFORM_SECRET  — the control plane's, gates /internal/provision + /internal/link (K-31)
 	// No SERVICE_TOKEN / CONTROL_PLANE_URL — a CP-less vertical calls no control plane.
 	// ALLOW_DEV_HEADER is set by `pnpm cf:dev` for local use only, so a real deploy stays
-	// fail-closed. Scrive is NOT wired in the pushed worker (its reconcile cron cannot run
-	// as a dispatch user-worker) — it remains a standalone-mode feature.
+	// fail-closed. Scrive is NOT wired in the pushed worker: the TIMER half is solved
+	// (definePlatformSweeperDO in @substrat-run/adapter-cloudflare — a DO alarm, which
+	// unlike a cron does run in a dispatch user-worker), but a CP-less vertical holds no
+	// connection directory for the sweep to enumerate (listConnections), so it remains a
+	// standalone-mode feature until connections are reachable from the vertical's runtime.
 }

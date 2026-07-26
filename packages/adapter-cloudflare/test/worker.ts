@@ -5,8 +5,12 @@
  * handler so the Worker is valid. The contract tests drive everything through
  * the exported bindings via `CloudflareScopeHost` — see contract.test.ts.
  */
+import { platformActorId } from '@substrat-run/contracts';
+import { runPlatformSweep, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
 import { brokenMod, contractTestModules, contractTestBareOps } from '@substrat-run/contract-tests';
 import { defineScopeDO } from '../src/scope-do.js';
+import { CloudflareScopeHost } from '../src/host.js';
+import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
 
 export const ScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
 
@@ -19,6 +23,69 @@ export const ScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
 export const BrokenScopeDO = defineScopeDO([brokenMod], {});
 
 export { ControlPlaneDO } from '../src/control-plane-do.js';
+
+// -- the platform-sweep trigger (platform-sweeper.test.ts) --------------------
+
+interface SweeperEnv {
+  // The sweeper tests' OWN namespaces (same DO classes as the contract suites'
+  // SCOPE/CONTROL_PLANE — see the wrangler.jsonc comment for why they are split).
+  SWEEP_SCOPE: DurableObjectNamespace;
+  SWEEP_CONTROL_PLANE: DurableObjectNamespace;
+}
+
+/** The actor the scheduled pass runs as (a machine pass, not staff). */
+const SWEEP_ACTOR = platformActorId.parse('01JZ0000000000000000SWEEP1');
+
+/** Egress stub — no sweeper below ever performs real I/O. */
+const noFetch: FetchLike = async () => new Response('unused', { status: 200 });
+
+/**
+ * One REAL pass: a per-invocation `CloudflareScopeHost` over the same SCOPE /
+ * CONTROL_PLANE bindings the contract tests use, driving the kernel's
+ * `runPlatformSweep` (treated as a black box) with two fake connector sweepers:
+ * `sweep-test` counts its passes in durable connector state (slowly, so the
+ * non-overlap test can force a concurrent kick), `sweep-boom` always throws.
+ * Drain/GC phases are off — this worker's storage is shared with the contract
+ * suites (isolatedStorage: false), and the trigger tests must not consume their
+ * scopes' outbox or reap their forks.
+ */
+async function sweepPass(env: SweeperEnv): Promise<PlatformSweepReport> {
+  const host = new CloudflareScopeHost({
+    scope: env.SWEEP_SCOPE,
+    controlPlane: env.SWEEP_CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return runPlatformSweep(host, {
+    actor: SWEEP_ACTOR,
+    fetch: noFetch,
+    drainRetries: false,
+    gcSnapshots: false,
+    sweepers: {
+      'sweep-test': async (h, connectionId) => {
+        const prior = ((await h.admin.getConnectorState(connectionId, 'sweeps')) as number | undefined) ?? 0;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        await h.admin.putConnectorState(connectionId, 'sweeps', prior + 1);
+      },
+      'sweep-boom': async () => {
+        throw new Error('provider exploded');
+      },
+    },
+  });
+}
+
+/** The trigger under test: alarm-driven, self-re-arming, non-overlapping. */
+export const SweeperDO = definePlatformSweeperDO<SweeperEnv>({
+  intervalMs: 60_000,
+  sweep: sweepPass,
+});
+
+/** A sweeper whose every pass sinks whole — the loop must survive it re-armed. */
+export const BrokenSweeperDO = definePlatformSweeperDO<SweeperEnv>({
+  intervalMs: 60_000,
+  sweep: async () => {
+    throw new Error('the directory is unreachable');
+  },
+});
 
 export default {
   fetch(): Response {

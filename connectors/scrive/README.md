@@ -45,9 +45,13 @@ await host.admin.grantToConnection(actor, {
   connectionId: id, permission: 'protocol:record-signature', node, grantedBy: actor,
 });
 
-// 3. Schedule the poll — YOUR deployment calls the sweep on a timer.
+// 3. Schedule the poll — YOUR deployment calls the sweep on a timer. Both triggers ship:
 //    Node:        startPlatformSweeper(host, { sweepers: { scrive: sweepScriveReconciliations }, intervalMs })
-//    Cloudflare:  a scheduled() Cron / DO alarm calling runPlatformSweep(host, { sweepers: { scrive: … } })
+//    Cloudflare:  definePlatformSweeperDO (@substrat-run/adapter-cloudflare) — a self-re-arming
+//                 Durable Object alarm whose pass calls runPlatformSweep(host, { sweepers: { scrive: … } }).
+//                 An alarm rather than a cron because a vertical pushed into a Workers-for-Platforms
+//                 dispatch namespace gets no `triggers.crons`; where a cron IS available, point
+//                 scheduled() at the DO's ensureArmed() as a safety net.
 ```
 
 The credential is Scrive's OAuth1 "personal access credentials" — four parts that combine into a
@@ -59,9 +63,14 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
 ## Caveats worth knowing
 
 1. **Your deployment must schedule the poll** (step 3). The connector provides the driver; it
-   cannot hold a timer — that is a deployment concern (a cron, a Durable Object alarm, or
-   `startPlatformSweeper`'s interval). Without one, dispatch works but signatures are never
-   recorded back.
+   cannot hold a timer — that is a deployment concern. Both triggers now exist off the shelf:
+   `startPlatformSweeper` (node, a self-rescheduling interval) and `definePlatformSweeperDO`
+   (`@substrat-run/adapter-cloudflare`, a self-re-arming Durable Object alarm — works in a
+   Workers-for-Platforms dispatch namespace, where crons do not). Without one wired, dispatch
+   works but signatures are never recorded back. Note the sweep enumerates connections through
+   `host.admin.listConnections`, so the deployment that runs it must hold the connection
+   directory — a control-plane-less vertical worker (scope-local-permissions.md Phase 3) cannot
+   sweep until its connections are reachable from its runtime.
 
 2. **The live BankID signing round-trip is unverified.** The outbound lifecycle is checked against
    `api-testbed.scrive.com`, but `se_bankid`-to-sign is **disabled on the testbed account**

@@ -79,6 +79,10 @@ no service binding, so it passes `assertSandboxContract`.
   employeeId }`) via `hr/whoami`, and owner **login-linking is done** — the first sign-in claims the
   owner seat (`hr-admin`), so a real signed-up owner lands on the Admin/setup surface. (Reconciled
   in from the data-contract change.)
-- **Scrive reconcile.** The poll-path cron cannot run as a dispatch user-worker, so Scrive e-sign
-  reconciliation is not wired in the pushed worker; it remains a standalone-mode feature until a
-  platform-level sweep covers dispatch verticals.
+- **Scrive reconcile.** The timer half is now solved: `definePlatformSweeperDO`
+  (`@substrat-run/adapter-cloudflare`) is a self-re-arming Durable Object alarm that drives
+  `runPlatformSweep` — and unlike a cron, a DO alarm *does* run in a dispatch user-worker. What
+  still blocks the pushed worker is the directory: a CP-less vertical has no `listConnections`
+  for the sweep to enumerate, so reconciliation remains a standalone-mode feature until
+  connections are reachable from the vertical's runtime (or the platform runs the pass for
+  dispatch verticals, like the snapshot-GC orchestration).
