@@ -9,8 +9,9 @@ Both halves work and it now ships as a public package: a request becomes a start
 back into the scope (**inbound**, via `reconcileScriveDispatch` on the [authority seam](/connectors/#the-seam-a-connector-plugs-into)).
 It is a `0.x` release, which already signals an unstable surface, and two caveats travel with it —
 neither in the connector code: **the consuming vertical must schedule the poll on a timer**
-(`sweepScriveReconciliations` via `startPlatformSweeper` on node, a Cron / DO alarm on Workers —
-see the [scheduler](https://github.com/substrat-run/substrat/blob/main/docs/design/scheduler.md)),
+(`sweepScriveReconciliations` via `startPlatformSweeper` on node, or `definePlatformSweeperDO` —
+a self-re-arming Durable Object alarm in `@substrat-run/adapter-cloudflare` — on Workers; see the
+[scheduler](https://github.com/substrat-run/substrat/blob/main/docs/design/scheduler.md)),
 and **BankID-to-sign is disabled on the testbed account**, so the real signing round-trip is
 unverified. See [What's missing](#what-s-missing).
 :::
@@ -116,11 +117,15 @@ provider-reported content hash against the frozen one and fails closed on a mism
 idempotent across polls. `sweepScriveReconciliations` is the poll driver over it — it enumerates
 the dispatch ledger (`listConnectorState`) and reconciles every outstanding instance.
 
-What still has no home is the **timer** that calls the sweep. `runPlatformSweep` (the kernel's
+The **timer** that calls the sweep now exists for both runtimes: `startPlatformSweeper` (node, a
+self-rescheduling interval — live in the Meridian demo server) and `definePlatformSweeperDO`
+(`@substrat-run/adapter-cloudflare`, a self-re-arming Durable Object alarm — chosen over a cron
+because a vertical pushed into a Workers-for-Platforms dispatch namespace gets no `triggers.crons`).
+Both drive the same `runPlatformSweep` (the kernel's
 [scheduler](https://github.com/substrat-run/substrat/blob/main/docs/design/scheduler.md) unit of
-work) drives it, but a deployment has to call it on a cron, alarm, or interval — and the
-control-plane worker is deliberately not that home, because its scope DO is module-less. The call
-site belongs in the vertical's own runtime.
+work), and the control-plane worker is deliberately not the home, because its scope DO is
+module-less. The call site belongs in the vertical's own runtime — what remains is a *deployed*
+vertical wiring one up with a live connection.
 
 ## What's missing
 
@@ -138,10 +143,14 @@ Most of the gaps found by building it have since closed. What is done, and what 
 4. **No document store.** There is still no place for rendered document *bytes*, which is why this
    sends an attestation sheet rather than the avtal, and why the real contract's rendering waits on
    the vertical plus a store.
-5. **Nothing schedules the poll.** The poll driver (`sweepScriveReconciliations`) and the platform
-   scheduler unit of work (`runPlatformSweep`) exist and are tested, but no deployment calls them
-   on a timer yet ([#96](https://github.com/substrat-run/substrat/issues/96), the poll path). This
-   is a deployment concern — a one-line call site in the vertical's runtime — not connector code.
+5. ~~**Nothing schedules the poll.**~~ **Done — both triggers ship.** `startPlatformSweeper`
+   drives the sweep on node (wired in the Meridian demo server), and `definePlatformSweeperDO`
+   (`@substrat-run/adapter-cloudflare`) drives it on Workers: a singleton Durable Object whose
+   alarm runs one `runPlatformSweep` pass and re-arms only after the pass settles — non-overlap
+   by construction, and it works inside a Workers-for-Platforms dispatch namespace, where crons
+   do not ([#96](https://github.com/substrat-run/substrat/issues/96), the poll path). What's left
+   is deployment wiring, not a timer: a hosted CP-less vertical holds no connection directory to
+   enumerate, so its sweep waits on connections becoming reachable from the vertical's runtime.
 6. **BankID-to-sign is disabled on the testbed account**, so `start` returns 409 for `se_bankid`
    and the real BankID signing round-trip (and Scrive's live `get` party shape and order) cannot
    be verified yet. The live test uses `standard` auth until it is enabled.

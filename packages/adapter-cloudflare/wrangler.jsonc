@@ -7,7 +7,19 @@
       { "name": "SCOPE", "class_name": "ScopeDO" },
       { "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
       // Scopes whose migration fails closed — see test/worker.ts.
-      { "name": "BROKEN_SCOPE", "class_name": "BrokenScopeDO" }
+      { "name": "BROKEN_SCOPE", "class_name": "BrokenScopeDO" },
+      // The alarm-driven platform-sweep trigger — see platform-sweeper.test.ts.
+      { "name": "SWEEPER", "class_name": "SweeperDO" },
+      // …and one whose every pass throws whole (the loop must survive re-armed).
+      { "name": "BROKEN_SWEEPER", "class_name": "BrokenSweeperDO" },
+      // The sweeper tests' OWN directory + scope namespaces (same classes).
+      // vitest-pool-workers re-patches the worker's module graph between test
+      // files, invalidating live DO instances — if these tests instantiated the
+      // contract suites' 'control-plane' singleton, the suite that runs next
+      // would find a stale object and fail with "changed, invalidating this
+      // Durable Object". Separate namespaces = separate objects = no collision.
+      { "name": "SWEEP_SCOPE", "class_name": "ScopeDO" },
+      { "name": "SWEEP_CONTROL_PLANE", "class_name": "ControlPlaneDO" }
     ]
   },
   "migrations": [
@@ -18,6 +30,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["BrokenScopeDO"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["SweeperDO", "BrokenSweeperDO"]
     }
   ]
 }

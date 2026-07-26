@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { warmControlPlane } from './do-warmup.js';
 import { orgId, permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
@@ -8,6 +9,10 @@ import {
   scopeHostContractSuite,
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
+
+// Absorb the inter-file DO reload before any suite's first directory call
+// (see do-warmup.ts) — file-level, so it runs before every suite below.
+beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
 
 // The scope-host suite runs against an allow-all checker (it exercises no
 // ctx.check). Runtime module registration is unsupported on CF — the ScopeDO

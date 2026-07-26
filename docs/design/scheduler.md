@@ -86,9 +86,18 @@ So the call site is:
   `demos/meridian`). One line in its server boot: `startPlatformSweeper(host, { actor, fetch,
   sweepers, intervalMs: 120_000 })`, and `stop()` on shutdown. `startPlatformSweeper` reschedules
   only after each pass settles, so passes never overlap.
-- **Cloudflare runtime (when a vertical deploys to Workers).** A `scheduled()` handler or a DO
-  alarm calls `runPlatformSweep` directly (Workers own the timer, not the process), with
-  `"triggers": { "crons": ["*/2 * * * *"] }` in that vertical's `wrangler.jsonc`.
+- **Cloudflare runtime (when a vertical deploys to Workers) — landed.**
+  `definePlatformSweeperDO` (`@substrat-run/adapter-cloudflare`) is the trigger: a singleton
+  Durable Object whose `alarm()` runs one `runPlatformSweep` pass and re-arms itself only after
+  the pass settles — the workerd analogue of `startPlatformSweeper`, with the same non-overlap
+  guarantee. An **alarm rather than a cron** because a hosted vertical is pushed into a
+  Workers-for-Platforms dispatch namespace, where `triggers.crons` is not honoured — a DO alarm
+  is the only timer such a deployment can own, and it needs no wrangler config (it self-arms via
+  `ensureArmed()`, called from provisioning or fire-and-forget per request). Where a cron IS
+  available (standalone deploy, own account), point `scheduled()` at `ensureArmed()` — the §4
+  safety-net shape, recovering a lost alarm rather than doing the work. Exercised end to end in
+  workerd (real alarm → real pass → real directory) in
+  `packages/adapter-cloudflare/test/platform-sweeper.test.ts`.
 
 Both call the *same* `runPlatformSweep`. The blocker to a live call site is not the driver — it is
 that no scrive vertical is deployed yet, and the one node vertical (`demos/meridian`) does not
@@ -146,10 +155,14 @@ alarms. Start with the latter — retry is the higher-frequency, more latency-se
 1. ~~**Build the Design A driver**~~ **Done** — `runPlatformSweep` + `startPlatformSweeper` in
    `@substrat-run/kernel`, with the injected sweeper registry, bounded concurrency, error
    isolation, and tests (fakes + real SQLite end to end).
-2. **Wire the call site** in the scrive vertical's runtime (§3.0): `startPlatformSweeper(host, …)`
-   in a node server today, a `scheduled()`/alarm on Cloudflare later. Blocked on a scrive vertical
-   that actually registers the connector and holds a connection — otherwise the pass has nothing
-   to sweep. This is the last step before the connector can complete a signature unattended.
+2. **Wire the call site** in the scrive vertical's runtime (§3.0). Both triggers now exist:
+   `startPlatformSweeper(host, …)` in a node server (live in `demos/meridian/src/server.ts`),
+   and `definePlatformSweeperDO` on Cloudflare (the alarm above). What remains is a DEPLOYED
+   scrive vertical wiring one up: the node demo registers the connector behind env flags, and a
+   Cloudflare deployment additionally needs the connection directory in reach — a CP-less
+   dispatch vertical (scope-local-permissions.md Phase 3) has no `listConnections` to enumerate,
+   so its sweep waits on connections becoming reachable from the vertical's runtime (or on the
+   platform running the pass FOR dispatch verticals, the same orchestrated shape as snapshot GC).
 3. **Add the sweeper registry to the host contract** so a connector registers its reconcile
    sweeper beside its dispatch handler — the call site stops assembling the map by hand.
 4. **Move `drainDue` to per-scope alarms (Design B)** when fan-out latency shows up; keep the
