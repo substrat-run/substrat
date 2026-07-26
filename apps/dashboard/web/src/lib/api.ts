@@ -161,6 +161,17 @@ export interface GitReposResult {
   repos: GitRepo[];
 }
 
+/** `POST /api/github/setup-ci` — what the one-click deploy setup did (or still needs). */
+export type SetupCiResult =
+  | { ok: true; workflowPath: string; workflowUpdated: boolean; branch: string; vertical: string }
+  | { ok: false; needsPermissions: true };
+
+/** `GET /api/github/workflow-preview` — the manual path's copy-paste workflow. */
+export interface WorkflowPreview {
+  workflowPath: string;
+  workflow: string;
+}
+
 /** One table in an app's database — the Data tab's left list (mirrors ScopeTable). */
 export interface ScopeTable {
   name: string;
@@ -339,6 +350,17 @@ export const api = {
   listDeployments: () => call<Deployment[]>('/deployments'),
   /** The tenant's GitHub-import state — connection status + the repos it can see. */
   gitRepos: () => call<GitReposResult>('/github/repos'),
+  /** A repo's branches, for the import step's branch picker. */
+  gitBranches: (repo: string) =>
+    call<{ branches: Array<{ name: string }> }>(`/github/branches?repo=${encodeURIComponent(repo)}`),
+  /** One-click deploy setup: commit the workflow + write the scoped push credential. */
+  setupCi: (repo: string, branch: string) =>
+    call<SetupCiResult>('/github/setup-ci', { method: 'POST', body: JSON.stringify({ repo, branch }) }),
+  /** The manual path's workflow YAML (same generator the one-click commit uses). */
+  workflowPreview: (repo: string, branch: string) =>
+    call<WorkflowPreview>(
+      `/github/workflow-preview?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`,
+    ),
   promoteDeployment: (slug: string, channel: 'dev' | 'staging', versionId: string) =>
     call<void>(`/deployments/${encodeURIComponent(slug)}/promote`, {
       method: 'POST',

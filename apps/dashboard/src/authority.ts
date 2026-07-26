@@ -232,6 +232,18 @@ export class TenantNarrowedControlPlane {
     });
   }
 
+  /**
+   * Mint a tenant-scoped CI push token (control-plane-api push-token.ts) — the
+   * credential the git-import setup writes into a customer repo's Actions secrets.
+   * Pinned to this tenant like everything here: the minted token authenticates as a
+   * BUILDER for this tenant only, so the repo's CI can push `<tenantSlug>/…` versions
+   * (landing pending) and nothing else — never the platform service token. 501 from
+   * the CP when push tokens are not configured there.
+   */
+  mintPushToken(): Promise<{ token: string; tenantSlug: string }> {
+    return this.post('/push-tokens', { tenantId: this.tenantId });
+  }
+
   // -- snapshots (preview-and-snapshots.md §3/§9) -----------------------------
   // Thin wrappers over the CP's orchestrated snapshot surface, tenant-pinned by
   // construction like everything else here. The CP does the data hop into the

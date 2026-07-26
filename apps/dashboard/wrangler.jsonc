@@ -38,6 +38,10 @@
 	"services": [
 		{ "binding": "CONTROL_PLANE_SVC", "service": "substrat-control-plane" }
 	],
+	// The control plane's PUBLIC URL — what a customer repo's GitHub Actions reaches
+	// (SUBSTRAT_CP_URL in the generated deploy workflow); CI cannot use the service
+	// binding above. Also requires PUSH_TOKEN_SECRET on the control plane worker.
+	"vars": { "CP_PUBLIC_URL": "https://console.substrat.net/api" },
 	// Cloudflare Email Service — transactional mail (team invites). The `send_email`
 	// binding needs no API key; onboard a dedicated SENDING SUBDOMAIN once with
 	//   wrangler email sending enable send.substrat.net
@@ -88,6 +92,7 @@
 			"services": [
 				{ "binding": "CONTROL_PLANE_SVC", "service": "substrat-control-plane-test" } // differs
 			],
+			"vars": { "CP_PUBLIC_URL": "https://console-test.substrat.net/api" }, // differs
 			"send_email": [{ "name": "EMAIL" }],
 			"observability": { "enabled": true }
 		}

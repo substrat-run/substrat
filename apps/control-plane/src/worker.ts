@@ -28,7 +28,9 @@ import {
 import {
   createControlPlaneApi,
   createWfpUploader,
+  firstBuilderAuth,
   firstPlatformActorAuth,
+  pushTokenBuilderAuth,
   serviceTokenAuth,
   sessionPlatformAuth,
   UNSAFE_devPlatformActorAuth,
@@ -55,6 +57,14 @@ interface Env extends OidcEnv {
   ASSETS?: Fetcher;
   /** Shared secret a connected vertical presents (x-service-token) to register. */
   SERVICE_TOKEN?: string;
+  /**
+   * Signs tenant-scoped push tokens (`spt1.…` — the CI credential the dashboard mints
+   * into a customer repo during git-import setup). Set ONCE (`openssl rand -hex 32`)
+   * and keep it out of routine rotation: rotating it revokes every issued push token,
+   * breaking customer CI until they reconnect. Unset ⇒ minting 501s and presented
+   * push tokens simply never authenticate.
+   */
+  PUSH_TOKEN_SECRET?: string;
   /** Local dev / test only: trust the `x-platform-actor` header. NEVER on a real deploy. */
   ALLOW_DEV_ACTOR?: string;
   /**
@@ -287,7 +297,13 @@ export default {
         authenticate: authFor(env),
         // A tenant user acting on their own verticals — self-serve, no vetting roster.
         // Tried only after staff/service auth declines (control-plane-api middleware).
-        authenticateBuilder: oidcBuilderReader(hostFor(env), env),
+        // A CI push token (`spt1.…` in x-service-token) authenticates as the same kind
+        // of principal — tenant-scoped builder, never staff — via the second reader.
+        authenticateBuilder: firstBuilderAuth(
+          oidcBuilderReader(hostFor(env), env),
+          ...(env.PUSH_TOKEN_SECRET ? [pushTokenBuilderAuth(env.PUSH_TOKEN_SECRET)] : []),
+        ),
+        pushTokenSecret: env.PUSH_TOKEN_SECRET,
         verticals: verticalsFor(env),
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),

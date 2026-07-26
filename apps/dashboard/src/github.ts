@@ -132,6 +132,111 @@ export interface GithubRepo {
   updatedAt: string;
 }
 
+/** One branch of a repo, as the import UI's branch picker needs it. */
+export interface GithubBranch {
+  name: string;
+}
+
+/** List a repo's branches with the installation's token (paginates to a sane cap). */
+export async function listRepoBranches(
+  cfg: GithubConfig,
+  installationId: string,
+  repoFullName: string,
+): Promise<GithubBranch[]> {
+  const token = await installationToken(cfg, installationId);
+  const repo = encodeRepo(repoFullName);
+  const branches: GithubBranch[] = [];
+  for (let page = 1; page <= 5; page++) {
+    const res = await gh(cfg, `/repos/${repo}/branches?per_page=100&page=${page}`, `token ${token}`);
+    if (!res.ok) throw new Error(`github: list branches failed (${res.status})`);
+    const body = (await res.json()) as Array<{ name: string }>;
+    for (const b of body) branches.push({ name: b.name });
+    if (body.length < 100) break;
+  }
+  return branches;
+}
+
+/** `owner/name` → path segments, each encoded (a repo name can't contain `/` beyond the one). */
+const encodeRepo = (fullName: string): string =>
+  fullName.split('/').map(encodeURIComponent).join('/');
+
+export interface SetupRepoCiInput {
+  repoFullName: string;
+  branch: string;
+  /** e.g. `.github/workflows/substrat-deploy.yml` */
+  workflowPath: string;
+  workflowContent: string;
+  /** e.g. `SUBSTRAT_SERVICE_TOKEN` */
+  secretName: string;
+  secretValue: string;
+  /** Seals `secretValue` to the repo's Actions public key (github-seal.ts, injected for testability). */
+  seal: (message: string, recipientPublicKeyB64: string) => string;
+}
+
+/**
+ * One-click CI setup on a customer repo: write the push credential as an Actions
+ * secret, then commit the deploy workflow to the chosen branch. Both writes need the
+ * App's WIDENED permissions (contents: write, workflows, secrets) — a 403/404 from
+ * GitHub on an app installed before the widening surfaces as `needsPermissions`, so
+ * the UI can say "re-approve the App" instead of failing opaquely. Secret BEFORE
+ * workflow: committing the workflow triggers a CI run immediately, and that first run
+ * must already find its credential.
+ */
+export async function setupRepoCi(
+  cfg: GithubConfig,
+  installationId: string,
+  input: SetupRepoCiInput,
+): Promise<{ workflowUpdated: boolean } | { needsPermissions: true }> {
+  const token = await installationToken(cfg, installationId);
+  const repo = encodeRepo(input.repoFullName);
+
+  // The repo's Actions public key — GitHub only accepts secrets sealed to it.
+  const keyRes = await gh(cfg, `/repos/${repo}/actions/secrets/public-key`, `token ${token}`);
+  if (keyRes.status === 403 || keyRes.status === 404) return { needsPermissions: true };
+  if (!keyRes.ok) throw new Error(`github: actions public key failed (${keyRes.status})`);
+  const { key, key_id } = (await keyRes.json()) as { key: string; key_id: string };
+
+  const secretRes = await gh(
+    cfg,
+    `/repos/${repo}/actions/secrets/${encodeURIComponent(input.secretName)}`,
+    `token ${token}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ encrypted_value: input.seal(input.secretValue, key), key_id }),
+      headers: { 'content-type': 'application/json' },
+    },
+  );
+  if (secretRes.status === 403) return { needsPermissions: true };
+  if (!secretRes.ok) throw new Error(`github: set actions secret failed (${secretRes.status})`);
+
+  // Create-or-update the workflow file: the contents API needs the existing blob's
+  // sha to update, and 404s when the file is new — both are fine.
+  const path = input.workflowPath.split('/').map(encodeURIComponent).join('/');
+  const existing = await gh(
+    cfg,
+    `/repos/${repo}/contents/${path}?ref=${encodeURIComponent(input.branch)}`,
+    `token ${token}`,
+  );
+  const sha = existing.ok ? ((await existing.json()) as { sha?: string }).sha : undefined;
+
+  const bytes = new TextEncoder().encode(input.workflowContent);
+  const put = await gh(cfg, `/repos/${repo}/contents/${path}`, `token ${token}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: sha ? 'Update Substrat deploy workflow' : 'Add Substrat deploy workflow',
+      content: btoa(String.fromCharCode(...bytes)),
+      branch: input.branch,
+      ...(sha ? { sha } : {}),
+    }),
+    headers: { 'content-type': 'application/json' },
+  });
+  // Committing under .github/workflows without the `workflows` permission is a 403
+  // (and on some paths a 404) — the re-approve case again, not a hard error.
+  if (put.status === 403 || put.status === 404) return { needsPermissions: true };
+  if (!put.ok) throw new Error(`github: commit workflow failed (${put.status})`);
+  return { workflowUpdated: Boolean(sha) };
+}
+
 /** List the repos the tenant granted this installation (paginates to a sane cap). */
 export async function listInstallationRepos(cfg: GithubConfig, installationId: string): Promise<GithubRepo[]> {
   const token = await installationToken(cfg, installationId);
