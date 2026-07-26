@@ -966,6 +966,10 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
+  deleteHostname(hostname: string): void {
+    this.sql.exec('DELETE FROM hostnames WHERE hostname = ?', hostname);
+  }
+
   listHostnames(filter: { tenantId?: string; scopeId?: string }): HostnameRow[] {
     const where: string[] = [];
     const params: string[] = [];

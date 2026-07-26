@@ -986,6 +986,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(row);
   });
 
+  // Unbind (hard-delete) a hostname row — what the orphan cleanup uses on rows
+  // whose scope is archived or gone. Staff-only (not in BUILDER_ROUTES), audited
+  // below the seam, idempotent: an unknown hostname deletes nothing and still 200s.
+  app.delete('/hostnames/:hostname', async (c) => {
+    const name = c.req.param('hostname');
+    await admin.unbindHostname(c.get('actor'), name);
+    return c.json({ deleted: name.toLowerCase() });
+  });
+
   // -- roles, read only (§4.5 console item 4) --------------------------------
   // The READ lands; `defineRole` deliberately does not. Creating a role over
   // HTTP is a permission change, and the permission diff is a human checkpoint

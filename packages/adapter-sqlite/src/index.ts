@@ -2150,6 +2150,23 @@ export class SqliteScopeHost implements ScopeHost {
           { status, note: note ?? null },
         );
       },
+      unbindHostname: async (actor, raw: string) => {
+        const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
+        const row = this.directory
+          .prepare('SELECT tenant_id, scope_id, status FROM hostnames WHERE hostname = ?')
+          .get(hostname) as
+          | { tenant_id: string; scope_id: string; status: string }
+          | undefined;
+        if (!row) return; // idempotent, and a no-op is not audited
+        this.directory.prepare('DELETE FROM hostnames WHERE hostname = ?').run(hostname);
+        this.recordAdmin(
+          actor,
+          'unbindHostname',
+          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
+          { hostname, status: row.status },
+          null,
+        );
+      },
       listHostnames: async (actor, filter) => {
         const where: string[] = [];
         const params: string[] = [];

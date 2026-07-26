@@ -1536,6 +1536,38 @@ export function scopeHostContractSuite(
       expect(await host.admin.resolveHostname('eu.example.com')).toBeUndefined();
     });
 
+    it('unbinds a hostname: the row is gone, it stops resolving, and the unbind is audited', async () => {
+      // The inverse of bindHostname — what a cleanup pass uses on orphaned rows.
+      // A hard delete, not a tombstone: the row is routing config, and its history
+      // lives in the admin log.
+      await host.admin.unbindHostname(staff, 'EU.example.com'); // case-insensitive, like DNS
+      expect(
+        (await host.admin.listHostnames(staff, { scopeId: s1 })).map((h) => h.hostname),
+      ).not.toContain('eu.example.com');
+      expect(await host.admin.resolveHostname('eu.example.com')).toBeUndefined();
+
+      const entries = await host.admin.auditLog(staff, { scopeId: s1 });
+      expect(entries.map((e) => e.action)).toContain('unbindHostname');
+
+      // Idempotent: unbinding an unknown hostname is a no-op, not an error — a
+      // cleanup pass can re-run over a partial failure.
+      await expect(host.admin.unbindHostname(staff, 'eu.example.com')).resolves.toBeUndefined();
+
+      // The released name is immediately reclaimable by another scope.
+      await host.admin.bindHostname(staff, {
+        hostname: 'eu.example.com',
+        tenantId: t2,
+        scopeId: s2,
+        surface: 'app',
+        region: null,
+        canonical: false,
+      });
+      const reclaimed = (await host.admin.listHostnames(staff, { scopeId: s2 })).find(
+        (h) => h.hostname === 'eu.example.com',
+      );
+      expect(reclaimed?.scopeId).toBe(s2);
+    });
+
     it('rejects duplicate module registration', () => {
       expect(() => host.registerModule({ manifest: testModManifest })).toThrow(/already registered/);
     });

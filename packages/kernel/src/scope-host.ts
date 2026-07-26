@@ -568,6 +568,17 @@ export interface HostAdmin {
     status: HostnameStatus,
     note?: string,
   ): Promise<void>;
+  /**
+   * Remove a hostname binding — the inverse of `bindHostname`.
+   *
+   * A hard DELETE, not a tombstone, and deliberately so: a hostname row is
+   * routing config, not access evidence — `deleteSnapshot` already hard-deletes
+   * a reaped fork's rows via the same path, and the bind/unbind history lives in
+   * the append-only admin log (K-21 protects tuples, not the route table).
+   * Idempotent: unbinding an unknown hostname is a silent no-op, not an error —
+   * so a cleanup pass can re-run over a partial failure.
+   */
+  unbindHostname(actor: PlatformActorId, hostname: string): Promise<void>;
   listHostnames(
     actor: PlatformActorId,
     filter?: { tenantId?: TenantId; scopeId?: ScopeId },
