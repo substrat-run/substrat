@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { orgId, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { MODULES, provisionDashboard, reconcileRoles, type DashboardNode } from '../src/index.js';
+import { MODULES, provisionDashboard, reconcileRoles, ensureRosterSeeded, type DashboardNode } from '../src/index.js';
 import type { DashboardMemberRow } from '../src/module.js';
 
 /**
@@ -78,6 +78,43 @@ describe('Dashboard teams — invite + accept', () => {
     };
     expect(result.members.some((m) => m.principal === acme.principal)).toBe(true);
     expect((await members(acme)).filter((m) => m.status === 'active')).toHaveLength(0);
+  });
+
+  it('a pre-roster team self-heals: the resolving caller is seeded as owner and can delete', async () => {
+    // Provision the way pre-#191 code did: no org, no init-team — the roster tables
+    // exist (migrations ran) but are empty. The tenant id is hand-built with a
+    // pre-ROSTER_EPOCH timestamp so the heal's ULID gate lets it through.
+    const legacy = await provisionDashboard(host, {
+      tenantId: tenantId.parse('01KY54SRTR' + ulid().slice(10)),
+      scopeId: scopeId.parse(ulid()),
+      owner: principalId.parse(ulid()),
+      slug: 'legacy',
+      name: 'legacy',
+    });
+    const scope = await host.getScope(legacy.principal, legacy.tenantId, legacy.scopeId);
+
+    // The bug: the owner-by-kernel-role is refused because the roster has no row.
+    await expect(scope.invoke('dashboard/delete-team', {})).rejects.toThrow(/only the owner/);
+
+    // The heal seeds the resolving caller as the owner row (and the invite org).
+    await ensureRosterSeeded(host, staff, legacy, 'owner@legacy.com');
+    const roster = await members(legacy);
+    expect(roster).toHaveLength(1);
+    expect(roster[0]).toMatchObject({ email: 'owner@legacy.com', role_key: 'owner', status: 'active', principal: legacy.principal });
+    expect(await host.admin.listOrgs(staff, legacy.tenantId)).toHaveLength(1);
+
+    // An already-seeded team is left untouched — the roster read short-circuits.
+    const acme = await makeTeam('acme-heal', 'owner@acme-heal.com');
+    await ensureRosterSeeded(host, staff, acme, 'someone-else@acme-heal.com');
+    const acmeRoster = await members(acme);
+    expect(acmeRoster).toHaveLength(1);
+    expect(acmeRoster[0]!.email).toBe('owner@acme-heal.com');
+
+    // And the healed owner can now delete the organization.
+    const result = (await scope.invoke('dashboard/delete-team', {})) as {
+      members: Array<{ principal: string; roleKey: string }>;
+    };
+    expect(result.members).toEqual([{ principal: legacy.principal, roleKey: 'owner' }]);
   });
 
   it('owner invites, recipient accepts with the matching email, and the roster reflects it', async () => {

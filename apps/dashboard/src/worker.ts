@@ -31,7 +31,7 @@ import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, provisionDashboard, reconcileRoles, slugify, type DashboardNode } from './provision.js';
+import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -324,7 +324,8 @@ async function resolveNode(
  * in. `null` when there is no session OR the login belongs to no team yet — a
  * teamless login is routed to onboarding by `/api/me`, never here. This resolver
  * is READ-ONLY: teams are created explicitly (`createTeam` / `POST /api/teams`),
- * not as a side effect of resolving who you are.
+ * not as a side effect of resolving who you are — the roster self-heal below only
+ * ever completes a team that already exists.
  */
 async function resolveAccount(
   host: ScopeHost,
@@ -337,7 +338,11 @@ async function resolveAccount(
   // The pool must exist before we can ask which tenants a login is in (central topology).
   await host.admin.registerIdentityPool(STAFF, { provider: PROVIDER, topology: 'central', tenantId: null });
   const tenants = await host.admin.listIdentityTenants(STAFF, PROVIDER, user.id);
-  return resolveNode(host, tenants, user.id, selectedTeamId);
+  const node = await resolveNode(host, tenants, user.id, selectedTeamId);
+  // Pre-roster teams (#191) get their empty roster seeded here — the email is only
+  // in hand at this layer (the session), which is why the heal lives on this path.
+  if (node) await ensureRosterSeeded(host, STAFF, node, user.email ?? '');
+  return node;
 }
 
 /**
