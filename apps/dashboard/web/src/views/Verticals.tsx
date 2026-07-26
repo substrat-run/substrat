@@ -442,18 +442,27 @@ export function Verticals({
   );
 }
 
-/** The CLI alternative to the repo import — the same push seam, from a terminal. */
+/**
+ * The CLI alternative to the repo import — the same push seam, from a terminal.
+ * The command carries no flags on purpose: run from the vertical's directory,
+ * `push` derives the slug from package.json and auto-bumps the version, so the
+ * shortest command is also the correct one (and it fits the narrow column).
+ */
 function CliPushPanel() {
-  const cmd = 'npx @substrat-run/cli push . --slug my-app --version 0.1.0';
+  const cmd = 'npx @substrat-run/cli push';
   return (
     <div style={{ background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-secondary)' }}>Or push from your terminal</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32, padding: '0 10px', background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 6, fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-primary)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 32, padding: '0 10px', background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 6, fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-primary)', minWidth: 0 }}>
         <span style={{ color: 'var(--text-tertiary)' }}>$</span>
-        <span style={{ flex: 1 }}>{cmd}</span>
+        <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflowX: 'auto' }}>{cmd}</span>
         <CopyButton text={cmd} />
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Run <span style={{ fontFamily: 'var(--font-mono)' }}>login</span> first. A private vertical's push is ready to promote immediately — add <span style={{ fontFamily: 'var(--font-mono)' }}>--promote prod</span> to go live in one step.</div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+        Run <span style={{ fontFamily: 'var(--font-mono)' }}>login</span> first, then push from your vertical's directory —
+        the name comes from package.json and the version bumps itself. Add{' '}
+        <span style={{ fontFamily: 'var(--font-mono)' }}>--promote prod</span> to go live in one step.
+      </div>
     </div>
   );
 }
