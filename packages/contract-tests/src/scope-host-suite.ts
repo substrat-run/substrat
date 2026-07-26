@@ -279,6 +279,36 @@ export function scopeHostContractSuite(
       expect(journal2.filter((r) => r.module_id === '@test/mod')).toHaveLength(1);
     });
 
+    // -- the migration frontier + deliberate wake (kernel-design §5.3, #49) --
+    // The reconciliation sweep's two host affordances, held to their contract on
+    // every adapter: the frontier is what "up to date" means for this build, and
+    // `migrateScope` is a fresh, structured-outcome attempt. The failure paths
+    // (a scope that CANNOT migrate) live in each adapter's own broken-module
+    // fixture — a broken migration in the shared set would fail every suite.
+
+    it('reports a migration frontier a woken scope is never behind (§5.3, #49)', async () => {
+      const frontier = host.migrationFrontier();
+      expect(frontier.total).toBeGreaterThan(0);
+      await host.getScope(alice, t1, s1); // wake — applies anything pending
+      const record = await host.admin.getScopeRecord(staff, t1, s1);
+      // ≥, not =: a deployment may carry modules beyond the ones this host
+      // registered (the CF test DO does) — "behind" must still never be reported.
+      expect(Number(record?.schemaVersion)).toBeGreaterThanOrEqual(frontier.total);
+    });
+
+    it('migrateScope on an up-to-date scope is a noop that touches nothing', async () => {
+      await host.getScope(alice, t1, s1);
+      const before = await host.admin.getScopeRecord(staff, t1, s1);
+      await expect(host.migrateScope(t1, s1)).resolves.toEqual({ status: 'noop' });
+      const after = await host.admin.getScopeRecord(staff, t1, s1);
+      expect(after?.schemaVersion).toBe(before?.schemaVersion);
+      expect(after?.migrationFailure).toBeNull();
+    });
+
+    it('migrateScope cross-checks the (tenant, scope) pair and fails closed (K-3)', async () => {
+      await expect(host.migrateScope(t2, s1)).rejects.toThrow(/unknown scope/);
+    });
+
     it.runIf(supportsRuntimeRegistration)(
       'applies migrations of modules registered after a scope was first accessed',
       async () => {

@@ -119,6 +119,37 @@ export interface SqlMigration {
 }
 
 /**
+ * The deployed migration frontier — what "up to date" means for THIS host build
+ * (kernel-design §5.3, #49). `total` counts the registered (module, version)
+ * pairs, which is exactly the number `scope.schemaVersion` counts toward, so
+ * "which scopes are behind" is a directory comparison and never a fan-out
+ * (§5.4). In a multi-deployment fleet each deployment has its own frontier —
+ * this describes the modules registered on this host, nothing more.
+ */
+export interface MigrationFrontier {
+  total: number;
+}
+
+/**
+ * What one deliberate migration attempt did (`migrateScope`, the sweep's retry
+ * affordance — #49).
+ *
+ * A structured result, NOT a throw, and deliberately so: the wake paths
+ * (`getScope`, `invoke`) must keep rejecting so a half-migrated scope fails
+ * closed on every operation (#50's near-regression), but the sweep is not a
+ * request — a failure is a state it reports and backs off from, not an
+ * exception. `noop` means this host had nothing pending for the scope: either
+ * it is at the frontier already, or the scope's modules live in a different
+ * deployment (the control plane sweeping a fleet it does not run) — in both
+ * cases no state was touched, so a foreign host can never clear a failure it
+ * knows nothing about.
+ */
+export type MigrateScopeOutcome =
+  | { status: 'migrated'; schemaVersion: string }
+  | { status: 'noop' }
+  | { status: 'failed'; failure: { version: string; error: string } };
+
+/**
  * How a module (engine or vertical) joins a host: manifest + migrations +
  * operations in one registration. Migrations apply lazily per scope, inside
  * the scope's serialization domain, journaled in `_substrat_migrations`
@@ -1277,6 +1308,36 @@ export interface ScopeHost {
    * nothing is due.
    */
   drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport>;
+
+  /**
+   * The deployed migration frontier for the modules registered on this host —
+   * the number a scope's `schemaVersion` must reach to be current (§5.3, #49).
+   * Sync like `registerModule`: it is code-time bookkeeping, not directory state.
+   */
+  migrationFrontier(): MigrationFrontier;
+
+  /**
+   * Attempt a scope's pending migrations NOW — the reconciliation sweep's wake +
+   * retry affordance (§5.3, #49).
+   *
+   * Distinct from the lazy wake in three deliberate ways. It takes no principal
+   * (this is fleet maintenance, the same class as `drainDue` — no actor, not
+   * audited; the outcome lands in the directory's migration-state projection
+   * either way). It returns a structured outcome instead of throwing, because
+   * for a sweep a failed migration is state to report and back off from — the
+   * request paths keep their rejection so operations still fail closed. And it
+   * MUST defeat any per-instance memoisation of a failed attempt (the
+   * Cloudflare ScopeDO caches its migration promise, so a plain re-wake would
+   * return the cached rejection forever): a call here is always a fresh
+   * attempt of whatever is still pending.
+   *
+   * Gates: the (tenantId, scopeId) pair is cross-checked and fails closed on a
+   * mismatch (K-3). Allowed on `active` AND `provisioning` scopes — a scope
+   * stuck in provisioning because its migration failed is precisely a sweep
+   * target — refused for `suspended`/`archived`, which are deliberate states
+   * the sweep must not disturb.
+   */
+  migrateScope(tenantId: TenantId, scopeId: ScopeId): Promise<MigrateScopeOutcome>;
 
   /**
    * Executor deliveries that exhausted their attempts, oldest first — the evidence a

@@ -4,6 +4,7 @@ import type {
   ChannelName,
   HostnameBinding,
   HostnameStatus,
+  MigrationProgress,
   PromotionAcknowledgement,
   Scope,
   ScopeId,
@@ -137,6 +138,10 @@ export function createApi(actor: string | null, baseUrl = '/api') {
 
     listScopes: (filter?: { tenantId?: TenantId; status?: ScopeStatus[]; vertical?: string }) =>
       call<Scope[]>(`/scopes${query({ ...filter })}`),
+    // Fleet migration progress (kernel-design §5.3, #49): "release N: X/Y
+    // migrated, P pending, F failed" against the deployment's frontier.
+    migrationProgress: (vertical?: string) =>
+      call<MigrationProgress>(`/fleet/migrations${query({ vertical })}`),
     getScope: (tenantId: TenantId, scopeId: ScopeId) =>
       call<Scope>(`/tenants/${tenantId}/scopes/${scopeId}`),
     provisionScope: (input: {

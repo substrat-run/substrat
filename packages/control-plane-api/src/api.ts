@@ -22,7 +22,7 @@ import {
 } from '@substrat-run/contracts';
 import type { PlatformActorId, Scope, ScopeId, TenantId } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
-import { ulid } from '@substrat-run/kernel';
+import { migrationProgress, ulid } from '@substrat-run/kernel';
 import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
 import type { VerticalClient } from './vertical-client.js';
 import { ControlPlaneError } from './client.js';
@@ -175,6 +175,8 @@ const listScopesQuery = z.object({
   status: z.array(scopeStatus).optional(),
   vertical: z.string().optional(),
 });
+
+const fleetMigrationsQuery = z.object({ vertical: z.string().min(1).optional() });
 
 // -- vertical + version registry bodies (#31; orchestration.md §5.6) --------
 // Each route below is a thin pass-through to a built `HostAdmin` method — the
@@ -379,6 +381,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       vertical: c.req.query('vertical'),
     });
     return c.json(await admin.listScopes(c.get('actor'), filter));
+  });
+
+  // -- fleet migration progress (kernel-design §5.3, #49) ---------------------
+  // The ops-console view: "release N: X/Y migrated, P pending, F failed",
+  // computed from the directory listing against THIS host's registered frontier
+  // (§5.4: fleet questions never fan out — no scope is woken to answer). Staff
+  // only via the builder allowlist's default-deny. `vertical` narrows the fleet
+  // — in a multi-deployment environment each vertical has its own frontier, so
+  // an unfiltered read is meaningful only where one deployment runs everything.
+  app.get('/fleet/migrations', async (c) => {
+    const filter = fleetMigrationsQuery.parse({ vertical: c.req.query('vertical') });
+    const scopes = await admin.listScopes(c.get('actor'), {
+      status: ['active', 'provisioning'],
+      ...(filter.vertical ? { vertical: filter.vertical } : {}),
+    });
+    return c.json(migrationProgress(host.migrationFrontier(), scopes));
   });
 
   app.post('/scopes', async (c) => {

@@ -15,6 +15,8 @@ export type {
   FetchLike,
   GuardPredicate,
   HostAdmin,
+  MigrateScopeOutcome,
+  MigrationFrontier,
   ModuleRegistration,
   OperationContext,
   OperationHandler,
@@ -52,8 +54,17 @@ export {
 export { runPlatformSweep, startPlatformSweeper } from './platform-sweep.js';
 export type {
   ConnectorSweeper,
+  MigrationSweepReport,
   PlatformSweepOptions,
   PlatformSweepReport,
   PlatformSweeperHandle,
   StartPlatformSweeperOptions,
 } from './platform-sweep.js';
+export {
+  MIGRATION_FLAG_THRESHOLD,
+  migrationFleet,
+  migrationProgress,
+  migrationSummary,
+  scopeMigrationState,
+} from './migration-progress.js';
+export type { ScopeMigrationState } from './migration-progress.js';
