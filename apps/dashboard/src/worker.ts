@@ -149,6 +149,38 @@ function controlPlaneFor(env: Env, tenantId: DashboardNode['tenantId']): TenantN
 
 /** The AES-256 SecretBox that seals connection credentials, or undefined when unset
  *  (the host then fails closed on any credential write — never stores plaintext). */
+/**
+ * Mirror one login's identity link for a team into the SHARED control plane
+ * (CONNECTED mode; a no-op without the service binding). The builder plane —
+ * `substrat login`'s whoami and the CLI push's session auth — resolves
+ * `userId → tenants` against the shared plane's directory, but identity links
+ * are written at sign-up/invite-accept into THIS deployment's own
+ * ControlPlaneDO, a different DO entirely; the mirror is what makes an
+ * interactive `substrat push` find a workspace. Best-effort by design: the
+ * local link stays authoritative, a plane outage must never fail sign-up or
+ * invite-accept, and `/api/me` re-mirrors on every load — which is also the
+ * backfill for teams created before this mirror existed.
+ */
+async function mirrorBuilderIdentity(env: Env, host: ScopeHost, userId: string, t: TenantId): Promise<void> {
+  const cp = controlPlaneFor(env, t);
+  if (!cp) return;
+  try {
+    const team = await host.admin.getTenant(STAFF, t);
+    if (!team || team.status !== 'active') return;
+    const mapped = await host.admin.resolveIdentity(t, PROVIDER, userId);
+    if (!mapped) return;
+    await cp.ensureTenant(team.slug, team.name);
+    await cp.linkIdentity({
+      provider: PROVIDER,
+      externalId: userId,
+      principal: mapped.principal,
+      ...(mapped.scopeId ? { scopeId: mapped.scopeId } : {}),
+    });
+  } catch {
+    // best-effort: re-mirrored on the next /api/me
+  }
+}
+
 function secretBoxFor(env: Env): SecretBox | undefined {
   if (!env.SECRET_BOX_KEY) return undefined;
   const key = b64urlToBytes(env.SECRET_BOX_KEY.trim());
@@ -355,7 +387,7 @@ async function resolveAccount(
  * only action that cannot be tenant-narrowed (there is no tenant yet), so it stays
  * a controlled platform action, gated by the authenticated session.
  */
-async function createTeam(host: ScopeHost, user: { id: string; email?: string | null }, name: string): Promise<DashboardNode> {
+async function createTeam(host: ScopeHost, env: Env, user: { id: string; email?: string | null }, name: string): Promise<DashboardNode> {
   await host.admin.registerIdentityPool(STAFF, { provider: PROVIDER, topology: 'central', tenantId: null });
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
@@ -374,6 +406,9 @@ async function createTeam(host: ScopeHost, user: { id: string; email?: string | 
   await host.admin.createOrg(STAFF, { id: org, tenantId: t, slug: 'team', name });
   const scope = await host.getScope(owner, t, s);
   await scope.invoke('dashboard/init-team', { orgId: org, ownerEmail: user.email ?? '' });
+  // Mirror the owner into the shared plane's directory so `substrat push` can
+  // resolve this workspace immediately (see mirrorBuilderIdentity).
+  await mirrorBuilderIdentity(env, host, user.id, t);
   return { tenantId: t, scopeId: s, principal: owner };
 }
 
@@ -507,6 +542,10 @@ app.get('/api/me', async (c) => {
   }
   const node = await resolveNode(host, tenants, user.id, getCookie(c, TEAM_COOKIE));
   if (!node) return c.json({ error: 'unauthorized' }, 401);
+  // Re-mirror this login's links into the shared plane's directory off the hot
+  // path — the backfill for teams created before the mirror existed, and the
+  // self-heal when a best-effort mirror was missed (see mirrorBuilderIdentity).
+  c.executionCtx.waitUntil(Promise.all(tenants.map((t) => mirrorBuilderIdentity(c.env, host, user.id, t))));
   // The dashboard scope carries no display identity — the shell shows the signed-in
   // email/name, which live on the OIDC session, so surface them alongside the teams.
   return c.json({
@@ -532,7 +571,7 @@ app.post('/api/teams', async (c) => {
   if (!user) throw new HTTPException(401, { message: 'unauthorized' });
   const { name } = createTeamBody.parse(await c.req.json());
   const host = hostFor(c.env);
-  const node = await createTeam(host, user, name);
+  const node = await createTeam(host, c.env, user, name);
   setCookie(c, TEAM_COOKIE, node.tenantId, teamCookieOpts(new URL(c.req.url).protocol));
   return c.json({ teamId: node.tenantId }, 201);
 });
@@ -573,6 +612,8 @@ app.post('/api/teams/leave', async (c) => {
   const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
   await scope.invoke('dashboard/leave-self', {});
   await host.admin.unlinkIdentity(STAFF, node.tenantId, node.principal);
+  // Sever the shared plane's mirrored link too (best-effort — see mirrorBuilderIdentity).
+  await controlPlaneFor(c.env, node.tenantId)?.unlinkIdentity(node.principal).catch(() => {});
   deleteCookie(c, TEAM_COOKIE, { path: '/' });
   return c.body(null, 204);
 });
@@ -620,6 +661,8 @@ app.post('/api/teams/delete', async (c) => {
   for (const m of members) {
     try {
       await host.admin.unlinkIdentity(STAFF, node.tenantId, principalId.parse(m.principal));
+      // The shared plane's mirrored link goes with it (best-effort).
+      if (cp) await cp.unlinkIdentity(principalId.parse(m.principal));
     } catch {
       // an already-unlinked member (e.g. left earlier) is fine
     }
@@ -784,6 +827,9 @@ app.post('/api/members/remove', async (c) => {
       node: { tenantId: node.tenantId, scopeId: null },
     });
     await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);
+    // And the shared plane's mirrored link, so their CLI push loses the
+    // workspace too (best-effort — see mirrorBuilderIdentity).
+    await controlPlaneFor(c.env, node.tenantId)?.unlinkIdentity(principal).catch(() => {});
   }
   return c.body(null, 204);
 });
@@ -860,6 +906,9 @@ app.post('/api/invites/accept', async (c) => {
     tenantId: t,
     scopeId: s,
   });
+  // Mirror the new member into the shared plane's directory so they can
+  // `substrat push` for this workspace too (see mirrorBuilderIdentity).
+  await mirrorBuilderIdentity(c.env, host, user.id, t);
   setCookie(c, TEAM_COOKIE, t, teamCookieOpts(new URL(c.req.url).protocol));
   return c.json({ teamId: t });
 });

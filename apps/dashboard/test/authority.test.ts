@@ -113,6 +113,25 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect((calls[0]!.body as { versionId: string }).versionId).toBe('01JVERSION');
   });
 
+  it('mirrors identity links under the pinned tenant, idempotently', async () => {
+    const { cp, calls } = harness();
+    await cp.linkIdentity({ provider: 'authhero', externalId: 'auth0|u1', principal: owner, scopeId: S });
+    await cp.unlinkIdentity(owner);
+
+    expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}/identities`);
+    expect(calls[0]!.method).toBe('PUT');
+    expect(calls[0]!.body).toEqual({ provider: 'authhero', externalId: 'auth0|u1', principal: owner, scopeId: S });
+
+    expect(calls[1]!.url).toBe(`https://cp/api/tenants/${T}/identities/${owner}`);
+    expect(calls[1]!.method).toBe('DELETE');
+
+    // Re-mirroring an existing link (the /api/me self-heal) tolerates a conflict.
+    const conflicted = harness(409, { error: 'already linked' });
+    await expect(
+      conflicted.cp.linkIdentity({ provider: 'authhero', externalId: 'auth0|u1', principal: owner }),
+    ).resolves.toBeUndefined();
+  });
+
   // -- observability narrowing (design/observability.md §5, view 2) ----------
   // The plane's observability routes are staff-wide over the service token, so the
   // owner filter HERE is the entire tenant boundary for metrics and logs.
