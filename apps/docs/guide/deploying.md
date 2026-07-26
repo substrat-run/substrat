@@ -74,10 +74,14 @@ substrat whoami
 #   acme-co  (Acme Co)
 ```
 
-If you belong to several, pick per command with `--tenant <slug>` (or set `SUBSTRAT_TENANT`, or
-change the stored default). You never type your workspace *into* a slug — the control plane
-forms the prefix for you (next section). New here? Sign up once in the dashboard to create your
-workspace, then the CLI just works.
+Which workspace a **push** acts for is pinned per project, not per machine: a
+`"substrat": { "tenant": "acme-co" }` block in the vertical's `package.json` (the first
+interactive push offers to write it for you; `--tenant` / `SUBSTRAT_TENANT` override). The
+stored login default is deliberately *not* used for pushes — the first push of a slug claims it
+for a workspace, and a global default silently pointing at the wrong one would claim it for the
+wrong owner. You never type your workspace *into* a slug — the control plane forms the prefix
+for you (next section). New here? Sign up once in the dashboard to create your workspace, then
+the CLI just works.
 
 ## Ship it — `substrat push`
 

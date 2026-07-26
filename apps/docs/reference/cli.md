@@ -27,9 +27,11 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 |---|---|
 | `substrat login` | Sign in via the browser (per-human), or store a CI service token with `--token`. |
 | `substrat whoami` | Print who you are and the workspaces you can build for. |
-| `substrat push <dir> --slug <s> --version <v>` | Build the vertical in `<dir>` and push a **pending** version. |
+| `substrat push [dir]` | Build the vertical and push a **pending** version — no flags needed from inside the project. |
 | `substrat promote <slug> --channel dev\|staging --version <id>` | Point a non-prod channel at a version. |
 | `substrat versions <slug>` | List a vertical's versions + which channels point where. |
+| `substrat publish <slug>` | Request a listing on the public marketplace (a staff operator reviews). |
+| `substrat unpublish <slug>` | Remove a vertical from the public marketplace (staff). |
 | `substrat scope pull <scopeId>` | Pull a scope's data to a local SQLite file — masked by default, `--full` is break-glass. |
 
 Options on any command: `--cp <url>` (control-plane API base), `--token <tok>` (a service
@@ -45,21 +47,62 @@ substrat login --token <SERVICE_TOKEN>   # CI: store a service-actor credential
 The browser flow starts a one-shot `127.0.0.1` server, opens the platform's CLI broker, signs
 you in through [AuthHero](/concepts/identity), and exchanges a PKCE-bound `code` for a session
 token — the token never transits a URL. On success the CLI also resolves your workspace(s) and
-stores a default (prompting if you belong to several). Everything lands in
+stores a default (prompting if you belong to several) — used by `promote` and `scope pull`;
+`push` pins its workspace [per project](#push) instead. Everything lands in
 `~/.substrat/config.json` (mode `0600`).
+
+### `whoami`
+
+```bash
+substrat whoami
+# signed in as you@acme.com
+#   acme-co   (Acme Co)
+#   side-org  (Side Org)
+```
+
+Prints the signed-in identity and every workspace you can build for — useful before a push if
+you're unsure which workspace a project will act as.
 
 ### `push`
 
 ```bash
-substrat push ./my-vertical --slug helpdesk --version 0.1.0 [--name "Helpdesk"]
+cd my-vertical && substrat push      # no flags — everything defaults from the project
 ```
 
-From the vertical's directory (the one with `wrangler.jsonc`): builds the bundle, reads the
-declared surface (your own DO classes, D1 databases, compatibility date/flags, entry module),
-computes the three digests, and POSTs to `{cp}/verticals/{slug}/deploy`. The slug is **bare** —
-the control plane forms the registry id `<workspace>/<slug>` from your session (see
-[the prefix](/guide/deploying#the-workspace-prefix)). The version lands **pending**; admission
-is a separate, human step.
+Run from the vertical's directory (the one with `wrangler.jsonc` + `package.json`) and every
+input defaults from the project; flags override each:
+
+| Input | Default | Override |
+|---|---|---|
+| slug / name | `"substrat": { "slug", "name" }` in `package.json`, else derived from the package name | `--slug`, `--name` |
+| version | the registry's latest for the slug, patch-bumped (seeded from `package.json` `version` on the very first push) | `--version` |
+| workspace | `"substrat": { "tenant" }` in `package.json` — the **pin** | `--tenant`, `SUBSTRAT_TENANT` |
+
+The push builds the bundle (`wrangler deploy --dry-run`, running your own `build.command`),
+reads the declared surface (your own DO classes, D1 databases, compatibility date/flags, entry
+module), computes the three digests, and POSTs to `{cp}/verticals/{slug}/deploy`. The slug is
+**bare** — the control plane forms the registry id `<workspace>/<slug>` from the workspace you
+push as (see [the prefix](/guide/deploying#the-workspace-prefix)). The version lands
+**pending**; admission is a separate, human step.
+
+**The first push of a project** has no pin yet, so the CLI asks — once — and offers to write
+the answer into `package.json`, where it's reviewable and shared with every teammate and CI:
+
+```
+$ substrat push
+this project has no pinned workspace. you belong to:
+  1. acme-co   (Acme Co)
+  2. side-org  (Side Org)
+push as [1-2, enter = 1]: 1
+pin 'acme-co' in package.json so this project always pushes there? [Y/n]: y
+✓ pinned — package.json now carries "substrat": { "tenant": "acme-co" }
+authenticating with browser session (workspace acme-co)
+pushing acme-co/helpdesk@0.1.0 (Helpdesk) …
+```
+
+It never falls back to the workspace stored at login: the first push of a slug **claims** it
+for a workspace, so a machine-wide default silently pointing at the wrong one would claim it
+for the wrong owner. A non-interactive push (CI) with no pin refuses instead of guessing.
 
 ### `promote`
 
@@ -69,6 +112,29 @@ substrat promote helpdesk --channel staging --version 01J…
 
 Moves an **admitted** version onto a channel. You self-serve `dev` and `staging`; `prod` is
 refused — production promotion and admission stay a platform decision (model B).
+
+### `versions`
+
+```bash
+substrat versions helpdesk
+# VERSION  ADMISSION  CHANNELS      ID
+# 0.2.0    admitted   staging       01J…
+# 0.1.0    admitted   dev,prod      01J…
+```
+
+Lists a vertical's versions (newest first), each one's admission state, and which channels
+point at it. The same view is in the dashboard's **Deployments** tab.
+
+### `publish` / `unpublish`
+
+```bash
+substrat publish helpdesk      # request a public-marketplace listing — staff reviews
+substrat unpublish helpdesk    # remove the listing (staff)
+```
+
+`publish` is a **request**: any owner may ask, and a Substrat operator reviews before the
+vertical is listed — once listed, every tenant can install it from the catalog. Flipping the
+listing itself is staff-only, so `unpublish` works for staff and is refused for builders.
 
 ### `scope pull`
 
@@ -102,8 +168,12 @@ At request time the CLI resolves, in order:
   stored browser session (sent as `Authorization: Bearer`) → a stored service token.
 - **Control-plane URL** — `--cp` → `SUBSTRAT_CP_URL` → the stored config (default
   `https://console.substrat.net/api`).
-- **Workspace** (browser session only) — `--tenant` → `SUBSTRAT_TENANT` → the stored default,
-  sent as `x-substrat-tenant`.
+- **Workspace** (browser session only) — sent as `x-substrat-tenant`. For **push** it is the
+  *project's* choice: `--tenant` → `SUBSTRAT_TENANT` → `"substrat": { "tenant" }` in
+  `package.json` — never the stored login default, because the first push of a slug **claims**
+  `<workspace>/<slug>` for whatever workspace resolved. With no pin, an interactive push lists
+  your workspaces and offers to write the pin; a non-TTY push refuses. Other commands
+  (`promote`, `scope pull`) fall back to the workspace stored at login.
 
 You are always authenticated **as yourself** — a push is attributable to the human or service
 that ran it, never a hand-picked actor.
@@ -117,7 +187,7 @@ that ran it, never a hand-picked actor.
   "controlPlaneUrl": "https://console.substrat.net/api",
   "bearerToken": "…",        // a browser session (per-human)
   "serviceToken": "…",       // a machine credential (CI)
-  "defaultTenant": "acme-co" // the workspace push/promote act for
+  "defaultTenant": "acme-co" // the workspace promote/scope act for (push pins one per project)
 }
 ```
 

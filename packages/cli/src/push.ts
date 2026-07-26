@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { webcrypto } from 'node:crypto';
@@ -144,6 +144,14 @@ export interface VerticalMeta {
   slug: string;
   /** Display name: an explicit `substrat.name`, else the slug title-cased. */
   name: string;
+  /**
+   * The workspace this project pushes to — `substrat.tenant`. Repo-scoped and reviewable,
+   * because which tenant owns a vertical is a property of the project, not the machine:
+   * the first push of a slug CLAIMS `<tenant>/<slug>`, so a machine-wide default silently
+   * pointing at the wrong workspace would claim it for the wrong owner. Undefined → the
+   * CLI prompts (interactive) or refuses (non-TTY); it never guesses.
+   */
+  tenant: string | undefined;
   /** package.json `version` — only a seed for the FIRST push of a brand-new slug. */
   versionSeed: string | undefined;
   /** The vertical's declared env-spec, from package.json `substrat.envSpec` — the static,
@@ -167,7 +175,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   let pkg: {
     name?: string;
     version?: string;
-    substrat?: { slug?: string; name?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[] };
+    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[] };
   } = {};
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg;
@@ -181,6 +189,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   return {
     slug,
     name: s?.name ?? title,
+    tenant: s?.tenant,
     versionSeed: pkg.version,
     envSpec: s?.envSpec,
     ownerGrants: s?.ownerGrants,
@@ -188,6 +197,21 @@ export function readVerticalMeta(dir: string): VerticalMeta {
     provides: s?.provides,
     requires: s?.requires,
   };
+}
+
+/**
+ * Pin the pushed-to workspace into the project's package.json (`substrat.tenant`) so every
+ * later push — any teammate, any machine, CI — lands in the same workspace without asking.
+ * Preserves the file's indentation style (best-effort sniff); throws if there is no
+ * parseable package.json — the caller only offers pinning when meta came from one.
+ */
+export function pinTenant(dir: string, tenant: string): void {
+  const path = join(dir, 'package.json');
+  const raw = readFileSync(path, 'utf8');
+  const pkg = JSON.parse(raw) as Record<string, unknown> & { substrat?: Record<string, unknown> };
+  pkg.substrat = { ...pkg.substrat, tenant };
+  const indent = /^(\s+)"/m.exec(raw)?.[1] ?? '  ';
+  writeFileSync(path, JSON.stringify(pkg, null, indent) + '\n');
 }
 
 function parseSemver(v: string): [number, number, number] | null {

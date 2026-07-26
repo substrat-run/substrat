@@ -19,6 +19,11 @@ export interface CliConfig {
    * prefixes onto a bare `--slug` to form `<tenantSlug>/<name>`. Stored by `substrat login`
    * (the sole/selected workspace); `--tenant` overrides per command. Sent as
    * `x-substrat-tenant`, and only with a browser session (a service token is not a builder).
+   *
+   * `push` deliberately does NOT fall back to this (`useDefaultTenant: false`): which
+   * workspace owns a vertical is a property of the project (package.json `substrat.tenant`),
+   * and a silently-wrong machine-wide default would claim `<wrong-tenant>/<slug>` on first
+   * push. For push this is only the pre-filled suggestion in the interactive picker.
    */
   defaultTenant?: string;
 }
@@ -53,6 +58,8 @@ export interface ResolvedAuth {
   header: Record<string, string>;
   /** Human description of how we authenticated (for the CLI to print). */
   as: string;
+  /** 'session' = a per-human browser login (tenant-scoped); 'service' = the platform actor. */
+  kind: 'session' | 'service';
 }
 
 /**
@@ -63,7 +70,13 @@ export interface ResolvedAuth {
  * service token as `x-service-token` (the platform service actor). Throws a clear,
  * actionable error pointing at `substrat login` rather than surfacing a 401 later.
  */
-export function resolveAuth(flags: { cp?: string; token?: string; tenant?: string }): ResolvedAuth {
+export function resolveAuth(flags: {
+  cp?: string;
+  token?: string;
+  tenant?: string;
+  /** false = never fall back to the stored defaultTenant (push — the project decides). */
+  useDefaultTenant?: boolean;
+}): ResolvedAuth {
   const cfg = loadConfig();
   const raw = flags.cp ?? process.env.SUBSTRAT_CP_URL ?? cfg.controlPlaneUrl;
   if (!raw) {
@@ -73,18 +86,27 @@ export function resolveAuth(flags: { cp?: string; token?: string; tenant?: strin
 
   const explicitService = flags.token ?? process.env.SUBSTRAT_SERVICE_TOKEN;
   if (explicitService) {
-    return { controlPlaneUrl, header: { 'x-service-token': explicitService }, as: 'service token' };
+    return { controlPlaneUrl, header: { 'x-service-token': explicitService }, as: 'service token', kind: 'service' };
   }
   if (cfg.bearerToken) {
-    // A builder acts for a tenant: `--tenant` → SUBSTRAT_TENANT → the stored default.
+    // A builder acts for a tenant: `--tenant` → SUBSTRAT_TENANT → the stored default
+    // (unless the caller opted out — push resolves its tenant from the project instead).
     // Sent only with a browser session — a service token is the platform, not a builder.
-    const tenant = flags.tenant ?? process.env.SUBSTRAT_TENANT ?? cfg.defaultTenant;
+    const tenant =
+      flags.tenant ??
+      process.env.SUBSTRAT_TENANT ??
+      (flags.useDefaultTenant === false ? undefined : cfg.defaultTenant);
     const header: Record<string, string> = { authorization: `Bearer ${cfg.bearerToken}` };
     if (tenant) header['x-substrat-tenant'] = tenant;
-    return { controlPlaneUrl, header, as: tenant ? `browser session (tenant ${tenant})` : 'browser session' };
+    return {
+      controlPlaneUrl,
+      header,
+      as: tenant ? `browser session (workspace ${tenant})` : 'browser session',
+      kind: 'session',
+    };
   }
   if (cfg.serviceToken) {
-    return { controlPlaneUrl, header: { 'x-service-token': cfg.serviceToken }, as: 'service token' };
+    return { controlPlaneUrl, header: { 'x-service-token': cfg.serviceToken }, as: 'service token', kind: 'service' };
   }
   throw new Error('not authenticated — run `substrat login` (browser), or pass --token / set SUBSTRAT_SERVICE_TOKEN for CI');
 }
