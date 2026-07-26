@@ -237,6 +237,45 @@ export async function setupRepoCi(
   return { workflowUpdated: Boolean(sha) };
 }
 
+/**
+ * The workflow one-click setup commits — kept host-side (never the SPA) and shared
+ * with the manual copy-paste path (`GET /api/github/workflow-preview`), so the
+ * committed file and the manual instructions can never drift from what the platform
+ * expects. The install step is load-bearing: `substrat push` runs the repo's own
+ * build (wrangler custom build), which needs the repo's devDependencies on disk —
+ * the lockfile picks the package manager, via corepack for pnpm/yarn.
+ */
+export function deployWorkflowYaml(branch: string, slug: string, cpUrl: string): string {
+  return `name: Deploy to Substrat
+on:
+  push:
+    branches: [${branch}]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 22+: corepack resolves the latest pnpm for lockfile-only repos, and pnpm 11
+          # needs Node >= 22.13 (node:sqlite).
+          node-version: 22
+      - name: Install dependencies
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+        run: |
+          if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile
+          elif [ -f package-lock.json ]; then npm ci
+          else npm install
+          fi
+      - run: npx @substrat-run/cli push . --slug ${slug} --version 0.1.\${{ github.run_number }}
+        env:
+          SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
+          SUBSTRAT_CP_URL: ${cpUrl}
+`;
+}
+
 /** List the repos the tenant granted this installation (paginates to a sane cap). */
 export async function listInstallationRepos(cfg: GithubConfig, installationId: string): Promise<GithubRepo[]> {
   const token = await installationToken(cfg, installationId);
