@@ -7,13 +7,17 @@ import { SCHEMA_STATEMENTS } from '../db/ddl.js';
 import { buildAuth } from './auth.js';
 import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
+import type { ConfigEntry, InstanceMeta } from './do-contract.js';
 
 /**
- * The single global issuer, as one Durable Object. There is exactly one instance (the
- * worker addresses it by a fixed name), and it owns the ENTIRE identity store — users,
- * sessions, OAuth clients, access tokens, consent, and the JWKS signing keys — in its own
- * SQLite. Its Better Auth signing secret is generated here on first init and persisted in
- * its own `config` table, so there is no shared `wrangler secret` to set.
+ * One issuer, as one Durable Object. STANDALONE (own worker, own hostname): a single
+ * instance under a fixed name — the original shape. HOSTED (dispatch namespace, behind
+ * the router): one instance PER SCOPE, addressed by the routed scope id, so every
+ * installed Auth Server app is its own issuer. Either way the DO owns the ENTIRE
+ * identity store — users, sessions, OAuth clients, access tokens, consent, and the JWKS
+ * signing keys — in its own SQLite. Its Better Auth signing secret is generated here on
+ * first init and persisted in its own `config` table, so there is no shared
+ * `wrangler secret` to set, and no two issuers can ever share one.
  *
  * The worker never runs Better Auth; it forwards the `/api/auth/*` surface here. `fetch`
  * runs Better Auth's handler for everything except the small `/__*` control probes.
@@ -35,8 +39,10 @@ export interface AuthServerDoEnv {
 export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   /** This issuer's Better Auth signing secret — generated in this DO, never a worker binding. */
   private authSecret!: string;
-  /** The declared config (manifest env-spec) resolved against this DO's env — the single
-   *  source of which keys the issuer reads (PUBLIC_ORIGIN, ADMIN_EMAIL/PASSWORD, EMAIL_FROM). */
+  /** The declared config (manifest env-spec) resolved against this DO's env — the BASE
+   *  layer of `effectiveCfg()`, which overlays per-instance `cfg:` rows delivered via
+   *  `setInstanceConfig` (hosted mode). The env-spec stays the single source of which
+   *  keys exist (PUBLIC_ORIGIN, ADMIN_EMAIL/PASSWORD, EMAIL_FROM). */
   private readonly cfg: Record<string, string | undefined>;
 
   constructor(ctx: DurableObjectState, env: AuthServerDoEnv) {
@@ -67,8 +73,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * When these are unset, the setup screen remains the fallback.
    */
   private async seedEnvAdmin(): Promise<void> {
-    const email = this.cfg.ADMIN_EMAIL?.trim();
-    const password = this.cfg.ADMIN_PASSWORD;
+    const cfg = this.effectiveCfg();
+    const email = cfg.ADMIN_EMAIL?.trim();
+    const password = cfg.ADMIN_PASSWORD;
     if (!email || !password) return;
     const count = ([...this.ctx.storage.sql.exec('SELECT count(*) AS n FROM user')][0] as { n: number }).n;
     if (count > 0) return;
@@ -78,7 +85,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     }
     try {
       // Password hashing is origin-independent, so the boot-time baseURL fallback is fine.
-      const auth = this.auth(this.cfg.PUBLIC_ORIGIN ?? 'http://localhost');
+      const auth = this.auth(cfg.PUBLIC_ORIGIN ?? 'http://localhost');
       const created = await auth.api.signUpEmail({ body: { email, password, name: 'Administrator' } });
       this.ctx.storage.sql.exec("UPDATE user SET role = 'admin', email_verified = 1 WHERE id = ?", created.user.id);
     } catch (e) {
@@ -88,7 +95,8 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
 
   /** A Better Auth instance over THIS DO's SQLite, issuing for `origin`. */
   private auth(origin: string) {
-    const baseURL = this.cfg.PUBLIC_ORIGIN ?? origin;
+    const cfg = this.effectiveCfg();
+    const baseURL = cfg.PUBLIC_ORIGIN ?? origin;
     const db = drizzle(this.ctx.storage, { schema });
     return buildAuth({
       database: drizzleAdapter(db, { provider: 'sqlite', schema }),
@@ -100,8 +108,58 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // EMAIL is a Cloudflare binding (infra, not a declared string key), so it's read from
       // env directly; the sender address is the manifest-declared EMAIL_FROM.
       transport: transportFor(this.env),
-      sender: senderFor(this.cfg.EMAIL_FROM),
+      sender: senderFor(cfg.EMAIL_FROM),
     });
+  }
+
+  /**
+   * Record what this instance IS — called by the platform-gated `/internal/provision`
+   * (K-31, hosted mode). Waking the DO is what materializes the issuer (the constructor
+   * creates the schema and mints the signing secret), so this only has to persist the
+   * metadata — and any config delivered WITH provisioning, so an instance can arrive
+   * with its bootstrap admin in the same call. INSERT OR REPLACE keeps it idempotent —
+   * the control plane's reconciliation sweep re-runs provisioning, and a retry must
+   * converge, not duplicate.
+   */
+  async provisionInstance(meta: InstanceMeta, config?: ConfigEntry[]): Promise<void> {
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO config (key, value) VALUES ('instance', ?)",
+      JSON.stringify(meta),
+    );
+    if (config?.length) await this.setInstanceConfig(config);
+  }
+
+  /**
+   * Upsert per-instance config (vertical-auth-detach.md §2.2) — the delivery half of
+   * the dashboard's Env tab, arriving via the platform-gated `/internal/configure`.
+   * Stored under `cfg:<key>` in this DO's own config table and overlaid over worker env
+   * by `effectiveCfg()`, so a hosted instance is configured per-scope while a standalone
+   * deploy keeps using `wrangler` vars/secrets. Key-by-key upserts (never a replace), so
+   * partial deliveries compose. Seeding the bootstrap admin re-runs afterward: config
+   * delivering `ADMIN_EMAIL`/`ADMIN_PASSWORD` is exactly how a hosted instance gets its
+   * deterministic first admin (the seed itself stays guarded on a zero-user store).
+   */
+  async setInstanceConfig(entries: ConfigEntry[]): Promise<void> {
+    for (const { key, value } of entries) {
+      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", `cfg:${key}`, value);
+    }
+    await this.seedEnvAdmin();
+  }
+
+  /**
+   * The instance's live config: worker env (resolved through the declared env-spec)
+   * overlaid with per-instance `cfg:` rows — instance config wins, and only DECLARED
+   * keys are read, so a stray delivered key can never reach Better Auth.
+   */
+  private effectiveCfg(): Record<string, string | undefined> {
+    const out = { ...this.cfg };
+    for (const spec of AUTH_SERVER_ENV) {
+      const row = [...this.ctx.storage.sql.exec('SELECT value FROM config WHERE key = ?', `cfg:${spec.key}`)][0] as
+        | { value: string }
+        | undefined;
+      if (row) out[spec.key] = row.value;
+    }
+    return out;
   }
 
   /** Is the issuer un-bootstrapped (no users yet)? The worker shows "create the first admin". */
@@ -147,17 +205,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   }
 }
 
-/** The DO's callable surface (avoids leaking the full class type through the binding). */
-export type AuthServerStub = {
-  fetch(request: Request): Promise<Response>;
-  needsSetup(): Promise<boolean>;
-  setupFirstAdmin(origin: string, creds: { email: string; password: string; name: string }): Promise<{ id: string }>;
-};
-
-/** The verified subject behind a session, as the `/__session` probe returns it. */
-export interface SessionSubject {
-  sub: string;
-  email: string | null;
-  name: string | null;
-  role: string | null;
-}
+// The callable-surface + session types live in `do-contract.ts` (no `cloudflare:workers`
+// import there, so the HTTP layer and node tests can share them); re-exported for
+// worker-build importers.
+export type { AuthServerStub, SessionSubject, InstanceMeta } from './do-contract.js';

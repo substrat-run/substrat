@@ -51,6 +51,22 @@ export interface ProvisionInstanceInput {
   owner: PrincipalId;
   slug: string;
   name: string;
+  /**
+   * Per-instance config delivered WITH provisioning, so a new app arrives configured
+   * atomically — no window where the instance is live but unconfigured (an issuer with
+   * no admin, an app with no auth). Same entries `configureInstance` upserts later; a
+   * vertical that predates the field ignores it (its body parse strips unknown keys).
+   */
+  config?: Record<string, string>;
+}
+
+export interface ConfigureInstanceInput {
+  /** The scope's tenant — CP-less verticals shard identity/config storage per tenant
+   *  (e.g. Meridian's IdentityDO is addressed by tenant id), so the address rides along. */
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  /** Upserts, key by key — never a full replace, so partial writes compose. */
+  entries: Array<{ key: string; value: string }>;
 }
 
 export interface ProvisionedInstance {
@@ -90,6 +106,18 @@ export class VerticalClient {
       );
     }
     return (await res.json()) as ProvisionedInstance;
+  }
+
+  /**
+   * Deliver per-instance CONFIG to the scope's own storage (vertical-auth-detach.md
+   * §2.2) — the write half of the dashboard's Env tab, and the same trust line as
+   * provisionInstance: the platform names a scope inside the vertical's deployment and
+   * hands it settings; the vertical owns what they mean. Idempotent upserts, so the
+   * reconciliation sweep can re-run it. A vertical that has no live-config support
+   * answers 501, which the caller may treat as "authored but not delivered".
+   */
+  async configureInstance(input: ConfigureInstanceInput): Promise<void> {
+    await this.postInternal<unknown>('/internal/configure', input, 'configure');
   }
 
   /**

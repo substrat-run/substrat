@@ -201,6 +201,8 @@ export function isNeedsSetup(m: Me | NeedsSetup): m is NeedsSetup {
 
 export const api = {
   me: () => get<Me | NeedsSetup>('/api/me'),
+  /** Which auth this instance runs — the sign-in screen branches on it. */
+  authMode: () => get<{ mode: 'builtin' | 'oidc' }>('/api/auth-mode'),
   cast: () => get<CastMember[]>('/api/cast'),
 
   // Invites (admin-only server-side): the post-setup join path.

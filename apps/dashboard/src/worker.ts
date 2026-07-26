@@ -32,6 +32,7 @@ import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
 import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
+import type { AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -379,6 +380,19 @@ async function createTeam(host: ScopeHost, user: { id: string; email?: string | 
 const createAppBody = z.object({
   verticalSlug: z.string().min(1),
   name: z.string().min(1),
+  /** The Identity section's choice (vertical-auth-detach.md §2.4). Absent ⇒ builtin. */
+  auth: z
+    .discriminatedUnion('source', [
+      z.object({ source: z.literal('auth-server'), scopeId: z.string().min(1) }),
+      z.object({
+        source: z.literal('external'),
+        issuer: z.string().url(),
+        clientId: z.string().min(1),
+        clientSecret: z.string().optional(),
+        audience: z.string().optional(),
+      }),
+    ])
+    .optional(),
 });
 
 // A builder self-serves dev/staging only; prod is refused in the handler (model B).
@@ -1081,7 +1095,26 @@ app.put('/api/apps/:scopeId/env', async (c) => {
   const body = await c.req.json<{ entries?: Array<{ key: string; value: string; secret?: boolean }> }>();
   const entries = (body.entries ?? []).filter((e) => e && typeof e.key === 'string');
   if (entries.length === 0) return c.json({ saved: 0 });
-  return c.json(await dash.invoke('dashboard/set-app-env', { appScopeId: appRow.app_scope_id, entries }));
+  const saved = await dash.invoke('dashboard/set-app-env', { appScopeId: appRow.app_scope_id, entries });
+  // DELIVER to the running app scope (vertical-auth-detach.md §2.2), not just author:
+  // the control plane routes the entries to the deployment holding the scope's DO.
+  // Best-effort — a vertical without live-config support answers 501, and older
+  // installs predate the verb entirely; the values stay authored here either way, so
+  // the UI can say "saved" vs "saved + applied" rather than erroring.
+  let delivered = false;
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (cp) {
+    try {
+      await cp.configureInstance(
+        scopeId.parse(appRow.app_scope_id),
+        entries.map((e) => ({ key: e.key, value: e.value })),
+      );
+      delivered = true;
+    } catch {
+      // 501/404 from the app's deployment — authored but not delivered.
+    }
+  }
+  return c.json({ ...(saved as Record<string, unknown>), delivered });
 });
 
 app.delete('/api/apps/:scopeId/env/:key', async (c) => {
@@ -1111,6 +1144,27 @@ app.post('/api/apps', async (c) => {
   // (`callout-sesamy.global.substrat.run`). From the TEAM record, not the user.
   const team = await host.admin.getTenant(STAFF, node.tenantId);
   const teamHandle = team?.name ? slugify(team.name) : undefined;
+  // The Identity choice (vertical-auth-detach.md §2.4). A team Auth Server is named by
+  // its app scope id and resolved to its ISSUER ORIGIN from the caller's OWN apps — it
+  // must be one of theirs, active, with a bound hostname; anything else is a 400 now
+  // rather than a dangling issuer later.
+  let appAuth: AppAuthChoice | undefined;
+  if (body.auth?.source === 'external') {
+    const { source, ...rest } = body.auth;
+    appAuth = { source, ...rest };
+  } else if (body.auth?.source === 'auth-server') {
+    const chosenScopeId = body.auth.scopeId;
+    const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+    const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+    const issuerApp = apps.find((a) => a.app_scope_id === chosenScopeId);
+    if (!issuerApp || issuerApp.vertical_slug !== 'auth-server') {
+      throw new HTTPException(400, { message: 'the chosen auth server is not one of your Auth Server apps' });
+    }
+    if (issuerApp.status !== 'active' || !issuerApp.hostname) {
+      throw new HTTPException(400, { message: `auth server '${issuerApp.name}' is not active yet — wait for it to provision` });
+    }
+    appAuth = { source: 'auth-server', issuer: `https://${issuerApp.hostname}` };
+  }
   const appRow = await createApp(host, {
     node,
     appScopeId: scopeId.parse(ulid()),
@@ -1121,6 +1175,7 @@ app.post('/api/apps', async (c) => {
     teamHandle,
     controlPlane: cp ?? undefined,
     tenantName: user?.name ?? user?.email ?? 'Workspace',
+    ...(appAuth ? { appAuth } : {}),
   });
   return c.json(appRow, 201);
 });

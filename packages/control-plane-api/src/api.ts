@@ -131,6 +131,11 @@ const provisionInstanceBody = z.object({
   owner: z.string().min(1),
   slug: z.string().min(1),
   name: z.string().min(1),
+  config: z.record(z.string(), z.string()).optional(),
+});
+
+const configureInstanceBody = z.object({
+  entries: z.array(z.object({ key: z.string().min(1), value: z.string() })).min(1),
 });
 
 const bindHostnameBody = z.object({
@@ -436,6 +441,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? await vertical.readScopeTable(scopeId, input)
         : await admin.readScopeTable(c.get('actor'), tenantId, scopeId, input),
     );
+  });
+
+  // Deliver per-instance CONFIG to the scope's own storage (vertical-auth-detach.md
+  // §2.2) — the missing "delivery" step behind the dashboard's Env tab. Same K-3
+  // addressing + bound-version resolution as introspection: the scope's DO lives in the
+  // deployment of its BOUND version, so that is where its config must land. A scope with
+  // no reachable vertical deployment (co-located/contract-test hosts run no vertical
+  // code) has nowhere to deliver to — 501, so the caller can tell "authored but not
+  // delivered" from "failed". The vertical's own status (e.g. its 501 for no live-config
+  // support) propagates rather than collapsing to a 500.
+  app.post('/tenants/:tenantId/scopes/:scopeId/configure', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = configureInstanceBody.parse(await c.req.json());
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) {
+      return c.json({ error: `no deployment is bound for vertical '${scope.vertical ?? '(none)'}'` }, 501);
+    }
+    try {
+      await vertical.configureInstance({ tenantId, scopeId, entries: input.entries });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+    return c.json({ applied: input.entries.length });
   });
 
   // The four lifecycle transitions, one route each — mirroring the four audited

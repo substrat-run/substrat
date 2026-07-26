@@ -113,7 +113,10 @@ const HTTP_CLIENTS = new Set(['undici', 'node-fetch', 'axios', 'got', 'ky']);
  * (the composition root that mounts the adapter + engines onto a Worker) — the
  * workerd analogue of server.ts. page.ts is a served SPA (an HTML/JS string the
  * worker returns) — its `fetch` is browser code, not module code, the same
- * edge-wiring class as worker.ts/routes.ts.
+ * edge-wiring class as worker.ts/routes.ts. do-contract.ts is the TYPE contract
+ * of a Durable Object stub (auth-do.ts's callable shape, split out so node code
+ * can import it without `cloudflare:workers`) — its `fetch` is a type signature,
+ * not a call.
  */
 export const DEFAULT_HARNESS = [
   'seed.ts',
@@ -123,6 +126,7 @@ export const DEFAULT_HARNESS = [
   'auth-node.ts',
   'auth-do.ts',
   'auth-adapters.ts',
+  'do-contract.ts',
   'oidc.ts',
   'worker.ts',
   'routes.ts',

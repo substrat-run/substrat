@@ -12,12 +12,15 @@
 	"build": {
 		"command": "pnpm --dir app build && node scripts/gen-assets.mjs"
 	},
-	// This is a STANDALONE identity provider, not a Substrat vertical: it composes no kernel
-	// engines and has no ScopeDO. Its entire durable state — users, sessions, OAuth clients,
-	// access tokens, consent, and the JWKS signing keys — lives in ONE Durable Object
-	// (a single global issuer, addressed by a fixed name), running Better Auth over its own
-	// SQLite. A per-instance signing secret is generated and persisted inside that DO, so
-	// there is no shared `wrangler secret` to manage.
+	// An identity provider, not a kernel vertical: it composes no engines and has no
+	// ScopeDO. Its entire durable state — users, sessions, OAuth clients, access tokens,
+	// consent, and the JWKS signing keys — lives in AuthServerDO instances running Better
+	// Auth over their own SQLite. Standalone (this config): one fixed-name issuer. Hosted
+	// (pushed to the platform's dispatch namespace): one issuer PER INSTALLED APP, the DO
+	// named by the router-asserted scope id — the WfP uploader injects PLATFORM_SECRET +
+	// ROUTER_SECRET there, neither of which this standalone config sets. A per-issuer
+	// signing secret is generated and persisted inside each DO, so there is no shared
+	// `wrangler secret` to manage.
 	"durable_objects": {
 		"bindings": [{ "name": "AUTH", "class_name": "AuthServerDO" }]
 	},

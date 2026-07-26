@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
-import { type CatalogEntry } from '../lib/api';
+import { type AppAuthChoice, type AppRow, type CatalogEntry } from '../lib/api';
 import { ENV_OPTS, verticalMeta } from '../lib/demo';
 import { Ic } from '../lib/icons';
 import { slugify } from '../lib/format';
@@ -35,19 +35,22 @@ const TEMPLATE_BLURBS: Record<string, string> = {
  */
 export function CreateApp({
   catalog,
+  authServers,
   onCancel,
   onCreate,
 }: {
   catalog: CatalogEntry[];
+  /** The team's ACTIVE Auth Server apps — offered as one-click issuers in the Identity section. */
+  authServers: AppRow[];
   onCancel: () => void;
-  onCreate: (input: { verticalSlug: string; name: string }) => Promise<void>;
+  onCreate: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice }) => Promise<void>;
 }) {
   const [source, setSource] = useState<Source | null>(null);
 
   if (!source) {
     return <ChooseVertical catalog={catalog} onCancel={onCancel} onPick={setSource} />;
   }
-  return <Configure source={source} onBack={() => setSource(null)} onCancel={onCancel} onCreate={onCreate} disabled={catalog.length === 0} />;
+  return <Configure source={source} authServers={authServers} onBack={() => setSource(null)} onCancel={onCancel} onCreate={onCreate} disabled={catalog.length === 0} />;
 }
 
 function Stepper({ step }: { step: 1 | 2 }) {
@@ -167,17 +170,47 @@ function ChooseVertical({
   );
 }
 
-function Configure({ source, onBack, onCancel, onCreate, disabled }: { source: Source; onBack: () => void; onCancel: () => void; onCreate: (i: { verticalSlug: string; name: string }) => Promise<void>; disabled: boolean }) {
+function Configure({ source, authServers, onBack, onCancel, onCreate, disabled }: { source: Source; authServers: AppRow[]; onBack: () => void; onCancel: () => void; onCreate: (i: { verticalSlug: string; name: string; auth?: AppAuthChoice }) => Promise<void>; disabled: boolean }) {
   const [name, setName] = useState(source.defaultName);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const host = slugify(name);
 
+  // The Identity choice (vertical-auth-detach.md §2.4). 'builtin' = the vertical's own
+  // auth (the safe default — every vertical supports it); an Auth Server app = one-click
+  // SSO (the client is registered there automatically); 'external' = any OIDC issuer,
+  // configured by hand. Hidden when installing an Auth Server itself — an issuer doesn't
+  // authenticate against another issuer.
+  const identityApplies = source.verticalSlug !== 'auth-server';
+  const [identity, setIdentity] = useState('builtin');
+  const [issuer, setIssuer] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const identityOptions = [
+    { value: 'builtin', label: 'Built-in — this app manages its own users' },
+    ...authServers.map((a) => ({ value: a.app_scope_id, label: `Auth Server — ${a.name}` })),
+    { value: 'external', label: 'External OIDC issuer…' },
+  ];
+
+  const authChoice = (): AppAuthChoice | undefined => {
+    if (!identityApplies || identity === 'builtin') return undefined;
+    if (identity === 'external') {
+      return {
+        source: 'external',
+        issuer: issuer.trim(),
+        clientId: clientId.trim(),
+        ...(clientSecret ? { clientSecret } : {}),
+      };
+    }
+    return { source: 'auth-server', scopeId: identity };
+  };
+  const externalIncomplete = identity === 'external' && (!issuer.trim() || !clientId.trim());
+
   const submit = async () => {
     setBusy(true);
     setError(undefined);
     try {
-      await onCreate({ verticalSlug: source.verticalSlug, name: name.trim() || source.defaultName });
+      await onCreate({ verticalSlug: source.verticalSlug, name: name.trim() || source.defaultName, auth: authChoice() });
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
@@ -214,10 +247,36 @@ function Configure({ source, onBack, onCancel, onCreate, disabled }: { source: S
 
         <Select label="Environment" options={ENV_OPTS} value="Production" style={{ width: 220 }} />
 
+        {identityApplies && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <Select
+              label="Identity"
+              options={identityOptions}
+              value={identity}
+              onChange={(e) => setIdentity(e.target.value)}
+              style={{ maxWidth: 420 }}
+            />
+            {identity !== 'builtin' && identity !== 'external' && (
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                Users sign in through this Auth Server — the app is registered there automatically when it's created.
+              </div>
+            )}
+            {identity === 'external' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <Input label="Issuer URL" value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="https://auth.example.com" hint={`Register the redirect URL https://${host}.global.substrat.run/api/auth/callback at your issuer.`} />
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <Input label="Client ID" value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ flex: 1 }} />
+                  <Input label="Client secret" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} style={{ flex: 1 }} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {error && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
-          <Button onClick={submit} disabled={busy || disabled}>{busy ? 'Creating…' : 'Create app'}</Button>
+          <Button onClick={submit} disabled={busy || disabled || externalIncomplete}>{busy ? 'Creating…' : 'Create app'}</Button>
           <Button variant="ghost" onClick={onBack}>Back</Button>
           <div style={{ flex: 1 }} />
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Appears in your grid immediately — provisions in the background.</div>
