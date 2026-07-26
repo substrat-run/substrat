@@ -479,7 +479,12 @@ to the app.
 ### 4.9 Analytics `[future]`
 
 **Purpose.** Usage insight across the tenant's apps. *Not in the system spec yet* — this is
-a forward design; keep it read-only and additive.
+a forward design; keep it read-only and additive. The metrics source is now defined in
+[observability.md](./observability.md): tenant-facing numbers come only from the router's
+tenant-keyed Analytics Engine datapoints (script-grain Cloudflare analytics would leak other
+tenants' traffic), and the screen stays "preview" until that read path is built (§3/§5
+there). Long-term, this screen's audience likely wants business activity (engine events)
+more than request telemetry.
 
 **Layout.** Page header **Analytics** + a **range `Select`** (24h / 7d / 30d / custom) and
 an app filter `Select` (All apps / one). Below:

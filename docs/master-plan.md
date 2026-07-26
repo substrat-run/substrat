@@ -192,7 +192,9 @@ same Iceberg catalog) changes nothing architecturally — **Iceberg is the contr
 query engine is replaceable.**
 
 **Tier 3 — telemetry** (Analytics Engine / Datadog). Sampled and approximate by design.
-Never touches money, never shown to customers as a count. Ops metrics only.
+Never touches money, never shown to customers as a count. Ops metrics only. Design:
+[design/observability.md](design/observability.md) — piggyback Cloudflare's native
+analytics/telemetry APIs at script grain; the router stamps the tenant dimension into AE.
 
 Standing integrity guarantee: a reconciliation job continuously verifies Tier 2 sums match
 Tier 1 balances.
@@ -444,7 +446,7 @@ the direction the spectrum points.
 | API surface | **Build (cheap early)** | Per-tenant keys, rate limits, signed outbound webhooks. Contract-first: zod-openapi→OAS, emitted + CI-diffed (§5.6, decision 22). |
 | App shell + design system | **Build shell, buy components** | Login/SSO, org/scope switcher, permission-aware nav, settings, members, audit viewer, notifications, connector UI. **Not** a dashboard framework — that's Retool, a whole company. End-user dashboards: chart components over saved gateway queries; resist configurability until a customer pays for it. |
 | Localization | **Build day one** | sv/no/da/en. Retrofits are miserable; the FSM vendor ships three languages. |
-| Observability per tenant | **Convention + adapter** | OpenTelemetry is the contract; tenant/scope IDs on every trace and error; APM vendor swappable (Datadog/Sentry/Better Stack) (§5.7). |
+| Observability per tenant | **Convention + adapter** | OpenTelemetry is the contract; tenant/scope IDs on every trace and error; APM vendor swappable (Datadog/Sentry/Better Stack) (§5.7). Default backend is Cloudflare-native ([design/observability.md](design/observability.md)); an external APM slots in behind the same proxy later. |
 | Feature flags | **Adopt** | On entitlements, or GrowthBook. |
 
 Sequencing discipline: **kernel work is never more than one step ahead of a vertical that
