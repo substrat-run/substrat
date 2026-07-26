@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { splitSqlStatements } from './scope-do.js';
 import type {
   AdminLogEntry,
   RoleDefinition,
@@ -207,6 +208,8 @@ export interface AdminEntryInput {
 }
 
 const DIRECTORY_DDL = `
+  -- The ';' in this comment is a deliberate tripwire; the DDL must go through
+  -- splitSqlStatements, and a naive split(';') fails the directory at construction.
   CREATE TABLE IF NOT EXISTS tenants (
     tenant_id TEXT PRIMARY KEY,
     slug TEXT NOT NULL,
@@ -443,9 +446,8 @@ export class ControlPlaneDO extends DurableObject {
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env as never);
     this.sql = ctx.storage.sql;
-    for (const stmt of DIRECTORY_DDL.split(';')) {
-      const s = stmt.trim();
-      if (s) this.sql.exec(s);
+    for (const stmt of splitSqlStatements(DIRECTORY_DDL)) {
+      this.sql.exec(stmt);
     }
     this.ensureDirectoryColumns();
   }
