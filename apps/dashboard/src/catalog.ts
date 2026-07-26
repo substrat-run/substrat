@@ -115,17 +115,32 @@ export async function ensureCatalog(host: ScopeHost, staff: PlatformActorId): Pr
 }
 
 /**
+ * One row of the install catalog — the New-app page groups on these flags: `listed` ⇒ the
+ * public **Marketplace** group, `owned` ⇒ the caller's **Your verticals** group (private to
+ * their team unless also `listed`). `source` lets the endpoint decide installability
+ * (a builtin is always provisionable; a pushed vertical needs a prod-promoted version).
+ */
+export interface CatalogListing {
+  slug: string;
+  name: string;
+  owned: boolean;
+  listed: boolean;
+  source: string;
+}
+
+/**
  * The verticals to advertise for a caller — REGISTRY-DRIVEN (marketplace-publish.md §3), no
  * hardcoded gate: a vertical shows if it's PUBLISHED (`listed`) or OWNED by the caller's tenant
  * (private to your team). So a pushed → promoted → published vertical appears with no dashboard
- * change. `verticals` is the registry listing; the result is the `{ slug, name }[]` the endpoint
- * returns.
+ * change. `verticals` is the registry listing; the result is what the endpoint returns
+ * (minus `installable`, which needs channel reads the worker does).
  */
 export function availableCatalog(
   verticals: readonly Vertical[],
   opts: { tenantId: string | null },
-): Array<{ slug: string; name: string }> {
+): CatalogListing[] {
+  const owned = (v: Vertical) => opts.tenantId !== null && v.ownerTenant === opts.tenantId;
   return verticals
-    .filter((v) => v.listed || (opts.tenantId !== null && v.ownerTenant === opts.tenantId))
-    .map((v) => ({ slug: v.slug, name: v.name }));
+    .filter((v) => v.listed || owned(v))
+    .map((v) => ({ slug: v.slug, name: v.name, owned: owned(v), listed: v.listed, source: v.source }));
 }

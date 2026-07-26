@@ -595,6 +595,14 @@ describe('catalog availability — registry-driven (marketplace-publish.md §3)'
     expect(slugs).toEqual(['published', 'theirs-published']);
   });
 
+  it('carries the grouping flags the New-app page splits on (owned / listed)', () => {
+    // One registry, two lenses: `listed && !owned` renders under Marketplace,
+    // `owned` under "Your verticals" (badged Published when both).
+    const byS = Object.fromEntries(availableCatalog(registry, { tenantId: 'me' }).map((v) => [v.slug, v]));
+    expect(byS['published']).toMatchObject({ owned: false, listed: true, source: 'cli' });
+    expect(byS['mine-private']).toMatchObject({ owned: true, listed: false });
+  });
+
   it('ensureCatalog seeds first-party as listed unless flagged not-yet-connected', () => {
     // `listed: e.connected !== false` — a bundled-but-undeployed entry stays private (would 501
     // on install in connected mode); a deployed one is published to everyone.

@@ -52,8 +52,11 @@ export const vertical = z.object({
    * Published to the PUBLIC marketplace (marketplace-publish.md §2/§5). `false` = private to
    * its `ownerTenant`. First-party verticals are seeded `true`; a builder vertical flips it via
    * the staff-reviewed publish action (a later phase). Its own column adapter-side — set on
-   * insert, NEVER touched by a re-push refresh, so re-pushing a published vertical can't
-   * silently unpublish it (publish is a distinct action from push).
+   * insert, NEVER touched by a re-push refresh of a `git`/`cli` vertical, so re-pushing a
+   * published vertical can't silently unpublish it (publish is a distinct action from push).
+   * For a BUILTIN vertical it IS refreshed on re-registration: there `listed` is seed
+   * metadata (derived from the catalog's `connected` flag), and the re-seed each boot must
+   * be able to list a row first registered before it was listable.
    */
   listed: z.boolean().default(false),
   /**

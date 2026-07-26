@@ -992,9 +992,14 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  /** Refresh a vertical's declared env-spec + install-spec (both evolve with the manifest). */
-  updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null): void {
+  /** Refresh a vertical's declared env-spec + install-spec (both evolve with the manifest).
+   *  `listed` rides along ONLY for builtin re-seeds (null ⇒ leave it alone): a pushed
+   *  vertical's `listed` is the staff publish decision, never touched by a re-push. */
+  updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null, listed?: number | null): void {
     this.sql.exec('UPDATE verticals SET env_spec = ?, install_spec = ? WHERE slug = ?', envSpec, installSpec, slug);
+    if (listed !== null && listed !== undefined) {
+      this.sql.exec('UPDATE verticals SET listed = ? WHERE slug = ?', listed, slug);
+    }
   }
 
   /** Publish/unpublish a vertical to the public marketplace + resolve any pending request. */
