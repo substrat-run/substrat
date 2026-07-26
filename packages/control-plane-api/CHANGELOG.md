@@ -1,5 +1,63 @@
 # @substrat-run/control-plane-api
 
+## 0.16.0
+
+### Minor Changes
+
+- b23c0a7: The Data tab grows a SQL console (#219): `HostAdmin.queryScope` runs ONE read-only SQL
+  statement against a scope's own database, next to the table-shaped reads that stay safe
+  by construction. User SQL reaching the DB moves the safety to statement-level
+  enforcement, in two layers shared across adapters:
+
+  - the kernel's `assertReadOnlyQuery` — a comment/string/identifier-aware token scan
+    that rejects multi-statement input, a first keyword outside SELECT/WITH/VALUES/
+    EXPLAIN, and any bare write/DDL/session verb anywhere (`WITH … INSERT INTO` is valid
+    SQLite, so the first keyword alone proves nothing); deliberately over-strict, since a
+    false positive costs a quoted identifier and a false negative forges the spine;
+  - an adapter-authoritative backstop: better-sqlite3's `prepare().readonly`
+    (sqlite3_stmt_readonly) on the pure adapter, and a transaction that ALWAYS rolls
+    back inside the ScopeDO, whose `exec` has no read-only flag.
+
+  Results are positional rows capped at `SCOPE_QUERY_ROW_MAX` (200) with a `truncated`
+  flag — a ceiling, never an error. Same K-3 (tenantId, scopeId) cross-check and K-24
+  access log as the table reads; the logged argument is the SQL itself. The refusal
+  message prefix (`read-only console:`) is contract — pinned by the shared suite against
+  both adapters and mapped to 400 by the transport.
+
+  Transport: `POST /tenants/:tenantId/scopes/:scopeId/query` with the same
+  vertical-delegation as the table reads (`VerticalClient.queryScope` →
+  `/internal/query`); a vertical that cannot answer safely refuses with its own status,
+  relayed verbatim — auth-server keeps refusing via its `/internal/*` 501 catch-all,
+  because its DO redacts secret-bearing columns on table reads and arbitrary SQL would
+  walk around the redaction. Editing rows stays out of scope forever: a write here would
+  bypass the event log and forge the spine.
+
+### Patch Changes
+
+- 81e9408: The deploy manifest becomes a shared contract (#190 part A): `deployManifest` and
+  `DeclaredBinding` move from `control-plane-api` into `@substrat-run/contracts`, and
+  BOTH ends of the push seam now speak the same schema — the CLI parses the manifest it
+  builds with `deployManifest.parse(...)` before uploading, the control plane re-parses
+  it at the trust boundary and runs the §4 sandbox contract against the result.
+
+  Before this, `push.ts` hand-rolled a parallel manifest object against a local
+  `DeclaredBinding` interface while the server parsed the real Zod schema — a drift
+  hazard on the deploy trust boundary, where a shape mismatch surfaced only as a 4xx
+  from the deploy endpoint. Now drift is a compile error (shared types) or a local parse
+  failure before any bytes are uploaded; a CLI-side effect is that registry metadata
+  (`envSpec`, `ownerGrants`, `provides`, `requires`) is validated at push time too.
+
+  `control-plane-api` re-exports the schema and types unchanged, so hosts keep importing
+  from the transport package. The CLI gains its first runtime dependency
+  (`@substrat-run/contracts`) — deliberate: the alternative was the drift. Part B of
+  #190 (a substrate-neutral `runtimeNeeds` manifest section) stays open, gated on the
+  product decision the issue describes.
+
+- Updated dependencies [b23c0a7]
+- Updated dependencies [81e9408]
+  - @substrat-run/contracts@0.16.0
+  - @substrat-run/kernel@0.16.0
+
 ## 0.15.0
 
 ### Minor Changes
