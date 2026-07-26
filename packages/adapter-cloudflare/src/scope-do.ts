@@ -85,6 +85,8 @@ interface OutboxRow {
 }
 
 const KERNEL_DDL = `
+  -- The ';' in this comment is a deliberate tripwire; the DDL must go through
+  -- splitSqlStatements, and a naive split(';') fails every scope at construction.
   CREATE TABLE IF NOT EXISTS _substrat_outbox (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
@@ -193,10 +195,11 @@ function cellToJson(v: unknown): unknown {
 }
 
 /**
- * Split a migration into its statements, honouring SQL syntax.
+ * Split a SQL blob (a migration, the kernel/directory DDL) into its statements,
+ * honouring SQL syntax.
  *
- * The DO's `SqlStorage.exec` runs one statement per call, so a migration blob is
- * split on `;`. A naive `sql.split(';')` breaks the moment a `;` appears inside a
+ * The DO's `SqlStorage.exec` runs one statement per call, so a multi-statement
+ * blob is split on `;`. A naive `sql.split(';')` breaks the moment a `;` appears inside a
  * `--`/`/* *​/` comment or a string literal — it truncates the statement and the DO
  * reports "incomplete input". The SQLite adapter never hit this because
  * better-sqlite3's `exec` takes the whole blob; this is what made a migration that
@@ -282,9 +285,8 @@ export function defineScopeDO(
     constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
       super(ctx, env);
       this.sql = ctx.storage.sql;
-      for (const stmt of KERNEL_DDL.split(';')) {
-        const s = stmt.trim();
-        if (s) this.sql.exec(s);
+      for (const stmt of splitSqlStatements(KERNEL_DDL)) {
+        this.sql.exec(stmt);
       }
       // KERNEL_DDL is all IF NOT EXISTS, so a scope DO created before K-21 keeps
       // the old shape. Attempt-and-tolerate: DO SQLite restricts PRAGMA, so there
