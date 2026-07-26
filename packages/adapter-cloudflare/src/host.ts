@@ -229,6 +229,7 @@ interface ControlPlaneStub {
     surface: string; region: string | null; canonical: boolean; createdAt: string;
   }): Promise<void>;
   setHostnameStatus(hostname: string, status: string, note: string | null): Promise<void>;
+  deleteHostname(hostname: string): Promise<void>;
   listHostnames(filter: { tenantId?: string; scopeId?: string }): Promise<HostnameRow[]>;
   readVertical(slug: string): Promise<VerticalRow | undefined>;
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
@@ -1416,6 +1417,19 @@ export class CloudflareScopeHost implements ScopeHost {
           { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
           { status: row.status },
           { status, note: note ?? null },
+        );
+      },
+      unbindHostname: async (actor, raw: string) => {
+        const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
+        const row = await this.cp.readHostname(hostname);
+        if (!row) return; // idempotent, and a no-op is not audited
+        await this.cp.deleteHostname(hostname);
+        await this.recordAdmin(
+          actor,
+          'unbindHostname',
+          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
+          { hostname, status: row.status },
+          null,
         );
       },
       listHostnames: async (actor, filter) => {

@@ -36,6 +36,7 @@ export const adminAction = z.enum([
   'promoteVersion',
   'bindHostname', // K-26 — the hostname map
   'setHostnameStatus', // #31 step 2 — where the two human checkpoints fire
+  'unbindHostname', // the inverse of bindHostname — a hard delete; the history is this log
   'pruneAccessLog', // K-24 — deleting drained access rows is itself a mutation // K-23 — a provider declares its topology before it may link
   'createTenant', // §4.1
   'setTenantStatus', // §4.1 — before/after carry the transitioned status
