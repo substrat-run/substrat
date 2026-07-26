@@ -1,5 +1,16 @@
-import type { ConnectionId, PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
+import { instant } from '@substrat-run/contracts';
+import type {
+  ConnectionId,
+  MigrationProgress,
+  MigrationStraggler,
+  PlatformActorId,
+  Scope,
+  ScopeId,
+  TenantId,
+} from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, ScopeHost } from './scope-host.js';
+import { backoffAt } from './scope-host.js';
+import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 
 // setTimeout/clearTimeout are web-standard (Node, Workers, browsers) but the
 // kernel pulls in no platform lib typings; declared locally, returning an opaque
@@ -50,6 +61,52 @@ export interface PlatformSweepOptions {
    * that actually holds it, then the in-process delete for directory row + audit.
    */
   deleteSnapshotFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
+  /**
+   * Also reconcile migrations (kernel-design §5.3, #49): walk the directory for
+   * live scopes behind this host's frontier or failed, wake each with
+   * `migrateScope`, back off between retries of a failing scope, and report
+   * "release N: X/Y migrated, P pending, F failed". Default `true`; the phase
+   * also quietly skips itself on a host that predates `migrateScope`.
+   */
+  reconcileMigrations?: boolean;
+  /**
+   * Backoff between retries of a FAILED scope, keyed off the directory's
+   * consecutive-attempt count: `baseDelayMs * 2^(attempts-1)`, capped at
+   * `maxDelayMs`, jittered ±20% (the same curve executor retries use). There is
+   * no max-attempts: a broken migration heals only by a patched forward release,
+   * so the sweep retries at the capped cadence until one arrives — flagging past
+   * `migrationFlagThreshold` is the human signal, not a stop. Defaults: 60s
+   * base, 1h cap. Never-attempted stragglers are always due — waking them IS the
+   * sweep's job.
+   */
+  migrationBackoff?: { baseDelayMs?: number; maxDelayMs?: number };
+  /** Consecutive failures before a scope is flagged/paged. Default 3. */
+  migrationFlagThreshold?: number;
+  /**
+   * The paging seam (§5.3 "pages past a threshold"): called once per pass with
+   * the failed scopes at/over the threshold, only when there are any. The
+   * deployment wires it to whatever alerting it has; the same list always rides
+   * `report.migrations.stragglers` (`flagged: true`), so ignoring the callback
+   * loses nothing but immediacy. A throwing pager is caught — it must never
+   * sink the pass it is reporting on.
+   */
+  onMigrationsFlagged?: (flagged: MigrationStraggler[]) => void;
+}
+
+/**
+ * What the migration-reconciliation phase did in one pass: the fleet progress
+ * AFTER the pass (the §5.3 "release N: X/Y migrated…" numbers, shared shape
+ * with the ops-console view), plus the pass's own work.
+ */
+export interface MigrationSweepReport extends MigrationProgress {
+  /** `migrateScope` calls made this pass (stragglers that were due). */
+  attempted: number;
+  /** Stragglers this pass brought to the frontier. */
+  repaired: number;
+  /** Failed scopes skipped this pass — their backoff window has not elapsed. */
+  deferred: number;
+  /** Attempts where this host had nothing pending — the scope's modules run in another deployment. */
+  noops: number;
 }
 
 export interface PlatformSweepReport {
@@ -63,8 +120,16 @@ export interface PlatformSweepReport {
   connectionsSkipped: number;
   /** Expired forks reaped by `deleteSnapshot` this pass. */
   snapshotsReaped: number;
+  /**
+   * The migration-reconciliation phase's report (§5.3, #49), or null when the
+   * phase was disabled or the host predates `migrateScope`. Note null vs a
+   * report saying "everything migrated" are different facts — the first is
+   * "nobody looked", which is exactly the unfalsifiable state the sweep exists
+   * to end.
+   */
+  migrations: MigrationSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
-  errors: { kind: 'drain' | 'sweep' | 'gc'; id: string; error: string }[];
+  errors: { kind: 'drain' | 'sweep' | 'gc' | 'migrate'; id: string; error: string }[];
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -117,12 +182,116 @@ export async function runPlatformSweep(
     connectionsSwept: 0,
     connectionsSkipped: 0,
     snapshotsReaped: 0,
+    migrations: null,
     errors: [],
   };
+
+  // -- migration reconciliation (kernel-design §5.3, #49) ---------------------
+  // FIRST, deliberately: `drainDue` wakes scopes (and wake migrates lazily), so
+  // running this phase after it would mean every failed scope gets its attempt
+  // counted twice per pass — once here, once as a drain error. Feature-detected
+  // so a fake or pre-#49 host degrades to `migrations: null`, never a crash.
+  //
+  // The scopes this phase leaves in a FAILED state are skipped by the drain
+  // phase below: they fail closed, so draining them would only re-throw the
+  // same migration error as noise and advance the attempt counter a second time.
+  const failedThisPass = new Set<string>();
+  if (
+    options.reconcileMigrations !== false &&
+    typeof host.migrateScope === 'function' &&
+    typeof host.migrationFrontier === 'function'
+  ) {
+    const frontier = host.migrationFrontier();
+    const flagThreshold = options.migrationFlagThreshold ?? MIGRATION_FLAG_THRESHOLD;
+    const retry = {
+      maxAttempts: Number.MAX_SAFE_INTEGER, // no give-up: recovery is a patched forward release
+      baseDelayMs: options.migrationBackoff?.baseDelayMs ?? 60_000,
+      maxDelayMs: options.migrationBackoff?.maxDelayMs ?? 3_600_000,
+    };
+    const now = new Date().toISOString();
+    // `provisioning` included: a scope stuck there because its migration failed
+    // is precisely a straggler (the pure adapter's getScope makes the same call).
+    const listed = await host.admin.listScopes(options.actor, {
+      status: ['active', 'provisioning'],
+    });
+    const fleet = migrationFleet(listed);
+
+    // Due = behind and never-failed (wake it — that IS the sweep's job), or
+    // failed with its backoff window elapsed. A failed scope inside its window
+    // is deferred, not forgotten: it stays in the report as `failed`.
+    const due: Scope[] = [];
+    let deferred = 0;
+    for (const s of fleet) {
+      const state = scopeMigrationState(s, frontier);
+      if (state === 'migrated') continue;
+      const failure = s.migrationFailure;
+      if (
+        failure &&
+        backoffAt(failure.attempts, retry, new Date(failure.lastAttemptAt)) > now
+      ) {
+        deferred += 1;
+        continue;
+      }
+      due.push(s);
+    }
+
+    // Attempt each due straggler, then report progress over a SHADOW fleet that
+    // reflects this pass's outcomes — computed by the same `migrationProgress`
+    // the ops view uses, so the two shapes cannot drift. The shadow is the
+    // pass's honest summary; the next pass re-reads the directory for truth.
+    const after = new Map<string, Scope>(fleet.map((s) => [s.id, s]));
+    let attempted = 0;
+    let repaired = 0;
+    let noops = 0;
+    await mapBounded(due, concurrency, async (s) => {
+      attempted += 1;
+      try {
+        const outcome = await host.migrateScope(s.tenantId, s.id);
+        if (outcome.status === 'migrated') {
+          repaired += 1;
+          after.set(s.id, { ...s, schemaVersion: outcome.schemaVersion, migrationFailure: null });
+        } else if (outcome.status === 'failed') {
+          after.set(s.id, {
+            ...s,
+            migrationFailure: {
+              version: outcome.failure.version,
+              error: outcome.failure.error,
+              attempts: (s.migrationFailure?.attempts ?? 0) + 1,
+              lastAttemptAt: instant.parse(now),
+            },
+          });
+        } else {
+          // noop: this host had nothing pending for the scope — its modules run
+          // in another deployment. State untouched, classification unchanged.
+          noops += 1;
+        }
+      } catch (err) {
+        // A throw is transport/gating trouble (DO unreachable, K-3 mismatch),
+        // not a migration verdict — recorded and stepped over like every unit.
+        report.errors.push({ kind: 'migrate', id: s.id, error: message(err) });
+      }
+    });
+
+    const progress = migrationProgress(frontier, [...after.values()], { flagThreshold });
+    report.migrations = { ...progress, attempted, repaired, deferred, noops };
+    // From the shadow fleet, not `progress.stragglers` — that list is capped.
+    for (const s of after.values()) {
+      if (scopeMigrationState(s, frontier) === 'failed') failedThisPass.add(s.id);
+    }
+    const flagged = progress.stragglers.filter((f) => f.flagged);
+    if (flagged.length > 0 && options.onMigrationsFlagged) {
+      try {
+        options.onMigrationsFlagged(flagged);
+      } catch (err) {
+        report.errors.push({ kind: 'migrate', id: 'onMigrationsFlagged', error: message(err) });
+      }
+    }
+  }
 
   if (options.drainRetries !== false) {
     const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
     await mapBounded(scopes, concurrency, async (s) => {
+      if (failedThisPass.has(s.id)) return; // fails closed — draining is only noise
       try {
         const r = await host.drainDue(s.tenantId, s.id);
         report.scopesDrained += 1;

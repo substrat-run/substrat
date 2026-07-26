@@ -248,6 +248,36 @@ describe('control-plane API', () => {
     expect((await req(`/tenants/${t2}/scopes/${s1}`)).status).toBe(404);
   });
 
+  it('reports fleet migration progress in the §5.3 shape (#49)', async () => {
+    const res = await req('/fleet/migrations');
+    expect(res.status).toBe(200);
+    const p = (await res.json()) as {
+      release: string;
+      total: number;
+      migrated: number;
+      pending: number;
+      failed: number;
+      complete: boolean;
+      stragglers: unknown[];
+      summary: string;
+    };
+    // This host registers no modules, so the frontier is 0 and every live scope
+    // is at it — the honest reading of "nothing to migrate". The shape is the
+    // contract; the interesting numbers are proven against real modules in the
+    // adapter suites.
+    expect(p.release).toBe('0');
+    expect(p.total).toBeGreaterThan(0);
+    expect(p.migrated).toBe(p.total);
+    expect(p.pending).toBe(0);
+    expect(p.failed).toBe(0);
+    expect(p.complete).toBe(true);
+    expect(p.stragglers).toEqual([]);
+    expect(p.summary).toMatch(/^release 0: \d+\/\d+ migrated, 0 pending, 0 failed$/);
+    // Narrowable by vertical — each deployment has its own frontier.
+    const narrowed = (await (await req('/fleet/migrations?vertical=housing')).json()) as { total: number };
+    expect(narrowed.total).toBe(1);
+  });
+
   it('introspects a scope database, read-only (§5.4 admin-query RPC)', async () => {
     // The table list — a fresh scope already has the `_substrat_*` spine, flagged system.
     const tablesRes = await req(`/tenants/${t1}/scopes/${s1}/tables`);

@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { platformActorId, connectionId, scopeId, tenantId } from '@substrat-run/contracts';
+import type { MigrationFailure, MigrationStraggler, Scope } from '@substrat-run/contracts';
 import { runPlatformSweep, startPlatformSweeper } from '../src/platform-sweep.js';
 import type { ConnectorSweeper } from '../src/platform-sweep.js';
-import type { FetchLike, ScopeHost } from '../src/scope-host.js';
+import type { FetchLike, MigrateScopeOutcome, ScopeHost } from '../src/scope-host.js';
 
 /**
  * The orchestration, with fakes — that the pass enumerates, drains, dispatches by
@@ -159,6 +160,249 @@ describe('runPlatformSweep', () => {
     expect(drainCalled).toBe(false);
     expect(report.scopesDrained).toBe(0);
     expect(report.connectionsSwept).toBe(1);
+  });
+});
+
+describe('runPlatformSweep — migration reconciliation (§5.3, #49)', () => {
+  /** A directory row with just the fields the phase reads, ULID-shaped ids. */
+  function row(over: Partial<Scope>): Scope {
+    const id = scopeId.parse(genId());
+    return {
+      id,
+      tenantId: T,
+      slug: `s-${id.toLowerCase()}`,
+      status: 'active',
+      vertical: null,
+      schemaVersion: '0',
+      migrationFailure: null,
+      forkedFrom: null,
+      ...over,
+    } as Scope;
+  }
+
+  const failed = (attempts: number, lastAttemptAt: string): MigrationFailure =>
+    ({ version: '@v/m@0002-broken', error: 'boom', attempts, lastAttemptAt }) as MigrationFailure;
+
+  const LONG_AGO = '2020-01-01T00:00:00.000Z';
+
+  /** A host with the migration affordances; drain/connection surfaces are inert unless given. */
+  function migHost(opts: {
+    frontier: number;
+    scopes: Scope[];
+    migrateScope?: (t: string, s: string) => Promise<MigrateScopeOutcome>;
+    drainDue?: (t: string, s: string) => Promise<{ attempted: number; delivered: number; retrying: number; deadLettered: number }>;
+  }): ScopeHost {
+    return {
+      admin: {
+        listScopes: async () => opts.scopes,
+        listConnections: async () => [],
+      },
+      migrationFrontier: () => ({ total: opts.frontier }),
+      migrateScope: opts.migrateScope ?? (async () => ({ status: 'noop' }) as const),
+      drainDue:
+        opts.drainDue ??
+        (async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 })),
+    } as unknown as ScopeHost;
+  }
+
+  const run = (host: ScopeHost, extra: object = {}) =>
+    runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      migrationBackoff: { baseDelayMs: 0 }, // deterministic: every failed scope is due
+      ...extra,
+    });
+
+  it('walks the directory and wakes exactly the stragglers, reporting §5.3 numbers', async () => {
+    const current = [row({ schemaVersion: '3' }), row({ schemaVersion: '4' })];
+    const pending = row({ schemaVersion: '1' }); // behind, never failed — never woken
+    const broken = row({ schemaVersion: '2', migrationFailure: failed(1, LONG_AGO) });
+    const attempted: string[] = [];
+    const host = migHost({
+      frontier: 3,
+      scopes: [...current, pending, broken],
+      migrateScope: async (_t, s) => {
+        attempted.push(s);
+        if (s === broken.id) return { status: 'failed', failure: { version: '@v/m@0002-broken', error: 'still boom' } };
+        return { status: 'migrated', schemaVersion: '3' };
+      },
+    });
+
+    const report = await run(host);
+
+    expect(attempted.sort()).toEqual([pending.id, broken.id].sort()); // up-to-date scopes untouched
+    expect(report.migrations).toMatchObject({
+      release: '3',
+      total: 4,
+      migrated: 3, // 2 already there + the repaired straggler
+      pending: 0,
+      failed: 1,
+      complete: false,
+      attempted: 2,
+      repaired: 1,
+      deferred: 0,
+      noops: 0,
+    });
+    expect(report.migrations?.summary).toBe('release 3: 3/4 migrated, 0 pending, 1 failed');
+    expect(report.errors).toEqual([]);
+  });
+
+  it('failure is per-scope: one refusing scope neither sinks the pass nor blocks the rest', async () => {
+    const unreachable = row({ schemaVersion: '0' });
+    const fine = row({ schemaVersion: '0' });
+    const host = migHost({
+      frontier: 1,
+      scopes: [unreachable, fine],
+      migrateScope: async (_t, s) => {
+        if (s === unreachable.id) throw new Error('scope DO unreachable');
+        return { status: 'migrated', schemaVersion: '1' };
+      },
+    });
+    const report = await run(host);
+    expect(report.errors).toContainEqual({
+      kind: 'migrate',
+      id: unreachable.id,
+      error: 'scope DO unreachable',
+    });
+    expect(report.migrations?.repaired).toBe(1);
+    // The scope that threw keeps its directory classification — pending, not failed.
+    expect(report.migrations?.pending).toBe(1);
+  });
+
+  it('a scope this pass left failed is skipped by the drain phase — it fails closed anyway', async () => {
+    const broken = row({ schemaVersion: '0', migrationFailure: failed(1, LONG_AGO) });
+    const healthy = row({ schemaVersion: '1' });
+    const drained: string[] = [];
+    const host = migHost({
+      frontier: 1,
+      scopes: [broken, healthy],
+      migrateScope: async () => ({
+        status: 'failed',
+        failure: { version: '@v/m@0002-broken', error: 'boom' },
+      }),
+      drainDue: async (_t, s) => {
+        drained.push(s);
+        return { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 };
+      },
+    });
+    await run(host);
+    expect(drained).toEqual([healthy.id]);
+  });
+
+  it('backs off: a freshly-failed scope is deferred until its window elapses', async () => {
+    const justFailed = row({
+      schemaVersion: '0',
+      migrationFailure: failed(1, new Date().toISOString()),
+    });
+    let calls = 0;
+    const host = migHost({
+      frontier: 1,
+      scopes: [justFailed],
+      migrateScope: async () => {
+        calls += 1;
+        return { status: 'migrated', schemaVersion: '1' };
+      },
+    });
+    const report = await run(host, { migrationBackoff: { baseDelayMs: 60_000 } });
+    expect(calls).toBe(0);
+    expect(report.migrations).toMatchObject({ attempted: 0, deferred: 1, failed: 1 });
+    // The same scope with its window long past IS retried.
+    const again = await run(
+      migHost({
+        frontier: 1,
+        scopes: [row({ schemaVersion: '0', migrationFailure: failed(1, LONG_AGO) })],
+        migrateScope: async () => {
+          return { status: 'migrated', schemaVersion: '1' };
+        },
+      }),
+      { migrationBackoff: { baseDelayMs: 60_000 } },
+    );
+    expect(again.migrations).toMatchObject({ attempted: 1, repaired: 1, deferred: 0 });
+  });
+
+  it('flags past the threshold and pages through onMigrationsFlagged', async () => {
+    // Two prior failures; this pass's third crosses the default threshold (3).
+    const chronic = row({ schemaVersion: '0', migrationFailure: failed(2, LONG_AGO) });
+    const fresh = row({ schemaVersion: '0' }); // fails for the first time — not flagged
+    const paged: MigrationStraggler[][] = [];
+    const host = migHost({
+      frontier: 1,
+      scopes: [chronic, fresh],
+      migrateScope: async () => ({
+        status: 'failed',
+        failure: { version: '@v/m@0002-broken', error: 'boom' },
+      }),
+    });
+    const report = await run(host, { onMigrationsFlagged: (f: MigrationStraggler[]) => void paged.push(f) });
+    expect(paged).toHaveLength(1);
+    expect(paged[0]!.map((s) => s.scopeId)).toEqual([chronic.id]);
+    const flaggedRow = report.migrations?.stragglers.find((s) => s.scopeId === chronic.id);
+    expect(flaggedRow).toMatchObject({ state: 'failed', flagged: true });
+    expect(flaggedRow?.failure?.attempts).toBe(3);
+    expect(report.migrations?.stragglers.find((s) => s.scopeId === fresh.id)?.flagged).toBe(false);
+  });
+
+  it('a throwing pager is recorded, never sinks the pass', async () => {
+    const chronic = row({ schemaVersion: '0', migrationFailure: failed(5, LONG_AGO) });
+    const host = migHost({
+      frontier: 1,
+      scopes: [chronic],
+      migrateScope: async () => ({
+        status: 'failed',
+        failure: { version: '@v/m@0002-broken', error: 'boom' },
+      }),
+    });
+    const report = await run(host, {
+      onMigrationsFlagged: () => {
+        throw new Error('pager down');
+      },
+    });
+    expect(report.migrations?.failed).toBe(1);
+    expect(report.errors).toContainEqual({
+      kind: 'migrate',
+      id: 'onMigrationsFlagged',
+      error: 'pager down',
+    });
+  });
+
+  it('a noop outcome leaves the classification alone — a foreign host repairs nothing', async () => {
+    // The control plane sweeping a fleet whose modules run in vertical
+    // deployments: everything is "behind" its OWN frontier, nothing is this
+    // host's to migrate, and above all nothing gets cleared.
+    const foreign = row({ schemaVersion: '0', migrationFailure: failed(1, LONG_AGO) });
+    const host = migHost({ frontier: 1, scopes: [foreign] }); // default migrateScope → noop
+    const report = await run(host);
+    expect(report.migrations).toMatchObject({ attempted: 1, noops: 1, repaired: 0, failed: 1 });
+  });
+
+  it('forks and non-live scopes are not fleet: never woken, never counted', async () => {
+    const primary = row({ schemaVersion: '2' });
+    const fork = row({ schemaVersion: '0', forkedFrom: primary.id });
+    const suspended = row({ schemaVersion: '0', status: 'suspended' });
+    const attempted: string[] = [];
+    const host = migHost({
+      frontier: 2,
+      scopes: [primary, fork, suspended],
+      migrateScope: async (_t, s) => {
+        attempted.push(s);
+        return { status: 'migrated', schemaVersion: '2' };
+      },
+    });
+    const report = await run(host);
+    expect(attempted).toEqual([]);
+    expect(report.migrations).toMatchObject({ total: 1, migrated: 1, complete: true });
+    expect(report.migrations?.summary).toBe('release 2: 1/1 migrated, 0 pending, 0 failed');
+  });
+
+  it('reconcileMigrations: false and a pre-#49 host both yield migrations: null', async () => {
+    const off = await run(migHost({ frontier: 1, scopes: [row({})] }), {
+      reconcileMigrations: false,
+    });
+    expect(off.migrations).toBeNull();
+    // The original fake host has no migrateScope — the phase steps aside.
+    const legacy = await runPlatformSweep(fakeHost({}), { actor: ACTOR, fetch: FETCH, sweepers: {} });
+    expect(legacy.migrations).toBeNull();
   });
 });
 

@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
+import { runPlatformSweep, ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
+import type { FetchLike, ModuleRegistration } from '@substrat-run/kernel';
 import { brokenMod } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
@@ -86,5 +87,90 @@ describe('migration failure is recorded in the directory', () => {
       await healthy.close();
       rmSync(healthyDir, { recursive: true, force: true });
     }
+  });
+
+  // -- the reconciliation sweep's half (#49), on the same broken fixture ------
+
+  it('migrateScope returns a structured failure and advances the attempt counter', async () => {
+    const before = (await host.admin.getScopeRecord(staff, t, s))?.migrationFailure?.attempts ?? 0;
+    const outcome = await host.migrateScope(t, s);
+    expect(outcome).toEqual({
+      status: 'failed',
+      failure: {
+        version: '@test/broken@0002-broken',
+        error: expect.any(String),
+      },
+    });
+    const after = (await host.admin.getScopeRecord(staff, t, s))?.migrationFailure;
+    expect(after?.attempts).toBe(before + 1);
+  });
+
+  it('the frontier names the scope behind: two registered, one landed', async () => {
+    expect(host.migrationFrontier()).toEqual({ total: 2 });
+    const record = await host.admin.getScopeRecord(staff, t, s);
+    expect(Number(record?.schemaVersion)).toBeLessThan(host.migrationFrontier().total);
+  });
+
+  it('runPlatformSweep finds, retries and reports the failed scope end to end', async () => {
+    const report = await runPlatformSweep(host, {
+      actor: staff,
+      fetch: (() => Promise.reject(new Error('unused'))) as unknown as FetchLike,
+      sweepers: {},
+      drainRetries: false,
+      migrationBackoff: { baseDelayMs: 0 }, // always due — this is a test, not production cadence
+    });
+    expect(report.migrations).toMatchObject({
+      release: '2',
+      total: 1,
+      migrated: 0,
+      pending: 0,
+      failed: 1,
+      complete: false,
+      attempted: 1,
+      repaired: 0,
+    });
+    expect(report.migrations?.summary).toBe('release 2: 0/1 migrated, 0 pending, 1 failed');
+    expect(report.migrations?.stragglers[0]).toMatchObject({
+      scopeId: s,
+      state: 'failed',
+    });
+  });
+
+  it('a patched forward release heals the scope through migrateScope (§5.3 recovery)', async () => {
+    // The recovery path §5.3 names: per-scope state plus a PATCHED release. A new
+    // host over the same directory is exactly what a redeploy is; its fixed
+    // migration applies, the journal fills in, and the failure record clears.
+    // (The broken 0002 never applied anywhere — patching it is the recovery,
+    // not an edit of shipped history.)
+    const fixedMod: ModuleRegistration = {
+      ...brokenMod,
+      migrations: [
+        { version: '0001-ok', sql: 'CREATE TABLE broken_ok (id TEXT PRIMARY KEY)' },
+        { version: '0002-broken', sql: 'CREATE TABLE broken_t (id TEXT PRIMARY KEY)' },
+      ],
+    };
+    const patched = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+    try {
+      patched.registerModule(fixedMod);
+      const outcome = await patched.migrateScope(t, s);
+      expect(outcome).toEqual({ status: 'migrated', schemaVersion: '2' });
+      const record = await patched.admin.getScopeRecord(staff, t, s);
+      expect(record?.schemaVersion).toBe('2');
+      expect(record?.migrationFailure).toBeNull(); // attempts reset — consecutive means consecutive
+      // And the fleet view agrees: the skew window is closed.
+      const report = await runPlatformSweep(patched, {
+        actor: staff,
+        fetch: (() => Promise.reject(new Error('unused'))) as unknown as FetchLike,
+        sweepers: {},
+        drainRetries: false,
+      });
+      expect(report.migrations).toMatchObject({ total: 1, migrated: 1, failed: 0, complete: true });
+    } finally {
+      await patched.close();
+    }
+  });
+
+  it('migrateScope fails closed on a (tenant, scope) mismatch and on non-live scopes', async () => {
+    await expect(host.migrateScope(tenantId.parse(ulid()), s)).rejects.toThrow(/unknown scope/);
   });
 });

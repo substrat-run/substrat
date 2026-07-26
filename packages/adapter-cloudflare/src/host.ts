@@ -85,6 +85,8 @@ import {
   type ExecutorDrainReport,
   type ExecutorHandler,
   type ExecutorRetryPolicy,
+  type MigrateScopeOutcome,
+  type MigrationFrontier,
   backoffAt,
   resolveRetryPolicy,
   unconfiguredSecretBox,
@@ -385,6 +387,12 @@ interface AdminEntry {
 interface ScopeStubRpc {
   /** The applied-migration count if this call applied any, else null (nothing changed). */
   migrate(): Promise<number | null>;
+  /**
+   * A FRESH attempt of whatever is pending — clears the DO's memoised migration
+   * promise first, so a warm instance's cached rejection is defeated (#49).
+   * Same return contract as `migrate()`.
+   */
+  retryMigrations(): Promise<number | null>;
   pendingExecutorEvents(deliveryId: string, eventType: string): Promise<DomainEvent[]>;
   recordExecutorAttempt(
     eventId: string,
@@ -517,6 +525,8 @@ export class CloudflareScopeHost implements ScopeHost {
   // Registration-mechanics bookkeeping (validation only — the DO executes).
   // Code-time, derived from the bundled modules, NOT durable directory state.
   private readonly moduleIds = new Set<string>();
+  /** Registered (module, version) pairs — the frontier `schemaVersion` counts toward (§5.3, #49). */
+  private migrationTotal = 0;
   private readonly operations = new Set<string>();
   private readonly predicateNames = new Map<string, string>(); // name → module
   /** Executor id → {eventType, handler} (K-22 §4.2). Coordinator-side, not in the DO. */
@@ -726,6 +736,61 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeStub(scopeId).executorDeadLetters();
   }
 
+  migrationFrontier(): MigrationFrontier {
+    return { total: this.migrationTotal };
+  }
+
+  /**
+   * The reconciliation sweep's wake + retry (kernel-design §5.3, #49).
+   *
+   * Reaches the DO through `retryMigrations`, NOT `migrate`: the DO memoises
+   * its migration promise, so a warm instance that failed once returns the
+   * cached rejection to `migrate()` forever — the retry RPC clears that latch
+   * and makes a fresh attempt (already-journaled versions are skipped, so it
+   * can never double-apply). The directory recording mirrors
+   * `migrateAndRecord`, with one deliberate difference: a `null` from the DO
+   * (nothing pending here) writes NOTHING — this host may not run the scope's
+   * modules at all (the control plane sweeping verticals' scopes), and a
+   * foreign host must never clear a failure recorded by the deployment that
+   * owns it.
+   *
+   * NOT `validateScopeAccess`: that gate refuses `provisioning`, and a scope
+   * stuck in provisioning on a failed migration is precisely a sweep target.
+   * Requires a control plane (the CP-less host trusts its router for lifecycle
+   * and has no directory to read a status from).
+   */
+  async migrateScope(tenantId: TenantId, scopeId: ScopeId): Promise<MigrateScopeOutcome> {
+    const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+    // K-3: a scope under another tenant is indistinguishable from one that does not exist.
+    if (!rec) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    if (rec.status !== 'active' && rec.status !== 'provisioning') {
+      throw new Error(`scope not migratable (status: ${rec.status}): ${scopeId}`);
+    }
+    const stub = this.scopeStub(scopeId);
+    try {
+      const applied = await stub.retryMigrations();
+      if (applied === null) return { status: 'noop' };
+      await this.cp.setMigrationState(scopeId, String(applied), null);
+      return { status: 'migrated', schemaVersion: String(applied) };
+    } catch (err) {
+      // Best-effort read-back, as in migrateAndRecord: a scope broken enough to
+      // fail may be broken enough not to answer, and the recorder must not
+      // replace the migration error with its own.
+      let failure: { version: string; error: string; applied: number } | null = null;
+      try {
+        failure = await stub.migrationFailure();
+      } catch {
+        // deliberately swallowed — the rethrow below carries the real signal
+      }
+      if (!failure) throw err;
+      await this.cp.setMigrationState(scopeId, String(failure.applied), {
+        version: failure.version,
+        error: failure.error,
+      });
+      return { status: 'failed', failure: { version: failure.version, error: failure.error } };
+    }
+  }
+
   /**
    * Read-only introspection of a scope's OWN database, reaching the scope DO directly
    * (kernel-design §5.4's admin-query RPC). Unlike `admin.listScopeTables`, this does
@@ -817,6 +882,7 @@ export class CloudflareScopeHost implements ScopeHost {
       this.predicateNames.set(name, manifest.id);
     }
     this.moduleIds.add(manifest.id);
+    this.migrationTotal += migrations.length;
     const ownOperations = new Set(Object.keys(registration.operations ?? {}));
     for (const name of manifest.withdraws ?? []) {
       if (ownOperations.has(name)) {

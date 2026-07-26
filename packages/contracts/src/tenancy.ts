@@ -103,15 +103,57 @@ export type ProvisionableJurisdiction = z.infer<typeof provisionableJurisdiction
  *
  * `attempts` counts *consecutive* failures and resets to 0 on a successful apply.
  */
-export const migrationFailure = z
-  .object({
-    version: z.string().min(1), // the `module@version` that threw
-    error: z.string(),
-    attempts: z.number().int().positive(), // ≥1: the record only exists after a failure
-    lastAttemptAt: instant,
-  })
-  .nullable();
+export const migrationFailureRecord = z.object({
+  version: z.string().min(1), // the `module@version` that threw
+  error: z.string(),
+  attempts: z.number().int().positive(), // ≥1: the record only exists after a failure
+  lastAttemptAt: instant,
+});
+export type MigrationFailureRecord = z.infer<typeof migrationFailureRecord>;
+export const migrationFailure = migrationFailureRecord.nullable();
 export type MigrationFailure = z.infer<typeof migrationFailure>;
+
+/**
+ * One scope the reconciliation sweep (kernel-design §5.3, #49) still owes a
+ * migration: `pending` = behind the deployed frontier with no recorded failure
+ * (typically never woken since the release), `failed` = its last attempt threw
+ * and the scope fails closed. `flagged` marks a failed scope whose consecutive
+ * attempts crossed the paging threshold — the "page past a threshold" signal.
+ */
+export const migrationStraggler = z.object({
+  tenantId,
+  scopeId,
+  slug,
+  vertical: z.string().min(1).nullable(),
+  schemaVersion: z.string(),
+  state: z.enum(['pending', 'failed']),
+  failure: migrationFailure, // null exactly when state is 'pending'
+  flagged: z.boolean(),
+});
+export type MigrationStraggler = z.infer<typeof migrationStraggler>;
+
+/**
+ * Fleet migration progress in the shape §5.3 names — "release N: X/Y migrated,
+ * P pending, F failed" — computed from the directory alone (§5.4: fleet
+ * questions never fan out). `release` is the deployed migration frontier's
+ * label: the registered (module, version) count, the same number
+ * `scope.schemaVersion` counts toward, so the comparison needs no second
+ * bookkeeping. `complete` is the expand–contract gate: the skew window is
+ * closed — and a destructive follow-up release is shippable — only when it is
+ * true. `stragglers` is capped by the producer (failed first); the counts are
+ * always the whole truth.
+ */
+export const migrationProgress = z.object({
+  release: z.string(),
+  total: z.number().int().nonnegative(),
+  migrated: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  complete: z.boolean(),
+  stragglers: z.array(migrationStraggler),
+  summary: z.string(),
+});
+export type MigrationProgress = z.infer<typeof migrationProgress>;
 
 export const scope = z.object({
   id: scopeId, // globally unique; APIs still take (tenantId, scopeId) and cross-check (K-3)

@@ -284,6 +284,8 @@ export function defineScopeDO(
     private schemaVersionReported = false;
     /** The migration that failed on this instance, read back by `migrationFailure`. */
     private lastFailure: { version: string; error: string } | null = null;
+    /** Passes of `applyPendingMigrations` that had work to do — see `migrationAttemptsOnInstance`. */
+    private migrationRuns = 0;
 
     constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
       super(ctx, env);
@@ -381,6 +383,43 @@ export function defineScopeDO(
       if (!applied || this.schemaVersionReported) return null;
       this.schemaVersionReported = true;
       return this.applied.size;
+    }
+
+    /**
+     * A FRESH migration attempt — the reconciliation sweep's retry affordance
+     * (kernel-design §5.3, #49).
+     *
+     * `ensureMigrations` memoises its promise, and a REJECTED promise stays
+     * assigned: every later `migrate()` on a warm instance returns the same
+     * cached rejection without re-attempting (deliberate on the success path —
+     * see `migrate` — but it means a sweep that "wakes" a failed scope through
+     * the ordinary door retries nothing). This clears the latch and re-runs
+     * `applyPendingMigrations`: already-journaled versions are skipped by the
+     * `applied` set and the in-transaction re-check, so a concurrent or repeated
+     * retry can never double-apply — the worst case is a redundant no-op pass.
+     *
+     * Same return contract as `migrate()`: the applied count when this call
+     * applied any, else null; a still-failing migration rejects (and refreshes
+     * `lastFailure` for the coordinator's read).
+     */
+    async retryMigrations(): Promise<number | null> {
+      this.migrationPromise = undefined;
+      this.lastFailure = null;
+      // The reported latch is NOT reset: a successful retry returns the fresh
+      // count below, and the coordinator records it on this same call.
+      const applied = await this.ensureMigrations();
+      return applied ? this.applied.size : null;
+    }
+
+    /**
+     * How many times THIS instance has actually executed a migration pass —
+     * the observable that distinguishes a fresh attempt from the memoised
+     * rejection. The directory's `attempts` counter cannot: the coordinator
+     * increments it whenever `migrate()` rejects, cached or not. Test/diagnostic
+     * surface; the sweep itself never reads it.
+     */
+    migrationAttemptsOnInstance(): number {
+      return this.migrationRuns;
     }
 
     /**
@@ -523,6 +562,7 @@ export function defineScopeDO(
         }
       }
       if (pending.length === 0) return false;
+      this.migrationRuns += 1;
       await this.queue.enqueue(async () => {
         for (const { moduleId, migration } of pending) {
           const key = `${moduleId}@${migration.version}`;

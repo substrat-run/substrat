@@ -94,6 +94,44 @@ describe('migration failure is recorded in the directory', () => {
     const record = await host.admin.getScopeRecord(staff, t, s);
     expect(record?.schemaVersion).toBe('1');
   });
+
+  /**
+   * The #49 retry affordance, proven at the exact seam the issue named: the
+   * ScopeDO memoises its migration promise, and a REJECTED promise stays
+   * assigned — so an ordinary wake on a warm instance returns the cached
+   * rejection without re-attempting anything. The instance-run counter is the
+   * observable that tells the two apart (the directory's `attempts` cannot:
+   * the coordinator increments it on cached rejections too).
+   */
+  it('migrateScope defeats the memoised rejection — a fresh attempt, not the cached one (#49)', async () => {
+    interface MigrationProbe {
+      migrationAttemptsOnInstance(): Promise<number>;
+    }
+    const probe = env.BROKEN_SCOPE.get(env.BROKEN_SCOPE.idFromName(s)) as unknown as MigrationProbe;
+    const before = await probe.migrationAttemptsOnInstance();
+    expect(before).toBeGreaterThan(0);
+
+    // The ordinary wake: rejects, but from the cache — no new run on this instance.
+    await expect(host.getScope(alice, t, s)).rejects.toThrow(/scope fails closed/);
+    expect(await probe.migrationAttemptsOnInstance()).toBe(before);
+
+    // The sweep's door: clears the latch, actually re-runs, reports structurally.
+    const outcome = await host.migrateScope(t, s);
+    expect(outcome).toMatchObject({
+      status: 'failed',
+      failure: { version: '@test/broken@0002-broken' },
+    });
+    expect(await probe.migrationAttemptsOnInstance()).toBe(before + 1);
+  });
+
+  it('each retry advances the directory attempt counter, so the sweep can back off (#49)', async () => {
+    const read = async () =>
+      (await host.admin.getScopeRecord(staff, t, s))?.migrationFailure?.attempts ?? 0;
+    const before = await read();
+    expect(before).toBeGreaterThan(0);
+    await host.migrateScope(t, s);
+    expect(await read()).toBe(before + 1);
+  });
 });
 
 /**

@@ -100,6 +100,8 @@ import {
   type ConsumerHandler,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
+  type MigrateScopeOutcome,
+  type MigrationFrontier,
   type ExecutorHandler,
   type ExecutorRetryPolicy,
   backoffAt,
@@ -1494,6 +1496,68 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     return rt.actor.enqueue(() => this.dispatchExecutors(rt));
+  }
+
+  migrationFrontier(): MigrationFrontier {
+    let total = 0;
+    for (const mod of this.modules.values()) total += mod.migrations.length;
+    return { total };
+  }
+
+  /**
+   * The reconciliation sweep's wake + retry (kernel-design §5.3, #49). Reuses
+   * `applyPendingMigrations` — the one place migrations apply, so the journal,
+   * the directory projection and the attempt counter behave exactly as a lazy
+   * wake — but converts the outcome to a structured result: the sweep reports
+   * and backs off, it does not catch exceptions to guess at states. The wake
+   * paths (`getScope`, `invoke`) keep their throw, so operations on a failed
+   * scope still fail closed.
+   */
+  async migrateScope(tenantId: TenantId, scopeId: ScopeId): Promise<MigrateScopeOutcome> {
+    const row = this.directory
+      .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { tenant_id: string; status: string } | undefined;
+    // K-3: a scope under another tenant is indistinguishable from one that does not exist.
+    if (!row || row.tenant_id !== tenantId) {
+      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
+    // `provisioning` allowed — a scope stuck there on a failed migration is a
+    // sweep target. Suspended/archived are deliberate states; not disturbed.
+    if (row.status !== 'active' && row.status !== 'provisioning') {
+      throw new Error(`scope not migratable (status: ${row.status}): ${scopeId}`);
+    }
+    const rt = this.runtime(tenantId, scopeId);
+    // Nothing pending FOR THIS HOST → noop, and deliberately no state write: a
+    // host that does not run the scope's modules must never clear (or overwrite)
+    // a failure recorded by the deployment that does.
+    let pending = false;
+    for (const mod of this.modules.values()) {
+      for (const migration of mod.migrations) {
+        if (!rt.appliedMigrations.has(`${mod.id}@${migration.version}`)) pending = true;
+      }
+    }
+    if (!pending) return { status: 'noop' };
+    try {
+      await this.applyPendingMigrations(rt);
+      return { status: 'migrated', schemaVersion: String(rt.appliedMigrations.size) };
+    } catch {
+      // `applyPendingMigrations` already projected the failure (finally-path);
+      // read back what it recorded rather than re-deriving it here.
+      const f = this.directory
+        .prepare(
+          'SELECT migration_failed_version, migration_error FROM scopes WHERE scope_id = ?',
+        )
+        .get(scopeId) as
+        | { migration_failed_version: string | null; migration_error: string | null }
+        | undefined;
+      return {
+        status: 'failed',
+        failure: {
+          version: f?.migration_failed_version ?? 'unknown',
+          error: f?.migration_error ?? 'migration failed',
+        },
+      };
+    }
   }
 
   async executorDeadLetters(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDeadLetter[]> {

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import type { HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
+import { useEffect, useMemo, useState } from 'react';
+import type { HostnameBinding, MigrationProgress, Scope, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, KeyValue, Table, Tabs, Tag } from '../components';
 import type { TableColumn } from '../components';
 import {
@@ -54,9 +54,81 @@ function Stat({ label, value, meta }: { label: string; value: string | number; m
   );
 }
 
+/**
+ * The §5.3 ops view (#49): "release N: X/Y migrated, P pending, F failed",
+ * computed directory-side against the deployment's migration frontier. This is
+ * what makes "0 failed" a measurement instead of an artifact of nobody having
+ * woken the stragglers — the reconciliation sweep keeps the numbers honest.
+ */
+function MigrationProgressCard({ progress, tenants }: { progress: MigrationProgress; tenants: Map<TenantId, Tenant> }) {
+  const flagged = progress.stragglers.filter((s) => s.flagged);
+  return (
+    <Card
+      title="Migrations"
+      description={progress.summary}
+      actions={
+        progress.complete ? (
+          <Badge status="success">Skew window closed</Badge>
+        ) : (
+          <span style={{ display: 'inline-flex', gap: 6 }}>
+            {progress.failed > 0 && <Badge status="danger">{progress.failed} failed</Badge>}
+            {progress.pending > 0 && <Badge status="warning">{progress.pending} pending</Badge>}
+            {flagged.length > 0 && <Badge status="danger">{flagged.length} past threshold</Badge>}
+          </span>
+        )
+      }
+    >
+      {progress.complete ? (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Every live scope is at the deployed frontier — the expand–contract gate is open:
+          a destructive follow-up release may ship (kernel-design §5.3).
+        </p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {progress.stragglers.map((s) => (
+            <div key={s.scopeId} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12.5 }}>
+              <Badge status={s.state === 'failed' ? 'danger' : 'warning'}>{s.state}</Badge>
+              <code style={{ fontSize: 12 }}>
+                {tenants.get(s.tenantId)?.slug ?? '?'}/{s.slug}
+              </code>
+              <span style={{ color: 'var(--text-tertiary)' }}>
+                schema {s.schemaVersion}/{progress.release}
+                {s.failure &&
+                  ` · ${s.failure.version} · ${s.failure.attempts} attempt${s.failure.attempts === 1 ? '' : 's'}${s.flagged ? ' · FLAGGED' : ''}`}
+              </span>
+            </div>
+          ))}
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-tertiary)' }}>
+            Pending scopes migrate on next wake or sweep pass; failed scopes fail closed and are
+            retried with backoff — recovery is per-scope PITR plus a patched forward release.
+          </p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChanged, onToast }: ScopesProps) {
   const [tab, setTab] = useState('all');
   const [selected, setSelected] = useState<Scope>();
+  // Null until it loads; stays null where the API predates /fleet/migrations —
+  // the card simply does not render, nothing else degrades.
+  const [migrations, setMigrations] = useState<MigrationProgress | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .migrationProgress()
+      .then((p) => {
+        if (!cancelled) setMigrations(p);
+      })
+      .catch(() => {
+        if (!cancelled) setMigrations(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, scopes]);
 
   const counts = useMemo(() => fleetCounts(scopes, tenants), [scopes, tenants]);
   const tenantList = useMemo(() => [...tenants.values()], [tenants]);
@@ -152,6 +224,8 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
         />
         <Stat label="Entitlements held" value={skuTotal} meta={`across ${entitlements.size} tenants`} />
       </div>
+
+      {migrations && <MigrationProgressCard progress={migrations} tenants={tenants} />}
 
       <Tabs
         value={tab}
