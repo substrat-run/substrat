@@ -5,7 +5,7 @@ import { ConsoleShell } from './ConsoleShell';
 import type { ViewKey } from './ConsoleShell';
 import type { BreadcrumbItem } from './components';
 import { createApi } from './lib/api';
-import { getSession, signOut, type StaffSession } from './lib/auth';
+import { getSession, signIn, signOut, type StaffSession } from './lib/auth';
 import { AdminLog } from './views/AdminLog';
 import { Domains } from './views/Domains';
 import { Observability } from './views/Observability';
@@ -103,10 +103,20 @@ export function App() {
   const api = useMemo(() => createApi(devMode ? actor : null), [actor]);
   const authed = devMode ? !!actor : !!session;
 
-  // Check for an existing staff session on load (session mode only).
+  // Check for an existing staff session on load (session mode only). Signed out →
+  // hand straight off to the IdP (there is no local sign-in page). The one exception
+  // is a failed login round-trip (`?error=auth`), where redirecting again would
+  // loop — that renders the retry card instead.
   useEffect(() => {
     if (devMode) return;
-    void getSession().then(setSession);
+    void getSession().then((s) => {
+      if (s === null && new URLSearchParams(window.location.search).get('error') !== 'auth') {
+        const here = `${window.location.pathname}${window.location.search}`;
+        signIn(here !== '/' ? { returnTo: here } : {});
+        return; // session stays undefined → blank page while the browser navigates
+      }
+      setSession(s);
+    });
   }, []);
 
   useEffect(() => {
@@ -171,8 +181,9 @@ export function App() {
     ...(detail ? [{ label: detail.slug, mono: true }] : []),
   ];
 
-  // Session mode: checking → blank; signed out → login. (Dev mode keeps session
-  // pinned to a placeholder, so it never reaches here without an actor.)
+  // Session mode: checking → blank (also covers the redirect to the IdP); signed out
+  // → the login-failed retry card (only reachable via `?error=auth`). (Dev mode keeps
+  // session pinned to a placeholder, so it never reaches here without an actor.)
   if (!devMode && session === undefined) {
     return <div style={{ height: '100vh', background: 'var(--surface-page)' }} />;
   }

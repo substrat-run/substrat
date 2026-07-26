@@ -4,11 +4,12 @@ import { StrataGlyph } from '../lib/icons';
 import { signIn } from '../lib/api';
 
 /**
- * Sign in (screens 1a/1b). Authentication is an OIDC redirect to the platform's
- * AuthHero instance — the actual credential entry happens there — so "Continue"
- * hands off to `/api/auth/login`. The branded card is the design's; the email
- * field seeds the hand-off UX. First login bootstraps the tenant (worker
- * `resolveAccount`), so there is no separate sign-up call here.
+ * The login-failed retry card. Signed-out visits normally redirect straight to the
+ * platform's AuthHero instance (App.tsx hands off to `/api/auth/login` without
+ * rendering anything local) — this card only renders after a failed OIDC round-trip
+ * (`?error=auth`), where auto-redirecting again could loop. "Continue" retries the
+ * hand-off; the email field seeds `login_hint`. First login bootstraps the tenant
+ * (worker `resolveAccount`), so there is no separate sign-up call here.
  */
 export function SignIn({ error }: { error?: boolean }) {
   const [email, setEmail] = useState('');

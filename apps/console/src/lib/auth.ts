@@ -17,11 +17,14 @@ export async function getSession(): Promise<StaffSession | null> {
 }
 
 /** Redirect into the OIDC login flow; the browser comes back to the console signed in. */
-export function signIn(): void {
-  window.location.href = '/api/auth/login';
+export function signIn(opts: { returnTo?: string } = {}): void {
+  const rt = opts.returnTo;
+  window.location.href = `/api/auth/login${rt ? `?returnTo=${encodeURIComponent(rt)}` : ''}`;
 }
 
-/** Drop the session and return to the console. */
+/** Drop the session and return to the console. Always federated: signed-out visits
+ * redirect straight to the IdP, so a logout that left the IdP's SSO cookie alive
+ * would silently sign the user right back in. */
 export function signOut(): void {
-  window.location.href = '/api/auth/logout';
+  window.location.href = '/api/auth/logout?federated';
 }
