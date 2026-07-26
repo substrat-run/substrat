@@ -36,7 +36,7 @@ import type { AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
-import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from './github.js';
+import { githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from './github.js';
 import { sealForGithub } from './github-seal.js';
 import { b64url, b64urlToBytes } from './b64.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
@@ -1533,7 +1533,32 @@ app.post('/api/github/setup-ci', async (c) => {
   });
 });
 
-/** The manual path's copy-paste workflow — same generator as the committed one (github.ts). */
+/**
+ * The workflow the setup commits — kept in the worker (not the SPA) so the committed
+ * file and the manual instructions can never drift from what the platform expects.
+ * Exported to the UI via `GET /api/github/workflow-preview` for the manual path.
+ */
+function deployWorkflowYaml(branch: string, slug: string, cpUrl: string): string {
+  return `name: Deploy to Substrat
+on:
+  push:
+    branches: [${branch}]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npx @substrat-run/cli push . --slug ${slug} --version 0.1.\${{ github.run_number }}
+        env:
+          SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
+          SUBSTRAT_CP_URL: ${cpUrl}
+`;
+}
+
+/** The manual path's copy-paste workflow — same generator as the committed one. */
 app.get('/api/github/workflow-preview', async (c) => {
   const node = await resolveAccount(hostFor(c.env), c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
