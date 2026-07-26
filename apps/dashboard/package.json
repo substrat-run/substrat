@@ -26,7 +26,9 @@
     "@substrat-run/engine-workorder": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/oidc-rp": "workspace:^",
+    "@noble/hashes": "^1.5.0",
     "hono": "^4.6.0",
+    "tweetnacl": "^1.0.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

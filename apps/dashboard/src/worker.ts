@@ -35,7 +35,8 @@ import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSna
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
-import { githubConfig, installUrl, installationAccount, listInstallationRepos } from './github.js';
+import { githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from './github.js';
+import { sealForGithub } from './github-seal.js';
 import { b64url, b64urlToBytes } from './b64.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 
@@ -107,6 +108,13 @@ interface Env extends OidcEnv {
   GITHUB_APP_ID?: string;
   GITHUB_APP_SLUG?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
+  /**
+   * The control plane's PUBLIC base URL (e.g. `https://console.substrat.net/api`) — what
+   * a customer repo's CI needs as `SUBSTRAT_CP_URL`, since GitHub Actions cannot reach
+   * the service binding. A plain var (wrangler.jsonc), not a secret. Absent ⇒ the
+   * one-click CI setup 501s (the manual instructions remain).
+   */
+  CP_PUBLIC_URL?: string;
   /**
    * The AES-256 key that seals stored connection credentials (connections.md §3.3).
    * base64 of 32 bytes (`openssl rand -base64 32`). A DEDICATED secret — never derived
@@ -1252,6 +1260,127 @@ app.get('/api/github/repos', async (c) => {
   if (!installationId) return c.json({ configured: true, connected: false, repos: [] });
   const repos = await listInstallationRepos(cfg, installationId);
   return c.json({ configured: true, connected: true, account: conn.externalAccountRef, repos });
+});
+
+/** The connected installation's id for this tenant, or null (worker-local helper). */
+async function githubInstallationFor(
+  host: ReturnType<typeof hostFor>,
+  tenantId: DashboardNode['tenantId'],
+): Promise<string | null> {
+  const open = await host.admin.openConnection(tenantId, GIT_VERTICAL, 'github');
+  return open?.secret.installationId ?? null;
+}
+
+/** A repo's branches — the import step's branch picker. */
+app.get('/api/github/branches', async (c) => {
+  const cfg = githubConfig(c.env);
+  if (!cfg) throw new HTTPException(503, { message: 'GitHub is not configured' });
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const repo = c.req.query('repo');
+  if (!repo || !/^[^/\s]+\/[^/\s]+$/.test(repo)) throw new HTTPException(400, { message: 'missing or malformed repo (owner/name)' });
+  const installationId = await githubInstallationFor(host, node.tenantId);
+  if (!installationId) throw new HTTPException(409, { message: 'GitHub is not connected' });
+  return c.json({ branches: await listRepoBranches(cfg, installationId, repo) });
+});
+
+const setupCiBody = z.object({
+  repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+  branch: z.string().min(1).max(200),
+});
+
+/**
+ * One-click deploy setup on an imported repo (the git-import happy path): mint a
+ * TENANT-SCOPED push token on the control plane (never the platform service token —
+ * the token authenticates repo CI as a builder for this tenant only), write it as the
+ * repo's `SUBSTRAT_SERVICE_TOKEN` Actions secret, and commit the deploy workflow to
+ * the chosen branch. Authorized in-scope first (`begin-connection` = the
+ * `dashboard:manage-integrations` check), the same gate as connecting GitHub itself.
+ */
+app.post('/api/github/setup-ci', async (c) => {
+  const cfg = githubConfig(c.env);
+  if (!cfg) throw new HTTPException(503, { message: 'GitHub is not configured' });
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const body = setupCiBody.parse(await c.req.json());
+
+  // Permission check, in-scope (throws → 403 via onError if the caller may not manage integrations).
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  await dash.invoke('dashboard/begin-connection', { provider: 'github' });
+
+  const installationId = await githubInstallationFor(host, node.tenantId);
+  if (!installationId) throw new HTTPException(409, { message: 'GitHub is not connected' });
+
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const cpUrl = c.env.CP_PUBLIC_URL;
+  if (!cp || !cpUrl) {
+    throw new HTTPException(501, { message: 'one-click CI setup needs the shared control plane (CP_PUBLIC_URL) on this deployment' });
+  }
+  const { token, tenantSlug } = await cp.mintPushToken();
+
+  const slug = slugify(body.repo.split('/').pop() ?? 'app');
+  const workflowPath = '.github/workflows/substrat-deploy.yml';
+  const result = await setupRepoCi(cfg, installationId, {
+    repoFullName: body.repo,
+    branch: body.branch,
+    workflowPath,
+    workflowContent: deployWorkflowYaml(body.branch, slug, cpUrl),
+    secretName: 'SUBSTRAT_SERVICE_TOKEN',
+    secretValue: token,
+    seal: sealForGithub,
+  });
+  if ('needsPermissions' in result) {
+    // Structured, not an HTTP error: the UI offers the re-approve link + manual path.
+    return c.json({ ok: false, needsPermissions: true });
+  }
+  return c.json({
+    ok: true,
+    workflowPath,
+    workflowUpdated: result.workflowUpdated,
+    branch: body.branch,
+    // What the pushed versions will be registered under (builder-plane.md §5).
+    vertical: `${tenantSlug}/${slug}`,
+  });
+});
+
+/**
+ * The workflow the setup commits — kept in the worker (not the SPA) so the committed
+ * file and the manual instructions can never drift from what the platform expects.
+ * Exported to the UI via `GET /api/github/workflow-preview` for the manual path.
+ */
+function deployWorkflowYaml(branch: string, slug: string, cpUrl: string): string {
+  return `name: Deploy to Substrat
+on:
+  push:
+    branches: [${branch}]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npx @substrat-run/cli push . --slug ${slug} --version 0.1.\${{ github.run_number }}
+        env:
+          SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
+          SUBSTRAT_CP_URL: ${cpUrl}
+`;
+}
+
+/** The manual path's copy-paste workflow — same generator as the committed one. */
+app.get('/api/github/workflow-preview', async (c) => {
+  const node = await resolveAccount(hostFor(c.env), c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const repo = c.req.query('repo') ?? 'owner/app';
+  const branch = c.req.query('branch') ?? 'main';
+  const slug = slugify(repo.split('/').pop() ?? 'app');
+  return c.json({
+    workflowPath: '.github/workflows/substrat-deploy.yml',
+    workflow: deployWorkflowYaml(branch, slug, c.env.CP_PUBLIC_URL ?? 'https://console.substrat.net/api'),
+  });
 });
 
 app.onError((err, c) => {

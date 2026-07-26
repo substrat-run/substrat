@@ -30,6 +30,7 @@ import { mapError } from './errors.js';
 import { maskDump } from './mask.js';
 import { assertSandboxContract, deployManifest, deploymentRefFor } from './deploy.js';
 import type { DeployVerticalFn } from './deploy.js';
+import { mintPushToken, pushActorFor } from './push-token.js';
 
 export interface ControlPlaneApiOptions {
   host: ScopeHost;
@@ -86,6 +87,13 @@ export interface ControlPlaneApiOptions {
    * the vertical-management routes and to the verticals their tenant owns.
    */
   authenticateBuilder?: BuilderAuth;
+  /**
+   * Signs tenant-scoped push tokens (push-token.ts) — the CI credential the dashboard
+   * mints into a customer repo. Absent ⇒ the mint route 501s. A dedicated secret,
+   * never PLATFORM_SECRET (injected into pushed verticals) and never the service
+   * token; set once, out of routine rotation (rotating it revokes every issued token).
+   */
+  pushTokenSecret?: string;
 }
 
 // `actor` is the audited subject for every HostAdmin call (staff or builder alike).
@@ -918,6 +926,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     const version = (await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id);
     return c.json(version, 201);
+  });
+
+  // -- push tokens (push-token.ts) -------------------------------------------
+  // Mint a tenant-scoped CI credential. STAFF-ONLY by the builder allowlist (not in
+  // BUILDER_ROUTES): the dashboard mints over its service token during git-import
+  // setup; a builder session cannot mint (their own session already authenticates
+  // them, and a self-serve mint surface deserves its own decision, not a side door).
+  // The token authenticates as a BUILDER for the named tenant — everything a builder
+  // can NOT do (prod promote, admit, other tenants' slugs) holds for it identically.
+  app.post('/push-tokens', async (c) => {
+    if (!options.pushTokenSecret) {
+      return c.json({ error: 'push tokens are not configured on this control plane' }, 501);
+    }
+    const { tenantId } = z.object({ tenantId: tenantIdSchema }).parse(await c.req.json());
+    const tenant = await admin.getTenant(c.get('actor'), tenantId);
+    if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
+    const token = await mintPushToken(options.pushTokenSecret, {
+      actor: await pushActorFor(tenantId),
+      tenantId,
+      tenantSlug: tenant.slug,
+    });
+    return c.json({ token, tenantSlug: tenant.slug }, 201);
   });
 
   // -- the hostname map (§4.7, K-26) -----------------------------------------

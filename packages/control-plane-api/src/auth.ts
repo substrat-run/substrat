@@ -176,6 +176,17 @@ export type BuilderAuth = (
   request: Request,
 ) => Promise<BuilderIdentity | null> | BuilderIdentity | null;
 
+/** Try each builder reader in order; first non-null identity wins, else null (fail closed). */
+export function firstBuilderAuth(...auths: BuilderAuth[]): BuilderAuth {
+  return async (request) => {
+    for (const auth of auths) {
+      const identity = await auth(request);
+      if (identity) return identity;
+    }
+    return null;
+  };
+}
+
 /**
  * Who is acting on the control-plane surface, once authenticated.
  *

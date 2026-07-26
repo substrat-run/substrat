@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
-import { connectGithub, type CatalogEntry, type GitRepo, type GitReposResult } from '../lib/api';
+import { api, connectGithub, type CatalogEntry, type GitRepo, type GitReposResult, type WorkflowPreview } from '../lib/api';
 import { ENV_OPTS, verticalMeta } from '../lib/demo';
 import { Ic } from '../lib/icons';
 import { slugify } from '../lib/format';
@@ -333,30 +333,53 @@ function Configure({ source, onBack, onCancel, onCreate, disabled }: { source: S
 }
 
 /**
- * Deploy-from-GitHub (customer CI). A repo can't be provisioned through the template
- * path — `POST /api/apps` instantiates a catalog vertical, and building arbitrary repo
- * code server-side is the model-A gap (self-serve-deploy.md). So the honest, shipping
- * path is: scaffold a GitHub Actions workflow that runs `substrat push` on every push;
- * the first push lands a *pending* version, promoted from Deployments. No fiction here.
+ * Deploy-from-GitHub (customer CI, now one-click). A repo still can't be provisioned
+ * through the template path — building arbitrary repo code server-side is the model-A
+ * gap (self-serve-deploy.md) — but the CI scaffolding is no longer homework: pick a
+ * branch and Set up deployment mints a tenant-scoped push token, writes it as the
+ * repo's `SUBSTRAT_SERVICE_TOKEN` secret, and commits the workflow — which triggers
+ * the first run immediately. The first version lands *pending*; promote from
+ * Deployments. The copy-paste manual path remains as the fallback (older App
+ * installations may lack the write permissions until re-approved).
  */
 function RepoDeploy({ repo, onBack, onCancel }: { repo: { fullName: string; branch: string }; onBack: () => void; onCancel: () => void }) {
-  const slug = slugify(repo.fullName.split('/').pop() ?? 'app');
-  const workflow = `name: Deploy to Substrat
-on:
-  push:
-    branches: [${repo.branch}]
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: npx @substrat-run/cli push . --slug ${slug} --version 0.1.\${{ github.run_number }}
-        env:
-          SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
-`;
+  const [branches, setBranches] = useState<string[] | null>(null);
+  const [branch, setBranch] = useState(repo.branch);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<{ workflowPath: string; workflowUpdated: boolean; vertical: string } | null>(null);
+  const [needsPermissions, setNeedsPermissions] = useState(false);
+  const [error, setError] = useState<string>();
+  const [manual, setManual] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .gitBranches(repo.fullName)
+      .then((r) => {
+        if (!live) return;
+        const names = r.branches.map((b) => b.name);
+        setBranches(names.length ? names : [repo.branch]);
+      })
+      // Branches are a nicety; the default branch always works (and dev-mock has no API).
+      .catch(() => live && setBranches([repo.branch]));
+    return () => {
+      live = false;
+    };
+  }, [repo.fullName, repo.branch]);
+
+  const setup = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await api.setupCi(repo.fullName, branch);
+      if (result.ok) setDone(result);
+      else setNeedsPermissions(true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <Page maxWidth={720}>
@@ -367,7 +390,7 @@ jobs:
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--brand-600)' }} />
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-              {repo.fullName} <MonoTag>{repo.branch}</MonoTag>
+              {repo.fullName} <MonoTag>{branch}</MonoTag>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Deploy from GitHub on every push</div>
           </div>
@@ -375,26 +398,101 @@ jobs:
           <a href="#" onClick={(e) => { e.preventDefault(); onBack(); }} style={{ fontSize: 12.5 }}>Change</a>
         </div>
 
-        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-          Add this workflow at <span style={{ fontFamily: 'var(--font-mono)' }}>.github/workflows/substrat-deploy.yml</span>. Each push builds and pushes a version; the first lands <em>pending</em> — promote it to a channel from Deployments.
-        </div>
+        {done ? (
+          <>
+            <div style={{ fontSize: 13, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Ic name="check" size={14} color="var(--status-success-fg)" /> Deployment set up — the first build is running.
+            </div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <span>
+                {done.workflowUpdated ? 'Updated' : 'Committed'}{' '}
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{done.workflowPath}</span> on{' '}
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{branch}</span> and stored a deploy credential scoped to your
+                workspace as the repository secret <span style={{ fontFamily: 'var(--font-mono)' }}>SUBSTRAT_SERVICE_TOKEN</span>.
+              </span>
+              <span>
+                Every push to <span style={{ fontFamily: 'var(--font-mono)' }}>{branch}</span> now builds and pushes a version of{' '}
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{done.vertical}</span>. Versions land <em>pending</em> — promote
+                them from Deployments. Prod promotion + admission stay a Substrat-team decision.
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+              <Button onClick={() => { window.location.hash = '#/deployments'; }}>Go to Deployments</Button>
+              <Button variant="ghost" onClick={onCancel}>Done</Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              Substrat commits a deploy workflow to your repo and stores a workspace-scoped deploy credential as a repository
+              secret. Each push then builds and pushes a version; the first lands <em>pending</em> — promote it to a channel from
+              Deployments.
+            </div>
 
-        <div style={{ position: 'relative', background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '12px 14px' }}>
-          <div style={{ position: 'absolute', top: 8, right: 8 }}><CopyButton text={workflow} /></div>
-          <pre style={{ margin: 0, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, color: 'var(--text-primary)', whiteSpace: 'pre', overflowX: 'auto' }}>{workflow}</pre>
-        </div>
+            <Select
+              label="Branch to deploy from"
+              options={branches ?? [branch]}
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+              style={{ width: 260 }}
+            />
 
-        <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-          Add a repository secret <span style={{ fontFamily: 'var(--font-mono)' }}>SUBSTRAT_SERVICE_TOKEN</span> (a service credential for your workspace) so the action can authenticate. Prod promotion + admission stay a Substrat-team decision.
-        </div>
+            {needsPermissions && (
+              <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
+                The GitHub App is missing write access on this repository (an older installation). Re-approve the App's updated
+                permissions on GitHub, or{' '}
+                <a href="#" onClick={(e) => { e.preventDefault(); setManual(true); }}>set it up manually</a>.{' '}
+                <a href="#" onClick={(e) => { e.preventDefault(); connectGithub(); }}>Review the App's access</a>
+              </div>
+            )}
+            {error && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
-          <Button variant="ghost" onClick={onBack}>Back</Button>
-          <div style={{ flex: 1 }} />
-          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Pushed versions appear under Deployments.</div>
-        </div>
+            {manual && <ManualCiSetup repo={repo.fullName} branch={branch} />}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+              <Button onClick={setup} disabled={busy || branches === null}>{busy ? 'Setting up…' : 'Set up deployment'}</Button>
+              <Button variant="ghost" onClick={onBack}>Back</Button>
+              <div style={{ flex: 1 }} />
+              {!manual && (
+                <a href="#" onClick={(e) => { e.preventDefault(); setManual(true); }} style={{ fontSize: 12 }}>
+                  Set up manually instead
+                </a>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </Page>
+  );
+}
+
+/** The copy-paste fallback: the same workflow the one-click path would commit. */
+function ManualCiSetup({ repo, branch }: { repo: string; branch: string }) {
+  const [preview, setPreview] = useState<WorkflowPreview | null>(null);
+  useEffect(() => {
+    let live = true;
+    api
+      .workflowPreview(repo, branch)
+      .then((p) => live && setPreview(p))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [repo, branch]);
+
+  if (!preview) return <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading workflow…</div>;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+        Add this workflow at <span style={{ fontFamily: 'var(--font-mono)' }}>{preview.workflowPath}</span>, and add a repository
+        secret <span style={{ fontFamily: 'var(--font-mono)' }}>SUBSTRAT_SERVICE_TOKEN</span> (a deploy credential for your
+        workspace — ask us for one, or use Set up deployment above to store it automatically).
+      </div>
+      <div style={{ position: 'relative', background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '12px 14px' }}>
+        <div style={{ position: 'absolute', top: 8, right: 8 }}><CopyButton text={preview.workflow} /></div>
+        <pre style={{ margin: 0, fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, color: 'var(--text-primary)', whiteSpace: 'pre', overflowX: 'auto' }}>{preview.workflow}</pre>
+      </div>
+    </div>
   );
 }
 
