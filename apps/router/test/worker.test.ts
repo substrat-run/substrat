@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import worker, { type Env } from '../src/worker.js';
 
 /**
@@ -371,5 +371,90 @@ describe('router', () => {
     // The one that returned 1101 in production.
     cp.beginRequest();
     expect((await worker.fetch(get('https://acme.example.com/'), env)).status).toBe(200);
+  });
+
+  it('meters every resolved request: tenant-keyed datapoint + structured log line', async () => {
+    // design/observability.md §4.2/§4.3 — the router stamps the one dimension
+    // Cloudflare cannot know (which tenant). Blob/double order is a published shape.
+    const points: Array<{ indexes?: string[]; blobs?: string[]; doubles?: number[] }> = [];
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      logs.push(line);
+    });
+    const env = {
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: spyVertical().binding,
+      ANALYTICS: { writeDataPoint: (p: (typeof points)[number]) => points.push(p) },
+    } as unknown as Env;
+
+    try {
+      const res = await worker.fetch(
+        get('https://acme.example.com/api/repairs', { 'cf-ray': '8f2ab-ARN' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+
+      expect(points).toHaveLength(1);
+      expect(points[0]!.indexes).toEqual([T]);
+      expect(points[0]!.blobs).toEqual(['fsm', S, 'app', '2xx', '8f2ab-ARN']);
+      const [durationMs, status] = points[0]!.doubles!;
+      expect(status).toBe(200);
+      expect(durationMs).toBeGreaterThanOrEqual(0);
+
+      const line = JSON.parse(logs.find((l) => l.includes('"router":"request"'))!);
+      expect(line).toMatchObject({
+        tenantId: T,
+        scopeId: S,
+        vertical: 'fsm',
+        surface: 'app',
+        hostname: 'acme.example.com',
+        rayId: '8f2ab-ARN',
+        status: 200,
+      });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('meters the failure paths too — a 502 with no binding, and an unmetered 404', async () => {
+    const points: Array<{ blobs?: string[]; doubles?: number[] }> = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const env = {
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      // No VERTICAL_FSM binding → dispatch answers 502; that must still be metered.
+      ANALYTICS: { writeDataPoint: (p: (typeof points)[number]) => points.push(p) },
+    } as unknown as Env;
+
+    try {
+      expect((await worker.fetch(get('https://acme.example.com/'), env)).status).toBe(502);
+      expect(points).toHaveLength(1);
+      expect(points[0]!.blobs?.[3]).toBe('5xx');
+      expect(points[0]!.doubles?.[1]).toBe(502);
+
+      // An unresolved hostname has no tenant to write under — no datapoint.
+      expect((await worker.fetch(get('https://unknown.example.com/'), env)).status).toBe(404);
+      expect(points).toHaveLength(1);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('a metering failure never fails the request', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const env = {
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: spyVertical().binding,
+      ANALYTICS: {
+        writeDataPoint: () => {
+          throw new Error('daily limit exceeded');
+        },
+      },
+    } as unknown as Env;
+
+    try {
+      expect((await worker.fetch(get('https://acme.example.com/'), env)).status).toBe(200);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });

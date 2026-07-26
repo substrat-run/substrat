@@ -34,7 +34,7 @@ import { dashboardModule, type DashboardAppRow } from './module.js';
 import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
 import type { AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
-import { TenantNarrowedControlPlane } from './authority.js';
+import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
 import { githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from './github.js';
 import { sealForGithub } from './github-seal.js';
@@ -1256,6 +1256,58 @@ app.get('/api/deployments', async (c) => {
     ? await listDeploymentsFromCp(cp)
     : await listDeploymentsFromHost(host, STAFF, node.tenantId);
   return c.json(deployments);
+});
+
+/**
+ * Observability for MY pushed verticals (design/observability.md §5, view 2). Both
+ * routes are thin: the owner-narrowing lives in `TenantNarrowedControlPlane`
+ * (rows filtered to owned deployment refs; an unowned ref in the logs query answers
+ * `[]` without ever reaching the plane). Connected mode only — embedded mode has no
+ * observability backend, and 501 is the platform's shape for an absent capability;
+ * the plane's own 501 (no backend configured there either) passes through as such.
+ */
+const cpObservability = async <T>(read: () => Promise<T>): Promise<T> => {
+  try {
+    return await read();
+  } catch (e) {
+    if (e instanceof ControlPlaneError && e.status === 501) {
+      throw new HTTPException(501, { message: 'observability is not configured on this platform' });
+    }
+    throw e;
+  }
+};
+
+app.get('/api/observability/metrics', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'observability requires the shared control plane' });
+  const hours = Number(c.req.query('hours') ?? '24');
+  return c.json(await cpObservability(() => cp.observabilityMetrics(Number.isFinite(hours) ? hours : 24)));
+});
+
+app.get('/api/observability/logs', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'observability requires the shared control plane' });
+  const service = c.req.query('service');
+  if (!service) throw new HTTPException(400, { message: 'service is required' });
+  const hours = Number(c.req.query('hours') ?? '1');
+  const limit = Number(c.req.query('limit') ?? '100');
+  const level = c.req.query('level') || undefined;
+  return c.json(
+    await cpObservability(() =>
+      cp.observabilityLogs({
+        service,
+        level,
+        hours: Number.isFinite(hours) ? hours : 1,
+        limit: Number.isFinite(limit) ? limit : 100,
+      }),
+    ),
+  );
 });
 
 /**

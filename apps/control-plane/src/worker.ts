@@ -28,6 +28,7 @@ import {
 import {
   createControlPlaneApi,
   createWfpUploader,
+  createCfObservabilityReader,
   firstBuilderAuth,
   firstPlatformActorAuth,
   pushTokenBuilderAuth,
@@ -117,6 +118,17 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
     // secret setup (wrangler can't set secrets on a dispatch-namespace script anyway).
     injectSecrets: { PLATFORM_SECRET: env.PLATFORM_SECRET, ROUTER_SECRET: env.ROUTER_SECRET },
   });
+}
+
+/**
+ * Cloudflare-native observability reads for the console's fleet view
+ * (design/observability.md §4.1). Same credential slot as the WfP uploader; the token
+ * additionally needs Account Analytics read + Workers Observability read, or the
+ * proxied queries fail with a Cloudflare auth error rather than 501.
+ */
+function observabilityFor(env: Env) {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
+  return createCfObservabilityReader({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN });
 }
 
 /**
@@ -308,6 +320,7 @@ export default {
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         deployVertical: deployVerticalFor(env),
+        observability: observabilityFor(env),
       }),
     );
 

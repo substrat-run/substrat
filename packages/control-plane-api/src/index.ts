@@ -33,3 +33,6 @@ export { assertSandboxContract, deployManifest, deploymentRefFor } from './deplo
 export type { DeployVerticalFn, VerticalBundle, DeclaredBinding, DeployManifest } from './deploy.js';
 export { createWfpUploader } from './wfp.js';
 export type { WfpUploaderOptions } from './wfp.js';
+export type { ObservabilityReader, ServiceMetricsRow, RecentLogEvent } from './observability.js';
+export { createCfObservabilityReader } from './cf-observability.js';
+export type { CfObservabilityOptions } from './cf-observability.js';

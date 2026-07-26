@@ -29,6 +29,30 @@ import type {
 /** Dev only. Real staff auth (SSO/MFA) gates exposing the console — §6. */
 const DEV_ACTOR_HEADER = 'x-platform-actor';
 
+/** One service's invocation aggregates — the control plane's observability proxy
+ *  (provider-neutral seam; Cloudflare analytics is the current backend). */
+export interface ServiceMetricsRow {
+  service: string;
+  /** Set for pushed verticals (the platform's dispatch pool), null for platform services. */
+  namespace: string | null;
+  requests: number;
+  errors: number;
+  subrequests: number;
+  /** Per-request CPU time quantiles, microseconds. */
+  cpuTimeP50: number;
+  cpuTimeP99: number;
+}
+
+/** One log event from the control plane's observability proxy. */
+export interface RecentLogEvent {
+  timestamp: number | null;
+  level: string | null;
+  message: string | null;
+  service: string | null;
+  outcome: string | null;
+  raw: unknown;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -215,6 +239,14 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // Refuses a non-admitted version below the seam.
     bindScopeVersion: (tenantId: TenantId, scopeId: ScopeId, versionId: string) =>
       post<Scope>(`/tenants/${tenantId}/scopes/${scopeId}/version`, { versionId }),
+
+    // -- observability (design/observability.md §4.1) -----------------------
+    // Proxied reads over the control plane's observability seam; 501 when no
+    // backend is configured. Tier-3 numbers: sampled, approximate, never money
+    // (master-plan §5.3).
+    serviceMetrics: (hours: number) => call<ServiceMetricsRow[]>(`/observability/metrics${query({ hours })}`),
+    recentLogs: (q: { service?: string; level?: string; hours?: number; limit?: number } = {}) =>
+      call<RecentLogEvent[]>(`/observability/logs${query({ ...q })}`),
   };
 }
 

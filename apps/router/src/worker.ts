@@ -45,6 +45,13 @@ export interface Env {
    */
   DISPATCH?: DispatchNamespace;
   /**
+   * Tenant-keyed request metering (design/observability.md §4.2). The router is the
+   * one place that knows which TENANT a request belonged to — Cloudflare's own
+   * analytics only see scripts — so it stamps that dimension here, one datapoint
+   * per resolved request. Optional: absent (tests, local dev) ⇒ no metering.
+   */
+  ANALYTICS?: AnalyticsEngineDataset;
+  /**
    * Legacy static service bindings, keyed `VERTICAL_<SLUG>` (slug upper-cased, dashes
    * as underscores). The milestone-one shape, kept as a fallback while the dispatch
    * namespace takes over — used only when a route has no `deploymentRef`.
@@ -147,6 +154,93 @@ const isReplayable = (request: Request): boolean => request.body === null;
  */
 const resolverFor = (env: Env): RouteResolver => createRouteResolver(env.CONTROL_PLANE);
 
+/**
+ * Record one resolved request (design/observability.md §4.2/§4.3): an Analytics
+ * Engine datapoint keyed by tenant, and one structured log line carrying the same
+ * fields for the telemetry query path. Blob/double order is a published shape —
+ * the read proxy indexes into it — so it only ever grows, never reorders:
+ * index [tenantId]; blobs [vertical, scope, surface, statusClass, rayId];
+ * doubles [durationMs, status].
+ */
+function record(
+  env: Env,
+  target: RouteTarget,
+  m: { hostname: string; rayId: string | null; status: number; durationMs: number },
+): void {
+  const statusClass = `${Math.floor(m.status / 100)}xx`;
+  try {
+    env.ANALYTICS?.writeDataPoint({
+      indexes: [target.tenantId],
+      blobs: [target.verticalSlug ?? '', target.scopeId, target.surface, statusClass, m.rayId ?? ''],
+      doubles: [m.durationMs, m.status],
+    });
+  } catch {
+    // Metering must never fail a request.
+  }
+  console.log(
+    JSON.stringify({
+      router: 'request',
+      tenantId: target.tenantId,
+      scopeId: target.scopeId,
+      vertical: target.verticalSlug,
+      surface: target.surface,
+      hostname: m.hostname,
+      rayId: m.rayId,
+      status: m.status,
+      durationMs: m.durationMs,
+    }),
+  );
+}
+
+async function dispatch(
+  env: Env,
+  request: Request,
+  target: RouteTarget,
+  hostname: string,
+): Promise<Response> {
+  const vertical = verticalFor(env, target);
+  if (!vertical) {
+    // The map says which vertical answers and no binding provides it. That is our
+    // misconfiguration, not the caller's — 502, and it is worth logging loudly.
+    console.error(
+      `router: no service binding ${bindingNameFor(target.verticalSlug ?? '?')} for ` +
+        `hostname ${hostname} (scope ${target.scopeId})`,
+    );
+    return new Response('This application is not available.', {
+      status: 502,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
+  }
+
+  // `target.region` is carried but not enforced here: Regional Services pins TLS
+  // termination and processing at the edge, ahead of this worker, and the DO
+  // jurisdiction pins storage and execution (K-7). Both halves are configuration.
+  // Re-checking it in code would be a third enforcement point that can disagree.
+  const forwarded = assertNode(request, target, env.ROUTER_SECRET);
+
+  try {
+    return await vertical.fetch(forwarded);
+  } catch (e) {
+    if (!isTransientDispatchFailure(e) || !isReplayable(request)) throw e;
+    try {
+      return await vertical.fetch(assertNode(request, target, env.ROUTER_SECRET));
+    } catch (retryError) {
+      if (!isTransientDispatchFailure(retryError)) throw retryError;
+      // Twice is enough to distinguish a propagation gap from a script that is
+      // simply not there. Bounded, so a real misconfiguration fails fast instead
+      // of hanging — 502, the same answer as a vertical with no binding.
+      console.error(
+        `router: vertical '${target.verticalSlug}' not found on retry for ` +
+          `hostname ${hostname} (scope ${target.scopeId})`,
+      );
+      return new Response('This application is not available.', {
+        status: 502,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
+    }
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const hostname = new URL(request.url).hostname;
@@ -155,52 +249,28 @@ export default {
     if (!target) {
       // Unknown, still validating, or failed — all the same from outside. Which of
       // those it is belongs in the console, not in a response to an anonymous caller.
+      // Not metered either: with no resolved tenant there is no index to write under.
       return new Response('No application is configured for this hostname.', {
         status: 404,
         headers: { 'content-type': 'text/plain; charset=utf-8' },
       });
     }
 
-    const vertical = verticalFor(env, target);
-    if (!vertical) {
-      // The map says which vertical answers and no binding provides it. That is our
-      // misconfiguration, not the caller's — 502, and it is worth logging loudly.
-      console.error(
-        `router: no service binding ${bindingNameFor(target.verticalSlug ?? '?')} for ` +
-          `hostname ${hostname} (scope ${target.scopeId})`,
-      );
-      return new Response('This application is not available.', {
-        status: 502,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      });
-    }
-
-    // `target.region` is carried but not enforced here: Regional Services pins TLS
-    // termination and processing at the edge, ahead of this worker, and the DO
-    // jurisdiction pins storage and execution (K-7). Both halves are configuration.
-    // Re-checking it in code would be a third enforcement point that can disagree.
-    const forwarded = assertNode(request, target, env.ROUTER_SECRET);
-
+    const startedAt = Date.now();
+    // If dispatch throws (non-transient vertical error), the runtime answers 500 —
+    // record it as such; the finally is what makes error paths count in the metrics.
+    let status = 500;
     try {
-      return await vertical.fetch(forwarded);
-    } catch (e) {
-      if (!isTransientDispatchFailure(e) || !isReplayable(request)) throw e;
-      try {
-        return await vertical.fetch(assertNode(request, target, env.ROUTER_SECRET));
-      } catch (retryError) {
-        if (!isTransientDispatchFailure(retryError)) throw retryError;
-        // Twice is enough to distinguish a propagation gap from a script that is
-        // simply not there. Bounded, so a real misconfiguration fails fast instead
-        // of hanging — 502, the same answer as a vertical with no binding.
-        console.error(
-          `router: vertical '${target.verticalSlug}' not found on retry for ` +
-            `hostname ${hostname} (scope ${target.scopeId})`,
-        );
-        return new Response('This application is not available.', {
-          status: 502,
-          headers: { 'content-type': 'text/plain; charset=utf-8' },
-        });
-      }
+      const response = await dispatch(env, request, target, hostname);
+      status = response.status;
+      return response;
+    } finally {
+      record(env, target, {
+        hostname,
+        rayId: request.headers.get('cf-ray'),
+        status,
+        durationMs: Date.now() - startedAt,
+      });
     }
   },
 };

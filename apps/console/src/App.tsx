@@ -8,6 +8,7 @@ import { createApi } from './lib/api';
 import { getSession, signOut, type StaffSession } from './lib/auth';
 import { AdminLog } from './views/AdminLog';
 import { Domains } from './views/Domains';
+import { Observability } from './views/Observability';
 import { Login } from './views/Login';
 import { Permissions } from './views/Permissions';
 import { Scopes } from './views/Scopes';
@@ -48,7 +49,7 @@ interface Toast {
   status: 'success' | 'danger';
 }
 
-const VIEWS: ViewKey[] = ['tenants', 'scopes', 'domains', 'verticals', 'admin-log', 'permissions'];
+const VIEWS: ViewKey[] = ['tenants', 'scopes', 'domains', 'verticals', 'observability', 'admin-log', 'permissions'];
 
 /**
  * Navigation lives in the URL — which view, and any drilled-into tenant — so a
@@ -272,6 +273,7 @@ export function App() {
         />
       )}
       {view === 'verticals' && <Verticals api={api} onToast={notify} />}
+      {view === 'observability' && <Observability api={api} />}
       {view === 'admin-log' && <AdminLog api={api} tenants={tenantMap} />}
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}
 

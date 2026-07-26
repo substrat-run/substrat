@@ -73,7 +73,12 @@ is engine events / Tier 2 (master-plan §5.3), not request telemetry, and out of
 
 **4.1 Piggyback all reads; the platform token never leaves the platform.** The control
 plane (which holds the Cloudflare API token, D-34) grows thin read routes that proxy the
-GraphQL Analytics API and the Telemetry Query API. The console renders the staff fleet
+GraphQL Analytics API and the Telemetry Query API. The routes sit on a **provider-neutral
+seam** (`ObservabilityReader` in `control-plane-api/src/observability.ts` — neutral
+vocabulary: *service*, *namespace*, never *script*), with the Cloudflare reader as one
+injected implementation (`cf-observability.ts`) — the `DeployVerticalFn`/`wfp.ts` pattern,
+honouring master-plan §5.7: Cloudflare is the deployment target, not a dependency. An
+APM/OTel backend slots in behind the identical routes later without touching any consumer. The console renders the staff fleet
 view over them unfiltered; the dashboard renders the builder view with the query narrowed
 **server-side** to scripts whose registry `ownerTenant` is the caller's tenant. The
 narrowing lives in the proxy, same posture as `TenantNarrowedControlPlane` — never in the

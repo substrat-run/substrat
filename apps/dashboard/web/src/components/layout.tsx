@@ -48,9 +48,22 @@ export function GridTable({
 }
 
 /** One grid row inside a GridTable (last row drops its divider). */
-export function Row({ columns, last, children, style }: { columns: string; last?: boolean; children: ReactNode; style?: CSSProperties }) {
+export function Row({
+  columns,
+  last,
+  children,
+  style,
+  onClick,
+}: {
+  columns: string;
+  last?: boolean;
+  children: ReactNode;
+  style?: CSSProperties;
+  onClick?: () => void;
+}) {
   return (
     <div
+      onClick={onClick}
       style={{
         display: 'grid',
         gridTemplateColumns: columns,
@@ -59,6 +72,7 @@ export function Row({ columns, last, children, style }: { columns: string; last?
         padding: '0 16px',
         fontSize: 13,
         borderBottom: last ? 'none' : '1px solid var(--border-subtle)',
+        ...(onClick ? { cursor: 'pointer' } : {}),
         ...style,
       }}
     >
