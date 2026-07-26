@@ -1,5 +1,74 @@
 # @substrat-run/console
 
+## 0.2.0
+
+### Minor Changes
+
+- 297e057: Observability, views 1–3 of design/observability.md — piggyback Cloudflare, stamp
+  what only we know:
+
+  - **Seam + Cloudflare reader** (`control-plane-api`): a provider-neutral
+    `ObservabilityReader` contract (service/namespace vocabulary, never
+    script/dispatch-namespace) with `createCfObservabilityReader` as the injected
+    Cloudflare implementation (GraphQL invocation analytics + the Workers
+    Observability telemetry query API) — the `DeployVerticalFn`/`wfp.ts` pattern, so
+    an APM/OTel backend can slot in behind identical routes later. Two staff-only
+    proxy routes: `GET /observability/metrics` and `GET /observability/logs`
+    (501 when no backend is configured; deliberately not in `BUILDER_ROUTES`).
+  - **Router**: one Analytics Engine datapoint per resolved request — index
+    `tenantId`, blobs `(vertical, scope, surface, statusClass, rayId)`, doubles
+    `(durationMs, status)` — plus a structured JSON log line with the same fields.
+    The router is the only place that knows which tenant a request belonged to;
+    written now so tenant-keyed history accrues before any tenant-facing read path
+    exists. Metering never fails a request, and error paths are counted.
+  - **WfP uploads**: pushed verticals get `observability: { enabled: true }`, so
+    builder logs exist to query.
+  - **Console**: an Observability fleet view — per-service invocations, error
+    rates, CPU quantiles, and a row-click recent-logs panel.
+  - **Dashboard**: a Traffic panel on the Verticals view showing the team's own
+    deployed versions (requests/errors/CPU + recent logs). Owner-narrowing lives in
+    `TenantNarrowedControlPlane`: metrics rows are filtered to owned deployment
+    refs and mapped back to (vertical, version); a logs query for an unowned ref
+    answers `[]` without ever reaching the plane.
+
+  Deploy notes: the control plane's `CF_API_TOKEN` additionally needs **Account
+  Analytics: Read** and **Workers Observability: Read**; the router redeploy picks
+  up the `substrat_router` AE dataset binding (auto-created on first write).
+
+- ec89a88: Vertical lifecycle: delete a vertical, and block new installs of one.
+
+  **`deleteVertical`** (HostAdmin + `DELETE /verticals/:slug`, staff-only): removes the
+  registry row, its versions, and its channels — **refused while any scope is still
+  bound** to the vertical, naming the count, so a delete can never strand a live scope's
+  version pin or routing. Deployed dispatch scripts are left as orphans for the cleanup
+  script (#248), never reaped inline. Audited. The console's vertical detail card gets a
+  type-the-slug-to-confirm Delete.
+
+  **`installsBlocked`** (new registry flag + `setVerticalInstallsBlocked` /
+  `POST /verticals/:slug/install-block`, staff-only): the install kill-switch, orthogonal
+  to `listed`. A blocked vertical is hidden from the dashboard's install catalog and the
+  control plane refuses to provision an instance of it (403) — for everyone, owner
+  included. Existing scopes keep serving: it gates provisioning, not serving. Additive
+  `installs_blocked` column in both adapters (attempt-and-tolerate migration, default 0).
+  Console gets a Block/Allow installs toggle and a "blocked" badge.
+
+  The console also now shows **timestamps**: when each version was pushed (table +
+  promote picker), when each channel pointer last moved, and when a vertical was
+  registered.
+
+### Patch Changes
+
+- 18251a4: Make the console tab tellable from the dashboard: recolor the console favicon
+  to a red/rose tonal strata (the dashboard keeps amber/cyan/indigo) and retitle
+  the page `substrat.console`.
+- 5860d59: Header wordmark reads substrat.console and the header glyph uses the console's rose palette, matching the favicon's privileged-surface signal.
+- Updated dependencies [cd32011]
+- Updated dependencies [297e057]
+- Updated dependencies [ec89a88]
+  - @substrat-run/contracts@0.15.0
+  - @substrat-run/ui@0.1.1
+  - @substrat-run/kernel@0.15.0
+
 ## 0.1.2
 
 ### Patch Changes

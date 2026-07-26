@@ -1,5 +1,114 @@
 # @substrat-run/control-plane-api
 
+## 0.15.0
+
+### Minor Changes
+
+- 297e057: Observability, views 1–3 of design/observability.md — piggyback Cloudflare, stamp
+  what only we know:
+
+  - **Seam + Cloudflare reader** (`control-plane-api`): a provider-neutral
+    `ObservabilityReader` contract (service/namespace vocabulary, never
+    script/dispatch-namespace) with `createCfObservabilityReader` as the injected
+    Cloudflare implementation (GraphQL invocation analytics + the Workers
+    Observability telemetry query API) — the `DeployVerticalFn`/`wfp.ts` pattern, so
+    an APM/OTel backend can slot in behind identical routes later. Two staff-only
+    proxy routes: `GET /observability/metrics` and `GET /observability/logs`
+    (501 when no backend is configured; deliberately not in `BUILDER_ROUTES`).
+  - **Router**: one Analytics Engine datapoint per resolved request — index
+    `tenantId`, blobs `(vertical, scope, surface, statusClass, rayId)`, doubles
+    `(durationMs, status)` — plus a structured JSON log line with the same fields.
+    The router is the only place that knows which tenant a request belonged to;
+    written now so tenant-keyed history accrues before any tenant-facing read path
+    exists. Metering never fails a request, and error paths are counted.
+  - **WfP uploads**: pushed verticals get `observability: { enabled: true }`, so
+    builder logs exist to query.
+  - **Console**: an Observability fleet view — per-service invocations, error
+    rates, CPU quantiles, and a row-click recent-logs panel.
+  - **Dashboard**: a Traffic panel on the Verticals view showing the team's own
+    deployed versions (requests/errors/CPU + recent logs). Owner-narrowing lives in
+    `TenantNarrowedControlPlane`: metrics rows are filtered to owned deployment
+    refs and mapped back to (vertical, version); a logs query for an unowned ref
+    answers `[]` without ever reaching the plane.
+
+  Deploy notes: the control plane's `CF_API_TOKEN` additionally needs **Account
+  Analytics: Read** and **Workers Observability: Read**; the router redeploy picks
+  up the `substrat_router` AE dataset binding (auto-created on first write).
+
+- d93e690: Detachable vertical auth (docs/design/vertical-auth-detach.md): auth moves out of the
+  verticals and becomes an install-time choice — a team Auth Server app or any external
+  OIDC issuer — with `builtin` (embedded Better Auth) as the unchanged default.
+
+  **auth-server** is now a real multi-instance vertical: one issuer DO per scope behind
+  the router (own users, signing secret, JWKS per install), the fixed-name single issuer
+  standalone. It implements the K-31 surface (`/internal/provision`, `/internal/configure`)
+  and answers unknown `/internal/*` paths with JSON — never the SPA fallback that
+  surfaced as "Provisioning failed — internal error".
+
+  **Config delivery seam** (control-plane-api): `VerticalClient.configureInstance` +
+  `POST /tenants/:t/scopes/:s/configure` deliver per-instance config to the deployment
+  holding the scope's DO (bound-version resolution, 501 when there is nowhere to deliver);
+  `ProvisionInstanceInput` gains optional `config` so an app arrives configured
+  atomically. The dashboard Env tab now delivers after authoring (`delivered` flag).
+
+  **RP flow** (vertical-auth): `oidcRpAuthProvider` — the full server-side
+  Authorization-Code + PKCE relying party as an `AuthProvider`, cookie sessions signed
+  with a per-tenant DO-minted secret, bearer fallback for API clients. The IdentityDO
+  stores platform-delivered per-scope config and keeps the provider-agnostic
+  `sub → principal` directory (TOFU owner claim + invites) under every mode. Meridian
+  selects its provider per scope from the delivered `substrat:auth`; its SPA renders a
+  redirect sign-in and invite-accept in OIDC mode. jose is bumped to v6 so node JWKS
+  fetching goes through `fetch`, matching workerd.
+
+  **Install-time identity** (dashboard): the New-app form's Identity section — builtin,
+  a team Auth Server (the app is auto-registered there via RFC 7591 dynamic client
+  registration against its real bound hostname), or an external issuer. Wiring failures
+  mark the app failed with the reason on its audit trail.
+
+- ec89a88: Vertical lifecycle: delete a vertical, and block new installs of one.
+
+  **`deleteVertical`** (HostAdmin + `DELETE /verticals/:slug`, staff-only): removes the
+  registry row, its versions, and its channels — **refused while any scope is still
+  bound** to the vertical, naming the count, so a delete can never strand a live scope's
+  version pin or routing. Deployed dispatch scripts are left as orphans for the cleanup
+  script (#248), never reaped inline. Audited. The console's vertical detail card gets a
+  type-the-slug-to-confirm Delete.
+
+  **`installsBlocked`** (new registry flag + `setVerticalInstallsBlocked` /
+  `POST /verticals/:slug/install-block`, staff-only): the install kill-switch, orthogonal
+  to `listed`. A blocked vertical is hidden from the dashboard's install catalog and the
+  control plane refuses to provision an instance of it (403) — for everyone, owner
+  included. Existing scopes keep serving: it gates provisioning, not serving. Additive
+  `installs_blocked` column in both adapters (attempt-and-tolerate migration, default 0).
+  Console gets a Block/Allow installs toggle and a "blocked" badge.
+
+  The console also now shows **timestamps**: when each version was pushed (table +
+  promote picker), when each channel pointer last moved, and when a vertical was
+  registered.
+
+### Patch Changes
+
+- 7ed3015: The dashboard Data tab works for Auth Server apps ("Couldn't load the database — internal error").
+
+  **auth-server** now implements the §5.4 introspection verbs (`GET /internal/tables`,
+  `GET /internal/tables/:table`): the issuer DO's Better Auth SQLite is a real per-scope
+  database, and it answers the same two table-shaped, platform-gated reads a ScopeDO does.
+  Secret-bearing columns are redacted inside the DO before anything crosses its boundary —
+  password hashes, session tokens, OAuth tokens/client secrets, JWKS private keys, and the
+  issuer's own signing secret (`config.value`, which also carries delivered `cfg:` entries
+  such as ADMIN_PASSWORD) all come back `[redacted]`; ids, emails, timestamps and row
+  counts stay readable.
+
+  **control-plane-api**'s error boundary now passes a `ControlPlaneError` through verbatim
+  (status + message) instead of collapsing it into the generic 500 "internal error". A
+  vertical's honest refusal — e.g. a 501 for a verb it does not implement — reaches the
+  dashboard as itself; routes that already hand-caught it are unchanged.
+
+- Updated dependencies [cd32011]
+- Updated dependencies [ec89a88]
+  - @substrat-run/contracts@0.15.0
+  - @substrat-run/kernel@0.15.0
+
 ## 0.14.1
 
 ### Patch Changes
