@@ -31,6 +31,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:^"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^7.0.0"

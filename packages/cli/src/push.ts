@@ -3,14 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { webcrypto } from 'node:crypto';
-
-interface DeclaredBinding {
-  type: string;
-  name: string;
-  class_name?: string;
-  script_name?: string;
-  id?: string;
-}
+import { deployManifest, type DeclaredBinding } from '@substrat-run/contracts';
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
@@ -93,7 +86,11 @@ export async function push(opts: PushOptions): Promise<{ id: string; admission: 
   const modules = files.map((f) => ({ name: f, content: readFileSync(join(out, f)) }));
   const concat = Buffer.concat(modules.map((m) => m.content));
 
-  const manifest = {
+  // Parsed with the SAME schema the control plane applies at the trust boundary
+  // (contracts' deployManifest, re-parsed server-side in control-plane-api). Drift
+  // between what the CLI builds and what the server accepts fails here, before the
+  // upload, instead of as a 4xx from the deploy endpoint.
+  const manifest = deployManifest.parse({
     version: opts.version,
     name: opts.name ?? opts.slug,
     entry,
@@ -116,7 +113,7 @@ export async function push(opts: PushOptions): Promise<{ id: string; admission: 
       permission: await sha256(Buffer.from(JSON.stringify(bindings))),
       migration: await sha256(Buffer.from(JSON.stringify(doClasses))),
     },
-  };
+  });
 
   const form = new FormData();
   form.set('manifest', JSON.stringify(manifest));
