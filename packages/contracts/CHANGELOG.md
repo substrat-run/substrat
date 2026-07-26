@@ -1,5 +1,15 @@
 # @substrat-run/contracts
 
+## 0.18.0
+
+### Minor Changes
+
+- d18a247: `HostAdmin.setTenantName` + `PATCH /tenants/:tenantId` — a display-only rename (the
+  slug, which registry ids key on, never moves). The dashboard's identity mirror uses
+  it to keep the shared directory's tenant names in step with team names, so the CLI's
+  workspace picker shows the organization, not a placeholder; the CLI now lists
+  workspaces name-first.
+
 ## 0.17.0
 
 ## 0.16.0
@@ -565,7 +575,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                    z.object({ facility: entityRef, unitPrice: money })
+                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
