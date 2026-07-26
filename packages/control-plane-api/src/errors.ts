@@ -1,4 +1,5 @@
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { ControlPlaneError } from './client.js';
 
 /**
  * Map an adapter throw onto an HTTP status.
@@ -69,6 +70,15 @@ export interface ApiError {
 }
 
 export function mapError(err: unknown): ApiError {
+  // A ControlPlaneError is a DELIBERATE downstream answer, not an unreviewed throw —
+  // the VerticalClient wraps the vertical's own JSON status/message in it. Passing it
+  // through verbatim is what lets an honest refusal (e.g. auth-server's 501 for an
+  // unimplemented verb) reach the dashboard as itself, instead of collapsing into the
+  // generic 500 below (the shape of the 2026-07-25 incident, on this side of the seam).
+  // Several routes hand-catch it already; this makes the boundary consistent for the rest.
+  if (err instanceof ControlPlaneError) {
+    return { status: err.status as ContentfulStatusCode, body: { error: err.message } };
+  }
   const message = err instanceof Error ? err.message : String(err);
   for (const [pattern, status] of STATUS_PATTERNS) {
     if (pattern.test(message)) return { status, body: { error: message } };

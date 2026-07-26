@@ -12,15 +12,17 @@
  *     single-issuer name — the original deployment shape, unchanged.
  *
  * The platform surface (K-31) is `/internal/*`, gated by `PLATFORM_SECRET`:
- * `/internal/provision` materializes an instance; every OTHER `/internal/*` path answers
- * a JSON 501 — NEVER the SPA fallback. (A platform call once fell through to the SPA
- * catch-all, returned 200 text/html, and surfaced as "Provisioning failed — internal
- * error" in the dashboard. The fallback route and its test pin the fix.)
+ * `/internal/provision` materializes an instance, `/internal/configure` delivers config,
+ * `/internal/tables` answers the §5.4 introspection reads (secrets redacted in the DO);
+ * every OTHER `/internal/*` path answers a JSON 501 — NEVER the SPA fallback. (A platform
+ * call once fell through to the SPA catch-all, returned 200 text/html, and surfaced as
+ * "Provisioning failed — internal error" in the dashboard. The fallback route and its
+ * test pin the fix.)
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { tenantId, scopeId, principalId } from '@substrat-run/contracts';
+import { tenantId, scopeId, principalId, readScopeTableInput } from '@substrat-run/contracts';
 import {
   readRoutedNode,
   RouterAssertionError,
@@ -196,7 +198,40 @@ app.post('/internal/configure', async (c) => {
 });
 
 /**
- * Every OTHER platform verb (introspection, snapshot, export …) is honestly unimplemented:
+ * Read-only introspection of one instance's issuer DB (§5.4's admin-query RPC) — what the
+ * dashboard's Data tab reads, via the control plane's `VerticalClient`. Same gate and
+ * addressing as provisioning: platform-secret, the QUERY's scope id (a platform call
+ * carries no router assertion). The DO redacts secret-bearing columns before answering,
+ * so no credential material ever leaves it. MUST precede the `/internal/*` 501 catch-all.
+ */
+app.get('/internal/tables', async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const scope = scopeId.parse(c.req.query('scopeId'));
+  return c.json(await stubFor(c.env, scope).introspectTables());
+});
+
+app.get('/internal/tables/:table', async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const scope = scopeId.parse(c.req.query('scopeId'));
+  const input = readScopeTableInput.parse({
+    table: c.req.param('table'),
+    limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+    offset: c.req.query('offset') ? Number(c.req.query('offset')) : undefined,
+  });
+  try {
+    return c.json(await stubFor(c.env, scope).introspectTable(input.table, input.limit, input.offset));
+  } catch (e) {
+    // The DO refuses names outside its live schema; that is an addressing miss (404),
+    // not a bad request — the control plane relays the vertical's status verbatim.
+    if (e instanceof Error && e.message.startsWith('unknown table')) {
+      throw new HTTPException(404, { message: e.message });
+    }
+    throw e;
+  }
+});
+
+/**
+ * Every OTHER platform verb (snapshot, export …) is honestly unimplemented:
  * a JSON 501 the control plane's error mapping can surface verbatim. This MUST precede the
  * SPA catch-all — an `/internal/*` request that falls through to the SPA returns 200
  * text/html, which the platform's JSON parse turns into an unrecognized throw and the
