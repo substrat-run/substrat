@@ -1,5 +1,58 @@
 # @substrat-run/dashboard
 
+## 0.5.0
+
+### Minor Changes
+
+- 0caa0a9: No more local sign-in screens: a signed-out visit hands straight off to the IdP.
+
+  Both platform apps rendered their own branded sign-in card before redirecting to
+  AuthHero — an extra screen that authenticated nothing. Now the SPA redirects to
+  `/api/auth/login` as soon as the session check comes back empty, preserving the
+  intended destination via `returnTo`. The local card survives only as the
+  `?error=auth` retry screen (auto-redirecting after a failed round-trip would loop).
+
+  Sign-out is now always federated (`/api/auth/logout?federated`): with signed-out
+  visits auto-redirecting to the IdP, a logout that left the IdP's SSO cookie alive
+  would silently sign the user right back in. This also fixes the invite-mismatch
+  "sign out & continue as the invited email" path, which could previously re-login
+  as the wrong account.
+
+  Deploy note: each app's origin (`https://app.substrat.net/…`,
+  `https://console.substrat.net/…`) must be registered as an allowed logout URL on
+  its AuthHero client — the invite flow uses dynamic `/invite/<token>` return paths,
+  so a path wildcard is needed.
+
+### Patch Changes
+
+- 0a7e1a7: The generated GitHub deploy workflow installs dependencies before pushing.
+
+  One-click deploy setup committed a workflow that ran `substrat push` on a bare
+  checkout — wrangler's custom build (the repo's own `tsc`) then failed on missing
+  devDependencies, the first push never landed, and the vertical silently never
+  appeared (registration happens on first successful push). The workflow now
+  installs from the repo's lockfile (pnpm/yarn via corepack, `npm ci`, `npm install`
+  fallback) and runs on Node 22 — corepack floats to latest pnpm for repos without a
+  `packageManager` pin, and pnpm 11 needs Node ≥ 22.13. The generator moved to
+  `github.ts` so the committed file, the manual copy-paste path, and the tests all
+  share one source.
+
+- Updated dependencies [b23c0a7]
+- Updated dependencies [b2ab362]
+- Updated dependencies [0caa0a9]
+- Updated dependencies [81e9408]
+  - @substrat-run/contracts@0.16.0
+  - @substrat-run/kernel@0.16.0
+  - @substrat-run/adapter-cloudflare@0.16.0
+  - @substrat-run/oidc-rp@0.4.0
+  - @substrat-run/demo-callout@0.1.4
+  - @substrat-run/demo-manyfold@0.1.2
+  - @substrat-run/demo-meridian@0.2.1
+  - @substrat-run/engine-invites@0.0.13
+  - @substrat-run/engine-invoicing@0.3.14
+  - @substrat-run/engine-protocol@0.4.8
+  - @substrat-run/engine-workorder@0.3.14
+
 ## 0.4.0
 
 ### Minor Changes
