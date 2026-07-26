@@ -38,9 +38,11 @@ import type {
   ResolvedIdentity,
   RoleAssignment,
   RoleDefinition,
+  QueryScopeInput,
   ReadScopeTableInput,
   Scope,
   ScopeDump,
+  ScopeQueryResult,
   ScopeId,
   ScopeStatus,
   ScopeTable,
@@ -711,6 +713,25 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: ReadScopeTableInput,
   ): Promise<ScopeTablePage>;
+
+  /**
+   * One read-only SQL statement against the scope's database — the console the two
+   * table-shaped reads deliberately weren't (#219). User SQL DOES reach the DB here,
+   * so read-only-ness is enforced per statement instead of by construction: the
+   * kernel's `assertReadOnlyQuery` textual gate (shared, so both adapters reject the
+   * same statements) plus the adapter's authoritative backstop (better-sqlite3's
+   * `prepare().readonly`; a rolled-back transaction on the DO). Results are capped at
+   * SCOPE_QUERY_ROW_MAX rows (`truncated` set, never an error). Same actor + K-24
+   * access log (the statement itself is the logged argument) and the same K-3
+   * (tenantId, scopeId) cross-check, failing closed on a mismatch. Writes stay
+   * impossible, not just forbidden — editing rows would forge the spine.
+   */
+  queryScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: QueryScopeInput,
+  ): Promise<ScopeQueryResult>;
 
   /**
    * A COMPLETE dump of the scope's database — every table (the vertical's own AND the

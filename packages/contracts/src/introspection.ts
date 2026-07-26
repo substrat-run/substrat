@@ -57,6 +57,37 @@ export const readScopeTableInput = z.object({
 });
 export type ReadScopeTableInput = z.infer<typeof readScopeTableInput>;
 
+// The hard ceiling on a console query's result — same order as a table page. The cap
+// (with the single-statement rule) is also the time bound: there is no per-query
+// timeout on either adapter, so "bounded rows out" is what keeps the read cheap.
+export const SCOPE_QUERY_ROW_MAX = 200;
+
+/**
+ * What `queryScope` accepts: one read-only SQL statement (#219). Unlike
+ * `readScopeTable` this IS user-supplied SQL, so the safety moves from "no SQL at
+ * all" to statement-level enforcement — the kernel's `assertReadOnlyQuery` textual
+ * gate plus each adapter's authoritative check (better-sqlite3's
+ * `prepare().readonly`; a rolled-back transaction on the DO). Editing rows stays
+ * out of scope forever: a write here would forge the spine.
+ */
+export const queryScopeInput = z.object({
+  sql: z.string().min(1).max(10_000),
+});
+export type QueryScopeInput = z.infer<typeof queryScopeInput>;
+
+/**
+ * A bounded result of one read-only query. Positional rows aligned to `columns`
+ * (JSON values, blob-as-null, like a table page); `truncated` is set when the
+ * statement had more rows than SCOPE_QUERY_ROW_MAX — the cap is a ceiling, never
+ * an error, so an over-broad SELECT still shows its first screenful.
+ */
+export const scopeQueryResult = z.object({
+  columns: z.array(z.string()),
+  rows: z.array(z.array(z.unknown())),
+  truncated: z.boolean(),
+});
+export type ScopeQueryResult = z.infer<typeof scopeQueryResult>;
+
 /**
  * A COMPLETE, byte-faithful dump of one scope's database — the deliberate opposite
  * of `readScopeTable` above (bounded, blob-as-null, "not a dump"). This is the whole

@@ -1,6 +1,7 @@
 import type {
   PrincipalId,
   ScopeId,
+  ScopeQueryResult,
   ScopeTable,
   ScopeTablePage,
   TenantId,
@@ -416,5 +417,13 @@ export class TenantNarrowedControlPlane {
     return this.call(
       `/tenants/${this.tenantId}/scopes/${scopeId}/tables/${encodeURIComponent(input.table)}?${q}`,
     );
+  }
+
+  /** One read-only SQL statement against the scope's database — the console (#219). */
+  queryScope(scopeId: ScopeId, sql: string): Promise<ScopeQueryResult> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/query`, {
+      method: 'POST',
+      body: JSON.stringify({ sql }),
+    });
   }
 }

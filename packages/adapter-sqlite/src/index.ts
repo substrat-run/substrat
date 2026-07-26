@@ -68,6 +68,7 @@ import {
   type Vertical,
   type VerticalVersion,
   type ResolvedIdentity,
+  type QueryScopeInput,
   type ReadScopeTableInput,
   type RoleAssignment,
   type RoleDefinition,
@@ -75,6 +76,7 @@ import {
   type ScopeDump,
   type ScopeDumpTable,
   type ScopeId,
+  type ScopeQueryResult,
   type ScopeStatus,
   type ScopeTable,
   type ScopeTablePage,
@@ -84,9 +86,11 @@ import {
   type TenantStatus,
   SCOPE_TABLE_PAGE_DEFAULT,
   SCOPE_TABLE_PAGE_MAX,
+  SCOPE_QUERY_ROW_MAX,
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
+  assertReadOnlyQuery,
   resolveScopeRecord,
   ulid,
   type AccessLogFilter,
@@ -2731,6 +2735,39 @@ export class SqliteScopeHost implements ScopeHost {
         ).c;
         this.recordAccess(actor, 'readScopeTable', { tenantId, scopeId }, { table: input.table, limit, offset }, rows.length);
         return { table: input.table, columns, rows, rowCount, limit, offset };
+      },
+      queryScope: async (
+        actor,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        input: QueryScopeInput,
+      ): Promise<ScopeQueryResult> => {
+        const db = this.scopeDbFor(tenantId, scopeId);
+        // Layer 1, shared: the kernel's textual gate (single statement, read verbs
+        // only) — the checked statement is the one that runs.
+        const sql = assertReadOnlyQuery(input.sql);
+        // Layer 2, authoritative: sqlite3_stmt_readonly via better-sqlite3. prepare()
+        // itself rejects multi-statement strings and bad SQL with the driver's message.
+        const stmt = db.prepare(sql);
+        if (!stmt.readonly) throw new Error('read-only console: statement is not read-only');
+        if (!stmt.reader) return { columns: [], rows: [], truncated: false };
+        stmt.raw(true);
+        const rows: unknown[][] = [];
+        let truncated = false;
+        // Iterate rather than .all(): the row cap bounds what leaves the DB, so an
+        // over-broad SELECT costs a screenful, not the table.
+        for (const row of stmt.iterate()) {
+          if (rows.length >= SCOPE_QUERY_ROW_MAX) {
+            truncated = true;
+            break;
+          }
+          rows.push((row as unknown[]).map(cellToJson));
+        }
+        const columns = stmt.columns().map((c) => c.name);
+        // The statement itself is the logged argument — the K-24 access log is the
+        // evidence trail for what staff read, and here the read IS the SQL.
+        this.recordAccess(actor, 'queryScope', { tenantId, scopeId }, { sql }, rows.length);
+        return { columns, rows, truncated };
       },
       exportScope: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeDump> => {
         // K-3: cross-check the pair before opening anything (same as the introspection reads).

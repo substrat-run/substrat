@@ -17,7 +17,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, readScopeTableInput, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { assertPlatformCall, PlatformCallError, readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { IdentityDO, doAuthProvider, oidcAuthProvider, type AuthProvider } from '@substrat-run/vertical-auth';
@@ -191,6 +191,20 @@ app.get('/internal/tables/:table', async (c) => {
     offset: c.req.query('offset') ? Number(c.req.query('offset')) : undefined,
   });
   return c.json(await hostFor(c.env).introspectScopeTable(scope, input));
+});
+// The SQL console (#219): one read-only statement, enforced in the DO (gate + rolled-
+// back transaction). A gate refusal is the caller's mistake — 400, relayed verbatim.
+app.post('/internal/query', async (c) => {
+  gatePlatform(c);
+  const body = queryScopeInput.extend({ scopeId }).parse(await c.req.json());
+  try {
+    return c.json(await hostFor(c.env).introspectScopeQuery(body.scopeId, { sql: body.sql }));
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('read-only console')) {
+      throw new HTTPException(400, { message: e.message });
+    }
+    throw e;
+  }
 });
 // Scope-storage lifecycle (preview-and-snapshots.md §9): copy a scope into a sibling
 // DO / wipe a reaped fork — both inside this deployment; no bytes cross the boundary.

@@ -8,6 +8,7 @@ import {
   principalId,
   scopeId,
   tenantId,
+  SCOPE_QUERY_ROW_MAX,
   type OrgId,
   type PrincipalId,
   type TenantId,
@@ -462,6 +463,85 @@ export function scopeHostContractSuite(
         await expect(host.admin.listScopeTables(staff, t2, s1)).rejects.toThrow();
         await expect(
           host.admin.readScopeTable(staff, t2, s1, { table: 'marker', limit: 50, offset: 0 }),
+        ).rejects.toThrow();
+      });
+    });
+
+    // -- the SQL console: queryScope (#219) -----------------------------------
+    //
+    // The table reads above are safe by construction; here user SQL DOES reach the
+    // scope's DB, so what the contract pins is the enforcement: any write shape is
+    // refused AND leaves no trace, results are row-capped, and the K-3 cross-check
+    // fails closed exactly as the table reads do.
+
+    describe('scope SQL console: queryScope (#219)', () => {
+      it('runs a read-only SELECT, joins included', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/write-marker', { v: 'console-row' });
+        const result = await host.admin.queryScope(staff, t1, s1, {
+          sql: `SELECT m.v, count(*) AS n FROM marker m WHERE m.v = 'console-row' GROUP BY m.v`,
+        });
+        expect(result.columns).toEqual(['v', 'n']);
+        expect(result.rows.length).toBe(1);
+        expect(result.rows[0]![0]).toBe('console-row');
+        expect(result.truncated).toBe(false);
+      });
+
+      it('reads the spine (projections read it; only writes forge it)', async () => {
+        const result = await host.admin.queryScope(staff, t1, s1, {
+          sql: 'SELECT type FROM _substrat_outbox ORDER BY id LIMIT 5',
+        });
+        expect(result.columns).toEqual(['type']);
+        expect(result.rows.length).toBeGreaterThan(0);
+      });
+
+      it("a ';' or a write verb inside a string literal does not trip the gate", async () => {
+        const result = await host.admin.queryScope(staff, t1, s1, {
+          sql: `SELECT 'update t; drop table x' AS s -- comment with; semicolon`,
+        });
+        expect(result.rows[0]![0]).toBe('update t; drop table x');
+      });
+
+      it('caps the result and reports truncation, never an error', async () => {
+        const result = await host.admin.queryScope(staff, t1, s1, {
+          sql: `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 1000)
+                SELECT x FROM n`,
+        });
+        expect(result.rows.length).toBe(SCOPE_QUERY_ROW_MAX);
+        expect(result.truncated).toBe(true);
+      });
+
+      it('rejects every write shape — and the refusal leaves no trace', async () => {
+        const writes = [
+          `INSERT INTO marker (v) VALUES ('forged')`,
+          `UPDATE marker SET v = 'forged'`,
+          `DELETE FROM marker`,
+          `REPLACE INTO marker (v) VALUES ('forged')`,
+          `DROP TABLE marker`,
+          `CREATE TABLE forged (id TEXT)`,
+          `PRAGMA journal_mode = OFF`,
+          `SELECT 1; DELETE FROM marker`,
+          // The first-keyword check alone would pass this one — SQLite allows a
+          // write behind a CTE, which is exactly why write verbs are refused anywhere.
+          `WITH x AS (SELECT v FROM marker) INSERT INTO marker (v) SELECT v FROM x`,
+        ];
+        for (const sql of writes) {
+          // The message prefix is CONTRACT: the transport maps /read-only console/
+          // to a 400, so both adapters must refuse with it (errors.ts).
+          await expect(host.admin.queryScope(staff, t1, s1, { sql })).rejects.toThrow(
+            /read-only console/,
+          );
+        }
+        // No write happened and nothing was forged: the marker rows are intact.
+        const after = await host.admin.queryScope(staff, t1, s1, {
+          sql: `SELECT count(*) FROM marker WHERE v = 'forged'`,
+        });
+        expect(after.rows[0]![0]).toBe(0);
+      });
+
+      it('fails closed on a mismatched (tenantId, scopeId) pair (K-3)', async () => {
+        await expect(
+          host.admin.queryScope(staff, t2, s1, { sql: 'SELECT 1' }),
         ).rejects.toThrow();
       });
     });

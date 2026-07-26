@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, readScopeTableInput, z, type PermissionKey, type TenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, z, type PermissionKey, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
@@ -957,6 +957,37 @@ app.get('/api/apps/:scopeId/tables/:table', async (c) => {
     : await host.admin.readScopeTable(STAFF, node.tenantId, scope, input);
   if (page == null) throw new HTTPException(502, { message: 'the platform returned no data for this table' });
   return c.json(page);
+});
+
+// The SQL console (#219): one read-only statement against the app's own database.
+// Same authorization walk as the table reads (the app must be the caller's own);
+// enforcement lives below the seam — the kernel's gate plus the adapter's backstop —
+// and a gate refusal surfaces as the platform's 400, message intact, for the UI.
+app.post('/api/apps/:scopeId/query', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const input = queryScopeInput.parse(await c.req.json());
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  try {
+    const result = cp
+      ? await cp.queryScope(scope, input.sql)
+      : await host.admin.queryScope(STAFF, node.tenantId, scope, input);
+    if (result == null) throw new HTTPException(502, { message: 'the platform returned no data for this query' });
+    return c.json(result);
+  } catch (e) {
+    // The gate's refusal is the caller's mistake — relay the message for the console
+    // UI instead of letting it collapse into a generic 500.
+    if (e instanceof Error && e.message.includes('read-only console')) {
+      throw new HTTPException(400, { message: e.message });
+    }
+    throw e;
+  }
 });
 
 /**

@@ -420,6 +420,17 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     await expect(
       host.admin.readScopeTable(staff, acme.tenantId, appScopeId, { table: 'nope', limit: 50, offset: 0 }),
     ).rejects.toThrow(/unknown table/);
+
+    // The SQL console (#219) — the exact path the dashboard's /api/apps/:scopeId/query
+    // route drives: a read runs, a write shape is refused with the gate's message.
+    const counted = await host.admin.queryScope(staff, acme.tenantId, appScopeId, {
+      sql: `SELECT count(*) AS n FROM "${populated.name}"`,
+    });
+    expect(counted.columns).toEqual(['n']);
+    expect(counted.rows[0]![0]).toBe(populated.rowCount);
+    await expect(
+      host.admin.queryScope(staff, acme.tenantId, appScopeId, { sql: `DELETE FROM "${populated.name}"` }),
+    ).rejects.toThrow(/read-only console/);
   });
 
   it('records a per-app audit trail — created + active on success, created + failed(reason) on failure', async () => {

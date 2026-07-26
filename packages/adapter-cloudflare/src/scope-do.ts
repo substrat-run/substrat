@@ -13,13 +13,16 @@ import {
   type PrincipalId,
   type ScopeId,
   type ScopeDumpTable,
+  type ScopeQueryResult,
   type ScopeTable,
   type ScopeTablePage,
   type TenantId,
   SCOPE_TABLE_PAGE_MAX,
+  SCOPE_QUERY_ROW_MAX,
 } from '@substrat-run/contracts';
 import {
   ulid,
+  assertReadOnlyQuery,
   type ConsumerHandler,
   type GuardPredicate,
   type ModuleRegistration,
@@ -728,6 +731,42 @@ export function defineScopeDO(
         (this.sql.exec(`SELECT COUNT(*) AS c FROM "${table}"`).toArray()[0] as { c: number }).c,
       );
       return { table, columns, rows, rowCount, limit: l, offset: o };
+    }
+
+    /**
+     * One read-only SQL statement against this scope's DB — the console (#219). User
+     * SQL reaches `exec` here, so read-only-ness is enforced in two layers: the
+     * kernel's shared textual gate (single statement, read verbs only — the same
+     * rejections as the pure adapter), and, because DO `exec` has no read-only flag
+     * (no sqlite3_stmt_readonly analogue), a transaction that ALWAYS rolls back — a
+     * statement the gate misclassified still cannot persist a write. Rows are capped
+     * at SCOPE_QUERY_ROW_MAX with `truncated` set, never an error.
+     */
+    async introspectQuery(sql: string): Promise<ScopeQueryResult> {
+      const stmt = assertReadOnlyQuery(sql);
+      let result: ScopeQueryResult | undefined;
+      const rollback = new Error('read-only console rollback');
+      try {
+        await this.ctx.storage.transaction(async () => {
+          const cursor = this.sql.exec(stmt);
+          const columns = cursor.columnNames;
+          const rows: unknown[][] = [];
+          let truncated = false;
+          for (const row of cursor.raw()) {
+            if (rows.length >= SCOPE_QUERY_ROW_MAX) {
+              truncated = true;
+              break;
+            }
+            rows.push((row as unknown[]).map(cellToJson));
+          }
+          result = { columns, rows, truncated };
+          // Thrown on success too: the transaction must never commit.
+          throw rollback;
+        });
+      } catch (e) {
+        if (e !== rollback) throw toRpcError(e);
+      }
+      return result!;
     }
 
     /**
