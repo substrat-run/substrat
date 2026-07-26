@@ -273,6 +273,29 @@ describe('control-plane API', () => {
     expect(calls).toEqual([`list:${sV}`, `read:${sV}:widget`]);
   });
 
+  it("relays the vertical's own introspection refusal instead of collapsing to 500", async () => {
+    // The "Couldn't load the database — internal error" incident: a vertical answered
+    // /internal/tables with an honest JSON 501, and the /tables route let it fall to the
+    // generic error boundary, which flattened it into 500 "internal error". The boundary
+    // now passes a ControlPlaneError through verbatim — status AND message.
+    const sR = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sR, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sR);
+    const refusing = {
+      listScopeTables: async () => {
+        throw new ControlPlaneError(501, 'demo-vert does not implement GET /internal/tables');
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': refusing },
+    });
+    const res = await delegated.request(`/tenants/${t1}/scopes/${sR}/tables`, { headers: auth });
+    expect(res.status).toBe(501);
+    expect(((await res.json()) as { error: string }).error).toContain('does not implement');
+  });
+
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------
 
   it('delivers per-instance config through the vertical that owns the scope', async () => {

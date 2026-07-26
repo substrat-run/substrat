@@ -26,6 +26,13 @@ export type AuthServerStub = {
   setupFirstAdmin(origin: string, creds: { email: string; password: string; name: string }): Promise<{ id: string }>;
   provisionInstance(meta: InstanceMeta, config?: ConfigEntry[]): Promise<void>;
   setInstanceConfig(entries: ConfigEntry[]): Promise<void>;
+  /** §5.4 admin-query reads (the dashboard Data tab); secrets are redacted inside the DO. */
+  introspectTables(): Promise<import('@substrat-run/contracts').ScopeTable[]>;
+  introspectTable(
+    table: string,
+    limit: number,
+    offset: number,
+  ): Promise<import('@substrat-run/contracts').ScopeTablePage>;
 };
 
 /** The verified subject behind a session, as the `/__session` probe returns it. */

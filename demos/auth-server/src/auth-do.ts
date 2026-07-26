@@ -1,7 +1,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
-import { resolveEnvSpec } from '@substrat-run/contracts';
+import { resolveEnvSpec, type ScopeTable, type ScopeTablePage } from '@substrat-run/contracts';
+import { introspectTables, introspectTable } from './introspect.js';
 import { schema } from './auth-schema.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.js';
 import { buildAuth } from './auth.js';
@@ -160,6 +161,20 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       if (row) out[spec.key] = row.value;
     }
     return out;
+  }
+
+  /**
+   * Read-only introspection of THIS issuer's SQLite (§5.4's admin-query RPC) — the
+   * dashboard Data tab, arriving via the platform-gated `/internal/tables` routes.
+   * Secret-bearing columns (password hashes, tokens, JWKS private keys, the signing
+   * secret) are redacted inside the DO, before anything crosses its boundary.
+   */
+  async introspectTables(): Promise<ScopeTable[]> {
+    return introspectTables(this.ctx.storage.sql);
+  }
+
+  async introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage> {
+    return introspectTable(this.ctx.storage.sql, table, limit, offset);
   }
 
   /** Is the issuer un-bootstrapped (no users yet)? The worker shows "create the first admin". */

@@ -24,6 +24,7 @@ const ROUTER_SECRET = 'test-router-secret';
 function fakeAuth() {
   const provisioned: Array<{ doName: string; meta: InstanceMeta; config?: ConfigEntry[] }> = [];
   const configured: Array<{ doName: string; entries: ConfigEntry[] }> = [];
+  const introspected: Array<{ doName: string; verb: string }> = [];
   const touched: string[] = [];
   const namespace = {
     idFromName: (name: string) => name,
@@ -40,10 +41,19 @@ function fakeAuth() {
         setInstanceConfig: async (entries) => {
           configured.push({ doName, entries });
         },
+        introspectTables: async () => {
+          introspected.push({ doName, verb: 'tables' });
+          return [{ name: 'user', rowCount: 1, system: false }];
+        },
+        introspectTable: async (table, limit, offset) => {
+          introspected.push({ doName, verb: `table:${table}` });
+          if (table === 'no_such_table') throw new Error(`unknown table '${table}'`);
+          return { table, columns: ['id'], rows: [['u1']], rowCount: 1, limit, offset };
+        },
       };
     },
   };
-  return { namespace, provisioned, configured, touched };
+  return { namespace, provisioned, configured, introspected, touched };
 }
 
 let auth: ReturnType<typeof fakeAuth>;
@@ -163,11 +173,46 @@ describe('/internal/configure (vertical-auth-detach.md §2.2)', () => {
   });
 });
 
+describe('/internal/tables (§5.4 introspection — the dashboard Data tab)', () => {
+  const get = (path: string, secret?: string) =>
+    Promise.resolve(app.request(path, { headers: secret ? { 'x-substrat-platform': secret } : {} }, env));
+
+  it('lists the SCOPE-NAMED issuer DO’s tables', async () => {
+    const scope = ulid();
+    const res = await get(`/internal/tables?scopeId=${scope}`, PLATFORM_SECRET);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([{ name: 'user', rowCount: 1, system: false }]);
+    expect(auth.introspected).toEqual([{ doName: scope, verb: 'tables' }]);
+  });
+
+  it('reads a bounded page of one table', async () => {
+    const scope = ulid();
+    const res = await get(`/internal/tables/user?scopeId=${scope}&limit=5&offset=0`, PLATFORM_SECRET);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ table: 'user', columns: ['id'], rows: [['u1']], rowCount: 1, limit: 5, offset: 0 });
+    expect(auth.introspected).toEqual([{ doName: scope, verb: 'table:user' }]);
+  });
+
+  it('answers 404 for a table outside the live schema', async () => {
+    const res = await get(`/internal/tables/no_such_table?scopeId=${ulid()}`, PLATFORM_SECRET);
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses a call without the platform secret, before touching any DO', async () => {
+    expect((await get(`/internal/tables?scopeId=${ulid()}`)).status).toBe(403);
+    expect((await get(`/internal/tables/user?scopeId=${ulid()}`)).status).toBe(403);
+    expect(auth.introspected).toHaveLength(0);
+  });
+
+  it('rejects a malformed scope id as a 400', async () => {
+    expect((await get('/internal/tables?scopeId=not-a-ulid', PLATFORM_SECRET)).status).toBe(400);
+  });
+});
+
 describe('the /internal/* surface never reaches the SPA', () => {
   // The incident: an unknown /internal/* path served the SPA's index.html with 200, the
   // platform's JSON parse threw, and the dashboard showed the generic "internal error".
   it.each([
-    ['GET', '/internal/tables?scopeId=01JZ0000000000000000000000'],
     ['GET', '/internal/export?scopeId=01JZ0000000000000000000000'],
     ['POST', '/internal/snapshot'],
     ['POST', '/internal/delete-scope'],
