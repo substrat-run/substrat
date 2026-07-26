@@ -454,5 +454,7 @@ export const connectGithub = () => {
 };
 export const signOut = (opts: { returnTo?: string } = {}) => {
   const rt = typeof opts?.returnTo === 'string' ? opts.returnTo : undefined;
-  window.location.href = `/api/auth/logout${rt ? `?returnTo=${encodeURIComponent(rt)}` : ''}`;
+  // Always federated: signed-out visits redirect straight to the IdP, so a logout
+  // that left the IdP's SSO cookie alive would silently sign the user right back in.
+  window.location.href = `/api/auth/logout?federated${rt ? `&returnTo=${encodeURIComponent(rt)}` : ''}`;
 };

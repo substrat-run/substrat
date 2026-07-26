@@ -107,7 +107,7 @@ const redirectUri = (env: OidcEnv, origin: string): string =>
 export async function beginLogin(
   env: OidcEnv,
   origin: string,
-  opts: { returnTo?: string; loginHint?: string; screenHint?: string } = {},
+  opts: { returnTo?: string; loginHint?: string; screenHint?: string; prompt?: 'login' | 'select_account' } = {},
 ): Promise<{ location: string; flow: string }> {
   const d = await discover(env.OIDC_ISSUER);
   const verifier = randomB64url(32);
@@ -137,6 +137,10 @@ export async function beginLogin(
   // `screen_hint=signup` opens the sign-up view for a first-time invitee.
   if (opts.loginHint) u.searchParams.set('login_hint', opts.loginHint);
   if (opts.screenHint) u.searchParams.set('screen_hint', opts.screenHint);
+  // `prompt=login` forces re-authentication even when the IdP holds a live SSO
+  // session — the "sign in as a different account" escape hatch (the IdP session
+  // otherwise silently re-authenticates the old user, and no typed email can win).
+  if (opts.prompt) u.searchParams.set('prompt', opts.prompt);
   return { location: u.toString(), flow };
 }
 
@@ -319,7 +323,9 @@ export function safePath(p: string | null | undefined): string | undefined {
  * Both platform apps wire the routes identically — cookie flags, redirects and the
  * PKCE round-trip — so the only per-app difference is what happens *after* the
  * session exists (JIT tenant bootstrap vs. staff-roster lookup), which stays in the
- * app.
+ * app. Account switching: `/api/auth/login?prompt=login` forces the IdP to
+ * re-authenticate past its SSO cookie; `/api/auth/logout?federated` also ends the
+ * IdP session itself.
  */
 export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, opts: MountOptions = {}): void {
   const onSuccess = opts.onSuccess ?? '/';
@@ -327,13 +333,16 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
 
   app.get('/api/auth/login', async (c) => {
     const origin = new URL(c.req.url).origin;
-    // `screen_hint` is allowlisted (only the two IdP-recognised values); `login_hint`
-    // is passed through — the authorize URL builder encodes it, and the IdP validates it.
+    // `screen_hint` and `prompt` are allowlisted (only IdP-recognised values);
+    // `login_hint` is passed through — the authorize URL builder encodes it, and the
+    // IdP validates it.
     const screen = c.req.query('screen_hint');
+    const prompt = c.req.query('prompt');
     const { location, flow } = await beginLogin(c.env, origin, {
       returnTo: safePath(c.req.query('returnTo')),
       loginHint: c.req.query('login_hint') || undefined,
       screenHint: screen === 'signup' || screen === 'login' ? screen : undefined,
+      prompt: prompt === 'login' || prompt === 'select_account' ? prompt : undefined,
     });
     setCookie(c, FLOW_COOKIE, flow, cookieOpts(origin, FLOW_MAXAGE));
     return c.redirect(location);
@@ -357,10 +366,29 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
     }
   });
 
-  app.get('/api/auth/logout', (c) => {
+  app.get('/api/auth/logout', async (c) => {
     deleteCookie(c, SESSION_COOKIE, { path: '/' });
     // A same-origin `returnTo` lets a "sign out and use another account" flow land
     // back where it started (e.g. an invite link) so the next login is scoped to it.
-    return c.redirect(safePath(c.req.query('returnTo')) ?? onSuccess);
+    const local = safePath(c.req.query('returnTo')) ?? onSuccess;
+    // `?federated` also ends the IdP's own SSO session (RP-initiated logout) — without
+    // it the IdP cookie silently signs the same user straight back in, so "use another
+    // account" never works. Opt-in per link: a plain logout stays local (other apps on
+    // the shared IdP session keep theirs). Requires the origin to be registered as an
+    // allowed logout URL on the IdP client; discovery failure falls back to local.
+    if (c.req.query('federated') !== undefined) {
+      try {
+        const d = await discover(c.env.OIDC_ISSUER);
+        if (d.end_session_endpoint) {
+          const u = new URL(d.end_session_endpoint);
+          u.searchParams.set('client_id', c.env.OIDC_CLIENT_ID);
+          u.searchParams.set('post_logout_redirect_uri', `${new URL(c.req.url).origin}${local}`);
+          return c.redirect(u.toString());
+        }
+      } catch (err) {
+        console.error('oidc.logout.discovery_failed', { reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return c.redirect(local);
   });
 }

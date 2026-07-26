@@ -49,9 +49,12 @@ function ask(question: string): Promise<string> {
 const USAGE = `substrat — authenticated deploy tooling
 
 Usage:
-  substrat login    [--cp <url>]              sign in via the browser (per-human)
+  substrat login    [--cp <url>] [--fresh]    sign in via the browser (per-human);
+                                              --fresh re-prompts past any live browser
+                                              or IdP session (switch accounts)
   substrat login    --token <serviceToken>    store a service credential (CI)
   substrat whoami                             show who you are + your workspaces
+  substrat workspaces                         list your workspaces (alias of whoami)
   substrat push     [dir]                      push a vertical (slug/name/version default
                                                from package.json; version auto-bumps)
   substrat promote  <slug> --channel dev|staging --version <versionId>
@@ -99,8 +102,10 @@ async function cmdLogin(): Promise<void> {
     return;
   }
 
-  // Default: browser loopback login → a per-human session token.
-  const bearerToken = await browserLogin(cp);
+  // Default: browser loopback login → a per-human session token. `--fresh` forces a
+  // real re-authentication (skips the browser's live session AND the IdP SSO cookie)
+  // so signing in as a different account actually works.
+  const bearerToken = await browserLogin(cp, { fresh: argv.includes('--fresh') });
 
   // Resolve the builder's workspace so `promote`/`scope` just work (builder-plane.md §5).
   // `push` never uses this default — its workspace is the project's (package.json pin).
@@ -316,6 +321,7 @@ async function main(): Promise<void> {
     case 'unpublish':
       return cmdUnpublish();
     case 'whoami':
+    case 'workspaces':
       return cmdWhoami();
     case 'scope':
       return cmdScope();

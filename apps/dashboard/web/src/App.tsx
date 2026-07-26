@@ -180,9 +180,17 @@ export function App() {
         }
       }
 
-      // 2. Normal session load.
+      // 2. Normal session load. Signed out → hand straight off to the IdP (there is
+      //    no local sign-in page). The one exception is a failed login round-trip
+      //    (`?error=auth`), where redirecting again would loop — that renders the
+      //    retry card instead.
       const m = await api.me();
       if (!live) return;
+      if (m === null && new URLSearchParams(window.location.search).get('error') !== 'auth') {
+        const here = `${window.location.pathname}${window.location.hash}`;
+        signIn(here !== '/' ? { returnTo: here } : {});
+        return; // `me` stays undefined → interstitial while the browser navigates
+      }
       setMe(m);
       // A teamless login (onboarding) has nothing to load yet — skip the fetches.
       if (m && !needsOnboarding(m)) {
@@ -452,8 +460,9 @@ export function App() {
 
   const openApp = useMemo(() => (route.app ? apps.find((a) => a.app_scope_id === route.app) : undefined), [apps, route.app]);
 
-  // Session mode: checking → interstitial; signed out → sign-in; signed in but
-  // teamless → onboarding (name your first team).
+  // Session mode: checking → interstitial; signed out → redirect to the IdP (only a
+  // failed round-trip renders the retry card); signed in but teamless → onboarding
+  // (name your first team).
   if (inviteBlock) {
     return (
       <InviteBlocked
