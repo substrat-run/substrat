@@ -119,6 +119,8 @@ export interface VerticalRow {
   listed: number;
   /** A builder's pending publish request (ISO timestamp, or null). */
   publish_requested_at: string | null;
+  /** New installs blocked (0/1) — the staff kill-switch; gates provisioning, not serving. */
+  installs_blocked: number;
   created_at: string;
 }
 
@@ -272,6 +274,9 @@ const DIRECTORY_DDL = `
     -- A builder's pending publish request (marketplace-publish.md §5): ISO timestamp, awaiting
     -- staff review. NULL = none / resolved.
     publish_requested_at TEXT,
+    -- New installs BLOCKED (staff kill-switch). 1 = hidden from the install catalog and
+    -- provisioning refuses, for everyone including the owner. Gates provisioning, not serving.
+    installs_blocked INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS vertical_versions (
@@ -550,6 +555,7 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('verticals', 'install_spec TEXT');
     this.addColumn('verticals', 'listed INTEGER NOT NULL DEFAULT 0');
     this.addColumn('verticals', 'publish_requested_at TEXT');
+    this.addColumn('verticals', 'installs_blocked INTEGER NOT NULL DEFAULT 0');
     this.sql.exec("UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL");
     this.sql.exec("UPDATE scopes SET kind = 'scope' WHERE kind IS NULL");
     this.sql.exec('UPDATE scopes SET name = slug WHERE name IS NULL');
@@ -1014,6 +1020,29 @@ export class ControlPlaneDO extends DurableObject {
   /** Record a builder's pending publish request (marketplace-publish.md §5). */
   updateVerticalPublishRequest(slug: string, requestedAt: string): void {
     this.sql.exec('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?', requestedAt, slug);
+  }
+
+  /** Block/unblock new installs of a vertical (staff kill-switch). */
+  updateVerticalInstallsBlocked(slug: string, blocked: number): void {
+    this.sql.exec('UPDATE verticals SET installs_blocked = ? WHERE slug = ?', blocked, slug);
+  }
+
+  /** How many scopes a vertical still backs — deleteVertical's refusal reads this. */
+  countScopesForVertical(slug: string): number {
+    const r = this.sql
+      .exec('SELECT COUNT(*) AS n FROM scopes WHERE vertical = ?', slug)
+      .toArray()[0] as unknown as { n: number } | undefined;
+    return r?.n ?? 0;
+  }
+
+  /**
+   * Remove a vertical's registry presence: channels, versions, the row. The bound-scope
+   * refusal lives host-side (the audited seam), not here — this is the storage verb.
+   */
+  deleteVertical(slug: string): void {
+    this.sql.exec('DELETE FROM vertical_channels WHERE vertical_slug = ?', slug);
+    this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
+    this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug);
   }
 
   listVerticals(): VerticalRow[] {

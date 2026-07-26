@@ -1138,6 +1138,12 @@ app.post('/api/apps', async (c) => {
   // Connected (prod): provision on the shared control plane through the tenant-narrowed
   // seam so the app is reachable via the router. Absent the binding: the M0 embedded path.
   const cp = controlPlaneFor(c.env, node.tenantId);
+  // The install kill-switch, embedded-mode edge (connected mode is enforced by the
+  // control plane's instances route): a blocked vertical takes no new installs.
+  const registeredVertical = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === body.verticalSlug);
+  if (registeredVertical?.installsBlocked) {
+    throw new HTTPException(403, { message: `new installs of '${body.verticalSlug}' are blocked` });
+  }
   const { entitlements, ownerGrants } = await installSpecFor(host, body.verticalSlug, cp);
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   // The team's human handle, suffixed into the default hostname

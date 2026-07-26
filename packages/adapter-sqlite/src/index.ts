@@ -368,6 +368,8 @@ interface VerticalRow {
   /** A builder's pending publish request (ISO timestamp, or null). Set by requestPublish,
    *  cleared by setVerticalListed. */
   publish_requested_at: string | null;
+  /** New installs blocked (0/1) — the staff kill-switch; gates provisioning, not serving. */
+  installs_blocked: number;
   created_at: string;
 }
 
@@ -568,6 +570,10 @@ export class SqliteScopeHost implements ScopeHost {
         -- A builder's pending publish request (marketplace-publish.md §5): ISO timestamp when
         -- the owner asked to be listed, awaiting staff review. NULL = none / resolved.
         publish_requested_at TEXT,
+        -- New installs BLOCKED (staff kill-switch). 1 = hidden from the install catalog
+        -- and provisioning refuses, for everyone including the owner. Existing scopes
+        -- keep running — this gates provisioning, not serving.
+        installs_blocked INTEGER NOT NULL DEFAULT 0,
         created_at   TEXT NOT NULL
       );
       -- admission: 'pending' until the gates pass. A push is not a deploy, and
@@ -1700,6 +1706,7 @@ export class SqliteScopeHost implements ScopeHost {
         ...(r.install_spec ? (JSON.parse(r.install_spec) as Record<string, unknown>) : {}),
         listed: !!r.listed,
         ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
+        installsBlocked: !!r.installs_blocked,
         createdAt: r.created_at,
       });
     const readVertical = (slugValue: string): Vertical | undefined => {
@@ -2329,6 +2336,40 @@ export class SqliteScopeHost implements ScopeHost {
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
         this.directory.prepare('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?').run(new Date().toISOString(), slug);
         this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug });
+      },
+      setVerticalInstallsBlocked: async (actor, slug: string, blocked: boolean) => {
+        const existing = readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        this.directory
+          .prepare('UPDATE verticals SET installs_blocked = ? WHERE slug = ?')
+          .run(blocked ? 1 : 0, slug);
+        this.recordAdmin(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: existing.installsBlocked }, { installsBlocked: blocked });
+      },
+      deleteVertical: async (actor, slug: string) => {
+        const existing = readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        // Refuse while any scope is bound: a deleted registry row would strand those
+        // scopes' version pins and routing. The count names the blast radius.
+        const bound = this.directory
+          .prepare('SELECT COUNT(*) AS n FROM scopes WHERE vertical = ?')
+          .get(slug) as { n: number };
+        if (bound.n > 0) {
+          throw new Error(
+            `vertical '${slug}' still backs ${bound.n} scope(s) — delete or rebind them first`,
+          );
+        }
+        // Deployed dispatch scripts are NOT reaped here — they become orphans for the
+        // cleanup script (#248), never destroyed alongside a registry row.
+        this.directory.prepare('DELETE FROM vertical_channels WHERE vertical_slug = ?').run(slug);
+        this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
+        this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug);
+        this.recordAdmin(
+          actor,
+          'deleteVertical',
+          { tenantId: null },
+          { slug, source: existing.source, ownerTenant: existing.ownerTenant },
+          null,
+        );
       },
       admitVersion: async (actor, versionId: string) => {
         const v = readVersion(versionId);
@@ -3337,6 +3378,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'verticals', 'install_spec', 'install_spec TEXT');
     this.ensureColumn(this.directory, 'verticals', 'listed', 'listed INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn(this.directory, 'verticals', 'publish_requested_at', 'publish_requested_at TEXT');
+    this.ensureColumn(this.directory, 'verticals', 'installs_blocked', 'installs_blocked INTEGER NOT NULL DEFAULT 0');
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,

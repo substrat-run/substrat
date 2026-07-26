@@ -141,6 +141,9 @@ export function availableCatalog(
 ): CatalogListing[] {
   const owned = (v: Vertical) => opts.tenantId !== null && v.ownerTenant === opts.tenantId;
   return verticals
+    // Install-blocked verticals are offered to NOBODY, owner included — the catalog is
+    // the offer side of the kill-switch; the control plane's instances route is the gate.
+    .filter((v) => !v.installsBlocked)
     .filter((v) => v.listed || owned(v))
     .map((v) => ({ slug: v.slug, name: v.name, owned: owned(v), listed: v.listed, source: v.source }));
 }

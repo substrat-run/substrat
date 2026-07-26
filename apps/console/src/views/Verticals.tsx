@@ -47,9 +47,16 @@ export function Verticals({ api, onToast }: VerticalsProps) {
   const [promote, setPromote] = useState<{ channel: ChannelName; versionId: string } | null>(null);
   const [ack, setAck] = useState<PromotionAcknowledgement>({});
 
+  // The delete dialog's type-to-confirm guard. Null when closed.
+  const [deleteInput, setDeleteInput] = useState<string | null>(null);
+
   const loadVerticals = useCallback(async () => {
     try {
-      setVerticals(await api.listVerticals());
+      const vs = await api.listVerticals();
+      setVerticals(vs);
+      // Keep the detail card on the FRESH row (a flag flip must show), and close it
+      // when the vertical is gone (a delete).
+      setSelected((cur) => (cur ? vs.find((v) => v.slug === cur.slug) : cur));
     } catch (e) {
       onToast('Failed to load verticals', (e as Error).message, 'danger');
     }
@@ -106,10 +113,21 @@ export function Verticals({ api, onToast }: VerticalsProps) {
     { header: 'Slug', render: (v) => <Tag mono>{v.slug}</Tag> },
     { header: 'Name', render: (v) => v.name },
     { header: 'Source', render: (v) => <Tag mono>{v.source}</Tag> },
+    {
+      header: 'Installs',
+      render: (v) =>
+        v.installsBlocked ? (
+          <Badge status="danger">blocked</Badge>
+        ) : (
+          <span style={{ color: 'var(--text-placeholder)', fontSize: 12.5 }}>open</span>
+        ),
+    },
+    { header: 'Created', render: (v) => v.createdAt.slice(0, 10), mono: true, muted: true, width: 110 },
   ];
 
   const versionColumns: TableColumn<VerticalVersion>[] = [
     { header: 'Version', render: (v) => v.version, mono: true },
+    { header: 'Pushed', render: (v) => v.createdAt.slice(0, 16).replace('T', ' '), mono: true, muted: true, width: 140 },
     { header: 'Admission', render: (v) => <Badge status={admissionTone(v.admission)}>{v.admission}</Badge> },
     {
       header: 'Deployment',
@@ -192,15 +210,33 @@ export function Verticals({ api, onToast }: VerticalsProps) {
           title={selected.name}
           description={`Versions and channels — ${selected.slug}`}
           actions={
-            <Button variant="secondary" onClick={() => setSelected(undefined)}>
-              Close
-            </Button>
+            <span style={{ display: 'inline-flex', gap: 8 }}>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  run(
+                    () => api.setInstallsBlocked(selected.slug, !selected.installsBlocked),
+                    selected.installsBlocked ? 'Installs allowed' : 'Installs blocked',
+                    selected.slug,
+                  )
+                }
+              >
+                {selected.installsBlocked ? 'Allow installs' : 'Block installs'}
+              </Button>
+              <Button variant="danger" onClick={() => setDeleteInput('')}>
+                Delete…
+              </Button>
+              <Button variant="secondary" onClick={() => setSelected(undefined)}>
+                Close
+              </Button>
+            </span>
           }
         >
           {/* Channels: the named pointers promotion moves. */}
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
             {CHANNELS.map((ch) => {
               const v = channelVersion(ch);
+              const pointer = channels.find((c) => c.channel === ch);
               return (
                 <div
                   key={ch}
@@ -217,7 +253,18 @@ export function Verticals({ api, onToast }: VerticalsProps) {
                   <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)' }}>
                     {ch}
                   </span>
-                  {v ? <Tag mono>{v.version}</Tag> : <span style={{ color: 'var(--text-placeholder)', fontSize: 12.5 }}>unset</span>}
+                  {v ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 8 }}>
+                      <Tag mono>{v.version}</Tag>
+                      {pointer && (
+                        <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>
+                          {pointer.updatedAt.slice(0, 16).replace('T', ' ')}
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--text-placeholder)', fontSize: 12.5 }}>unset</span>
+                  )}
                   <Button
                     size="sm"
                     variant="ghost"
@@ -269,6 +316,32 @@ export function Verticals({ api, onToast }: VerticalsProps) {
         </div>
       </Dialog>
 
+      {/* Delete — type the slug to confirm. The control plane refuses while any scope
+          is still bound, so a mistaken confirm cannot strand a live scope. */}
+      <Dialog
+        open={deleteInput !== null && !!selected}
+        danger
+        title={selected ? `Delete ${selected.slug}` : ''}
+        description="Removes the vertical, its versions, and its channels from the registry. Refused while any scope is still bound to it. Deployed scripts are left for orphan cleanup."
+        confirmLabel="Delete vertical"
+        confirmDisabled={deleteInput !== selected?.slug}
+        onConfirm={() => {
+          if (!selected) return;
+          void run(() => api.deleteVertical(selected.slug), 'Vertical deleted', selected.slug).then(
+            () => setDeleteInput(null),
+          );
+        }}
+        onCancel={() => setDeleteInput(null)}
+      >
+        <Input
+          label={`Type ${selected?.slug ?? ''} to confirm`}
+          mono
+          placeholder={selected?.slug}
+          value={deleteInput ?? ''}
+          onChange={(e) => setDeleteInput(e.target.value)}
+        />
+      </Dialog>
+
       {/* Promote — the blast-radius moment. The digest diff is shown, and a changed
           permission or migration surface must be acknowledged before the confirm frees. */}
       <Dialog
@@ -290,7 +363,7 @@ export function Verticals({ api, onToast }: VerticalsProps) {
               onChange={(e) => setPromote({ ...promote, versionId: e.target.value })}
               options={versions
                 .filter((v) => v.admission === 'admitted')
-                .map((v) => ({ value: v.id, label: v.version }))}
+                .map((v) => ({ value: v.id, label: `${v.version} — ${v.createdAt.slice(0, 16).replace('T', ' ')}` }))}
             />
             {current && (
               <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
