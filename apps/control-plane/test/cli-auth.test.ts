@@ -44,6 +44,34 @@ describe('CLI login broker', () => {
     expect(res.headers.get('location')).toMatch(/^\/api\/auth\/login\?returnTo=/);
   });
 
+  it('fresh=1 skips a live session and forces an IdP re-prompt, without looping', async () => {
+    // A live browser session that would normally short-circuit straight to a code…
+    const session = await sessionFor(STAFF_EMAIL);
+    const res = await SELF.fetch(
+      'https://cp.test/api/auth/cli?port=8976&state=st&challenge=ch&fresh=1',
+      { headers: { cookie: `${SESSION_COOKIE}=${session}` }, redirect: 'manual' },
+    );
+    // …is ignored: the broker bounces through browser login with prompt=login, and the
+    // returnTo has `fresh` stripped so the post-login bounce uses the NEW session
+    // instead of looping back into the forced re-prompt.
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('location')!;
+    expect(loc).toMatch(/^\/api\/auth\/login\?returnTo=/);
+    expect(loc).toContain('prompt=login');
+    const returnTo = new URL(loc, 'https://cp.test').searchParams.get('returnTo')!;
+    expect(returnTo).not.toContain('fresh');
+    expect(returnTo).toContain('port=8976');
+  });
+
+  it('logout?federated falls back to a local redirect when discovery is unavailable', async () => {
+    // No OIDC_ISSUER in the test env, so the end-session discovery fails — the logout
+    // must still clear the cookie and land locally, never 500.
+    const res = await SELF.fetch('https://cp.test/api/auth/logout?federated', { redirect: 'manual' });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/');
+    expect(res.headers.get('set-cookie')).toContain(`${SESSION_COOKIE}=;`);
+  });
+
   it('completes the PKCE round-trip and issues a bearer the deploy surface accepts', async () => {
     const verifier = 'a-random-verifier-value-1234567890';
     const challenge = await pkceS256(verifier);

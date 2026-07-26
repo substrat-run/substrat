@@ -84,15 +84,20 @@ function awaitCallback(expectedState: string): Promise<{ port: number; code: Pro
   });
 }
 
-/** Run the full loopback login against `controlPlaneUrl`; returns a session token to store. */
-export async function browserLogin(controlPlaneUrl: string): Promise<string> {
+/**
+ * Run the full loopback login against `controlPlaneUrl`; returns a session token to store.
+ * `fresh` forces a real re-authentication (`substrat login --fresh`): the broker skips any
+ * live browser session AND the IdP re-prompts past its SSO cookie — without it, a browser
+ * signed in as the wrong account silently wins and no typed email can change the outcome.
+ */
+export async function browserLogin(controlPlaneUrl: string, opts: { fresh?: boolean } = {}): Promise<string> {
   const cp = controlPlaneUrl.replace(/\/$/, '');
   const verifier = randomB64url(32);
   const challenge = await s256(verifier);
   const state = randomB64url(16);
 
   const { port, code } = await awaitCallback(state);
-  const authUrl = `${cp}/auth/cli?port=${port}&state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}`;
+  const authUrl = `${cp}/auth/cli?port=${port}&state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}${opts.fresh ? '&fresh=1' : ''}`;
   console.log('opening your browser to sign in…');
   console.log(`  if it doesn't open, visit:\n  ${authUrl}\n`);
   openBrowser(authUrl);

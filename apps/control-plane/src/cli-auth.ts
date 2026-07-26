@@ -41,12 +41,19 @@ export function mountCliAuthRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>
       return c.text('bad cli login request', 400);
     }
 
-    const user = await sessionFromHeaders(c.env, c.req.raw.headers);
+    // `fresh=1` (`substrat login --fresh`) means "as a different account": skip any live
+    // browser session and force the IdP to re-prompt (`prompt=login`) past its SSO cookie.
+    // Dropped from the returnTo so the post-login bounce back here uses the NEW session
+    // instead of looping.
+    const fresh = url.searchParams.get('fresh') !== null;
+    const user = fresh ? null : await sessionFromHeaders(c.env, c.req.raw.headers);
     if (!user) {
-      // No staff session yet: bounce through the normal browser login, which returns
+      // No (usable) session yet: bounce through the normal browser login, which returns
       // here (now with a session cookie) via the same-origin returnTo.
-      const returnTo = `/api/auth/cli?${url.searchParams.toString()}`;
-      return c.redirect(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
+      const params = new URLSearchParams(url.searchParams);
+      params.delete('fresh');
+      const returnTo = `/api/auth/cli?${params.toString()}`;
+      return c.redirect(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}${fresh ? '&prompt=login' : ''}`);
     }
 
     const code = await signEphemeral(
