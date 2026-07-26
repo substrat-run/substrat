@@ -1,4 +1,4 @@
-import { z, envVarSpec, capability, permissionKey } from '@substrat-run/contracts';
+import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /**
  * The deploy seam (self-serve-deploy.md). A `substrat push` uploads a *built* worker
@@ -19,15 +19,11 @@ import { z, envVarSpec, capability, permissionKey } from '@substrat-run/contract
  *    refusal — not inspecting minified code — is the primary defence.
  */
 
-/** A binding the uploaded worker declares, as far as the contract check needs it. */
-export interface DeclaredBinding {
-  type: string;
-  name: string;
-  class_name?: string;
-  script_name?: string;
-  /** For a `d1` binding: the database id — a vertical's OWN store (see the contract below). */
-  id?: string;
-}
+// The manifest schema itself lives in @substrat-run/contracts (deploy.ts there) so the
+// CLI validates the exact shape this server parses — re-exported here so hosts keep
+// importing it from the transport package.
+export { deployManifest } from '@substrat-run/contracts';
+export type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /** A built vertical, ready to upload. `modules` are the bundled ESM parts. */
 export interface VerticalBundle {
@@ -47,43 +43,6 @@ export interface VerticalBundle {
  * host so the transport package never imports a Cloudflare SDK and tests use a fake.
  */
 export type DeployVerticalFn = (deploymentRef: string, bundle: VerticalBundle) => Promise<void>;
-
-const declaredBinding = z.object({
-  type: z.string().min(1),
-  name: z.string().min(1),
-  class_name: z.string().optional(),
-  script_name: z.string().optional(),
-  id: z.string().optional(),
-});
-
-/** The JSON part a `substrat push` sends alongside the module files. */
-export const deployManifest = z.object({
-  version: z.string().min(1),
-  /** Display name for a first-time register; defaults to the slug. */
-  name: z.string().min(1).optional(),
-  /** Filename of the main module among the uploaded parts. */
-  entry: z.string().min(1),
-  compatibilityDate: z.string().min(1),
-  compatibilityFlags: z.array(z.string().min(1)).default([]),
-  doClasses: z.array(z.string().min(1)).default([]),
-  bindings: z.array(declaredBinding).default([]),
-  /** The vertical's declared env-spec (from its package.json `substrat.envSpec`), stored on
-   *  the registry so a host/console renders a config form for it. Optional + validated here. */
-  envSpec: z.array(envVarSpec).optional(),
-  /** Registry-driven install (marketplace-publish.md §3), from package.json `substrat.*` —
-   *  carried so the dashboard installs without a hardcoded catalog entry. Validated here. */
-  ownerGrants: z.array(permissionKey).optional(),
-  entitlements: z.array(z.string()).optional(),
-  provides: z.array(capability).optional(),
-  requires: z.array(capability).optional(),
-  /** Computed by the builder's toolchain; what the promotion checkpoint compares. */
-  digests: z.object({
-    manifest: z.string().min(1),
-    permission: z.string().min(1),
-    migration: z.string().min(1),
-  }),
-});
-export type DeployManifest = z.infer<typeof deployManifest>;
 
 /**
  * The §4 sandbox contract. Throws (mapped to a 4xx by errors.ts via "deploy refused")
