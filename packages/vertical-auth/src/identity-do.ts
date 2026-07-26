@@ -63,6 +63,11 @@ const SCHEMA_STATEMENTS: string[] = [
   `CREATE INDEX IF NOT EXISTS invite_by_scope ON invite (scope_id)`,
   // This DO's own config — notably its session-signing secret, generated here per tenant.
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // PER-SCOPE instance config, delivered by the platform via /internal/configure
+  // (vertical-auth-detach.md §2.2) — notably the scope's `substrat:auth` issuer choice.
+  // Lives here because this DO is the vertical's per-tenant harness store and the scope's
+  // own data DO exposes no harness-writable surface.
+  `CREATE TABLE IF NOT EXISTS scope_config (scope_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (scope_id, key))`,
 ];
 
 // The IdentityDO needs no injected env: its signing secret is generated per tenant and
@@ -90,6 +95,41 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
         ctx.storage.sql.exec("INSERT INTO config (key, value) VALUES ('auth_secret', ?)", this.authSecret);
       }
     });
+  }
+
+  /**
+   * Upsert per-scope config delivered by the platform (vertical-auth-detach.md §2.2).
+   * Key-by-key, never a replace, so partial deliveries compose; idempotent so the
+   * reconciliation sweep can re-run it.
+   */
+  async setScopeConfig(scopeId: string, entries: Array<{ key: string; value: string }>): Promise<void> {
+    for (const { key, value } of entries) {
+      this.ctx.storage.sql.exec(
+        'INSERT OR REPLACE INTO scope_config (scope_id, key, value) VALUES (?, ?, ?)',
+        scopeId, key, value,
+      );
+    }
+  }
+
+  /**
+   * Everything the worker needs to build the scope's `AuthProvider`, in ONE round-trip:
+   * the scope's delivered config (notably `substrat:auth`) plus this tenant's
+   * session-signing secret (minted here on first use, never a worker binding — the same
+   * per-tenant-secret move as `auth_secret`). One method rather than two keeps the
+   * per-request cost at a single DO hop.
+   */
+  async authWiring(scopeId: string): Promise<{ config: Record<string, string>; sessionSecret: string }> {
+    const config: Record<string, string> = {};
+    for (const row of this.ctx.storage.sql.exec('SELECT key, value FROM scope_config WHERE scope_id = ?', scopeId)) {
+      config[row.key as string] = row.value as string;
+    }
+    let secret = ([...this.ctx.storage.sql.exec("SELECT value FROM config WHERE key = 'session_secret'")][0] as { value: string } | undefined)?.value;
+    if (!secret) {
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      secret = btoa(String.fromCharCode(...bytes));
+      this.ctx.storage.sql.exec("INSERT INTO config (key, value) VALUES ('session_secret', ?)", secret);
+    }
+    return { config, sessionSecret: secret };
   }
 
   /** Record the owner seat to be claimed by the first login into this scope (called at provision). */
@@ -210,6 +250,8 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
 /** A minimal stub shape — the identity DO's callable surface (avoids leaking the full class type). */
 export type IdentityStub = {
   fetch(request: Request): Promise<Response>;
+  setScopeConfig(scopeId: string, entries: Array<{ key: string; value: string }>): Promise<void>;
+  authWiring(scopeId: string): Promise<{ config: Record<string, string>; sessionSecret: string }>;
   setPendingOwner(scopeId: string, principal: string): Promise<void>;
   needsSetup(scopeId: string): Promise<boolean>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;

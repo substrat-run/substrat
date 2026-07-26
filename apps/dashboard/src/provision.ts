@@ -13,6 +13,7 @@ import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
 import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js';
 import { TenantNarrowedControlPlane, type SnapshotRecord } from './authority.js';
+import { authConfigFor, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
 export const VERTICAL = 'dashboard';
@@ -211,6 +212,23 @@ export async function createApp(
     controlPlane?: TenantNarrowedControlPlane;
     /** Display name for the tenant when it is first registered on the shared plane. */
     tenantName?: string;
+    /**
+     * Per-instance config delivered WITH provisioning (vertical-auth-detach.md §2.2),
+     * so the app arrives configured atomically — e.g. an Auth Server's bootstrap
+     * ADMIN_*. Connected mode only; the embedded path has no delivery seam (modules
+     * there read authored config later).
+     */
+    appConfig?: Record<string, string>;
+    /**
+     * The install form's Identity choice (§2.4): which issuer this app authenticates
+     * against. Applied AFTER the hostname binds — the OIDC callback URL needs the app's
+     * URL, and a team Auth Server registers the client against it — then delivered as
+     * the `substrat:auth` entry. Absent ⇒ the vertical's builtin default. Connected
+     * mode only (embedded has no delivery seam).
+     */
+    appAuth?: AppAuthChoice;
+    /** Injected client-registration (tests); defaults to real dynamic registration. */
+    registerOidcClient?: RegisterOidcClientFn;
   },
 ): Promise<DashboardAppRow> {
   // 1. Authorize + record, as the caller, in their own dashboard scope. This is the
@@ -241,7 +259,31 @@ export async function createApp(
     throw e;
   }
 
-  // 3. Flip the account's record to active, recording the hostname if one bound.
+  // 3. Wire the chosen IDENTITY (vertical-auth-detach.md §2.4) — after the hostname
+  //    bound (the callback URL derives from it), before the row goes active. A failure
+  //    here is a real failure, not a degraded install: the user asked for THIS issuer,
+  //    and an app that silently fell back to builtin would strand its users later.
+  if (input.appAuth && input.controlPlane) {
+    try {
+      if (!hostname) {
+        throw new Error('no hostname could be bound, so the OIDC callback URL cannot be formed');
+      }
+      const config = await authConfigFor(input.appAuth, {
+        appName: input.name,
+        redirectUri: `https://${hostname}/api/auth/callback`,
+        ...(input.registerOidcClient ? { registerClient: input.registerOidcClient } : {}),
+      });
+      await input.controlPlane.configureInstance(input.appScopeId, [
+        { key: 'substrat:auth', value: JSON.stringify(config) },
+      ]);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      await scope.invoke('dashboard/mark-app-failed', { appScopeId: input.appScopeId, reason }).catch(() => {});
+      throw e;
+    }
+  }
+
+  // 4. Flip the account's record to active, recording the hostname if one bound.
   return scope.invoke('dashboard/mark-app-active', {
     appScopeId: input.appScopeId,
     ...(hostname ? { hostname } : {}),
@@ -580,7 +622,13 @@ async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: Cre
   // keeps the shared directory's entitlement view complete regardless.
   for (const key of input.appEntitlements ?? [input.verticalSlug]) await cp.grantEntitlement(key);
   await cp.provisionScope({ scopeId: input.appScopeId, slug, name: input.name, vertical: input.verticalSlug, jurisdiction: 'global' });
-  await cp.provisionInstance(input.verticalSlug, { scopeId: input.appScopeId, owner: input.node.principal, slug, name: input.name });
+  await cp.provisionInstance(input.verticalSlug, {
+    scopeId: input.appScopeId,
+    owner: input.node.principal,
+    slug,
+    name: input.name,
+    ...(input.appConfig ? { config: input.appConfig } : {}),
+  });
   await cp.activateScope(input.appScopeId);
 
   // Pin the scope to the vertical's prod version so the router dispatches on it once

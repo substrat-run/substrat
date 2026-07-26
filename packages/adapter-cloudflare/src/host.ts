@@ -236,6 +236,9 @@ interface ControlPlaneStub {
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null, listed?: number | null): Promise<void>;
   updateVerticalListed(slug: string, listed: number): Promise<void>;
   updateVerticalPublishRequest(slug: string, requestedAt: string): Promise<void>;
+  updateVerticalInstallsBlocked(slug: string, blocked: number): Promise<void>;
+  countScopesForVertical(slug: string): Promise<number>;
+  deleteVertical(slug: string): Promise<void>;
   listVerticals(): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
   insertVersion(v: {
@@ -1091,6 +1094,7 @@ export class CloudflareScopeHost implements ScopeHost {
         ...(r.install_spec ? (JSON.parse(r.install_spec) as Record<string, unknown>) : {}),
         listed: !!r.listed,
         ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
+        installsBlocked: !!r.installs_blocked,
         createdAt: r.created_at,
       });
     const mapVersion = (r: VersionRow): VerticalVersion =>
@@ -1524,6 +1528,33 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
         await this.cp.updateVerticalPublishRequest(slug, new Date().toISOString());
         await this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug });
+      },
+      setVerticalInstallsBlocked: async (actor, slug: string, blocked: boolean) => {
+        const existing = await this.cp.readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        await this.cp.updateVerticalInstallsBlocked(slug, blocked ? 1 : 0);
+        await this.recordAdmin(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: !!existing.installs_blocked }, { installsBlocked: blocked });
+      },
+      deleteVertical: async (actor, slug: string) => {
+        const existing = await this.cp.readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        // Refuse while any scope is bound: a deleted registry row would strand those
+        // scopes' version pins and routing. Deployed dispatch scripts are NOT reaped
+        // here — they become orphans for the cleanup script (#248).
+        const bound = await this.cp.countScopesForVertical(slug);
+        if (bound > 0) {
+          throw new Error(
+            `vertical '${slug}' still backs ${bound} scope(s) — delete or rebind them first`,
+          );
+        }
+        await this.cp.deleteVertical(slug);
+        await this.recordAdmin(
+          actor,
+          'deleteVertical',
+          { tenantId: null },
+          { slug, source: existing.source, ownerTenant: existing.owner_tenant },
+          null,
+        );
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);

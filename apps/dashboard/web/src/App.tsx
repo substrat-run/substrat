@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input } from '@substrat-run/ui';
-import { api, signIn, signOut, ApiError, needsOnboarding, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
+import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
@@ -204,7 +204,7 @@ export function App() {
   }, [toast]);
 
   const createApp = useCallback(
-    async (input: { verticalSlug: string; name: string }) => {
+    async (input: { verticalSlug: string; name: string; auth?: AppAuthChoice }) => {
       let name = input.name;
       try {
         if (DEV_MOCK) {
@@ -497,7 +497,13 @@ export function App() {
       onSignOut={signOut}
     >
       {route.section === 'new' ? (
-        <CreateApp catalog={catalog} teamName={currentTeam?.name} onCancel={() => go('#/apps')} onCreate={createApp} />
+        <CreateApp
+          catalog={catalog}
+          teamName={currentTeam?.name}
+          authServers={apps.filter((a) => a.vertical_slug === 'auth-server' && a.status === 'active' && a.hostname)}
+          onCancel={() => go('#/apps')}
+          onCreate={createApp}
+        />
       ) : route.section === 'apps' && openApp ? (
         <AppDetail
           app={openApp}

@@ -8,18 +8,22 @@
   "exports": {
     ".": "./src/index.ts",
     "./provider": "./src/provider.ts",
-    "./oidc": "./src/oidc.ts"
+    "./oidc": "./src/oidc.ts",
+    "./oidc-rp-provider": "./src/oidc-rp-provider.ts"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@substrat-run/oidc-rp": "workspace:^",
     "better-auth": "^1.6.23",
     "drizzle-orm": "^0.45.2",
-    "jose": "^5.9.6"
+    "jose": "^6.2.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250109.0",
-    "typescript": "^7.0.0"
+    "typescript": "^7.0.0",
+    "vitest": "^3.0.0"
   }
 }

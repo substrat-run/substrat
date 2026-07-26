@@ -190,6 +190,17 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     rejectVersion: (slug: string, id: string, note: string) =>
       post<VerticalVersion>(`/verticals/${encodeURIComponent(slug)}/versions/${id}/reject`, { note }),
     listChannels: (slug: string) => call<VerticalChannel[]>(`/verticals/${encodeURIComponent(slug)}/channels`),
+    // The install kill-switch: block/unblock NEW installs (existing scopes keep serving).
+    setInstallsBlocked: (slug: string, blocked: boolean) =>
+      post<{ slug: string; installsBlocked: boolean }>(
+        `/verticals/${encodeURIComponent(slug)}/install-block`,
+        { blocked },
+      ),
+    // Delete a vertical + its versions/channels. Refused (4xx) while any scope is bound.
+    deleteVertical: (slug: string) =>
+      call<{ slug: string; deleted: boolean }>(`/verticals/${encodeURIComponent(slug)}`, {
+        method: 'DELETE',
+      }),
     promoteVersion: (
       slug: string,
       channel: ChannelName,

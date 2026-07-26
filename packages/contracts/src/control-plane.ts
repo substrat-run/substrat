@@ -32,6 +32,8 @@ export const adminAction = z.enum([
   'rejectVersion',
   'setVerticalListed', // marketplace-publish.md §5 — publish/unpublish to the public marketplace
   'requestPublish', // marketplace-publish.md §5 — a builder requests listing (awaiting staff review)
+  'setVerticalInstallsBlocked', // the staff kill-switch — block/unblock NEW installs of a vertical
+  'deleteVertical', // remove a vertical + its versions/channels; refused while any scope is bound
   'bindScopeVersion',
   'promoteVersion',
   'bindHostname', // K-26 — the hostname map

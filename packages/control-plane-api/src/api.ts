@@ -131,6 +131,11 @@ const provisionInstanceBody = z.object({
   owner: z.string().min(1),
   slug: z.string().min(1),
   name: z.string().min(1),
+  config: z.record(z.string(), z.string()).optional(),
+});
+
+const configureInstanceBody = z.object({
+  entries: z.array(z.object({ key: z.string().min(1), value: z.string() })).min(1),
 });
 
 const bindHostnameBody = z.object({
@@ -438,6 +443,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     );
   });
 
+  // Deliver per-instance CONFIG to the scope's own storage (vertical-auth-detach.md
+  // §2.2) — the missing "delivery" step behind the dashboard's Env tab. Same K-3
+  // addressing + bound-version resolution as introspection: the scope's DO lives in the
+  // deployment of its BOUND version, so that is where its config must land. A scope with
+  // no reachable vertical deployment (co-located/contract-test hosts run no vertical
+  // code) has nowhere to deliver to — 501, so the caller can tell "authored but not
+  // delivered" from "failed". The vertical's own status (e.g. its 501 for no live-config
+  // support) propagates rather than collapsing to a 500.
+  app.post('/tenants/:tenantId/scopes/:scopeId/configure', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = configureInstanceBody.parse(await c.req.json());
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) {
+      return c.json({ error: `no deployment is bound for vertical '${scope.vertical ?? '(none)'}'` }, 501);
+    }
+    try {
+      await vertical.configureInstance({ tenantId, scopeId, entries: input.entries });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+    return c.json({ applied: input.entries.length });
+  });
+
   // The four lifecycle transitions, one route each — mirroring the four audited
   // actions rather than collapsing into a PATCH that would accept a target
   // status the transition graph forbids. The graph is enforced below the seam;
@@ -656,6 +690,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.post('/verticals/:slug/instances', async (c) => {
     const slug = c.req.param('slug');
+    // The install kill-switch: a blocked vertical takes no NEW instances, for anyone
+    // including its owner. Refused before deployment resolution so the answer is
+    // uniform whether or not anything is deployed. Existing scopes keep serving.
+    const registered = (await admin.listVerticals(c.get('actor'))).find((v) => v.slug === slug);
+    if (registered?.installsBlocked) {
+      return c.json({ error: `new installs of vertical '${slug}' are blocked` }, 403);
+    }
     // Static binding first (milestone-one shape), then the dispatch resolver for a
     // pushed vertical — the provisioning mirror of the router's verticalFor.
     const vertical =
@@ -801,6 +842,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { listed } = z.object({ listed: z.boolean() }).parse(await c.req.json());
     await admin.setVerticalListed(c.get('actor'), slug, listed);
     return c.json({ slug, listed });
+  });
+
+  // The install kill-switch (staff-only — not in BUILDER_ROUTES, so a builder is
+  // refused by the confinement middleware). Blocks NEW installs; existing scopes
+  // keep serving. Orthogonal to /listing (visibility).
+  app.post('/verticals/:slug/install-block', async (c) => {
+    const slug = c.req.param('slug');
+    const { blocked } = z.object({ blocked: z.boolean() }).parse(await c.req.json());
+    await admin.setVerticalInstallsBlocked(c.get('actor'), slug, blocked);
+    return c.json({ slug, installsBlocked: blocked });
+  });
+
+  // Delete a vertical + its versions and channels (staff-only, same confinement).
+  // Refused below the seam while any scope is still bound — surfaces as a 4xx via
+  // mapError, naming the count. Dispatch scripts become orphans for cleanup (#248).
+  app.delete('/verticals/:slug', async (c) => {
+    const slug = c.req.param('slug');
+    await admin.deleteVertical(c.get('actor'), slug);
+    return c.json({ slug, deleted: true });
   });
 
   app.get('/verticals/:slug/channels', async (c) => {

@@ -177,6 +177,85 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     expect(apps.find((a) => a.app_scope_id === failScopeId)?.status).toBe('failed');
   });
 
+  it('delivers the Identity choice as substrat:auth AFTER the hostname binds; a delivery failure fails the app', async () => {
+    const acme = await bootstrap('acme-auth-choice');
+    const configured: Array<{ scopeId: string; entries: Array<{ key: string; value: string }> }> = [];
+    const happyCp = () =>
+      ({
+        tenantId: acme.tenantId,
+        ensureTenant: async () => {},
+        grantEntitlement: async () => {},
+        provisionScope: async () => {},
+        provisionInstance: async () => {},
+        activateScope: async () => {},
+        listChannels: async () => [],
+        bindHostname: async () => {},
+        setHostnameStatus: async () => {},
+        configureInstance: async (scopeId: string, entries: Array<{ key: string; value: string }>) => {
+          configured.push({ scopeId, entries });
+        },
+      }) as unknown as Parameters<typeof createApp>[1]['controlPlane'];
+
+    // EXTERNAL issuer: the hand-configured client rides through verbatim.
+    const extScope = scopeId.parse(ulid());
+    const ext = await createApp(host, {
+      node: acme, appScopeId: extScope, verticalSlug: 'meridian', name: 'People',
+      appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+      controlPlane: happyCp(),
+      appAuth: { source: 'external', issuer: 'https://auth.example.com', clientId: 'cid', clientSecret: 'cs' },
+    });
+    expect(ext.status).toBe('active');
+    expect(configured).toHaveLength(1);
+    expect(configured[0]!.scopeId).toBe(extScope);
+    expect(configured[0]!.entries.map((e) => e.key)).toEqual(['substrat:auth']);
+    expect(JSON.parse(configured[0]!.entries[0]!.value)).toEqual({
+      mode: 'oidc', issuer: 'https://auth.example.com', clientId: 'cid', clientSecret: 'cs',
+    });
+
+    // TEAM AUTH SERVER: the client is REGISTERED at the issuer against the app's REAL
+    // bound hostname (the callback URL is derived from it), then wired in.
+    const asScope = scopeId.parse(ulid());
+    const registrations: Array<{ issuer: string; appName: string; redirectUri: string }> = [];
+    const srv = await createApp(host, {
+      node: acme, appScopeId: asScope, verticalSlug: 'meridian', name: 'People Two',
+      appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+      controlPlane: happyCp(),
+      appAuth: { source: 'auth-server', issuer: 'https://auth-acme.global.substrat.run' },
+      registerOidcClient: async (issuer, input) => {
+        registrations.push({ issuer, ...input });
+        return { clientId: 'minted-id', clientSecret: 'minted-secret' };
+      },
+    });
+    expect(srv.status).toBe('active');
+    expect(registrations).toEqual([{
+      issuer: 'https://auth-acme.global.substrat.run',
+      appName: 'People Two',
+      redirectUri: `https://${srv.hostname}/api/auth/callback`,
+    }]);
+    expect(JSON.parse(configured[1]!.entries[0]!.value)).toEqual({
+      mode: 'oidc', issuer: 'https://auth-acme.global.substrat.run', clientId: 'minted-id', clientSecret: 'minted-secret',
+    });
+
+    // A FAILING delivery is a failed app with the reason on its trail — the user asked
+    // for THIS issuer; silently falling back to builtin would strand its users later.
+    const failScope = scopeId.parse(ulid());
+    const failingDelivery = happyCp() as unknown as { configureInstance: () => Promise<void> };
+    failingDelivery.configureInstance = () => Promise.reject(new Error('client registration at issuer failed (403)'));
+    await expect(
+      createApp(host, {
+        node: acme, appScopeId: failScope, verticalSlug: 'meridian', name: 'Broken Auth',
+        appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+        controlPlane: failingDelivery as unknown as Parameters<typeof createApp>[1]['controlPlane'],
+        appAuth: { source: 'external', issuer: 'https://auth.example.com', clientId: 'cid' },
+      }),
+    ).rejects.toThrow('client registration at issuer failed');
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    const rows = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
+    expect(rows.find((a) => a.app_scope_id === failScope)?.status).toBe('failed');
+    const events = await dash.invoke<Array<{ kind: string; detail: string | null }>>('dashboard/app-events', { appScopeId: failScope });
+    expect(events.find((e) => e.kind === 'failed')?.detail).toContain('client registration');
+  });
+
   it('retrying a failed app tears down the failed attempt and provisions a fresh, active one', async () => {
     const acme = await bootstrap('acme-retry');
     const failScopeId = scopeId.parse(ulid());

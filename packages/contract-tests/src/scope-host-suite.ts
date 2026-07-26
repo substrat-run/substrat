@@ -1201,6 +1201,58 @@ export function scopeHostContractSuite(
       await expect(host.admin.requestPublish(staff, 'no-such-vertical')).rejects.toThrow(/unknown vertical/);
     });
 
+    it('blocks new installs (setVerticalInstallsBlocked) — a provisioning gate, not a delete', async () => {
+      const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
+      await host.admin.registerVertical(staff, { slug: 'blocktest', name: 'BlockTest', source: 'cli', ownerTenant: t2 });
+      expect((await at('blocktest'))?.installsBlocked).toBe(false); // installable on push
+
+      await host.admin.setVerticalInstallsBlocked(staff, 'blocktest', true);
+      expect((await at('blocktest'))?.installsBlocked).toBe(true);
+      await host.admin.setVerticalInstallsBlocked(staff, 'blocktest', true); // idempotent
+
+      // Orthogonal to `listed` — blocking is not unpublishing.
+      expect((await at('blocktest'))?.listed).toBe(false);
+
+      await host.admin.setVerticalInstallsBlocked(staff, 'blocktest', false);
+      expect((await at('blocktest'))?.installsBlocked).toBe(false);
+
+      await expect(host.admin.setVerticalInstallsBlocked(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
+    });
+
+    it('deletes a vertical — refused while a scope is bound, total once nothing is', async () => {
+      // 'callout' still backs s1 (bound above): the refusal that stops a delete from
+      // stranding a live scope's version pin and routing.
+      await expect(host.admin.deleteVertical(staff, 'callout')).rejects.toThrow(/still backs/);
+      expect((await host.admin.listVerticals(staff)).some((v) => v.slug === 'callout')).toBe(true);
+
+      // A vertical nothing is bound to deletes totally: row, versions, channels.
+      const versionId = ulid();
+      await host.admin.registerVertical(staff, { slug: 'deletable', name: 'Deletable', source: 'cli', ownerTenant: t2 });
+      await host.admin.publishVersion(staff, {
+        id: versionId,
+        verticalSlug: 'deletable',
+        version: '0.0.1',
+        manifestDigest: 'm',
+        permissionDigest: 'p',
+        migrationDigest: 'g',
+        deploymentRef: null,
+      });
+      await host.admin.admitVersion(staff, versionId);
+      await host.admin.promoteVersion(staff, 'deletable', 'dev', versionId);
+
+      await host.admin.deleteVertical(staff, 'deletable');
+      expect((await host.admin.listVerticals(staff)).some((v) => v.slug === 'deletable')).toBe(false);
+      expect(await host.admin.listVersions(staff, 'deletable')).toEqual([]);
+      expect(await host.admin.listChannels(staff, 'deletable')).toEqual([]);
+
+      // The slug is claimable again — a delete is a real removal, not a tombstone.
+      await host.admin.registerVertical(staff, { slug: 'deletable', name: 'Deletable', source: 'cli', ownerTenant: t2 });
+      expect(await host.admin.listVersions(staff, 'deletable')).toEqual([]); // no resurrected versions
+      await host.admin.deleteVertical(staff, 'deletable');
+
+      await expect(host.admin.deleteVertical(staff, 'no-such-vertical')).rejects.toThrow(/unknown vertical/);
+    });
+
     it('refreshes `listed` on builtin re-registration (the catalog re-seed can list a row)', async () => {
       const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
       // A builtin first registered UNLISTED (bundled but not yet deployable, or a row

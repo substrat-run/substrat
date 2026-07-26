@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, auth, ApiError } from './api';
 import { Button } from './ui';
 
@@ -11,6 +11,83 @@ const inputStyle: React.CSSProperties = {
   color: 'var(--ink)',
   fontSize: 15,
 };
+
+/**
+ * Which auth this instance runs, from the worker. `builtin` (Better Auth in the tenant's
+ * IdentityDO) renders the email/password forms; `oidc` a redirect to the instance's
+ * identity provider — the vertical holds no accounts in that mode
+ * (vertical-auth-detach.md §2.3). Defaults to `builtin` if the probe fails, so a
+ * transient error never blanks the sign-in screen.
+ */
+function useAuthMode(): 'builtin' | 'oidc' | null {
+  const [mode, setMode] = useState<'builtin' | 'oidc' | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.authMode().then(
+      (r) => { if (alive) setMode(r.mode); },
+      () => { if (alive) setMode('builtin'); },
+    );
+    return () => { alive = false; };
+  }, []);
+  return mode;
+}
+
+/** Send the browser to the issuer, returning to `returnTo` on this origin afterwards. */
+function loginAt(returnTo: string): void {
+  window.location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
+}
+
+/** The centered single-card frame every auth screen uses. */
+function AuthFrame({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+  return (
+    <div className="phone">
+      <div style={{ flex: 1, display: 'grid', placeItems: 'center', padding: 24 }}>
+        <div style={{ width: '100%', maxWidth: 360, display: 'grid', gap: 14 }}>
+          <div style={{ textAlign: 'center', marginBottom: 4 }}>
+            <div className="brand-mark" style={{ margin: '0 auto 12px' }} />
+            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--ink)' }}>{title}</div>
+            <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>{subtitle}</div>
+          </div>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * OIDC-mode invite accept: the invitee's ACCOUNT lives at the issuer, so there is nothing
+ * to create here — sign in (via the issuer), then claim the invite with the token. On
+ * arrival we try the claim straight away (a session may already exist from the redirect
+ * back); a 401 means "sign in first" and renders the redirect button.
+ */
+function AcceptInviteOidc({ token, onDone }: { token: string; onDone: () => void }) {
+  const [state, setState] = useState<'trying' | 'needs-login' | 'error'>('trying');
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.acceptInvite(token).then(
+      () => { if (alive) onDone(); },
+      (e) => {
+        if (!alive) return;
+        if (e instanceof ApiError && e.status === 401) setState('needs-login');
+        else { setErr(e instanceof ApiError ? e.message : String(e)); setState('error'); }
+      },
+    );
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per token
+  }, [token]);
+  return (
+    <AuthFrame title="Join the workspace" subtitle="Sign in with your identity provider to accept the invite">
+      {err && <div className="err-banner">{err}</div>}
+      {state === 'trying' ? (
+        <div className="muted" style={{ textAlign: 'center', fontSize: 13 }}>Checking your invite…</div>
+      ) : (
+        <Button onClick={() => loginAt(`/?invite=${encodeURIComponent(token)}`)}>Continue to sign-in</Button>
+      )}
+    </AuthFrame>
+  );
+}
 
 /**
  * Sign-in / sign-up for a HOSTED instance. Production has no persona switcher — the real
@@ -31,6 +108,13 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const mode = useAuthMode();
+  // Don't flash the account-creation form on an instance whose accounts live at an
+  // issuer — wait for the mode, then branch.
+  if (mode === null) {
+    return <AuthFrame title="Join the workspace" subtitle="One moment…">{null}</AuthFrame>;
+  }
+  if (mode === 'oidc') return <AcceptInviteOidc token={token} onDone={onDone} />;
 
   const submit = async () => {
     if (busy || !email.trim() || password.length < 8) return;
@@ -87,6 +171,23 @@ export function SignIn({ onDone, firstRun = false }: { onDone: () => void; first
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const authMode = useAuthMode();
+  if (authMode === null) {
+    return <AuthFrame title="Meridian" subtitle="One moment…">{null}</AuthFrame>;
+  }
+  // OIDC mode: accounts and passwords live at the identity provider — the only action
+  // here is to go there. The first sign-in still claims the owner seat on a fresh
+  // instance, so first-run needs no separate form either.
+  if (authMode === 'oidc') {
+    return (
+      <AuthFrame
+        title="Meridian"
+        subtitle={firstRun ? 'Sign in with your identity provider to claim this workspace' : 'Sign in to your HR workspace'}
+      >
+        <Button onClick={() => loginAt('/')}>Continue to sign-in</Button>
+      </AuthFrame>
+    );
+  }
 
   const submit = async () => {
     if (busy || !email.trim() || password.length < 8) return;
