@@ -499,6 +499,7 @@ export function App() {
       {route.section === 'new' ? (
         <CreateApp
           catalog={catalog}
+          teamName={currentTeam?.name}
           authServers={apps.filter((a) => a.vertical_slug === 'auth-server' && a.status === 'active' && a.hostname)}
           onCancel={() => go('#/apps')}
           onCreate={createApp}
