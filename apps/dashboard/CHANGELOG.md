@@ -1,5 +1,142 @@
 # @substrat-run/dashboard
 
+## 0.4.0
+
+### Minor Changes
+
+- cd32011: Marketplace apps/verticals split + the empty-marketplace fix.
+
+  **Adapters:** `registerVertical` now refreshes `listed` on an identical re-registration
+  of a **builtin** vertical (it is seed metadata, derived from the catalog's `connected`
+  flag). Rows registered before the `listed` column existed (migration default 0) were
+  stuck unlisted forever, so the hosted marketplace rendered empty. A pushed (`cli`/`git`)
+  vertical's `listed` stays untouched — re-pushing a published vertical still cannot
+  silently unpublish it.
+
+  **Dashboard:** the create-app page is now pure instantiation, grouped **Marketplace**
+  (published) and **Your verticals** (your team's own, badged Private/Published, disabled
+  until a version is promoted to prod). The Deployments page is renamed **Verticals**
+  (`#/deployments` stays as an alias) and takes over the supply side: the GitHub
+  import + one-click CI scaffold move there from create-app. `GET /api/catalog` returns
+  `{owned, listed, source, installable}` and, in connected mode, merges the shared
+  control plane's registry — so a pushed vertical shows up and (via the same fallback in
+  `installSpecFor`) installs in production, not just embedded mode.
+
+- 297e057: Observability, views 1–3 of design/observability.md — piggyback Cloudflare, stamp
+  what only we know:
+
+  - **Seam + Cloudflare reader** (`control-plane-api`): a provider-neutral
+    `ObservabilityReader` contract (service/namespace vocabulary, never
+    script/dispatch-namespace) with `createCfObservabilityReader` as the injected
+    Cloudflare implementation (GraphQL invocation analytics + the Workers
+    Observability telemetry query API) — the `DeployVerticalFn`/`wfp.ts` pattern, so
+    an APM/OTel backend can slot in behind identical routes later. Two staff-only
+    proxy routes: `GET /observability/metrics` and `GET /observability/logs`
+    (501 when no backend is configured; deliberately not in `BUILDER_ROUTES`).
+  - **Router**: one Analytics Engine datapoint per resolved request — index
+    `tenantId`, blobs `(vertical, scope, surface, statusClass, rayId)`, doubles
+    `(durationMs, status)` — plus a structured JSON log line with the same fields.
+    The router is the only place that knows which tenant a request belonged to;
+    written now so tenant-keyed history accrues before any tenant-facing read path
+    exists. Metering never fails a request, and error paths are counted.
+  - **WfP uploads**: pushed verticals get `observability: { enabled: true }`, so
+    builder logs exist to query.
+  - **Console**: an Observability fleet view — per-service invocations, error
+    rates, CPU quantiles, and a row-click recent-logs panel.
+  - **Dashboard**: a Traffic panel on the Verticals view showing the team's own
+    deployed versions (requests/errors/CPU + recent logs). Owner-narrowing lives in
+    `TenantNarrowedControlPlane`: metrics rows are filtered to owned deployment
+    refs and mapped back to (vertical, version); a logs query for an unowned ref
+    answers `[]` without ever reaching the plane.
+
+  Deploy notes: the control plane's `CF_API_TOKEN` additionally needs **Account
+  Analytics: Read** and **Workers Observability: Read**; the router redeploy picks
+  up the `substrat_router` AE dataset binding (auto-created on first write).
+
+- d93e690: Detachable vertical auth (docs/design/vertical-auth-detach.md): auth moves out of the
+  verticals and becomes an install-time choice — a team Auth Server app or any external
+  OIDC issuer — with `builtin` (embedded Better Auth) as the unchanged default.
+
+  **auth-server** is now a real multi-instance vertical: one issuer DO per scope behind
+  the router (own users, signing secret, JWKS per install), the fixed-name single issuer
+  standalone. It implements the K-31 surface (`/internal/provision`, `/internal/configure`)
+  and answers unknown `/internal/*` paths with JSON — never the SPA fallback that
+  surfaced as "Provisioning failed — internal error".
+
+  **Config delivery seam** (control-plane-api): `VerticalClient.configureInstance` +
+  `POST /tenants/:t/scopes/:s/configure` deliver per-instance config to the deployment
+  holding the scope's DO (bound-version resolution, 501 when there is nowhere to deliver);
+  `ProvisionInstanceInput` gains optional `config` so an app arrives configured
+  atomically. The dashboard Env tab now delivers after authoring (`delivered` flag).
+
+  **RP flow** (vertical-auth): `oidcRpAuthProvider` — the full server-side
+  Authorization-Code + PKCE relying party as an `AuthProvider`, cookie sessions signed
+  with a per-tenant DO-minted secret, bearer fallback for API clients. The IdentityDO
+  stores platform-delivered per-scope config and keeps the provider-agnostic
+  `sub → principal` directory (TOFU owner claim + invites) under every mode. Meridian
+  selects its provider per scope from the delivered `substrat:auth`; its SPA renders a
+  redirect sign-in and invite-accept in OIDC mode. jose is bumped to v6 so node JWKS
+  fetching goes through `fetch`, matching workerd.
+
+  **Install-time identity** (dashboard): the New-app form's Identity section — builtin,
+  a team Auth Server (the app is auto-registered there via RFC 7591 dynamic client
+  registration against its real bound hostname), or an external issuer. Wiring failures
+  mark the app failed with the reason on its audit trail.
+
+### Patch Changes
+
+- e83ba3c: The Apps overview no longer flashes the wrong screen while the first `listApps()` is in
+  flight: the list shows a skeleton (same geometry as the loaded page — title row, toolbar,
+  3-column card grid — so nothing jumps when data lands) instead of "Create your first
+  app", and a deep link to an app shows the skeleton instead of a flashed "app could not
+  be found". In the dev preview, `?loading=1` pins the skeleton (like `?onboarding=1`).
+- 15853bf: Create-app URL preview now shows the tenant-suffixed hostname. The page promised
+  `<app>.global.substrat.run` while provisioning actually binds
+  `<app>-<team>.global.substrat.run` (the tenant-suffix scheme in `bindDefaultHostname`).
+  The preview now mirrors the worker — same `slugify` on the current team's name,
+  falling back to the unsuffixed form for teamless sessions.
+- ea8fed4: Self-heal pre-roster teams: teams provisioned before #191 have an empty
+  `dashboard_members` table (no owner row), so every roster-gated move — delete
+  the organization, the Members tab, invites — refused its own owner with a 403.
+  `resolveAccount` now seeds the resolving caller as the owner row (plus the
+  invites entitlement and org) for pre-epoch tenants, gated by ULID timestamp and
+  memoized per isolate so post-fix teams never pay a read.
+- ec89a88: Vertical lifecycle: delete a vertical, and block new installs of one.
+
+  **`deleteVertical`** (HostAdmin + `DELETE /verticals/:slug`, staff-only): removes the
+  registry row, its versions, and its channels — **refused while any scope is still
+  bound** to the vertical, naming the count, so a delete can never strand a live scope's
+  version pin or routing. Deployed dispatch scripts are left as orphans for the cleanup
+  script (#248), never reaped inline. Audited. The console's vertical detail card gets a
+  type-the-slug-to-confirm Delete.
+
+  **`installsBlocked`** (new registry flag + `setVerticalInstallsBlocked` /
+  `POST /verticals/:slug/install-block`, staff-only): the install kill-switch, orthogonal
+  to `listed`. A blocked vertical is hidden from the dashboard's install catalog and the
+  control plane refuses to provision an instance of it (403) — for everyone, owner
+  included. Existing scopes keep serving: it gates provisioning, not serving. Additive
+  `installs_blocked` column in both adapters (attempt-and-tolerate migration, default 0).
+  Console gets a Block/Allow installs toggle and a "blocked" badge.
+
+  The console also now shows **timestamps**: when each version was pushed (table +
+  promote picker), when each channel pointer last moved, and when a vertical was
+  registered.
+
+- Updated dependencies [cd32011]
+- Updated dependencies [d93e690]
+- Updated dependencies [ec89a88]
+  - @substrat-run/adapter-cloudflare@0.15.0
+  - @substrat-run/contracts@0.15.0
+  - @substrat-run/oidc-rp@0.3.0
+  - @substrat-run/demo-meridian@0.2.0
+  - @substrat-run/kernel@0.15.0
+  - @substrat-run/demo-callout@0.1.3
+  - @substrat-run/demo-manyfold@0.1.1
+  - @substrat-run/engine-protocol@0.4.7
+  - @substrat-run/engine-invites@0.0.12
+  - @substrat-run/engine-invoicing@0.3.13
+  - @substrat-run/engine-workorder@0.3.13
+
 ## 0.3.1
 
 ### Patch Changes

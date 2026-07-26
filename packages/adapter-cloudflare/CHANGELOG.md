@@ -1,5 +1,55 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.15.0
+
+### Minor Changes
+
+- ec89a88: Vertical lifecycle: delete a vertical, and block new installs of one.
+
+  **`deleteVertical`** (HostAdmin + `DELETE /verticals/:slug`, staff-only): removes the
+  registry row, its versions, and its channels — **refused while any scope is still
+  bound** to the vertical, naming the count, so a delete can never strand a live scope's
+  version pin or routing. Deployed dispatch scripts are left as orphans for the cleanup
+  script (#248), never reaped inline. Audited. The console's vertical detail card gets a
+  type-the-slug-to-confirm Delete.
+
+  **`installsBlocked`** (new registry flag + `setVerticalInstallsBlocked` /
+  `POST /verticals/:slug/install-block`, staff-only): the install kill-switch, orthogonal
+  to `listed`. A blocked vertical is hidden from the dashboard's install catalog and the
+  control plane refuses to provision an instance of it (403) — for everyone, owner
+  included. Existing scopes keep serving: it gates provisioning, not serving. Additive
+  `installs_blocked` column in both adapters (attempt-and-tolerate migration, default 0).
+  Console gets a Block/Allow installs toggle and a "blocked" badge.
+
+  The console also now shows **timestamps**: when each version was pushed (table +
+  promote picker), when each channel pointer last moved, and when a vertical was
+  registered.
+
+### Patch Changes
+
+- cd32011: Marketplace apps/verticals split + the empty-marketplace fix.
+
+  **Adapters:** `registerVertical` now refreshes `listed` on an identical re-registration
+  of a **builtin** vertical (it is seed metadata, derived from the catalog's `connected`
+  flag). Rows registered before the `listed` column existed (migration default 0) were
+  stuck unlisted forever, so the hosted marketplace rendered empty. A pushed (`cli`/`git`)
+  vertical's `listed` stays untouched — re-pushing a published vertical still cannot
+  silently unpublish it.
+
+  **Dashboard:** the create-app page is now pure instantiation, grouped **Marketplace**
+  (published) and **Your verticals** (your team's own, badged Private/Published, disabled
+  until a version is promoted to prod). The Deployments page is renamed **Verticals**
+  (`#/deployments` stays as an alias) and takes over the supply side: the GitHub
+  import + one-click CI scaffold move there from create-app. `GET /api/catalog` returns
+  `{owned, listed, source, installable}` and, in connected mode, merges the shared
+  control plane's registry — so a pushed vertical shows up and (via the same fallback in
+  `installSpecFor`) installs in production, not just embedded mode.
+
+- Updated dependencies [cd32011]
+- Updated dependencies [ec89a88]
+  - @substrat-run/contracts@0.15.0
+  - @substrat-run/kernel@0.15.0
+
 ## 0.14.1
 
 ### Patch Changes
@@ -696,7 +746,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                              z.object({ facility: entityRef, unitPrice: money })
+                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
