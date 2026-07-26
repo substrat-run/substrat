@@ -395,6 +395,24 @@ export class TenantNarrowedControlPlane {
     return this.call(`/tenants/${this.tenantId}/identities/${principal}`, { method: 'DELETE', idempotent: true });
   }
 
+  /** The pinned tenant's own shared-directory row, or null before it is mirrored. */
+  async getTenant(): Promise<{ id: string; slug: string; name: string } | null> {
+    try {
+      return await this.call(`/tenants/${this.tenantId}`);
+    } catch (e) {
+      if (e instanceof ControlPlaneError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  /**
+   * Keep the shared directory's DISPLAY name in step with the team's — what the CLI
+   * shows in its workspace picker. Never the slug: registry ids key on it.
+   */
+  setTenantName(name: string): Promise<void> {
+    return this.call(`/tenants/${this.tenantId}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+  }
+
   // -- snapshots (preview-and-snapshots.md §3/§9) -----------------------------
   // Thin wrappers over the CP's orchestrated snapshot surface, tenant-pinned by
   // construction like everything else here. The CP does the data hop into the

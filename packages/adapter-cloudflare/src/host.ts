@@ -184,6 +184,7 @@ const toConnection = (r: ConnectionDoRow): Connection =>
 interface ControlPlaneStub {
   createTenant(id: string, slug: string, name: string, createdAt: string): Promise<Tenant | null>;
   setTenantStatus(tenantId: string, status: TenantStatus): Promise<string>;
+  setTenantName(tenantId: string, name: string): Promise<string>;
   getTenant(tenantId: string): Promise<Tenant | undefined>;
   listTenants(): Promise<Tenant[]>;
   provisionScope(
@@ -1842,6 +1843,11 @@ export class CloudflareScopeHost implements ScopeHost {
       setTenantStatus: async (actor, tenantId, status: TenantStatus) => {
         const before = await this.cp.setTenantStatus(tenantId, status);
         await this.recordAdmin(actor, 'setTenantStatus', { tenantId }, { status: before }, { status });
+      },
+      setTenantName: async (actor, tenantId, name: string) => {
+        const before = await this.cp.setTenantName(tenantId, name);
+        if (before === name) return; // no-op is not audited — nothing changed
+        await this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before }, { name });
       },
       listTenants: async (actor): Promise<Tenant[]> => {
         const tenants = (await this.cp.listTenants()).map((t) => tenantSchema.parse(t));

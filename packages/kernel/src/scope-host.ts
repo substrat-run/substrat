@@ -670,6 +670,12 @@ export interface HostAdmin {
     tenantId: TenantId,
     status: TenantStatus,
   ): Promise<void>;
+  /**
+   * Rename a tenant's DISPLAY name. Never the slug: registry ids
+   * (`<tenantSlug>/<name>`) and pinned workspaces are keyed on it, so the slug is
+   * immutable here by omission — renaming display must not orphan a vertical.
+   */
+  setTenantName(actor: PlatformActorId, tenantId: TenantId, name: string): Promise<void>;
   /** The tenant registry — the directory's inventory (control-plane.md §4.5 console item 1). */
   listTenants(actor: PlatformActorId): Promise<Tenant[]>;
   getTenant(actor: PlatformActorId, tenantId: TenantId): Promise<Tenant | undefined>;

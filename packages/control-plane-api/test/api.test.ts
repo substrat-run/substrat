@@ -127,6 +127,15 @@ describe('control-plane API', () => {
     await json(`/tenants/${t1}/status`, 'PATCH', { status: 'active' });
   });
 
+  it('renames a tenant display name; the slug stays put', async () => {
+    const before = (await (await req(`/tenants/${t1}`)).json()) as { slug: string };
+    const res = await json(`/tenants/${t1}`, 'PATCH', { name: 'Acme Renamed' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ name: 'Acme Renamed', slug: before.slug });
+    // A blank name is refused at the Zod boundary.
+    expect((await json(`/tenants/${t1}`, 'PATCH', { name: '  ' })).status).toBe(400);
+  });
+
   // -- entitlements (§4.3) --------------------------------------------------
 
   it('grants, lists and revokes entitlements', async () => {

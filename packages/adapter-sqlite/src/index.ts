@@ -2773,6 +2773,13 @@ export class SqliteScopeHost implements ScopeHost {
           { status },
         );
       },
+      setTenantName: async (actor: PlatformActorId, tenantId: TenantId, name: string) => {
+        const before = readTenant(tenantId);
+        if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+        if (before.name === name) return; // no-op is not audited — nothing changed
+        this.directory.prepare('UPDATE tenants SET name = ? WHERE tenant_id = ?').run(name, tenantId);
+        this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before.name }, { name });
+      },
       listTenants: async (actor): Promise<Tenant[]> => {
         const rows = (
           this.directory.prepare('SELECT * FROM tenants ORDER BY tenant_id').all() as TenantRow[]

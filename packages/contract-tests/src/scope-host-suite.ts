@@ -1996,6 +1996,31 @@ export function scopeHostContractSuite(
       ).rejects.toThrow(/unknown tenant/);
     });
 
+    it('renames a tenant display name — audited with before/after, slug untouched', async () => {
+      const before = (await host.admin.getTenant(staff, t3))!;
+      await host.admin.setTenantName(staff, t3, 'Renamed Co');
+      const after = (await host.admin.getTenant(staff, t3))!;
+      expect(after.name).toBe('Renamed Co');
+      expect(after.slug).toBe(before.slug); // the slug is immutable by omission
+
+      const renames = (await host.admin.auditLog(staff, { tenantId: t3 })).filter(
+        (r) => r.action === 'setTenantName',
+      );
+      expect(renames).toHaveLength(1);
+      expect((renames[0]!.before as { name: string }).name).toBe(before.name);
+      expect((renames[0]!.after as { name: string }).name).toBe('Renamed Co');
+
+      // Renaming to the current name is a no-op and leaves no audit row.
+      await host.admin.setTenantName(staff, t3, 'Renamed Co');
+      expect(
+        (await host.admin.auditLog(staff, { tenantId: t3 })).filter((r) => r.action === 'setTenantName'),
+      ).toHaveLength(1);
+
+      await expect(
+        host.admin.setTenantName(staff, tenantId.parse(ulid()), 'Ghost'),
+      ).rejects.toThrow(/unknown tenant/);
+    });
+
     // -- scope lifecycle (control-plane.md §4.2) ------------------------------
 
     it('suspend/unsuspend a scope gates getScope for that scope alone (§4.2)', async () => {
