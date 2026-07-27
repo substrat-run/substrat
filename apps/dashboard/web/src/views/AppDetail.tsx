@@ -146,6 +146,25 @@ function Overview({ app, meta, statusKind, statusLabel }: { app: AppRow; meta: {
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>A hostname is assigned once provisioning completes.</div>
           )}
         </div>
+        <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Eyebrow>API</Eyebrow>
+          {app.hostname ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, height: 32, padding: '0 10px', background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 6, ...mono, color: 'var(--text-primary)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{`https://${app.hostname}/openapi.json`}</span>
+                <IconBox label="Copy OpenAPI URL"><CopyButton text={`https://${app.hostname}/openapi.json`} size={14} /></IconBox>
+                <Button variant="secondary" onClick={() => window.open(`https://${app.hostname}/api/docs`, '_blank')}>API docs ↗</Button>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                The app serves its own OpenAPI document and interactive reference. Both ride the app's
+                session — sign in to the app first. Apps built before the API surface rolled out
+                redirect to their sign-in page instead.
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Available once provisioning completes.</div>
+          )}
+        </div>
       </div>
       <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column' }}>
         <Eyebrow style={{ paddingBottom: 12 }}>Activity</Eyebrow>
