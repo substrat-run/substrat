@@ -23,6 +23,7 @@ import {
   type DashboardNode,
 } from '../src/index.js';
 import { listDeploymentsFromHost, verticalDeploymentFromHost, assertOwned } from '../src/deployments.js';
+import { ControlPlaneError } from '../src/authority.js';
 
 /**
  * M0 — the central claim of docs/design/dashboard.md, cashed out: a tenant admin
@@ -254,6 +255,86 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     expect(rows.find((a) => a.app_scope_id === failScope)?.status).toBe('failed');
     const events = await dash.invoke<Array<{ kind: string; detail: string | null }>>('dashboard/app-events', { appScopeId: failScope });
     expect(events.find((e) => e.kind === 'failed')?.detail).toContain('client registration');
+  });
+
+  it('authors the Identity choice at install so Settings can read and update it — secret redacted, blank keeps it', async () => {
+    const acme = await bootstrap('acme-auth-visible');
+    const cp = {
+      tenantId: acme.tenantId,
+      ensureTenant: async () => {},
+      grantEntitlement: async () => {},
+      provisionScope: async () => {},
+      provisionInstance: async () => {},
+      activateScope: async () => {},
+      listChannels: async () => [],
+      bindHostname: async () => {},
+      setHostnameStatus: async () => {},
+      configureInstance: async () => {},
+    } as unknown as Parameters<typeof createApp>[1]['controlPlane'];
+    const appScope = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme, appScopeId: appScope, verticalSlug: 'meridian', name: 'People',
+      appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+      controlPlane: cp,
+      appAuth: { source: 'external', issuer: 'https://auth.example.com', clientId: 'cid', clientSecret: 'super-secret' },
+    });
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+
+    // Visible afterwards, with the secret REDACTED (write-only) — the install-time gap
+    // this closes: delivery alone left the issuer invisible everywhere but in the app.
+    type AuthView = { issuer: string; clientId: string; hasClientSecret: boolean } | null;
+    const view = (await dash.invoke('dashboard/get-app-auth', { appScopeId: appScope })) as AuthView;
+    expect(view).toMatchObject({ issuer: 'https://auth.example.com', clientId: 'cid', hasClientSecret: true });
+    expect(JSON.stringify(view)).not.toContain('super-secret');
+
+    // The reserved `substrat:auth` row never leaks into the Env tab's list.
+    expect(await dash.invoke('dashboard/list-app-env', { appScopeId: appScope })).toEqual([]);
+
+    // An update WITHOUT a clientSecret keeps the stored one (the form can change the
+    // issuer without re-typing a secret it never received back) — the returned merged
+    // config is what a caller delivers to the running scope.
+    const merged = await dash.invoke('dashboard/set-app-auth', {
+      appScopeId: appScope,
+      config: { mode: 'oidc', issuer: 'https://other.example.com', clientId: 'cid2' },
+    });
+    expect(merged).toEqual({
+      mode: 'oidc', issuer: 'https://other.example.com', clientId: 'cid2', clientSecret: 'super-secret',
+    });
+    const after = (await dash.invoke('dashboard/get-app-auth', { appScopeId: appScope })) as AuthView;
+    expect(after).toMatchObject({ issuer: 'https://other.example.com', clientId: 'cid2', hasClientSecret: true });
+  });
+
+  it("a 501 delivery failure fails with an ACTIONABLE reason, not just the deployment's status line", async () => {
+    const acme = await bootstrap('acme-501');
+    const failScope = scopeId.parse(ulid());
+    const cp = {
+      tenantId: acme.tenantId,
+      ensureTenant: async () => {},
+      grantEntitlement: async () => {},
+      provisionScope: async () => {},
+      provisionInstance: async () => {},
+      activateScope: async () => {},
+      listChannels: async () => [],
+      bindHostname: async () => {},
+      setHostnameStatus: async () => {},
+      // The sesamy-crm shape: a vertical with no /internal/configure route answers 501.
+      configureInstance: () => Promise.reject(new ControlPlaneError(501, 'sesamy-crm has no live-config support')),
+    } as unknown as Parameters<typeof createApp>[1]['controlPlane'];
+    await expect(
+      createApp(host, {
+        node: acme, appScopeId: failScope, verticalSlug: 'meridian', name: 'CRM',
+        appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+        controlPlane: cp,
+        appAuth: { source: 'external', issuer: 'https://auth.example.com', clientId: 'cid' },
+      }),
+    ).rejects.toThrow(/identity setup failed/);
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    const events = await dash.invoke<Array<{ kind: string; detail: string | null }>>('dashboard/app-events', { appScopeId: failScope });
+    const detail = events.find((e) => e.kind === 'failed')?.detail ?? '';
+    // The Activity trail carries what happened AND what to do next.
+    expect(detail).toContain('no live-config support');
+    expect(detail).toContain('Builtin');
+    expect(detail).toContain('/internal/configure');
   });
 
   it('retrying a failed app tears down the failed attempt and provisions a fresh, active one', async () => {

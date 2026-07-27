@@ -516,8 +516,11 @@ const listAppEnvInput = z.object({ appScopeId: z.string().min(1) });
 const listAppEnvOp: OperationHandler<z.infer<typeof listAppEnvInput>, AppEnvValue[]> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
   const input = listAppEnvInput.parse(raw);
+  // The `substrat:*` namespace is reserved for platform-managed entries (the app's
+  // Identity choice lives at `substrat:auth`) — those have their own ops with
+  // field-wise redaction, so they never appear as an opaque blob in the Env tab.
   const rows = ctx.sql.query<DashboardAppEnvRow>(
-    'SELECT * FROM dashboard_app_env WHERE app_scope_id = ? ORDER BY key',
+    "SELECT * FROM dashboard_app_env WHERE app_scope_id = ? AND key NOT LIKE 'substrat:%' ORDER BY key",
     [input.appScopeId],
   );
   return rows.map((r) => ({
@@ -538,6 +541,103 @@ const deleteAppEnvOp: OperationHandler<z.infer<typeof deleteAppEnvInput>, { ok: 
   ctx.sql.exec('DELETE FROM dashboard_app_env WHERE app_scope_id = ? AND key = ?', [input.appScopeId, input.key]);
   return { ok: true };
 };
+
+// -- app identity (the `substrat:auth` entry) --------------------------------
+
+/**
+ * The reserved key holding the app's Identity choice (vertical-auth-detach.md §2.4) —
+ * the same JSON that `/internal/configure` delivers to the running scope. It shares
+ * the env table (authored config, same authority) but sits outside the Env tab's
+ * UPPER_SNAKE_CASE namespace and has its own ops, because the secret lives INSIDE
+ * the JSON: masking the whole value would hide the issuer and clientId the user
+ * legitimately needs to see, so redaction here is field-wise.
+ */
+const APP_AUTH_KEY = 'substrat:auth';
+
+const appAuthConfig = z.object({
+  mode: z.literal('oidc'),
+  issuer: z.string().url(),
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1).optional(),
+  audience: z.string().min(1).optional(),
+});
+
+/** The `substrat:auth` payload as authored/delivered — what `authProviderFor` parses. */
+export type AppAuthConfig = z.infer<typeof appAuthConfig>;
+
+/** The identity record as exposed to callers — the clientSecret never leaves. */
+export interface AppAuthView {
+  mode: 'oidc';
+  issuer: string;
+  clientId: string;
+  audience: string | null;
+  hasClientSecret: boolean;
+  updatedAt: string;
+}
+
+const setAppAuthInput = z.object({ appScopeId: z.string().min(1), config: appAuthConfig });
+
+/**
+ * Record the app's identity choice (upsert, same authority as managing the app). An
+ * absent clientSecret KEEPS the stored one — write-only like env secrets, so the form
+ * can change issuer/clientId without re-typing a secret it never received back.
+ * Returns the merged config so the caller can deliver exactly what was stored; the
+ * Activity trail records the issuer, never the credentials.
+ */
+const setAppAuthOp: OperationHandler<z.infer<typeof setAppAuthInput>, AppAuthConfig> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = setAppAuthInput.parse(raw);
+  const merged: AppAuthConfig = { ...input.config };
+  if (!merged.clientSecret) {
+    const stored = readAppAuth(ctx, input.appScopeId);
+    if (stored?.config.clientSecret) merged.clientSecret = stored.config.clientSecret;
+  }
+  ctx.sql.exec(
+    `INSERT INTO dashboard_app_env (id, app_scope_id, key, value, is_secret, updated_by, updated_at)
+     VALUES (?, ?, ?, ?, 1, ?, ?)
+     ON CONFLICT (app_scope_id, key) DO UPDATE SET
+       value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+    [ulid(), input.appScopeId, APP_AUTH_KEY, JSON.stringify(merged), ctx.principal, new Date().toISOString()],
+  );
+  recordAppEvent(ctx, input.appScopeId, 'updated', `identity: ${merged.issuer}`);
+  return merged;
+};
+
+const getAppAuthInput = z.object({ appScopeId: z.string().min(1) });
+
+/** The app's identity choice, clientSecret redacted. Null ⇒ the vertical's builtin auth. */
+const getAppAuthOp: OperationHandler<z.infer<typeof getAppAuthInput>, AppAuthView | null> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  const input = getAppAuthInput.parse(raw);
+  const stored = readAppAuth(ctx, input.appScopeId);
+  if (!stored) return null;
+  return {
+    mode: stored.config.mode,
+    issuer: stored.config.issuer,
+    clientId: stored.config.clientId,
+    audience: stored.config.audience ?? null,
+    hasClientSecret: stored.config.clientSecret !== undefined,
+    updatedAt: stored.updatedAt,
+  };
+};
+
+/** The stored `substrat:auth` row, parsed; undefined when absent or unreadable. */
+function readAppAuth(
+  ctx: OperationContext,
+  appScopeId: string,
+): { config: AppAuthConfig; updatedAt: string } | undefined {
+  const row = ctx.sql.query<DashboardAppEnvRow>(
+    'SELECT * FROM dashboard_app_env WHERE app_scope_id = ? AND key = ?',
+    [appScopeId, APP_AUTH_KEY],
+  )[0];
+  if (!row) return undefined;
+  try {
+    const parsed = appAuthConfig.safeParse(JSON.parse(row.value));
+    return parsed.success ? { config: parsed.data, updatedAt: row.updated_at } : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // -- team + members ----------------------------------------------------------
 
@@ -816,6 +916,8 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/set-app-env': setAppEnvOp as OperationHandler<never, unknown>,
     'dashboard/list-app-env': listAppEnvOp as OperationHandler<never, unknown>,
     'dashboard/delete-app-env': deleteAppEnvOp as OperationHandler<never, unknown>,
+    'dashboard/set-app-auth': setAppAuthOp as OperationHandler<never, unknown>,
+    'dashboard/get-app-auth': getAppAuthOp as OperationHandler<never, unknown>,
     'dashboard/init-team': initTeamOp as OperationHandler<never, unknown>,
     'dashboard/invite-member': inviteMemberOp as OperationHandler<never, unknown>,
     'dashboard/accept-invite': acceptInviteOp as OperationHandler<never, unknown>,

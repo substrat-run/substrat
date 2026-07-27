@@ -12,7 +12,7 @@ import {
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
 import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js';
-import { TenantNarrowedControlPlane, type SnapshotRecord } from './authority.js';
+import { ControlPlaneError, TenantNarrowedControlPlane, type SnapshotRecord } from './authority.js';
 import { authConfigFor, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
@@ -264,11 +264,12 @@ export async function createApp(
   //    here is a real failure, not a degraded install: the user asked for THIS issuer,
   //    and an app that silently fell back to builtin would strand its users later.
   if (input.appAuth && input.controlPlane) {
+    let config: Record<string, string>;
     try {
       if (!hostname) {
         throw new Error('no hostname could be bound, so the OIDC callback URL cannot be formed');
       }
-      const config = await authConfigFor(input.appAuth, {
+      config = await authConfigFor(input.appAuth, {
         appName: input.name,
         redirectUri: `https://${hostname}/api/auth/callback`,
         ...(input.registerOidcClient ? { registerClient: input.registerOidcClient } : {}),
@@ -277,10 +278,14 @@ export async function createApp(
         { key: 'substrat:auth', value: JSON.stringify(config) },
       ]);
     } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
+      const reason = identityFailureReason(e, input.verticalSlug);
       await scope.invoke('dashboard/mark-app-failed', { appScopeId: input.appScopeId, reason }).catch(() => {});
-      throw e;
+      throw new Error(reason, { cause: e });
     }
+    // Author the delivered choice in the dashboard's own store (`dashboard/get-app-auth`)
+    // so the Settings tab can show and update it later — delivery alone would leave the
+    // issuer invisible everywhere but inside the app's deployment.
+    await scope.invoke('dashboard/set-app-auth', { appScopeId: input.appScopeId, config });
   }
 
   // 4. Flip the account's record to active, recording the hostname if one bound.
@@ -288,6 +293,25 @@ export async function createApp(
     appScopeId: input.appScopeId,
     ...(hostname ? { hostname } : {}),
   });
+}
+
+/**
+ * A HUMAN-readable reason for a failed identity step — this string lands on the app's
+ * Activity trail and in the failure toast, so it must say what happened AND what to do
+ * next, not just relay the deployment's status line. The one case worth naming: a 501
+ * from the app's deployment means the vertical has no `/internal/configure` route, so
+ * an issuer choice can never reach it (the sesamy-crm incident, 2026-07-27).
+ */
+function identityFailureReason(e: unknown, verticalSlug: string): string {
+  const cause = e instanceof Error ? e.message : String(e);
+  if (e instanceof ControlPlaneError && e.status === 501) {
+    return (
+      `identity setup failed: the '${verticalSlug}' app cannot receive auth settings while running ` +
+      `(its deployment answered: ${cause}). Create the app with Identity set to Builtin, ` +
+      `or add /internal/configure support to the vertical and retry.`
+    );
+  }
+  return `identity setup failed: ${cause}`;
 }
 
 type CreateAppInput = Parameters<typeof createApp>[1];
