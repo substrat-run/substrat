@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { instant, scopeId, slug, tenantId } from './ids.js';
+import { instant, scopeId, tenantId, verticalSlug } from './ids.js';
 
 /**
  * The hostname map (K-26; control-plane.md §4.7).
@@ -80,8 +80,9 @@ export const hostnameBinding = z.object({
   hostname,
   tenantId,
   scopeId,
-  /** Denormalized from the scope, so the router resolves in one read. */
-  verticalSlug: slug.nullable(),
+  /** Denormalized from the scope, so the router resolves in one read. A registry
+   *  id — `<tenantSlug>/<name>` for a builder's vertical, bare for platform. */
+  verticalSlug: verticalSlug.nullable(),
   surface: surfaceName,
   region: hostnameRegion,
   status: hostnameStatus,
@@ -113,7 +114,7 @@ export type BindHostnameInput = z.infer<typeof bindHostnameInput>;
 export const routeTarget = z.object({
   tenantId,
   scopeId,
-  verticalSlug: slug.nullable(),
+  verticalSlug: verticalSlug.nullable(),
   /**
    * The dispatch script the scope's bound version deploys as (orchestration.md §5.4) —
    * what the router hands to `env.DISPATCH.get(...)`. Null when the scope has no bound
