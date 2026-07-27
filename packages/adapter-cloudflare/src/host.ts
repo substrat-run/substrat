@@ -13,6 +13,7 @@ import {
   AUTO_ADMISSION_NOTE,
   registerVerticalInput,
   vertical as verticalSchema,
+  verticalServingState,
   verticalChannel,
   verticalVersion,
   connection,
@@ -252,11 +253,17 @@ interface ControlPlaneStub {
   insertVersion(v: {
     id: string; verticalSlug: string; version: string; manifestDigest: string;
     permissionDigest: string; migrationDigest: string; deploymentRef: string | null;
-    admission: string; admissionNote: string | null; createdAt: string;
+    admission: string; admissionNote: string | null; manifestJson: string | null;
+    createdAt: string;
   }): Promise<void>;
   listVersions(verticalSlug: string): Promise<VersionRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
+  setVerticalServing(
+    slug: string,
+    s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
+  ): Promise<void>;
+  setScopeServingRef(scopeId: string, servingRef: string | null): Promise<void>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): Promise<void>;
@@ -1227,6 +1234,8 @@ export class CloudflareScopeHost implements ScopeHost {
         listed: !!r.listed,
         ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         installsBlocked: !!r.installs_blocked,
+        ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
+        ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
       });
     const mapVersion = (r: VersionRow): VerticalVersion =>
@@ -1646,14 +1655,18 @@ export class CloudflareScopeHost implements ScopeHost {
         // sandbox contract is the gate and the version self-admits, noted so the
         // publish seam can tell a staff vouch from this shortcut.
         const selfAdmits = owning.owner_tenant !== null && !owning.listed;
+        // The manifest is retained for the serving upload (#286), not audited — a whole
+        // manifest per publish would drown the admin log in bundle metadata.
+        const { manifestJson, ...audited } = parsed;
         await this.cp.insertVersion({
-          ...parsed,
+          ...audited,
+          manifestJson: manifestJson ?? null,
           admission: selfAdmits ? 'admitted' : 'pending',
           admissionNote: selfAdmits ? AUTO_ADMISSION_NOTE : null,
           createdAt: new Date().toISOString(),
         });
         await this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
-          ...parsed,
+          ...audited,
           admission: selfAdmits ? 'admitted' : 'pending',
         });
       },
@@ -1880,6 +1893,58 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId, vertical: v.vertical_slug, version: v.version,
         });
+      },
+      verticalServing: async (actor, verticalSlug: string) => {
+        const r = await this.cp.readVertical(verticalSlug);
+        if (!r) throw new Error(`unknown vertical '${verticalSlug}'`);
+        await this.recordAccess(actor, 'verticalServing', {}, { verticalSlug }, r.serving_ref ? 1 : 0);
+        if (!r.serving_ref || !r.serving_version_id || !r.serving_migration_tag) return null;
+        return verticalServingState.parse({
+          ref: r.serving_ref,
+          versionId: r.serving_version_id,
+          doClasses: r.serving_do_classes ? JSON.parse(r.serving_do_classes) : [],
+          migrationTag: r.serving_migration_tag,
+        });
+      },
+      setVerticalServing: async (actor, verticalSlug: string, state) => {
+        const parsed = verticalServingState.parse(state);
+        const r = await this.cp.readVertical(verticalSlug);
+        if (!r) throw new Error(`unknown vertical '${verticalSlug}'`);
+        await this.cp.setVerticalServing(verticalSlug, {
+          ref: parsed.ref,
+          versionId: parsed.versionId,
+          doClassesJson: JSON.stringify(parsed.doClasses),
+          migrationTag: parsed.migrationTag,
+        });
+        await this.recordAdmin(
+          actor,
+          'setVerticalServing',
+          { tenantId: null },
+          r.serving_ref
+            ? { ref: r.serving_ref, versionId: r.serving_version_id }
+            : null,
+          { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
+        );
+      },
+      versionManifest: async (actor, verticalSlug: string, versionId: string) => {
+        const v = await this.cp.readVersion(versionId);
+        if (!v || v.vertical_slug !== verticalSlug) {
+          throw new Error(`unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        await this.recordAccess(actor, 'versionManifest', {}, { verticalSlug, versionId }, v.manifest_json ? 1 : 0);
+        return v.manifest_json;
+      },
+      setScopeServingRef: async (actor, tenantId, scopeId, servingRef) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        await this.cp.setScopeServingRef(scopeId, servingRef);
+        await this.recordAdmin(
+          actor,
+          'setScopeServingRef',
+          { tenantId, scopeId },
+          { servingRef: scope.serving_ref ?? null },
+          { servingRef },
+        );
       },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);

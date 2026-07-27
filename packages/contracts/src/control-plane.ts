@@ -36,6 +36,10 @@ export const adminAction = z.enum([
   'deleteVertical', // remove a vertical + its versions/channels; refused while any scope is bound
   'bindScopeVersion',
   'promoteVersion',
+  // #286 — in-place deploys: the stable serving script's state moves, and a scope's
+  // routing is pointed at the script its data now lives in (provision / adopt-serving).
+  'setVerticalServing',
+  'setScopeServingRef',
   'bindHostname', // K-26 — the hostname map
   'setHostnameStatus', // #31 step 2 — where the two human checkpoints fire
   'unbindHostname', // the inverse of bindHostname — a hard delete; the history is this log

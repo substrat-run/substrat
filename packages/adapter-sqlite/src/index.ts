@@ -89,6 +89,7 @@ import {
   SCOPE_TABLE_PAGE_DEFAULT,
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
+  verticalServingState,
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
@@ -378,6 +379,11 @@ interface VerticalRow {
   publish_requested_at: string | null;
   /** New installs blocked (0/1) — the staff kill-switch; gates provisioning, not serving. */
   installs_blocked: number;
+  /** The stable serving script (#286): name, current version, DO-class/tag delta base. */
+  serving_ref: string | null;
+  serving_version_id: string | null;
+  serving_do_classes: string | null;
+  serving_migration_tag: string | null;
   created_at: string;
 }
 
@@ -391,6 +397,8 @@ interface VersionRow {
   deployment_ref: string | null;
   admission: string;
   admission_note: string | null;
+  /** The pushed DeployManifest (JSON) — the serving upload's metadata source (#286). */
+  manifest_json: string | null;
   created_at: string;
 }
 
@@ -542,6 +550,9 @@ export class SqliteScopeHost implements ScopeHost {
         -- Retention horizon for forks (preview-and-snapshots.md §3): the GC sweep
         -- reaps a fork past this instant. Null = no expiry.
         expires_at TEXT,
+        -- The dispatch script this scope's data lives in (#286). NULL = legacy
+        -- per-version dispatch (the bound version's own script).
+        serving_ref TEXT,
         created_at TEXT NOT NULL
       );
       -- The hostname map (K-26). A single environment-wide router resolves against
@@ -592,6 +603,13 @@ export class SqliteScopeHost implements ScopeHost {
         -- and provisioning refuses, for everyone including the owner. Existing scopes
         -- keep running — this gates provisioning, not serving.
         installs_blocked INTEGER NOT NULL DEFAULT 0,
+        -- The ONE stable serving script (#286): the name every new scope's data DO
+        -- lives in, the version it currently runs, and the DO-class/migration-tag
+        -- base the next in-place upload diffs against.
+        serving_ref TEXT,
+        serving_version_id TEXT,
+        serving_do_classes TEXT,
+        serving_migration_tag TEXT,
         created_at   TEXT NOT NULL
       );
       -- admission: 'pending' until the gates pass. A push is not a deploy, and
@@ -607,6 +625,9 @@ export class SqliteScopeHost implements ScopeHost {
         deployment_ref    TEXT,
         admission         TEXT NOT NULL,
         admission_note    TEXT,
+        -- The pushed DeployManifest (JSON) — what a serve rebuilds upload metadata
+        -- from (#286). NULL = pre-#286 push, archivable but never served in place.
+        manifest_json     TEXT,
         created_at        TEXT NOT NULL,
         UNIQUE (vertical_slug, version)
       );
@@ -1827,6 +1848,8 @@ export class SqliteScopeHost implements ScopeHost {
         listed: !!r.listed,
         ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         installsBlocked: !!r.installs_blocked,
+        ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
+        ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
       });
     const readVertical = (slugValue: string): Vertical | undefined => {
@@ -2316,13 +2339,13 @@ export class SqliteScopeHost implements ScopeHost {
         // The router's per-request read. No actor, not logged — same carve-out as
         // resolveIdentity (K-24): this is a machine path, not a staff read.
         const hostname = raw.toLowerCase();
-        // Join the scope's bound version's deployment_ref — the router's dispatch
-        // script — in the same read (orchestration.md §5.4). LEFT joins: no bound
-        // version resolves with deployment_ref = null.
+        // Join the scope's dispatch script in the same read (orchestration.md §5.4).
+        // A scope on the stable serving script (#286) routes THERE; falls back to the
+        // bound version's own script. LEFT joins: neither resolves with null.
         const r = this.directory
           .prepare(
             `SELECT h.tenant_id, h.scope_id, h.vertical_slug, h.surface, h.region,
-                    vv.deployment_ref AS deployment_ref
+                    COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref
                FROM hostnames h
                LEFT JOIN scopes s ON s.scope_id = h.scope_id
                LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
@@ -2420,27 +2443,31 @@ export class SqliteScopeHost implements ScopeHost {
         // sandbox contract is the gate and the version self-admits, noted so the
         // publish seam can tell a staff vouch from this shortcut.
         const selfAdmits = owning.ownerTenant !== null && !owning.listed;
+        // The manifest is retained for the serving upload (#286), not audited — a whole
+        // manifest per publish would drown the admin log in bundle metadata.
+        const { manifestJson, ...audited } = parsed;
         this.directory
           .prepare(
             `INSERT INTO vertical_versions
                (id, vertical_slug, version, manifest_digest, permission_digest,
-                migration_digest, deployment_ref, admission, admission_note, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                migration_digest, deployment_ref, admission, admission_note, manifest_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
-            parsed.id,
-            parsed.verticalSlug,
-            parsed.version,
-            parsed.manifestDigest,
-            parsed.permissionDigest,
-            parsed.migrationDigest,
-            parsed.deploymentRef,
+            audited.id,
+            audited.verticalSlug,
+            audited.version,
+            audited.manifestDigest,
+            audited.permissionDigest,
+            audited.migrationDigest,
+            audited.deploymentRef,
             selfAdmits ? 'admitted' : 'pending',
             selfAdmits ? AUTO_ADMISSION_NOTE : null,
+            manifestJson ?? null,
             new Date().toISOString(),
           );
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
-          ...parsed,
+          ...audited,
           admission: selfAdmits ? 'admitted' : 'pending',
         });
       },
@@ -2739,6 +2766,68 @@ export class SqliteScopeHost implements ScopeHost {
           vertical: v.verticalSlug,
           version: v.version,
         });
+      },
+      verticalServing: async (actor, verticalSlug: string) => {
+        const r = this.directory
+          .prepare('SELECT * FROM verticals WHERE slug = ?')
+          .get(verticalSlug) as VerticalRow | undefined;
+        if (!r) throw new Error(`unknown vertical '${verticalSlug}'`);
+        this.recordAccess(actor, 'verticalServing', {}, { verticalSlug }, r.serving_ref ? 1 : 0);
+        if (!r.serving_ref || !r.serving_version_id || !r.serving_migration_tag) return null;
+        return verticalServingState.parse({
+          ref: r.serving_ref,
+          versionId: r.serving_version_id,
+          doClasses: r.serving_do_classes ? JSON.parse(r.serving_do_classes) : [],
+          migrationTag: r.serving_migration_tag,
+        });
+      },
+      setVerticalServing: async (actor, verticalSlug: string, state) => {
+        const parsed = verticalServingState.parse(state);
+        const r = this.directory
+          .prepare('SELECT * FROM verticals WHERE slug = ?')
+          .get(verticalSlug) as VerticalRow | undefined;
+        if (!r) throw new Error(`unknown vertical '${verticalSlug}'`);
+        this.directory
+          .prepare(
+            `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
+                    serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
+          )
+          .run(parsed.ref, parsed.versionId, JSON.stringify(parsed.doClasses), parsed.migrationTag, verticalSlug);
+        this.recordAdmin(
+          actor,
+          'setVerticalServing',
+          { tenantId: null },
+          r.serving_ref ? { ref: r.serving_ref, versionId: r.serving_version_id } : null,
+          { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
+        );
+      },
+      versionManifest: async (actor, verticalSlug: string, versionId: string) => {
+        const v = this.directory
+          .prepare('SELECT * FROM vertical_versions WHERE id = ?')
+          .get(versionId) as VersionRow | undefined;
+        if (!v || v.vertical_slug !== verticalSlug) {
+          throw new Error(`unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        this.recordAccess(actor, 'versionManifest', {}, { verticalSlug, versionId }, v.manifest_json ? 1 : 0);
+        return v.manifest_json;
+      },
+      setScopeServingRef: async (actor, tenantId, scopeId, servingRef) => {
+        const scope = this.directory
+          .prepare('SELECT tenant_id, serving_ref FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string; serving_ref: string | null } | undefined;
+        if (!scope || scope.tenant_id !== tenantId) {
+          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
+        this.directory
+          .prepare('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?')
+          .run(servingRef, scopeId);
+        this.recordAdmin(
+          actor,
+          'setScopeServingRef',
+          { tenantId, scopeId },
+          { servingRef: scope.serving_ref },
+          { servingRef },
+        );
       },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);
@@ -3651,6 +3740,12 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'verticals', 'listed', 'listed INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn(this.directory, 'verticals', 'publish_requested_at', 'publish_requested_at TEXT');
     this.ensureColumn(this.directory, 'verticals', 'installs_blocked', 'installs_blocked INTEGER NOT NULL DEFAULT 0');
+    // #286: the stable serving script + what the next in-place upload diffs against.
+    this.ensureColumn(this.directory, 'verticals', 'serving_ref', 'serving_ref TEXT');
+    this.ensureColumn(this.directory, 'verticals', 'serving_version_id', 'serving_version_id TEXT');
+    this.ensureColumn(this.directory, 'verticals', 'serving_do_classes', 'serving_do_classes TEXT');
+    this.ensureColumn(this.directory, 'verticals', 'serving_migration_tag', 'serving_migration_tag TEXT');
+    this.ensureColumn(this.directory, 'vertical_versions', 'manifest_json', 'manifest_json TEXT');
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,
@@ -3670,6 +3765,7 @@ export class SqliteScopeHost implements ScopeHost {
       ['forked_from', 'forked_from TEXT'],
       ['forked_at', 'forked_at TEXT'],
       ['expires_at', 'expires_at TEXT'],
+      ['serving_ref', 'serving_ref TEXT'],
     ] as const) {
       if (!existing.has(column)) this.directory.exec(`ALTER TABLE scopes ADD COLUMN ${ddl}`);
     }

@@ -34,6 +34,7 @@ import type {
   PromotionAcknowledgement,
   PublishVersionInput,
   RegisterVerticalInput,
+  VerticalServingState,
   RouteTarget,
   PrincipalId,
   ResolvedIdentity,
@@ -632,6 +633,49 @@ export interface HostAdmin {
     scopeId: ScopeId,
     versionId: string,
     opts?: { snapshot?: boolean },
+  ): Promise<void>;
+
+  // -- the stable serving script (#286) ---------------------------------------
+  //
+  // One script per vertical serves in place: a Durable Object namespace belongs to
+  // its script, so re-uploading new code under an unchanged name is what carries
+  // scope data across a version update — the per-version scripts stay as the push
+  // archive (admission review + the bundle store promote/backout read from). The
+  // registry records the serving state; the UPLOAD orchestration lives at the
+  // control-plane API where the platform's deploy credential is injected.
+
+  /** What the serving script currently runs, or null before the first in-place serve. */
+  verticalServing(actor: PlatformActorId, verticalSlug: string): Promise<VerticalServingState | null>;
+  /**
+   * Record a successful in-place serve: the script name, the version it now runs,
+   * and the DO-class/migration-tag base the NEXT upload diffs against. Written only
+   * AFTER the upload succeeded — a failed serve leaves `servingVersionId` trailing
+   * the prod channel, which is the visible, retryable state. Audited.
+   */
+  setVerticalServing(
+    actor: PlatformActorId,
+    verticalSlug: string,
+    state: VerticalServingState,
+  ): Promise<void>;
+  /**
+   * The pushed DeployManifest (JSON) of one version — what a serve rebuilds upload
+   * metadata from. Null for a version pushed before manifests were retained; such a
+   * version can be bound per-version but never served in place.
+   */
+  versionManifest(actor: PlatformActorId, verticalSlug: string, versionId: string): Promise<string | null>;
+  /**
+   * Point a scope's ROUTING at the serving script its data now lives in. Per-scope
+   * truth, deliberately not derived from the vertical: rerouting a scope whose DOs
+   * still sit in a per-version script would resolve empty storage. Set at provision
+   * (a scope born on the serving script) or by adopt-serving (a legacy scope whose
+   * data was exported → restored into the serving script). `null` reverts to
+   * per-version dispatch — the adopt path's own backout. Audited.
+   */
+  setScopeServingRef(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    servingRef: string | null,
   ): Promise<void>;
 
   // -- the hostname map (K-26; control-plane.md §4.7) -------------------------
