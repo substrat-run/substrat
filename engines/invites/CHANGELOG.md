@@ -1,5 +1,12 @@
 # @substrat-run/engine-invites
 
+## 0.0.18
+
+### Patch Changes
+
+- @substrat-run/contracts@0.21.0
+- @substrat-run/kernel@0.21.0
+
 ## 0.0.17
 
 ### Patch Changes

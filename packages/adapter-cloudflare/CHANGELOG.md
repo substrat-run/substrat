@@ -1,5 +1,21 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.21.0
+
+### Minor Changes
+
+- 3354e26: Restores heal their own permission model: `CloudflareScopeHost.projectRolesLocal`
+  re-applies a vertical's code-defined role definitions to one scope (scope-level
+  tuples untouched), and `VerticalClient.restoreScope` now carries `tenantId` so a
+  vertical's `/internal/restore` can invoke it after the import. A dump captured from
+  a CP-full world carries tuples but an empty roles table — without the repair, every
+  check denies while /me still names the role.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.21.0
+- @substrat-run/kernel@0.21.0
+
 ## 0.20.0
 
 ### Minor Changes
@@ -868,7 +884,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                          z.object({ facility: entityRef, unitPrice: money })
+                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
