@@ -1,5 +1,18 @@
 # @substrat-run/contract-tests
 
+## 0.19.0
+
+### Patch Changes
+
+- b4a6bee: Routing schemas accept prefixed vertical registry ids: `hostnameBinding.verticalSlug`
+  and `routeTarget.verticalSlug` now use the `verticalSlug` schema
+  (`<tenantSlug>/<name>` or bare) instead of the bare `slug` pattern. Before this, an
+  installed builder vertical's hostname row failed the Zod boundary on read-back, so
+  the bind was silently discarded and the app ended up with no URL.
+- Updated dependencies [b4a6bee]
+  - @substrat-run/contracts@0.19.0
+  - @substrat-run/kernel@0.19.0
+
 ## 0.18.0
 
 ### Minor Changes
@@ -652,7 +665,7 @@
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                      z.object({ facility: entityRef, unitPrice: money })
+                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
