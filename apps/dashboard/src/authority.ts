@@ -198,11 +198,11 @@ export class TenantNarrowedControlPlane {
    * same posture as `listVerticals` above, plus the public (`listed`) tier.
    */
   async listCatalog(): Promise<
-    Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[] }>
+    Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[] }>
   > {
     const all =
       (await this.call<
-        Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[] }>
+        Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[] }>
       >('/verticals')) ?? [];
     return all
       .filter((v) => v.listed || v.ownerTenant === this.tenantId)
@@ -214,6 +214,9 @@ export class TenantNarrowedControlPlane {
         listed: !!v.listed,
         entitlements: v.entitlements,
         ownerGrants: v.ownerGrants,
+        // The declared env-spec rides the registry too (manifest → push → here), so
+        // the Env tab renders a form for a pushed vertical without loading its code.
+        envSpec: v.envSpec,
       }));
   }
 
