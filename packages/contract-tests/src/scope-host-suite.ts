@@ -1725,6 +1725,32 @@ export function scopeHostContractSuite(
       });
     });
 
+    it('binds and lists a hostname for a PREFIXED vertical (a builder push)', async () => {
+      // A builder's registry id is `<tenantSlug>/<name>` (builder-plane.md §2), and it
+      // is denormalized onto the hostname row. The routing schemas must accept the `/`
+      // — the regression here broke every install of a pushed vertical: the bind wrote
+      // the row, then the read-back 400d at the Zod boundary and the app got no URL.
+      const sc = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sc, vertical: 't-acme/crm', jurisdiction: 'eu' });
+      await host.admin.bindHostname(staff, {
+        hostname: 'crm-acme.global.example.com',
+        tenantId: t1,
+        scopeId: sc,
+        surface: 'app',
+        region: null,
+        canonical: true,
+      });
+      const rows = await host.admin.listHostnames(staff, { scopeId: sc });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ verticalSlug: 't-acme/crm' });
+
+      await host.admin.setHostnameStatus(staff, 'crm-acme.global.example.com', 'active');
+      expect(await host.admin.resolveHostname('crm-acme.global.example.com')).toMatchObject({
+        scopeId: sc,
+        verticalSlug: 't-acme/crm',
+      });
+    });
+
     it('routes two surfaces of ONE scope to different hostnames', async () => {
       // The reason §5.5's one-hostname-per-scope was not enough: the shop fronts a
       // storefront and a back office from the same data, and RallyPoint a player
