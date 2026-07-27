@@ -24,6 +24,8 @@ import { IdentityDO, doAuthProvider, oidcAuthProvider, type AuthProvider } from 
 import { MODULES, ROLES } from './provision.js';
 import { serveAsset } from './assets.js';
 import { mountApi } from './routes.js';
+import { API_DOCUMENT } from './api.js';
+import { DOCS_HTML } from './docs.js';
 
 /** The scope-DO class = the app binary: kernel + the Manyfold module, bundled. */
 export const ScopeDO = defineScopeDO(MODULES, {});
@@ -295,6 +297,20 @@ app.post('/api/accept-invite', async (c) => {
   const principal = await identityDo(c.env, node).claimInvite(node.scopeId, subject.sub, await sha256Hex(token));
   if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
   return c.json({ ok: true, principal });
+});
+
+// The OpenAPI document + Scalar reference (design/api-surface.md). Session-gated
+// like the rest of /api/* — the spec enumerates the surface. The docs page
+// redirects a signed-out human to the SPA's login instead of a bare 401.
+app.get('/openapi.json', async (c) => {
+  const principal = await principalFor(c.env, c.req.raw);
+  if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
+  return c.json(API_DOCUMENT);
+});
+app.get('/api/docs', async (c) => {
+  const principal = await principalFor(c.env, c.req.raw);
+  if (!principal) return c.redirect('/');
+  return c.html(DOCS_HTML);
 });
 
 mountApi(app, stub);

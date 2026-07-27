@@ -56,6 +56,20 @@ function walk(dir) {
 }
 
 const entries = [];
+
+// The Scalar API Reference renderer, self-hosted (design/api-surface.md §2.3):
+// /api/docs must never load its renderer from a CDN, so the pinned package's
+// standalone bundle rides the same inline-asset path as the SPA. Resolved via
+// the package's node_modules dir (its `exports` map does not expose dist/).
+const scalarJs = join(here, '..', 'node_modules', '@scalar', 'api-reference', 'dist', 'browser', 'standalone.js');
+if (existsSync(scalarJs)) {
+  entries.push(
+    `  "/assets/scalar-api-reference.js": { body: ${JSON.stringify(readFileSync(scalarJs, 'utf8'))}, encoding: 'utf8', type: 'text/javascript; charset=utf-8' },`,
+  );
+} else {
+  console.warn('gen-assets: @scalar/api-reference not installed — /api/docs will 404 its renderer');
+}
+
 if (existsSync(distDir)) {
   for (const file of walk(distDir)) {
     const ext = extname(file).toLowerCase();

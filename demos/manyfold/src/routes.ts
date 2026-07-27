@@ -1,6 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
+import { API } from './api.js';
 
 /**
  * The Manyfold data API — one route table, adapter- and auth-agnostic. Both entrypoints
@@ -12,12 +13,13 @@ import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
  */
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 
-/** The vertical's operations, exposed under `/api/op/<name>`. */
-export const OPERATIONS = [
-  'create-entry', 'save-draft', 'restore-revision', 'submit-for-review', 'approve', 'reject',
-  'publish', 'unpublish', 'archive', 'list-entries', 'review-queue', 'get-entry', 'list-types',
-  'deliver', 'list-delivery', 'save-type', 'delete-type', 'whoami', 'timeline',
-] as const;
+/**
+ * The vertical's operations, exposed under `/api/op/<name>` — derived from the
+ * API catalog (src/api.ts), so the served surface and the documented surface
+ * are the same list by construction. Bare names (the SPA's pre-convention
+ * shape) stay accepted; full registered names are the documented convention.
+ */
+export const OPERATIONS = Object.keys(API).map((n) => n.slice('manyfold/'.length));
 const ALLOWED = new Set<string>(OPERATIONS);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -40,10 +42,14 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
     return c.json({ error: msg }, 400);
   });
 
-  app.post('/api/op/:op', async (c) => {
-    const op = c.req.param('op');
-    if (!ALLOWED.has(op)) throw new HTTPException(404, { message: `unknown operation: ${op}` });
-    const input = await c.req.json<Record<string, unknown>>().catch(() => ({}));
-    return c.json((await (await resolveStub(c)).invoke(`manyfold/${op}`, input)) ?? null);
+  // One URL per operation (design/api-surface.md §2.2). Full registered names
+  // (`/api/op/manyfold/create-entry`) are the documented platform convention;
+  // bare names (`/api/op/create-entry`) remain for the SPA.
+  app.post('/api/op/*', async (c) => {
+    const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
+    const full = name in API ? name : ALLOWED.has(name) ? `manyfold/${name}` : null;
+    if (!full) throw new HTTPException(404, { message: `unknown operation: ${name}` });
+    const body = await c.req.text();
+    return c.json((await (await resolveStub(c)).invoke(full, body ? JSON.parse(body) : undefined)) ?? null);
   });
 }
