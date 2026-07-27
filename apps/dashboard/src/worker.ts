@@ -1182,11 +1182,18 @@ app.get('/api/apps/:scopeId/env', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // The env-spec comes from the REGISTRY (a vertical declares it in its manifest; the
-  // registry carries it), so a pushed builder vertical works the same as a builtin — the
-  // catalog is only a fallback for a not-yet-seeded registry.
+  // registry carries it), so a pushed builder vertical works the same as a builtin. In
+  // CONNECTED mode a pushed vertical registers on the SHARED plane, not this
+  // deployment's registry — same lookup ladder as installSpecFor: local registry, the
+  // hardcoded catalog, then the shared plane's catalog.
   await ensureCatalog(host, STAFF);
   const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === appRow.vertical_slug);
-  const spec = registered?.envSpec ?? CATALOG[appRow.vertical_slug]?.envSpec ?? [];
+  let spec = registered?.envSpec ?? CATALOG[appRow.vertical_slug]?.envSpec;
+  if (!spec) {
+    const cp = controlPlaneFor(c.env, node.tenantId);
+    const remote = cp ? (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug) : undefined;
+    spec = (remote?.envSpec as typeof spec) ?? [];
+  }
   const values = await dash.invoke('dashboard/list-app-env', { appScopeId: appRow.app_scope_id });
   return c.json({ spec, values });
 });
