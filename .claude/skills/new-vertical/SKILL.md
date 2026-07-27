@@ -70,7 +70,29 @@ pass-through in the root `package.json` only if asked. Workspace globs already c
 - Server: dev principal picker via `x-principal` header, `getScope` → `invoke`, one
   route per operation, `PermissionDenied` → 403. **No business logic in routes.**
 
-### 5. Scenario test (`test/scenario.test.ts`)
+### 5. API surface (`src/api.ts` + docs routes)
+
+Every vertical is born documented (design/api-surface.md; reference:
+`demos/meridian/src/api.ts`, near-minimal: `demos/manyfold/src/api.ts`):
+
+- Export every operation's input schema from `module.ts` (named consts — no inline
+  anonymous `z.object(...).parse` in handlers; the catalog must reference the SAME
+  objects the handlers parse).
+- `src/api.ts`: an `ApiCatalog` (from `@substrat-run/contracts`) — one entry per
+  registered operation with `summary`, `description` (name the permission it checks),
+  `tag`, `input` (+ `inputOptional` for filter-style reads) — plus the import-time
+  parity check and `API_DOCUMENT = buildOpenApiDocument(...)`, versioned by the
+  manifest. Copy both blocks from Meridian verbatim.
+- Routes on BOTH entrypoints: `POST /api/op/*` (full registered names — the documented
+  convention), `GET /openapi.json` (session-gated on the worker, open on the dev
+  server), `GET /api/docs` (Scalar, self-hosted — copy `src/docs.ts` and the
+  gen-assets Scalar block from Meridian; `@scalar/api-reference` as devDependency;
+  never a CDN, never Scalar's proxy).
+- Run `pnpm lint:api` and COMMIT the emitted `demos/<name>/openapi.json` — CI checks
+  it with `--check`; that diff is the API-surface review artifact (a human checkpoint,
+  like the permission diff).
+
+### 6. Scenario test (`test/scenario.test.ts`)
 
 Replay the spec's scenario headlessly against a temp dir: migrations journaled →
 lifecycle happy path → **denials hold** (wrong role, portal isolation between two
@@ -93,7 +115,7 @@ Two things that decide whether these assertions are worth anything:
   (`packages/contracts/src/money.ts`), so 34 894,80 kr serialises as `'34894.8'` —
   asserting `'34894.80'` fails on a *correct* number.
 
-### 6. App skin (`app/`)
+### 7. App skin (`app/`)
 
 Copy-and-own from `demos/callout/app`: Vite + React, hash routing, principal picker in
 the top bar, views renamed to the vertical's vocabulary. Change brand, labels, and
@@ -105,7 +127,7 @@ which columns matter; keep the api.ts pattern (typed wrappers over the server ro
   is enough; `navigate(v)` sets `location.hash`, a `hashchange` listener re-derives the
   view. Site/persona can stay in `localStorage` (they persist across refresh anyway).
 
-### 7. Drive it over HTTP — the step the scenario test cannot do for you
+### 8. Drive it over HTTP — the step the scenario test cannot do for you
 
 **A vertical's scenario test can be 100% green while the demo is 100% broken.** The test
 calls `stub.invoke(...)` directly, so it never executes `server.ts`, the route table, the
@@ -181,10 +203,11 @@ Run all of these from the repo root; all must pass:
 pnpm -r build && pnpm -r typecheck
 node tools/boundary-lint.mjs
 pnpm lint:permissions --check          # PERMISSIONS.md is checked in; CI fails on drift
+pnpm lint:api --check                  # openapi.json is checked in; CI fails on drift
 pnpm --filter @substrat-run/demo-<name> test
 ```
 
-…and then the one that is not a command — **step 7: drive the arc over HTTP**. Green tests
+…and then the one that is not a command — **step 8: drive the arc over HTTP**. Green tests
 plus a broken `server.ts` is a real and unremarkable outcome here, so a vertical you have
 not actually run is not finished, however green the suite.
 

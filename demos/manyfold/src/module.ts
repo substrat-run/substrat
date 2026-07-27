@@ -146,7 +146,24 @@ export const manyfoldMigrations = [
 
 // ── Rows ────────────────────────────────────────────────────────────────────
 
-export type EntryStatus = 'draft' | 'in_review' | 'approved' | 'published' | 'unpublished' | 'archived';
+export const ENTRY_STATUSES = ['draft', 'in_review', 'approved', 'published', 'unpublished', 'archived'] as const;
+export type EntryStatus = (typeof ENTRY_STATUSES)[number];
+
+// The operation input schemas — named and exported so the API catalog
+// (src/api.ts) documents the SAME objects the handlers parse
+// (design/api-surface.md §2.1). `body` stays `unknown` at this boundary on
+// purpose: an entry body's real schema is the CONTENT TYPE's, data-defined and
+// validated by buildBodySchema inside the operation.
+export const createEntryInput = z.object({ typeKey: z.string().min(1), body: z.unknown() });
+export const saveDraftInput = z.object({ entryId: z.string().min(1), body: z.unknown() });
+export const restoreRevisionInput = z.object({ entryId: z.string().min(1), revNo: z.number().int().positive() });
+export const entryIdInput = z.object({ entryId: z.string().min(1) });
+export const rejectInput = z.object({ entryId: z.string().min(1), note: z.string().min(1, 'a rejection needs a note') });
+export const listEntriesInput = z.object({ typeKey: z.string().min(1).optional(), status: z.enum(ENTRY_STATUSES).optional() });
+export const deliverInput = z.object({ typeKey: z.string().min(1), slug: z.string().min(1) });
+export const listDeliveryInput = z.object({ typeKey: z.string().min(1).optional() });
+export const deleteTypeInput = z.object({ key: z.string().min(1) });
+export const timelineInput = z.object({ entityType: z.string().min(1), entityId: z.string().min(1) });
 
 export interface EntryRow {
   id: string;
@@ -312,8 +329,9 @@ function removeDelivery(ctx: OperationContext, entryId: string): void {
 
 // ── Authoring operations ────────────────────────────────────────────────────
 
-const createEntryOp: OperationHandler<{ typeKey: string; body: unknown }, EntryRow> = async (ctx, input) => {
+const createEntryOp: OperationHandler<z.infer<typeof createEntryInput>, EntryRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.author));
+  const input = createEntryInput.parse(raw);
   const def = loadType(ctx, input.typeKey);
   const { body, slug } = validateBody(def, input.body);
   const id = ulid();
@@ -338,8 +356,9 @@ const createEntryOp: OperationHandler<{ typeKey: string; body: unknown }, EntryR
   return getEntry(ctx, id);
 };
 
-const saveDraftOp: OperationHandler<{ entryId: string; body: unknown }, EntryRow> = async (ctx, input) => {
+const saveDraftOp: OperationHandler<z.infer<typeof saveDraftInput>, EntryRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.author));
+  const input = saveDraftInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   if (entry.status !== 'draft' && entry.status !== 'unpublished') {
     throw new Error(`cannot edit: entry is '${entry.status}' — only draft or unpublished entries take new revisions`);
@@ -361,8 +380,9 @@ const saveDraftOp: OperationHandler<{ entryId: string; body: unknown }, EntryRow
   return getEntry(ctx, input.entryId);
 };
 
-const restoreRevisionOp: OperationHandler<{ entryId: string; revNo: number }, EntryRow> = async (ctx, input) => {
+const restoreRevisionOp: OperationHandler<z.infer<typeof restoreRevisionInput>, EntryRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.author));
+  const input = restoreRevisionInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   if (entry.status !== 'draft' && entry.status !== 'unpublished') {
     throw new Error(`cannot restore: entry is '${entry.status}'`);
@@ -383,33 +403,36 @@ const restoreRevisionOp: OperationHandler<{ entryId: string; revNo: number }, En
   return getEntry(ctx, input.entryId);
 };
 
-const submitForReviewOp: OperationHandler<{ entryId: string }, EntryRow> = async (ctx, input) => {
+const submitForReviewOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.author));
+  const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   transition(ctx, entry, 'in_review');
   ctx.emit({ type: 'content.submitted', schemaVersion: 1, entity: entryRef(entry.id), piiClass: 'none', payload: { entryId: entry.id, typeKey: entry.type_key } });
   return getEntry(ctx, input.entryId);
 };
 
-const approveOp: OperationHandler<{ entryId: string }, EntryRow> = async (ctx, input) => {
+const approveOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.review));
+  const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   transition(ctx, entry, 'approved');
   ctx.emit({ type: 'content.approved', schemaVersion: 1, entity: entryRef(entry.id), piiClass: 'none', payload: { entryId: entry.id, typeKey: entry.type_key } });
   return getEntry(ctx, input.entryId);
 };
 
-const rejectOp: OperationHandler<{ entryId: string; note: string }, EntryRow> = async (ctx, input) => {
+const rejectOp: OperationHandler<z.infer<typeof rejectInput>, EntryRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.review));
-  const note = z.string().min(1, 'a rejection needs a note').parse(input.note);
-  const entry = getEntry(ctx, input.entryId);
+  const { entryId, note } = rejectInput.parse(raw);
+  const entry = getEntry(ctx, entryId);
   transition(ctx, entry, 'draft', note);
   ctx.emit({ type: 'content.rejected', schemaVersion: 1, entity: entryRef(entry.id), piiClass: 'none', payload: { entryId: entry.id, typeKey: entry.type_key, note } });
-  return getEntry(ctx, input.entryId);
+  return getEntry(ctx, entryId);
 };
 
-const publishOp: OperationHandler<{ entryId: string }, EntryRow> = async (ctx, input) => {
+const publishOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.publish));
+  const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   if (entry.status !== 'approved') {
     throw new Error(`invalid transition: publish requires an approved entry — '${entry.type_key}' is '${entry.status}'`);
@@ -440,8 +463,9 @@ const publishOp: OperationHandler<{ entryId: string }, EntryRow> = async (ctx, i
   return getEntry(ctx, input.entryId);
 };
 
-const unpublishOp: OperationHandler<{ entryId: string }, EntryRow> = async (ctx, input) => {
+const unpublishOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.publish));
+  const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   transition(ctx, entry, 'unpublished');
   removeDelivery(ctx, entry.id);
@@ -449,8 +473,9 @@ const unpublishOp: OperationHandler<{ entryId: string }, EntryRow> = async (ctx,
   return getEntry(ctx, input.entryId);
 };
 
-const archiveOp: OperationHandler<{ entryId: string }, EntryRow> = async (ctx, input) => {
+const archiveOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.publish));
+  const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   transition(ctx, entry, 'archived');
   removeDelivery(ctx, entry.id);
@@ -469,18 +494,19 @@ interface EntryListItem {
   updated_at: string;
 }
 
-const listEntriesOp: OperationHandler<{ typeKey?: string; status?: EntryStatus }, EntryListItem[]> = async (
+const listEntriesOp: OperationHandler<z.infer<typeof listEntriesInput> | undefined, EntryListItem[]> = async (
   ctx,
-  input,
+  raw,
 ) => {
   assertAllowed(await ctx.check(MF_PERM.read));
+  const input = listEntriesInput.parse(raw ?? {});
   const where: string[] = [];
   const params: string[] = [];
-  if (input?.typeKey) {
+  if (input.typeKey) {
     where.push('type_key = ?');
     params.push(input.typeKey);
   }
-  if (input?.status) {
+  if (input.status) {
     where.push('status = ?');
     params.push(input.status);
   }
@@ -507,8 +533,9 @@ interface EntryDetail {
   revisions: { rev_no: number; frozen: number; hash: string | null; author: string; created_at: string }[];
 }
 
-const getEntryOp: OperationHandler<{ entryId: string }, EntryDetail> = async (ctx, input) => {
+const getEntryOp: OperationHandler<z.infer<typeof entryIdInput>, EntryDetail> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
+  const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   const rev = currentDraft(ctx, entry);
   const revisions = ctx.sql.query<RevisionRow>(
@@ -539,7 +566,7 @@ const fieldDefInput = z.object({
   maxLen: z.number().int().positive().optional(),
 });
 
-const saveTypeInput = z.object({
+export const saveTypeInput = z.object({
   key: z.string().regex(/^[a-z][a-z0-9_]*$/, 'key must be lower_snake, starting with a letter'),
   title: z.string().min(1),
   titleField: z.string().min(1),
@@ -576,9 +603,9 @@ const saveTypeOp: OperationHandler<z.infer<typeof saveTypeInput>, ContentTypeDef
   return loadType(ctx, input.key);
 };
 
-const deleteTypeOp: OperationHandler<{ key: string }, { deleted: string }> = async (ctx, input) => {
+const deleteTypeOp: OperationHandler<z.infer<typeof deleteTypeInput>, { deleted: string }> = async (ctx, input) => {
   assertAllowed(await ctx.check(MF_PERM.admin));
-  const key = z.string().min(1).parse(input.key);
+  const { key } = deleteTypeInput.parse(input);
   const n = ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM manyfold_entry WHERE type_key = ?', [key])[0]!.n;
   if (n > 0) throw new Error(`cannot delete type '${key}': ${n} entr${n === 1 ? 'y' : 'ies'} already use it`);
   ctx.sql.exec('DELETE FROM manyfold_content_type WHERE key = ?', [key]);
@@ -603,8 +630,9 @@ interface DeliveryPayload {
   body: Record<string, unknown>;
 }
 
-const deliverOp: OperationHandler<{ typeKey: string; slug: string }, DeliveryPayload> = async (ctx, input) => {
+const deliverOp: OperationHandler<z.infer<typeof deliverInput>, DeliveryPayload> = async (ctx, raw) => {
   assertAllowed(await ctx.check(MF_PERM.read));
+  const input = deliverInput.parse(raw);
   const def = loadType(ctx, input.typeKey);
   const row = ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery WHERE type_key = ? AND slug = ?', [
     input.typeKey,
@@ -625,12 +653,13 @@ const deliverOp: OperationHandler<{ typeKey: string; slug: string }, DeliveryPay
   return { type: row.type_key, slug: row.slug, hash: row.hash, publishedAt: row.published_at, body };
 };
 
-const listDeliveryOp: OperationHandler<{ typeKey?: string }, { type_key: string; slug: string | null; title: string; hash: string }[]> = async (
+const listDeliveryOp: OperationHandler<z.infer<typeof listDeliveryInput> | undefined, { type_key: string; slug: string | null; title: string; hash: string }[]> = async (
   ctx,
-  input,
+  raw,
 ) => {
   assertAllowed(await ctx.check(MF_PERM.read));
-  const rows = input?.typeKey
+  const input = listDeliveryInput.parse(raw ?? {});
+  const rows = input.typeKey
     ? ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery WHERE type_key = ? ORDER BY published_at DESC', [input.typeKey])
     : ctx.sql.query<DeliveryRow>('SELECT * FROM manyfold_delivery ORDER BY published_at DESC');
   return rows.map((r) => ({ type_key: r.type_key, slug: r.slug, title: r.title, hash: r.hash }));
@@ -651,11 +680,11 @@ const whoamiOp: OperationHandler<undefined, { principal: string; can: Record<str
   };
 };
 
-const timelineOp: OperationHandler<{ entityType: string; entityId: string }, { type: string; occurred_at: string; actor: string }[]> = async (
+const timelineOp: OperationHandler<z.infer<typeof timelineInput>, { type: string; occurred_at: string; actor: string }[]> = async (
   ctx,
   input,
 ) => {
-  const entity = z.object({ entityType: z.string().min(1), entityId: z.string().min(1) }).parse(input);
+  const entity = timelineInput.parse(input);
   assertAllowed(await ctx.check(MF_PERM.read));
   return ctx.sql.query(
     'SELECT type, occurred_at, actor FROM _substrat_outbox WHERE entity_type = ? AND entity_id = ? ORDER BY rowid',

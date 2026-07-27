@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { serve } from '@hono/node-server';
@@ -9,6 +9,8 @@ import type { ScopeStub } from '@substrat-run/kernel';
 import type { PrincipalId, ScopeId } from '@substrat-run/contracts';
 import { buildDemoHost, seedDemo, type ManyfoldWorld } from './index.js';
 import { mountApi } from './routes.js';
+import { API_DOCUMENT } from './api.js';
+import { DOCS_HTML } from './docs.js';
 
 /**
  * Dev API server for Manyfold. Deliberately thin: resolve (principal, site) from the
@@ -67,6 +69,19 @@ app.get('/api/me', (c) => {
   const { principal, siteSlug } = resolve(c);
   return c.json({ principal: principal.id, name: principal.name, site: siteSlug, role: principal.roles[siteSlug] ?? null });
 });
+
+// The OpenAPI document + Scalar reference (design/api-surface.md). Dev posture:
+// open like every other dev route — the persona headers are the auth here. The
+// renderer is served from the pinned package, never a CDN.
+app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
+app.get('/api/docs', (c) => c.html(DOCS_HTML));
+const scalarJs = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..', 'node_modules', '@scalar', 'api-reference', 'dist', 'browser', 'standalone.js',
+);
+app.get('/assets/scalar-api-reference.js', (c) =>
+  c.body(readFileSync(scalarJs, 'utf8'), 200, { 'content-type': 'text/javascript; charset=utf-8' }),
+);
 
 // The whole data API — shared with the Cloudflare Worker (src/routes.ts).
 mountApi(app, stub);

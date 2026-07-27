@@ -546,6 +546,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^4.20250109.0
         version: 4.20260702.1
+      '@scalar/api-reference':
+        specifier: ^1.63.0
+        version: 1.63.0(tailwindcss@4.3.3)(typescript@7.0.2)(zod@4.4.3)
       '@types/better-sqlite3':
         specifier: ^7.6.0
         version: 7.6.13
@@ -6630,7 +6633,7 @@ snapshots:
   '@floating-ui/vue@1.1.9(vue@3.5.39(typescript@7.0.2))':
     dependencies:
       '@floating-ui/dom': 1.8.0
-      '@floating-ui/utils': 0.2.10
+      '@floating-ui/utils': 0.2.12
       vue-demi: 0.14.10(vue@3.5.39(typescript@7.0.2))
     transitivePeerDependencies:
       - '@vue/composition-api'
