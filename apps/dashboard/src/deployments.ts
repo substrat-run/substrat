@@ -22,6 +22,14 @@ export interface DeploymentVersion {
   admission: string;
   admissionNote: string | null;
   deploymentRef: string | null;
+  /**
+   * This version's migrations differ from its PREDECESSOR's (#286) — updating to it
+   * crosses a migration boundary, so the deployments UI badges it: a code-only
+   * version is freely deployable and rollbackable; a schema-changing one triggers
+   * the pre-migration bookmark and offers the time-boxed backout. False for the
+   * first version (there is no update that reaches it).
+   */
+  schemaChange: boolean;
   createdAt: string;
 }
 
@@ -52,6 +60,7 @@ interface RawVersion {
   admission: string;
   admissionNote?: string | null;
   deploymentRef?: string | null;
+  migrationDigest?: string;
   createdAt?: string;
 }
 
@@ -67,16 +76,32 @@ function shape(
     name: v.name,
     source: v.source,
     listed: !!v.listed,
-    versions: [...versions]
-      .sort((a, b) => (a.id < b.id ? 1 : -1))
-      .map((r) => ({
+    versions: (() => {
+      // Chronological (ULID ids) to find each version's predecessor, then newest-first
+      // for display. `schemaChange` is a digest comparison against the predecessor —
+      // the same signal promote's acknowledgement gate reads (#286).
+      const chrono = [...versions].sort((a, b) => (a.id < b.id ? -1 : 1));
+      const changed = new Map<string, boolean>(
+        chrono.map((r, i) => {
+          const prev = i > 0 ? chrono[i - 1] : undefined;
+          return [
+            r.id,
+            prev !== undefined &&
+              r.migrationDigest !== undefined &&
+              r.migrationDigest !== prev.migrationDigest,
+          ];
+        }),
+      );
+      return chrono.reverse().map((r) => ({
         id: r.id,
         version: r.version,
         admission: r.admission,
         admissionNote: r.admissionNote ?? null,
         deploymentRef: r.deploymentRef ?? null,
+        schemaChange: changed.get(r.id) ?? false,
         createdAt: r.createdAt ?? '',
-      })),
+      }));
+    })(),
     // Normalize: the host returns full VerticalChannel rows (verticalSlug, updatedAt);
     // the view needs only which version each channel points at.
     channels: channels.map((c) => ({ channel: c.channel, versionId: c.versionId })),

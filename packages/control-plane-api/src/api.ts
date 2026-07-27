@@ -32,8 +32,14 @@ import { ControlPlaneError } from './client.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { mapError } from './errors.js';
 import { maskDump } from './mask.js';
-import { assertSandboxContract, deployManifest, deploymentRefFor } from './deploy.js';
-import type { DeployVerticalFn } from './deploy.js';
+import {
+  assertSandboxContract,
+  deployManifest,
+  deploymentRefFor,
+  stableDeploymentRefFor,
+  nextMigrationTag,
+} from './deploy.js';
+import type { DeployVerticalFn, FetchVerticalModulesFn } from './deploy.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import type { ObservabilityReader } from './observability.js';
 
@@ -72,12 +78,28 @@ export interface ControlPlaneApiOptions {
     actor: PlatformActorId,
   ) => Promise<VerticalClient | undefined>;
   /**
+   * Resolves a vertical by a KNOWN dispatch script name (#286) — the direct form the
+   * other two resolvers reduce to. Introspection and restore use it for a scope whose
+   * `servingRef` is set: that scope's data lives in the stable serving script, and
+   * neither the bound version's script (data left behind) nor the prod channel (may
+   * have moved on) is the right door. Absent ⇒ serving scopes fall back to the other
+   * resolvers, which is only correct before any scope has adopted the serving script.
+   */
+  resolveVerticalRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
+  /**
    * Uploads a built vertical bundle to the platform runtime (a WfP dispatch
    * namespace), injected by the host so this package holds no Cloudflare SDK and the
    * builder never holds a Cloudflare credential (D-34). Absent ⇒ the deploy route
    * 501s. See `deploy.ts`.
    */
   deployVertical?: DeployVerticalFn;
+  /**
+   * Reads a script's module contents back from the platform runtime (#286) — the
+   * archive script is the bundle store the serving upload reads from. Host-injected
+   * like `deployVertical`. Absent ⇒ promotion moves channels without serving in
+   * place (the pre-#286 behavior: scopes stay on per-version dispatch).
+   */
+  fetchVerticalModules?: FetchVerticalModulesFn;
   /**
    * Resolves the platform actor from the request. No default: an unauthenticated
    * control plane is not a sensible fallback, and a package that shipped one
@@ -474,11 +496,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // scope DB directly (a co-located host, or the contract tests — data is right here).
   const verticalForScope = async (
     c: { get: (k: 'actor') => PlatformActorId },
-    scope: { vertical: string | null; verticalVersionId: string | null },
+    scope: { vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
   ): Promise<VerticalClient | undefined> => {
     const slug = scope.vertical;
     if (!slug) return undefined;
     const actor = c.get('actor');
+    // A scope on the stable serving script (#286) is reached THERE — that script holds
+    // its DOs regardless of what the bound version or the prod channel say.
+    if (scope.servingRef && options.resolveVerticalRef) {
+      const serving = await options.resolveVerticalRef(scope.servingRef);
+      if (serving) return serving;
+    }
     if (scope.verticalVersionId && options.resolveVerticalVersion) {
       const bound = await options.resolveVerticalVersion(slug, scope.verticalVersionId, actor);
       if (bound) return bound;
@@ -761,6 +789,103 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
+  // #286: the PITR bookmarks a scope recorded before its migration passes — the
+  // rewind points the deployments UI offers for a backout. Read through the
+  // vertical that holds the scope's data when one resolves; the co-located host
+  // otherwise. Metadata only — no scope bytes cross the boundary, so no masking.
+  app.get('/tenants/:tenantId/scopes/:scopeId/bookmarks', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.migrationBookmarks(scopeId)
+        : await admin.scopeMigrationBookmarks(actor, tenantId, scopeId),
+    );
+  });
+
+  // #286's backout: rewind a scope to a pre-migration bookmark — schema AND data,
+  // discarding every write since. Audited below the seam BEFORE the rewind runs;
+  // the scope DO enforces the freshness window (24h unless force). Delegated to the
+  // vertical that holds the scope's data when one resolves, applied on the
+  // co-located host otherwise.
+  app.post('/tenants/:tenantId/scopes/:scopeId/rewind', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const { bookmark, force } = z
+      .object({ bookmark: z.string().min(1), force: z.boolean().optional() })
+      .parse(await c.req.json());
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    try {
+      const vertical = await verticalForScope(c, scope);
+      const result = await admin.rewindScope(actor, tenantId, scopeId, bookmark, {
+        force,
+        localApply: !vertical,
+      });
+      if (vertical) {
+        return c.json(await vertical.rewindScope(scopeId, bookmark, { force }));
+      }
+      return c.json(result);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
+  // #286: adopt a LEGACY scope onto its vertical's stable serving script — the
+  // one-time data hop off per-version dispatch. Export from the script that holds
+  // the data today (the bound version's), restore into the serving script (which
+  // re-projects the vertical's roles), then flip routing. Ordering is data-first:
+  // a crash before the flip leaves the scope serving from its old script, intact,
+  // and the adopt retries idempotently. The scope's version pointer moves to the
+  // serving version in the same act, so Update stops offering a crossing it
+  // already made.
+  app.post('/tenants/:tenantId/scopes/:scopeId/adopt-serving', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (scope.servingRef) {
+      return c.json({ adopted: scopeId, servingRef: scope.servingRef, alreadyAdopted: true });
+    }
+    if (!scope.vertical) {
+      return c.json({ error: 'scope has no vertical — nothing to adopt onto' }, 409);
+    }
+    const serving = await admin.verticalServing(actor, scope.vertical);
+    if (!serving) {
+      return c.json(
+        { error: `vertical '${scope.vertical}' has no serving script yet — promote a version to prod first` },
+        409,
+      );
+    }
+    const source = await verticalForScope(c, scope);
+    const dest = await options.resolveVerticalRef?.(serving.ref);
+    if (!source || !dest) {
+      return c.json({ error: 'adopt-serving needs dispatch resolution for both ends' }, 501);
+    }
+    try {
+      const dump = await source.exportScope(scopeId);
+      const restored = await dest.restoreScope(tenantId, scopeId, dump);
+      // Data landed — only now flip routing and move the version pointer.
+      await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
+      await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+      return c.json({ adopted: scopeId, servingRef: serving.ref, tables: restored.tables });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a
   // non-admitted version below the seam — that refusal is the registry's reason to
   // exist. A scope operation, so it keeps the scope route shape. `snapshot: true`
@@ -1013,6 +1138,73 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(await admin.listChannelHistory(c.get('actor'), slug, channel));
   });
 
+  /**
+   * Serve a version IN PLACE (#286): upload its bundle onto the vertical's ONE stable
+   * serving script, where every scope's data DO lives — this is the step that makes a
+   * promote carry data forward instead of stranding it in the outgoing version's
+   * script. Reads the module bytes back from the version's archive script and the
+   * upload metadata from its retained manifest; the first serve creates the script
+   * (full DO-class migrations), later serves update it (secrets kept, class delta only).
+   *
+   * Serving state is recorded only AFTER the upload succeeds. A failed serve throws —
+   * the caller surfaces it — and leaves `servingVersionId` trailing the channel:
+   * visible, and retried by promoting again.
+   */
+  const serveVersionInPlace = async (
+    actor: PlatformActorId,
+    slug: string,
+    versionId: string,
+  ): Promise<void> => {
+    if (!options.deployVertical || !options.fetchVerticalModules) return; // not configured: pre-#286 behavior
+    const version = (await admin.listVersions(actor, slug)).find((v) => v.id === versionId);
+    if (!version?.deploymentRef) {
+      throw new ControlPlaneError(502, `version ${versionId} has no archive script to serve from`);
+    }
+    const manifestJson = await admin.versionManifest(actor, slug, versionId);
+    if (!manifestJson) {
+      throw new ControlPlaneError(
+        502,
+        `version ${versionId} retained no manifest — pushed pre-#286; push it again to serve in place`,
+      );
+    }
+    const manifest = deployManifest.parse(JSON.parse(manifestJson));
+    const serving = await admin.verticalServing(actor, slug);
+    const ref = serving?.ref ?? stableDeploymentRefFor(slug);
+    const modules = await options.fetchVerticalModules(version.deploymentRef);
+    await options.deployVertical(
+      ref,
+      {
+        entry: manifest.entry,
+        compatibilityDate: manifest.compatibilityDate,
+        compatibilityFlags: manifest.compatibilityFlags,
+        modules,
+        doClasses: manifest.doClasses,
+        bindings: manifest.bindings,
+      },
+      serving
+        ? { priorDoClasses: serving.doClasses, priorMigrationTag: serving.migrationTag }
+        : undefined,
+    );
+    const addedClasses = serving
+      ? manifest.doClasses.some((cls) => !serving.doClasses.includes(cls))
+      : false;
+    await admin.setVerticalServing(actor, slug, {
+      ref,
+      versionId,
+      // The serving script's class set only ever GROWS (DO classes cannot be deleted
+      // while their storage lives), so record the union, and the tag only moves when
+      // a migration actually rode the upload.
+      doClasses: serving
+        ? [...new Set([...serving.doClasses, ...manifest.doClasses])]
+        : manifest.doClasses,
+      migrationTag: serving
+        ? addedClasses
+          ? nextMigrationTag(serving.migrationTag)
+          : serving.migrationTag
+        : 'v1',
+    });
+  };
+
   app.post('/verticals/:slug/channels/:channel/promote', async (c) => {
     const p = c.get('principal');
     const slug = effectiveSlug(p, c.req.param('slug'));
@@ -1035,6 +1227,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // and refuses a non-admitted version. Both are enforced below the seam and
     // surface as a 4xx through mapError, not a 500.
     await admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge);
+    // The in-place serve (#286), prod only, AFTER every promote gate has passed —
+    // uploading first would deploy to live scopes before the acknowledgement check.
+    // A failed serve is NOT a failed promote: the channel moved (audited), old code
+    // still serves, and promoting again retries the upload.
+    if (channel === 'prod') {
+      try {
+        await serveVersionInPlace(c.get('actor'), slug, versionId);
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        console.error('serve.inplace.failed', { slug, versionId, detail });
+        return c.json(
+          {
+            error: 'promoted, but the in-place serve failed — scopes still run the previous code; promote again to retry',
+            detail,
+          },
+          502,
+        );
+      }
+    }
     return c.json((await admin.listChannels(c.get('actor'), slug)).find((ch) => ch.channel === channel));
   });
 
@@ -1131,6 +1342,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       permissionDigest: manifest.digests.permission,
       migrationDigest: manifest.digests.migration,
       deploymentRef,
+      // Retained for the serving upload (#286): the archive script keeps the module
+      // bytes, this keeps their shape (entry, compat, doClasses, bindings).
+      manifestJson: JSON.stringify(manifest),
     });
     const version = (await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id);
     return c.json(version, 201);

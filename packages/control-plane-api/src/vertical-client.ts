@@ -210,6 +210,37 @@ export class VerticalClient {
     return this.postInternal<{ tables: number }>('/internal/restore', { tenantId, scopeId, tables }, 'restore');
   }
 
+  /**
+   * The PITR bookmarks one scope recorded before its migration passes (#286) —
+   * the rewind points the deployments UI offers for a backout. Metadata only;
+   * no scope bytes cross the boundary.
+   */
+  async migrationBookmarks(
+    scopeId: ScopeId,
+  ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]> {
+    return this.getInternal<{ bookmark: string; takenAt: string; pending: string[] }[]>(
+      `/internal/bookmarks?scopeId=${encodeURIComponent(scopeId)}`,
+    );
+  }
+
+  /**
+   * Rewind one scope to a pre-migration bookmark (#286's backout): schema AND data,
+   * discarding every write since the bookmark. The scope DO enforces the freshness
+   * window (24h without `force`) and restarts itself to complete the restore; the
+   * control-plane route in front is the gate and the auditor.
+   */
+  async rewindScope(
+    scopeId: ScopeId,
+    bookmark: string,
+    opts?: { force?: boolean },
+  ): Promise<{ rewindingTo: string }> {
+    return this.postInternal<{ rewindingTo: string }>(
+      '/internal/rewind',
+      { scopeId, bookmark, force: opts?.force ?? false },
+      'rewind',
+    );
+  }
+
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
   private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';

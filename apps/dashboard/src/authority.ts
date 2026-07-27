@@ -438,6 +438,20 @@ export class TenantNarrowedControlPlane {
     return this.call(`/tenants/${this.tenantId}/scopes/${snapshotScopeId}`, { method: 'DELETE' });
   }
 
+  /** The PITR bookmarks a scope recorded before its migration passes (#286) —
+   *  the rewind points the deployments tab offers for a backout. */
+  migrationBookmarks(
+    scopeId: ScopeId,
+  ): Promise<Array<{ bookmark: string; takenAt: string; pending: string[] }>> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/bookmarks`);
+  }
+
+  /** #286's backout: rewind a scope to a pre-migration bookmark — schema AND data,
+   *  discarding every write since. The scope DO enforces the 24h freshness window. */
+  rewindScope(scopeId: ScopeId, bookmark: string): Promise<{ rewindingTo: string }> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/rewind`, { bookmark });
+  }
+
   /** The hostnames bound to one scope (tenant-pinned) — the copy's preview URL. */
   listHostnames(scopeId: ScopeId): Promise<Array<{ hostname: string; status: string }>> {
     const q = new URLSearchParams({ tenantId: this.tenantId, scopeId });

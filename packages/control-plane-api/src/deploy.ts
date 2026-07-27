@@ -39,10 +39,38 @@ export interface VerticalBundle {
 }
 
 /**
+ * How an upload treats an ALREADY-EXISTING script of the same name (#286). Absent ⇒
+ * the script is new: full DO-class migrations (`new_tag: v1`), no binding inheritance.
+ * Present ⇒ an in-place update of the stable serving script: existing secret bindings
+ * are kept (`keep_bindings` — a hand-put secret survives every deploy), and DO-class
+ * migrations are sent only as the DELTA against what the script already declares,
+ * under a bumped tag — re-declaring a live class as new is an upload error.
+ */
+export interface InPlaceUpload {
+  /** DO classes the serving script already has (directory-recorded, not CF-queried). */
+  priorDoClasses: string[];
+  /** The serving script's current migration tag (`v1`, `v2`, …). */
+  priorMigrationTag: string;
+}
+
+/**
  * Upload a built bundle to the platform runtime under `deploymentRef`. Injected by the
  * host so the transport package never imports a Cloudflare SDK and tests use a fake.
  */
-export type DeployVerticalFn = (deploymentRef: string, bundle: VerticalBundle) => Promise<void>;
+export type DeployVerticalFn = (
+  deploymentRef: string,
+  bundle: VerticalBundle,
+  inPlace?: InPlaceUpload,
+) => Promise<void>;
+
+/**
+ * Download the module contents of a script already in the namespace — what promote and
+ * backout re-upload from (the archive script is the platform's bundle store; nothing
+ * else retains the built bytes). Host-injected like `DeployVerticalFn`.
+ */
+export type FetchVerticalModulesFn = (
+  deploymentRef: string,
+) => Promise<VerticalBundle['modules']>;
 
 /**
  * The §4 sandbox contract. Throws (mapped to a 4xx by errors.ts via "deploy refused")
@@ -104,4 +132,28 @@ export function assertSandboxContract(m: DeployManifest): void {
 export function deploymentRefFor(slug: string, versionId: string): string {
   const safe = slug.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return `${safe}-${versionId.toLowerCase()}`;
+}
+
+/**
+ * The vertical's ONE stable serving script (#286, supersedes orchestration.md §5.3's
+ * one-script-per-version for serving). Data lives here: a Durable Object namespace
+ * belongs to its script, so re-uploading new code under this unchanged name is what
+ * makes a version update carry the scopes' data forward instead of stranding it in
+ * the outgoing version's script. Per-version scripts (`deploymentRefFor`) remain the
+ * push archive — admission review, readiness probes, and the bundle store that
+ * promote and backout re-upload from.
+ *
+ * Cannot collide with an archive ref: archive refs always end in `-<26-char ULID>`,
+ * and a slug is registered unique before either name is minted. Jurisdictional
+ * serving scripts (K-30, `<slug>-eu`) hang off this same name when eu/us open.
+ */
+export function stableDeploymentRefFor(slug: string): string {
+  return slug.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/** Serving-script migration tags are `v1`, `v2`, … — bumped only when a version adds
+ *  NEW DO classes to an existing serving script (`old_tag`/`new_tag` upload metadata). */
+export function nextMigrationTag(current: string): string {
+  const n = /^v(\d+)$/.exec(current);
+  return `v${(n ? Number(n[1]) : 1) + 1}`;
 }
