@@ -1,5 +1,21 @@
 # @substrat-run/control-plane-api
 
+## 0.21.0
+
+### Minor Changes
+
+- 3354e26: Restores heal their own permission model: `CloudflareScopeHost.projectRolesLocal`
+  re-applies a vertical's code-defined role definitions to one scope (scope-level
+  tuples untouched), and `VerticalClient.restoreScope` now carries `tenantId` so a
+  vertical's `/internal/restore` can invoke it after the import. A dump captured from
+  a CP-full world carries tuples but an empty roles table — without the repair, every
+  check denies while /me still names the role.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.21.0
+- @substrat-run/kernel@0.21.0
+
 ## 0.20.0
 
 ### Minor Changes
