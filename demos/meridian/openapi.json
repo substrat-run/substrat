@@ -1,0 +1,1390 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Meridian HR API",
+    "version": "0.0.1",
+    "description": "The Meridian demo vertical (employees, leave, time, expenses, payroll, employment contracts, onboarding) on the Substrat kernel. Every operation checks a permission for the calling principal; a 403 here is the permission system working, not a bug."
+  },
+  "paths": {
+    "/api/op/hr/create-employee": {
+      "post": {
+        "operationId": "hr-create-employee",
+        "summary": "Create an employee record.",
+        "description": "Requires `employee:manage`. PII (national id) stays in the record — it is never emitted on the event spine.",
+        "tags": [
+          "Directory"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "number": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "email": {
+                    "type": "string"
+                  },
+                  "nationalId": {
+                    "type": "string"
+                  },
+                  "principalRef": {
+                    "type": "string"
+                  },
+                  "startedAt": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}"
+                  }
+                },
+                "required": [
+                  "number",
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/list-employees": {
+      "post": {
+        "operationId": "hr-list-employees",
+        "summary": "List all employees, including PII fields.",
+        "description": "Requires `employee:manage` (HR admin). Managers use `hr/roster` instead.",
+        "tags": [
+          "Directory"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/roster": {
+      "post": {
+        "operationId": "hr-roster",
+        "summary": "The roster — employment facts only, no national id, no compensation.",
+        "description": "Requires `absence:read` held at the node (managers, HR). An employee’s own-record grant does not enumerate the team.",
+        "tags": [
+          "Directory"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/whoami": {
+      "post": {
+        "operationId": "hr-whoami",
+        "summary": "The caller’s own role hint and linked employee id.",
+        "description": "No permission gate: reveals only the caller’s own facts. The kernel still enforces the real permission on every operation regardless of this hint.",
+        "tags": [
+          "Directory"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/define-leave-type": {
+      "post": {
+        "operationId": "hr-define-leave-type",
+        "summary": "Define (or redefine) a leave type.",
+        "description": "Requires `absence:configure`.",
+        "tags": [
+          "Leave"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "annualDays": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label",
+                  "kind"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/list-leave-types": {
+      "post": {
+        "operationId": "hr-list-leave-types",
+        "summary": "List leave types.",
+        "description": "Requires `absence:read` — at the node, or via the caller’s own-record grant when `employeeId` names their own record.",
+        "tags": [
+          "Leave"
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/accrue": {
+      "post": {
+        "operationId": "hr-accrue",
+        "summary": "Grant an accrual to an employee’s absence ledger.",
+        "description": "Requires `absence:configure`. The ledger is append-only: an accrual is a new row, never an edit.",
+        "tags": [
+          "Leave"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "leaveTypeKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "days": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                  },
+                  "effectiveDate": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "employeeId",
+                  "leaveTypeKey",
+                  "days"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/balance": {
+      "post": {
+        "operationId": "hr-balance",
+        "summary": "One employee’s balance per leave type (a fold of the ledger).",
+        "description": "Requires `absence:read` for the named employee — node holders pass for anyone, employees only for themselves.",
+        "tags": [
+          "Leave"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "employeeId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/request-leave": {
+      "post": {
+        "operationId": "hr-request-leave",
+        "summary": "Request time off.",
+        "description": "Requires `absence:request` for the named employee (self-service via the own-record grant).",
+        "tags": [
+          "Leave"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "leaveTypeKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "startDate": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}"
+                  },
+                  "endDate": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}"
+                  },
+                  "days": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "employeeId",
+                  "leaveTypeKey",
+                  "startDate",
+                  "endDate",
+                  "days"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/decide-leave": {
+      "post": {
+        "operationId": "hr-decide-leave",
+        "summary": "Approve or reject a leave request.",
+        "description": "Requires `absence:approve`. Only a `requested` leave can be decided; approval books the ledger and cannot overdraw the balance.",
+        "tags": [
+          "Leave"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "reject"
+                    ]
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "decision"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/list-requests": {
+      "post": {
+        "operationId": "hr-list-requests",
+        "summary": "List leave requests, optionally by status.",
+        "description": "Requires `absence:read` at the node.",
+        "tags": [
+          "Leave"
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/my-requests": {
+      "post": {
+        "operationId": "hr-my-requests",
+        "summary": "One employee’s own leave requests (the self-service path).",
+        "description": "Requires `absence:read` for the named employee.",
+        "tags": [
+          "Leave"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "employeeId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/create-project": {
+      "post": {
+        "operationId": "hr-create-project",
+        "summary": "Create a project for time to book against.",
+        "description": "Requires `project:manage`.",
+        "tags": [
+          "Time"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "code",
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/list-projects": {
+      "post": {
+        "operationId": "hr-list-projects",
+        "summary": "The project catalogue.",
+        "description": "Requires `time:read` — at the node, or via the caller’s own-record grant when `employeeId` names their own record.",
+        "tags": [
+          "Time"
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/log-time": {
+      "post": {
+        "operationId": "hr-log-time",
+        "summary": "Log worked hours (append-only).",
+        "description": "Requires `time:report` for the named employee.",
+        "tags": [
+          "Time"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "projectId": {
+                    "type": "string"
+                  },
+                  "workDate": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}"
+                  },
+                  "hours": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "employeeId",
+                  "workDate",
+                  "hours"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/timesheet": {
+      "post": {
+        "operationId": "hr-timesheet",
+        "summary": "One employee’s time entries and total.",
+        "description": "Requires `time:read` for the named employee.",
+        "tags": [
+          "Time"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "employeeId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/submit-expense": {
+      "post": {
+        "operationId": "hr-submit-expense",
+        "summary": "Submit an expense.",
+        "description": "Requires `expense:submit` for the named employee.",
+        "tags": [
+          "Expenses"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "amount": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                  },
+                  "currency": {
+                    "default": "SEK",
+                    "type": "string",
+                    "pattern": "^[A-Z]{3}$"
+                  },
+                  "category": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "projectId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "employeeId",
+                  "description",
+                  "amount",
+                  "category"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/decide-expense": {
+      "post": {
+        "operationId": "hr-decide-expense",
+        "summary": "Approve or reject a submitted expense.",
+        "description": "Requires `expense:approve`. Only a `submitted` expense can be decided.",
+        "tags": [
+          "Expenses"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expenseId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "reject"
+                    ]
+                  }
+                },
+                "required": [
+                  "expenseId",
+                  "decision"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/list-expenses": {
+      "post": {
+        "operationId": "hr-list-expenses",
+        "summary": "List expenses, optionally by status.",
+        "description": "Requires `expense:read` at the node.",
+        "tags": [
+          "Expenses"
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/my-expenses": {
+      "post": {
+        "operationId": "hr-my-expenses",
+        "summary": "One employee’s own expenses (the self-service path).",
+        "description": "Requires `expense:read` for the named employee.",
+        "tags": [
+          "Expenses"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "employeeId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/payroll-export": {
+      "post": {
+        "operationId": "hr-payroll-export",
+        "summary": "The variable-pay export: approved expenses + booked absence in the window.",
+        "description": "Requires `payroll:export`. Exported expenses are marked so a re-run never double-counts.",
+        "tags": [
+          "Payroll"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "fromDate": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}"
+                  },
+                  "toDate": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}"
+                  }
+                },
+                "required": [
+                  "fromDate",
+                  "toDate"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/set-employment-terms": {
+      "post": {
+        "operationId": "hr-set-employment-terms",
+        "summary": "Set an employee’s employment terms (append-only; latest wins).",
+        "description": "Requires `employee:manage`. A signed contract pins the hash of the terms row current when it was issued.",
+        "tags": [
+          "Contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "roleTitle": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "monthlySalary": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                  },
+                  "currency": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 3
+                  },
+                  "scopePct": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                  },
+                  "startDate": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}"
+                  },
+                  "noticeMonths": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                  }
+                },
+                "required": [
+                  "employeeId",
+                  "roleTitle",
+                  "monthlySalary",
+                  "currency",
+                  "scopePct",
+                  "startDate",
+                  "noticeMonths"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/employment-terms": {
+      "post": {
+        "operationId": "hr-employment-terms",
+        "summary": "The latest employment terms for one employee.",
+        "description": "Requires `employee:manage`.",
+        "tags": [
+          "Contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "employeeId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/issue-employment-contract": {
+      "post": {
+        "operationId": "hr-issue-employment-contract",
+        "summary": "Issue the employment contract for signature (instantiate, bind, dispatch — one transaction).",
+        "description": "Requires `employee:manage` plus the protocol engine’s create/bind/request-signature permissions.",
+        "tags": [
+          "Contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "templateKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "templateKey",
+                  "employeeId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/verify-contract": {
+      "post": {
+        "operationId": "hr-verify-contract",
+        "summary": "Re-derive the terms hash and compare it to what the protocol froze.",
+        "description": "Requires protocol read on the instance. `matches: false` means the terms row moved after issue — a finding, not an invalid signature.",
+        "tags": [
+          "Contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "instanceId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "instanceId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/start-onboarding": {
+      "post": {
+        "operationId": "hr-start-onboarding",
+        "summary": "Start an onboarding checklist for an employee (protocol engine, composed).",
+        "description": "Requires the protocol engine’s create permission.",
+        "tags": [
+          "Onboarding"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "templateKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "employeeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "templateKey",
+                  "employeeId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/op/hr/timeline": {
+      "post": {
+        "operationId": "hr-timeline",
+        "summary": "The event-spine timeline for one entity.",
+        "description": "Requires `absence:read` for the entity.",
+        "tags": [
+          "Timeline"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entityType": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "entityId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "entityType",
+                  "entityId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sb_session",
+        "description": "The vertical's session cookie. Instances on the Better-Auth provider use its cookie instead; same-origin requests carry either automatically."
+      },
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "security": [
+    {
+      "session": []
+    },
+    {
+      "bearer": []
+    }
+  ]
+}

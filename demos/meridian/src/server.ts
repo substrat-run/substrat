@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { serve } from '@hono/node-server';
@@ -19,6 +19,8 @@ import {
 } from './auth-adapters.js';
 import { platformActorId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { buildDemoHost, seedDemo, type DemoWorld, type ScriveConfig } from './index.js';
+import { API, API_DOCUMENT } from './api.js';
+import { DOCS_HTML } from './docs.js';
 
 /**
  * Dev API server for the Meridian demo. Deliberately thin: pick the dev
@@ -187,6 +189,26 @@ app.post('/api/invoke', async (c) => {
   const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
   return c.json((await (await stub(c)).invoke(op, input)) ?? null);
 });
+
+// The documented invoke surface + the API reference (design/api-surface.md).
+// Dev posture: the docs are open like every other dev route — the x-principal
+// persona picker is the auth, and Scalar's try-it sends whatever header the
+// caller sets. The Scalar renderer is served from the pinned package, never a CDN.
+app.post('/api/op/*', async (c) => {
+  const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
+  if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
+  const body = await c.req.text();
+  return c.json((await (await stub(c)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null);
+});
+app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
+app.get('/api/docs', (c) => c.html(DOCS_HTML));
+const scalarJs = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..', 'node_modules', '@scalar', 'api-reference', 'dist', 'browser', 'standalone.js',
+);
+app.get('/assets/scalar-api-reference.js', (c) =>
+  c.body(readFileSync(scalarJs, 'utf8'), 200, { 'content-type': 'text/javascript; charset=utf-8' }),
+);
 
 // Dev-only: simulate the provider-side signature so the poll loop is observable
 // with the mock (a real testbed signs in the browser instead). Signs every party

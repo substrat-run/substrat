@@ -27,6 +27,8 @@ import {
 } from '@substrat-run/kernel';
 import type { PrincipalId } from '@substrat-run/contracts';
 import { MODULES, ROLES } from './provision.js';
+import { API, API_DOCUMENT } from './api.js';
+import { DOCS_HTML } from './docs.js';
 import { serveAsset } from './assets.js';
 import type { CompanyNode } from './auth-adapters.js';
 import {
@@ -541,10 +543,39 @@ app.post('/api/accept-invite', async (c) => {
 });
 
 // Generic invoke: the kernel checks the permission inside every operation, so a generic
-// route is exactly as safe as an explicit table — and far less code.
+// route is exactly as safe as an explicit table — and far less code. The SPA's path;
+// undocumented in the OpenAPI document (one path with a union body reads as nothing).
 app.post('/api/invoke', async (c) => {
   const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
   return c.json((await (await stub(c)).invoke(op, input)) ?? null);
+});
+
+// The DOCUMENTED invoke surface (design/api-surface.md §2.2): one URL per operation —
+// `POST /api/op/hr/create-employee` — which is what makes /api/docs readable and its
+// try-it client usable. Same kernel, same permission checks; only names the catalog
+// documents resolve, so the spec and the surface cannot disagree.
+app.post('/api/op/*', async (c) => {
+  const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
+  if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
+  const body = await c.req.text();
+  return c.json((await (await stub(c)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null);
+});
+
+// The OpenAPI 3.1 document, built from the operation catalog — the same schemas the
+// handlers parse. Session-gated like the rest of /api/*: the spec enumerates the
+// surface, so it is for signed-in callers, not anonymous traffic.
+app.get('/openapi.json', async (c) => {
+  const principal = await principalFor(c.env, c.req.raw);
+  if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
+  return c.json(API_DOCUMENT);
+});
+
+// Scalar over /openapi.json, self-hosted (docs.ts). No session → the SPA's login,
+// not a bare 401 — a human typed this URL.
+app.get('/api/docs', async (c) => {
+  const principal = await principalFor(c.env, c.req.raw);
+  if (!principal) return c.redirect('/');
+  return c.html(DOCS_HTML);
 });
 
 // Serve the inlined SPA for everything that isn't an /api or /internal route. MUST come

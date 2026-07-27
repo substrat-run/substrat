@@ -26,6 +26,10 @@ jobs:
       # widened a role must show it in the PR diff, not in a console nobody opens.
       # Needs the build above: it imports the engines' manifests.
       - run: pnpm lint:permissions --check
+      # The API-surface checkpoint (design/api-surface.md §2.4): re-emit each
+      # opted-in vertical's OpenAPI document from its operation catalog and fail
+      # on drift — a surface change must appear in the PR diff.
+      - run: pnpm lint:api --check
       - run: pnpm -r typecheck
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM

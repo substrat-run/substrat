@@ -344,7 +344,7 @@ function balanceOf(ctx: OperationContext, employeeId: string, leaveTypeKey: stri
 // Directory (HR admin)
 // ---------------------------------------------------------------------------
 
-const createEmployeeInput = z.object({
+export const createEmployeeInput = z.object({
   number: z.string().min(1),
   name: z.string().min(1),
   email: z.string().optional(),
@@ -437,7 +437,7 @@ const whoamiOp: OperationHandler<undefined, WhoAmI> = async (ctx) => {
 // Leave types + accrual (HR admin)
 // ---------------------------------------------------------------------------
 
-const defineLeaveTypeInput = z.object({
+export const defineLeaveTypeInput = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
   kind: z.string().min(1),
@@ -456,19 +456,29 @@ const defineLeaveTypeOp: OperationHandler<z.infer<typeof defineLeaveTypeInput>, 
     return ctx.sql.query<LeaveTypeRow>('SELECT * FROM hr_leave_types WHERE key = ?', [input.key])[0]!;
   };
 
+// The shared read selectors. Named (and exported) so the API catalog documents
+// the SAME objects the handlers parse — schemas an operation shares with
+// another operation are still one object, one contract (design/api-surface.md).
+export const employeeIdInput = z.object({ employeeId: z.string().min(1) });
+export const employeeFilterInput = z.object({ employeeId: z.string().min(1).optional() });
+export const statusFilterInput = z.object({ status: z.string().optional() });
+export const instanceIdInput = z.object({ instanceId: z.string().min(1) });
+export const timelineInput = z.object({ entityType: z.string().min(1), entityId: z.string().min(1) });
+
 // Leave types are scope vocabulary every absence-reader needs (an employee to
 // see their own balances, HR/managers at the node). Optional employee entity:
 // a node holder passes with none; an employee passes with their own record.
-const listLeaveTypesOp: OperationHandler<{ employeeId?: string } | undefined, LeaveTypeRow[]> = async (
+const listLeaveTypesOp: OperationHandler<z.infer<typeof employeeFilterInput> | undefined, LeaveTypeRow[]> = async (
   ctx,
-  input,
+  raw,
 ) => {
-  const entity = input?.employeeId ? employeeRef(input.employeeId) : undefined;
+  const input = employeeFilterInput.parse(raw ?? {});
+  const entity = input.employeeId ? employeeRef(input.employeeId) : undefined;
   assertAllowed(await ctx.check(HR_PERM.absenceRead, entity));
   return ctx.sql.query<LeaveTypeRow>('SELECT * FROM hr_leave_types ORDER BY key');
 };
 
-const accrueInput = z.object({
+export const accrueInput = z.object({
   employeeId: z.string().min(1),
   leaveTypeKey: z.string().min(1),
   days: posDecimal,
@@ -505,10 +515,10 @@ const accrueOp: OperationHandler<z.infer<typeof accrueInput>, LedgerRow> = async
 // ---------------------------------------------------------------------------
 
 const balanceOp: OperationHandler<
-  { employeeId: string },
+  z.infer<typeof employeeIdInput>,
   { employeeId: string; balances: { leaveTypeKey: string; balance: string }[] }
 > = async (ctx, input) => {
-  const employeeId = z.string().min(1).parse(input.employeeId);
+  const { employeeId } = employeeIdInput.parse(input);
   // Per-entity check: HR admin/manager pass on the node role; an employee passes
   // only for their OWN record, via the entity-narrowed grant.
   assertAllowed(await ctx.check(HR_PERM.absenceRead, employeeRef(employeeId)));
@@ -525,7 +535,7 @@ const balanceOp: OperationHandler<
   };
 };
 
-const requestLeaveInput = z.object({
+export const requestLeaveInput = z.object({
   employeeId: z.string().min(1),
   leaveTypeKey: z.string().min(1),
   startDate: isoDate,
@@ -560,7 +570,7 @@ const requestLeaveOp: OperationHandler<z.infer<typeof requestLeaveInput>, LeaveR
   return ctx.sql.query<LeaveRequestRow>('SELECT * FROM hr_leave_requests WHERE id = ?', [id])[0]!;
 };
 
-const decideLeaveInput = z.object({
+export const decideLeaveInput = z.object({
   requestId: z.string().min(1),
   decision: z.enum(['approve', 'reject']),
   note: z.string().optional(),
@@ -635,12 +645,12 @@ function getRequest(ctx: OperationContext, id: string): LeaveRequestRow {
   return ctx.sql.query<LeaveRequestRow>('SELECT * FROM hr_leave_requests WHERE id = ?', [id])[0]!;
 }
 
-const listRequestsOp: OperationHandler<{ status?: string } | undefined, LeaveRequestRow[]> = async (
+const listRequestsOp: OperationHandler<z.infer<typeof statusFilterInput> | undefined, LeaveRequestRow[]> = async (
   ctx,
-  input,
+  raw,
 ) => {
   assertAllowed(await ctx.check(HR_PERM.absenceRead));
-  const status = input?.status;
+  const { status } = statusFilterInput.parse(raw ?? {});
   return status
     ? ctx.sql.query<LeaveRequestRow>(
         'SELECT * FROM hr_leave_requests WHERE status = ? ORDER BY created_at',
@@ -650,8 +660,8 @@ const listRequestsOp: OperationHandler<{ status?: string } | undefined, LeaveReq
 };
 
 /** One employee's own requests — the self-service path (entity-checked). */
-const myRequestsOp: OperationHandler<{ employeeId: string }, LeaveRequestRow[]> = async (ctx, input) => {
-  const employeeId = z.string().min(1).parse(input.employeeId);
+const myRequestsOp: OperationHandler<z.infer<typeof employeeIdInput>, LeaveRequestRow[]> = async (ctx, input) => {
+  const { employeeId } = employeeIdInput.parse(input);
   assertAllowed(await ctx.check(HR_PERM.absenceRead, employeeRef(employeeId)));
   return ctx.sql.query<LeaveRequestRow>(
     'SELECT * FROM hr_leave_requests WHERE employee_id = ? ORDER BY created_at DESC',
@@ -663,7 +673,7 @@ const myRequestsOp: OperationHandler<{ employeeId: string }, LeaveRequestRow[]> 
 // Projects + time reporting (the second append-only ledger)
 // ---------------------------------------------------------------------------
 
-const createProjectInput = z.object({ code: z.string().min(1), name: z.string().min(1) });
+export const createProjectInput = z.object({ code: z.string().min(1), name: z.string().min(1) });
 
 const createProjectOp: OperationHandler<z.infer<typeof createProjectInput>, ProjectRow> = async (
   ctx,
@@ -686,16 +696,17 @@ const createProjectOp: OperationHandler<z.infer<typeof createProjectInput>, Proj
  * manager) passes with no entity; an employee passes with their own record,
  * whose grant carries `time:read`. Same op, two ways in.
  */
-const listProjectsOp: OperationHandler<{ employeeId?: string } | undefined, ProjectRow[]> = async (
+const listProjectsOp: OperationHandler<z.infer<typeof employeeFilterInput> | undefined, ProjectRow[]> = async (
   ctx,
-  input,
+  raw,
 ) => {
-  const entity = input?.employeeId ? employeeRef(input.employeeId) : undefined;
+  const input = employeeFilterInput.parse(raw ?? {});
+  const entity = input.employeeId ? employeeRef(input.employeeId) : undefined;
   assertAllowed(await ctx.check(HR_PERM.timeRead, entity));
   return ctx.sql.query<ProjectRow>('SELECT * FROM hr_projects ORDER BY code');
 };
 
-const logTimeInput = z.object({
+export const logTimeInput = z.object({
   employeeId: z.string().min(1),
   projectId: z.string().optional(),
   workDate: isoDate,
@@ -729,10 +740,10 @@ const logTimeOp: OperationHandler<z.infer<typeof logTimeInput>, TimeEntryRow> = 
 };
 
 const timesheetOp: OperationHandler<
-  { employeeId: string },
+  z.infer<typeof employeeIdInput>,
   { employeeId: string; entries: TimeEntryRow[]; totalHours: string }
 > = async (ctx, input) => {
-  const employeeId = z.string().min(1).parse(input.employeeId);
+  const { employeeId } = employeeIdInput.parse(input);
   assertAllowed(await ctx.check(HR_PERM.timeRead, employeeRef(employeeId)));
   const entries = ctx.sql.query<TimeEntryRow>(
     'SELECT * FROM hr_time_entries WHERE employee_id = ? ORDER BY work_date, rowid',
@@ -749,7 +760,7 @@ const timesheetOp: OperationHandler<
 // Expenses (submit → approve → export)
 // ---------------------------------------------------------------------------
 
-const submitExpenseInput = z.object({
+export const submitExpenseInput = z.object({
   employeeId: z.string().min(1),
   description: z.string().min(1),
   amount: posDecimal,
@@ -782,7 +793,7 @@ const submitExpenseOp: OperationHandler<z.infer<typeof submitExpenseInput>, Expe
   return ctx.sql.query<ExpenseRow>('SELECT * FROM hr_expenses WHERE id = ?', [id])[0]!;
 };
 
-const decideExpenseInput = z.object({
+export const decideExpenseInput = z.object({
   expenseId: z.string().min(1),
   decision: z.enum(['approve', 'reject']),
 });
@@ -816,20 +827,20 @@ const decideExpenseOp: OperationHandler<z.infer<typeof decideExpenseInput>, Expe
   return ctx.sql.query<ExpenseRow>('SELECT * FROM hr_expenses WHERE id = ?', [exp.id])[0]!;
 };
 
-const listExpensesOp: OperationHandler<{ status?: string } | undefined, ExpenseRow[]> = async (
+const listExpensesOp: OperationHandler<z.infer<typeof statusFilterInput> | undefined, ExpenseRow[]> = async (
   ctx,
-  input,
+  raw,
 ) => {
   assertAllowed(await ctx.check(HR_PERM.expenseRead));
-  const status = input?.status;
+  const { status } = statusFilterInput.parse(raw ?? {});
   return status
     ? ctx.sql.query<ExpenseRow>('SELECT * FROM hr_expenses WHERE status = ? ORDER BY created_at', [status])
     : ctx.sql.query<ExpenseRow>('SELECT * FROM hr_expenses ORDER BY created_at');
 };
 
 /** One employee's own expenses — the self-service path (entity-checked). */
-const myExpensesOp: OperationHandler<{ employeeId: string }, ExpenseRow[]> = async (ctx, input) => {
-  const employeeId = z.string().min(1).parse(input.employeeId);
+const myExpensesOp: OperationHandler<z.infer<typeof employeeIdInput>, ExpenseRow[]> = async (ctx, input) => {
+  const { employeeId } = employeeIdInput.parse(input);
   assertAllowed(await ctx.check(HR_PERM.expenseRead, employeeRef(employeeId)));
   return ctx.sql.query<ExpenseRow>(
     'SELECT * FROM hr_expenses WHERE employee_id = ? ORDER BY created_at DESC',
@@ -843,7 +854,7 @@ const myExpensesOp: OperationHandler<{ employeeId: string }, ExpenseRow[]> = asy
 // then the expenses are marked exported so the next run never double-counts.
 // ---------------------------------------------------------------------------
 
-const payrollExportInput = z.object({ fromDate: isoDate, toDate: isoDate });
+export const payrollExportInput = z.object({ fromDate: isoDate, toDate: isoDate });
 
 interface PayrollExport {
   fromDate: string;
@@ -944,7 +955,7 @@ export async function employmentTermsHash(terms: EmploymentTermsRow): Promise<st
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-const setTermsInput = z.object({
+export const setTermsInput = z.object({
   employeeId: z.string().min(1),
   roleTitle: z.string().min(1),
   monthlySalary: posDecimal,
@@ -995,15 +1006,15 @@ const setTermsOp: OperationHandler<z.infer<typeof setTermsInput>, EmploymentTerm
   ])[0]!;
 };
 
-const termsOp: OperationHandler<{ employeeId: string }, EmploymentTermsRow | null> = async (
+const termsOp: OperationHandler<z.infer<typeof employeeIdInput>, EmploymentTermsRow | null> = async (
   ctx,
   input,
 ) => {
   assertAllowed(await ctx.check(HR_PERM.employeeManage));
-  return latestTerms(ctx, z.string().min(1).parse(input.employeeId)) ?? null;
+  return latestTerms(ctx, employeeIdInput.parse(input).employeeId) ?? null;
 };
 
-const issueContractInput = z.object({
+export const issueContractInput = z.object({
   templateKey: z.string().min(1),
   employeeId: z.string().min(1),
 });
@@ -1074,10 +1085,10 @@ const issueContractOp: OperationHandler<
  * is findable is that the recipe is written down.
  */
 const verifyContractOp: OperationHandler<
-  { instanceId: string },
+  z.infer<typeof instanceIdInput>,
   { matches: boolean; boundHash: string | null; replayedHash: string | null; status: string }
 > = async (ctx, input) => {
-  const instanceId = z.string().min(1).parse(input.instanceId);
+  const { instanceId } = instanceIdInput.parse(input);
   assertAllowed(await ctx.check(PROTO.read, { entityType: 'protocol', entityId: instanceId }));
   const detail = getProtocol(ctx, instanceId);
   const termsId = detail.instance.content_ref_id;
@@ -1105,7 +1116,7 @@ const verifyContractOp: OperationHandler<
 // `protocol/*` bindings directly.
 // ---------------------------------------------------------------------------
 
-const startOnboardingInput = z.object({
+export const startOnboardingInput = z.object({
   templateKey: z.string().min(1),
   employeeId: z.string().min(1),
 });
@@ -1126,12 +1137,10 @@ const startOnboardingOp: OperationHandler<z.infer<typeof startOnboardingInput>, 
 // ---------------------------------------------------------------------------
 
 const timelineOp: OperationHandler<
-  { entityType: string; entityId: string },
+  z.infer<typeof timelineInput>,
   { type: string; occurred_at: string; actor: string }[]
 > = async (ctx, input) => {
-  const entity: EntityRef = z
-    .object({ entityType: z.string().min(1), entityId: z.string().min(1) })
-    .parse(input);
+  const entity: EntityRef = timelineInput.parse(input);
   assertAllowed(await ctx.check(HR_PERM.absenceRead, entity));
   return ctx.sql.query(
     `SELECT type, occurred_at, actor FROM _substrat_outbox

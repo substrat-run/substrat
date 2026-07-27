@@ -9,6 +9,7 @@
     "build": "pnpm -r build",
     "lint:boundaries": "node tools/boundary-lint.mjs",
     "lint:permissions": "tsx tools/permission-diff.mts",
+    "lint:api": "tsx tools/api-diff.mts",
     "substrat": "node packages/cli/dist/cli.js",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r build && pnpm -r test",
