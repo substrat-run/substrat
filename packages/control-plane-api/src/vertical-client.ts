@@ -196,9 +196,18 @@ export class VerticalClient {
    * The write half of `exportScope` — load a dump into one existing scope in this
    * deployment (drop-then-replay), for the governed restore/backout. The control-plane
    * route in front is the gate and the auditor, exactly as with the export.
+   *
+   * `tenantId` rides along so the vertical can RE-PROJECT its own role definitions
+   * after the import (projectRolesLocal): a dump from a CP-full world carries tuples
+   * but no role definitions, and without the repair every check denies while /me
+   * still names the role. A vertical that predates the field ignores it.
    */
-  async restoreScope(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ tables: number }> {
-    return this.postInternal<{ tables: number }>('/internal/restore', { scopeId, tables }, 'restore');
+  async restoreScope(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    tables: ScopeDumpTable[],
+  ): Promise<{ tables: number }> {
+    return this.postInternal<{ tables: number }>('/internal/restore', { tenantId, scopeId, tables }, 'restore');
   }
 
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
