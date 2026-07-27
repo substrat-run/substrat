@@ -25,7 +25,7 @@ import { printVersions } from './versions.js';
 import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
-import { pullScope, resolveTenantId } from './scope.js';
+import { pullScope, restoreScope, resolveTenantId } from './scope.js';
 
 const argv = process.argv.slice(2);
 
@@ -69,6 +69,10 @@ Usage:
                                               pull a scope's data to a local SQLite file
                                               (masked by default; --full is break-glass,
                                               audited server-side; 'global' scopes only)
+  substrat scope restore <scopeId> --file <backup>
+                                              load a backup into an existing hosted scope,
+                                              REPLACING its data (a pull's .sqlite, a local
+                                              adapter-sqlite scope file, or a .dump.json)
 
 'substrat push' defaults everything from the vertical's package.json — run it from inside the
 directory with no flags. Override any of: --slug, --name, --version. The slug/name come from a
@@ -297,8 +301,11 @@ async function cmdUnpublish(): Promise<void> {
 async function cmdScope(): Promise<void> {
   const sub = argv[1];
   const scope = argv[2];
-  if (sub !== 'pull' || !scope || scope.startsWith('--')) {
-    console.error('usage: substrat scope pull <scopeId> [--full] [--out <dir>] [--tenant <id-or-slug>]');
+  const usage =
+    'usage: substrat scope pull <scopeId> [--full] [--out <dir>] [--tenant <id-or-slug>]\n' +
+    '       substrat scope restore <scopeId> --file <backup.sqlite|.dump.json> [--tenant <id-or-slug>]';
+  if ((sub !== 'pull' && sub !== 'restore') || !scope || scope.startsWith('--')) {
+    console.error(usage);
     process.exit(1);
   }
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
@@ -308,6 +315,15 @@ async function cmdScope(): Promise<void> {
     header,
     flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant,
   );
+  if (sub === 'restore') {
+    const file = flag('file');
+    if (!file) {
+      console.error(usage);
+      process.exit(1);
+    }
+    await restoreScope({ controlPlaneUrl, header, tenantId, scopeId: scope, file });
+    return;
+  }
   await pullScope({
     controlPlaneUrl,
     header,

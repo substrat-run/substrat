@@ -45,6 +45,7 @@ export const adminAction = z.enum([
   'setTenantName', // §4.1 — display rename only; the slug (in registry ids) never moves
   'provisionScope', // §4.2 — the first scope-lifecycle transition (→ active)
   'importScope', // preview-and-snapshots.md §3 — provision a scope + load a dump (fork)
+  'restoreScope', // §8's write half — load a dump into an EXISTING scope in place (backup restore / backout)
   'deleteSnapshot', // preview-and-snapshots.md §9 — reap an expired fork: storage + directory row
   'suspendScope', // §4.2
   'unsuspendScope', // §4.2

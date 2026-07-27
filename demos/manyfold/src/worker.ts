@@ -227,6 +227,15 @@ app.get('/internal/export', async (c) => {
   gatePlatform(c);
   return c.json(await hostFor(c.env).exportScopeLocal(scopeId.parse(c.req.query('scopeId'))));
 });
+// The write half (§8): load a dump into one existing scope, replacing its data —
+// the governed restore/backout. The control plane is the gate and the auditor.
+app.post('/internal/restore', async (c) => {
+  gatePlatform(c);
+  const body = z
+    .object({ scopeId, tables: z.array(z.object({ name: z.string(), ddl: z.string(), columns: z.array(z.string()), rows: z.array(z.array(z.unknown())) })) })
+    .parse(await c.req.json());
+  return c.json(await hostFor(c.env).restoreScopeLocal(body.scopeId, body.tables));
+});
 
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.
 async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {

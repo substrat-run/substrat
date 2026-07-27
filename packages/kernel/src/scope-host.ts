@@ -1199,6 +1199,24 @@ export interface ScopeHost {
   ): Promise<void>;
 
   /**
+   * Load a `ScopeDump` into an EXISTING scope in place — the restore/backout half of
+   * `exportScope` (preview-and-snapshots.md §8). Same drop-then-replay as a fork: the
+   * dump's schema, rows AND migration frontier replace the scope's wholesale, so a
+   * restore rewinds data faithfully and the forward-only migration law still holds on
+   * the next bind (newer migrations roll forward from the dump's frontier).
+   *
+   * Refuses an unknown scope — restore never creates one; that is `importScope`. The
+   * dump's own `tenantId`/`scopeId` are provenance, never the authority: the caller
+   * says where it lands. Audited as `restoreScope` with the dump's provenance.
+   */
+  restoreScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    dump: ScopeDump,
+  ): Promise<void>;
+
+  /**
    * Snapshot a scope — fork its current data into a new scope and return that scope's
    * id. A thin composition of `exportScope` + `importScope` (preview-and-snapshots.md
    * §3): the new scope is `kind: 'archive'` by default, carries fork provenance

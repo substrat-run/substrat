@@ -14,6 +14,7 @@ import {
   queryScopeInput,
   readScopeTableInput,
   registerVerticalInput,
+  scopeDump,
   scopeId as scopeIdSchema,
   scopeStatus,
   storageShape,
@@ -723,6 +724,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const vertical = await verticalForScope(c, scope);
       const tables = vertical ? await vertical.exportScope(scopeId) : dump.tables;
       return c.json({ ...dump, tables: full ? tables : maskDump(tables), masked: !full });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
+  // The write half of the governed pull (§8) — load a dump INTO an existing scope:
+  // restore a backup, back out to a snapshot, or land a locally-built world on a
+  // hosted app. Staff-only like the export (not in BUILDER_ROUTES). No jurisdiction
+  // gate: this is ingress — the data ENTERS the scope's pinned region, it never
+  // leaves one. Mirrors the export's delegation shape: the canonical `restoreScope`
+  // writes the audit row (and the co-located bytes); when the scope's data lives in
+  // a vertical deployment, the same dump is then loaded THERE — the bytes the router
+  // actually serves. (Yes, that stores the dump twice in delegated mode; the
+  // placeholder copy is the price of one canonical audited path, same as export.)
+  app.post('/tenants/:tenantId/scopes/:scopeId/restore', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const dump = scopeDump.parse(await c.req.json());
+    try {
+      await host.restoreScope(actor, tenantId, scopeId, dump);
+      const vertical = await verticalForScope(c, scope);
+      if (vertical) await vertical.restoreScope(scopeId, dump.tables);
+      return c.json({ restored: scopeId, tables: dump.tables.length });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);

@@ -192,6 +192,15 @@ export class VerticalClient {
     );
   }
 
+  /**
+   * The write half of `exportScope` — load a dump into one existing scope in this
+   * deployment (drop-then-replay), for the governed restore/backout. The control-plane
+   * route in front is the gate and the auditor, exactly as with the export.
+   */
+  async restoreScope(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ tables: number }> {
+    return this.postInternal<{ tables: number }>('/internal/restore', { scopeId, tables }, 'restore');
+  }
+
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
   private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';

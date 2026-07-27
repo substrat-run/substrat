@@ -12,7 +12,7 @@
  * run the identical vertical against it. Written with `node:sqlite` (node 22.13+);
  * on an older node the dump lands as JSON next to where the db would have been.
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
 
@@ -123,4 +123,75 @@ export async function pullScope(opts: {
     console.log('  ⚠ FULL-FIDELITY pull: this file contains real customer data.');
     console.log('    Treat it as production data — do not share it, delete it when done.');
   }
+}
+
+/** Read a dump from disk: a real `.sqlite` file (node:sqlite), or a `.dump.json`. */
+async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
+  if (!file.endsWith('.sqlite')) {
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { tables?: DumpTable[] };
+    if (!Array.isArray(parsed.tables)) throw new Error(`${file} is not a scope dump (no tables)`);
+    return { tables: parsed.tables };
+  }
+  let DatabaseSync: (typeof import('node:sqlite'))['DatabaseSync'];
+  try {
+    ({ DatabaseSync } = await import('node:sqlite'));
+  } catch {
+    throw new Error('reading a .sqlite backup needs node 22.13+ (node:sqlite) — or pass a .dump.json');
+  }
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const tables: DumpTable[] = [];
+    const rows = db
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+      .all() as { name: string; sql: string }[];
+    for (const t of rows) {
+      const cols = (db.prepare(`PRAGMA table_info("${t.name}")`).all() as { name: string }[]).map((c) => c.name);
+      const data = db.prepare(`SELECT * FROM "${t.name}"`).all() as Record<string, unknown>[];
+      tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])) });
+    }
+    return { tables };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `substrat scope restore <scopeId> --file <backup>` — the write half of `pull`
+ * (preview-and-snapshots.md §8): load a backup into an EXISTING hosted scope,
+ * REPLACING its data wholesale. The backup can be a `.sqlite` file (a `scope pull`
+ * output, or a local `@substrat-run/adapter-sqlite` scope file — same shape) or a
+ * `.dump.json`. The server side is the gate: staff-gated and audited; the restore
+ * lands in the deployment the router actually serves the scope from.
+ */
+export async function restoreScope(opts: {
+  controlPlaneUrl: string;
+  header: Record<string, string>;
+  tenantId: string;
+  scopeId: string;
+  file: string;
+}): Promise<void> {
+  const { tables } = await readDump(opts.file);
+  const rows = tables.reduce((n, t) => n + t.rows.length, 0);
+  const res = await fetch(
+    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
+      `/scopes/${encodeURIComponent(opts.scopeId)}/restore`,
+    {
+      method: 'POST',
+      headers: { ...opts.header, 'content-type': 'application/json' },
+      // tenantId/scopeId in the body are PROVENANCE (where the backup came from);
+      // the URL says where it lands — same rule as the host primitive.
+      body: JSON.stringify({
+        tenantId: opts.tenantId,
+        scopeId: opts.scopeId,
+        capturedAt: new Date().toISOString(),
+        tables,
+      }),
+    },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `restore refused: ${res.status} ${res.statusText}`);
+  }
+  console.log(`✓ restored ${tables.length} tables (${rows} rows) into scope ${opts.scopeId}`);
+  console.log('  the scope now serves the backup — its previous data was replaced.');
 }

@@ -831,6 +831,17 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * Load a dump into one scope DO in THIS deployment (drop-then-replay) — the
+   * CP-less write half of `exportScopeLocal`, behind the vertical's
+   * `/internal/restore`. The control plane is the gate and the auditor; this end
+   * just replaces its own bytes with the dump's, migration frontier included.
+   */
+  async restoreScopeLocal(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ tables: number }> {
+    await this.scopeStub(scopeId).importDump(tables);
+    return { tables: tables.length };
+  }
+
+  /**
    * Wipe one scope DO's storage in THIS deployment — the reap half of an orchestrated
    * deleteSnapshot (§9). The fork-only refusal and the directory cleanup live on the
    * control plane, which calls the vertical's `/internal/delete-scope` before deleting
@@ -961,6 +972,25 @@ export class CloudflareScopeHost implements ScopeHost {
       actor,
       'importScope',
       { tenantId: input.tenantId, scopeId: input.scopeId },
+      null,
+      { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
+    );
+  }
+
+  async restoreScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    dump: ScopeDump,
+  ): Promise<void> {
+    // Restore never creates a scope (that is importScope) — an unknown target fails closed.
+    const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!existing) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+    await this.scopeStub(scopeId).importDump(dump.tables);
+    await this.recordAdmin(
+      actor,
+      'restoreScope',
+      { tenantId, scopeId },
       null,
       { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
     );

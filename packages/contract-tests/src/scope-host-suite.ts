@@ -716,6 +716,50 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- restore (§8's write half): load a dump into an EXISTING scope in place ---
+
+    describe('scope restore — backup/backout (§8)', () => {
+      it('rewinds a scope to a captured dump, audited; refuses an unknown scope', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/write-marker', { v: 'before-backup' });
+        const backup = await host.admin.exportScope(staff, t1, s1);
+        const markerCount = async () =>
+          (await host.admin.listScopeTables(staff, t1, s1)).find((t) => t.name === 'marker')
+            ?.rowCount ?? 0;
+        const atBackup = await markerCount();
+
+        // Diverge past the backup, then restore — the divergence must be gone.
+        await stub.invoke('test/write-marker', { v: 'after-backup' });
+        expect(await markerCount()).toBe(atBackup + 1);
+        await host.restoreScope(staff, t1, s1, backup);
+        expect(await markerCount()).toBe(atBackup);
+
+        // Audited with the dump's provenance.
+        const restores = (await host.admin.auditLog(staff, { scopeId: s1 })).filter(
+          (r) => r.action === 'restoreScope',
+        );
+        expect(restores).toHaveLength(1);
+        expect((restores[0]!.after as { sourceScopeId: string }).sourceScopeId).toBe(s1);
+
+        // Restore never creates a scope — that is importScope's job.
+        await expect(
+          host.restoreScope(staff, t1, scopeId.parse(ulid()), backup),
+        ).rejects.toThrow(/unknown scope/);
+      });
+
+      it('the scope still runs after a restore — operations write on the restored state', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/write-marker', { v: 'post-restore-write' });
+        const page = await host.admin.readScopeTable(staff, t1, s1, {
+          table: 'marker',
+          limit: 200,
+          offset: 0,
+        });
+        const vCol = page.columns.indexOf('v');
+        expect(page.rows.map((r) => r[vCol])).toContain('post-restore-write');
+      });
+    });
+
     // -- snapshot & auto-snapshot on bind (preview-and-snapshots.md §3/§4) -----
     //
     // snapshotScope forks an `archive` copy at the source's frontier. bindScopeVersion,

@@ -581,6 +581,27 @@ describe('control-plane API', () => {
     expect(((await full.json()) as { masked: boolean }).masked).toBe(false);
   });
 
+  it('restores a full dump into an existing scope; unknown scope 404s', async () => {
+    const sR = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sR });
+    await host.admin.activateScope(staff, t1, sR);
+    // A FULL export round-trips (the masked default deliberately does not — masked
+    // rows restored would silently replace real data with redactions).
+    const dump = (await (await req(`/tenants/${t1}/scopes/${sR}/export?full=true`)).json()) as {
+      tenantId: string; scopeId: string; capturedAt: string; tables: unknown[]; masked: boolean;
+    };
+    const res = await json(`/tenants/${t1}/scopes/${sR}/restore`, 'POST', {
+      tenantId: dump.tenantId, scopeId: dump.scopeId, capturedAt: dump.capturedAt, tables: dump.tables,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ restored: sR, tables: dump.tables.length });
+
+    const missing = await json(`/tenants/${t1}/scopes/${scopeId.parse(ulid())}/restore`, 'POST', {
+      tenantId: t1, scopeId: sR, capturedAt: dump.capturedAt, tables: [],
+    });
+    expect(missing.status).toBe(404);
+  });
+
   it('masks PII columns and JSON payload keys in a delegated export', async () => {
     const sM = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t1, scopeId: sM, vertical: 'demo-vert' });
