@@ -925,7 +925,21 @@ app.get('/api/apps', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  return c.json(await dash.invoke('dashboard/list-apps', {}));
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  // Self-heal the URL from the live directory: the hostname column is a snapshot
+  // taken at install time, and an install whose bind was recorded late (or repaired
+  // platform-side) leaves it null forever while the router happily serves the app.
+  // The directory is the source of truth for hostnames — join it for the gaps.
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (cp) {
+    for (const a of apps) {
+      if (a.hostname || a.status !== 'active') continue;
+      const live = (await cp.listHostnames(scopeId.parse(a.app_scope_id)).catch(() => []))
+        .find((h) => h.status === 'active');
+      if (live) a.hostname = live.hostname;
+    }
+  }
+  return c.json(apps);
 });
 
 /**
