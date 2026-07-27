@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type Deployment, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppEvent, type Deployment, type MigrationBookmark, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
 import { DEV_MOCK, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -226,6 +226,9 @@ function Deployments({ app }: { app: AppRow }) {
   // crossing update, so a bad upgrade has a rollback point. A code-only update
   // snapshots nothing — the platform compares migration digests, not the checkbox.
   const [snapFirst, setSnapFirst] = useState(true);
+  // #286: pre-migration rewind points, offered as a time-boxed backout. Fresh =
+  // within the 24h window the platform will actually honor without force.
+  const [bookmarks, setBookmarks] = useState<MigrationBookmark[]>([]);
   useEffect(() => {
     if (DEV_MOCK) {
       setDep(MOCK_DEPLOYMENTS[0] ?? null);
@@ -236,6 +239,10 @@ function Deployments({ app }: { app: AppRow }) {
       .appDeployments(app.app_scope_id)
       .then((d) => live && setDep(d))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    api
+      .appBookmarks(app.app_scope_id)
+      .then((b) => live && setBookmarks(b))
+      .catch(() => undefined); // no bookmarks surface (embedded/dev) → simply no backout offer
     return () => {
       live = false;
     };
@@ -270,6 +277,29 @@ function Deployments({ app }: { app: AppRow }) {
     }
   };
 
+  const doRewind = async (bookmark: MigrationBookmark) => {
+    // The honest contract, spelled out at the moment of choice (#286): PITR rewinds
+    // the WHOLE database, so everything written since the bookmark is discarded.
+    const ok = window.confirm(
+      `Rewind this app's data to before its last migration (${relativeTime(bookmark.takenAt)})?\n\n` +
+        `EVERY change made since then will be discarded — schema and data. ` +
+        `This is a first-hours backout for a bad update; for anything older, restore a snapshot instead.`,
+    );
+    if (!ok) return;
+    setUpdating(true);
+    setNote(null);
+    try {
+      await api.rewindApp(app.app_scope_id, bookmark.bookmark);
+      setNote('Rewinding — the app restarts on its pre-migration data in a few seconds.');
+      setBookmarks([]);
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ ...card, padding: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -297,6 +327,23 @@ function Deployments({ app }: { app: AppRow }) {
         )}
       </div>
       {note && <div style={{ ...card, padding: '10px 16px', fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</div>}
+      {(() => {
+        // The time-boxed backout offer (#286): shown only while the newest
+        // pre-migration bookmark is inside the 24h window the platform honors.
+        const fresh = bookmarks.find((b) => Date.now() - Date.parse(b.takenAt) < 24 * 60 * 60 * 1000);
+        if (!fresh) return null;
+        return (
+          <div style={{ ...card, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <Pill kind="warning">migrated {relativeTime(fresh.takenAt)}</Pill>
+            <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              A migration ran {relativeTime(fresh.takenAt)} ({fresh.pending.length} step{fresh.pending.length === 1 ? '' : 's'}).
+              If the update went wrong you can rewind to just before it — every change since is discarded.
+            </span>
+            <div style={{ flex: 1 }} />
+            <Button onClick={() => doRewind(fresh)} disabled={updating}>Back out</Button>
+          </div>
+        );
+      })()}
       <HonestyBanner>Read live from the registry. “Running” is the version this app’s scope is pinned to — what the router serves. Versions are managed by the Substrat team; promotion to prod is a staff action, and updating rebinds this app to the current prod version.</HonestyBanner>
       {dep.versions.length === 0 ? (
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No versions pushed to the registry yet.</div>
@@ -312,6 +359,7 @@ function Deployments({ app }: { app: AppRow }) {
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{v.version}</span>
                   {v.id === dep.boundVersionId && <Pill kind="success">running</Pill>}
+                  {v.schemaChange && <Pill kind="warning">schema change</Pill>}
                 </span>
                 <span><Pill kind={v.admission === 'admitted' ? 'success' : v.admission === 'rejected' ? 'danger' : 'warning'}>{v.admission}</Pill></span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

@@ -63,7 +63,12 @@ function VersionRow({
   const channels = d.listed ? (['dev', 'staging'] as const) : (['dev', 'staging', 'prod'] as const);
   return (
     <Row columns="1.2fr 1fr 1.4fr 1.6fr" last={last}>
-      <span style={{ fontWeight: 500 }}>{v.version}</span>
+      <span style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>
+        {v.version}
+        {/* #286: promoting this version migrates every instance's data in place —
+            the badge is the at-a-glance half of the acknowledgement gate. */}
+        {v.schemaChange && <Pill kind="warning">schema change</Pill>}
+      </span>
       <span>
         <Pill kind={ADMISSION_PILL[v.admission] ?? 'neutral'}>{v.admission}</Pill>
       </span>
