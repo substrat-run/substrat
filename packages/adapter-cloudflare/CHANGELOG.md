@@ -1,5 +1,26 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.20.0
+
+### Minor Changes
+
+- a39a024: Backup restore / backout (§8's write half): `ScopeHost.restoreScope` loads a
+  `ScopeDump` into an EXISTING scope in place (drop-then-replay, migration frontier
+  included) — audited as `restoreScope`, refusing unknown scopes. Threaded end to end:
+  `restoreScopeLocal` on the Cloudflare host, `/internal/restore` on the vertical
+  surface (VerticalClient + the Manyfold reference worker), a staff-only
+  `POST /tenants/:tenantId/scopes/:scopeId/restore` control-plane route that delegates
+  to the bound version's deployment, and `substrat scope restore <scopeId> --file
+<backup>` — accepting a `scope pull` .sqlite, a local adapter-sqlite scope file, or
+  a .dump.json.
+
+### Patch Changes
+
+- Updated dependencies [d18d788]
+- Updated dependencies [a39a024]
+  - @substrat-run/contracts@0.20.0
+  - @substrat-run/kernel@0.20.0
+
 ## 0.19.0
 
 ### Minor Changes
@@ -847,7 +868,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                        z.object({ facility: entityRef, unitPrice: money })
+                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

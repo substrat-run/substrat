@@ -1,5 +1,26 @@
 # @substrat-run/control-plane-api
 
+## 0.20.0
+
+### Minor Changes
+
+- a39a024: Backup restore / backout (§8's write half): `ScopeHost.restoreScope` loads a
+  `ScopeDump` into an EXISTING scope in place (drop-then-replay, migration frontier
+  included) — audited as `restoreScope`, refusing unknown scopes. Threaded end to end:
+  `restoreScopeLocal` on the Cloudflare host, `/internal/restore` on the vertical
+  surface (VerticalClient + the Manyfold reference worker), a staff-only
+  `POST /tenants/:tenantId/scopes/:scopeId/restore` control-plane route that delegates
+  to the bound version's deployment, and `substrat scope restore <scopeId> --file
+<backup>` — accepting a `scope pull` .sqlite, a local adapter-sqlite scope file, or
+  a .dump.json.
+
+### Patch Changes
+
+- Updated dependencies [d18d788]
+- Updated dependencies [a39a024]
+  - @substrat-run/contracts@0.20.0
+  - @substrat-run/kernel@0.20.0
+
 ## 0.19.0
 
 ### Patch Changes
