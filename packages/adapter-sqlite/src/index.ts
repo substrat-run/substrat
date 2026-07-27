@@ -1082,16 +1082,29 @@ export class SqliteScopeHost implements ScopeHost {
       forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
       forkedAt: input.forkedAt ?? dump.capturedAt,
     });
-    const rt = this.runtime(input.tenantId, input.scopeId);
+    this.loadDump(input.tenantId, input.scopeId, dump.tables);
+    await this.admin.activateScope(actor, input.tenantId, input.scopeId);
+    this.recordAdmin(
+      actor,
+      'importScope',
+      { tenantId: input.tenantId, scopeId: input.scopeId },
+      null,
+      { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
+    );
+  }
+
+  /** Drop-then-replay a dump into a scope's db, refreshing the migration frontier. */
+  private loadDump(tenantId: TenantId, scopeId: ScopeId, tables: ScopeDumpTable[]): void {
+    const rt = this.runtime(tenantId, scopeId);
     const db = rt.db;
-    const load = db.transaction((tables: ScopeDumpTable[]) => {
-      // Drop the provisioned schema — the dump's schema is authoritative. Only real
+    const load = db.transaction((dumped: ScopeDumpTable[]) => {
+      // Drop the current schema — the dump's schema is authoritative. Only real
       // tables (never `sqlite_*` internals, which are auto-managed and un-droppable).
       const existing = db
         .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
         .all() as { name: string }[];
       for (const { name } of existing) db.exec(`DROP TABLE IF EXISTS "${name}"`);
-      for (const t of tables) {
+      for (const t of dumped) {
         db.exec(t.ddl);
         if (t.rows.length === 0) continue;
         const cols = t.columns.map((c) => `"${c}"`).join(', ');
@@ -1100,9 +1113,9 @@ export class SqliteScopeHost implements ScopeHost {
         for (const row of t.rows) stmt.run(...(row as unknown[]));
       }
     });
-    load(dump.tables);
+    load(tables);
     // The frontier came in with the dump — refresh the cached applied-migration set so
-    // a later bind/migrate builds on the imported state, not the provisioning state.
+    // a later bind/migrate builds on the loaded state, not the previous one.
     rt.appliedMigrations.clear();
     for (const r of db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {
       module_id: string;
@@ -1110,11 +1123,22 @@ export class SqliteScopeHost implements ScopeHost {
     }[]) {
       rt.appliedMigrations.add(`${r.module_id}@${r.version}`);
     }
-    await this.admin.activateScope(actor, input.tenantId, input.scopeId);
+  }
+
+  async restoreScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    dump: ScopeDump,
+  ): Promise<void> {
+    // Restore never creates a scope (that is importScope) — an unknown target fails closed.
+    const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!existing) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+    this.loadDump(tenantId, scopeId, dump.tables);
     this.recordAdmin(
       actor,
-      'importScope',
-      { tenantId: input.tenantId, scopeId: input.scopeId },
+      'restoreScope',
+      { tenantId, scopeId },
       null,
       { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
     );
