@@ -134,20 +134,13 @@ export function DashShell(props: DashShellProps) {
           ))}
         </div>
         <div style={{ flex: 1 }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px 0', borderTop: '1px solid var(--border-subtle)' }}>
-          <Avatar seed={props.userName || props.userEmail} tone="brand" size={24} />
-          <span
-            title={props.userEmail}
-            style={{ fontSize: 12.5, color: 'var(--text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-          >
-            {props.userEmail}
-          </span>
-          <IconTile label="Toggle theme" onClick={props.onToggleTheme}>
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
-            </svg>
-          </IconTile>
-        </div>
+        <SidebarAccount
+          userName={props.userName}
+          userEmail={props.userEmail}
+          onSettings={() => props.onNav('settings')}
+          onToggleTheme={props.onToggleTheme}
+          onSignOut={props.onSignOut}
+        />
       </nav>
 
       {/* Main column */}
@@ -212,13 +205,6 @@ export function DashShell(props: DashShellProps) {
           <IconTile label="Notifications" onClick={props.onOpenNotifications} size={28} badge={props.unread}>
             <Ic name="bell" size={16} />
           </IconTile>
-          <AccountPill
-            userName={props.userName}
-            userEmail={props.userEmail}
-            onSettings={() => props.onNav('settings')}
-            onToggleTheme={props.onToggleTheme}
-            onSignOut={props.onSignOut}
-          />
         </header>
         <main style={{ flex: 1, overflow: 'auto' }}>{props.children}</main>
       </div>
@@ -379,8 +365,8 @@ export function Avatar({ seed, tone = 'brand', size = 26 }: { seed: string; tone
   );
 }
 
-/** The top-right account pill + its dropdown menu (settings / theme / sign out). */
-function AccountPill({
+/** The sidebar-footer account row + its upward dropdown menu (settings / theme / sign out). */
+function SidebarAccount({
   userName,
   userEmail,
   onSettings,
@@ -395,29 +381,40 @@ function AccountPill({
 }) {
   // `?menu=1` opens it on load (a demo/screenshot aid, like `?theme=`).
   const [open, setOpen] = useState(() => new URLSearchParams(window.location.search).get('menu') === '1');
+  const [hover, setHover] = useState(false);
   return (
-    <div style={{ position: 'relative', flexShrink: 0 }}>
+    <div style={{ position: 'relative', borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
       <button
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
         title="Account"
         onClick={() => setOpen((o) => !o)}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
         style={{
-          display: 'inline-flex',
+          display: 'flex',
           alignItems: 'center',
-          gap: 6,
-          height: 28,
-          padding: '0 8px 0 4px',
-          borderRadius: 999,
-          border: '1px solid var(--border-default)',
-          background: open ? 'var(--surface-hover)' : 'var(--surface-card)',
+          gap: 8,
+          width: '100%',
+          padding: '6px 10px',
+          borderRadius: 6,
+          border: 0,
+          background: open || hover ? 'var(--surface-hover)' : 'transparent',
           cursor: 'pointer',
+          textAlign: 'left',
         }}
       >
-        <Avatar seed={userName || userEmail} tone="brand" size={20} />
-        <span style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>{userName || 'Account'}</span>
-        <span style={{ display: 'inline-flex', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }}>
+        <Avatar seed={userName || userEmail} tone="brand" size={24} />
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {userName || 'Account'}
+          </span>
+          <span title={userEmail} style={{ display: 'block', fontSize: 11.5, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {userEmail}
+          </span>
+        </span>
+        <span style={{ display: 'inline-flex', transform: open ? 'none' : 'rotate(180deg)', transition: 'transform 120ms' }}>
           <Ic name="chevronDown" size={12} color="var(--text-tertiary)" />
         </span>
       </button>
@@ -429,10 +426,10 @@ function AccountPill({
             role="menu"
             style={{
               position: 'absolute',
-              top: 36,
+              bottom: 'calc(100% + 6px)',
+              left: 0,
               right: 0,
               zIndex: 41,
-              width: 220,
               background: 'var(--surface-card)',
               border: '1px solid var(--border-default)',
               borderRadius: 10,
@@ -440,10 +437,6 @@ function AccountPill({
               overflow: 'hidden',
             }}
           >
-            <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{userName || 'Account'}</div>
-              <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userEmail}</div>
-            </div>
             <MenuItem icon="settings" label="Account settings" onClick={() => { setOpen(false); onSettings(); }} />
             <MenuItem icon="settings" label="Toggle theme" onClick={() => { setOpen(false); onToggleTheme(); }} moon />
             <div style={{ height: 1, background: 'var(--border-subtle)' }} />
