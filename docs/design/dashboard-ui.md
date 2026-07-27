@@ -355,11 +355,19 @@ name-taken validation; provisioning failure → the card shows `failed` + retry.
 pencil), `StatusPill`, and a primary **Visit** `Button` (opens the hostname, `external-link`)
 + overflow (Rename, Delete). Beneath: a **`Tabs`** bar:
 
-**Overview · Deployments · Environment Variables · Domains · Integrations · Settings**
+**Overview · Data · Deployments · Previews · Settings**
 
-Only **Overview** is M0; **Environment Variables / Domains / Integrations / Settings** are
-M2; **Deployments** tracks the version registry (design now, wire when surfaced —
-dashboard.md open-Q #3).
+Five real nouns, no more. **Environment / Domains / Integrations** are *sections inside
+Settings* (`settings/environment` …) — configuration, not daily-driver surfaces, so they
+don't earn top-level slots. **Previews** (né Snapshots) is the preview-and-snapshots.md
+instance surface: "snapshot" stays the backend word for the exported data artifact; the
+user-facing thing — a copy you visit — is a preview. Old tab URLs (`snapshots`, `env`,
+`domains`, `integrations`) alias to their new homes. Only **Overview** is M0; Settings
+sections are M2; **Deployments** tracks the version registry (design now, wire when
+surfaced — dashboard.md open-Q #3). When the registry is real, Previews folds into
+Deployments as a second section (fork-before-promote makes them one workflow); an
+**Observability** tab (logs + metrics per app, observability.md) takes the freed slot,
+and backups land as a section under **Data**.
 
 #### 4.5.1 Overview tab `[M0]`
 
@@ -377,7 +385,7 @@ uploaded), status (current / previous), promoted-at, by-whom. Row action **Promo
 badged. Empty until the registry API is surfaced — show a "Deployments will appear here"
 note rather than a dead tab.
 
-#### 4.5.3 Environment Variables tab `[M2]`
+#### 4.5.3 Environment section (Settings) `[M2]`
 
 **Purpose.** Env vars / secrets = connection secrets + module config (dashboard.md mapping).
 
@@ -391,16 +399,16 @@ explicit (**Save changes** primary, sticky footer when dirty).
 audited); copying a secret is allowed but toasts a reminder. Editing requires
 `provision-app`; a viewer sees masked, read-only rows with a "Read-only" tag.
 
-#### 4.5.4 Domains tab `[M2]` — see §4.7 for the shared component
+#### 4.5.4 Domains section (Settings) `[M2]` — see §4.7 for the shared component
 
 The "my tenant" instance of the console's Domains view, filtered to this app: list of bound
 hostnames + **Add domain** flow.
 
-#### 4.5.5 Integrations tab `[M2]` — see §4.8
+#### 4.5.5 Integrations section (Settings) `[M2]` — see §4.8
 
 Providers this app can connect (Scrive, Fortnox…), connect/disconnect, connection status.
 
-#### 4.5.6 Settings tab `[M2]`
+#### 4.5.6 Settings tab — General section `[M2]`
 
 `KeyValue`/form: rename, the app's layer/kind (read-only), **Transfer**/ownership (future),
 and a **Danger zone** card (`--status-danger` border): **Delete app** — a `Dialog`

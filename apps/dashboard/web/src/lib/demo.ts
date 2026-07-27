@@ -268,15 +268,13 @@ export const ROLE_OPTS = ['Owner', 'Admin', 'Member', 'Viewer'];
 export const RANGE_OPTS = ['Last 7 days', 'Last 24 hours', 'Last 30 days', 'Custom'];
 export const APP_FILTER = ['All apps', 'Acme HR', 'Acme Legal', 'Acme Field Ops'];
 
-/** The per-app detail tabs (counts are demo). */
+/** The per-app detail tabs. Environment / Domains / Integrations live as sections
+ *  inside Settings; old tab URLs are aliased in AppDetail. */
 export const APP_TABS: Array<{ value: string; label: string; count?: number; future?: boolean }> = [
   { value: 'overview', label: 'Overview' },
   { value: 'data', label: 'Data' },
   { value: 'deployments', label: 'Deployments', future: true },
-  { value: 'snapshots', label: 'Snapshots' },
-  { value: 'env', label: 'Environment Variables', count: 4 },
-  { value: 'domains', label: 'Domains', count: 1 },
-  { value: 'integrations', label: 'Integrations', count: 2 },
+  { value: 'previews', label: 'Previews' },
   { value: 'settings', label: 'Settings' },
 ];
 
