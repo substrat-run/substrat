@@ -111,6 +111,16 @@ const KERNEL_DDL = `
     applied_at TEXT NOT NULL,
     PRIMARY KEY (module_id, version)
   );
+  -- #286: the PITR bookmark taken immediately BEFORE a migration pass runs on a
+  -- scope that already holds data -- the precise rewind point a backout restores
+  -- to. Rows live in the same storage they describe, so a rewind erases the rows
+  -- taken after its target, which is exactly right. "pending" names what was about
+  -- to apply (module@version list, JSON) for the deployments UI.
+  CREATE TABLE IF NOT EXISTS _substrat_migration_bookmarks (
+    bookmark TEXT PRIMARY KEY,
+    taken_at TEXT NOT NULL,
+    pending TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
     relation TEXT NOT NULL,
@@ -435,6 +445,73 @@ export function defineScopeDO(
       return this.lastFailure ? { ...this.lastFailure, applied: this.applied.size } : null;
     }
 
+    /**
+     * The PITR bookmarks this scope recorded before migration passes (#286),
+     * newest first — what a backout UI offers as rewind points. Rows taken after
+     * a rewind's target no longer exist post-rewind, by construction (they live
+     * in the storage the rewind restores).
+     */
+    migrationBookmarks(limit = 20): { bookmark: string; takenAt: string; pending: string[] }[] {
+      return this.sql
+        .exec(
+          `SELECT bookmark, taken_at, pending FROM _substrat_migration_bookmarks
+            ORDER BY taken_at DESC LIMIT ?`,
+          limit,
+        )
+        .toArray()
+        .map((r) => ({
+          bookmark: r.bookmark as string,
+          takenAt: r.taken_at as string,
+          pending: JSON.parse((r.pending as string) ?? '[]') as string[],
+        }));
+    }
+
+    /**
+     * Rewind this scope's ENTIRE storage — schema and data — to a bookmark (#286's
+     * backout). The honest caveat travels in the refusals: PITR restores everything,
+     * so every write since the bookmark is discarded. Without `force` the bookmark
+     * must be one this scope recorded before a migration and younger than 24h — the
+     * first-hours backout window where "nothing happened since" is plausible; later
+     * regret belongs to #278's considered restore path. `force` admits any bookmark
+     * Cloudflare still holds (30 days), for a staff `getBookmarkForTime` flow.
+     *
+     * The restore completes on restart: the DO aborts shortly after answering, and
+     * the next request finds the storage as it was at the bookmark.
+     */
+    async rewindToBookmark(
+      bookmark: string,
+      opts?: { force?: boolean },
+    ): Promise<{ rewindingTo: string }> {
+      const storage = this.ctx.storage as unknown as {
+        onNextSessionRestoreBookmark?: (b: string) => Promise<string>;
+      };
+      if (typeof storage.onNextSessionRestoreBookmark !== 'function') {
+        throw new Error('point-in-time rewind is not available on this host (PITR is production-plane only)');
+      }
+      const row = this.sql
+        .exec('SELECT taken_at FROM _substrat_migration_bookmarks WHERE bookmark = ?', bookmark)
+        .toArray()[0] as { taken_at: string } | undefined;
+      if (!opts?.force) {
+        if (!row) {
+          throw new Error(
+            'unknown bookmark — not one this scope recorded before a migration (force admits any bookmark Cloudflare holds)',
+          );
+        }
+        const ageMs = Date.now() - Date.parse(row.taken_at);
+        if (ageMs > 24 * 60 * 60 * 1000) {
+          throw new Error(
+            `bookmark is ${Math.round(ageMs / 3_600_000)}h old — rewinding discards EVERY write since; ` +
+              `use the backup restore path (#278), or force if the loss is intended`,
+          );
+        }
+      }
+      const confirmed = await storage.onNextSessionRestoreBookmark(bookmark);
+      // Answer first, then restart to complete the restore — an immediate abort
+      // would take the RPC response down with it.
+      setTimeout(() => this.ctx.abort(), 100);
+      return { rewindingTo: confirmed ?? bookmark };
+    }
+
     /** Admin scope-tuple write (role assignment / grant scoped to this scope). */
     async writeTuple(
       subject: string,
@@ -564,6 +641,32 @@ export function defineScopeDO(
       if (pending.length === 0) return false;
       this.migrationRuns += 1;
       await this.queue.enqueue(async () => {
+        // #286: bookmark the instant before an UPGRADE migrates live data — the
+        // backout's rewind point. Skipped on first provision (`applied` empty: an
+        // empty scope has nothing to rewind to) and where PITR does not exist
+        // (local dev, miniflare — the API is production-plane only). Taken inside
+        // the queue so no writer can slip between the bookmark and the migration,
+        // and committed immediately: if the migration below FAILS, the bookmark
+        // row is precisely what survives to back out to.
+        const storage = this.ctx.storage as unknown as {
+          getCurrentBookmark?: () => Promise<string>;
+        };
+        if (this.applied.size > 0 && typeof storage.getCurrentBookmark === 'function') {
+          try {
+            const bookmark = await storage.getCurrentBookmark();
+            this.sql.exec(
+              `INSERT OR IGNORE INTO _substrat_migration_bookmarks (bookmark, taken_at, pending)
+               VALUES (?, ?, ?)`,
+              bookmark,
+              new Date().toISOString(),
+              JSON.stringify(pending.map((p) => `${p.moduleId}@${p.migration.version}`)),
+            );
+          } catch {
+            // A failed bookmark must not block the migration: the scope would fail
+            // closed over a safety net, which protects nothing. The backup path
+            // (#278) remains the fallback rewind point.
+          }
+        }
         for (const { moduleId, migration } of pending) {
           const key = `${moduleId}@${migration.version}`;
           if (this.applied.has(key)) continue;

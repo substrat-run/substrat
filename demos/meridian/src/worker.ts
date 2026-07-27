@@ -388,6 +388,70 @@ app.get('/internal/export', async (c) => {
   return c.json(await hostFor(c.env).exportScopeLocal(scope));
 });
 
+// The write half (§8): load a dump into one existing scope, replacing its data — the
+// governed restore/backout, and the data hop of adopt-serving (#286). After the import
+// the vertical's OWN role definitions are re-projected: a dump from a CP-full world
+// carries tuples but no role definitions, and without the repair every check denies
+// while /me still names the role. Roles are code-defined, so re-projecting is safe.
+app.post('/internal/restore', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const body = z
+    .object({
+      tenantId: tenantId.optional(),
+      scopeId,
+      tables: z.array(
+        z.object({
+          name: z.string(),
+          ddl: z.string(),
+          columns: z.array(z.string()),
+          rows: z.array(z.array(z.unknown())),
+        }),
+      ),
+    })
+    .parse(await c.req.json());
+  const host = hostFor(c.env);
+  const result = await host.restoreScopeLocal(body.scopeId, body.tables);
+  if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, ROLES);
+  return c.json(result);
+});
+
+// #286: the PITR bookmarks one scope recorded before its migration passes — the
+// rewind points a backout offers. Metadata only; no scope bytes cross the boundary.
+app.get('/internal/bookmarks', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const scope = scopeId.parse(c.req.query('scopeId'));
+  return c.json(await hostFor(c.env).migrationBookmarksLocal(scope));
+});
+
+// #286's backout: rewind one scope's ENTIRE storage — schema and data — to a
+// pre-migration bookmark, discarding every write since. The scope DO enforces the
+// freshness window (24h without force) and restarts itself to complete the restore;
+// the control plane is the gate and the auditor.
+app.post('/internal/rewind', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const body = z
+    .object({ scopeId, bookmark: z.string().min(1), force: z.boolean().optional() })
+    .parse(await c.req.json());
+  return c.json(
+    await hostFor(c.env).rewindScopeLocal(body.scopeId, body.bookmark, { force: body.force }),
+  );
+});
+
 /**
  * Upsert per-instance config on the platform's instruction (vertical-auth-detach.md
  * §2.2) — the delivery half of the dashboard's Env tab, and how a scope's

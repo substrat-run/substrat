@@ -678,6 +678,34 @@ export interface HostAdmin {
     servingRef: string | null,
   ): Promise<void>;
 
+  /**
+   * The PITR bookmarks a CO-LOCATED scope recorded before its migration passes
+   * (#286) — the rewind points a backout offers. For a dispatch vertical the route
+   * reads them through the vertical's `/internal/bookmarks` instead; this is the
+   * bare-host/co-located fallback. Hosts without PITR (the SQLite adapter) return
+   * an empty list — there is nothing to offer, not an error.
+   */
+  scopeMigrationBookmarks(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
+  /**
+   * #286's backout: PITR-rewind a scope to a pre-migration bookmark — schema AND
+   * data, discarding every write since. Audited (destructive by design). The scope
+   * DO enforces the freshness window (24h unless `force`). `localApply: false`
+   * audits without touching this host's own namespace — the route sets it when the
+   * rewind is delegated to a dispatch vertical's `/internal/rewind`, whose DO
+   * actually holds the data. Hosts without PITR throw.
+   */
+  rewindScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    bookmark: string,
+    opts?: { force?: boolean; localApply?: boolean },
+  ): Promise<{ rewindingTo: string }>;
+
   // -- the hostname map (K-26; control-plane.md §4.7) -------------------------
 
   /**

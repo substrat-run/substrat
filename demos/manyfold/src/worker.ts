@@ -249,6 +249,26 @@ app.post('/internal/restore', async (c) => {
   if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, ROLES);
   return c.json(result);
 });
+// #286: the PITR bookmarks one scope recorded before its migration passes — the
+// rewind points a backout offers. Metadata only; no scope bytes cross the boundary.
+app.get('/internal/bookmarks', async (c) => {
+  gatePlatform(c);
+  return c.json(
+    await hostFor(c.env).migrationBookmarksLocal(scopeId.parse(c.req.query('scopeId'))),
+  );
+});
+// #286's backout: rewind one scope's ENTIRE storage — schema and data — to a
+// pre-migration bookmark, discarding every write since. The scope DO enforces the
+// freshness window (24h without force) and restarts itself to complete the restore.
+app.post('/internal/rewind', async (c) => {
+  gatePlatform(c);
+  const body = z
+    .object({ scopeId, bookmark: z.string().min(1), force: z.boolean().optional() })
+    .parse(await c.req.json());
+  return c.json(
+    await hostFor(c.env).rewindScopeLocal(body.scopeId, body.bookmark, { force: body.force }),
+  );
+});
 
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.
 async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {

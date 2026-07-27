@@ -2837,6 +2837,23 @@ export class SqliteScopeHost implements ScopeHost {
           { servingRef },
         );
       },
+      scopeMigrationBookmarks: async (actor, tenantId, scopeId) => {
+        const scope = this.directory
+          .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string } | undefined;
+        if (!scope || scope.tenant_id !== tenantId) {
+          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
+        // No PITR on plain SQLite — an empty list, not an error: there is simply
+        // nothing to offer. The backup/restore path (#278) is this host's rewind.
+        this.recordAccess(actor, 'scopeMigrationBookmarks', { tenantId, scopeId }, null, 0);
+        return [];
+      },
+      rewindScope: async () => {
+        throw new Error(
+          'point-in-time rewind is not available on this host (PITR is a Durable-Object-plane mechanism) — use the backup restore path',
+        );
+      },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);
         if (readOrg(parsed.tenantId, parsed.id)) return; // idempotent, unaudited

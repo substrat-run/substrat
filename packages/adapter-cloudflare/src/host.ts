@@ -444,6 +444,10 @@ interface ScopeStubRpc {
   importDump(tables: ScopeDumpTable[]): Promise<void>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
+  /** PITR bookmarks recorded before migration passes (#286), newest first. */
+  migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
+  /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
+  rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
 
 export interface CloudflareScopeHostOptions {
@@ -888,6 +892,30 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]> {
     return this.scopeStub(scopeId).exportDump();
+  }
+
+  /**
+   * The PITR bookmarks one scope recorded before its migration passes (#286) — the
+   * rewind points a backout UI offers. Behind the vertical's platform-gated
+   * `/internal/bookmarks`; the control plane is the gate and the auditor.
+   */
+  async migrationBookmarksLocal(
+    scopeId: ScopeId,
+  ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]> {
+    return this.scopeStub(scopeId).migrationBookmarks();
+  }
+
+  /**
+   * Rewind one scope to a pre-migration bookmark (#286's backout) — schema AND data,
+   * discarding every write since; the DO enforces the freshness window and restarts
+   * itself to complete the restore. Behind the vertical's `/internal/rewind`.
+   */
+  async rewindScopeLocal(
+    scopeId: ScopeId,
+    bookmark: string,
+    opts?: { force?: boolean },
+  ): Promise<{ rewindingTo: string }> {
+    return this.scopeStub(scopeId).rewindToBookmark(bookmark, opts);
   }
 
   registerModule(registration: ModuleRegistration): void {
@@ -1946,6 +1974,31 @@ export class CloudflareScopeHost implements ScopeHost {
           { servingRef: scope.serving_ref ?? null },
           { servingRef },
         );
+      },
+      scopeMigrationBookmarks: async (actor, tenantId, scopeId) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        const bookmarks = await this.scopeStub(scopeId).migrationBookmarks();
+        await this.recordAccess(actor, 'scopeMigrationBookmarks', { tenantId, scopeId }, null, bookmarks.length);
+        return bookmarks;
+      },
+      rewindScope: async (actor, tenantId, scopeId, bookmark, opts) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        // Audit FIRST: a destructive rewind that fails halfway must still be on the
+        // record — the entry names the intent; the DO's refusals name the outcome.
+        await this.recordAdmin(actor, 'rewindScope', { tenantId, scopeId }, null, {
+          bookmark,
+          force: opts?.force ?? false,
+          delegated: opts?.localApply === false,
+        });
+        if (opts?.localApply === false) {
+          // The scope's data lives in a dispatch vertical's own deployment; the route
+          // delegates the actual rewind to its `/internal/rewind`. Touching this
+          // host's namespace here would PITR an unrelated, unused DO.
+          return { rewindingTo: bookmark };
+        }
+        return this.scopeStub(scopeId).rewindToBookmark(bookmark, { force: opts?.force });
       },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);

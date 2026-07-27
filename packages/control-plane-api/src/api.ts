@@ -789,6 +789,103 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
+  // #286: the PITR bookmarks a scope recorded before its migration passes — the
+  // rewind points the deployments UI offers for a backout. Read through the
+  // vertical that holds the scope's data when one resolves; the co-located host
+  // otherwise. Metadata only — no scope bytes cross the boundary, so no masking.
+  app.get('/tenants/:tenantId/scopes/:scopeId/bookmarks', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.migrationBookmarks(scopeId)
+        : await admin.scopeMigrationBookmarks(actor, tenantId, scopeId),
+    );
+  });
+
+  // #286's backout: rewind a scope to a pre-migration bookmark — schema AND data,
+  // discarding every write since. Audited below the seam BEFORE the rewind runs;
+  // the scope DO enforces the freshness window (24h unless force). Delegated to the
+  // vertical that holds the scope's data when one resolves, applied on the
+  // co-located host otherwise.
+  app.post('/tenants/:tenantId/scopes/:scopeId/rewind', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const { bookmark, force } = z
+      .object({ bookmark: z.string().min(1), force: z.boolean().optional() })
+      .parse(await c.req.json());
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    try {
+      const vertical = await verticalForScope(c, scope);
+      const result = await admin.rewindScope(actor, tenantId, scopeId, bookmark, {
+        force,
+        localApply: !vertical,
+      });
+      if (vertical) {
+        return c.json(await vertical.rewindScope(scopeId, bookmark, { force }));
+      }
+      return c.json(result);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
+  // #286: adopt a LEGACY scope onto its vertical's stable serving script — the
+  // one-time data hop off per-version dispatch. Export from the script that holds
+  // the data today (the bound version's), restore into the serving script (which
+  // re-projects the vertical's roles), then flip routing. Ordering is data-first:
+  // a crash before the flip leaves the scope serving from its old script, intact,
+  // and the adopt retries idempotently. The scope's version pointer moves to the
+  // serving version in the same act, so Update stops offering a crossing it
+  // already made.
+  app.post('/tenants/:tenantId/scopes/:scopeId/adopt-serving', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (scope.servingRef) {
+      return c.json({ adopted: scopeId, servingRef: scope.servingRef, alreadyAdopted: true });
+    }
+    if (!scope.vertical) {
+      return c.json({ error: 'scope has no vertical — nothing to adopt onto' }, 409);
+    }
+    const serving = await admin.verticalServing(actor, scope.vertical);
+    if (!serving) {
+      return c.json(
+        { error: `vertical '${scope.vertical}' has no serving script yet — promote a version to prod first` },
+        409,
+      );
+    }
+    const source = await verticalForScope(c, scope);
+    const dest = await options.resolveVerticalRef?.(serving.ref);
+    if (!source || !dest) {
+      return c.json({ error: 'adopt-serving needs dispatch resolution for both ends' }, 501);
+    }
+    try {
+      const dump = await source.exportScope(scopeId);
+      const restored = await dest.restoreScope(tenantId, scopeId, dump);
+      // Data landed — only now flip routing and move the version pointer.
+      await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
+      await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+      return c.json({ adopted: scopeId, servingRef: serving.ref, tables: restored.tables });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a
   // non-admitted version below the seam — that refusal is the registry's reason to
   // exist. A scope operation, so it keeps the scope route shape. `snapshot: true`
