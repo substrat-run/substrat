@@ -842,6 +842,27 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * Re-apply the vertical's OWN role definitions to one scope, CP-lessly — the
+   * repair half of `restoreScopeLocal`. A dump captured from a CP-FULL world
+   * carries the scope's tuples but an EMPTY roles table (definitions live in
+   * that world's directory), so a plain restore leaves grants the local checker
+   * cannot expand: /me shows a role while every ctx.check denies. Roles are
+   * code-defined and deterministic, so re-projecting after import is always
+   * safe; scope-level tuples (the restored grants) are never touched.
+   */
+  async projectRolesLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    roles: RoleDefinition[],
+  ): Promise<void> {
+    await this.scopeStub(scopeId).applyProjection(
+      tenantId,
+      roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source })),
+      [],
+    );
+  }
+
+  /**
    * Wipe one scope DO's storage in THIS deployment — the reap half of an orchestrated
    * deleteSnapshot (§9). The fork-only refusal and the directory cleanup live on the
    * control plane, which calls the vertical's `/internal/delete-scope` before deleting

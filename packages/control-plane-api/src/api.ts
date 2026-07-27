@@ -751,7 +751,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       await host.restoreScope(actor, tenantId, scopeId, dump);
       const vertical = await verticalForScope(c, scope);
-      if (vertical) await vertical.restoreScope(scopeId, dump.tables);
+      if (vertical) await vertical.restoreScope(tenantId, scopeId, dump.tables);
       return c.json({ restored: scopeId, tables: dump.tables.length });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
