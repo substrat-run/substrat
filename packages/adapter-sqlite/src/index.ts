@@ -308,6 +308,8 @@ interface ScopeRow {
   forked_from: string | null;
   forked_at: string | null;
   expires_at: string | null;
+  /** The dispatch script this scope's data lives in (#286); null = per-version dispatch. */
+  serving_ref: string | null;
   created_at: string;
 }
 
@@ -1054,10 +1056,14 @@ export class SqliteScopeHost implements ScopeHost {
         .prepare(
           `INSERT INTO scopes
              (scope_id, tenant_id, parent_scope_id, slug, kind, name, vertical,
-              storage_shape, jurisdiction, status, forked_from, forked_at, expires_at, created_at)
+              storage_shape, jurisdiction, status, forked_from, forked_at, expires_at,
+              serving_ref, created_at)
            -- 'provisioning', not 'active' (K-31): the directory row exists before the
            -- vertical has created the scope DO, and only activateScope says it has.
-           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?)`,
+           -- serving_ref sub-selected (#286): a scope born while its vertical serves
+           -- in place is born ON the serving script, so its routing points there.
+           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?,
+                   (SELECT serving_ref FROM verticals WHERE slug = ?), ?)`,
         )
         .run(
           input.scopeId,
@@ -1071,6 +1077,7 @@ export class SqliteScopeHost implements ScopeHost {
           record.forkedFrom,
           record.forkedAt,
           record.expiresAt,
+          record.vertical,
           new Date().toISOString(),
         );
     }
@@ -1937,6 +1944,7 @@ export class SqliteScopeHost implements ScopeHost {
         forkedFrom: r.forked_from,
         forkedAt: r.forked_at,
         expiresAt: r.expires_at,
+        ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         createdAt: r.created_at,
       });
 

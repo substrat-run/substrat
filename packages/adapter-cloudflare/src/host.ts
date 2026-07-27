@@ -1300,6 +1300,7 @@ export class CloudflareScopeHost implements ScopeHost {
         forkedFrom: r.forked_from,
         forkedAt: r.forked_at,
         expiresAt: r.expires_at,
+        ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         createdAt: r.created_at,
       });
 

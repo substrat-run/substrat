@@ -752,11 +752,16 @@ export class ControlPlaneDO extends DurableObject {
             `by ${slugOwner.scope_id} (slugs are unique within a tenant)`,
         );
       }
+      // A scope born while its vertical serves in place (#286) is born ON the serving
+      // script — provisioning dispatches there — so its routing points there from row
+      // one. Sub-selected at insert: per-scope truth that later serves can't disturb.
       this.sql.exec(
         `INSERT INTO scopes
            (scope_id, tenant_id, parent_scope_id, slug, kind, name, vertical,
-            storage_shape, jurisdiction, status, forked_from, forked_at, expires_at, created_at)
-         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?)`,
+            storage_shape, jurisdiction, status, forked_from, forked_at, expires_at,
+            serving_ref, created_at)
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?,
+                 (SELECT serving_ref FROM verticals WHERE slug = ?), ?)`,
         scopeId,
         tenantId,
         record.slug,
@@ -768,6 +773,7 @@ export class ControlPlaneDO extends DurableObject {
         record.forkedFrom,
         record.forkedAt,
         record.expiresAt,
+        record.vertical,
         createdAt,
       );
     }
