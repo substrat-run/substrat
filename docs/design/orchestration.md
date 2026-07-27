@@ -134,16 +134,44 @@ version. The uploader can run from the control-plane Worker (it is just an authe
 HTTP call) or from the same node context as the build — see the open decision in §8 about
 where the artifact lives between publish and deploy.
 
-### 5.3 `deploymentRef` and naming — one script per version
+### 5.3 `deploymentRef` and naming — archive scripts per version, ONE serving script per vertical
 
-**Decision:** each version is uploaded as its **own** dispatch script, named by a stable
-`deploymentRef` (proposal: `<slug>@<version>` or `<slug>-<versionId>`). Not one mutable
-script per vertical. The reason is staged rollout: the registry already lets a scope pin an
-old `vertical_version_id` while a channel moves others forward, and readiness (K-29) needs
-the new version live *before* anything is promoted onto it — both require two versions of one
-vertical to be dispatchable at once, which one-script-per-vertical cannot do. WfP is built
-for many scripts; this is what it is for. Old versions are garbage-collected once no scope
-and no channel reference them.
+> **Superseded in part (K-33, #286).** The original decision — each version its own
+> dispatch script, scopes dispatched to their bound version's script — priced the
+> scripts as stateless. They are not: the scope DO *is* the app, a DO namespace
+> belongs to its script, and so rebinding a scope to a new version rebound it to
+> **empty storage**. The benefits claimed were illusory for stateful scopes (a scope
+> could never actually move versions without abandoning its data, so per-scope
+> pinning only ever worked for empty scopes, and rollback-by-repointing resurrected
+> stale data), while the cost was fatal: the kernel's append-only `SqlMigration[]`
+> machinery never met production data, replaced by a manual backup→update→restore
+> ritual per deploy.
+
+**Decision (revised):** per-version scripts survive as the **push archive** —
+`deploymentRefFor(slug, versionId)`, where a push uploads, admission reviews, and the
+bundle bytes live — but serving happens from **one stable script per vertical**
+(`stableDeploymentRefFor(slug)`). A prod promote re-uploads the promoted version's
+bundle onto that unchanged name (modules read back from the archive script; metadata
+rebuilt from the version's retained manifest), so every scope's Durable Objects — and
+therefore its data — stay put while the code moves, and migrations finally run in
+place exactly as the kernel designed. In-place uploads keep existing secrets
+(`keep_bindings`) and send only the DO-class *delta* under a bumped migration tag,
+diffed against directory-recorded serving state — no deploy guesses Cloudflare state.
+
+Scope routing is **per-scope truth**: `scopes.serving_ref` names the script a scope's
+data lives in (set at provision for scopes born on the serving script; set by the
+one-time **adopt-serving** hop — export → restore into the serving script → flip —
+for legacy scopes), and `readHostname` resolves `COALESCE(serving_ref, bound
+version's ref)`. What is conceded is per-scope staged rollout across versions —
+which one shared namespace never truly offered — so blast radius stays per-vertical,
+the boundary D-30 drew. The safety net replacing it (#286): versions are badged
+**code-only vs schema-change** at publish (a migration-digest diff against the
+predecessor — the same signal promote's acknowledgement gate reads); the scope DO
+takes a **PITR bookmark** immediately before an upgrade's migration pass; and a
+time-boxed **backout** (`rewindToBookmark`, 24h window without force) restores schema
+and data to that instant, with #278's backup/restore as the considered path beyond
+the window. Old archive scripts are garbage-collected once no scope and no channel
+reference them, as before.
 
 ### 5.4 Reach — dispatch + per-scope version resolution
 
