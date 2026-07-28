@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runtimeNeeds, RUNTIME_BASELINE } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds } from '../src/push.js';
+import { runtimeNeeds, RUNTIME_BASELINE, type PermissionRegistry } from '@substrat-run/contracts';
+import { wranglerConfigFor, readRuntimeNeeds, readRegistry, permissionDigest } from '../src/push.js';
 
 const scratch = (pkg?: unknown): string => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-test-'));
@@ -78,5 +78,64 @@ describe('readRuntimeNeeds', () => {
       substrat: { runtimeNeeds: { entry: 'a.ts', stores: [{ binding: 'lower', class: 'X' }] } },
     });
     expect(() => readRuntimeNeeds(dir)).toThrow();
+  });
+});
+
+describe('readRegistry — the declared permission surface shipped in the manifest (D-39)', () => {
+  const A = '@substrat-run/engine-a';
+  const registryFile = (registry: unknown): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-reg-'));
+    writeFileSync(join(dir, 'permissions.json'), JSON.stringify(registry));
+    return dir;
+  };
+  const sample = {
+    permissions: [{ key: 'a:read', description: 'Read', declaredBy: [A] }],
+    roles: [{ key: 'staff', permissions: ['a:read'], source: 'vertical' }],
+    entityGrants: [{ entityType: 'order', permissions: ['a:read'] }],
+  };
+
+  it('reads and validates a checked-in permissions.json', () => {
+    expect(readRegistry(registryFile(sample))).toEqual(sample);
+  });
+
+  it('is undefined when the vertical ships no registry', () => {
+    expect(readRegistry(mkdtempSync(join(tmpdir(), 'substrat-cli-noreg-')))).toBeUndefined();
+  });
+
+  it('rejects a malformed registry instead of shipping it', () => {
+    expect(() => readRegistry(registryFile({ permissions: [{ key: 'bad key' }] }))).toThrow();
+  });
+});
+
+describe('permissionDigest — the promotion "permissions changed" signal (D-39)', () => {
+  const reg = (permissions: unknown[]): PermissionRegistry =>
+    ({ permissions, roles: [], entityGrants: [] }) as PermissionRegistry;
+
+  it('is a pure function of content — key/array order does not change it', async () => {
+    const a = reg([
+      { key: 'a:read', description: 'Read', declaredBy: ['@substrat-run/engine-a'] },
+      { key: 'b:read', description: 'Read', declaredBy: ['@substrat-run/engine-b'] },
+    ]);
+    // Same content, keys in a different insertion order.
+    const b: PermissionRegistry = {
+      entityGrants: [],
+      roles: [],
+      permissions: [
+        { declaredBy: ['@substrat-run/engine-a'] as never, key: 'a:read' as never, description: 'Read' },
+        { description: 'Read', key: 'b:read' as never, declaredBy: ['@substrat-run/engine-b'] as never },
+      ],
+    };
+    expect(await permissionDigest(a)).toBe(await permissionDigest(b));
+  });
+
+  it('moves when the declared surface changes', async () => {
+    const before = reg([{ key: 'a:read', description: 'Read', declaredBy: ['@substrat-run/engine-a'] }]);
+    const after = reg([{ key: 'a:read', description: 'Read invoices', declaredBy: ['@substrat-run/engine-a'] }]);
+    expect(await permissionDigest(before)).not.toBe(await permissionDigest(after));
+  });
+
+  it('an absent registry hashes the empty surface, not the worker bindings', async () => {
+    // Deterministic and independent of any binding/module content — the old placeholder bug.
+    expect(await permissionDigest(undefined)).toBe(await permissionDigest(reg([])));
   });
 });

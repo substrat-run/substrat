@@ -1,0 +1,180 @@
+{
+  "permissions": [
+    {
+      "key": "bike:manage",
+      "description": "Register and manage customers' bikes",
+      "declaredBy": [
+        "@substrat-run/demo-handlebar"
+      ]
+    },
+    {
+      "key": "customer:manage",
+      "description": "Manage customers and the workshop price list",
+      "declaredBy": [
+        "@substrat-run/demo-handlebar"
+      ]
+    },
+    {
+      "key": "invoicing:export",
+      "description": "Export an invoice basis (makes it immutable)",
+      "declaredBy": [
+        "@substrat-run/engine-invoicing"
+      ]
+    },
+    {
+      "key": "invoicing:read",
+      "description": "Read invoice bases",
+      "declaredBy": [
+        "@substrat-run/engine-invoicing"
+      ]
+    },
+    {
+      "key": "protocol:bind",
+      "description": "Bind vertical-owned document content (ref + hash) to an open document protocol",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:countersign",
+      "description": "Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup)",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:create",
+      "description": "Define protocol templates and start protocol instances on entities",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:fill",
+      "description": "Record responses on an open checklist protocol (append-only)",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:read",
+      "description": "Read protocol templates, instances, responses, signature requests and signatures",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:record-signature",
+      "description": "Record a signature reported by an external signing provider — held by connector ingress, never by a human role",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:request-signature",
+      "description": "Freeze a protocol and request signatures from named parties (external signing flows); also cancels a pending request set",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:sign",
+      "description": "Sign a protocol in-app — freezes it forever (separate from fill: the technician fills, the arbetsledare signs)",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:void",
+      "description": "Void (supersede) a protocol — never deletes",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "workorder:assign",
+      "description": "Assign a technician",
+      "declaredBy": [
+        "@substrat-run/engine-workorder"
+      ]
+    },
+    {
+      "key": "workorder:close",
+      "description": "Close a completed work order",
+      "declaredBy": [
+        "@substrat-run/engine-workorder"
+      ]
+    },
+    {
+      "key": "workorder:complete",
+      "description": "Complete a work order (with billable lines)",
+      "declaredBy": [
+        "@substrat-run/engine-workorder"
+      ]
+    },
+    {
+      "key": "workorder:create",
+      "description": "Create work orders",
+      "declaredBy": [
+        "@substrat-run/engine-workorder"
+      ]
+    },
+    {
+      "key": "workorder:read",
+      "description": "Read work orders, time and material",
+      "declaredBy": [
+        "@substrat-run/engine-workorder"
+      ]
+    },
+    {
+      "key": "workorder:report",
+      "description": "Start work, report time and material",
+      "declaredBy": [
+        "@substrat-run/engine-workorder"
+      ]
+    }
+  ],
+  "roles": [
+    {
+      "key": "mechanic",
+      "permissions": [
+        "protocol:fill",
+        "protocol:read",
+        "workorder:read",
+        "workorder:report"
+      ],
+      "source": "vertical"
+    },
+    {
+      "key": "workshop-admin",
+      "permissions": [
+        "bike:manage",
+        "customer:manage",
+        "invoicing:export",
+        "invoicing:read",
+        "protocol:create",
+        "protocol:fill",
+        "protocol:read",
+        "protocol:sign",
+        "protocol:void",
+        "workorder:assign",
+        "workorder:close",
+        "workorder:complete",
+        "workorder:create",
+        "workorder:read",
+        "workorder:report"
+      ],
+      "source": "vertical"
+    }
+  ],
+  "entityGrants": [
+    {
+      "entityType": "customer",
+      "permissions": [
+        "protocol:countersign",
+        "protocol:read",
+        "workorder:read"
+      ]
+    }
+  ]
+}

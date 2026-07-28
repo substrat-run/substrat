@@ -1,0 +1,211 @@
+{
+  "permissions": [
+    {
+      "key": "absence:approve",
+      "description": "Approve or reject a leave request — approval books the ledger (managers, HR admin)",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "absence:configure",
+      "description": "Define leave types and grant accruals to employees (HR admin)",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "absence:read",
+      "description": "Read absence balances, ledger, and requests",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "absence:request",
+      "description": "Request time off (employees, narrowed to their own record)",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "employee:manage",
+      "description": "Create and read employee records, including salary/national id (HR admin)",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "expense:approve",
+      "description": "Approve or reject an expense (managers, HR admin)",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "expense:read",
+      "description": "Read expenses",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "expense:submit",
+      "description": "Submit an expense (employees, narrowed to their own record)",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "payroll:export",
+      "description": "Generate the variable-pay export and mark expenses exported (payroll operator)",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "project:manage",
+      "description": "Manage the projects time books against (HR admin)",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "protocol:bind",
+      "description": "Bind vertical-owned document content (ref + hash) to an open document protocol",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:countersign",
+      "description": "Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup)",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:create",
+      "description": "Define protocol templates and start protocol instances on entities",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:fill",
+      "description": "Record responses on an open checklist protocol (append-only)",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:read",
+      "description": "Read protocol templates, instances, responses, signature requests and signatures",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:record-signature",
+      "description": "Record a signature reported by an external signing provider — held by connector ingress, never by a human role",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:request-signature",
+      "description": "Freeze a protocol and request signatures from named parties (external signing flows); also cancels a pending request set",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:sign",
+      "description": "Sign a protocol in-app — freezes it forever (separate from fill: the technician fills, the arbetsledare signs)",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "protocol:void",
+      "description": "Void (supersede) a protocol — never deletes",
+      "declaredBy": [
+        "@substrat-run/engine-protocol"
+      ]
+    },
+    {
+      "key": "time:read",
+      "description": "Read time entries and utilization",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    },
+    {
+      "key": "time:report",
+      "description": "Log worked hours to a project (employees, narrowed to their own record)",
+      "declaredBy": [
+        "@substrat-run/demo-meridian"
+      ]
+    }
+  ],
+  "roles": [
+    {
+      "key": "hr-admin",
+      "permissions": [
+        "absence:approve",
+        "absence:configure",
+        "absence:read",
+        "employee:manage",
+        "expense:approve",
+        "expense:read",
+        "payroll:export",
+        "project:manage",
+        "protocol:bind",
+        "protocol:create",
+        "protocol:fill",
+        "protocol:read",
+        "protocol:request-signature",
+        "protocol:sign",
+        "protocol:void",
+        "time:read"
+      ],
+      "source": "vertical"
+    },
+    {
+      "key": "manager",
+      "permissions": [
+        "absence:approve",
+        "absence:read",
+        "expense:approve",
+        "expense:read",
+        "protocol:read",
+        "time:read"
+      ],
+      "source": "vertical"
+    },
+    {
+      "key": "payroll",
+      "permissions": [
+        "expense:read",
+        "payroll:export"
+      ],
+      "source": "vertical"
+    }
+  ],
+  "entityGrants": [
+    {
+      "entityType": "employee",
+      "permissions": [
+        "absence:read",
+        "absence:request",
+        "expense:read",
+        "expense:submit",
+        "protocol:fill",
+        "protocol:read",
+        "protocol:sign",
+        "time:read",
+        "time:report"
+      ]
+    }
+  ]
+}

@@ -37,6 +37,7 @@ interface ModuleLike {
 interface RoleLike {
   key: string;
   permissions: string[];
+  source?: string; // moduleId | 'vertical' — required by roleDefinition; guarded below
 }
 interface EntityGrantLike {
   entityType: string;
@@ -175,6 +176,49 @@ function render(name: string, pkg: string, src: VerticalSource): string {
   return out.join('\n');
 }
 
+/**
+ * The machine-readable twin of the markdown snapshot (D-39): the SAME registry, roles, and
+ * grant shapes, as the JSON the deploy manifest carries (`permissionRegistry` in contracts).
+ * `push` reads this checked-in file and injects it into the manifest, so the platform holds
+ * the declared surface it already committed to via `digests.permission` — without the CLI
+ * ever loading (and executing) the vertical's module code. Deterministic: arrays sorted, keys
+ * in a fixed order, so `--check` is a byte compare and the digest a pure function of content.
+ */
+function collectRegistry(rel: string, src: VerticalSource): {
+  permissions: { key: string; description: string; declaredBy: string[] }[];
+  roles: { key: string; permissions: string[]; source: string }[];
+  entityGrants: { entityType: string; permissions: string[] }[];
+} {
+  const modules = src.MODULES ?? [];
+  const declaredBy = new Map<string, { description: string; modules: Set<string> }>();
+  for (const m of modules) {
+    for (const p of m.manifest.permissions) {
+      const seen = declaredBy.get(p.key);
+      if (seen) seen.modules.add(m.manifest.id);
+      else declaredBy.set(p.key, { description: p.description, modules: new Set([m.manifest.id]) });
+    }
+  }
+  const roles = [...(src.ROLES ?? [])].sort(byKey).map((r) => {
+    if (!r.source) {
+      cannot(
+        `${rel}: role ${code(r.key)} has no \`source\`.\n` +
+          `  The manifest registry (D-39) records who declared each role; roleDefinition\n` +
+          `  requires it. Remedy: add \`source: '<moduleId>' | 'vertical'\` to the role.`,
+      );
+    }
+    return { key: r.key, permissions: sorted(r.permissions), source: r.source };
+  });
+  return {
+    permissions: [...declaredBy.entries()]
+      .map(([key, v]) => ({ key, description: v.description, declaredBy: [...v.modules].sort((a, b) => a.localeCompare(b)) }))
+      .sort(byKey),
+    roles,
+    entityGrants: [...(src.ENTITY_GRANTS ?? [])]
+      .sort((a, b) => a.entityType.localeCompare(b.entityType))
+      .map((g) => ({ entityType: g.entityType, permissions: sorted(g.permissions) })),
+  };
+}
+
 // Verticals live in demos/ (demo verticals) AND apps/ (real platform verticals —
 // e.g. apps/dashboard, the platform vertical). A vertical is any package with a
 // src/seed.ts; both trees are scanned so a real vertical outside demos/ still
@@ -217,26 +261,33 @@ for (const { rel, dir } of verticals) {
     );
   }
 
-  const content = render(name, pkg, mod);
-  const artifact = join(dir, 'PERMISSIONS.md');
+  // Two artifacts from one source: the human snapshot (PERMISSIONS.md) and its
+  // machine-readable twin (permissions.json, D-39) that `push` ships in the manifest.
+  const artifacts: { path: string; content: string }[] = [
+    { path: join(dir, 'PERMISSIONS.md'), content: render(name, pkg, mod) },
+    { path: join(dir, 'permissions.json'), content: JSON.stringify(collectRegistry(rel, mod), null, 2) + '\n' },
+  ];
 
-  if (!check) {
-    writeFileSync(artifact, content);
-    continue;
+  for (const { path, content } of artifacts) {
+    const shown = path.slice(root.length);
+    if (!check) {
+      writeFileSync(path, content);
+      continue;
+    }
+    if (!existsSync(path)) {
+      cannot(
+        `${shown} does not exist.\n` +
+          `  A missing artifact is a broken setup, not drift.\n` +
+          `  Remedy: pnpm lint:permissions && git add ${shown}`,
+      );
+    }
+    if (readFileSync(path, 'utf8') !== content) drifted.push(shown);
   }
-  if (!existsSync(artifact)) {
-    cannot(
-      `${rel}/PERMISSIONS.md does not exist.\n` +
-        `  A missing artifact is a broken setup, not drift.\n` +
-        `  Remedy: pnpm lint:permissions && git add ${rel}/PERMISSIONS.md`,
-    );
-  }
-  if (readFileSync(artifact, 'utf8') !== content) drifted.push(rel);
 }
 
 if (drifted.length) {
-  console.error(`permission-diff: ${drifted.length} snapshot(s) out of date\n`);
-  for (const rel of drifted) console.error(`  ✗ ${rel}/PERMISSIONS.md`);
+  console.error(`permission-diff: ${drifted.length} artifact(s) out of date\n`);
+  for (const path of drifted) console.error(`  ✗ ${path}`);
   console.error(
     `\n  The permission surface changed and the checkpoint was not regenerated.\n` +
       `  Run: pnpm lint:permissions — then READ the diff. Someone must approve it.\n`,

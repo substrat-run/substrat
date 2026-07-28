@@ -5,15 +5,57 @@ import { join, basename } from 'node:path';
 import { webcrypto } from 'node:crypto';
 import {
   deployManifest,
+  permissionRegistry,
   runtimeNeeds,
   RUNTIME_BASELINE,
   type DeclaredBinding,
+  type PermissionRegistry,
   type RuntimeNeeds,
 } from '@substrat-run/contracts';
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
   return Buffer.from(digest).toString('hex').slice(0, 32);
+}
+
+/** Deterministic JSON: object keys sorted recursively, array order preserved. Makes the
+ *  permission digest a pure function of registry CONTENT — independent of the artifact's
+ *  on-disk key order or formatting. */
+function stableStringify(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(v);
+}
+
+const EMPTY_REGISTRY: PermissionRegistry = { permissions: [], roles: [], entityGrants: [] };
+
+/**
+ * Read the vertical's generated permission registry (`permissions.json`), if present. The
+ * file is emitted and CI-checked by `tools/permission-diff.mts` from the same `MODULES` +
+ * `ROLES` + `ENTITY_GRANTS` the host registers, so it cannot drift from what is enforced —
+ * and reading a checked-in artifact means `push` never has to load (and execute) the
+ * vertical's module code. Absent ⇒ the vertical ships no permission surface here.
+ */
+export function readRegistry(dir: string): PermissionRegistry | undefined {
+  const path = join(dir, 'permissions.json');
+  if (!existsSync(path)) return undefined;
+  return permissionRegistry.parse(JSON.parse(readFileSync(path, 'utf8')));
+}
+
+/**
+ * The permission digest (D-39): a content hash of the vertical's declared permission
+ * surface — what the promotion checkpoint compares to fire "permissions changed". Over the
+ * empty surface when no registry ships, so the value is always meaningful (never the old
+ * placeholder that hashed the worker's bindings and moved on unrelated changes).
+ */
+export async function permissionDigest(registry: PermissionRegistry | undefined): Promise<string> {
+  return sha256(Buffer.from(stableStringify(registry ?? EMPTY_REGISTRY)));
 }
 
 /** A tiny JSONC reader: strip // and block comments, then JSON.parse. */
@@ -162,6 +204,10 @@ export async function push(
   const modules = files.map((f) => ({ name: f, content: readFileSync(join(out, f)) }));
   const concat = Buffer.concat(modules.map((m) => m.content));
 
+  // The declared permission surface (D-39), read from the checked-in artifact — shipped in
+  // the manifest and hashed into digests.permission below.
+  const registry = readRegistry(opts.dir);
+
   // Parsed with the SAME schema the control plane applies at the trust boundary
   // (contracts' deployManifest, re-parsed server-side in control-plane-api). Drift
   // between what the CLI builds and what the server accepts fails here, before the
@@ -185,9 +231,12 @@ export async function push(
     ...(opts.provides ? { provides: opts.provides } : {}),
     ...(opts.requires ? { requires: opts.requires } : {}),
     ...(opts.surfaces ? { surfaces: opts.surfaces } : {}),
+    // The declared permission surface travels with the bundle (D-39): keys+descriptions,
+    // role templates, entity-grant shapes. Its content hash is digests.permission.
+    ...(registry ? { registry } : {}),
     digests: {
       manifest: await sha256(concat),
-      permission: await sha256(Buffer.from(JSON.stringify(bindings))),
+      permission: await permissionDigest(registry),
       migration: await sha256(Buffer.from(JSON.stringify(doClasses))),
     },
   });

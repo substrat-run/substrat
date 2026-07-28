@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { permissionKey } from './ids.js';
+import { moduleId, permissionKey } from './ids.js';
 import { envVarSpec, capability } from './manifest.js';
+import { roleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
@@ -62,6 +63,46 @@ export const declaredBinding = z.object({
 });
 export type DeclaredBinding = z.infer<typeof declaredBinding>;
 
+/**
+ * One row of the permission registry: a declared key, its description, and the module(s)
+ * that declare it (§1 of PERMISSIONS.md, made machine-readable). `declaredBy` lets a
+ * console group keys by owning engine without re-deriving from module code.
+ */
+export const permissionRegistryEntry = z.object({
+  key: permissionKey,
+  description: z.string().min(1),
+  declaredBy: z.array(moduleId).min(1),
+});
+export type PermissionRegistryEntry = z.infer<typeof permissionRegistryEntry>;
+
+/** An entity-narrowed grant SHAPE — which keys a per-entity grant carries (§4 of
+ *  PERMISSIONS.md). The grants themselves are per-principal, runtime, scope-local; only
+ *  their declared shapes are a code fact and belong in the manifest. */
+export const entityGrantShape = z.object({
+  entityType: z.string().min(1),
+  permissions: z.array(permissionKey),
+});
+export type EntityGrantShape = z.infer<typeof entityGrantShape>;
+
+/**
+ * The vertical's declared permission surface, shipped in the deploy manifest (D-39) — the
+ * machine-readable twin of PERMISSIONS.md. Assembled at push from the SAME `MODULES` +
+ * `ROLES` + `ENTITY_GRANTS` the host registers (via the checked-in `permissions.json` that
+ * `tools/permission-diff.mts` emits and CI keeps fresh), so it cannot drift from what is
+ * enforced. `digests.permission` is its content hash: the platform now holds the registry
+ * it already committed to, not only the hash. Immutable per version; consumed by admission
+ * (a real permission diff between versions) and any tenant-facing permissions view.
+ *
+ * Deliberately NOT the runtime grant table: minted capability grants are scope-local tuples
+ * (control-plane.md §4.5), reachable only through the admin-query RPC, never mirrored here.
+ */
+export const permissionRegistry = z.object({
+  permissions: z.array(permissionRegistryEntry),
+  roles: z.array(roleDefinition),
+  entityGrants: z.array(entityGrantShape).default([]),
+});
+export type PermissionRegistry = z.infer<typeof permissionRegistry>;
+
 /** The JSON part a `substrat push` sends alongside the module files. */
 export const deployManifest = z.object({
   version: z.string().min(1),
@@ -85,9 +126,17 @@ export const deployManifest = z.object({
   /** The surfaces the vertical serves (package.json `substrat.surfaces`, K-26 multi-surface) —
    *  labels only, carried to the registry for the hostname-binding picker. Metadata, not code. */
   surfaces: z.array(declaredSurface).optional(),
+  /** The vertical's declared permission surface (D-39): keys+descriptions, role templates,
+   *  entity-grant shapes — the machine-readable PERMISSIONS.md. Optional + additive (D-28);
+   *  `digests.permission` is its content hash. Absent ⇒ the vertical ships no registry here
+   *  and the permission digest is over the empty surface. */
+  registry: permissionRegistry.optional(),
   /** Computed by the builder's toolchain; what the promotion checkpoint compares. */
   digests: z.object({
     manifest: z.string().min(1),
+    /** Content hash of `registry` (D-39) — the promotion checkpoint's "permissions changed"
+     *  signal. A pure function of the declared surface, so it moves iff a key, description,
+     *  role, or grant shape moves. */
     permission: z.string().min(1),
     migration: z.string().min(1),
   }),
