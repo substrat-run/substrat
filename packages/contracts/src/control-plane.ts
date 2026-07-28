@@ -36,6 +36,10 @@ export const adminAction = z.enum([
   'deleteVertical', // remove a vertical + its versions/channels; refused while any scope is bound
   'bindScopeVersion',
   'promoteVersion',
+  // #286 — in-place deploys: the stable serving script's state moves, and a scope's
+  // routing is pointed at the script its data now lives in (provision / adopt-serving).
+  'setVerticalServing',
+  'setScopeServingRef',
   'bindHostname', // K-26 — the hostname map
   'setHostnameStatus', // #31 step 2 — where the two human checkpoints fire
   'unbindHostname', // the inverse of bindHostname — a hard delete; the history is this log
@@ -46,6 +50,7 @@ export const adminAction = z.enum([
   'provisionScope', // §4.2 — the first scope-lifecycle transition (→ active)
   'importScope', // preview-and-snapshots.md §3 — provision a scope + load a dump (fork)
   'restoreScope', // §8's write half — load a dump into an EXISTING scope in place (backup restore / backout)
+  'rewindScope', // #286's backout — PITR-rewind a scope to a pre-migration bookmark (schema AND data)
   'deleteSnapshot', // preview-and-snapshots.md §9 — reap an expired fork: storage + directory row
   'suspendScope', // §4.2
   'unsuspendScope', // §4.2

@@ -13,6 +13,7 @@ import {
   AUTO_ADMISSION_NOTE,
   registerVerticalInput,
   vertical as verticalSchema,
+  verticalServingState,
   verticalChannel,
   verticalVersion,
   connection,
@@ -252,11 +253,17 @@ interface ControlPlaneStub {
   insertVersion(v: {
     id: string; verticalSlug: string; version: string; manifestDigest: string;
     permissionDigest: string; migrationDigest: string; deploymentRef: string | null;
-    admission: string; admissionNote: string | null; createdAt: string;
+    admission: string; admissionNote: string | null; manifestJson: string | null;
+    createdAt: string;
   }): Promise<void>;
   listVersions(verticalSlug: string): Promise<VersionRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
+  setVerticalServing(
+    slug: string,
+    s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
+  ): Promise<void>;
+  setScopeServingRef(scopeId: string, servingRef: string | null): Promise<void>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): Promise<void>;
@@ -437,6 +444,10 @@ interface ScopeStubRpc {
   importDump(tables: ScopeDumpTable[]): Promise<void>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
+  /** PITR bookmarks recorded before migration passes (#286), newest first. */
+  migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
+  /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
+  rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
 
 export interface CloudflareScopeHostOptions {
@@ -842,6 +853,27 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * Re-apply the vertical's OWN role definitions to one scope, CP-lessly — the
+   * repair half of `restoreScopeLocal`. A dump captured from a CP-FULL world
+   * carries the scope's tuples but an EMPTY roles table (definitions live in
+   * that world's directory), so a plain restore leaves grants the local checker
+   * cannot expand: /me shows a role while every ctx.check denies. Roles are
+   * code-defined and deterministic, so re-projecting after import is always
+   * safe; scope-level tuples (the restored grants) are never touched.
+   */
+  async projectRolesLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    roles: RoleDefinition[],
+  ): Promise<void> {
+    await this.scopeStub(scopeId).applyProjection(
+      tenantId,
+      roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source })),
+      [],
+    );
+  }
+
+  /**
    * Wipe one scope DO's storage in THIS deployment — the reap half of an orchestrated
    * deleteSnapshot (§9). The fork-only refusal and the directory cleanup live on the
    * control plane, which calls the vertical's `/internal/delete-scope` before deleting
@@ -860,6 +892,30 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]> {
     return this.scopeStub(scopeId).exportDump();
+  }
+
+  /**
+   * The PITR bookmarks one scope recorded before its migration passes (#286) — the
+   * rewind points a backout UI offers. Behind the vertical's platform-gated
+   * `/internal/bookmarks`; the control plane is the gate and the auditor.
+   */
+  async migrationBookmarksLocal(
+    scopeId: ScopeId,
+  ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]> {
+    return this.scopeStub(scopeId).migrationBookmarks();
+  }
+
+  /**
+   * Rewind one scope to a pre-migration bookmark (#286's backout) — schema AND data,
+   * discarding every write since; the DO enforces the freshness window and restarts
+   * itself to complete the restore. Behind the vertical's `/internal/rewind`.
+   */
+  async rewindScopeLocal(
+    scopeId: ScopeId,
+    bookmark: string,
+    opts?: { force?: boolean },
+  ): Promise<{ rewindingTo: string }> {
+    return this.scopeStub(scopeId).rewindToBookmark(bookmark, opts);
   }
 
   registerModule(registration: ModuleRegistration): void {
@@ -1206,6 +1262,8 @@ export class CloudflareScopeHost implements ScopeHost {
         listed: !!r.listed,
         ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         installsBlocked: !!r.installs_blocked,
+        ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
+        ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
       });
     const mapVersion = (r: VersionRow): VerticalVersion =>
@@ -1270,6 +1328,7 @@ export class CloudflareScopeHost implements ScopeHost {
         forkedFrom: r.forked_from,
         forkedAt: r.forked_at,
         expiresAt: r.expires_at,
+        ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         createdAt: r.created_at,
       });
 
@@ -1625,14 +1684,18 @@ export class CloudflareScopeHost implements ScopeHost {
         // sandbox contract is the gate and the version self-admits, noted so the
         // publish seam can tell a staff vouch from this shortcut.
         const selfAdmits = owning.owner_tenant !== null && !owning.listed;
+        // The manifest is retained for the serving upload (#286), not audited — a whole
+        // manifest per publish would drown the admin log in bundle metadata.
+        const { manifestJson, ...audited } = parsed;
         await this.cp.insertVersion({
-          ...parsed,
+          ...audited,
+          manifestJson: manifestJson ?? null,
           admission: selfAdmits ? 'admitted' : 'pending',
           admissionNote: selfAdmits ? AUTO_ADMISSION_NOTE : null,
           createdAt: new Date().toISOString(),
         });
         await this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
-          ...parsed,
+          ...audited,
           admission: selfAdmits ? 'admitted' : 'pending',
         });
       },
@@ -1859,6 +1922,83 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId, vertical: v.vertical_slug, version: v.version,
         });
+      },
+      verticalServing: async (actor, verticalSlug: string) => {
+        const r = await this.cp.readVertical(verticalSlug);
+        if (!r) throw new Error(`unknown vertical '${verticalSlug}'`);
+        await this.recordAccess(actor, 'verticalServing', {}, { verticalSlug }, r.serving_ref ? 1 : 0);
+        if (!r.serving_ref || !r.serving_version_id || !r.serving_migration_tag) return null;
+        return verticalServingState.parse({
+          ref: r.serving_ref,
+          versionId: r.serving_version_id,
+          doClasses: r.serving_do_classes ? JSON.parse(r.serving_do_classes) : [],
+          migrationTag: r.serving_migration_tag,
+        });
+      },
+      setVerticalServing: async (actor, verticalSlug: string, state) => {
+        const parsed = verticalServingState.parse(state);
+        const r = await this.cp.readVertical(verticalSlug);
+        if (!r) throw new Error(`unknown vertical '${verticalSlug}'`);
+        await this.cp.setVerticalServing(verticalSlug, {
+          ref: parsed.ref,
+          versionId: parsed.versionId,
+          doClassesJson: JSON.stringify(parsed.doClasses),
+          migrationTag: parsed.migrationTag,
+        });
+        await this.recordAdmin(
+          actor,
+          'setVerticalServing',
+          { tenantId: null },
+          r.serving_ref
+            ? { ref: r.serving_ref, versionId: r.serving_version_id }
+            : null,
+          { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
+        );
+      },
+      versionManifest: async (actor, verticalSlug: string, versionId: string) => {
+        const v = await this.cp.readVersion(versionId);
+        if (!v || v.vertical_slug !== verticalSlug) {
+          throw new Error(`unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        await this.recordAccess(actor, 'versionManifest', {}, { verticalSlug, versionId }, v.manifest_json ? 1 : 0);
+        return v.manifest_json;
+      },
+      setScopeServingRef: async (actor, tenantId, scopeId, servingRef) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        await this.cp.setScopeServingRef(scopeId, servingRef);
+        await this.recordAdmin(
+          actor,
+          'setScopeServingRef',
+          { tenantId, scopeId },
+          { servingRef: scope.serving_ref ?? null },
+          { servingRef },
+        );
+      },
+      scopeMigrationBookmarks: async (actor, tenantId, scopeId) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        const bookmarks = await this.scopeStub(scopeId).migrationBookmarks();
+        await this.recordAccess(actor, 'scopeMigrationBookmarks', { tenantId, scopeId }, null, bookmarks.length);
+        return bookmarks;
+      },
+      rewindScope: async (actor, tenantId, scopeId, bookmark, opts) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        // Audit FIRST: a destructive rewind that fails halfway must still be on the
+        // record — the entry names the intent; the DO's refusals name the outcome.
+        await this.recordAdmin(actor, 'rewindScope', { tenantId, scopeId }, null, {
+          bookmark,
+          force: opts?.force ?? false,
+          delegated: opts?.localApply === false,
+        });
+        if (opts?.localApply === false) {
+          // The scope's data lives in a dispatch vertical's own deployment; the route
+          // delegates the actual rewind to its `/internal/rewind`. Touching this
+          // host's namespace here would PITR an unrelated, unused DO.
+          return { rewindingTo: bookmark };
+        }
+        return this.scopeStub(scopeId).rewindToBookmark(bookmark, { force: opts?.force });
       },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);

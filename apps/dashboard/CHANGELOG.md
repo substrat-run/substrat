@@ -1,5 +1,93 @@
 # @substrat-run/dashboard
 
+## 0.7.0
+
+### Minor Changes
+
+- 22b1f97: Export & import from the dashboard (preview-and-snapshots.md §8's dashboard half):
+  the Snapshots tab grows an Export & import card. Export downloads the app's data as
+  a `.dump.json` the CLI's `scope restore` also accepts — in connected mode it arrives
+  PII-masked from the control plane's governed export route (the full-fidelity
+  break-glass stays a CLI/staff affordance); embedded mode returns the full read
+  (`masked: false`), since the host's files already sit on the operator's own disk.
+  Import replaces the app's data wholesale with an uploaded dump (a pulled export or a
+  locally built world), always forking a TTL'd safety copy first so the pre-restore
+  state survives as a snapshot to back out to. Both halves gate on
+  `dashboard:provision-app` in the caller's own scope and land on the app's activity
+  trail as `data-exported` / `data-restored` (migration 0008 widens the event CHECK,
+  rebuild-and-copy like 0005/0007). New tenant-narrowed CP wrappers `exportScope` /
+  `restoreScope` reach the existing staff routes over the service binding.
+
+### Patch Changes
+
+- 6a22014: The app Deployments tab no longer dead-ends a builder on their own vertical. The
+  per-app deployments read now says whether the app's vertical is one the tenant
+  pushed (`owned`, with the real `listed` flag alongside), and the tab words itself
+  accordingly: for an owned private vertical the banner says promotion is self-serve
+  and links to the Verticals page instead of claiming prod is a staff action (true
+  only for listed/foreign verticals). When the newest admitted version isn't what
+  prod points at — the exact state where no "Update to latest" can be offered — the
+  Running card now explains why and links to the promote button (or names the staff
+  handoff, for the non-owned case) rather than showing nothing.
+- Updated dependencies [6a86837]
+  - @substrat-run/contracts@0.23.0
+  - @substrat-run/demo-callout@0.1.11
+  - @substrat-run/demo-manyfold@0.1.9
+  - @substrat-run/demo-meridian@0.2.8
+  - @substrat-run/engine-invites@0.0.20
+  - @substrat-run/engine-invoicing@0.3.21
+  - @substrat-run/engine-protocol@0.4.15
+  - @substrat-run/engine-workorder@0.3.21
+  - @substrat-run/adapter-cloudflare@0.23.0
+  - @substrat-run/kernel@0.23.0
+
+## 0.6.0
+
+### Minor Changes
+
+- a7d30b2: The app's Identity choice is visible and editable after install, and identity failures
+  read as instructions. Install now AUTHORS the delivered `substrat:auth` config in the
+  dashboard's own store (new `dashboard/set-app-auth` / `dashboard/get-app-auth` ops on the
+  reserved `substrat:*` key namespace, hidden from the Env tab), so a Settings-tab Identity
+  card can show the wired issuer and client id — clientSecret write-only, blank keeps the
+  stored one — and switch issuers via `PUT /api/apps/:scopeId/auth`, which reports honestly
+  whether the running app received the change (`delivered: false` + a readable note when the
+  deployment answers 501, instead of an error or a silent fake success). A failed identity
+  step at install now records an ACTIONABLE reason on the Activity trail — a 501 from the
+  app's deployment (no live-config support, the sesamy-crm incident) says to retry with
+  Builtin identity or add `/internal/configure` to the vertical, rather than relaying the
+  deployment's bare status line.
+
+### Patch Changes
+
+- Updated dependencies [bc6d0fa]
+  - @substrat-run/contracts@0.22.0
+  - @substrat-run/kernel@0.22.0
+  - @substrat-run/adapter-cloudflare@0.22.0
+  - @substrat-run/demo-meridian@0.2.7
+  - @substrat-run/demo-manyfold@0.1.8
+  - @substrat-run/demo-callout@0.1.10
+  - @substrat-run/engine-invites@0.0.19
+  - @substrat-run/engine-invoicing@0.3.20
+  - @substrat-run/engine-protocol@0.4.14
+  - @substrat-run/engine-workorder@0.3.20
+
+## 0.5.5
+
+### Patch Changes
+
+- Updated dependencies [3354e26]
+  - @substrat-run/adapter-cloudflare@0.21.0
+  - @substrat-run/demo-callout@0.1.9
+  - @substrat-run/demo-manyfold@0.1.7
+  - @substrat-run/demo-meridian@0.2.6
+  - @substrat-run/contracts@0.21.0
+  - @substrat-run/kernel@0.21.0
+  - @substrat-run/engine-invites@0.0.18
+  - @substrat-run/engine-invoicing@0.3.19
+  - @substrat-run/engine-protocol@0.4.13
+  - @substrat-run/engine-workorder@0.3.19
+
 ## 0.5.4
 
 ### Patch Changes

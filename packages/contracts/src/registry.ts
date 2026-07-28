@@ -83,9 +83,37 @@ export const vertical = z.object({
    * serving. Never set at registration; flipped by staff (`setVerticalInstallsBlocked`).
    */
   installsBlocked: z.boolean().default(false),
+  /**
+   * The vertical's ONE stable serving script (#286). A Durable Object namespace
+   * belongs to its script, so this unchanged name is what makes a promote carry every
+   * scope's data forward: promote re-uploads the new version's bundle onto it in
+   * place. `null` = nothing served in-place yet (legacy per-version dispatch).
+   */
+  servingRef: z.string().min(1).nullish(),
+  /**
+   * The version whose bundle the serving script currently runs. Normally the prod
+   * channel's version; TRAILS it when a promote moved the channel but the serve
+   * upload failed — visible state, retried by promoting again.
+   */
+  servingVersionId: z.string().min(1).nullish(),
   createdAt: instant,
 });
 export type Vertical = z.infer<typeof vertical>;
+
+/**
+ * What the serving script currently declares (#286) — the base the NEXT in-place
+ * upload diffs against. Directory-recorded at each successful serve, so no deploy
+ * ever queries Cloudflare to guess live state: `doClasses` yields the DO-class
+ * migration DELTA (re-declaring a live class is an upload error), `migrationTag`
+ * the `old_tag` it rides under.
+ */
+export const verticalServingState = z.object({
+  ref: z.string().min(1),
+  versionId: z.string().min(1),
+  doClasses: z.array(z.string().min(1)),
+  migrationTag: z.string().min(1),
+});
+export type VerticalServingState = z.infer<typeof verticalServingState>;
 
 export const registerVerticalInput = vertical
   .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, surfaces: true, listed: true })
@@ -145,15 +173,26 @@ export const verticalVersion = z.object({
 });
 export type VerticalVersion = z.infer<typeof verticalVersion>;
 
-export const publishVersionInput = verticalVersion.pick({
-  id: true,
-  verticalSlug: true,
-  version: true,
-  manifestDigest: true,
-  permissionDigest: true,
-  migrationDigest: true,
-  deploymentRef: true,
-});
+export const publishVersionInput = verticalVersion
+  .pick({
+    id: true,
+    verticalSlug: true,
+    version: true,
+    manifestDigest: true,
+    permissionDigest: true,
+    migrationDigest: true,
+    deploymentRef: true,
+  })
+  .extend({
+    /**
+     * The full pushed DeployManifest, as JSON (#286). Not part of the version record
+     * the registry serves back (a list of versions should not carry N whole manifests);
+     * stored so promote/backout can rebuild the serving upload's metadata — the archive
+     * script keeps the module bytes, this keeps their shape. Optional: a pre-#286
+     * publisher omits it, and such a version can be archived but never served in place.
+     */
+    manifestJson: z.string().nullish(),
+  });
 export type PublishVersionInput = z.infer<typeof publishVersionInput>;
 
 /**

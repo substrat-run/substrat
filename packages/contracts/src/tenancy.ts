@@ -202,6 +202,14 @@ export const scope = z.object({
    * concept, and the reaper refuses non-forks regardless.
    */
   expiresAt: instant.nullable(),
+  /**
+   * The dispatch script this scope's data DO lives in (#286). Set when the scope is
+   * born on (or adopted onto) its vertical's stable serving script; null = legacy
+   * per-version dispatch, where the bound version's own script holds the data.
+   * Routing and introspection follow THIS, not the bound version — rerouting a scope
+   * away from the script that holds its Durable Objects resolves empty storage.
+   */
+  servingRef: z.string().min(1).nullish(),
   createdAt: instant,
 });
 export type Scope = z.infer<typeof scope>;

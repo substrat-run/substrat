@@ -117,7 +117,17 @@ export interface DeploymentVersion {
   admission: 'pending' | 'admitted' | 'rejected' | string;
   admissionNote: string | null;
   deploymentRef: string | null;
+  /** Updating TO this version crosses a migration boundary (#286) — badged in the UI. */
+  schemaChange?: boolean;
   createdAt: string;
+}
+
+/** One PITR rewind point an app recorded before a migration pass (#286). */
+export interface MigrationBookmark {
+  bookmark: string;
+  takenAt: string;
+  /** The `module@version` migrations that were about to apply when it was taken. */
+  pending: string[];
 }
 
 /** A vertical this tenant pushed — the Verticals view's row (builder-plane.md Phase 4). */
@@ -128,6 +138,12 @@ export interface Deployment {
   source: string;
   /** Published to the public marketplace (vs private to this team). */
   listed?: boolean;
+  /**
+   * Pushed by MY team — set on the per-app deployments read (the tenant-level Verticals
+   * list is owned by construction). Owned + private ⇒ prod promotion is self-serve on
+   * the Verticals page; otherwise it's a staff action.
+   */
+  owned?: boolean;
   versions: DeploymentVersion[];
   channels: Array<{ channel: string; versionId: string }>;
   /**
@@ -456,6 +472,17 @@ export const api = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ snapshot: opts?.snapshot ?? false }),
+    }),
+  /** The app's pre-migration rewind points (#286), newest first. */
+  appBookmarks: (scopeId: string) =>
+    call<MigrationBookmark[]>(`/apps/${encodeURIComponent(scopeId)}/bookmarks`),
+  /** Rewind the app to a pre-migration bookmark (#286's backout) — schema AND data;
+   *  every write since the bookmark is discarded. Refused past the 24h window. */
+  rewindApp: (scopeId: string, bookmark: string) =>
+    call<{ rewindingTo: string }>(`/apps/${encodeURIComponent(scopeId)}/rewind`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bookmark }),
     }),
   /** The app's snapshots (test copies), newest first. */
   appSnapshots: (scopeId: string) =>

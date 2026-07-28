@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/cli",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "The substrat CLI — authenticated deploy tooling: push a vertical to the platform, manage its versions and channels",
   "license": "Apache-2.0",
   "repository": {
@@ -29,14 +29,16 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^7.0.0"
+    "typescript": "^7.0.0",
+    "vitest": "^3.0.0"
   },
   "publishConfig": {
     "access": "public"

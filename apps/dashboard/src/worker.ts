@@ -996,13 +996,23 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
   // The vertical's version registry AND the version THIS scope is actually pinned to
   // (the router dispatches on the latter). They differ when prod moved after install —
   // which is exactly the "the tab says 0.0.12 but I run 0.0.9" confusion this answers.
-  const [deployment, boundVersionId] = cp
-    ? await Promise.all([verticalDeploymentFromCp(cp, appRow.vertical_slug), cp.boundVersionId(scope)])
+  // `mine` decides `owned`: whether the app's vertical is one this tenant pushed, which
+  // is what makes prod promotion self-serve (while private) instead of a staff action —
+  // the UI words the tab differently for each.
+  const [deployment, boundVersionId, mine] = cp
+    ? await Promise.all([verticalDeploymentFromCp(cp, appRow.vertical_slug), cp.boundVersionId(scope), cp.listVerticals()])
     : await Promise.all([
         verticalDeploymentFromHost(host, STAFF, appRow.vertical_slug),
         host.admin.getScopeRecord(STAFF, node.tenantId, scope).then((r) => r?.verticalVersionId ?? null),
+        host.admin.listVerticals(STAFF).then((vs) => vs.filter((v) => v.ownerTenant === node.tenantId)),
       ]);
-  return c.json({ ...deployment, boundVersionId });
+  const ownRecord = mine.find((v) => v.slug === appRow.vertical_slug);
+  return c.json({
+    ...deployment,
+    owned: !!ownRecord,
+    listed: ownRecord ? !!ownRecord.listed : deployment.listed,
+    boundVersionId,
+  });
 });
 
 /**
@@ -1115,6 +1125,44 @@ app.post('/api/apps/:scopeId/update', async (c) => {
     controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
   });
   return c.json(result);
+});
+
+/**
+ * #286: the PITR bookmarks an app recorded before its migration passes — the rewind
+ * points the Deployments tab offers for a backout. Same ownership check as every
+ * per-app route; connected-plane only (PITR is a Durable-Object-plane mechanism).
+ */
+app.get('/api/apps/:scopeId/bookmarks', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) return c.json([]);
+  return c.json(await cp.migrationBookmarks(scopeId.parse(appRow.app_scope_id)));
+});
+
+/**
+ * #286's backout: rewind an app to a pre-migration bookmark — schema AND data,
+ * discarding every write since the bookmark. Deliberately loud in its contract:
+ * the scope DO refuses a bookmark older than 24h, and the UI carries the caveat.
+ * Audited on the control plane below the seam.
+ */
+app.post('/api/apps/:scopeId/rewind', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const body = z.object({ bookmark: z.string().min(1) }).parse(await c.req.json());
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'rewind needs the shared control plane' });
+  return c.json(await cp.rewindScope(scopeId.parse(appRow.app_scope_id), body.bookmark));
 });
 
 /**

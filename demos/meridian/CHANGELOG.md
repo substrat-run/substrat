@@ -1,5 +1,61 @@
 # @substrat-run/demo-hr
 
+## 0.2.8
+
+### Patch Changes
+
+- Updated dependencies [6a86837]
+  - @substrat-run/contracts@0.23.0
+  - @substrat-run/connector-scrive@0.1.13
+  - @substrat-run/engine-protocol@0.4.15
+  - @substrat-run/adapter-cloudflare@0.23.0
+  - @substrat-run/adapter-sqlite@0.23.0
+  - @substrat-run/control-plane-api@0.23.0
+  - @substrat-run/kernel@0.23.0
+
+## 0.2.7
+
+### Patch Changes
+
+- bc6d0fa: In-place deploys (#286, K-33): version updates carry scope data forward. Verticals now
+  serve from ONE stable dispatch script per vertical — a prod promote re-uploads the
+  promoted version's bundle onto that unchanged name (modules read back from the
+  per-version archive script, metadata from the version's retained manifest), so scope
+  DOs and their data stay put while the code moves, and kernel migrations finally run in
+  place. In-place uploads keep existing secrets (`keep_bindings`) and send only the
+  DO-class delta, diffed against directory-recorded serving state. Routing is per-scope
+  truth (`scopes.servingRef`, COALESCEd over the bound version's ref); new scopes are
+  born on the serving script, legacy scopes hop once via the new adopt-serving endpoint
+  (export → restore → flip, data-first). Safety net: versions carry a code-only vs
+  schema-change signal (migration-digest diff), the scope DO takes a PITR bookmark
+  immediately before an upgrade's migration pass, and a new audited, time-boxed rewind
+  (`rewindScope`, 24h window unless forced) restores schema and data to that instant.
+  New `/internal/bookmarks`, `/internal/rewind` (and Meridian's previously missing
+  `/internal/restore`) vertical routes; new `HostAdmin` methods (`verticalServing`,
+  `setVerticalServing`, `versionManifest`, `setScopeServingRef`,
+  `scopeMigrationBookmarks`, `rewindScope`).
+- Updated dependencies [bc6d0fa]
+  - @substrat-run/contracts@0.22.0
+  - @substrat-run/kernel@0.22.0
+  - @substrat-run/adapter-cloudflare@0.22.0
+  - @substrat-run/adapter-sqlite@0.22.0
+  - @substrat-run/control-plane-api@0.22.0
+  - @substrat-run/connector-scrive@0.1.12
+  - @substrat-run/engine-protocol@0.4.14
+
+## 0.2.6
+
+### Patch Changes
+
+- Updated dependencies [3354e26]
+  - @substrat-run/adapter-cloudflare@0.21.0
+  - @substrat-run/control-plane-api@0.21.0
+  - @substrat-run/contracts@0.21.0
+  - @substrat-run/kernel@0.21.0
+  - @substrat-run/adapter-sqlite@0.21.0
+  - @substrat-run/connector-scrive@0.1.11
+  - @substrat-run/engine-protocol@0.4.13
+
 ## 0.2.5
 
 ### Patch Changes

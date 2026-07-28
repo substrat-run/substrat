@@ -60,6 +60,7 @@ export const MOCK_DEPLOYMENTS: Deployment[] = [
     displaySlug: 'helpdesk',
     name: 'Helpdesk',
     source: 'cli',
+    owned: true,
     versions: [
       { id: '01J2Q8Z3V9K4W7X2M5N6P7V300', version: '0.3.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', createdAt: '2026-07-22T12:00:00Z' },
       { id: '01J2Q8Z3V9K4W7X2M5N6P7V200', version: '0.2.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', createdAt: '2026-07-20T12:00:00Z' },
@@ -77,6 +78,7 @@ export const MOCK_DEPLOYMENTS: Deployment[] = [
     displaySlug: 'reports',
     name: 'Reports',
     source: 'cli',
+    owned: true,
     versions: [
       { id: '01J2Q8Z3V9K4W7X2M5N6P7R100', version: '1.0.0', admission: 'pending', admissionNote: null, deploymentRef: 'acme-reports-01j2q8z3v9k4w7x2m5n6p7r100', createdAt: '2026-07-21T12:00:00Z' },
     ],

@@ -30,7 +30,8 @@ function parseHash(): Route {
   const h = window.location.hash.replace(/^#\/?/, '');
   const parts = h.split('/').filter(Boolean);
   if (parts[0] === 'apps' && parts[1] === 'new') return { section: 'new' };
-  if (parts[0] === 'apps' && parts[1]) return { section: 'apps', app: parts[1], tab: parts[2] ?? 'overview' };
+  // The tab may carry a sub-section (settings/environment); AppDetail parses it.
+  if (parts[0] === 'apps' && parts[1]) return { section: 'apps', app: parts[1], tab: parts.slice(2).join('/') || 'overview' };
   // Legacy alias: the page was called "Deployments" before the apps/verticals split.
   if (parts[0] === 'deployments') return { section: 'verticals' };
   const known: NavKey[] = ['overview', 'apps', 'verticals', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];

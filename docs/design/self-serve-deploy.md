@@ -111,6 +111,15 @@ structural defense in model B.
   authenticated as the builder (a dashboard session or a scoped push token — *not* a Cloudflare
   token; the builder never holds one, D-34). In model A it pushes source instead and the build
   sandbox produces the bundle.
+- **The declared surface is authored in substrate vocabulary** (D-38): `substrat.runtimeNeeds`
+  in the vertical's package.json — entry module, `needsNodeCompat`, an optional pre-bundle
+  `build` command, and the vertical's own `stores` (binding → durable state class). The CLI
+  derives the wrangler config from it at push time (compatibility baseline pinned by the
+  platform, `RUNTIME_BASELINE`) and assembles the manifest from the same derived object, so
+  declaration and bundle cannot drift. §4 is why the vocabulary is complete at four fields:
+  the sandbox contract refuses everything except own stores anyway. A hand-authored
+  `wrangler.jsonc` remains the expert/legacy path. Note the honest limit: this neutralizes
+  the declaration, not the toolchain — wrangler still bundles in the builder's CI.
 - **The deploy endpoint** (dashboard or control-plane worker, platform-controlled, holds the
   WfP-scoped CF credential): authenticates the builder → validates the declared bindings
   against §4 → uploads to the `substrat-verticals` namespace under `deploymentRef =

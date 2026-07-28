@@ -1,4 +1,5 @@
-import type { DeployVerticalFn, VerticalBundle } from './deploy.js';
+import { nextMigrationTag } from './deploy.js';
+import type { DeployVerticalFn, FetchVerticalModulesFn, VerticalBundle } from './deploy.js';
 
 /**
  * A `DeployVerticalFn` that uploads a bundle into a Workers-for-Platforms **dispatch
@@ -29,7 +30,25 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
     .filter(([, text]) => text)
     .map(([name, text]) => ({ type: 'secret_text', name, text: text as string }));
 
-  return async (deploymentRef: string, bundle: VerticalBundle) => {
+  return async (deploymentRef, bundle, inPlace) => {
+    // A fresh script declares every DO class under the first tag. An in-place update
+    // of the serving script (#286) may only declare classes the script does not
+    // already have — re-declaring a live class errors — so send the delta under a
+    // bumped tag, or no migrations block at all when the class set is unchanged.
+    const newClasses = inPlace
+      ? bundle.doClasses.filter((cls) => !inPlace.priorDoClasses.includes(cls))
+      : bundle.doClasses;
+    const migrations = inPlace
+      ? newClasses.length
+        ? {
+            old_tag: inPlace.priorMigrationTag,
+            new_tag: nextMigrationTag(inPlace.priorMigrationTag),
+            new_sqlite_classes: newClasses,
+          }
+        : undefined
+      : // Every Substrat scope DO is SQLite-backed (new_sqlite_classes, not new_classes).
+        { new_tag: 'v1', new_sqlite_classes: bundle.doClasses };
+
     const metadata = {
       main_module: bundle.entry,
       compatibility_date: bundle.compatibilityDate,
@@ -40,8 +59,11 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       // AFTER the §4 sandbox check on the declared set — the platform is granting the
       // vertical verification secrets, not the vertical reaching for a platform binding).
       bindings: [...bundle.bindings, ...injected],
-      // Every Substrat scope DO is SQLite-backed (new_sqlite_classes, not new_classes).
-      migrations: { new_tag: 'v1', new_sqlite_classes: bundle.doClasses },
+      ...(migrations ? { migrations } : {}),
+      // On the serving script, secrets put by hand or by an earlier deploy survive the
+      // re-upload — this is what deletes the "re-put every secret on every new script"
+      // ritual a per-version script forced.
+      ...(inPlace ? { keep_bindings: ['secret_text', 'secret_key'] } : {}),
       // Builder logs exist to query (design/observability.md §4.4): without this the
       // pushed script's console output and exceptions are simply not recorded, and the
       // builder's only debugging tool is asking staff to redeploy with it on.
@@ -67,5 +89,58 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       // Surfaced as a 502-ish deploy failure by the caller; not a sandbox refusal.
       throw new Error(`WfP upload failed (${res.status}) for '${deploymentRef}': ${body.slice(0, 400)}`);
     }
+  };
+}
+
+/**
+ * A `FetchVerticalModulesFn` over the namespace's script-content endpoint. The archive
+ * script (one per pushed version) is the platform's bundle store — promote and backout
+ * read the built modules back from it rather than requiring anyone to retain bytes.
+ *
+ * Cloudflare answers with `multipart/form-data` for a multi-module script and with the
+ * bare module body (entrypoint named in `cf-entrypoint`) for a single-module one; both
+ * shapes are handled with web-standard parsing only.
+ */
+export function createWfpModulesFetcher(
+  opts: Pick<WfpUploaderOptions, 'accountId' | 'namespace' | 'apiToken'>,
+): FetchVerticalModulesFn {
+  return async (deploymentRef) => {
+    const url =
+      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
+      `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(deploymentRef)}/content`;
+    const res = await fetch(url, { headers: { authorization: `Bearer ${opts.apiToken}` } });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(
+        `WfP content read failed (${res.status}) for '${deploymentRef}': ${body.slice(0, 400)}`,
+      );
+    }
+    const contentType = res.headers.get('content-type') ?? '';
+    if (contentType.includes('multipart/form-data')) {
+      const form = await res.formData();
+      const modules: VerticalBundle['modules'] = [];
+      for (const [name, value] of form.entries()) {
+        if (value instanceof File) {
+          modules.push({
+            name,
+            content: new Uint8Array(await value.arrayBuffer()),
+            contentType: value.type || 'application/javascript+module',
+          });
+        }
+      }
+      if (!modules.length) throw new Error(`WfP content for '${deploymentRef}' held no modules`);
+      return modules;
+    }
+    const entry = res.headers.get('cf-entrypoint');
+    if (!entry) {
+      throw new Error(`WfP content for '${deploymentRef}' is single-module but names no cf-entrypoint`);
+    }
+    return [
+      {
+        name: entry,
+        content: new Uint8Array(await res.arrayBuffer()),
+        contentType: contentType || 'application/javascript+module',
+      },
+    ];
   };
 }

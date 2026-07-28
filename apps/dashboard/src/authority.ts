@@ -453,6 +453,20 @@ export class TenantNarrowedControlPlane {
     return this.call(`/tenants/${this.tenantId}/scopes/${snapshotScopeId}`, { method: 'DELETE' });
   }
 
+  /** The PITR bookmarks a scope recorded before its migration passes (#286) —
+   *  the rewind points the deployments tab offers for a backout. */
+  migrationBookmarks(
+    scopeId: ScopeId,
+  ): Promise<Array<{ bookmark: string; takenAt: string; pending: string[] }>> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/bookmarks`);
+  }
+
+  /** #286's backout: rewind a scope to a pre-migration bookmark — schema AND data,
+   *  discarding every write since. The scope DO enforces the 24h freshness window. */
+  rewindScope(scopeId: ScopeId, bookmark: string): Promise<{ rewindingTo: string }> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/rewind`, { bookmark });
+  }
+
   // -- export / restore (preview-and-snapshots.md §8 — the dashboard half) ----
   // The CLI's `scope pull`/`scope restore` seam, reached tenant-pinned. The CP is
   // the gate on both: the export lands MASKED (this client never sends `?full=true` —
@@ -478,9 +492,9 @@ export class TenantNarrowedControlPlane {
     });
   }
 
-  /** The hostnames bound to one scope (tenant-pinned) — the Domains tab's list and
+  /** The hostnames bound to one scope (tenant-pinned) — the Domains list and
    *  the copy's preview URL. Full binding rows: the surface/canonical/status columns
-   *  are exactly what the tab renders. */
+   *  are exactly what the settings section renders. */
   listHostnames(scopeId: ScopeId): Promise<HostnameBindingRow[]> {
     const q = new URLSearchParams({ tenantId: this.tenantId, scopeId });
     return this.call<HostnameBindingRow[]>(`/hostnames?${q}`);

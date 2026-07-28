@@ -90,6 +90,8 @@ export interface ScopeRow {
   forked_from: string | null;
   forked_at: string | null;
   expires_at: string | null;
+  /** The dispatch script this scope's data lives in (#286); null = per-version dispatch. */
+  serving_ref: string | null;
   created_at: string;
 }
 
@@ -122,6 +124,14 @@ export interface VerticalRow {
   publish_requested_at: string | null;
   /** New installs blocked (0/1) — the staff kill-switch; gates provisioning, not serving. */
   installs_blocked: number;
+  /** The stable serving script's name (#286); null = no serving script yet. */
+  serving_ref: string | null;
+  /** The version whose bundle the serving script currently runs (may trail prod). */
+  serving_version_id: string | null;
+  /** DO classes the serving script declares, as a JSON array — the in-place delta base. */
+  serving_do_classes: string | null;
+  /** The serving script's current DO-migration tag (`v1`, `v2`, …). */
+  serving_migration_tag: string | null;
   created_at: string;
 }
 
@@ -135,6 +145,8 @@ export interface VersionRow {
   deployment_ref: string | null;
   admission: string;
   admission_note: string | null;
+  /** The pushed DeployManifest (JSON) — promote/backout rebuild upload metadata from it. */
+  manifest_json: string | null;
   created_at: string;
 }
 
@@ -255,6 +267,10 @@ const DIRECTORY_DDL = `
     forked_from TEXT,
     forked_at TEXT,
     expires_at TEXT,
+    -- The scope's data lives in THIS dispatch script (#286). NULL = legacy per-version
+    -- dispatch (the bound version's own script). Set at provision once the vertical has
+    -- a serving script, or by adopt-serving when a legacy scope's data is moved over.
+    serving_ref TEXT,
     created_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS hostnames (
@@ -290,6 +306,16 @@ const DIRECTORY_DDL = `
     -- New installs BLOCKED (staff kill-switch). 1 = hidden from the install catalog and
     -- provisioning refuses, for everyone including the owner. Gates provisioning, not serving.
     installs_blocked INTEGER NOT NULL DEFAULT 0,
+    -- The ONE stable serving script (#286) and what it currently runs. serving_ref is
+    -- the script name every new scope's data DO lives in; serving_version_id is the
+    -- version whose bundle was last uploaded onto it (may trail the prod channel if a
+    -- serve-upload failed and awaits retry). serving_do_classes (JSON array) and
+    -- serving_migration_tag are what the NEXT in-place upload diffs its DO-class
+    -- migrations against — directory-recorded so no deploy ever guesses Cloudflare state.
+    serving_ref TEXT,
+    serving_version_id TEXT,
+    serving_do_classes TEXT,
+    serving_migration_tag TEXT,
     created_at   TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS vertical_versions (
@@ -302,6 +328,10 @@ const DIRECTORY_DDL = `
     deployment_ref    TEXT,
     admission         TEXT NOT NULL,
     admission_note    TEXT,
+    -- The full DeployManifest as pushed (JSON). What promote/backout rebuild the
+    -- serving upload's metadata from — the archive script stores the module BYTES,
+    -- this stores the shape (entry, compat, doClasses, bindings). NULL = pre-#286 push.
+    manifest_json     TEXT,
     created_at        TEXT NOT NULL,
     UNIQUE (vertical_slug, version)
   );
@@ -462,6 +492,7 @@ const SCOPE_COLUMNS_ADDED = [
   'forked_from TEXT',
   'forked_at TEXT',
   'expires_at TEXT',
+  'serving_ref TEXT',
 ] as const;
 
 export class ControlPlaneDO extends DurableObject {
@@ -582,6 +613,11 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('verticals', 'listed INTEGER NOT NULL DEFAULT 0');
     this.addColumn('verticals', 'publish_requested_at TEXT');
     this.addColumn('verticals', 'installs_blocked INTEGER NOT NULL DEFAULT 0');
+    this.addColumn('verticals', 'serving_ref TEXT');
+    this.addColumn('verticals', 'serving_version_id TEXT');
+    this.addColumn('verticals', 'serving_do_classes TEXT');
+    this.addColumn('verticals', 'serving_migration_tag TEXT');
+    this.addColumn('vertical_versions', 'manifest_json TEXT');
     this.sql.exec("UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL");
     this.sql.exec("UPDATE scopes SET kind = 'scope' WHERE kind IS NULL");
     this.sql.exec('UPDATE scopes SET name = slug WHERE name IS NULL');
@@ -716,11 +752,16 @@ export class ControlPlaneDO extends DurableObject {
             `by ${slugOwner.scope_id} (slugs are unique within a tenant)`,
         );
       }
+      // A scope born while its vertical serves in place (#286) is born ON the serving
+      // script — provisioning dispatches there — so its routing points there from row
+      // one. Sub-selected at insert: per-scope truth that later serves can't disturb.
       this.sql.exec(
         `INSERT INTO scopes
            (scope_id, tenant_id, parent_scope_id, slug, kind, name, vertical,
-            storage_shape, jurisdiction, status, forked_from, forked_at, expires_at, created_at)
-         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?)`,
+            storage_shape, jurisdiction, status, forked_from, forked_at, expires_at,
+            serving_ref, created_at)
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?,
+                 (SELECT serving_ref FROM verticals WHERE slug = ?), ?)`,
         scopeId,
         tenantId,
         record.slug,
@@ -732,6 +773,7 @@ export class ControlPlaneDO extends DurableObject {
         record.forkedFrom,
         record.forkedAt,
         record.expiresAt,
+        record.vertical,
         createdAt,
       );
     }
@@ -962,12 +1004,16 @@ export class ControlPlaneDO extends DurableObject {
   // -- the hostname map (K-26) ------------------------------------------------
 
   readHostname(hostname: string): (HostnameRow & { deployment_ref: string | null }) | undefined {
-    // Join the scope's bound version's deployment_ref, so the router resolves the
-    // dispatch script in the same one directory read (orchestration.md §5.4). LEFT
-    // joins: a scope with no bound version resolves with deployment_ref = null.
+    // Join the scope's dispatch script, so the router resolves it in the same one
+    // directory read (orchestration.md §5.4). A scope whose data lives in the stable
+    // serving script (#286) routes THERE — per-scope truth, because rerouting a scope
+    // whose Durable Objects sit in a per-version script would resolve empty storage.
+    // Falls back to the bound version's own script (legacy per-version dispatch); LEFT
+    // joins: a scope with neither resolves with deployment_ref = null.
     return this.sql
       .exec(
-        `SELECT h.*, vv.deployment_ref AS deployment_ref, s.status AS scope_status
+        `SELECT h.*, COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
+                s.status AS scope_status
            FROM hostnames h
            LEFT JOIN scopes s ON s.scope_id = h.scope_id
            LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
@@ -1093,16 +1139,36 @@ export class ControlPlaneDO extends DurableObject {
   insertVersion(v: {
     id: string; verticalSlug: string; version: string; manifestDigest: string;
     permissionDigest: string; migrationDigest: string; deploymentRef: string | null;
-    admission: string; admissionNote: string | null; createdAt: string;
+    admission: string; admissionNote: string | null; manifestJson: string | null;
+    createdAt: string;
   }): void {
     this.sql.exec(
       `INSERT INTO vertical_versions
          (id, vertical_slug, version, manifest_digest, permission_digest,
-          migration_digest, deployment_ref, admission, admission_note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          migration_digest, deployment_ref, admission, admission_note, manifest_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       v.id, v.verticalSlug, v.version, v.manifestDigest, v.permissionDigest,
-      v.migrationDigest, v.deploymentRef, v.admission, v.admissionNote, v.createdAt,
+      v.migrationDigest, v.deploymentRef, v.admission, v.admissionNote, v.manifestJson,
+      v.createdAt,
     );
+  }
+
+  /** Record what the serving script now runs — written only after a successful
+   *  in-place upload, so a failed serve leaves the trailing state visible. */
+  setVerticalServing(
+    slug: string,
+    s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
+  ): void {
+    this.sql.exec(
+      `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
+              serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
+      s.ref, s.versionId, s.doClassesJson, s.migrationTag, slug,
+    );
+  }
+
+  /** Point a scope's routing at the serving script its data now lives in (#286). */
+  setScopeServingRef(scopeId: string, servingRef: string | null): void {
+    this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?', servingRef, scopeId);
   }
 
   listVersions(verticalSlug: string): VersionRow[] {

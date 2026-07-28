@@ -28,6 +28,7 @@ import {
 import {
   createControlPlaneApi,
   createWfpUploader,
+  createWfpModulesFetcher,
   createCfObservabilityReader,
   firstBuilderAuth,
   firstPlatformActorAuth,
@@ -120,6 +121,17 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
   });
 }
 
+/** Reads a pushed script's modules back from the namespace (#286) — the archive
+ *  script is the bundle store the in-place serve at promote reads from. */
+function fetchVerticalModulesFor(env: Env) {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
+  return createWfpModulesFetcher({
+    accountId: env.CF_ACCOUNT_ID,
+    namespace: env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
+    apiToken: env.CF_API_TOKEN,
+  });
+}
+
 /**
  * Cloudflare-native observability reads for the console's fleet view
  * (design/observability.md §4.1). Same credential slot as the WfP uploader; the token
@@ -144,11 +156,33 @@ function resolveVerticalFor(
   if (!dispatch || !secret) return undefined;
   return async (slug, actor) => {
     const host = hostFor(env);
+    // A vertical serving in place (#286) provisions into its stable serving script —
+    // that's where a new scope's data DO must be born, or the router (which resolves
+    // scopes to the serving script) would serve empty storage.
+    const serving = await host.admin.verticalServing(actor, slug).catch(() => null);
+    if (serving) {
+      const fetcher = dispatch.get(serving.ref);
+      return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret });
+    }
     const prod = (await host.admin.listChannels(actor, slug)).find((c) => c.channel === 'prod');
     if (!prod) return undefined;
     const version = (await host.admin.listVersions(actor, slug)).find((v) => v.id === prod.versionId);
     if (!version?.deploymentRef) return undefined;
     const fetcher = dispatch.get(version.deploymentRef);
+    return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret });
+  };
+}
+
+/** Resolve a vertical by a KNOWN dispatch script name (#286) — scopes on the stable
+ *  serving script are reached directly; no channel or version lookup can disagree. */
+function resolveVerticalRefFor(
+  env: Env,
+): ((deploymentRef: string) => Promise<VerticalClient | undefined>) | undefined {
+  const dispatch = env.DISPATCH;
+  const secret = env.PLATFORM_SECRET;
+  if (!dispatch || !secret) return undefined;
+  return async (deploymentRef) => {
+    const fetcher = dispatch.get(deploymentRef);
     return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret });
   };
 }
@@ -319,7 +353,9 @@ export default {
         verticals: verticalsFor(env),
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
+        resolveVerticalRef: resolveVerticalRefFor(env),
         deployVertical: deployVerticalFor(env),
+        fetchVerticalModules: fetchVerticalModulesFor(env),
         observability: observabilityFor(env),
       }),
     );

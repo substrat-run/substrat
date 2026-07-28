@@ -34,6 +34,7 @@ import type {
   PromotionAcknowledgement,
   PublishVersionInput,
   RegisterVerticalInput,
+  VerticalServingState,
   RouteTarget,
   PrincipalId,
   ResolvedIdentity,
@@ -633,6 +634,77 @@ export interface HostAdmin {
     versionId: string,
     opts?: { snapshot?: boolean },
   ): Promise<void>;
+
+  // -- the stable serving script (#286) ---------------------------------------
+  //
+  // One script per vertical serves in place: a Durable Object namespace belongs to
+  // its script, so re-uploading new code under an unchanged name is what carries
+  // scope data across a version update — the per-version scripts stay as the push
+  // archive (admission review + the bundle store promote/backout read from). The
+  // registry records the serving state; the UPLOAD orchestration lives at the
+  // control-plane API where the platform's deploy credential is injected.
+
+  /** What the serving script currently runs, or null before the first in-place serve. */
+  verticalServing(actor: PlatformActorId, verticalSlug: string): Promise<VerticalServingState | null>;
+  /**
+   * Record a successful in-place serve: the script name, the version it now runs,
+   * and the DO-class/migration-tag base the NEXT upload diffs against. Written only
+   * AFTER the upload succeeded — a failed serve leaves `servingVersionId` trailing
+   * the prod channel, which is the visible, retryable state. Audited.
+   */
+  setVerticalServing(
+    actor: PlatformActorId,
+    verticalSlug: string,
+    state: VerticalServingState,
+  ): Promise<void>;
+  /**
+   * The pushed DeployManifest (JSON) of one version — what a serve rebuilds upload
+   * metadata from. Null for a version pushed before manifests were retained; such a
+   * version can be bound per-version but never served in place.
+   */
+  versionManifest(actor: PlatformActorId, verticalSlug: string, versionId: string): Promise<string | null>;
+  /**
+   * Point a scope's ROUTING at the serving script its data now lives in. Per-scope
+   * truth, deliberately not derived from the vertical: rerouting a scope whose DOs
+   * still sit in a per-version script would resolve empty storage. Set at provision
+   * (a scope born on the serving script) or by adopt-serving (a legacy scope whose
+   * data was exported → restored into the serving script). `null` reverts to
+   * per-version dispatch — the adopt path's own backout. Audited.
+   */
+  setScopeServingRef(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    servingRef: string | null,
+  ): Promise<void>;
+
+  /**
+   * The PITR bookmarks a CO-LOCATED scope recorded before its migration passes
+   * (#286) — the rewind points a backout offers. For a dispatch vertical the route
+   * reads them through the vertical's `/internal/bookmarks` instead; this is the
+   * bare-host/co-located fallback. Hosts without PITR (the SQLite adapter) return
+   * an empty list — there is nothing to offer, not an error.
+   */
+  scopeMigrationBookmarks(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
+  /**
+   * #286's backout: PITR-rewind a scope to a pre-migration bookmark — schema AND
+   * data, discarding every write since. Audited (destructive by design). The scope
+   * DO enforces the freshness window (24h unless `force`). `localApply: false`
+   * audits without touching this host's own namespace — the route sets it when the
+   * rewind is delegated to a dispatch vertical's `/internal/rewind`, whose DO
+   * actually holds the data. Hosts without PITR throw.
+   */
+  rewindScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    bookmark: string,
+    opts?: { force?: boolean; localApply?: boolean },
+  ): Promise<{ rewindingTo: string }>;
 
   // -- the hostname map (K-26; control-plane.md §4.7) -------------------------
 

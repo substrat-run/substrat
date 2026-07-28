@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type Deployment, type DumpTable, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type Deployment, type DumpTable, type MigrationBookmark, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -10,11 +10,20 @@ import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, Pill, RowActions } f
 import { IntegrationCard } from './Integrations';
 
 /**
- * App detail (screens 1i, 1j, 1k, 1l + Domains/Integrations tabs). The header and
- * the Overview tab render REAL fields from the app row; the other tabs (env vars,
- * domains, integrations, deployments, settings) run on demo data behind the
- * design's honesty framing, since the platform does not back them yet.
+ * App detail (screens 1i, 1j, 1k, 1l). The header and the Overview tab render REAL
+ * fields from the app row; screens the platform does not back yet run on demo data
+ * behind the design's honesty framing. Environment / Domains / Integrations are
+ * sections inside Settings, so the tab bar stays five real nouns.
  */
+
+/** Old tab URLs → their new home, so bookmarks and in-flight links keep working. */
+const TAB_ALIASES: Record<string, string> = {
+  snapshots: 'previews',
+  env: 'settings/environment',
+  domains: 'settings/domains',
+  integrations: 'settings/integrations',
+};
+
 export function AppDetail({
   app,
   tab,
@@ -32,6 +41,7 @@ export function AppDetail({
   const meta = verticalMeta(app.vertical_slug);
   const statusKind = app.status === 'provisioning' ? 'info' : app.status === 'failed' ? 'danger' : 'success';
   const statusLabel = app.status === 'provisioning' ? 'Provisioning' : app.status === 'failed' ? 'Failed' : 'Active';
+  const [main, sub] = (TAB_ALIASES[tab] ?? tab).split('/');
 
   return (
     <Page>
@@ -51,18 +61,23 @@ export function AppDetail({
 
       <Tabs
         tabs={APP_TABS.map((t) => ({ value: t.value, label: t.label, ...(t.count !== undefined ? { count: t.count } : {}) }))}
-        value={tab}
+        value={main}
         onChange={onTab}
       />
 
-      {tab === 'overview' && <Overview app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} />}
-      {tab === 'data' && <DataBrowser app={app} />}
-      {tab === 'deployments' && <Deployments app={app} />}
-      {tab === 'snapshots' && <Snapshots app={app} />}
-      {tab === 'env' && <EnvVars app={app} />}
-      {tab === 'domains' && <AppDomains app={app} />}
-      {tab === 'integrations' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 16 }}>{INTEGRATIONS.slice(0, 2).map((i) => <IntegrationCard key={i.name} integ={i} />)}</div>}
-      {tab === 'settings' && <Settings app={app} onDeleted={onDeleted} authServers={authServers} />}
+      {main === 'overview' && <Overview app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} />}
+      {main === 'data' && <DataBrowser app={app} />}
+      {main === 'deployments' && <Deployments app={app} />}
+      {main === 'previews' && <Previews app={app} />}
+      {main === 'settings' && (
+        <Settings
+          app={app}
+          section={sub ?? 'general'}
+          onSection={(s) => onTab(s === 'general' ? 'settings' : `settings/${s}`)}
+          onDeleted={onDeleted}
+          authServers={authServers}
+        />
+      )}
     </Page>
   );
 }
@@ -237,6 +252,9 @@ function Deployments({ app }: { app: AppRow }) {
   // crossing update, so a bad upgrade has a rollback point. A code-only update
   // snapshots nothing — the platform compares migration digests, not the checkbox.
   const [snapFirst, setSnapFirst] = useState(true);
+  // #286: pre-migration rewind points, offered as a time-boxed backout. Fresh =
+  // within the 24h window the platform will actually honor without force.
+  const [bookmarks, setBookmarks] = useState<MigrationBookmark[]>([]);
   useEffect(() => {
     if (DEV_MOCK) {
       setDep(MOCK_DEPLOYMENTS[0] ?? null);
@@ -247,6 +265,10 @@ function Deployments({ app }: { app: AppRow }) {
       .appDeployments(app.app_scope_id)
       .then((d) => live && setDep(d))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    api
+      .appBookmarks(app.app_scope_id)
+      .then((b) => live && setBookmarks(b))
+      .catch(() => undefined); // no bookmarks surface (embedded/dev) → simply no backout offer
     return () => {
       live = false;
     };
@@ -265,6 +287,13 @@ function Deployments({ app }: { app: AppRow }) {
   const running = bound ?? (dep.boundVersionId == null ? prodVersion : undefined);
   // An update is offered when prod points somewhere other than where this scope is pinned.
   const updateAvailable = !!prod && prod.versionId !== dep.boundVersionId;
+  // Owned + private ⇒ prod promotion is self-serve (Verticals page); listed hands prod
+  // back to staff, and someone else's vertical was never this team's to promote.
+  const selfServe = !!dep.owned && !dep.listed;
+  // The stuck state this tab must not leave unexplained: the newest admitted version
+  // isn't what prod points at, so no update can be offered until someone promotes it.
+  const newestAdmitted = dep.versions.find((v) => v.admission === 'admitted');
+  const awaitingPromotion = !updateAvailable && !!newestAdmitted && newestAdmitted.id !== prod?.versionId;
   const COLS = '1fr 1.2fr 1.6fr 1.4fr';
 
   const doUpdate = async () => {
@@ -274,6 +303,29 @@ function Deployments({ app }: { app: AppRow }) {
       const r = await api.updateApp(app.app_scope_id, { snapshot: snapFirst });
       setNote(r.updated ? `Updated ${r.previousVersion ?? '—'} → ${r.version ?? ''}` : 'Already on the latest version.');
       setNonce((n) => n + 1); // refetch so Running + the table reflect the rebind
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const doRewind = async (bookmark: MigrationBookmark) => {
+    // The honest contract, spelled out at the moment of choice (#286): PITR rewinds
+    // the WHOLE database, so everything written since the bookmark is discarded.
+    const ok = window.confirm(
+      `Rewind this app's data to before its last migration (${relativeTime(bookmark.takenAt)})?\n\n` +
+        `EVERY change made since then will be discarded — schema and data. ` +
+        `This is a first-hours backout for a bad update; for anything older, restore a snapshot instead.`,
+    );
+    if (!ok) return;
+    setUpdating(true);
+    setNote(null);
+    try {
+      await api.rewindApp(app.app_scope_id, bookmark.bookmark);
+      setNote('Rewinding — the app restarts on its pre-migration data in a few seconds.');
+      setBookmarks([]);
+      setNonce((n) => n + 1);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     } finally {
@@ -296,6 +348,16 @@ function Deployments({ app }: { app: AppRow }) {
           <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Not serving a registry version yet — a pushed version must be admitted and promoted.</span>
         )}
         <div style={{ flex: 1 }} />
+        {awaitingPromotion && (
+          <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>
+            <MonoTag>{newestAdmitted.version}</MonoTag> is admitted but not in <b>prod</b>
+            {selfServe ? (
+              <> — <a href="#/verticals" style={{ color: 'var(--text-brand)' }}>promote it on Verticals →</a></>
+            ) : (
+              <> — the Substrat team promotes it</>
+            )}
+          </span>
+        )}
         {updateAvailable && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {prodVersion && <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>Update available → <MonoTag>{prodVersion.version}</MonoTag></span>}
@@ -308,7 +370,30 @@ function Deployments({ app }: { app: AppRow }) {
         )}
       </div>
       {note && <div style={{ ...card, padding: '10px 16px', fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</div>}
-      <HonestyBanner>Read live from the registry. “Running” is the version this app’s scope is pinned to — what the router serves. Versions are managed by the Substrat team; promotion to prod is a staff action, and updating rebinds this app to the current prod version.</HonestyBanner>
+      {(() => {
+        // The time-boxed backout offer (#286): shown only while the newest
+        // pre-migration bookmark is inside the 24h window the platform honors.
+        const fresh = bookmarks.find((b) => Date.now() - Date.parse(b.takenAt) < 24 * 60 * 60 * 1000);
+        if (!fresh) return null;
+        return (
+          <div style={{ ...card, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <Pill kind="warning">migrated {relativeTime(fresh.takenAt)}</Pill>
+            <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+              A migration ran {relativeTime(fresh.takenAt)} ({fresh.pending.length} step{fresh.pending.length === 1 ? '' : 's'}).
+              If the update went wrong you can rewind to just before it — every change since is discarded.
+            </span>
+            <div style={{ flex: 1 }} />
+            <Button onClick={() => doRewind(fresh)} disabled={updating}>Back out</Button>
+          </div>
+        );
+      })()}
+      <HonestyBanner>
+        {selfServe ? (
+          <>Read live from the registry. “Running” is the version this app’s scope is pinned to — what the router serves. This vertical is yours: promote a version to <b>prod</b> on the <a href="#/verticals" style={{ color: 'inherit' }}>Verticals page</a>, then updating here rebinds this app to it.</>
+        ) : (
+          <>Read live from the registry. “Running” is the version this app’s scope is pinned to — what the router serves. Versions are managed by the Substrat team; promotion to prod is a staff action, and updating rebinds this app to the current prod version.</>
+        )}
+      </HonestyBanner>
       {dep.versions.length === 0 ? (
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No versions pushed to the registry yet.</div>
       ) : (
@@ -323,6 +408,7 @@ function Deployments({ app }: { app: AppRow }) {
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{v.version}</span>
                   {v.id === dep.boundVersionId && <Pill kind="success">running</Pill>}
+                  {v.schemaChange && <Pill kind="warning">schema change</Pill>}
                 </span>
                 <span><Pill kind={v.admission === 'admitted' ? 'success' : v.admission === 'rejected' ? 'danger' : 'warning'}>{v.admission}</Pill></span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -355,12 +441,13 @@ const TTL_CHOICES = [
 ] as const;
 
 /**
- * The Snapshots tab (preview-and-snapshots.md §3): create a test copy of the app's
- * data, watch its expiry, delete it. A copy is unmistakably NOT the live app — it
- * never receives traffic, integrations are off, and it expires unless kept; the
- * banner says so in words.
+ * The Previews tab (preview-and-snapshots.md §3): create a preview — a full copy of
+ * the app's data to try things on — watch its expiry, delete it. A preview is
+ * unmistakably NOT the live app — it never receives traffic, integrations are off,
+ * and it expires unless kept; the banner says so in words. ("Snapshot" stays the
+ * backend word for the data artifact; the user-facing instance is a preview.)
  */
-function Snapshots({ app }: { app: AppRow }) {
+function Previews({ app }: { app: AppRow }) {
   const [snaps, setSnaps] = useState<SnapshotRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -389,11 +476,11 @@ function Snapshots({ app }: { app: AppRow }) {
     setNote(null);
     try {
       if (DEV_MOCK) {
-        setNote('Test copy created (preview).');
+        setNote('Preview created (mock).');
       } else {
         const days = Number(ttl);
         await api.createSnapshot(app.app_scope_id, days > 0 ? { ttlDays: days } : {});
-        setNote('Test copy created.');
+        setNote('Preview created.');
         setNonce((n) => n + 1);
       }
     } catch (e) {
@@ -418,29 +505,29 @@ function Snapshots({ app }: { app: AppRow }) {
     }
   };
 
-  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load snapshots — {err}</div>;
-  if (!snaps) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading snapshots…</div>;
+  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load previews — {err}</div>;
+  if (!snaps) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading previews…</div>;
 
   const COLS = '1.2fr 2fr 1fr 1.2fr 1fr';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ ...card, padding: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <Eyebrow>Test copies</Eyebrow>
+        <Eyebrow>Previews</Eyebrow>
         <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-          A snapshot is a full copy of this app’s data at a moment in time — try things on it without touching the live app.
+          A preview is a full copy of this app’s data at a moment in time — try things on it without touching the live app.
         </span>
         <div style={{ flex: 1 }} />
         <Select size="sm" value={ttl} onChange={(e) => setTtl(e.target.value)} options={TTL_CHOICES.map((t) => ({ value: t.value, label: t.label }))} style={{ width: 170 }} />
-        <Button onClick={doCreate} disabled={creating}>{creating ? 'Creating…' : 'Create test copy'}</Button>
+        <Button onClick={doCreate} disabled={creating}>{creating ? 'Creating…' : 'Create preview'}</Button>
       </div>
       {note && <div style={{ ...card, padding: '10px 16px', fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</div>}
-      <HonestyBanner>A copy is not the live app: it receives no traffic, integrations are off, and it is deleted automatically when it expires. Copies contain real data — the same access rules apply.</HonestyBanner>
+      <HonestyBanner>A preview is not the live app: it receives no traffic, integrations are off, and it is deleted automatically when it expires. Previews contain real data — the same access rules apply.</HonestyBanner>
       {snaps.length === 0 ? (
-        <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No test copies yet.</div>
+        <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No previews yet.</div>
       ) : (
         <div style={{ ...card, overflow: 'hidden' }}>
           <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
-            <span>Copy</span><span>URL</span><span>Taken</span><span>Retention</span><span />
+            <span>Preview</span><span>URL</span><span>Taken</span><span>Retention</span><span />
           </div>
           {snaps.map((s, i) => (
             <div key={s.id} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 44, padding: '8px 16px', fontSize: 13, borderBottom: i === snaps.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
@@ -479,8 +566,8 @@ function Snapshots({ app }: { app: AppRow }) {
  * Export & import (preview-and-snapshots.md §8 — the dashboard half of the CLI's
  * `scope pull`/`scope restore`). Export downloads the app's data as a `.dump.json`
  * the CLI accepts; Import replaces the app's data with an uploaded dump — behind a
- * danger dialog, and always after the platform forks a safety copy (which is why
- * `onChanged` refreshes the snapshot list above).
+ * danger dialog, and always after the platform forks a safety preview (which is
+ * why `onChanged` refreshes the preview list above).
  */
 function ExportImport({ app, onChanged }: { app: AppRow; onChanged: () => void }) {
   const [exporting, setExporting] = useState(false);
@@ -543,7 +630,7 @@ function ExportImport({ app, onChanged }: { app: AppRow; onChanged: () => void }
         setNote('Import is not available in the preview.');
       } else {
         const r = await api.restoreAppData(app.app_scope_id, pending.tables);
-        setNote(`Imported ${r.tables} tables — the app now serves the uploaded data. The previous data lives on as safety copy ${shortId(r.safetyCopyId)} above.`);
+        setNote(`Imported ${r.tables} tables — the app now serves the uploaded data. The previous data lives on as preview ${shortId(r.safetyCopyId)} above.`);
         onChanged();
       }
       setPending(null);
@@ -579,7 +666,7 @@ function ExportImport({ app, onChanged }: { app: AppRow; onChanged: () => void }
         <div style={{ background: 'var(--status-danger-bg)', borderRadius: 6, padding: '12px 14px', fontSize: 12.5, color: 'var(--status-danger-fg)', lineHeight: 1.6 }}>
           Importing <span style={{ fontFamily: 'var(--font-mono)' }}>{pending?.name}</span> ({pending?.tables.length} tables, {pending?.rows} rows):
           <div>→ ALL current data in {app.name} is replaced by the file’s</div>
-          <div>→ a safety copy of today’s data is taken first (kept 7 days)</div>
+          <div>→ a preview of today’s data is created first (kept 7 days)</div>
           <div>→ a PII-masked export restores <span style={{ fontFamily: 'var(--font-mono)' }}>[masked]</span> over real values</div>
         </div>
       </Dialog>
@@ -875,7 +962,7 @@ const pagerBtn = (enabled: boolean): React.CSSProperties => ({
 });
 
 /**
- * The Env tab — a REAL settings form driven by the vertical's declared env-spec
+ * The Environment section (under Settings) — a REAL settings form driven by the vertical's declared env-spec
  * (placeholder + description per key) plus this app's stored values. Secret values are
  * write-only: never sent back, shown as "set" and left blank to keep. Values are stored
  * on the account; the honesty banner names that delivery to the running app is on its next
@@ -1217,7 +1304,35 @@ function AppDomains({ app }: { app: AppRow }) {
   );
 }
 
-function Settings({ app, onDeleted, authServers }: { app: AppRow; onDeleted: () => void; authServers: AppRow[] }) {
+const SETTINGS_SECTIONS = [
+  { value: 'general', label: 'General' },
+  { value: 'environment', label: 'Environment' },
+  { value: 'domains', label: 'Domains' },
+  { value: 'integrations', label: 'Integrations' },
+];
+
+/**
+ * The Settings tab — configuration, not daily-driver surfaces: General (name +
+ * identity + danger zone), Environment (the env-spec form), Domains, Integrations.
+ * Each section keeps its own URL (settings/environment …) so deep links survive.
+ */
+function Settings({ app, section, onSection, onDeleted, authServers }: { app: AppRow; section: string; onSection: (s: string) => void; onDeleted: () => void; authServers: AppRow[] }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Tabs tabs={SETTINGS_SECTIONS} value={section} onChange={onSection} />
+      {section === 'general' && <GeneralSettings app={app} onDeleted={onDeleted} authServers={authServers} />}
+      {section === 'environment' && <EnvVars app={app} />}
+      {section === 'domains' && <AppDomains app={app} />}
+      {section === 'integrations' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 16 }}>
+          {INTEGRATIONS.slice(0, 2).map((i) => <IntegrationCard key={i.name} integ={i} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GeneralSettings({ app, onDeleted, authServers }: { app: AppRow; onDeleted: () => void; authServers: AppRow[] }) {
   const meta = verticalMeta(app.vertical_slug);
   const [name, setName] = useState(app.name);
   const [confirm, setConfirm] = useState('');

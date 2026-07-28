@@ -1,5 +1,40 @@
 # @substrat-run/demo-rally
 
+## 0.0.20
+
+### Patch Changes
+
+- Updated dependencies [6a86837]
+  - @substrat-run/contracts@0.23.0
+  - @substrat-run/engine-booking@0.1.18
+  - @substrat-run/engine-invites@0.0.20
+  - @substrat-run/engine-invoicing@0.3.21
+  - @substrat-run/adapter-sqlite@0.23.0
+  - @substrat-run/kernel@0.23.0
+
+## 0.0.19
+
+### Patch Changes
+
+- Updated dependencies [bc6d0fa]
+  - @substrat-run/contracts@0.22.0
+  - @substrat-run/kernel@0.22.0
+  - @substrat-run/adapter-sqlite@0.22.0
+  - @substrat-run/engine-booking@0.1.17
+  - @substrat-run/engine-invites@0.0.19
+  - @substrat-run/engine-invoicing@0.3.20
+
+## 0.0.18
+
+### Patch Changes
+
+- @substrat-run/contracts@0.21.0
+- @substrat-run/kernel@0.21.0
+- @substrat-run/adapter-sqlite@0.21.0
+- @substrat-run/engine-booking@0.1.16
+- @substrat-run/engine-invites@0.0.18
+- @substrat-run/engine-invoicing@0.3.19
+
 ## 0.0.17
 
 ### Patch Changes

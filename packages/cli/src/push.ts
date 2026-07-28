@@ -1,9 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { webcrypto } from 'node:crypto';
-import { deployManifest, type DeclaredBinding } from '@substrat-run/contracts';
+import {
+  deployManifest,
+  runtimeNeeds,
+  RUNTIME_BASELINE,
+  type DeclaredBinding,
+  type RuntimeNeeds,
+} from '@substrat-run/contracts';
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
@@ -16,6 +22,47 @@ function readJsonc(path: string): Record<string, unknown> {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
   return JSON.parse(raw) as Record<string, unknown>;
+}
+
+/**
+ * The Substrat→Cloudflare mapping (D-38): derive the wrangler config a `runtimeNeeds`
+ * vertical never authors. The result feeds BOTH the bundler (written to disk, passed via
+ * `--config`) and the manifest extraction below — one object, so what we bundle and what
+ * we declare cannot drift. The compatibility date is the platform's RUNTIME_BASELINE;
+ * a builder states needs, not substrate config.
+ */
+export function wranglerConfigFor(needs: RuntimeNeeds): Record<string, unknown> {
+  return {
+    // wrangler requires a name; the real identity is the platform's deploymentRef.
+    name: 'substrat-vertical',
+    main: needs.entry,
+    compatibility_date: RUNTIME_BASELINE,
+    compatibility_flags: needs.needsNodeCompat ? ['nodejs_compat'] : [],
+    workers_dev: false,
+    ...(needs.build ? { build: { command: needs.build } } : {}),
+    ...(needs.stores.length
+      ? {
+          durable_objects: {
+            bindings: needs.stores.map((s) => ({ name: s.binding, class_name: s.class })),
+          },
+          migrations: [{ tag: 'v1', new_sqlite_classes: needs.stores.map((s) => s.class) }],
+        }
+      : {}),
+  };
+}
+
+/** The vertical's `substrat.runtimeNeeds` block, parsed — or undefined for the wrangler.jsonc path. */
+export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
+  let raw: unknown;
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+      substrat?: { runtimeNeeds?: unknown };
+    };
+    raw = pkg.substrat?.runtimeNeeds;
+  } catch {
+    return undefined;
+  }
+  return raw === undefined ? undefined : runtimeNeeds.parse(raw);
 }
 
 export interface PushOptions {
@@ -59,7 +106,15 @@ export interface PushOptions {
 export async function push(
   opts: PushOptions,
 ): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
-  const cfg = readJsonc(join(opts.dir, 'wrangler.jsonc'));
+  // Substrate-vocabulary path (D-38): when `substrat.runtimeNeeds` is present the builder
+  // authored no wrangler config, so none is read — the CLI derives it. The generated file
+  // lands next to the vertical (a relative `main` and the build command's cwd both resolve
+  // against the config's directory) and is removed after the build.
+  const needs = readRuntimeNeeds(opts.dir);
+  if (needs && existsSync(join(opts.dir, 'wrangler.jsonc'))) {
+    console.log('note: substrat.runtimeNeeds is set — wrangler.jsonc is ignored for this push');
+  }
+  const cfg = needs ? wranglerConfigFor(needs) : readJsonc(join(opts.dir, 'wrangler.jsonc'));
 
   // A vertical's OWN stores travel with the bundle: its DO classes, and its D1 databases
   // (e.g. a Better-Auth AUTH_DB). The control plane re-checks these against the §4 sandbox
@@ -83,13 +138,20 @@ export async function push(
   const compatibilityFlags = (cfg.compatibility_flags as string[] | undefined) ?? [];
   const mainPath = cfg.main as string;
 
-  // Build the bundle (runs the vertical's own wrangler `build.command` first).
+  // Build the bundle (runs the vertical's own build command first).
   const out = mkdtempSync(join(tmpdir(), 'substrat-build-'));
   console.log(`building ${opts.slug}@${opts.version} …`);
-  execFileSync('npx', ['wrangler', 'deploy', '--dry-run', '--outdir', out], {
-    cwd: opts.dir,
-    stdio: 'inherit',
-  });
+  const generated = needs ? join(opts.dir, '.wrangler.substrat.json') : undefined;
+  if (generated) writeFileSync(generated, JSON.stringify(cfg, null, 2) + '\n');
+  try {
+    execFileSync(
+      'npx',
+      ['wrangler', 'deploy', '--dry-run', '--outdir', out, ...(generated ? ['--config', generated] : [])],
+      { cwd: opts.dir, stdio: 'inherit' },
+    );
+  } finally {
+    if (generated) rmSync(generated, { force: true });
+  }
 
   // Collect the built modules; the entry is the bundled basename of `main`.
   const mainBase = basename(mainPath).replace(/\.[cm]?ts$|\.[cm]?js$/, '');

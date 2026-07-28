@@ -1,5 +1,57 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.23.0
+
+### Patch Changes
+
+- Updated dependencies [6a86837]
+  - @substrat-run/contracts@0.23.0
+  - @substrat-run/kernel@0.23.0
+
+## 0.22.0
+
+### Minor Changes
+
+- bc6d0fa: In-place deploys (#286, K-33): version updates carry scope data forward. Verticals now
+  serve from ONE stable dispatch script per vertical — a prod promote re-uploads the
+  promoted version's bundle onto that unchanged name (modules read back from the
+  per-version archive script, metadata from the version's retained manifest), so scope
+  DOs and their data stay put while the code moves, and kernel migrations finally run in
+  place. In-place uploads keep existing secrets (`keep_bindings`) and send only the
+  DO-class delta, diffed against directory-recorded serving state. Routing is per-scope
+  truth (`scopes.servingRef`, COALESCEd over the bound version's ref); new scopes are
+  born on the serving script, legacy scopes hop once via the new adopt-serving endpoint
+  (export → restore → flip, data-first). Safety net: versions carry a code-only vs
+  schema-change signal (migration-digest diff), the scope DO takes a PITR bookmark
+  immediately before an upgrade's migration pass, and a new audited, time-boxed rewind
+  (`rewindScope`, 24h window unless forced) restores schema and data to that instant.
+  New `/internal/bookmarks`, `/internal/rewind` (and Meridian's previously missing
+  `/internal/restore`) vertical routes; new `HostAdmin` methods (`verticalServing`,
+  `setVerticalServing`, `versionManifest`, `setScopeServingRef`,
+  `scopeMigrationBookmarks`, `rewindScope`).
+
+### Patch Changes
+
+- Updated dependencies [bc6d0fa]
+  - @substrat-run/contracts@0.22.0
+  - @substrat-run/kernel@0.22.0
+
+## 0.21.0
+
+### Minor Changes
+
+- 3354e26: Restores heal their own permission model: `CloudflareScopeHost.projectRolesLocal`
+  re-applies a vertical's code-defined role definitions to one scope (scope-level
+  tuples untouched), and `VerticalClient.restoreScope` now carries `tenantId` so a
+  vertical's `/internal/restore` can invoke it after the import. A dump captured from
+  a CP-full world carries tuples but an empty roles table — without the repair, every
+  check denies while /me still names the role.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.21.0
+- @substrat-run/kernel@0.21.0
+
 ## 0.20.0
 
 ### Minor Changes
@@ -868,7 +920,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                          z.object({ facility: entityRef, unitPrice: money })
+                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

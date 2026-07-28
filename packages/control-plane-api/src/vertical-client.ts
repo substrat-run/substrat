@@ -196,9 +196,49 @@ export class VerticalClient {
    * The write half of `exportScope` — load a dump into one existing scope in this
    * deployment (drop-then-replay), for the governed restore/backout. The control-plane
    * route in front is the gate and the auditor, exactly as with the export.
+   *
+   * `tenantId` rides along so the vertical can RE-PROJECT its own role definitions
+   * after the import (projectRolesLocal): a dump from a CP-full world carries tuples
+   * but no role definitions, and without the repair every check denies while /me
+   * still names the role. A vertical that predates the field ignores it.
    */
-  async restoreScope(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ tables: number }> {
-    return this.postInternal<{ tables: number }>('/internal/restore', { scopeId, tables }, 'restore');
+  async restoreScope(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    tables: ScopeDumpTable[],
+  ): Promise<{ tables: number }> {
+    return this.postInternal<{ tables: number }>('/internal/restore', { tenantId, scopeId, tables }, 'restore');
+  }
+
+  /**
+   * The PITR bookmarks one scope recorded before its migration passes (#286) —
+   * the rewind points the deployments UI offers for a backout. Metadata only;
+   * no scope bytes cross the boundary.
+   */
+  async migrationBookmarks(
+    scopeId: ScopeId,
+  ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]> {
+    return this.getInternal<{ bookmark: string; takenAt: string; pending: string[] }[]>(
+      `/internal/bookmarks?scopeId=${encodeURIComponent(scopeId)}`,
+    );
+  }
+
+  /**
+   * Rewind one scope to a pre-migration bookmark (#286's backout): schema AND data,
+   * discarding every write since the bookmark. The scope DO enforces the freshness
+   * window (24h without `force`) and restarts itself to complete the restore; the
+   * control-plane route in front is the gate and the auditor.
+   */
+  async rewindScope(
+    scopeId: ScopeId,
+    bookmark: string,
+    opts?: { force?: boolean },
+  ): Promise<{ rewindingTo: string }> {
+    return this.postInternal<{ rewindingTo: string }>(
+      '/internal/rewind',
+      { scopeId, bookmark, force: opts?.force ?? false },
+      'rewind',
+    );
   }
 
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */

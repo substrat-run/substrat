@@ -231,12 +231,43 @@ app.get('/internal/export', async (c) => {
 });
 // The write half (§8): load a dump into one existing scope, replacing its data —
 // the governed restore/backout. The control plane is the gate and the auditor.
+// After the import, the vertical's OWN role definitions are re-projected: a dump
+// from a CP-full world carries tuples but no role definitions (they live in that
+// world's directory), and without the repair every check denies while the role
+// still resolves. Roles are code-defined, so re-projecting is always safe.
 app.post('/internal/restore', async (c) => {
   gatePlatform(c);
   const body = z
-    .object({ scopeId, tables: z.array(z.object({ name: z.string(), ddl: z.string(), columns: z.array(z.string()), rows: z.array(z.array(z.unknown())) })) })
+    .object({
+      tenantId: tenantId.optional(),
+      scopeId,
+      tables: z.array(z.object({ name: z.string(), ddl: z.string(), columns: z.array(z.string()), rows: z.array(z.array(z.unknown())) })),
+    })
     .parse(await c.req.json());
-  return c.json(await hostFor(c.env).restoreScopeLocal(body.scopeId, body.tables));
+  const host = hostFor(c.env);
+  const result = await host.restoreScopeLocal(body.scopeId, body.tables);
+  if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, ROLES);
+  return c.json(result);
+});
+// #286: the PITR bookmarks one scope recorded before its migration passes — the
+// rewind points a backout offers. Metadata only; no scope bytes cross the boundary.
+app.get('/internal/bookmarks', async (c) => {
+  gatePlatform(c);
+  return c.json(
+    await hostFor(c.env).migrationBookmarksLocal(scopeId.parse(c.req.query('scopeId'))),
+  );
+});
+// #286's backout: rewind one scope's ENTIRE storage — schema and data — to a
+// pre-migration bookmark, discarding every write since. The scope DO enforces the
+// freshness window (24h without force) and restarts itself to complete the restore.
+app.post('/internal/rewind', async (c) => {
+  gatePlatform(c);
+  const body = z
+    .object({ scopeId, bookmark: z.string().min(1), force: z.boolean().optional() })
+    .parse(await c.req.json());
+  return c.json(
+    await hostFor(c.env).rewindScopeLocal(body.scopeId, body.bookmark, { force: body.force }),
+  );
 });
 
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.

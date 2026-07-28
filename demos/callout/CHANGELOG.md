@@ -1,5 +1,47 @@
 # @substrat-run/demo-fsm
 
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies [6a86837]
+  - @substrat-run/contracts@0.23.0
+  - @substrat-run/engine-invoicing@0.3.21
+  - @substrat-run/engine-protocol@0.4.15
+  - @substrat-run/engine-workorder@0.3.21
+  - @substrat-run/adapter-cloudflare@0.23.0
+  - @substrat-run/adapter-sqlite@0.23.0
+  - @substrat-run/control-plane-api@0.23.0
+  - @substrat-run/kernel@0.23.0
+
+## 0.1.10
+
+### Patch Changes
+
+- Updated dependencies [bc6d0fa]
+  - @substrat-run/contracts@0.22.0
+  - @substrat-run/kernel@0.22.0
+  - @substrat-run/adapter-cloudflare@0.22.0
+  - @substrat-run/adapter-sqlite@0.22.0
+  - @substrat-run/control-plane-api@0.22.0
+  - @substrat-run/engine-invoicing@0.3.20
+  - @substrat-run/engine-protocol@0.4.14
+  - @substrat-run/engine-workorder@0.3.20
+
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies [3354e26]
+  - @substrat-run/adapter-cloudflare@0.21.0
+  - @substrat-run/control-plane-api@0.21.0
+  - @substrat-run/contracts@0.21.0
+  - @substrat-run/kernel@0.21.0
+  - @substrat-run/adapter-sqlite@0.21.0
+  - @substrat-run/engine-invoicing@0.3.19
+  - @substrat-run/engine-protocol@0.4.13
+  - @substrat-run/engine-workorder@0.3.19
+
 ## 0.1.8
 
 ### Patch Changes
