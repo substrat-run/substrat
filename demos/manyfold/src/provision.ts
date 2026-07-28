@@ -7,7 +7,8 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { manyfoldModule, MF_PERM } from './module.js';
+import { manyfoldModule } from './module.js';
+import { MF_PERM } from './manifest.js';
 
 /**
  * Provisioning ONE instance of Manyfold — what a team receives when they install

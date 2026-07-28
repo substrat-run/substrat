@@ -3,8 +3,6 @@ import {
   addDecimal,
   compareDecimal,
   dataSubjectId,
-  moduleManifest,
-  permissionKey,
   type EntityRef,
 } from '@substrat-run/contracts';
 import {
@@ -22,6 +20,8 @@ import {
   PROTOCOL_PERM as PROTO,
   type ProtocolInstanceRow,
 } from '@substrat-run/engine-protocol';
+import { HR_PERM, meridianManifest } from './manifest.js';
+import { meridianMigrations } from './migrations.js';
 
 // ============================================================================
 // The Meridian vertical (spec/concept.md): employees, leave types, the
@@ -33,182 +33,10 @@ import {
 //
 // The line kept honest now (§5.1): every ledger entry binds to an opaque
 // `(employee, id)` ref the VERTICAL owns, never an engine-owned employee table.
+//
+// The declarative surface (HR_PERM, manifest) lives in manifest.ts; the
+// migration journal in migrations.ts. This file is operations + wiring.
 // ============================================================================
-
-export const HR_PERM = {
-  employeeManage: permissionKey.parse('employee:manage'),
-  absenceConfigure: permissionKey.parse('absence:configure'),
-  absenceRequest: permissionKey.parse('absence:request'),
-  absenceApprove: permissionKey.parse('absence:approve'),
-  absenceRead: permissionKey.parse('absence:read'),
-  timeReport: permissionKey.parse('time:report'),
-  timeRead: permissionKey.parse('time:read'),
-  projectManage: permissionKey.parse('project:manage'),
-  expenseSubmit: permissionKey.parse('expense:submit'),
-  expenseApprove: permissionKey.parse('expense:approve'),
-  expenseRead: permissionKey.parse('expense:read'),
-  payrollExport: permissionKey.parse('payroll:export'),
-};
-
-export const meridianManifest = moduleManifest.parse({
-  id: '@substrat-run/demo-meridian',
-  version: '0.0.1',
-  kernelContract: '^0.0.1',
-  permissions: [
-    { key: 'employee:manage', description: 'Create and read employee records, including salary/national id (HR admin)' },
-    { key: 'absence:configure', description: 'Define leave types and grant accruals to employees (HR admin)' },
-    { key: 'absence:request', description: 'Request time off (employees, narrowed to their own record)' },
-    { key: 'absence:approve', description: 'Approve or reject a leave request — approval books the ledger (managers, HR admin)' },
-    { key: 'absence:read', description: 'Read absence balances, ledger, and requests' },
-    { key: 'time:report', description: 'Log worked hours to a project (employees, narrowed to their own record)' },
-    { key: 'time:read', description: 'Read time entries and utilization' },
-    { key: 'project:manage', description: 'Manage the projects time books against (HR admin)' },
-    { key: 'expense:submit', description: 'Submit an expense (employees, narrowed to their own record)' },
-    { key: 'expense:approve', description: 'Approve or reject an expense (managers, HR admin)' },
-    { key: 'expense:read', description: 'Read expenses' },
-    { key: 'payroll:export', description: 'Generate the variable-pay export and mark expenses exported (payroll operator)' },
-  ],
-  events: {
-    emits: [
-      { type: 'hr.employee-created', schemaVersion: 1 },
-      { type: 'hr.employment-terms-set', schemaVersion: 1 },
-      { type: 'hr.absence-accrued', schemaVersion: 1 },
-      { type: 'hr.leave-requested', schemaVersion: 1 },
-      { type: 'hr.leave-decided', schemaVersion: 1 },
-      { type: 'hr.time-logged', schemaVersion: 1 },
-      { type: 'hr.expense-submitted', schemaVersion: 1 },
-      { type: 'hr.expense-decided', schemaVersion: 1 },
-      { type: 'hr.payroll-exported', schemaVersion: 1 },
-    ],
-    consumes: [],
-  },
-  migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
-  attachmentTargets: [{ entityType: 'employee', readPermission: 'absence:read' }],
-  entityRelations: [
-    // Onboarding checklists (protocol engine) hang off employees; THIS vertical
-    // owns that vocabulary, so it declares the permission-walk edge — which is
-    // also what lets an employee's own-record grant reach their onboarding fill.
-    { entityType: 'protocol', parentType: 'employee' },
-  ],
-  entitlementKey: 'meridian',
-});
-
-export const meridianMigrations = [
-  {
-    version: '0001-init',
-    sql: `
-      CREATE TABLE hr_employees (
-        id            TEXT PRIMARY KEY,
-        number        TEXT NOT NULL UNIQUE,
-        name          TEXT NOT NULL,
-        email         TEXT,
-        national_id   TEXT,            -- PII: crypto-shred target (spec §8)
-        principal_ref TEXT,            -- the login principal, if this person has one
-        started_at    TEXT,
-        created_at    TEXT NOT NULL
-      );
-      CREATE TABLE hr_leave_types (
-        key         TEXT PRIMARY KEY,
-        label       TEXT NOT NULL,
-        kind        TEXT NOT NULL,     -- vacation | sick | vab | parental | ...
-        annual_days TEXT,             -- statutory entitlement, decimal string
-        created_at  TEXT NOT NULL
-      );
-      -- The absence ledger is APPEND-ONLY: an accrual, a booking, a correction,
-      -- or a carryover is a new row, never an edit. Balance is a fold of delta.
-      CREATE TABLE hr_absence_ledger (
-        id             TEXT PRIMARY KEY,
-        employee_id    TEXT NOT NULL REFERENCES hr_employees(id),
-        leave_type_key TEXT NOT NULL REFERENCES hr_leave_types(key),
-        entry_kind     TEXT NOT NULL CHECK (entry_kind IN ('accrual','booking','correction','carryover')),
-        delta          TEXT NOT NULL, -- signed decimal days; balance = SUM(delta)
-        effective_date TEXT NOT NULL,
-        request_id     TEXT,          -- the approved request that produced a booking
-        note           TEXT,
-        created_by     TEXT NOT NULL,
-        created_at     TEXT NOT NULL
-      );
-      CREATE TABLE hr_leave_requests (
-        id             TEXT PRIMARY KEY,
-        employee_id    TEXT NOT NULL REFERENCES hr_employees(id),
-        leave_type_key TEXT NOT NULL REFERENCES hr_leave_types(key),
-        start_date     TEXT NOT NULL,
-        end_date       TEXT NOT NULL,
-        days           TEXT NOT NULL, -- decimal
-        status         TEXT NOT NULL CHECK (status IN ('requested','approved','rejected','cancelled')),
-        decided_by     TEXT,
-        decided_at     TEXT,
-        note           TEXT,
-        created_by     TEXT NOT NULL,
-        created_at     TEXT NOT NULL
-      );
-      CREATE TABLE hr_projects (
-        id         TEXT PRIMARY KEY,
-        code       TEXT NOT NULL UNIQUE,
-        name       TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-      -- Time entries are APPEND-ONLY too — the second ledger of the same shape.
-      CREATE TABLE hr_time_entries (
-        id          TEXT PRIMARY KEY,
-        employee_id TEXT NOT NULL REFERENCES hr_employees(id),
-        project_id  TEXT REFERENCES hr_projects(id),
-        work_date   TEXT NOT NULL,
-        hours       TEXT NOT NULL,   -- decimal
-        note        TEXT,
-        created_by  TEXT NOT NULL,
-        created_at  TEXT NOT NULL
-      );
-      CREATE TABLE hr_expenses (
-        id          TEXT PRIMARY KEY,
-        employee_id TEXT NOT NULL REFERENCES hr_employees(id),
-        project_id  TEXT REFERENCES hr_projects(id),
-        description TEXT NOT NULL,
-        amount      TEXT NOT NULL,   -- decimal
-        currency    TEXT NOT NULL,
-        category    TEXT NOT NULL,
-        status      TEXT NOT NULL CHECK (status IN ('submitted','approved','rejected','exported')),
-        decided_by  TEXT,
-        decided_at  TEXT,
-        created_by  TEXT NOT NULL,
-        created_at  TEXT NOT NULL
-      );
-      CREATE TABLE hr_holidays (
-        id           TEXT PRIMARY KEY,
-        holiday_date TEXT NOT NULL,
-        name         TEXT NOT NULL,
-        created_at   TEXT NOT NULL
-      );
-    `,
-  },
-  // 0002 — the anställningsavtal's TERMS. This vertical owns the content of the
-  // employment contract; the protocol engine only ever sees its hash.
-  //
-  // Append-only, like the absence ledger: renegotiated terms are a NEW row and
-  // latest-per-employee wins. A signed contract pinned the hash of the row that
-  // was current when it was issued, so an edit-in-place would silently move what
-  // somebody signed — the same reason protocol templates version rather than
-  // update.
-  {
-    version: '0002-employment-terms',
-    sql: `
-      CREATE TABLE hr_employment_terms (
-        id             TEXT PRIMARY KEY,
-        employee_id    TEXT NOT NULL,
-        role_title     TEXT NOT NULL,
-        monthly_salary TEXT NOT NULL,   -- decimal string, never a float (K-14)
-        currency       TEXT NOT NULL,
-        scope_pct      TEXT NOT NULL,   -- sysselsättningsgrad: '100', '80'
-        start_date     TEXT NOT NULL,
-        notice_months  TEXT NOT NULL,
-        created_by     TEXT NOT NULL,
-        created_at     TEXT NOT NULL
-      );
-      CREATE INDEX hr_employment_terms_by_employee
-        ON hr_employment_terms (employee_id);
-    `,
-  },
-];
 
 // ---------------------------------------------------------------------------
 // Row shapes

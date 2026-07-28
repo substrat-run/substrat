@@ -1,4 +1,5 @@
 import { buildOpenApiDocument, type ApiCatalog } from '@substrat-run/contracts';
+import { manyfoldManifest } from './manifest.js';
 import {
   createEntryInput,
   deleteTypeInput,
@@ -6,7 +7,6 @@ import {
   entryIdInput,
   listDeliveryInput,
   listEntriesInput,
-  manyfoldManifest,
   manyfoldModule,
   rejectInput,
   restoreRevisionInput,

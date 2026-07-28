@@ -32,7 +32,8 @@ export { ENTITY_GRANTS, MODULES, ROLES, provisionCallout, type CalloutInstance }
 import { workorderModule, PERM as WO } from '@substrat-run/engine-workorder';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
-import { calloutModule, SC_PERM } from './module.js';
+import { calloutModule } from './module.js';
+import { SC_PERM } from './manifest.js';
 
 export function buildDemoHost(dir: string): SqliteScopeHost {
   const host = new SqliteScopeHost({ dir }); // default checker: the tuple engine

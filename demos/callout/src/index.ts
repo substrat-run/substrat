@@ -1,4 +1,5 @@
-export { calloutModule, calloutManifest, SC_PERM } from './module.js';
+export { calloutModule } from './module.js';
+export { calloutManifest, SC_PERM } from './manifest.js';
 // Protocol machinery lives in the engine since milestone B; re-exported here
 // for the scenario test's convenience.
 export {

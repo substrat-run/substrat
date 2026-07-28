@@ -3,9 +3,9 @@ import type { ScopeHost } from '@substrat-run/kernel';
 import { PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import { PERM as WO } from '@substrat-run/engine-workorder';
 import { INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
-import { SC_PERM } from '@substrat-run/demo-callout/module';
-import { HR_PERM } from '@substrat-run/demo-meridian/module';
-import { MF_PERM } from '@substrat-run/demo-manyfold/module';
+import { SC_PERM } from '@substrat-run/demo-callout/manifest';
+import { HR_PERM } from '@substrat-run/demo-meridian/manifest';
+import { MF_PERM } from '@substrat-run/demo-manyfold/manifest';
 
 /**
  * The catalog — the verticals a customer can instantiate, and the provisioning
