@@ -1,4 +1,5 @@
 import type {
+  EntitlementGrant,
   PrincipalId,
   QueryScopeInput,
   ReadScopeTableInput,
@@ -60,6 +61,16 @@ export interface ProvisionInstanceInput {
    * vertical that predates the field ignores it (its body parse strips unknown keys).
    */
   config?: Record<string, string>;
+  /**
+   * The tenant's entitlements, delivered WITH provisioning (#310) so a CP-less vertical
+   * PROJECTS them into the new scope and reads/enforces `plan`/`quota`/`expiry` at request
+   * time (#304) — it may not read the shared control plane (the `CONTROL_PLANE` binding is
+   * forbidden, #302). The platform is authoritative: it gathers these itself rather than
+   * trusting a caller. A vertical that predates the field ignores it (its body parse strips
+   * unknown keys); until it lands, the scope trusts upstream and only expiry (carried on the
+   * row) enforces locally.
+   */
+  entitlements?: EntitlementGrant[];
 }
 
 export interface ConfigureInstanceInput {

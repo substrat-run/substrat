@@ -69,6 +69,13 @@ Enforcement flips **per scope** the first time entitlements are projected (an `e
 marker): a scope provisioned before #304 keeps trusting upstream until a fan-out / reconcile /
 re-provision back-fills it, so the switch strands no live scope.
 
+A **dispatched** vertical has no control plane to project from, so the platform delivers the
+tenant's entitlements **with provisioning** (#310): the control-plane's provision endpoint gathers
+them itself (`admin.listEntitlements`, never trusting the caller) and hands them to the vertical,
+which projects them in `provisionScopeLocal`. A grant/revoke *after* provision rides a re-provision
+(idempotent, K-31 — the same channel role-definition changes use); expiry still enforces locally in
+the meantime because the projected row carries it.
+
 ## 4. The model — projection on write
 
 The `ControlPlaneReader` interface (`tenantTuples`, `getRole`) stays; its **implementation**

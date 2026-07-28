@@ -17,7 +17,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { assertPlatformCall, PlatformCallError, readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { IdentityDO, doAuthProvider, oidcAuthProvider, type AuthProvider } from '@substrat-run/vertical-auth';
@@ -146,7 +146,7 @@ app.get('/api/me', async (c) => {
   return c.json({ key: principal, display: subject?.name ?? subject?.email ?? 'You', site: node.scopeId, can: who.can });
 });
 
-const provisionBody = z.object({ tenantId, scopeId, owner: principalId, slug: z.string().min(1), name: z.string().min(1) });
+const provisionBody = z.object({ tenantId, scopeId, owner: principalId, slug: z.string().min(1), name: z.string().min(1), entitlements: z.array(entitlementGrant).optional() }); // entitlements (#310): projected so ctx.entitlement + the gate work CP-lessly (#304)
 
 // Provision ONE site on the platform's instruction (K-31), CP-less. The shared control plane
 // already owns the directory row + entitlement; the vertical sets up only the site's OWN
@@ -166,6 +166,7 @@ app.post('/internal/provision', async (c) => {
     owner: body.owner,
     roles: ROLES,
     ownerRoleKey: 'admin',
+    entitlements: body.entitlements,
   });
   await identityDo(c.env, { tenantId: body.tenantId, scopeId: body.scopeId }).setPendingOwner(body.scopeId, body.owner);
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
