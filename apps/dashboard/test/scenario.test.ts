@@ -515,6 +515,53 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     ).rejects.toThrow(/read-only console/);
   });
 
+  it('binds a hostname per DECLARED surface — a URL for each, not just the app surface', async () => {
+    const acme = await bootstrap('acme-eka');
+    const appScopeId = scopeId.parse(ulid());
+    // A vertical that declares TWO surfaces (K-26). The registry row is what provisioning
+    // reads to know a second surface exists — the module registration alone doesn't say it.
+    await host.admin.registerVertical(staff, {
+      slug: 'meridian',
+      name: 'Meridian',
+      source: 'cli',
+      ownerTenant: acme.tenantId,
+      surfaces: [
+        { name: 'app', label: 'CRM' },
+        { name: 'eka', label: 'EKA' },
+      ],
+    });
+
+    const app = await createApp(host, {
+      node: acme,
+      appScopeId,
+      verticalSlug: 'meridian',
+      name: 'Egeryds',
+      appEntitlements: ['meridian', 'protocol'],
+      appOwnerGrants: [HR_PERM.employeeManage] as PermissionKey[],
+    });
+    expect(app.status).toBe('active');
+    // The clean hostname fronts the primary `app` surface, exactly as before.
+    expect(app.hostname).toBe('egeryds.global.substrat.run');
+    expect(await host.admin.resolveHostname('egeryds.global.substrat.run')).toMatchObject({
+      scopeId: appScopeId,
+      surface: 'app',
+    });
+    // ...and the SECOND surface arrived with its own `<base>-<surface>` URL, live, on the
+    // same scope — the previously-missing binding that left multi-surface apps single-URL.
+    expect(await host.admin.resolveHostname('egeryds-eka.global.substrat.run')).toMatchObject({
+      scopeId: appScopeId,
+      surface: 'eka',
+    });
+    // Both are active bindings on the scope, each canonical for its own surface.
+    const bindings = await host.admin.listHostnames(staff, { scopeId: appScopeId });
+    expect(
+      bindings
+        .filter((h) => h.status === 'active' && h.canonical)
+        .map((h) => `${h.surface}:${h.hostname}`)
+        .sort(),
+    ).toEqual(['app:egeryds.global.substrat.run', 'eka:egeryds-eka.global.substrat.run']);
+  });
+
   it('records a per-app audit trail — created + active on success, created + failed(reason) on failure', async () => {
     const acme = await bootstrap('acme-audit');
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);

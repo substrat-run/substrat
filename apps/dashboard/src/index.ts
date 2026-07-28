@@ -14,6 +14,7 @@ export {
   listAppHostnames,
   addAppHostname,
   removeAppHostname,
+  reconcileSurfaceHostnames,
   type AppHostnameRow,
   reconcileRoles,
   ensureRosterSeeded,

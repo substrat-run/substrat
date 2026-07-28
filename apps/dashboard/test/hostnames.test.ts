@@ -6,7 +6,7 @@ import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/c
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, type DashboardNode } from '../src/index.js';
-import { listAppHostnames, addAppHostname, removeAppHostname, resolveDefaultHostname } from '../src/provision.js';
+import { listAppHostnames, addAppHostname, removeAppHostname, resolveDefaultHostname, reconcileSurfaceHostnames } from '../src/provision.js';
 
 /**
  * The Domains tab's backend, embedded mode (K-26 multi-surface): the check-then-
@@ -149,6 +149,41 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
     const bareScope = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: node.tenantId, scopeId: bareScope, vertical: 'callout' });
     expect(await resolveDefaultHostname(host, { node, appScopeId: bareScope, stored: null })).toBeNull();
+  });
+
+  it('reconcileSurfaceHostnames binds a URL for a declared surface that has none yet — idempotently', async () => {
+    const { node, appScope, appHostname } = await makeTeamWithApp();
+    // The vertical DECLARES two surfaces, but the app (a pre-fix / pre-declaration install)
+    // only has the `app` surface bound — the exact state that leaves a multi-surface app
+    // single-URL. Reconcile is the update-time self-heal that closes the gap.
+    await host.admin.registerVertical(staff, {
+      slug: 'callout',
+      name: 'Callout',
+      source: 'cli',
+      ownerTenant: node.tenantId,
+      surfaces: [
+        { name: 'app', label: 'CRM' },
+        { name: 'eka', label: 'EKA' },
+      ],
+    });
+    expect((await listAppHostnames(host, { node, appScopeId: appScope })).map((h) => h.surface)).toEqual(['app']);
+
+    await reconcileSurfaceHostnames(host, { node, appScopeId: appScope, verticalSlug: 'callout', appHostname });
+    // The newly-declared surface now serves on `<base>-<surface>`, same scope, its own surface.
+    expect(await host.admin.resolveHostname('crm-egeryds-eka.global.substrat.run')).toMatchObject({
+      scopeId: appScope,
+      surface: 'eka',
+    });
+    // The primary URL is untouched.
+    expect(await host.admin.resolveHostname(appHostname)).toMatchObject({ scopeId: appScope, surface: 'app' });
+
+    // Idempotent: a second reconcile binds nothing new (no duplicate, no throw).
+    await reconcileSurfaceHostnames(host, { node, appScopeId: appScope, verticalSlug: 'callout', appHostname });
+    const active = (await listAppHostnames(host, { node, appScopeId: appScope })).filter((h) => h.status === 'active');
+    expect(active.map((h) => `${h.surface}:${h.hostname}`).sort()).toEqual([
+      'app:crm-egeryds.global.substrat.run',
+      'eka:crm-egeryds-eka.global.substrat.run',
+    ]);
   });
 
   it('both halves require app-management authority, before any effect', async () => {

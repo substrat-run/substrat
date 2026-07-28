@@ -474,6 +474,26 @@ export async function updateApp(
       snapshot: input.snapshot,
     });
   }
+
+  // The new version may DECLARE a surface the app didn't have before (surfaces evolve
+  // additively). Bind a URL for any newly-declared surface now, so "add a surface in a PR,
+  // push" gives it a public URL on update with no manual bind. Best-effort: the version has
+  // already moved, and a missing surface URL must never fail the update itself.
+  const apps = (await scope.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appHostname = await resolveDefaultHostname(host, {
+    node: input.node,
+    appScopeId: input.appScopeId,
+    stored: apps.find((a) => a.app_scope_id === input.appScopeId)?.hostname ?? null,
+    ...(input.controlPlane ? { controlPlane: input.controlPlane } : {}),
+  });
+  await reconcileSurfaceHostnames(host, {
+    node: input.node,
+    appScopeId: input.appScopeId,
+    verticalSlug: input.verticalSlug,
+    appHostname,
+    ...(input.controlPlane ? { controlPlane: input.controlPlane } : {}),
+  }).catch(() => {});
+
   return { updated: true, version: toLabel, previousVersion: fromLabel };
 }
 
@@ -746,10 +766,9 @@ async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: Cre
   // The vertical's DECLARED surfaces (K-26): the clean hostname fronts the primary
   // surface; every OTHER declared surface gets its own `<base>-<surface>` hostname —
   // the same mint the Domains tab uses — so a multi-surface app arrives with a URL per
-  // surface, not just one (#316). A vertical that declares none keeps the historic
+  // surface, not just one. A vertical that declares none keeps the historic
   // single `app` binding, so nothing changes for the common case.
-  const catalog = typeof cp.listCatalog === 'function' ? await cp.listCatalog().catch(() => []) : [];
-  const surfaces = catalog.find((v) => v.slug === input.verticalSlug)?.surfaces ?? [];
+  const surfaces = await declaredSurfacesFor({ controlPlane: cp }, input.verticalSlug);
   const primary = primarySurface(surfaces);
   for (const label of labels) {
     const hostname = `${label}.global.${domain}`;
@@ -764,19 +783,19 @@ async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: Cre
     // activation or a secondary surface must NOT discard the hostname we just bound (that
     // stranded the dashboard's record — a null column — while the app ran fine).
     await cp.setHostnameStatus(hostname, 'active').catch(() => {});
-    // Bind the remaining surfaces off the SAME base that won the collision ladder,
-    // so they share the app's chosen label (`egeryds` → `egeryds-eka`). A secondary
-    // hostname that collides is skipped, never failing the whole provision.
-    for (const s of surfaces) {
-      if (s.name === primary) continue;
-      const surfaceHost = `${label}-${s.name}.global.${domain}`;
-      try {
-        await cp.bindHostname({ hostname: surfaceHost, scopeId: input.appScopeId, surface: s.name, canonical: true });
-        await cp.setHostnameStatus(surfaceHost, 'active');
-      } catch {
-        // Collision or transient on a secondary surface — skip it.
-      }
-    }
+    // Bind the remaining surfaces off the SAME base that won the collision ladder, so they
+    // share the app's chosen label (`egeryds` → `egeryds-eka`).
+    await bindDeclaredSurfaces({
+      base: label,
+      suffix: `global.${domain}`,
+      surfaces,
+      primary,
+      alreadyBound: new Set(),
+      bind: async (h, surface) => {
+        await cp.bindHostname({ hostname: h, scopeId: input.appScopeId, surface, canonical: true });
+        await cp.setHostnameStatus(h, 'active');
+      },
+    });
     return hostname;
   }
   return null;
@@ -801,10 +820,7 @@ async function provisionEmbedded(host: ScopeHost, input: CreateAppInput): Promis
   }
   // Declared surfaces ride the local registry (register-vertical → install-spec); absent
   // for an unregistered vertical (older tests) ⇒ [] ⇒ the historic single `app` binding.
-  const surfaces = await host.admin
-    .listVerticals(staff)
-    .then((vs) => vs.find((v) => v.slug === input.verticalSlug)?.surfaces ?? [])
-    .catch(() => [] as Array<{ name: string; label: string }>);
+  const surfaces = await declaredSurfacesFor({ host }, input.verticalSlug);
   return bindDefaultHostname(host, {
     staff,
     tenantId,
@@ -826,6 +842,110 @@ async function provisionEmbedded(host: ScopeHost, input: CreateAppInput): Promis
  */
 function primarySurface(surfaces: Array<{ name: string; label: string }>): string {
   return surfaces.find((s) => s.name === 'app')?.name ?? surfaces[0]?.name ?? 'app';
+}
+
+/**
+ * Bind a hostname for every DECLARED surface (K-26) other than the primary that has no
+ * active binding yet — `<base>-<surface>.<suffix>` off the app's chosen label, active and
+ * canonical for its surface. Idempotent (the primary and anything in `alreadyBound` are
+ * skipped) and best-effort per surface (a collision on one never blocks the rest), so it is
+ * safe to run at install AND on every update. `bind` carries the mode: the tenant-narrowed
+ * control plane when connected, `host.admin` when embedded.
+ */
+async function bindDeclaredSurfaces(opts: {
+  base: string;
+  suffix: string;
+  surfaces: Array<{ name: string; label: string }>;
+  primary: string;
+  alreadyBound: Set<string>;
+  bind: (hostname: string, surface: string) => Promise<void>;
+}): Promise<void> {
+  for (const s of opts.surfaces) {
+    if (s.name === opts.primary || opts.alreadyBound.has(s.name)) continue;
+    try {
+      await opts.bind(`${opts.base}-${s.name}.${opts.suffix}`, s.name);
+    } catch {
+      // Collision or transient on a secondary surface — skip it.
+    }
+  }
+}
+
+/**
+ * The surfaces a vertical DECLARES (package.json `substrat.surfaces` → the registry). Read
+ * from the shared plane's catalog when connected, else this host's local registry; `[]` when
+ * the vertical declares none, isn't registered, or the lookup fails — i.e. the historic
+ * single-surface default. The catalog method may be absent on a test seam, hence the guard.
+ */
+async function declaredSurfacesFor(
+  src: { host?: ScopeHost; controlPlane?: TenantNarrowedControlPlane },
+  verticalSlug: string,
+): Promise<Array<{ name: string; label: string }>> {
+  if (src.controlPlane) {
+    if (typeof src.controlPlane.listCatalog !== 'function') return [];
+    const catalog = await src.controlPlane.listCatalog().catch(() => []);
+    return catalog.find((v) => v.slug === verticalSlug)?.surfaces ?? [];
+  }
+  if (src.host) {
+    const staff = platformActorId.parse(ulid());
+    return src.host.admin
+      .listVerticals(staff)
+      .then((vs) => vs.find((v) => v.slug === verticalSlug)?.surfaces ?? [])
+      .catch(() => [] as Array<{ name: string; label: string }>);
+  }
+  return [];
+}
+
+/**
+ * Bind a URL for every DECLARED surface of an already-installed app that lacks one — the
+ * update-time half of the install-time binding in `createApp`. Surfaces evolve additively
+ * (a new version can DECLARE a surface the app didn't have), so on update we mint the missing
+ * `<base>-<surface>` hostnames off the app's own default hostname. Idempotent and best-effort
+ * — the same self-heal shape as `reconcileRoles` — so a version that adds a surface gets its
+ * URL with no manual bind, and a version that changes nothing does no work.
+ *
+ * The base label is the app's default (primary) hostname, passed in by the caller — never a
+ * custom domain, so a surface mint can't inherit a customer's own domain label by accident.
+ */
+export async function reconcileSurfaceHostnames(
+  host: ScopeHost,
+  input: {
+    node: DashboardNode;
+    appScopeId: ScopeId;
+    verticalSlug: string;
+    /** The app's default hostname (`egeryds.global.substrat.run`) — the base for surface mints. */
+    appHostname: string | null;
+    controlPlane?: TenantNarrowedControlPlane;
+  },
+): Promise<void> {
+  if (!input.appHostname || !input.appHostname.includes('.')) return;
+  const surfaces = await declaredSurfacesFor({ host, controlPlane: input.controlPlane }, input.verticalSlug);
+  if (surfaces.length < 2) return; // nothing beyond the primary to bind
+  const existing = await listAppHostnames(host, {
+    node: input.node,
+    appScopeId: input.appScopeId,
+    ...(input.controlPlane ? { controlPlane: input.controlPlane } : {}),
+  });
+  const alreadyBound = new Set(existing.filter((h) => h.status === 'active').map((h) => h.surface));
+  const [base, ...rest] = input.appHostname.split('.');
+  const suffix = rest.join('.');
+  const bind = input.controlPlane
+    ? async (hostname: string, surface: string): Promise<void> => {
+        await input.controlPlane!.bindHostname({ hostname, scopeId: input.appScopeId, surface, canonical: true });
+        await input.controlPlane!.setHostnameStatus(hostname, 'active');
+      }
+    : async (hostname: string, surface: string): Promise<void> => {
+        const staff = platformActorId.parse(ulid());
+        await host.admin.bindHostname(staff, {
+          hostname,
+          tenantId: input.node.tenantId,
+          scopeId: input.appScopeId,
+          surface,
+          region: null,
+          canonical: true,
+        });
+        await host.admin.setHostnameStatus(staff, hostname, 'active');
+      };
+  await bindDeclaredSurfaces({ base: base!, suffix, surfaces, primary: primarySurface(surfaces), alreadyBound, bind });
 }
 
 /** A URL-safe slug from an app or team name. */
@@ -875,26 +995,26 @@ async function bindDefaultHostname(
     // dashboard must record. Activation and secondary-surface binds below are best-effort:
     // a failure there must NOT discard the hostname we just bound.
     await host.admin.setHostnameStatus(args.staff, hostname, 'active').catch(() => {});
-    // Every OTHER declared surface (K-26) gets its own `<base>-<surface>` hostname on
-    // the same winning label. A collision on a secondary surface is skipped, never
-    // failing a provision that already has its primary URL.
-    for (const s of surfaces) {
-      if (s.name === primary) continue;
-      const surfaceHost = `${label}-${s.name}.${args.jurisdiction}.${args.baseDomain}`;
-      try {
+    // Every OTHER declared surface (K-26) gets its own `<base>-<surface>` hostname on the
+    // same winning label.
+    await bindDeclaredSurfaces({
+      base: label,
+      suffix: `${args.jurisdiction}.${args.baseDomain}`,
+      surfaces,
+      primary,
+      alreadyBound: new Set(),
+      bind: async (h, surface) => {
         await host.admin.bindHostname(args.staff, {
-          hostname: surfaceHost,
+          hostname: h,
           tenantId: args.tenantId,
           scopeId: args.scopeId,
-          surface: s.name,
+          surface,
           region: null,
           canonical: true,
         });
-        await host.admin.setHostnameStatus(args.staff, surfaceHost, 'active');
-      } catch {
-        // Collision or transient on a secondary surface — skip it.
-      }
-    }
+        await host.admin.setHostnameStatus(args.staff, h, 'active');
+      },
+    });
     return hostname;
   }
   return null;
