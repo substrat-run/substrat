@@ -138,6 +138,12 @@ export interface Deployment {
   source: string;
   /** Published to the public marketplace (vs private to this team). */
   listed?: boolean;
+  /**
+   * Pushed by MY team — set on the per-app deployments read (the tenant-level Verticals
+   * list is owned by construction). Owned + private ⇒ prod promotion is self-serve on
+   * the Verticals page; otherwise it's a staff action.
+   */
+  owned?: boolean;
   versions: DeploymentVersion[];
   channels: Array<{ channel: string; versionId: string }>;
   /**
