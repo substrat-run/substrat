@@ -730,6 +730,46 @@ describe('control-plane API', () => {
     expect(await restored.json()).toMatchObject({ status: 'active' });
   });
 
+  it('reap: refuses a non-archived scope (409), then wipes via the vertical and keeps the tombstone (§4.4)', async () => {
+    // A dedicated tenant so this test's archive/reap entries do not perturb the shared
+    // admin-log counts other tests assert on t1.
+    const tR = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tR, slug: 'reap-co', name: 'Reap Co' });
+    const sR = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tR, scopeId: sR, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, tR, sR);
+
+    const deletes: string[] = [];
+    const fakeVertical = {
+      deleteScope: async (input: { scopeId: string }) => {
+        deletes.push(input.scopeId);
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    const djson = (path: string, method: string) =>
+      delegated.request(path, { method, headers: auth });
+
+    // Active scope refused BEFORE any delegation — the vertical is never asked to wipe it.
+    const early = await djson(`/tenants/${tR}/scopes/${sR}/reap`, 'POST');
+    expect(early.status).toBe(409);
+    expect((await early.json()).error).toMatch(/not archived/);
+    expect(deletes).toEqual([]);
+
+    // Archive, then reap: the storage wipe reaches the vertical, and the directory row
+    // SURVIVES here as a `reaped` tombstone (unlike the fork DELETE, which removes it).
+    await host.admin.archiveScope(staff, tR, sR);
+    const reaped = await djson(`/tenants/${tR}/scopes/${sR}/reap`, 'POST');
+    expect(reaped.status).toBe(200);
+    expect(await reaped.json()).toMatchObject({ status: 'reaped' });
+    expect(deletes).toEqual([sR]);
+    // The tombstone is still resolvable (200, not the fork-delete's 404).
+    expect((await delegated.request(`/tenants/${tR}/scopes/${sR}`, { headers: auth })).status).toBe(200);
+  });
+
   // -- roles (§4.5) ----------------------------------------------------------
 
   it('lists roles and filters by tenant and source', async () => {

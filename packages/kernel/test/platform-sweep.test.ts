@@ -483,3 +483,89 @@ describe('startPlatformSweeper', () => {
     expect(clock.count()).toBe(1); // rescheduled despite the failure
   });
 });
+
+describe('runPlatformSweep — reap long-archived scopes (§4.4)', () => {
+  /** A directory row carrying the two fields the reap phase reads: status + archivedAt. */
+  const archivedRow = (archivedAt: string | null): Scope =>
+    ({
+      id: scopeId.parse(genId()),
+      tenantId: T,
+      slug: 's',
+      status: 'archived',
+      vertical: null,
+      schemaVersion: '0',
+      migrationFailure: null,
+      forkedFrom: null,
+      archivedAt,
+    }) as Scope;
+
+  /** A host exposing listScopes + admin.reapScope; the reaped ids are captured. */
+  function reapHost(scopes: Scope[], reaped: string[]): ScopeHost {
+    return {
+      admin: {
+        listScopes: async () => scopes,
+        listConnections: async () => [],
+        reapScope: async (_a: unknown, _t: unknown, s: string) => {
+          reaped.push(s);
+        },
+      },
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+    } as unknown as ScopeHost;
+  }
+
+  const OLD = '2020-01-01T00:00:00.000Z';
+  const base = { actor: ACTOR, fetch: FETCH, sweepers: {}, drainRetries: false } as const;
+
+  it('is opt-in: no retention window ⇒ the phase never runs', async () => {
+    const reaped: string[] = [];
+    const report = await runPlatformSweep(reapHost([archivedRow(OLD)], reaped), { ...base });
+    expect(reaped).toEqual([]);
+    expect(report.archivedScopesReaped).toBe(0);
+  });
+
+  it('reaps scopes archived past the window, skips recent ones and null archivedAt', async () => {
+    const old = archivedRow(OLD);
+    const recent = archivedRow(new Date().toISOString());
+    const unknownAge = archivedRow(null); // archived before the column shipped — never auto-reaped
+    const reaped: string[] = [];
+    const report = await runPlatformSweep(reapHost([old, recent, unknownAge], reaped), {
+      ...base,
+      reapArchivedAfterDays: 30,
+    });
+    expect(reaped).toEqual([old.id]);
+    expect(report.archivedScopesReaped).toBe(1);
+  });
+
+  it('a per-scope reap failure is recorded and stepped over, never fatal', async () => {
+    const a = archivedRow(OLD);
+    const b = archivedRow(OLD);
+    const reaped: string[] = [];
+    const host = reapHost([a, b], reaped);
+    (host.admin as unknown as { reapScope: unknown }).reapScope = async (
+      _actor: unknown,
+      _t: unknown,
+      s: string,
+    ) => {
+      if (s === a.id) throw new Error('DO unreachable');
+      reaped.push(s);
+    };
+    const report = await runPlatformSweep(host, { ...base, reapArchivedAfterDays: 0 });
+    expect(reaped).toEqual([b.id]); // b still reaped despite a failing
+    expect(report.archivedScopesReaped).toBe(1);
+    expect(report.errors).toEqual([{ kind: 'reap', id: a.id, error: 'DO unreachable' }]);
+  });
+
+  it('reapScopeFn overrides the default (the control-plane orchestrated reap)', async () => {
+    const old = archivedRow(OLD);
+    const viaFn: string[] = [];
+    const report = await runPlatformSweep(reapHost([old], []), {
+      ...base,
+      reapArchivedAfterDays: 30,
+      reapScopeFn: async (_t, s) => {
+        viaFn.push(s);
+      },
+    });
+    expect(viaFn).toEqual([old.id]);
+    expect(report.archivedScopesReaped).toBe(1);
+  });
+});

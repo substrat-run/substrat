@@ -1347,6 +1347,7 @@ export class CloudflareScopeHost implements ScopeHost {
         forkedAt: r.forked_at,
         expiresAt: r.expires_at,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
+        archivedAt: r.archived_at ?? null,
         createdAt: r.created_at,
       });
 
@@ -1570,11 +1571,13 @@ export class CloudflareScopeHost implements ScopeHost {
           throw new Error(`unknown scope ${parsed.scopeId} in tenant ${parsed.tenantId}`);
         }
         const existing = await this.cp.readHostname(parsed.hostname);
-        const holderArchived = (existing as { scope_status?: string } | undefined)?.scope_status === 'archived';
-        if (existing && existing.scope_id !== parsed.scopeId && !holderArchived) {
+        const holderStatus = (existing as { scope_status?: string } | undefined)?.scope_status;
+        const holderReleased = holderStatus === 'archived' || holderStatus === 'reaped';
+        if (existing && existing.scope_id !== parsed.scopeId && !holderReleased) {
           // A hostname routes to exactly one place; silently rebinding would move
-          // another tenant's traffic. Exception: the holder is ARCHIVED (a deleted app) —
-          // it has released the name, so the rebind reclaims it.
+          // another tenant's traffic. Exception: the holder is ARCHIVED or REAPED (a
+          // deleted app, storage since wiped) — it has released the name, so the rebind
+          // reclaims it.
           throw new Error(`hostname '${parsed.hostname}' is already bound to another scope`);
         }
         // Exactly one canonical per (scope, surface).
@@ -2204,6 +2207,26 @@ export class CloudflareScopeHost implements ScopeHost {
         transitionScope(actor, 'archiveScope', tenantId, scopeId, ['provisioning', 'active', 'suspended'], 'archived'),
       unarchiveScope: async (actor, tenantId, scopeId) =>
         transitionScope(actor, 'unarchiveScope', tenantId, scopeId, ['archived'], 'active'),
+      reapScope: async (actor, tenantId, scopeId) => {
+        // Reap an ARCHIVED scope's DO storage (Cloudflare never GCs a DO) while keeping
+        // the directory row as a tombstone (§4.4). Storage BEFORE the status flip, the
+        // same ordering deleteSnapshot keeps: a crash between the two leaves an `archived`
+        // row over emptied storage and re-running converges, whereas flipping first would
+        // strand live bytes under a `reaped` row that reap never revisits. The real wipe
+        // for a CP-less scope (bytes in the vertical's own deployment) is done by the
+        // caller via vertical.deleteScope before this; destroyStorage here wipes the
+        // co-located SCOPE namespace (embedded / self-host / tests) and is a harmless
+        // no-op when the bytes lived remotely.
+        const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!rec) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        if (rec.status !== 'archived') {
+          throw new Error(
+            `scope ${scopeId} is ${rec.status}, not archived — only an archived scope may be reaped`,
+          );
+        }
+        await this.scopeStub(scopeId).destroyStorage();
+        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped');
+      },
       grantEntitlement: async (actor, tenantId, entitlementKey, plan?) => {
         const input = entitlementGrantInput.parse(plan ?? {});
         const result = await this.cp.grantEntitlement(tenantId, entitlementKey, input, actor);

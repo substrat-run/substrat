@@ -51,6 +51,7 @@ export function statusTone(s: EffectiveStatus): BadgeTone {
       return 'warning';
     case 'archiving':
     case 'archived':
+    case 'reaped':
       return 'neutral';
   }
 }
@@ -82,7 +83,9 @@ export function fleetCounts(scopes: Scope[], tenants: Map<TenantId, Tenant>): Fl
   for (const s of scopes) {
     const e = effectiveStatus(s, tenants.get(s.tenantId));
     if (e === 'active') counts.active++;
-    if (e === 'archived' || e === 'archiving') counts.archived++;
+    // `reaped` folds under Archived — it is a deleted app whose storage is now gone, the
+    // terminal end of the same tombstone, so the Archived tab stays its home.
+    if (e === 'archived' || e === 'archiving' || e === 'reaped') counts.archived++;
     if (isSuspended(e)) counts.suspended++;
     if (e === 'suspended-via-tenant') counts.viaCascade++;
   }
@@ -98,14 +101,21 @@ export function fleetCounts(scopes: Scope[], tenants: Map<TenantId, Tenant>): Fl
  * `active`, so `unsuspendScope` would be rejected as an illegal transition. The
  * lever is the tenant.
  */
-export function availableActions(s: EffectiveStatus): ('suspend' | 'unsuspend' | 'archive' | 'unarchive')[] {
+export function availableActions(
+  s: EffectiveStatus,
+): ('suspend' | 'unsuspend' | 'archive' | 'unarchive' | 'reap')[] {
   switch (s) {
     case 'active':
       return ['suspend', 'archive'];
     case 'suspended':
       return ['unsuspend', 'archive'];
+    // An archived scope can be restored (unarchive) OR reaped — the latter frees its DO
+    // storage for good (§4.4), which is why it is the one destructive, unrestorable action.
     case 'archived':
-      return ['unarchive'];
+      return ['unarchive', 'reap'];
+    // Terminal: storage is gone, the row is a tombstone. Nothing to offer.
+    case 'reaped':
+      return [];
     // Transient states settle into one of the above; nothing to offer meanwhile.
     case 'provisioning':
     case 'archiving':

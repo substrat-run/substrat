@@ -169,6 +169,10 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     unsuspendScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/unsuspend`),
     archiveScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/archive`),
     unarchiveScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/unarchive`),
+    // archived → reaped (§4.4): irreversibly wipe the scope's DO storage, keeping the
+    // directory row as a tombstone. Staff-only server-side; the console arms it behind a
+    // type-to-confirm dialog because, unlike archive, there is no restore.
+    reapScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/reap`),
 
     // Read only — there is no route that writes a role, by design.
     listRoles: (filter?: { tenantId?: TenantId; source?: string }) =>

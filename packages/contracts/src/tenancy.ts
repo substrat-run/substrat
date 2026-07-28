@@ -51,6 +51,12 @@ export const scopeStatus = z.enum([
   'suspended',
   'archiving',
   'archived',
+  // Terminal, past `archived`: the directory row survives as a tombstone (audit
+  // history + burned slug, control-plane.md §4.4) but the scope DO's storage has been
+  // reaped (`storage.deleteAll()`). Unlike `archived`, this is NOT reversible — the
+  // bytes are gone, so there is no restore. Read gates fail closed on it exactly like a
+  // missing scope. Reached only from `archived` via the audited `reapScope` action.
+  'reaped',
 ]);
 export type ScopeStatus = z.infer<typeof scopeStatus>;
 
@@ -96,7 +102,9 @@ export type ProvisionableJurisdiction = z.infer<typeof provisionableJurisdiction
  * Deliberately **not** a `scopeStatus` member: the scope already fails closed at the
  * migration layer, so nothing about lifecycle gating changes, and the §3.3 machine
  * (`provisioning → active → suspended ⇄ active → archiving → archived`) has no
- * sensible transition for it. Structured rather than a flag because the
+ * sensible transition for it. (`archived → reaped` extends that machine at the terminal
+ * end — a storage reap, K-34 §4.4 — but that is a real lifecycle transition, unlike a
+ * migration failure.) Structured rather than a flag because the
  * reconciliation sweep (§5.3) retries with backoff and reports
  * "487/500 migrated, 13 pending, 0 failed" — which needs the attempt count and the
  * failing version, not a boolean.
@@ -210,6 +218,13 @@ export const scope = z.object({
    * away from the script that holds its Durable Objects resolves empty storage.
    */
   servingRef: z.string().min(1).nullish(),
+  /**
+   * When the scope last entered `archived` (§4.4). Null if it never archived (every
+   * active scope) and cleared on unarchive. The reap sweep ages a scope off this — an
+   * `archived` scope older than the retention window has its DO storage reaped and moves
+   * to `reaped`. History-only for a `reaped` scope: the bytes are already gone.
+   */
+  archivedAt: instant.nullable(),
   createdAt: instant,
 });
 export type Scope = z.infer<typeof scope>;

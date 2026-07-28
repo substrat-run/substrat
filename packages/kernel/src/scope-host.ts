@@ -933,6 +933,21 @@ export interface HostAdmin {
    */
   unarchiveScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
 
+  /**
+   * archived → reaped. The terminal reap (control-plane.md §4.4): wipe the scope DO's
+   * storage — Cloudflare never garbage-collects a Durable Object, so an archived app's
+   * bytes persist forever until this runs — while KEEPING the directory row as a
+   * tombstone (audit history + burned slug, §4.4). Unlike `unarchiveScope` this is
+   * IRREVERSIBLE: the bytes are gone, so `reaped` never returns to `active`, and only
+   * an `archived` scope may be reaped (an illegal source status fails closed). Unlike
+   * `deleteSnapshot` it reaps a PRIMARY scope, not a fork, and does not delete the row.
+   *
+   * The CP-less byte-wipe (a hosted scope's DO lives in the vertical's own deployment)
+   * is orchestrated by the caller via the vertical's `deleteScope` before this; the
+   * adapter half wipes any co-located storage and flips the status.
+   */
+  reapScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
+
   // -- entitlements (control-plane.md §4.3) ----------------------------------
   // What finally makes `manifest.entitlementKey` mean something (D-20). An
   // entitlement is a per-tenant SKU flag; a module whose key the tenant does not
