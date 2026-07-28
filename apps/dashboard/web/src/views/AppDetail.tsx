@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type Deployment, type MigrationBookmark, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type Deployment, type MigrationBookmark, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
 import { DEV_MOCK, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -29,11 +29,14 @@ export function AppDetail({
   tab,
   onTab,
   onDeleted,
+  authServers = [],
 }: {
   app: AppRow;
   tab: string;
   onTab: (t: string) => void;
   onDeleted: () => void;
+  /** The team's active Auth Server apps — offered as issuers on the Settings Identity card. */
+  authServers?: AppRow[];
 }) {
   const meta = verticalMeta(app.vertical_slug);
   const statusKind = app.status === 'provisioning' ? 'info' : app.status === 'failed' ? 'danger' : 'success';
@@ -72,6 +75,7 @@ export function AppDetail({
           section={sub ?? 'general'}
           onSection={(s) => onTab(s === 'general' ? 'settings' : `settings/${s}`)}
           onDeleted={onDeleted}
+          authServers={authServers}
         />
       )}
     </Page>
@@ -1006,14 +1010,14 @@ const SETTINGS_SECTIONS = [
 
 /**
  * The Settings tab — configuration, not daily-driver surfaces: General (name +
- * danger zone), Environment (the env-spec form), Domains, Integrations. Each
- * section keeps its own URL (settings/environment …) so deep links survive.
+ * identity + danger zone), Environment (the env-spec form), Domains, Integrations.
+ * Each section keeps its own URL (settings/environment …) so deep links survive.
  */
-function Settings({ app, section, onSection, onDeleted }: { app: AppRow; section: string; onSection: (s: string) => void; onDeleted: () => void }) {
+function Settings({ app, section, onSection, onDeleted, authServers }: { app: AppRow; section: string; onSection: (s: string) => void; onDeleted: () => void; authServers: AppRow[] }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Tabs tabs={SETTINGS_SECTIONS} value={section} onChange={onSection} />
-      {section === 'general' && <GeneralSettings app={app} onDeleted={onDeleted} />}
+      {section === 'general' && <GeneralSettings app={app} onDeleted={onDeleted} authServers={authServers} />}
       {section === 'environment' && <EnvVars app={app} />}
       {section === 'domains' && <AppDomains />}
       {section === 'integrations' && (
@@ -1025,7 +1029,7 @@ function Settings({ app, section, onSection, onDeleted }: { app: AppRow; section
   );
 }
 
-function GeneralSettings({ app, onDeleted }: { app: AppRow; onDeleted: () => void }) {
+function GeneralSettings({ app, onDeleted, authServers }: { app: AppRow; onDeleted: () => void; authServers: AppRow[] }) {
   const meta = verticalMeta(app.vertical_slug);
   const [name, setName] = useState(app.name);
   const [confirm, setConfirm] = useState('');
@@ -1040,6 +1044,7 @@ function GeneralSettings({ app, onDeleted }: { app: AppRow; onDeleted: () => voi
         </div>
         <div><Button variant="secondary">Save</Button></div>
       </div>
+      {app.vertical_slug !== 'auth-server' && <IdentityCard app={app} authServers={authServers} />}
       <div style={{ ...card, border: '1px solid var(--status-danger-fg)', padding: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--status-danger-fg)' }}>Danger zone</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -1068,6 +1073,153 @@ function GeneralSettings({ app, onDeleted }: { app: AppRow; onDeleted: () => voi
           <Input label="Type the app name to confirm" placeholder={app.name} mono value={confirm} onChange={(e) => setConfirm(e.target.value)} />
         </div>
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * The Identity card (Settings tab): the `substrat:auth` choice made at install,
+ * readable and editable after the fact. The clientSecret is write-only — blank keeps
+ * the stored one — and the save reports honestly whether the running app received the
+ * change (`delivered`) or only the account's record did (its deployment may have no
+ * live-config support).
+ */
+function IdentityCard({ app, authServers }: { app: AppRow; authServers: AppRow[] }) {
+  const [view, setView] = useState<AppAuthView | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  // 'builtin' | 'external' | an Auth Server app's scope id.
+  const [identity, setIdentity] = useState('builtin');
+  const [issuer, setIssuer] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [audience, setAudience] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setView({ auth: null, callbackUrl: app.hostname ? `https://${app.hostname}/api/auth/callback` : null });
+      return;
+    }
+    let live = true;
+    setView(null);
+    setErr(null);
+    api
+      .appAuth(app.app_scope_id)
+      .then((v) => live && setView(v))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id, nonce]);
+
+  // Seed the form from a fresh view: a stored issuer that matches one of the team's
+  // Auth Servers selects that server; any other issuer is an external one.
+  useEffect(() => {
+    if (!view) return;
+    if (!view.auth) {
+      setIdentity('builtin');
+      return;
+    }
+    const server = authServers.find((a) => a.hostname && `https://${a.hostname}` === view.auth!.issuer);
+    setIdentity(server ? server.app_scope_id : 'external');
+    setIssuer(view.auth.issuer);
+    setClientId(view.auth.clientId);
+    setAudience(view.auth.audience ?? '');
+    setClientSecret(''); // write-only — never echoed back
+  }, [view, authServers]);
+
+  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load the identity settings — {err}</div>;
+  if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading identity settings…</div>;
+
+  const options = [
+    { value: 'builtin', label: 'Builtin — the app handles sign-in itself' },
+    { value: 'external', label: 'External OIDC issuer' },
+    ...authServers.filter((a) => a.app_scope_id !== app.app_scope_id).map((a) => ({ value: a.app_scope_id, label: `Auth Server — ${a.name}` })),
+  ];
+  // Once an issuer is wired, "builtin" is display-only: there is no un-deliver verb yet,
+  // so offering a save that silently couldn't reach the app would be dishonest.
+  const revertingToBuiltin = view.auth !== null && identity === 'builtin';
+  const externalIncomplete = identity === 'external' && (!issuer.trim() || !clientId.trim());
+
+  const save = async () => {
+    const choice: AppAuthChoice | null =
+      identity === 'external'
+        ? {
+            source: 'external',
+            issuer: issuer.trim(),
+            clientId: clientId.trim(),
+            ...(clientSecret ? { clientSecret } : {}),
+            ...(audience.trim() ? { audience: audience.trim() } : {}),
+          }
+        : identity !== 'builtin'
+          ? { source: 'auth-server', scopeId: identity }
+          : null;
+    if (!choice) return;
+    setSaving(true);
+    setNote(null);
+    try {
+      const r = await api.setAppAuth(app.app_scope_id, choice);
+      setNote(r.delivered ? 'Saved and applied to the running app.' : r.note ?? 'Saved.');
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Identity</div>
+      <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+        {view.auth ? (
+          <>Users sign in via <span style={{ fontFamily: 'var(--font-mono)' }}>{view.auth.issuer}</span> (client <span style={{ fontFamily: 'var(--font-mono)' }}>{view.auth.clientId}</span>{view.auth.hasClientSecret ? ', secret set' : ''}).</>
+        ) : (
+          <>No issuer is wired — the app’s builtin sign-in is in use.</>
+        )}
+      </div>
+      <Select label="Issuer" options={options} value={identity} onChange={(e) => setIdentity(e.target.value)} style={{ maxWidth: 420 }} />
+      {revertingToBuiltin && (
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          Switching back to builtin isn’t supported yet — the wired issuer stays until you save a different one.
+        </div>
+      )}
+      {identity === 'external' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Input
+            label="Issuer URL"
+            value={issuer}
+            onChange={(e) => setIssuer(e.target.value)}
+            placeholder="https://auth.example.com"
+            {...(view.callbackUrl ? { hint: `Register the redirect URL ${view.callbackUrl} at your issuer.` } : {})}
+          />
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Input label="Client ID" mono value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ flex: 1 }} />
+            <Input
+              label="Client secret"
+              value={clientSecret}
+              onChange={(e) => setClientSecret(e.target.value)}
+              placeholder={view.auth?.hasClientSecret ? '•••••••• (set — leave blank to keep)' : ''}
+              style={{ flex: 1 }}
+            />
+          </div>
+          <Input label="Audience (optional)" value={audience} onChange={(e) => setAudience(e.target.value)} style={{ maxWidth: 420 }} />
+        </div>
+      )}
+      {identity !== 'builtin' && identity !== 'external' && (
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          The app is re-registered at this Auth Server when you save — users sign in there.
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {note && <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</span>}
+        <div style={{ flex: 1 }} />
+        <Button onClick={save} disabled={saving || revertingToBuiltin || identity === 'builtin' || externalIncomplete}>
+          {saving ? 'Saving…' : 'Save identity'}
+        </Button>
+      </div>
     </div>
   );
 }

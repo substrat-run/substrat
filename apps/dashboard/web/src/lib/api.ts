@@ -264,6 +264,29 @@ export interface AppEnvView {
   values: AppEnvValue[];
 }
 
+/** The app's stored Identity choice — the clientSecret is write-only, never echoed. */
+export interface AppAuthRecord {
+  mode: 'oidc';
+  issuer: string;
+  clientId: string;
+  audience: string | null;
+  hasClientSecret: boolean;
+  updatedAt: string;
+}
+
+/** `GET /api/apps/:scope/auth` — `auth: null` ⇒ the vertical's builtin sign-in. */
+export interface AppAuthView {
+  auth: AppAuthRecord | null;
+  /** The redirect URL to register at an external issuer; null while no hostname is bound. */
+  callbackUrl: string | null;
+}
+
+/** `PUT /api/apps/:scope/auth` — saved always; `delivered` says whether the running app got it. */
+export interface AppAuthUpdateResult {
+  delivered: boolean;
+  note?: string;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -434,6 +457,14 @@ export const api = {
   /** Remove one env var. */
   deleteAppEnv: (scopeId: string, key: string) =>
     call<void>(`/apps/${encodeURIComponent(scopeId)}/env/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  /** The app's Identity choice (secret redacted) + its OIDC callback URL. */
+  appAuth: (scopeId: string) => call<AppAuthView>(`/apps/${encodeURIComponent(scopeId)}/auth`),
+  /** Update the Identity choice; a blank clientSecret keeps the stored one. */
+  setAppAuth: (scopeId: string, choice: AppAuthChoice) =>
+    call<AppAuthUpdateResult>(`/apps/${encodeURIComponent(scopeId)}/auth`, {
+      method: 'PUT',
+      body: JSON.stringify(choice),
+    }),
   listDeployments: () => call<Deployment[]>('/deployments'),
 
   // -- observability (design/observability.md §5, view 2) -------------------
