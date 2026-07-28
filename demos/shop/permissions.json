@@ -1,0 +1,125 @@
+{
+  "permissions": [
+    {
+      "key": "cart:checkout",
+      "description": "Create a cart, reserve stock and place an order",
+      "declaredBy": [
+        "@substrat-run/demo-shop"
+      ]
+    },
+    {
+      "key": "catalog:manage",
+      "description": "Manage products, variants and publishing",
+      "declaredBy": [
+        "@substrat-run/demo-shop"
+      ]
+    },
+    {
+      "key": "customer:manage",
+      "description": "Manage customer records",
+      "declaredBy": [
+        "@substrat-run/demo-shop"
+      ]
+    },
+    {
+      "key": "discount:manage",
+      "description": "Create and manage discount codes",
+      "declaredBy": [
+        "@substrat-run/demo-shop"
+      ]
+    },
+    {
+      "key": "invoicing:export",
+      "description": "Export an invoice basis (makes it immutable)",
+      "declaredBy": [
+        "@substrat-run/engine-invoicing"
+      ]
+    },
+    {
+      "key": "invoicing:read",
+      "description": "Read invoice bases",
+      "declaredBy": [
+        "@substrat-run/engine-invoicing"
+      ]
+    },
+    {
+      "key": "order:fulfil",
+      "description": "Advance an order from placed → fulfilled → closed",
+      "declaredBy": [
+        "@substrat-run/demo-shop"
+      ]
+    },
+    {
+      "key": "order:read",
+      "description": "Read orders (admin); portal customers hold an entity-narrowed grant",
+      "declaredBy": [
+        "@substrat-run/demo-shop"
+      ]
+    },
+    {
+      "key": "shop:browse",
+      "description": "Read the published catalogue",
+      "declaredBy": [
+        "@substrat-run/demo-shop"
+      ]
+    },
+    {
+      "key": "stock:manage",
+      "description": "Adjust stock levels",
+      "declaredBy": [
+        "@substrat-run/demo-shop"
+      ]
+    }
+  ],
+  "roles": [
+    {
+      "key": "public",
+      "permissions": [
+        "shop:browse"
+      ],
+      "source": "vertical"
+    },
+    {
+      "key": "shop-admin",
+      "permissions": [
+        "cart:checkout",
+        "catalog:manage",
+        "customer:manage",
+        "discount:manage",
+        "invoicing:export",
+        "invoicing:read",
+        "order:fulfil",
+        "order:read",
+        "shop:browse",
+        "stock:manage"
+      ],
+      "source": "vertical"
+    },
+    {
+      "key": "shopper",
+      "permissions": [
+        "cart:checkout",
+        "shop:browse"
+      ],
+      "source": "vertical"
+    },
+    {
+      "key": "warehouse",
+      "permissions": [
+        "order:fulfil",
+        "order:read",
+        "shop:browse",
+        "stock:manage"
+      ],
+      "source": "vertical"
+    }
+  ],
+  "entityGrants": [
+    {
+      "entityType": "customer",
+      "permissions": [
+        "order:read"
+      ]
+    }
+  ]
+}
