@@ -66,7 +66,12 @@ export function AppDetail({
       />
 
       {main === 'overview' && <Overview app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} />}
-      {main === 'data' && <DataBrowser app={app} />}
+      {main === 'data' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <DataBrowser app={app} />
+          <ExportImport app={app} />
+        </div>
+      )}
       {main === 'deployments' && <Deployments app={app} />}
       {main === 'previews' && <Previews app={app} />}
       {main === 'settings' && (
@@ -557,7 +562,6 @@ function Previews({ app }: { app: AppRow }) {
           ))}
         </div>
       )}
-      <ExportImport app={app} onChanged={() => setNonce((n) => n + 1)} />
     </div>
   );
 }
@@ -566,10 +570,10 @@ function Previews({ app }: { app: AppRow }) {
  * Export & import (preview-and-snapshots.md §8 — the dashboard half of the CLI's
  * `scope pull`/`scope restore`). Export downloads the app's data as a `.dump.json`
  * the CLI accepts; Import replaces the app's data with an uploaded dump — behind a
- * danger dialog, and always after the platform forks a safety preview (which is
- * why `onChanged` refreshes the preview list above).
+ * danger dialog, and always after the platform forks a safety preview (visible in
+ * the Previews tab).
  */
-function ExportImport({ app, onChanged }: { app: AppRow; onChanged: () => void }) {
+function ExportImport({ app }: { app: AppRow }) {
   const [exporting, setExporting] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [pending, setPending] = useState<{ name: string; tables: DumpTable[]; rows: number } | null>(null);
@@ -630,8 +634,7 @@ function ExportImport({ app, onChanged }: { app: AppRow; onChanged: () => void }
         setNote('Import is not available in the preview.');
       } else {
         const r = await api.restoreAppData(app.app_scope_id, pending.tables);
-        setNote(`Imported ${r.tables} tables — the app now serves the uploaded data. The previous data lives on as preview ${shortId(r.safetyCopyId)} above.`);
-        onChanged();
+        setNote(`Imported ${r.tables} tables — the app now serves the uploaded data. The previous data lives on as preview ${shortId(r.safetyCopyId)} in the Previews tab.`);
       }
       setPending(null);
     } catch (e) {
