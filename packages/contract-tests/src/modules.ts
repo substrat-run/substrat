@@ -13,11 +13,12 @@ import {
   type EntityRef,
   type PermissionKey,
 } from '@substrat-run/contracts';
-import type {
-  ConsumerHandler,
-  ModuleRegistration,
-  OperationContext,
-  OperationHandler,
+import {
+  assertAllowed,
+  type ConsumerHandler,
+  type ModuleRegistration,
+  type OperationContext,
+  type OperationHandler,
 } from '@substrat-run/kernel';
 
 // -- manifests ---------------------------------------------------------------
@@ -287,6 +288,31 @@ const probeOp: OperationHandler<{ permission: PermissionKey; entity?: EntityRef 
   input,
 ) => ctx.check(input.permission, input.entity);
 
+// Assert a permission, then emit — the shape a real mutating operation has. Exercises
+// K-34 (the emitted event carries the passed check as `authorization`) and, when the
+// check is refused, K-35 (assertAllowed throws → the host records a denial and rolls back).
+const authorizedEmitOp: OperationHandler<
+  { permission: PermissionKey; entity?: EntityRef },
+  void
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(input.permission, input.entity));
+  ctx.emit({
+    type: 'perm.acted',
+    schemaVersion: 1,
+    entity: input.entity ?? { entityType: 'test-thing', entityId: 'x1' },
+    piiClass: 'none',
+    payload: {},
+  });
+};
+
+const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
+  ctx.sql.query('SELECT id, type, authorization FROM _substrat_outbox ORDER BY id');
+
+const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
+  ctx.sql.query(
+    'SELECT actor, permission, tenant_id, scope_id, operation FROM _substrat_denials ORDER BY id',
+  );
+
 const flowStep1Consumer: ConsumerHandler = (ctx, event) => {
   ctx.sql.exec('INSERT INTO flow_log (event_id, type) VALUES (?, ?)', [event.id, event.type]);
   ctx.emit({
@@ -448,6 +474,9 @@ export const permMod: ModuleRegistration = {
   operations: {
     'perm/link': linkOp as OperationHandler<never, unknown>,
     'perm/probe': probeOp as OperationHandler<never, unknown>,
+    'perm/authorized-emit': authorizedEmitOp as OperationHandler<never, unknown>,
+    'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
+    'perm/read-denials': readDenialsOp as OperationHandler<never, unknown>,
   },
 };
 

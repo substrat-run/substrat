@@ -153,6 +153,58 @@ export function permissionContractSuite(
       await expect(probe(dave, s1, PERM_READ)).resolves.toMatchObject({ allowed: false });
     });
 
+    // -- event authorization + denial log (K-34, K-35) --------------------
+    // The two completions of the permission/audit story: what authorized a mutation
+    // (stamped on the event it produced), and what was refused (recorded even though
+    // the operation rolled back).
+
+    type AuthzRow = { id: string; type: string; authorization: string | null };
+    const lastActed = async (): Promise<AuthzRow> => {
+      const stub = await host.getScope(alice, t1, s1);
+      const rows = await stub.invoke<AuthzRow[]>('perm/read-outbox');
+      const acted = rows.filter((r) => r.type === 'perm.acted');
+      return acted[acted.length - 1]!;
+    };
+
+    it('stamps a role-authorized emit with the permission and no grant (K-34)', async () => {
+      // alice holds perm:use via the tenant-level `admin` role — a role, not a grant.
+      const stub = await host.getScope(alice, t1, s1);
+      await stub.invoke('perm/authorized-emit', { permission: PERM_USE });
+      const row = await lastActed();
+      expect(row.authorization).not.toBeNull();
+      expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_USE }]);
+    });
+
+    it('stamps an entity-grant emit with the granting entity ref (K-34)', async () => {
+      // carol's allow walks item i1 → box b1 to a grant ON box b1 — the grant ref.
+      const stub = await host.getScope(carol, t1, s1);
+      await stub.invoke('perm/authorized-emit', {
+        permission: PERM_READ,
+        entity: { entityType: 'item', entityId: 'i1' },
+      });
+      const row = await lastActed();
+      expect(JSON.parse(row.authorization!)).toEqual([{ permission: PERM_READ, grant: 'box:b1' }]);
+    });
+
+    it('records a refused check as a denial, though the operation rolled back (K-35)', async () => {
+      // bob's `tech` role at s1 holds perm:read, never perm:use.
+      const stub = await host.getScope(bob, t1, s1);
+      await expect(stub.invoke('perm/authorized-emit', { permission: PERM_USE })).rejects.toThrow(
+        /permission denied/,
+      );
+      // The emit never happened (rolled back), but the denial was recorded.
+      const acted = await host.getScope(alice, t1, s1);
+      const denials = await acted.invoke<
+        { actor: string; permission: string; tenant_id: string; scope_id: string; operation: string }[]
+      >('perm/read-denials');
+      const mine = denials.find(
+        (d) => d.permission === PERM_USE && (JSON.parse(d.actor) as string) === bob,
+      );
+      expect(mine).toBeDefined();
+      expect(mine!.operation).toBe('perm/authorized-emit');
+      expect(mine!.scope_id).toBe(s1);
+    });
+
     it('org membership reaches org grants (rule 4), membership tuple in the proof', async () => {
       const d = await probe(erin, s1, PERM_READ);
       expect(d.allowed).toBe(true);
