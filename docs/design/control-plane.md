@@ -255,6 +255,14 @@ vertical lands, this log *becomes* that scope's outbox rather than a second mech
 addMember) move behind this actor-taking, audited surface. Their current signature — no
 caller, no record — is a v0 stopgap the code comment already admits.
 
+One invariant this log carries alone, worth naming: grant tuples persist no `grantedBy` —
+the tuple table stores `(subject, relation, object, expires_at, revoked_at)` and nothing
+else — so the admin log is the **only witness** of who granted what, and effective grant
+provenance exists exactly as long as every grant write flows through this audited surface.
+Any future write path that touches tuples without landing here (a scope-local mint, a
+migration backfill) silently destroys provenance; per §4.2's algebra rule, that is a
+decision-log event, not a patch.
+
 ### 4.5 The console
 
 Thin, over the above. In build order:
@@ -277,6 +285,18 @@ function of code — nothing to boot, and therefore no ULID to launder out of th
 also the **first instance of D-22/D-29's emit → check-in → CI-diff pipeline**, which both
 decisions describe in the present tense and neither had built; OAS and event-schema emission
 plug into the same convention.
+
+Plan decision 39 gives the build-time artifact a **runtime home**: the deploy manifest
+carries the registry itself (keys + descriptions, role templates, entity-grant shapes)
+beside the `digests.permission` hash that already committed to that exact content.
+Per-version and immutable — stamped at push, so it cannot drift from the bundle — which
+lets admission render a mechanical version-to-version permission diff and lets any
+tenant-facing surface (the dashboard's permissions view) display the declared surface
+without a hardcoded copy. Deliberately *not* a mutable "current permissions" table (a
+second source of truth for a code-declared fact) and *not* a self-describe endpoint on
+running verticals (a build-time fact should not be a runtime question). On an
+opaque-bundle push the registry is pusher-claimed exactly as the digest is
+(self-serve-deploy.md §3) — verified only under the controlled build.
 
 That leaves the console the **runtime half**, which the artifact structurally cannot cover:
 capability **grants** (per-principal, per-entity, minted with random ULIDs — only their
@@ -325,6 +345,16 @@ log is itself logged.
 
 `result_count` is what makes a row worth keeping. *"Called listScopes"* is navigation;
 *"enumerated 4,000 tenants"* is an incident, and only the count tells them apart.
+
+**Denials land here too (K-35).** `assertAllowed` throws `PermissionDenied` and, until
+this, nothing recorded it — a refused call left no row in any log, because both
+`recordAdmin` and `recordAccess` run only on the success path. A denial is
+attacker-influenceable volume (a probing client mints unlimited rows), which is exactly
+the retention argument above: operational history, not permanent evidence, so it belongs
+beside reads — rate-bucketed per actor/key/window if volume demands — and never in the
+admin log. Denials raised inside scope operations are deferred (they need a path to this
+directory-side log, or a scope-local twin that drains); the control-plane surface, where
+the log already lives, goes first.
 
 #### Hot storage is not retention
 
