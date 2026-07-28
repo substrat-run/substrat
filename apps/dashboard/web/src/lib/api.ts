@@ -103,7 +103,7 @@ export interface AppRow {
 export interface AppEvent {
   id: string;
   app_scope_id: string;
-  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated';
+  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored';
   /** Failure reason / bound hostname / the version move / the vertical slug — depending on `kind`. */
   detail: string | null;
   actor: string;
@@ -170,6 +170,31 @@ export interface SnapshotRow {
   createdAt: string;
   /** The copy's preview hostname (`app--s1a2b.…`), when one is bound. */
   url?: string | null;
+}
+
+/** One table of an app-data dump (mirrors the platform's ScopeDumpTable). */
+export interface DumpTable {
+  name: string;
+  ddl: string;
+  columns: string[];
+  rows: unknown[][];
+}
+
+/** `GET /api/apps/:id/export` — the app's data as a dump the CLI also accepts. */
+export interface AppDataDump {
+  tenantId: string;
+  scopeId: string;
+  capturedAt: string;
+  /** True when PII columns arrived redacted (always, in connected mode). */
+  masked: boolean;
+  tables: DumpTable[];
+}
+
+/** `POST /api/apps/:id/restore` — what the import did, incl. the fork to back out to. */
+export interface RestoreResult {
+  restored: string;
+  tables: number;
+  safetyCopyId: string;
 }
 
 /** One importable repo the tenant's GitHub connection can see (worker's github.ts shape). */
@@ -252,6 +277,51 @@ export interface AppEnvValue {
 export interface AppEnvView {
   spec: EnvVarSpec[];
   values: AppEnvValue[];
+}
+
+/** One hostname bound to the app's scope (the Domains tab). */
+export interface AppHostnameRow {
+  hostname: string;
+  surface: string;
+  status: string;
+  canonical: boolean;
+  createdAt: string | null;
+}
+
+/** A surface the app's vertical declares it serves — the Domains tab's picker. */
+export interface DeclaredSurface {
+  name: string;
+  label: string;
+}
+
+/** `GET /api/apps/:scope/hostnames` — bindings + declared surfaces + the untouchable default. */
+export interface AppHostnamesView {
+  bindings: AppHostnameRow[];
+  surfaces: DeclaredSurface[];
+  defaultHostname: string | null;
+}
+
+/** The app's stored Identity choice — the clientSecret is write-only, never echoed. */
+export interface AppAuthRecord {
+  mode: 'oidc';
+  issuer: string;
+  clientId: string;
+  audience: string | null;
+  hasClientSecret: boolean;
+  updatedAt: string;
+}
+
+/** `GET /api/apps/:scope/auth` — `auth: null` ⇒ the vertical's builtin sign-in. */
+export interface AppAuthView {
+  auth: AppAuthRecord | null;
+  /** The redirect URL to register at an external issuer; null while no hostname is bound. */
+  callbackUrl: string | null;
+}
+
+/** `PUT /api/apps/:scope/auth` — saved always; `delivered` says whether the running app got it. */
+export interface AppAuthUpdateResult {
+  delivered: boolean;
+  note?: string;
 }
 
 export class ApiError extends Error {
@@ -402,6 +472,15 @@ export const api = {
       `/apps/${encodeURIComponent(scopeId)}/snapshots/${encodeURIComponent(snapshotId)}`,
       { method: 'DELETE' },
     ),
+  /** The app's data as a downloadable dump (PII-masked in connected mode). */
+  exportAppData: (scopeId: string) => call<AppDataDump>(`/apps/${encodeURIComponent(scopeId)}/export`),
+  /** Replace the app's data with an uploaded dump; a safety copy is forked first. */
+  restoreAppData: (scopeId: string, tables: DumpTable[]) =>
+    call<RestoreResult>(`/apps/${encodeURIComponent(scopeId)}/restore`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tables }),
+    }),
   /** The app's env-spec + current values (secrets masked). */
   appEnv: (scopeId: string) => call<AppEnvView>(`/apps/${encodeURIComponent(scopeId)}/env`),
   /** Upsert env values; an empty value leaves a key unchanged (untouched secret). */
@@ -413,6 +492,28 @@ export const api = {
   /** Remove one env var. */
   deleteAppEnv: (scopeId: string, key: string) =>
     call<void>(`/apps/${encodeURIComponent(scopeId)}/env/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  /** The app's hostname bindings + the vertical's declared surfaces (Domains tab). */
+  appHostnames: (scopeId: string) => call<AppHostnamesView>(`/apps/${encodeURIComponent(scopeId)}/hostnames`),
+  /** Bind a hostname to a surface: platform-minted (`domain` omitted, lands active) or a custom domain (lands pending). */
+  addAppHostname: (scopeId: string, input: { surface: string; domain?: string }) =>
+    call<AppHostnameRow>(`/apps/${encodeURIComponent(scopeId)}/hostnames`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** Unbind one hostname (the default hostname is refused). */
+  removeAppHostname: (scopeId: string, hostname: string) =>
+    call<{ deleted: string }>(
+      `/apps/${encodeURIComponent(scopeId)}/hostnames/${encodeURIComponent(hostname)}`,
+      { method: 'DELETE' },
+    ),
+  /** The app's Identity choice (secret redacted) + its OIDC callback URL. */
+  appAuth: (scopeId: string) => call<AppAuthView>(`/apps/${encodeURIComponent(scopeId)}/auth`),
+  /** Update the Identity choice; a blank clientSecret keeps the stored one. */
+  setAppAuth: (scopeId: string, choice: AppAuthChoice) =>
+    call<AppAuthUpdateResult>(`/apps/${encodeURIComponent(scopeId)}/auth`, {
+      method: 'PUT',
+      body: JSON.stringify(choice),
+    }),
   listDeployments: () => call<Deployment[]>('/deployments'),
 
   // -- observability (design/observability.md §5, view 2) -------------------

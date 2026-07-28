@@ -167,3 +167,60 @@ describe('oidcRpAuthProvider', () => {
     expect(((await res.json()) as { issuer: string }).issuer).toBe(ISSUER);
   });
 });
+
+/**
+ * The multi-surface shared session (K-26 + cookie-domain.ts): with `cookieDomain`
+ * configured, the session cookie is set with `Domain=…` so every sibling surface
+ * (`crm.`, `eka.`, …) shares the login — plus the host-only hygiene that keeps a stale
+ * pre-config cookie from shadowing it.
+ */
+describe('oidcRpAuthProvider with cookieDomain', () => {
+  const DOMAIN = 'global.substrat.test'; // the parent of APP's hostname
+  const domainCfg: OidcRpConfig = { ...cfg, cookieDomain: DOMAIN };
+
+  /** All Set-Cookie values for one cookie name (the domain + host-only pair). */
+  const named = (res: Response, name: string): string[] =>
+    setCookies(res).filter((c) => c.startsWith(`${name}=`));
+
+  async function completeCallback(provider: ReturnType<typeof oidcRpAuthProvider>): Promise<Response> {
+    const login = await provider.handle(new Request(`${APP}/api/auth/login`));
+    const authorize = new URL(login.headers.get('location')!);
+    const flow = cookieValue(setCookies(login), FLOW_COOKIE)!;
+    nextClaims = { sub: 'user-77', nonce: authorize.searchParams.get('nonce') };
+    return provider.handle(
+      new Request(`${APP}/api/auth/callback?code=c0de&state=${authorize.searchParams.get('state')}`, {
+        headers: { cookie: `${FLOW_COOKIE}=${encodeURIComponent(flow)}` },
+      }),
+    );
+  }
+
+  it('callback sets the session cookie domain-wide and clears the host-only shadow', async () => {
+    const cb = await completeCallback(oidcRpAuthProvider(domainCfg));
+    const sessions = named(cb, SESSION_COOKIE);
+    expect(sessions).toHaveLength(2);
+    const domainSet = sessions.find((c) => c.includes(`Domain=${DOMAIN}`))!;
+    expect(domainSet).toBeTruthy();
+    expect(domainSet).not.toContain('Max-Age=0');
+    const hostClear = sessions.find((c) => !c.includes('Domain='))!;
+    expect(hostClear).toContain('Max-Age=0');
+    // The flow cookie stays HOST-ONLY — the code flow begins and ends on one hostname.
+    expect(named(cb, FLOW_COOKIE)[0]).not.toContain('Domain=');
+  });
+
+  it('logout clears BOTH the domain-wide and host-only variants', async () => {
+    const out = await oidcRpAuthProvider(domainCfg).handle(new Request(`${APP}/api/auth/logout`));
+    const sessions = named(out, SESSION_COOKIE);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.every((c) => c.includes('Max-Age=0'))).toBe(true);
+    expect(sessions.some((c) => c.includes(`Domain=${DOMAIN}`))).toBe(true);
+    expect(sessions.some((c) => !c.includes('Domain='))).toBe(true);
+  });
+
+  it('a domain that does not cover the request host degrades to host-only — never broken sign-in', async () => {
+    const cb = await completeCallback(oidcRpAuthProvider({ ...cfg, cookieDomain: 'unrelated.test' }));
+    const sessions = named(cb, SESSION_COOKIE);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).not.toContain('Domain=');
+    expect(cb.headers.get('location')).toBe('/');
+  });
+});

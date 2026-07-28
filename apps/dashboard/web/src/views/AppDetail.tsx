@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type Deployment, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type Deployment, type DumpTable, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
-import { DEV_MOCK, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
@@ -20,11 +20,14 @@ export function AppDetail({
   tab,
   onTab,
   onDeleted,
+  authServers = [],
 }: {
   app: AppRow;
   tab: string;
   onTab: (t: string) => void;
   onDeleted: () => void;
+  /** The team's active Auth Server apps — offered as issuers on the Settings Identity card. */
+  authServers?: AppRow[];
 }) {
   const meta = verticalMeta(app.vertical_slug);
   const statusKind = app.status === 'provisioning' ? 'info' : app.status === 'failed' ? 'danger' : 'success';
@@ -57,9 +60,9 @@ export function AppDetail({
       {tab === 'deployments' && <Deployments app={app} />}
       {tab === 'snapshots' && <Snapshots app={app} />}
       {tab === 'env' && <EnvVars app={app} />}
-      {tab === 'domains' && <AppDomains />}
+      {tab === 'domains' && <AppDomains app={app} />}
       {tab === 'integrations' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 16 }}>{INTEGRATIONS.slice(0, 2).map((i) => <IntegrationCard key={i.name} integ={i} />)}</div>}
-      {tab === 'settings' && <Settings app={app} onDeleted={onDeleted} />}
+      {tab === 'settings' && <Settings app={app} onDeleted={onDeleted} authServers={authServers} />}
     </Page>
   );
 }
@@ -181,6 +184,14 @@ function toTimelineItem(e: AppEvent): { dot: TimelineDot; body: React.ReactNode;
       return { dot: 'neutral', body: <>Deleted</>, time };
     case 'updated':
       return { dot: 'success', body: <>Updated{e.detail ? <> · <span style={{ fontFamily: 'var(--font-mono)' }}>{e.detail}</span></> : null}</>, time };
+    case 'snapshotted':
+      return { dot: 'info', body: <>Test copy taken{e.detail ? <> · {e.detail}</> : null}</>, time };
+    case 'snapshot-deleted':
+      return { dot: 'neutral', body: <>Test copy deleted{e.detail ? <> · <span style={{ fontFamily: 'var(--font-mono)' }}>{e.detail}</span></> : null}</>, time };
+    case 'data-exported':
+      return { dot: 'info', body: <>Data exported{e.detail ? <> · {e.detail}</> : null}</>, time };
+    case 'data-restored':
+      return { dot: 'danger', body: <>Data replaced by import{e.detail ? <> · {e.detail}</> : null}</>, time };
     case 'created':
     default:
       return { dot: 'info', body: <>Provisioning started{e.detail ? <> · <span style={{ fontFamily: 'var(--font-mono)' }}>{e.detail}</span></> : null}</>, time };
@@ -459,6 +470,119 @@ function Snapshots({ app }: { app: AppRow }) {
           ))}
         </div>
       )}
+      <ExportImport app={app} onChanged={() => setNonce((n) => n + 1)} />
+    </div>
+  );
+}
+
+/**
+ * Export & import (preview-and-snapshots.md §8 — the dashboard half of the CLI's
+ * `scope pull`/`scope restore`). Export downloads the app's data as a `.dump.json`
+ * the CLI accepts; Import replaces the app's data with an uploaded dump — behind a
+ * danger dialog, and always after the platform forks a safety copy (which is why
+ * `onChanged` refreshes the snapshot list above).
+ */
+function ExportImport({ app, onChanged }: { app: AppRow; onChanged: () => void }) {
+  const [exporting, setExporting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [pending, setPending] = useState<{ name: string; tables: DumpTable[]; rows: number } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const doExport = async () => {
+    setExporting(true);
+    setNote(null);
+    try {
+      if (DEV_MOCK) {
+        setNote('Export is not available in the preview.');
+        return;
+      }
+      const dump = await api.exportAppData(app.app_scope_id);
+      const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${dump.tenantId}__${dump.scopeId}.dump.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      const rows = dump.tables.reduce((n, t) => n + t.rows.length, 0);
+      setNote(
+        dump.masked
+          ? `Exported ${dump.tables.length} tables (${rows} rows). Personal data is redacted in this file — full-fidelity export is a CLI/staff affordance.`
+          : `Exported ${dump.tables.length} tables (${rows} rows), full fidelity — treat the file as production data.`,
+      );
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const onFile = async (file: File | undefined) => {
+    setNote(null);
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as { tables?: DumpTable[] };
+      if (!Array.isArray(parsed.tables) || parsed.tables.length === 0) {
+        throw new Error(`${file.name} is not a scope dump (no tables) — expected a .dump.json export`);
+      }
+      const rows = parsed.tables.reduce((n, t) => n + (Array.isArray(t.rows) ? t.rows.length : 0), 0);
+      setPending({ name: file.name, tables: parsed.tables, rows });
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const doRestore = async () => {
+    if (!pending) return;
+    setRestoring(true);
+    setNote(null);
+    try {
+      if (DEV_MOCK) {
+        setNote('Import is not available in the preview.');
+      } else {
+        const r = await api.restoreAppData(app.app_scope_id, pending.tables);
+        setNote(`Imported ${r.tables} tables — the app now serves the uploaded data. The previous data lives on as safety copy ${shortId(r.safetyCopyId)} above.`);
+        onChanged();
+      }
+      setPending(null);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  return (
+    <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <Eyebrow>Export &amp; import</Eyebrow>
+        <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Download this app’s data, or replace it with a dump — an export from here, <span style={{ fontFamily: 'var(--font-mono)' }}>substrat scope pull</span>, or a local dev world (<span style={{ fontFamily: 'var(--font-mono)' }}>.dump.json</span>; for <span style={{ fontFamily: 'var(--font-mono)' }}>.sqlite</span> files use <span style={{ fontFamily: 'var(--font-mono)' }}>substrat scope restore</span>).
+        </span>
+        <div style={{ flex: 1 }} />
+        <Button onClick={doExport} disabled={exporting}>{exporting ? 'Exporting…' : 'Export data'}</Button>
+        <Button variant="secondary" onClick={() => fileRef.current?.click()} disabled={restoring}>Import data…</Button>
+        <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={(e) => onFile(e.target.files?.[0])} />
+      </div>
+      {note && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{note}</div>}
+      <Dialog
+        open={pending !== null}
+        title={`Replace ${app.name}’s data?`}
+        danger
+        confirmLabel={restoring ? 'Importing…' : 'Replace data'}
+        confirmDisabled={restoring}
+        onCancel={() => setPending(null)}
+        onConfirm={doRestore}
+      >
+        <div style={{ background: 'var(--status-danger-bg)', borderRadius: 6, padding: '12px 14px', fontSize: 12.5, color: 'var(--status-danger-fg)', lineHeight: 1.6 }}>
+          Importing <span style={{ fontFamily: 'var(--font-mono)' }}>{pending?.name}</span> ({pending?.tables.length} tables, {pending?.rows} rows):
+          <div>→ ALL current data in {app.name} is replaced by the file’s</div>
+          <div>→ a safety copy of today’s data is taken first (kept 7 days)</div>
+          <div>→ a PII-masked export restores <span style={{ fontFamily: 'var(--font-mono)' }}>[masked]</span> over real values</div>
+        </div>
+      </Dialog>
     </div>
   );
 }
@@ -917,24 +1041,183 @@ function EnvVars({ app }: { app: AppRow }) {
   );
 }
 
-function AppDomains() {
-  const COLS = '2.4fr 1.4fr 1fr 40px';
+/**
+ * Domains (K-26 multi-surface): one scope can front several apps — the hostname
+ * decides which surface the vertical serves, so this tab is where a second surface
+ * (or a custom domain) gets its URL. A platform hostname is minted from the app's
+ * own label and is live immediately (it rides the wildcard cert); a custom domain
+ * lands `pending` and walks the DNS-validation lifecycle. The default hostname can't
+ * be removed here — deleting the app retires it.
+ */
+function AppDomains({ app }: { app: AppRow }) {
+  const [view, setView] = useState<AppHostnamesView | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const [surface, setSurface] = useState('');
+  const [domain, setDomain] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [toRemove, setToRemove] = useState<AppHostnameRow | null>(null);
+
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setView(MOCK_APP_HOSTNAMES);
+      return;
+    }
+    let live = true;
+    setView(null);
+    setErr(null);
+    api
+      .appHostnames(app.app_scope_id)
+      .then((v) => live && setView(v))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id, nonce]);
+
+  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load hostnames — {err}</div>;
+  if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading hostnames…</div>;
+
+  const surfaceLabel = (name: string) => view.surfaces.find((s) => s.name === name)?.label;
+  const statusKind = (s: string) => (s === 'active' ? 'success' : s === 'failed' ? 'danger' : 'info');
+
+  const add = async () => {
+    const chosen = surface.trim();
+    if (!chosen) {
+      setNote('Name the surface the hostname should serve — e.g. app, or a second surface your vertical renders.');
+      return;
+    }
+    setAdding(true);
+    setNote(null);
+    try {
+      const bound = await api.addAppHostname(app.app_scope_id, {
+        surface: chosen,
+        ...(domain.trim() ? { domain: domain.trim() } : {}),
+      });
+      setNote(
+        bound.status === 'active'
+          ? `${bound.hostname} is live.`
+          : `${bound.hostname} recorded — it goes live once DNS validation and the certificate complete.`,
+      );
+      setSurface('');
+      setDomain('');
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!toRemove) return;
+    try {
+      if (!DEV_MOCK) await api.removeAppHostname(app.app_scope_id, toRemove.hostname);
+      setNote(`${toRemove.hostname} unbound.`);
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setToRemove(null);
+    }
+  };
+
+  const COLS = '2.4fr 1fr 1.4fr 1fr 40px';
   return (
-    <div style={{ ...card, overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
-        <span>Hostname</span><span>Status</span><span>Added</span><span />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ ...card, overflow: 'hidden' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+          <span>Hostname</span><span>Surface</span><span>Status</span><span>Added</span><span />
+        </div>
+        {view.bindings.length === 0 && (
+          <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No hostnames bound yet.</div>
+        )}
+        {view.bindings.map((h) => {
+          const isDefault = view.defaultHostname !== null && h.hostname === view.defaultHostname;
+          return (
+            <div key={h.hostname} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 44, padding: '0 16px', fontSize: 13, borderBottom: '1px solid var(--border-subtle)' }}>
+              {h.status === 'active' ? (
+                <a href={`https://${h.hostname}`} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  {h.hostname}<Ic name="external" size={11} />
+                </a>
+              ) : (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-secondary)' }}>{h.hostname}</span>
+              )}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <MonoTag color="var(--text-secondary)">{h.surface}</MonoTag>
+                {surfaceLabel(h.surface) && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{surfaceLabel(h.surface)}</span>}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Pill kind={statusKind(h.status)}>{h.status.charAt(0).toUpperCase() + h.status.slice(1)}</Pill>
+                {h.canonical && <MonoTag color="var(--text-tertiary)">canonical</MonoTag>}
+                {isDefault && <MonoTag color="var(--text-tertiary)">default</MonoTag>}
+              </span>
+              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.createdAt ? shortDate(h.createdAt) : '—'}</span>
+              {isDefault ? <span /> : (
+                <button type="button" aria-label={`Remove ${h.hostname}`} onClick={() => setToRemove(h)} style={iconBtn}>
+                  <Ic name="trash" size={14} />
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 40, padding: '0 16px', fontSize: 13 }}>
-        <a href="#" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}>hr.acme.com<Ic name="external" size={11} /></a>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Pill kind="success">Active</Pill><MonoTag color="var(--text-tertiary)">primary</MonoTag></span>
-        <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>Jul 21, 2026</span>
-        <RowActions />
+
+      <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <Eyebrow>Add hostname</Eyebrow>
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          Pick the surface the hostname should serve. Leave the domain blank to mint a platform
+          hostname (live immediately — <span style={{ fontFamily: 'var(--font-mono)' }}>{view.defaultHostname ? `${view.defaultHostname.split('.')[0]}-<surface>.${view.defaultHostname.split('.').slice(1).join('.')}` : '<app>-<surface>.global.substrat.run'}</span>),
+          or enter your own domain to start DNS validation.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+          {view.surfaces.length > 0 ? (
+            <Select
+              label="Surface"
+              value={surface}
+              onChange={(e) => setSurface(e.target.value)}
+              options={[
+                { value: '', label: 'Choose a surface…' },
+                ...view.surfaces.map((s) => ({ value: s.name, label: `${s.label} (${s.name})` })),
+              ]}
+              style={{ width: 260 }}
+            />
+          ) : (
+            <Input label="Surface" placeholder="e.g. eka" mono value={surface} onChange={(e) => setSurface(e.target.value)} style={{ width: 200 }} />
+          )}
+          <Input label="Custom domain (optional)" placeholder="eka.example.com" mono value={domain} onChange={(e) => setDomain(e.target.value)} style={{ width: 260 }} />
+          <Button onClick={add} disabled={adding}>{adding ? 'Binding…' : 'Add hostname'}</Button>
+        </div>
+        {note && <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</span>}
       </div>
+
+      <Dialog
+        open={toRemove !== null}
+        title={`Remove ${toRemove?.hostname ?? ''}?`}
+        danger
+        confirmLabel="Remove hostname"
+        onCancel={() => setToRemove(null)}
+        onConfirm={remove}
+      >
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          Requests to <span style={{ fontFamily: 'var(--font-mono)' }}>{toRemove?.hostname}</span> stop
+          resolving the moment you confirm.
+          {toRemove?.canonical && (
+            <>
+              {' '}This is the <span style={{ fontFamily: 'var(--font-mono)' }}>canonical</span> hostname for
+              surface <span style={{ fontFamily: 'var(--font-mono)' }}>{toRemove.surface}</span> — removing it
+              leaves that surface without a canonical name until you bind another (binding a new canonical
+              demotes any existing one automatically).
+            </>
+          )}
+        </div>
+      </Dialog>
     </div>
   );
 }
 
-function Settings({ app, onDeleted }: { app: AppRow; onDeleted: () => void }) {
+function Settings({ app, onDeleted, authServers }: { app: AppRow; onDeleted: () => void; authServers: AppRow[] }) {
   const meta = verticalMeta(app.vertical_slug);
   const [name, setName] = useState(app.name);
   const [confirm, setConfirm] = useState('');
@@ -949,6 +1232,7 @@ function Settings({ app, onDeleted }: { app: AppRow; onDeleted: () => void }) {
         </div>
         <div><Button variant="secondary">Save</Button></div>
       </div>
+      {app.vertical_slug !== 'auth-server' && <IdentityCard app={app} authServers={authServers} />}
       <div style={{ ...card, border: '1px solid var(--status-danger-fg)', padding: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--status-danger-fg)' }}>Danger zone</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -977,6 +1261,153 @@ function Settings({ app, onDeleted }: { app: AppRow; onDeleted: () => void }) {
           <Input label="Type the app name to confirm" placeholder={app.name} mono value={confirm} onChange={(e) => setConfirm(e.target.value)} />
         </div>
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * The Identity card (Settings tab): the `substrat:auth` choice made at install,
+ * readable and editable after the fact. The clientSecret is write-only — blank keeps
+ * the stored one — and the save reports honestly whether the running app received the
+ * change (`delivered`) or only the account's record did (its deployment may have no
+ * live-config support).
+ */
+function IdentityCard({ app, authServers }: { app: AppRow; authServers: AppRow[] }) {
+  const [view, setView] = useState<AppAuthView | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  // 'builtin' | 'external' | an Auth Server app's scope id.
+  const [identity, setIdentity] = useState('builtin');
+  const [issuer, setIssuer] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [audience, setAudience] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setView({ auth: null, callbackUrl: app.hostname ? `https://${app.hostname}/api/auth/callback` : null });
+      return;
+    }
+    let live = true;
+    setView(null);
+    setErr(null);
+    api
+      .appAuth(app.app_scope_id)
+      .then((v) => live && setView(v))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id, nonce]);
+
+  // Seed the form from a fresh view: a stored issuer that matches one of the team's
+  // Auth Servers selects that server; any other issuer is an external one.
+  useEffect(() => {
+    if (!view) return;
+    if (!view.auth) {
+      setIdentity('builtin');
+      return;
+    }
+    const server = authServers.find((a) => a.hostname && `https://${a.hostname}` === view.auth!.issuer);
+    setIdentity(server ? server.app_scope_id : 'external');
+    setIssuer(view.auth.issuer);
+    setClientId(view.auth.clientId);
+    setAudience(view.auth.audience ?? '');
+    setClientSecret(''); // write-only — never echoed back
+  }, [view, authServers]);
+
+  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load the identity settings — {err}</div>;
+  if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading identity settings…</div>;
+
+  const options = [
+    { value: 'builtin', label: 'Builtin — the app handles sign-in itself' },
+    { value: 'external', label: 'External OIDC issuer' },
+    ...authServers.filter((a) => a.app_scope_id !== app.app_scope_id).map((a) => ({ value: a.app_scope_id, label: `Auth Server — ${a.name}` })),
+  ];
+  // Once an issuer is wired, "builtin" is display-only: there is no un-deliver verb yet,
+  // so offering a save that silently couldn't reach the app would be dishonest.
+  const revertingToBuiltin = view.auth !== null && identity === 'builtin';
+  const externalIncomplete = identity === 'external' && (!issuer.trim() || !clientId.trim());
+
+  const save = async () => {
+    const choice: AppAuthChoice | null =
+      identity === 'external'
+        ? {
+            source: 'external',
+            issuer: issuer.trim(),
+            clientId: clientId.trim(),
+            ...(clientSecret ? { clientSecret } : {}),
+            ...(audience.trim() ? { audience: audience.trim() } : {}),
+          }
+        : identity !== 'builtin'
+          ? { source: 'auth-server', scopeId: identity }
+          : null;
+    if (!choice) return;
+    setSaving(true);
+    setNote(null);
+    try {
+      const r = await api.setAppAuth(app.app_scope_id, choice);
+      setNote(r.delivered ? 'Saved and applied to the running app.' : r.note ?? 'Saved.');
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Identity</div>
+      <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+        {view.auth ? (
+          <>Users sign in via <span style={{ fontFamily: 'var(--font-mono)' }}>{view.auth.issuer}</span> (client <span style={{ fontFamily: 'var(--font-mono)' }}>{view.auth.clientId}</span>{view.auth.hasClientSecret ? ', secret set' : ''}).</>
+        ) : (
+          <>No issuer is wired — the app’s builtin sign-in is in use.</>
+        )}
+      </div>
+      <Select label="Issuer" options={options} value={identity} onChange={(e) => setIdentity(e.target.value)} style={{ maxWidth: 420 }} />
+      {revertingToBuiltin && (
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          Switching back to builtin isn’t supported yet — the wired issuer stays until you save a different one.
+        </div>
+      )}
+      {identity === 'external' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Input
+            label="Issuer URL"
+            value={issuer}
+            onChange={(e) => setIssuer(e.target.value)}
+            placeholder="https://auth.example.com"
+            {...(view.callbackUrl ? { hint: `Register the redirect URL ${view.callbackUrl} at your issuer.` } : {})}
+          />
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Input label="Client ID" mono value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ flex: 1 }} />
+            <Input
+              label="Client secret"
+              value={clientSecret}
+              onChange={(e) => setClientSecret(e.target.value)}
+              placeholder={view.auth?.hasClientSecret ? '•••••••• (set — leave blank to keep)' : ''}
+              style={{ flex: 1 }}
+            />
+          </div>
+          <Input label="Audience (optional)" value={audience} onChange={(e) => setAudience(e.target.value)} style={{ maxWidth: 420 }} />
+        </div>
+      )}
+      {identity !== 'builtin' && identity !== 'external' && (
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          The app is re-registered at this Auth Server when you save — users sign in there.
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {note && <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</span>}
+        <div style={{ flex: 1 }} />
+        <Button onClick={save} disabled={saving || revertingToBuiltin || identity === 'builtin' || externalIncomplete}>
+          {saving ? 'Saving…' : 'Save identity'}
+        </Button>
+      </div>
     </div>
   );
 }

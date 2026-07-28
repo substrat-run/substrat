@@ -137,6 +137,10 @@ const authChoice = z.object({
   clientId: z.string().min(1).optional(),
   clientSecret: z.string().optional(),
   audience: z.string().optional(),
+  /** Share the login across every surface under this parent domain (K-26 multi-surface;
+   *  `egeryds.se` covers `crm.` + `eka.`). Validated against the request host where the
+   *  cookie is set (vertical-auth); applies under either mode. */
+  cookieDomain: z.string().min(1).optional(),
 });
 export const AUTH_CONFIG_KEY = 'substrat:auth';
 
@@ -180,13 +184,18 @@ async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
       clientSecret: choice.clientSecret ?? '',
       sessionSecret,
       ...(choice.audience ? { audience: choice.audience } : {}),
+      ...(choice.cookieDomain ? { cookieDomain: choice.cookieDomain } : {}),
     });
   }
   if ((env.AUTH_PROVIDER ?? 'better-auth-do') === 'oidc') {
     if (!env.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
     return oidcAuthProvider({ issuer: env.OIDC_ISSUER, ...(env.OIDC_AUDIENCE ? { audience: env.OIDC_AUDIENCE } : {}) });
   }
-  return doAuthProvider(identityDo(env, node), originOf(req));
+  return doAuthProvider(
+    identityDo(env, node),
+    originOf(req),
+    choice?.cookieDomain ? { cookieDomain: choice.cookieDomain } : undefined,
+  );
 }
 
 /**

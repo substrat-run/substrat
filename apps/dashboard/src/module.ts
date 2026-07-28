@@ -234,6 +234,52 @@ export const dashboardMigrations = [
       CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
     `,
   },
+  {
+    version: '0008-app-data-events',
+    sql: `
+      -- Widen the event kinds for the Export & import card (preview-and-snapshots.md
+      -- §8): 'data-exported' (the app's data left as a dump) and 'data-restored' (an
+      -- uploaded dump replaced the app's data; the detail names the safety copy).
+      -- Same rebuild-and-copy shape as 0005/0007 — SQLite can't ALTER a CHECK, and
+      -- the shipped migrations stay untouched (append-only).
+      CREATE TABLE dashboard_app_events_new (
+        id           TEXT PRIMARY KEY,
+        app_scope_id TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('created','active','failed','deleted','updated','snapshotted','snapshot-deleted','data-exported','data-restored')),
+        detail       TEXT,
+        actor        TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      INSERT INTO dashboard_app_events_new (id, app_scope_id, kind, detail, actor, created_at)
+        SELECT id, app_scope_id, kind, detail, actor, created_at FROM dashboard_app_events;
+      DROP TABLE dashboard_app_events;
+      ALTER TABLE dashboard_app_events_new RENAME TO dashboard_app_events;
+      CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
+    `,
+  },
+  {
+    version: '0009-app-hostname-events',
+    sql: `
+      -- Widen the event kinds for the Domains tab (K-26 multi-surface exposure):
+      -- 'hostname-bound' (a surface got a URL — platform-minted or a custom domain)
+      -- and 'hostname-unbound' (a binding was removed; the detail names it). Same
+      -- rebuild-and-copy shape as 0005/0007/0008 — SQLite can't ALTER a CHECK, and
+      -- the shipped migrations stay untouched (append-only).
+      CREATE TABLE dashboard_app_events_new (
+        id           TEXT PRIMARY KEY,
+        app_scope_id TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('created','active','failed','deleted','updated','snapshotted','snapshot-deleted','data-exported','data-restored','hostname-bound','hostname-unbound')),
+        detail       TEXT,
+        actor        TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      INSERT INTO dashboard_app_events_new (id, app_scope_id, kind, detail, actor, created_at)
+        SELECT id, app_scope_id, kind, detail, actor, created_at FROM dashboard_app_events;
+      DROP TABLE dashboard_app_events;
+      ALTER TABLE dashboard_app_events_new RENAME TO dashboard_app_events;
+      CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
+    `,
+  },
 ];
 
 export interface DashboardAppRow {
@@ -274,7 +320,7 @@ export interface AppEnvValue {
 export interface DashboardAppEventRow {
   id: string;
   app_scope_id: string;
-  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted';
+  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored' | 'hostname-bound' | 'hostname-unbound';
   detail: string | null;
   actor: string;
   created_at: string;
@@ -393,6 +439,50 @@ const deleteAppSnapshotOp: OperationHandler<z.infer<typeof snapshotAppInput>, { 
   assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
   const input = snapshotAppInput.parse(raw);
   recordAppEvent(ctx, input.appScopeId, 'snapshot-deleted', input.detail ?? null);
+  return { ok: true };
+};
+
+/**
+ * Authorize + record an export of the app's data (preview-and-snapshots.md §8's
+ * governed pull, from the dashboard). Same check-then-effect split as a snapshot:
+ * this asserts and writes the trail entry; the dump itself is the platform effect.
+ */
+const exportAppDataOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'data-exported', input.detail ?? null);
+  return { ok: true };
+};
+
+/**
+ * Authorize + record a restore INTO the app (§8's write half): an uploaded dump
+ * replaces the app's data wholesale. The safety copy taken just before is part of
+ * the recorded detail, so the trail names the fork to back out to.
+ */
+const restoreAppDataOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'data-restored', input.detail ?? null);
+  return { ok: true };
+};
+
+/**
+ * Authorize + record a hostname binding on one of this team's apps (K-26 multi-
+ * surface). Same check-then-effect split as a snapshot: this asserts and writes the
+ * trail entry; the platform effect (the directory bind, tenant-narrowed) follows.
+ */
+const bindAppHostnameOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'hostname-bound', input.detail ?? null);
+  return { ok: true };
+};
+
+/** The inverse record: a hostname was unbound from this app (the detail names it). */
+const unbindAppHostnameOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'hostname-unbound', input.detail ?? null);
   return { ok: true };
 };
 
@@ -516,8 +606,11 @@ const listAppEnvInput = z.object({ appScopeId: z.string().min(1) });
 const listAppEnvOp: OperationHandler<z.infer<typeof listAppEnvInput>, AppEnvValue[]> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
   const input = listAppEnvInput.parse(raw);
+  // The `substrat:*` namespace is reserved for platform-managed entries (the app's
+  // Identity choice lives at `substrat:auth`) — those have their own ops with
+  // field-wise redaction, so they never appear as an opaque blob in the Env tab.
   const rows = ctx.sql.query<DashboardAppEnvRow>(
-    'SELECT * FROM dashboard_app_env WHERE app_scope_id = ? ORDER BY key',
+    "SELECT * FROM dashboard_app_env WHERE app_scope_id = ? AND key NOT LIKE 'substrat:%' ORDER BY key",
     [input.appScopeId],
   );
   return rows.map((r) => ({
@@ -538,6 +631,103 @@ const deleteAppEnvOp: OperationHandler<z.infer<typeof deleteAppEnvInput>, { ok: 
   ctx.sql.exec('DELETE FROM dashboard_app_env WHERE app_scope_id = ? AND key = ?', [input.appScopeId, input.key]);
   return { ok: true };
 };
+
+// -- app identity (the `substrat:auth` entry) --------------------------------
+
+/**
+ * The reserved key holding the app's Identity choice (vertical-auth-detach.md §2.4) —
+ * the same JSON that `/internal/configure` delivers to the running scope. It shares
+ * the env table (authored config, same authority) but sits outside the Env tab's
+ * UPPER_SNAKE_CASE namespace and has its own ops, because the secret lives INSIDE
+ * the JSON: masking the whole value would hide the issuer and clientId the user
+ * legitimately needs to see, so redaction here is field-wise.
+ */
+const APP_AUTH_KEY = 'substrat:auth';
+
+const appAuthConfig = z.object({
+  mode: z.literal('oidc'),
+  issuer: z.string().url(),
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1).optional(),
+  audience: z.string().min(1).optional(),
+});
+
+/** The `substrat:auth` payload as authored/delivered — what `authProviderFor` parses. */
+export type AppAuthConfig = z.infer<typeof appAuthConfig>;
+
+/** The identity record as exposed to callers — the clientSecret never leaves. */
+export interface AppAuthView {
+  mode: 'oidc';
+  issuer: string;
+  clientId: string;
+  audience: string | null;
+  hasClientSecret: boolean;
+  updatedAt: string;
+}
+
+const setAppAuthInput = z.object({ appScopeId: z.string().min(1), config: appAuthConfig });
+
+/**
+ * Record the app's identity choice (upsert, same authority as managing the app). An
+ * absent clientSecret KEEPS the stored one — write-only like env secrets, so the form
+ * can change issuer/clientId without re-typing a secret it never received back.
+ * Returns the merged config so the caller can deliver exactly what was stored; the
+ * Activity trail records the issuer, never the credentials.
+ */
+const setAppAuthOp: OperationHandler<z.infer<typeof setAppAuthInput>, AppAuthConfig> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = setAppAuthInput.parse(raw);
+  const merged: AppAuthConfig = { ...input.config };
+  if (!merged.clientSecret) {
+    const stored = readAppAuth(ctx, input.appScopeId);
+    if (stored?.config.clientSecret) merged.clientSecret = stored.config.clientSecret;
+  }
+  ctx.sql.exec(
+    `INSERT INTO dashboard_app_env (id, app_scope_id, key, value, is_secret, updated_by, updated_at)
+     VALUES (?, ?, ?, ?, 1, ?, ?)
+     ON CONFLICT (app_scope_id, key) DO UPDATE SET
+       value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+    [ulid(), input.appScopeId, APP_AUTH_KEY, JSON.stringify(merged), ctx.principal, new Date().toISOString()],
+  );
+  recordAppEvent(ctx, input.appScopeId, 'updated', `identity: ${merged.issuer}`);
+  return merged;
+};
+
+const getAppAuthInput = z.object({ appScopeId: z.string().min(1) });
+
+/** The app's identity choice, clientSecret redacted. Null ⇒ the vertical's builtin auth. */
+const getAppAuthOp: OperationHandler<z.infer<typeof getAppAuthInput>, AppAuthView | null> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  const input = getAppAuthInput.parse(raw);
+  const stored = readAppAuth(ctx, input.appScopeId);
+  if (!stored) return null;
+  return {
+    mode: stored.config.mode,
+    issuer: stored.config.issuer,
+    clientId: stored.config.clientId,
+    audience: stored.config.audience ?? null,
+    hasClientSecret: stored.config.clientSecret !== undefined,
+    updatedAt: stored.updatedAt,
+  };
+};
+
+/** The stored `substrat:auth` row, parsed; undefined when absent or unreadable. */
+function readAppAuth(
+  ctx: OperationContext,
+  appScopeId: string,
+): { config: AppAuthConfig; updatedAt: string } | undefined {
+  const row = ctx.sql.query<DashboardAppEnvRow>(
+    'SELECT * FROM dashboard_app_env WHERE app_scope_id = ? AND key = ?',
+    [appScopeId, APP_AUTH_KEY],
+  )[0];
+  if (!row) return undefined;
+  try {
+    const parsed = appAuthConfig.safeParse(JSON.parse(row.value));
+    return parsed.success ? { config: parsed.data, updatedAt: row.updated_at } : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // -- team + members ----------------------------------------------------------
 
@@ -809,6 +999,10 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/update-app': updateAppOp as OperationHandler<never, unknown>,
     'dashboard/snapshot-app': snapshotAppOp as OperationHandler<never, unknown>,
     'dashboard/delete-app-snapshot': deleteAppSnapshotOp as OperationHandler<never, unknown>,
+    'dashboard/export-app-data': exportAppDataOp as OperationHandler<never, unknown>,
+    'dashboard/restore-app-data': restoreAppDataOp as OperationHandler<never, unknown>,
+    'dashboard/bind-app-hostname': bindAppHostnameOp as OperationHandler<never, unknown>,
+    'dashboard/unbind-app-hostname': unbindAppHostnameOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-failed': markAppFailedOp as OperationHandler<never, unknown>,
     'dashboard/app-events': appEventsOp as OperationHandler<never, unknown>,
     'dashboard/list-apps': listAppsOp as OperationHandler<never, unknown>,
@@ -816,6 +1010,8 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/set-app-env': setAppEnvOp as OperationHandler<never, unknown>,
     'dashboard/list-app-env': listAppEnvOp as OperationHandler<never, unknown>,
     'dashboard/delete-app-env': deleteAppEnvOp as OperationHandler<never, unknown>,
+    'dashboard/set-app-auth': setAppAuthOp as OperationHandler<never, unknown>,
+    'dashboard/get-app-auth': getAppAuthOp as OperationHandler<never, unknown>,
     'dashboard/init-team': initTeamOp as OperationHandler<never, unknown>,
     'dashboard/invite-member': inviteMemberOp as OperationHandler<never, unknown>,
     'dashboard/accept-invite': acceptInviteOp as OperationHandler<never, unknown>,

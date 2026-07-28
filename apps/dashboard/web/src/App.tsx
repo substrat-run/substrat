@@ -538,6 +538,7 @@ export function App() {
           tab={route.tab ?? 'overview'}
           onTab={(t) => go(`#/apps/${openApp.app_scope_id}/${t}`)}
           onDeleted={() => void deleteApp(openApp)}
+          authServers={apps.filter((a) => a.vertical_slug === 'auth-server' && a.status === 'active' && a.hostname)}
         />
       ) : route.section === 'apps' && route.app ? (
         // While the first listApps() is in flight the deep-linked app is merely

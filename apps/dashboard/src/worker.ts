@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, z, type PermissionKey, type TenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, z, type PermissionKey, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
@@ -31,8 +31,8 @@ import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
-import type { AppAuthChoice } from './auth-wiring.js';
+import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
+import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -418,23 +418,45 @@ async function createTeam(host: ScopeHost, env: Env, user: { id: string; email?:
   return { tenantId: t, scopeId: s, principal: owner };
 }
 
+/** An Identity choice as the API accepts it — install form and Settings tab alike. */
+const appAuthChoiceBody = z.discriminatedUnion('source', [
+  z.object({ source: z.literal('auth-server'), scopeId: z.string().min(1) }),
+  z.object({
+    source: z.literal('external'),
+    issuer: z.string().url(),
+    clientId: z.string().min(1),
+    clientSecret: z.string().optional(),
+    audience: z.string().optional(),
+  }),
+]);
+
 const createAppBody = z.object({
   verticalSlug: z.string().min(1),
   name: z.string().min(1),
   /** The Identity section's choice (vertical-auth-detach.md §2.4). Absent ⇒ builtin. */
-  auth: z
-    .discriminatedUnion('source', [
-      z.object({ source: z.literal('auth-server'), scopeId: z.string().min(1) }),
-      z.object({
-        source: z.literal('external'),
-        issuer: z.string().url(),
-        clientId: z.string().min(1),
-        clientSecret: z.string().optional(),
-        audience: z.string().optional(),
-      }),
-    ])
-    .optional(),
+  auth: appAuthChoiceBody.optional(),
 });
+
+/**
+ * Resolve an API Identity choice to a concrete issuer. An `auth-server` choice names
+ * one of the CALLER'S own apps and is resolved to its issuer origin from THEIR app
+ * list — it must be an active Auth Server with a bound hostname; anything else is a
+ * 400 now rather than a dangling issuer later.
+ */
+function resolveAuthChoice(choice: z.infer<typeof appAuthChoiceBody>, apps: DashboardAppRow[]): AppAuthChoice {
+  if (choice.source === 'external') {
+    const { source, ...rest } = choice;
+    return { source, ...rest };
+  }
+  const issuerApp = apps.find((a) => a.app_scope_id === choice.scopeId);
+  if (!issuerApp || issuerApp.vertical_slug !== 'auth-server') {
+    throw new HTTPException(400, { message: 'the chosen auth server is not one of your Auth Server apps' });
+  }
+  if (issuerApp.status !== 'active' || !issuerApp.hostname) {
+    throw new HTTPException(400, { message: `auth server '${issuerApp.name}' is not active yet — wait for it to provision` });
+  }
+  return { source: 'auth-server', issuer: `https://${issuerApp.hostname}` };
+}
 
 // A builder self-serves every channel of a PRIVATE vertical — prod included, which is
 // what makes rollback (promote an older version) a dashboard action. Prod on a LISTED
@@ -1166,6 +1188,51 @@ app.delete('/api/apps/:scopeId/snapshots/:snapshotId', async (c) => {
 });
 
 /**
+ * Export & import (preview-and-snapshots.md §8 — the dashboard half of the CLI's
+ * `scope pull`/`scope restore`). GET hands back the app's data as a dump the CLI
+ * and the Import button both accept; connected mode arrives MASKED from the CP
+ * (this surface has no break-glass). POST loads an uploaded dump into the app,
+ * replacing its data wholesale — the helper forks a safety copy first, so the
+ * response names the fork to back out to. Same authority as managing the app.
+ */
+app.get('/api/apps/:scopeId/export', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const dump = await exportAppData(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  return c.json(dump);
+});
+
+app.post('/api/apps/:scopeId/restore', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  // The upload is a pulled export or a local `.dump.json` — only `tables` matters
+  // here; any tenantId/scopeId in the file are provenance, never authority.
+  const body = z.object({ tables: z.array(scopeDumpTable).min(1) }).parse(await c.req.json());
+  const result = await restoreAppData(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    tables: body.tables,
+    appHostname: appRow.hostname,
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  return c.json(result);
+});
+
+/**
  * One app's environment/config (the Env tab). GET returns the vertical's declared
  * env-spec (placeholder + description per key, from the catalog/manifest) alongside the
  * app's current values — secret values are never echoed (write-only). PUT upserts values;
@@ -1243,6 +1310,164 @@ app.delete('/api/apps/:scopeId/env/:key', async (c) => {
   return c.body(null, 204);
 });
 
+/**
+ * The app's hostname bindings (the Domains tab; K-26 multi-surface). One scope can
+ * front more than one app — the hostname decides which surface the vertical serves
+ * (`readRoutedNode(...).surface`), so giving a surface a URL is exactly a binding.
+ * GET lists the bindings plus the vertical's DECLARED surfaces (registry ladder,
+ * same as the env-spec: pushed verticals declare them in package.json `substrat.surfaces`)
+ * so the UI offers a picker; free text stays valid — the declaration is UX, not contract.
+ */
+app.get('/api/apps/:scopeId/hostnames', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const bindings = await listAppHostnames(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  // Declared surfaces: local registry first, then the shared plane's catalog for a
+  // vertical pushed there — the same lookup ladder the Env tab's spec uses.
+  await ensureCatalog(host, STAFF);
+  const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === appRow.vertical_slug);
+  let surfaces = registered?.surfaces;
+  if (!surfaces) {
+    const cp = controlPlaneFor(c.env, node.tenantId);
+    const remote = cp ? (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug) : undefined;
+    surfaces = remote?.surfaces ?? [];
+  }
+  return c.json({ bindings, surfaces, defaultHostname: appRow.hostname });
+});
+
+/**
+ * Bind a hostname to a surface of this app. A platform hostname (`domain` omitted)
+ * is minted from the app's own label and lands ACTIVE — it rides the wildcard cert.
+ * A custom domain lands PENDING and walks the §4.2 lifecycle. Same authority as
+ * managing the app; recorded on the activity trail (`hostname-bound`).
+ */
+app.post('/api/apps/:scopeId/hostnames', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const body = z
+    .object({ surface: z.string().min(1).max(32), domain: z.string().min(1).max(253).optional() })
+    .parse(await c.req.json());
+  try {
+    const bound = await addAppHostname(host, {
+      node,
+      appScopeId: scopeId.parse(appRow.app_scope_id),
+      surface: body.surface,
+      ...(body.domain ? { customDomain: body.domain } : {}),
+      appHostname: appRow.hostname,
+      controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    });
+    return c.json(bound, 201);
+  } catch (e) {
+    if (e instanceof Error && /permission denied/.test(e.message)) throw e;
+    throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind hostname' });
+  }
+});
+
+/** Unbind one hostname. The app's default hostname is refused (409) — deleting the app retires it. */
+app.delete('/api/apps/:scopeId/hostnames/:hostname', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  try {
+    await removeAppHostname(host, {
+      node,
+      appScopeId: scopeId.parse(appRow.app_scope_id),
+      hostname: c.req.param('hostname'),
+      defaultHostname: appRow.hostname,
+      controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    });
+  } catch (e) {
+    if (e instanceof Error && /permission denied/.test(e.message)) throw e;
+    const message = e instanceof Error ? e.message : 'could not unbind hostname';
+    throw new HTTPException(/not bound/.test(message) ? 404 : 409, { message });
+  }
+  return c.json({ deleted: c.req.param('hostname').toLowerCase() });
+});
+
+/**
+ * The app's Identity choice (vertical-auth-detach.md §2.4) as authored at install or
+ * updated since — clientSecret redacted (write-only), `auth: null` ⇒ the vertical's
+ * builtin sign-in. The callback URL rides along so a user registering the client at an
+ * external issuer can copy it from the same card.
+ */
+app.get('/api/apps/:scopeId/auth', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const auth = await dash.invoke('dashboard/get-app-auth', { appScopeId: appRow.app_scope_id });
+  return c.json({ auth, callbackUrl: appRow.hostname ? `https://${appRow.hostname}/api/auth/callback` : null });
+});
+
+/**
+ * Update the app's Identity choice. Authors the record first (a blank clientSecret
+ * keeps the stored one), then DELIVERS it to the running scope — and reports honestly:
+ * `delivered: false` with a readable note when the app's deployment cannot receive
+ * live config (its 501), instead of failing the save or pretending it applied.
+ */
+app.put('/api/apps/:scopeId/auth', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const choice = resolveAuthChoice(appAuthChoiceBody.parse(await c.req.json()), apps);
+  if (!appRow.hostname) {
+    throw new HTTPException(400, { message: 'this app has no hostname yet, so the OIDC callback URL cannot be formed' });
+  }
+  const config = await authConfigFor(choice, {
+    appName: appRow.name,
+    redirectUri: `https://${appRow.hostname}/api/auth/callback`,
+  });
+  // Author first — the merged config (stored secret filled in) is what gets delivered.
+  const merged = (await dash.invoke('dashboard/set-app-auth', {
+    appScopeId: appRow.app_scope_id,
+    config,
+  })) as Record<string, string>;
+  let delivered = false;
+  let note: string | undefined;
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (cp) {
+    try {
+      await cp.configureInstance(scopeId.parse(appRow.app_scope_id), [
+        { key: 'substrat:auth', value: JSON.stringify(merged) },
+      ]);
+      delivered = true;
+    } catch (e) {
+      note =
+        e instanceof ControlPlaneError && e.status === 501
+          ? `Saved, but not applied: this app's deployment cannot receive auth settings while running (no live-config support). It applies once the vertical adds /internal/configure.`
+          : `Saved, but not applied: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  } else {
+    note = 'Saved. This deployment has no delivery seam (embedded mode) — the app reads authored config.';
+  }
+  return c.json({ delivered, ...(note ? { note } : {}) });
+});
+
 /** Create an app — provisioned into MY tenant (from the session), authorized in-scope. */
 app.post('/api/apps', async (c) => {
   const host = hostFor(c.env);
@@ -1264,26 +1489,15 @@ app.post('/api/apps', async (c) => {
   // (`callout-sesamy.global.substrat.run`). From the TEAM record, not the user.
   const team = await host.admin.getTenant(STAFF, node.tenantId);
   const teamHandle = team?.name ? slugify(team.name) : undefined;
-  // The Identity choice (vertical-auth-detach.md §2.4). A team Auth Server is named by
-  // its app scope id and resolved to its ISSUER ORIGIN from the caller's OWN apps — it
-  // must be one of theirs, active, with a bound hostname; anything else is a 400 now
-  // rather than a dangling issuer later.
+  // The Identity choice (vertical-auth-detach.md §2.4), resolved to a concrete issuer
+  // (`resolveAuthChoice` above — an auth-server pick must be one of the caller's own).
   let appAuth: AppAuthChoice | undefined;
-  if (body.auth?.source === 'external') {
-    const { source, ...rest } = body.auth;
-    appAuth = { source, ...rest };
-  } else if (body.auth?.source === 'auth-server') {
-    const chosenScopeId = body.auth.scopeId;
-    const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-    const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-    const issuerApp = apps.find((a) => a.app_scope_id === chosenScopeId);
-    if (!issuerApp || issuerApp.vertical_slug !== 'auth-server') {
-      throw new HTTPException(400, { message: 'the chosen auth server is not one of your Auth Server apps' });
-    }
-    if (issuerApp.status !== 'active' || !issuerApp.hostname) {
-      throw new HTTPException(400, { message: `auth server '${issuerApp.name}' is not active yet — wait for it to provision` });
-    }
-    appAuth = { source: 'auth-server', issuer: `https://${issuerApp.hostname}` };
+  if (body.auth) {
+    const apps =
+      body.auth.source === 'auth-server'
+        ? ((await (await host.getScope(node.principal, node.tenantId, node.scopeId)).invoke('dashboard/list-apps', {})) as DashboardAppRow[])
+        : [];
+    appAuth = resolveAuthChoice(body.auth, apps);
   }
   const appRow = await createApp(host, {
     node,

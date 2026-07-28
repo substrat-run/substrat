@@ -275,7 +275,7 @@ export const APP_TABS: Array<{ value: string; label: string; count?: number; fut
   { value: 'deployments', label: 'Deployments', future: true },
   { value: 'snapshots', label: 'Snapshots' },
   { value: 'env', label: 'Environment Variables', count: 4 },
-  { value: 'domains', label: 'Domains', count: 1 },
+  { value: 'domains', label: 'Domains' },
   { value: 'integrations', label: 'Integrations', count: 2 },
   { value: 'settings', label: 'Settings' },
 ];

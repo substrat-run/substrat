@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import {
   adminAction,
   channelName,
@@ -312,6 +313,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A builder REQUESTS publication of a vertical it owns (marketplace-publish.md §5); the
     // `listing` flip stays staff-only. Ownership is checked in the handler.
     { method: 'POST', re: /\/verticals\/[^/]+\/publish-request$/ },
+    // The hostname map, tenant-narrowed (K-26 multi-surface exposure): a builder manages
+    // bindings for ITS OWN scopes — the same power the dashboard already exercises for it
+    // over the service token. Each handler narrows to the principal's tenant; an unknown
+    // or foreign hostname reads as 404 (existence hiding, like the registry filter).
+    { method: 'GET', re: /\/hostnames$/ },
+    { method: 'POST', re: /\/hostnames$/ },
+    { method: 'PATCH', re: /\/hostnames\/[^/]+\/status$/ },
+    { method: 'DELETE', re: /\/hostnames\/[^/]+$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -872,11 +881,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // (builder-plane.md §5): they send a bare `--slug`, the control plane forms the prefix
   // from their authenticated tenant — so two builders can each own a `helpdesk` with no
   // global claim race, and a builder can never name another tenant's namespace (their
-  // prefix is fixed by auth). Staff address a vertical by its full id, so for them the raw
-  // slug is the identity. A builder slug that already contains `/` yields a two-slash id
-  // that fails `verticalSlug` validation / the ownership check downstream — fail-closed.
+  // prefix is fixed by auth). Idempotent: a builder addressing its own FULL id (e.g. the
+  // `verticalSlug` a deploy response returned) is not double-prefixed — the prefix is
+  // auth-derived either way, so this can never reach another tenant's namespace. Staff
+  // address a vertical by its full id, so for them the raw slug is the identity. A builder
+  // slug carrying any OTHER tenant's prefix yields a two-slash id that fails
+  // `verticalSlug` validation / the ownership check downstream — fail-closed.
   const effectiveSlug = (p: Principal, raw: string): string =>
-    p.kind === 'builder' ? `${p.tenantSlug}/${raw}` : raw;
+    p.kind === 'builder' ? (raw.startsWith(`${p.tenantSlug}/`) ? raw : `${p.tenantSlug}/${raw}`) : raw;
 
   app.get('/verticals', async (c) => {
     const all = await admin.listVerticals(c.get('actor'));
@@ -1049,15 +1061,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'deploy is not configured on this control plane' }, 501);
     }
     const p = c.get('principal');
-    // A builder pushes a bare `--slug`; the registry id is `<tenantSlug>/<name>` (§5).
-    const slug = effectiveSlug(p, c.req.param('slug'));
-    // A builder pushes to a slug it owns, or claims an unregistered one (§3). Checked
-    // BEFORE the upload so a refused push never leaves an orphaned namespace script.
-    // `existingOwner` also lets a staff push stay ownership-idempotent (below).
-    const existingOwner = await ownerOf(c.get('actor'), slug);
-    if (p.kind === 'builder' && existingOwner !== undefined && existingOwner !== p.tenantId) {
-      return c.json({ error: 'forbidden' }, 403);
-    }
     const form = await c.req.formData();
     const raw = form.get('manifest');
     if (typeof raw !== 'string') return c.json({ error: 'missing manifest part' }, 400);
@@ -1065,6 +1068,60 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
     // §4 sandbox contract, before anything reaches the namespace.
     assertSandboxContract(manifest);
+
+    // The workspace this push is FOR — the project's pin (package.json `substrat.tenant`),
+    // sent by the CLI alongside the bundle. The pin is intent, and intent is honored or
+    // refused, never silently reinterpreted: a BUILDER's workspace is already fixed by
+    // auth, so a pin naming a different one is a 403 rather than a push that lands
+    // somewhere the project didn't say; STAFF have no workspace of their own, so the pin
+    // is what makes their push land as the tenant's — prefixed and owned exactly as the
+    // equivalent builder push — instead of claiming the slug platform-owned (unowned ⇒
+    // invisible in every workspace dashboard, and never self-admitting) with the pin
+    // silently dropped. An old CLI that sends no pin keeps today's behavior on all paths.
+    const pinField = form.get('tenant');
+    const pin = typeof pinField === 'string' && pinField.length > 0 ? pinField : null;
+
+    // Resolve the registry id + owner this push acts on. Checked BEFORE the upload so a
+    // refused push never leaves an orphaned namespace script.
+    const bare = c.req.param('slug');
+    let slug: string;
+    let ownerTenant: TenantId | null;
+    if (p.kind === 'builder') {
+      if (pin && pin !== p.tenantSlug && pin !== p.tenantId) {
+        return c.json(
+          { error: `push is pinned to workspace '${pin}' but this session acts for '${p.tenantSlug}'` },
+          403,
+        );
+      }
+      slug = effectiveSlug(p, bare);
+      // A builder pushes to a slug it owns, or claims an unregistered one (§3).
+      const existingOwner = await ownerOf(c.get('actor'), slug);
+      if (existingOwner !== undefined && existingOwner !== p.tenantId) {
+        return c.json({ error: 'forbidden' }, 403);
+      }
+      ownerTenant = p.tenantId;
+    } else if (pin) {
+      const workspace = (await admin.listTenants(c.get('actor'))).find(
+        (t) => t.slug === pin || t.id === pin,
+      );
+      if (!workspace) return c.json({ error: `unknown workspace '${pin}'` }, 404);
+      // Back-compat: a BARE slug already registered as the pinned tenant's (a staff
+      // hand-registration predating prefixed claims) stays addressable as itself.
+      // Otherwise the claim lands under the tenant prefix, exactly like a builder push —
+      // same namespace, no claim race with other workspaces' bare names.
+      const bareOwner = await ownerOf(c.get('actor'), bare);
+      slug = bareOwner === workspace.id ? bare : `${workspace.slug}/${bare}`;
+      const existingOwner = slug === bare ? bareOwner : await ownerOf(c.get('actor'), slug);
+      if (existingOwner !== undefined && existingOwner !== workspace.id) {
+        return c.json({ error: `vertical '${slug}' is not owned by workspace '${pin}'` }, 403);
+      }
+      ownerTenant = workspace.id;
+    } else {
+      // No pin: the raw slug is the identity and an existing owner is preserved
+      // (null ⇒ platform-owned for a first-party vertical) — unchanged staff behavior.
+      slug = bare;
+      ownerTenant = (await ownerOf(c.get('actor'), slug)) ?? null;
+    }
 
     const modules: { name: string; content: Uint8Array; contentType: string }[] = [];
     for (const [name, value] of form.entries()) {
@@ -1105,14 +1162,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
 
     // Register-then-publish, both idempotent-ish below the seam: a first push of a
-    // slug registers it; publishVersion lands the version pending with deploymentRef.
-    // A builder push claims the slug for its tenant; a staff push preserves the existing
-    // owner (null ⇒ platform-owned for a first-party vertical) rather than clobbering it.
+    // slug registers it; publishVersion lands the version pending with deploymentRef
+    // (or admitted, for a PRIVATE vertical — the registry's self-admit rule). The owner
+    // was resolved with the slug above: the builder's tenant, the pinned workspace, or
+    // the preserved existing owner for an unpinned staff push.
     await admin.registerVertical(c.get('actor'), {
       slug,
       name: manifest.name ?? slug,
       source: 'cli',
-      ownerTenant: p.kind === 'builder' ? p.tenantId : (existingOwner ?? null),
+      ownerTenant,
       // The vertical's declared config surface rides to the registry, so the dashboard
       // renders a settings form for a pushed vertical exactly like a builtin.
       ...(manifest.envSpec ? { envSpec: manifest.envSpec } : {}),
@@ -1122,6 +1180,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ...(manifest.entitlements ? { entitlements: manifest.entitlements } : {}),
       ...(manifest.provides ? { provides: manifest.provides } : {}),
       ...(manifest.requires ? { requires: manifest.requires } : {}),
+      // The declared surfaces (K-26) ride like envSpec: registry metadata for the
+      // hostname-binding picker, never behavior. Not part of any admission digest.
+      ...(manifest.surfaces ? { surfaces: manifest.surfaces } : {}),
     });
     await admin.publishVersion(c.get('actor'), {
       id,
@@ -1132,8 +1193,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       migrationDigest: manifest.digests.migration,
       deploymentRef,
     });
+    // Same spirit as the permission-surface gate, advisory tier: when the push DECLARES
+    // surfaces, name any surface that hostnames are still bound to but the declaration
+    // dropped — the URL keeps resolving (routing never keys on the declaration), it just
+    // serves whatever the vertical does for an unknown surface. A push declaring nothing
+    // opts out of the check entirely.
+    const warnings: string[] = [];
+    if (manifest.surfaces?.length) {
+      const declared = new Set(manifest.surfaces.map((s) => s.name));
+      const bound = await admin.listHostnames(c.get('actor'), {});
+      for (const h of bound) {
+        if (h.verticalSlug === slug && !declared.has(h.surface)) {
+          warnings.push(
+            `hostname '${h.hostname}' is bound to surface '${h.surface}', which this version no longer declares`,
+          );
+        }
+      }
+    }
     const version = (await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id);
-    return c.json(version, 201);
+    return c.json({ ...version, ...(warnings.length ? { warnings } : {}) }, 201);
   });
 
   // -- observability (design/observability.md §4.1) --------------------------
@@ -1195,22 +1273,49 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   // -- the hostname map (§4.7, K-26) -----------------------------------------
-  // The three STAFF actions land here. `resolveHostname` deliberately does NOT:
-  // it is the router's per-request machine path, unaudited by design (K-24), and
-  // putting it on the audited staff surface would either flood the log or quietly
-  // create an unaudited route on a surface whose whole claim is that it is audited.
-  // The router reads the directory directly; it does not come through here.
+  // Staff actions, PLUS a tenant-narrowed builder view (multi-surface exposure —
+  // binding an EKA-style second surface is self-serve for the scope's own tenant).
+  // `resolveHostname` deliberately does NOT land here: it is the router's per-request
+  // machine path, unaudited by design (K-24), and putting it on the audited staff
+  // surface would either flood the log or quietly create an unaudited route on a
+  // surface whose whole claim is that it is audited. The router reads the directory
+  // directly; it does not come through here.
+
+  // A builder's view of one hostname: the row when it belongs to their tenant,
+  // undefined otherwise — a foreign hostname must read as nonexistent, never as 403
+  // (which would confirm the name is taken by someone).
+  const tenantHostname = async (c: Context<{ Variables: Vars }>, name: string) => {
+    const p = c.get('principal');
+    const filter = p.kind === 'builder' ? { tenantId: p.tenantId } : {};
+    return (await admin.listHostnames(c.get('actor'), filter)).find(
+      (h) => h.hostname === name.toLowerCase(),
+    );
+  };
 
   app.get('/hostnames', async (c) => {
+    const p = c.get('principal');
     const filter = listHostnamesQuery.parse({
       tenantId: c.req.query('tenantId'),
       scopeId: c.req.query('scopeId'),
     });
+    // A builder's list is ALWAYS its own tenant's — the query may narrow further
+    // (scopeId) but never widen; a foreign tenantId in the query loses silently.
+    if (p.kind === 'builder') filter.tenantId = p.tenantId;
     return c.json(await admin.listHostnames(c.get('actor'), filter));
   });
 
   app.post('/hostnames', async (c) => {
+    const p = c.get('principal');
     const input = bindHostnameBody.parse(await c.req.json());
+    if (p.kind === 'builder') {
+      // The body names the tenant the binding lands under; a builder may only name
+      // its own (the adapter then verifies the scope belongs to it, K-3).
+      if (input.tenantId !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
+      // The region column is an EU-residency claim (K-30) — never builder-suppliable.
+      if (input.region !== null) {
+        return c.json({ error: 'region is derived from the scope, not chosen on a binding' }, 403);
+      }
+    }
     await admin.bindHostname(c.get('actor'), input);
     const bound = (await admin.listHostnames(c.get('actor'), { scopeId: input.scopeId })).find(
       (h) => h.hostname === input.hostname,
@@ -1223,6 +1328,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Not path-parsed through the schema: a hostname is the path segment here, and
     // `setHostnameStatus` normalizes and 404s an unknown one below the seam.
     const name = c.req.param('hostname');
+    if (c.get('principal').kind === 'builder' && !(await tenantHostname(c, name))) {
+      return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
+    }
     await admin.setHostnameStatus(c.get('actor'), name, status, note);
     const row = (await admin.listHostnames(c.get('actor'), {})).find(
       (h) => h.hostname === name.toLowerCase(),
@@ -1231,10 +1339,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   // Unbind (hard-delete) a hostname row — what the orphan cleanup uses on rows
-  // whose scope is archived or gone. Staff-only (not in BUILDER_ROUTES), audited
-  // below the seam, idempotent: an unknown hostname deletes nothing and still 200s.
+  // whose scope is archived or gone, and what an operator uses to retire a surface
+  // URL. Audited below the seam, idempotent for staff: an unknown hostname deletes
+  // nothing and still 200s. For a builder a hostname outside their tenant is a 404 —
+  // idempotency yields to existence hiding at the tenant boundary.
   app.delete('/hostnames/:hostname', async (c) => {
     const name = c.req.param('hostname');
+    if (c.get('principal').kind === 'builder' && !(await tenantHostname(c, name))) {
+      return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
+    }
     await admin.unbindHostname(c.get('actor'), name);
     return c.json({ deleted: name.toLowerCase() });
   });

@@ -23,6 +23,15 @@ export interface PushOptions {
   slug: string;
   version: string;
   name?: string;
+  /**
+   * The workspace this push is FOR (the project pin — cli.ts resolves --tenant →
+   * SUBSTRAT_TENANT → package.json `substrat.tenant`). Sent with the bundle so the
+   * control plane can HONOR it regardless of who is authenticated: a builder session
+   * with a different workspace is refused (not silently redirected), and a staff
+   * session's claim lands as the pinned tenant's — prefixed and owned like the
+   * equivalent builder push — instead of platform-owned with the pin dropped.
+   */
+  tenant?: string;
   /** The vertical's declared env-spec (from package.json `substrat.envSpec`), carried to the
    *  registry so the platform can render a config form for it. Validated control-plane-side. */
   envSpec?: readonly unknown[];
@@ -31,6 +40,9 @@ export interface PushOptions {
   entitlements?: readonly unknown[];
   provides?: readonly unknown[];
   requires?: readonly unknown[];
+  /** The surfaces the vertical serves (K-26), from package.json `substrat.surfaces` —
+   *  labels only; buys the dashboard a hostname-binding picker + a push-time warning. */
+  surfaces?: readonly unknown[];
   controlPlaneUrl: string;
   /** The auth header to send — a bearer session or an x-service-token (see config.resolveAuth). */
   authHeader: Record<string, string>;
@@ -44,7 +56,9 @@ export interface PushOptions {
  * credential (`opts.authHeader` — a browser session or a service token), never a
  * hand-picked `--actor`.
  */
-export async function push(opts: PushOptions): Promise<{ id: string; admission: string; deploymentRef: string }> {
+export async function push(
+  opts: PushOptions,
+): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
   const cfg = readJsonc(join(opts.dir, 'wrangler.jsonc'));
 
   // A vertical's OWN stores travel with the bundle: its DO classes, and its D1 databases
@@ -108,6 +122,7 @@ export async function push(opts: PushOptions): Promise<{ id: string; admission: 
     ...(opts.entitlements ? { entitlements: opts.entitlements } : {}),
     ...(opts.provides ? { provides: opts.provides } : {}),
     ...(opts.requires ? { requires: opts.requires } : {}),
+    ...(opts.surfaces ? { surfaces: opts.surfaces } : {}),
     digests: {
       manifest: await sha256(concat),
       permission: await sha256(Buffer.from(JSON.stringify(bindings))),
@@ -117,11 +132,14 @@ export async function push(opts: PushOptions): Promise<{ id: string; admission: 
 
   const form = new FormData();
   form.set('manifest', JSON.stringify(manifest));
+  // The workspace pin rides WITH the push (not in the manifest — it is addressing, not
+  // code, so it stays out of every digest). The control plane honors or refuses it.
+  if (opts.tenant) form.set('tenant', opts.tenant);
   for (const m of modules) {
     form.set(m.name, new Blob([m.content], { type: 'application/javascript+module' }), m.name);
   }
 
-  const url = `${opts.controlPlaneUrl}/verticals/${opts.slug}/deploy`;
+  const url = `${opts.controlPlaneUrl}/verticals/${encodeURIComponent(opts.slug)}/deploy`;
   console.log(`uploading ${entry} (+${modules.length - 1} modules) → ${url}`);
   const res = await fetch(url, {
     method: 'POST',
@@ -132,7 +150,7 @@ export async function push(opts: PushOptions): Promise<{ id: string; admission: 
   if (!res.ok) {
     throw new Error(`push failed (${res.status}): ${body}`);
   }
-  return JSON.parse(body) as { id: string; admission: string; deploymentRef: string };
+  return JSON.parse(body) as { id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] };
 }
 
 /** Push defaults read from a vertical's package.json, so `substrat push` needs no flags. */
@@ -159,6 +177,8 @@ export interface VerticalMeta {
   entitlements: readonly unknown[] | undefined;
   provides: readonly unknown[] | undefined;
   requires: readonly unknown[] | undefined;
+  /** Declared surfaces (K-26), from package.json `substrat.surfaces`: `[{ name, label }]`. */
+  surfaces: readonly unknown[] | undefined;
 }
 
 /**
@@ -172,7 +192,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   let pkg: {
     name?: string;
     version?: string;
-    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[] };
+    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; surfaces?: unknown[] };
   } = {};
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg;
@@ -193,6 +213,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
     entitlements: s?.entitlements,
     provides: s?.provides,
     requires: s?.requires,
+    surfaces: s?.surfaces,
   };
 }
 
@@ -224,21 +245,28 @@ function isNewer(a: [number, number, number], b: [number, number, number]): bool
  * builder never hand-tracks the number. Falls back to the package.json seed (or `0.0.1`) for
  * the first push of a slug the registry has never seen. A non-semver latest is bumped as-is
  * would be wrong, so those are skipped when finding the max.
+ *
+ * Takes CANDIDATE slugs because the caller may not know the registry id its push will
+ * land on: a pinned push claims `<tenantSlug>/<slug>` in general but a legacy bare row
+ * owned by the pin stays bare — so cli.ts asks for both and the max across them wins
+ * (they are the same lineage; at most one exists in practice).
  */
 export async function nextVersion(
   controlPlaneUrl: string,
   header: Record<string, string>,
-  slug: string,
+  slugs: readonly string[],
   seed: string | undefined,
 ): Promise<string> {
   const base = controlPlaneUrl.replace(/\/$/, '');
-  const versions = await fetch(`${base}/verticals/${encodeURIComponent(slug)}/versions`, { headers: header })
-    .then((r) => (r.ok ? (r.json() as Promise<{ version: string }[]>) : []))
-    .catch(() => [] as { version: string }[]);
   let best: [number, number, number] | null = null;
-  for (const v of versions) {
-    const t = parseSemver(v.version);
-    if (t && (!best || isNewer(t, best))) best = t;
+  for (const slug of slugs) {
+    const versions = await fetch(`${base}/verticals/${encodeURIComponent(slug)}/versions`, { headers: header })
+      .then((r) => (r.ok ? (r.json() as Promise<{ version: string }[]>) : []))
+      .catch(() => [] as { version: string }[]);
+    for (const v of versions) {
+      const t = parseSemver(v.version);
+      if (t && (!best || isNewer(t, best))) best = t;
+    }
   }
   if (best) return `${best[0]}.${best[1]}.${best[2] + 1}`;
   return seed && parseSemver(seed) ? seed : '0.0.1';
