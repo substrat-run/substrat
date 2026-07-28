@@ -1,5 +1,180 @@
 # @substrat-run/contracts
 
+## 0.24.0
+
+### Minor Changes
+
+- 72b1128: Entitlements express a plan (#33): the two-column SKU flag grows `expiresAt`,
+  `quota`, `plan` and `grantedAt`/`grantedBy`. Expiry is the one field the kernel
+  itself enforces — an expired grant fails closed at the per-invoke gate exactly as
+  if revoked, checked lazily at read like tuple expiry (never swept), and the row
+  stays in `listEntitlements` so a lapsed trial reads as lapsed rather than
+  never-granted. Quota and tier are expression only, per the D-33 reframe: they
+  describe the builder's subscription, and counting usage against them is the
+  builder portal's job — which is why plan _expression_ lands ahead of billing
+  (#39 stays blocked on meters). Grant calls are PATCH-shaped: omitted fields
+  preserve what the row carries (a bare re-grant on an idempotent provisioning
+  path cannot silently turn a trial perpetual), explicit null clears, and any
+  effective change is a renewal audited with before/after. `listEntitlements` now
+  returns `EntitlementGrant[]` instead of `string[]`; the PUT route accepts the
+  plan as an optional body (a bodyless PUT stays the bare-flag grant); both
+  adapters widen `_substrat_entitlements` with nullable columns via the existing
+  ensure-column path, so legacy rows read as perpetual boolean flags — exactly
+  their old semantics. The console shows and edits the plan half; Callout's boot
+  mirror forwards whole grants so the shared plane never sees a trial as
+  perpetual.
+- 1cfce31: A hosted vertical reads its entitlements at request time from a scope-local projection (#304),
+  settling kernel open-question 5 with the same answer as the routing cache.
+
+  Entitlements used to be a coordinator-only, trust-at-provision check: it gated _module loading_,
+  but a dispatched worker could not read `plan`/`quota`/`tier` at request time — the `CONTROL_PLANE`
+  binding is forbidden by the sandbox contract (#302) — and a CP-less scope short-circuited the gate
+  to `true`, enforcing nothing in-request, not even expiry.
+
+  Entitlements are now **projected into each scope** alongside roles and tenant tuples, extending the
+  scope-local-permissions machinery rather than duplicating it:
+
+  - **`OperationContext` gains `entitlement(key)` and `entitlements()`** — the sanctioned request-time
+    read. Returns the live view (`key`, `plan`, `quota`, `expiresAt`) or `null`; expiry is applied at
+    read, so a non-null result is always live. A hosted scope reads its local projection; a
+    console-managed scope reads over the same RPC the permission checker uses. New `EntitlementView`
+    contract type.
+  - **The per-operation gate fails closed against the projection** on the scope-local path — expiry
+    and revocation now enforce at request time in a hosted vertical, not only at provision.
+  - **A grant/revoke fans out to invalidate** the projected scopes — the event-invalidation half of
+    kernel open-question 5's answer (cached in scope DOs with event invalidation), deliberately the
+    same project-on-write mechanism the routing/suspension cache defers to.
+
+  Two posture calls, per #33's grain:
+
+  - **Expose, don't enforce** `quota`/`plan`: the kernel gates presence + expiry; the vertical reads
+    the number and enforces its own quota (no kernel usage-counting).
+  - **Fail-closed enforcement flips per scope** via an `entitlements_enforced` marker set the first
+    time entitlements are projected — a scope provisioned before #304 keeps trusting upstream until a
+    fan-out / reconcile / re-provision back-fills it, so the switch to strict enforcement strands no
+    live scope.
+
+  `provisionScopeLocal` accepts an optional `entitlements` list (the platform passes the tenant's
+  grants at provision). Scoped out as a follow-up: the platform→dispatched-vertical provision path
+  (control-plane-api) does not yet _pass_ entitlements into `provisionScopeLocal`, so re-projection to
+  a live dispatched worker rides re-provision/reconcile until that is wired; expiry still enforces
+  locally meanwhile, because the projected row carries it.
+
+- aa503c2: Record what authorized a mutation on its event, and what was refused (K-34, K-35).
+
+  **K-34 — authorization on the event envelope.** `ctx.check` computes a `Decision` whose
+  allow branch carries the proof chain, and the kernel discarded it — so a mutation-event
+  recorded who acted but never under what authority. `DomainEvent` gains an optional,
+  kernel-stamped `authorization: {permission, grant?}[]`: the checks the emitting operation
+  passed, plus — when the allow came via a capability grant rather than a role — the granting
+  tuple's `object` (the entity/node it was granted on). The shape correction from the design
+  note: there is no grant _id_ — a grant is a relation tuple with no surrogate key, so the
+  tuple's object is what names it; `contracts` exports `grantRefFromProof` for this. The full
+  proof chain is not persisted (`explain` re-derives it); only the pointer re-derivation
+  cannot recover — which check was consulted at write time — is kept. Module code can neither
+  supply it (not on `DomainEventInput`) nor suppress it; system/override actors are
+  unconditionally allowed, so their checks are not recorded. The operation context is now
+  built fresh per invoke so the accumulator cannot leak across operations.
+
+  **K-35 — a scope-local denial log.** `assertAllowed` threw `PermissionDenied` and nothing
+  recorded it. A denial happens in the scope's serialization domain and rolls its own
+  operation back, so it cannot reach the directory access log and would be erased if written
+  in the operation's transaction. It now lands in a scope-local `_substrat_denials` (actor,
+  permission, node, operation, at, drained_at), recorded at the operation boundary the moment
+  a `PermissionDenied` unwinds it — a fresh autocommit write after the rollback, so it
+  survives. Only enforced denials record; a bare `ctx.check` a module branches on is not a
+  denial. `PermissionDenied` now carries the checked `permission` and `node`.
+
+  Both surfaces are additive kernel-schema changes (a nullable `_substrat_outbox.authorization`
+  column and the new `_substrat_denials` table), applied on both adapters (pure-SQLite and the
+  DO port) via KERNEL_DDL + an additive column on existing scopes. Legacy outbox rows read as
+  `authorization` NULL — honestly unrecorded, not empty. Held to the same contract on both
+  adapters by new cases in the permission contract suite.
+
+- 5a3ef82: Ship the vertical's declared permission surface in the deploy manifest (D-39).
+
+  The permission registry — every key + description a registered manifest declares, the
+  role templates provisioning defines, and the entity-grant shapes — existed only at build
+  time as `demos/*/PERMISSIONS.md`. The deploy manifest carried `ownerGrants` and a
+  `digests.permission` HASH of that surface, so the platform committed (at promotion) to
+  content it did not hold, and the dashboard kept a hardcoded third copy. Worse, the digest
+  was a placeholder: it hashed the worker's `bindings`, not any permission content, so the
+  "permissions changed" promotion checkpoint fired on binding changes and missed real
+  permission changes.
+
+  Now `deployManifest` carries a first-class `registry` (`permissionRegistry`:
+  `permissions[]` with `declaredBy`, `roles[]`, `entityGrants[]`), and `digests.permission`
+  is its content hash. `tools/permission-diff.mts` emits a machine-readable
+  `permissions.json` next to `PERMISSIONS.md` — from the SAME `MODULES` + `ROLES` +
+  `ENTITY_GRANTS` the host registers — CI-checked with `--check`, so it cannot drift from
+  what is enforced and it never requires the CLI to load (or execute) module code. `push`
+  reads that checked-in artifact and injects it; the digest is a canonical, formatting-
+  independent hash of the surface, so it moves iff a key, description, role, or grant shape
+  moves. Additive and optional (D-28): a vertical shipping no registry hashes the empty
+  surface (never bindings again), and the control-plane trust-boundary parse accepts the
+  new field unchanged.
+
+  This is what a tenant-facing permissions view (and a real version-to-version admission
+  diff) consume without new backend plumbing.
+
+- 4c275df: The hosted-vertical sandbox is a positive binding allowlist, not a denylist (#302).
+  `assertSandboxContract` used to refuse a known-bad shortlist — `CONTROL_PLANE`, `service`
+  bindings, cross-script DO — and allow **everything else by omission**: KV, Queues, R2, and
+  analytics were never named or validated, and an unrecognized binding type sailed straight
+  through. "What passes" was an emergent property of what the denylist forgot to ban, so a
+  builder couldn't predict admission and the platform couldn't say what it permitted.
+
+  Inverted: a vertical may now declare only its OWN resources, from one written set —
+  `ADMISSIBLE_BINDING_TYPES` in `@substrat-run/contracts`, so the CLI can predict admission
+  from the same list the control plane enforces. Permitted are its `durable_object_namespace`
+  (own class only — no `script_name`, `class_name` ∈ declared `doClasses`) and own data stores:
+  `d1`, `kv_namespace`, `queue`, `r2_bucket`, `analytics_engine`, plus inert `secret_text` /
+  `plain_text` config. Anything else is refused **by omission**, with a message that names the
+  offending binding and its type and points at self-serve-deploy.md §4.1.
+
+  Two posture calls, now documented rather than incidental: own→own **`service` bindings stay
+  rejected** (a hosted vertical is one serving script — no own sibling to bind, and platform
+  reach is the router, K-27); own **`d1` stays admitted**, but its `database_id` ownership is
+  still unproven and trusted under model-B human admission until platform provisioning injects
+  the id (#301). `CONTROL_PLANE` is refused by **name** whatever type it claims, so a
+  masquerading binding can't slip through the type check.
+
+  `type` stays a free string at the schema layer on purpose: a refused type produces a named,
+  actionable rejection instead of a generic Zod parse error. Decision D-40; §4.1 enumerates the
+  full permitted/rejected/why table.
+
+- d4bf108: Surface hostname binding is operator-facing (K-26 multi-surface exposure — the Egeryds
+  EKA ask). The vertical side always worked: one scope, one worker, one bundle, and
+  `readRoutedNode(...).surface` decides which app the hostname serves. What was missing
+  was any way to GIVE a second surface a URL; `bindHostname` existed but nothing
+  operator-facing called it.
+
+  The dashboard's Domains tab is now real: it lists an app's bindings (hostname, surface,
+  status, canonical), mints a platform hostname for a surface (`crm.global…` + `eka` →
+  `crm-eka.global…`, live immediately — it rides the wildcard cert), records a custom
+  domain as `pending` into the §4.2 lifecycle, and unbinds with the canonical-demotion
+  rule stated in the UI. The default hostname is refused for removal — deleting the app
+  retires it. Both mutations gate on `dashboard:provision-app` in the caller's own scope
+  and land on the activity trail as `hostname-bound` / `hostname-unbound` (migration 0009
+  widens the event CHECK, rebuild-and-copy like 0005–0008). A custom-domain form never
+  accepts platform names — that path is the mint, so labels can't be squatted cross-tenant.
+
+  The control plane's hostname routes join `BUILDER_ROUTES`, tenant-narrowed: a builder
+  lists only its own tenant's rows (a foreign `tenantId` in the query loses silently),
+  binds only into its own tenant, never supplies `region` (an EU-residency claim, K-30),
+  and a foreign hostname on status/unbind reads 404 — indistinguishable from absent. CLI
+  parity rides that: `substrat hostnames <slug>` lists an install's bindings,
+  `… bind <slug> --surface eka [--domain …] [--scope …]` mints or records, `… unbind
+<hostname>` removes.
+
+  Verticals may declare their surfaces — package.json `substrat.surfaces: [{ name,
+label }]` rides the deploy manifest to the registry like `envSpec` (metadata, not
+  behavior, not in any digest; the anchor #111's per-surface operation-sets extend
+  later). The declaration buys the Domains tab a picker instead of free text, and a
+  push-time warning naming any hostname still bound to a surface the new version stopped
+  declaring — the same spirit as the permission-surface gate, advisory tier. Free-text
+  surfaces stay valid everywhere; declaring nothing opts out of the check.
+
 ## 0.23.0
 
 ### Minor Changes
@@ -648,7 +823,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                z.object({ facility: entityRef, unitPrice: money })
+                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

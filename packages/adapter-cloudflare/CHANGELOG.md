@@ -1,5 +1,107 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.24.0
+
+### Minor Changes
+
+- 72b1128: Entitlements express a plan (#33): the two-column SKU flag grows `expiresAt`,
+  `quota`, `plan` and `grantedAt`/`grantedBy`. Expiry is the one field the kernel
+  itself enforces — an expired grant fails closed at the per-invoke gate exactly as
+  if revoked, checked lazily at read like tuple expiry (never swept), and the row
+  stays in `listEntitlements` so a lapsed trial reads as lapsed rather than
+  never-granted. Quota and tier are expression only, per the D-33 reframe: they
+  describe the builder's subscription, and counting usage against them is the
+  builder portal's job — which is why plan _expression_ lands ahead of billing
+  (#39 stays blocked on meters). Grant calls are PATCH-shaped: omitted fields
+  preserve what the row carries (a bare re-grant on an idempotent provisioning
+  path cannot silently turn a trial perpetual), explicit null clears, and any
+  effective change is a renewal audited with before/after. `listEntitlements` now
+  returns `EntitlementGrant[]` instead of `string[]`; the PUT route accepts the
+  plan as an optional body (a bodyless PUT stays the bare-flag grant); both
+  adapters widen `_substrat_entitlements` with nullable columns via the existing
+  ensure-column path, so legacy rows read as perpetual boolean flags — exactly
+  their old semantics. The console shows and edits the plan half; Callout's boot
+  mirror forwards whole grants so the shared plane never sees a trial as
+  perpetual.
+- 1cfce31: A hosted vertical reads its entitlements at request time from a scope-local projection (#304),
+  settling kernel open-question 5 with the same answer as the routing cache.
+
+  Entitlements used to be a coordinator-only, trust-at-provision check: it gated _module loading_,
+  but a dispatched worker could not read `plan`/`quota`/`tier` at request time — the `CONTROL_PLANE`
+  binding is forbidden by the sandbox contract (#302) — and a CP-less scope short-circuited the gate
+  to `true`, enforcing nothing in-request, not even expiry.
+
+  Entitlements are now **projected into each scope** alongside roles and tenant tuples, extending the
+  scope-local-permissions machinery rather than duplicating it:
+
+  - **`OperationContext` gains `entitlement(key)` and `entitlements()`** — the sanctioned request-time
+    read. Returns the live view (`key`, `plan`, `quota`, `expiresAt`) or `null`; expiry is applied at
+    read, so a non-null result is always live. A hosted scope reads its local projection; a
+    console-managed scope reads over the same RPC the permission checker uses. New `EntitlementView`
+    contract type.
+  - **The per-operation gate fails closed against the projection** on the scope-local path — expiry
+    and revocation now enforce at request time in a hosted vertical, not only at provision.
+  - **A grant/revoke fans out to invalidate** the projected scopes — the event-invalidation half of
+    kernel open-question 5's answer (cached in scope DOs with event invalidation), deliberately the
+    same project-on-write mechanism the routing/suspension cache defers to.
+
+  Two posture calls, per #33's grain:
+
+  - **Expose, don't enforce** `quota`/`plan`: the kernel gates presence + expiry; the vertical reads
+    the number and enforces its own quota (no kernel usage-counting).
+  - **Fail-closed enforcement flips per scope** via an `entitlements_enforced` marker set the first
+    time entitlements are projected — a scope provisioned before #304 keeps trusting upstream until a
+    fan-out / reconcile / re-provision back-fills it, so the switch to strict enforcement strands no
+    live scope.
+
+  `provisionScopeLocal` accepts an optional `entitlements` list (the platform passes the tenant's
+  grants at provision). Scoped out as a follow-up: the platform→dispatched-vertical provision path
+  (control-plane-api) does not yet _pass_ entitlements into `provisionScopeLocal`, so re-projection to
+  a live dispatched worker rides re-provision/reconcile until that is wired; expiry still enforces
+  locally meanwhile, because the projected row carries it.
+
+- aa503c2: Record what authorized a mutation on its event, and what was refused (K-34, K-35).
+
+  **K-34 — authorization on the event envelope.** `ctx.check` computes a `Decision` whose
+  allow branch carries the proof chain, and the kernel discarded it — so a mutation-event
+  recorded who acted but never under what authority. `DomainEvent` gains an optional,
+  kernel-stamped `authorization: {permission, grant?}[]`: the checks the emitting operation
+  passed, plus — when the allow came via a capability grant rather than a role — the granting
+  tuple's `object` (the entity/node it was granted on). The shape correction from the design
+  note: there is no grant _id_ — a grant is a relation tuple with no surrogate key, so the
+  tuple's object is what names it; `contracts` exports `grantRefFromProof` for this. The full
+  proof chain is not persisted (`explain` re-derives it); only the pointer re-derivation
+  cannot recover — which check was consulted at write time — is kept. Module code can neither
+  supply it (not on `DomainEventInput`) nor suppress it; system/override actors are
+  unconditionally allowed, so their checks are not recorded. The operation context is now
+  built fresh per invoke so the accumulator cannot leak across operations.
+
+  **K-35 — a scope-local denial log.** `assertAllowed` threw `PermissionDenied` and nothing
+  recorded it. A denial happens in the scope's serialization domain and rolls its own
+  operation back, so it cannot reach the directory access log and would be erased if written
+  in the operation's transaction. It now lands in a scope-local `_substrat_denials` (actor,
+  permission, node, operation, at, drained_at), recorded at the operation boundary the moment
+  a `PermissionDenied` unwinds it — a fresh autocommit write after the rollback, so it
+  survives. Only enforced denials record; a bare `ctx.check` a module branches on is not a
+  denial. `PermissionDenied` now carries the checked `permission` and `node`.
+
+  Both surfaces are additive kernel-schema changes (a nullable `_substrat_outbox.authorization`
+  column and the new `_substrat_denials` table), applied on both adapters (pure-SQLite and the
+  DO port) via KERNEL_DDL + an additive column on existing scopes. Legacy outbox rows read as
+  `authorization` NULL — honestly unrecorded, not empty. Held to the same contract on both
+  adapters by new cases in the permission contract suite.
+
+### Patch Changes
+
+- Updated dependencies [72b1128]
+- Updated dependencies [1cfce31]
+- Updated dependencies [aa503c2]
+- Updated dependencies [5a3ef82]
+- Updated dependencies [4c275df]
+- Updated dependencies [d4bf108]
+  - @substrat-run/contracts@0.24.0
+  - @substrat-run/kernel@0.24.0
+
 ## 0.23.0
 
 ### Patch Changes
@@ -920,7 +1022,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                z.object({ facility: entityRef, unitPrice: money })
+                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

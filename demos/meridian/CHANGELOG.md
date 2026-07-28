@@ -1,5 +1,82 @@
 # @substrat-run/demo-hr
 
+## 0.2.9
+
+### Patch Changes
+
+- 92d1aa1: The platform delivers a tenant's entitlements WITH provisioning, so a dispatched vertical
+  projects them (#310) — completing the seam #304 left open.
+
+  #304 projected entitlements into a scope but left the platform→dispatched-vertical path un-wired:
+  a freshly provisioned CP-less scope received no entitlements, so its `entitlements_enforced` marker
+  stayed off and the gate trusted upstream (only expiry, carried on the row, enforced locally).
+
+  - **`ProvisionInstanceInput` gains `entitlements`**, delivered on the provision payload.
+  - **The control-plane gathers them itself** at the single provision choke point
+    (`POST /verticals/:slug/instances`) via `admin.listEntitlements` — platform-authoritative, never
+    trusting the caller's body. Console and dashboard both route through that endpoint, so one
+    injection covers every production path.
+  - **The demo verticals (callout, meridian, manyfold)** parse `entitlements` (reusing the
+    `entitlementGrant` contract) and hand them to `provisionScopeLocal`, which projects them and flips
+    enforcement on.
+
+  Propagation of a later grant/revoke to an already-live dispatched worker **rides a re-provision**
+  (the idempotent K-31 call, the same channel role-definition changes use) rather than a new
+  push-on-grant fan-out; expiry keeps enforcing locally meanwhile. A dedicated push channel stays
+  available if a future SLA needs sub-re-provision revocation latency. Decision D-42.
+
+- d4bf108: Shared login across a scope's surfaces (K-26 multi-surface): a delivered
+  `substrat:auth.cookieDomain` sets the session cookie with `Domain=<parent>` instead of
+  host-only, so sibling surfaces (`crm.egeryds.se`, `eka.egeryds.se`, …) share one session.
+  The signing secret was already per-tenant (DO-minted), so the attribute is the only thing
+  that was missing. Both providers honor it — the OIDC relying party directly, Better Auth
+  via `advanced.crossSubDomainCookies` (the worker relays the choice to the IdentityDO as a
+  header, re-validated there). `resolveCookieDomain` validates the domain against the
+  request host where the cookie is set (equal or proper-suffix at a label boundary, no bare
+  TLDs); an invalid domain degrades to host-only rather than breaking sign-in. Setting the
+  domain cookie also clears the host-only shadow, and logout clears both variants. Meridian
+  threads `cookieDomain` through its `authChoice` as the reference wiring.
+- f610140: Each demo vertical's declarative surface now lives in its own crisp files instead of being
+  embedded at the top of `module.ts`. Open `src/manifest.ts` and you see the _entire_ shape of
+  the vertical — permission keys, id/version, events, entity relations, entitlement — with
+  nothing executable to wade through; `src/module.ts` is now just operations and the
+  `ModuleRegistration` wiring.
+
+  For each of Callout, Meridian, and Manyfold:
+
+  - **`src/manifest.ts`** — the permission-key consts (`SC_PERM`/`HR_PERM`/`MF_PERM`) **and**
+    `moduleManifest.parse({...})`. The consts sit beside the manifest's `permissions` list —
+    they're the same keys twice — so "add a permission" stays a single-file edit and the pair
+    can't drift.
+  - **`src/migrations.ts`** — the append-only `SqlMigration[]` journal (Callout's
+    `boundary-lint-allow R5` extraction block moved with the migration it guards).
+  - **`src/module.ts`** — imports both; holds row types, operations, and the module wiring.
+
+  Each package gains a `./manifest` export subpath so the dashboard catalog reads a vertical's
+  permission consts without dragging `seed.ts`'s `node:fs`/SQLite into the Worker bundle
+  (`manifest.ts` imports only from `@substrat-run/contracts`). The `new-vertical` skill now
+  scaffolds this three-file shape. Pure reorganization — no behavior, schema, or permission
+  change (permission snapshots unchanged; all demo + dashboard scenario tests green).
+
+- Updated dependencies [72b1128]
+- Updated dependencies [92d1aa1]
+- Updated dependencies [1cfce31]
+- Updated dependencies [aa503c2]
+- Updated dependencies [5a3ef82]
+- Updated dependencies [d4bf108]
+- Updated dependencies [4c275df]
+- Updated dependencies [d4bf108]
+- Updated dependencies [d4bf108]
+- Updated dependencies [b06730e]
+  - @substrat-run/contracts@0.24.0
+  - @substrat-run/kernel@0.24.0
+  - @substrat-run/adapter-sqlite@0.24.0
+  - @substrat-run/adapter-cloudflare@0.24.0
+  - @substrat-run/control-plane-api@0.24.0
+  - @substrat-run/vertical-auth@0.3.0
+  - @substrat-run/connector-scrive@0.1.14
+  - @substrat-run/engine-protocol@0.4.16
+
 ## 0.2.8
 
 ### Patch Changes
