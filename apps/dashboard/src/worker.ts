@@ -31,7 +31,7 @@ import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
+import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
@@ -1465,7 +1465,17 @@ app.get('/api/apps/:scopeId/auth', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const auth = await dash.invoke('dashboard/get-app-auth', { appScopeId: appRow.app_scope_id });
-  return c.json({ auth, callbackUrl: appRow.hostname ? `https://${appRow.hostname}/api/auth/callback` : null });
+  // The callback URL derives from the app's hostname. Prefer the stored column, but fall
+  // back to the live router bindings so a null column (a bind whose activation step threw
+  // during provisioning) doesn't hide the URL the app is actually reachable at.
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const hostname = await resolveDefaultHostname(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    stored: appRow.hostname,
+    ...(cp ? { controlPlane: cp } : {}),
+  });
+  return c.json({ auth, callbackUrl: hostname ? `https://${hostname}/api/auth/callback` : null });
 });
 
 /**
@@ -1483,12 +1493,22 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const choice = resolveAuthChoice(appAuthChoiceBody.parse(await c.req.json()), apps);
-  if (!appRow.hostname) {
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  // Prefer the stored column, but fall back to the live router bindings: an app can be
+  // fully reachable while its dashboard column is null (a bind whose activation step threw
+  // during provisioning), and refusing the save on that stale bookkeeping is the #294 bug.
+  const hostname = await resolveDefaultHostname(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    stored: appRow.hostname,
+    ...(cp ? { controlPlane: cp } : {}),
+  });
+  if (!hostname) {
     throw new HTTPException(400, { message: 'this app has no hostname yet, so the OIDC callback URL cannot be formed' });
   }
   const config = await authConfigFor(choice, {
     appName: appRow.name,
-    redirectUri: `https://${appRow.hostname}/api/auth/callback`,
+    redirectUri: `https://${hostname}/api/auth/callback`,
   });
   // Author first — the merged config (stored secret filled in) is what gets delivered.
   const merged = (await dash.invoke('dashboard/set-app-auth', {
@@ -1497,7 +1517,6 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   })) as Record<string, string>;
   let delivered = false;
   let note: string | undefined;
-  const cp = controlPlaneFor(c.env, node.tenantId);
   if (cp) {
     try {
       await cp.configureInstance(scopeId.parse(appRow.app_scope_id), [
