@@ -2,6 +2,8 @@ import type {
   AdminAction,
   AdminLogEntry,
   ChannelName,
+  EntitlementGrant,
+  EntitlementGrantInput,
   HostnameBinding,
   HostnameStatus,
   MigrationProgress,
@@ -130,11 +132,14 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     setTenantStatus: (id: TenantId, status: TenantStatus) =>
       call<Tenant>(`/tenants/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
 
-    listEntitlements: (id: TenantId) => call<string[]>(`/tenants/${id}/entitlements`),
-    grantEntitlement: (id: TenantId, key: string) =>
-      call<string[]>(`/tenants/${id}/entitlements/${key}`, { method: 'PUT' }),
+    listEntitlements: (id: TenantId) => call<EntitlementGrant[]>(`/tenants/${id}/entitlements`),
+    grantEntitlement: (id: TenantId, key: string, plan?: EntitlementGrantInput) =>
+      call<EntitlementGrant[]>(`/tenants/${id}/entitlements/${key}`, {
+        method: 'PUT',
+        body: plan === undefined ? undefined : JSON.stringify(plan),
+      }),
     revokeEntitlement: (id: TenantId, key: string) =>
-      call<string[]>(`/tenants/${id}/entitlements/${key}`, { method: 'DELETE' }),
+      call<EntitlementGrant[]>(`/tenants/${id}/entitlements/${key}`, { method: 'DELETE' }),
 
     listScopes: (filter?: { tenantId?: TenantId; status?: ScopeStatus[]; vertical?: string }) =>
       call<Scope[]>(`/scopes${query({ ...filter })}`),

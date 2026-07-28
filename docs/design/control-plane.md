@@ -226,6 +226,17 @@ Open: whether the check sits on the hot path of every module load or is cached i
 with event invalidation — kernel-design open question 5. Building the store is what forces
 it. Start simple (check at load, no cache); let a benchmark decide.
 
+**Widened by [#33](https://github.com/substrat-run/substrat/issues/33): the flag expresses a
+plan.** A grant carries `expiresAt`, `quota`, `plan`, and `grantedAt`/`grantedBy`. Per D-33
+these describe the *builder's* subscription (the paying customer), measured in the tenants
+underneath. Only expiry is enforced here: an expired grant fails closed at the gate exactly
+as if revoked — evaluated lazily at check time like tuple expiry, never swept, and the row
+stays listed so a lapsed trial reads as lapsed rather than never-granted. Quota and tier are
+expression only; counting usage against them is the builder portal's job (§5's meters).
+Grant calls are PATCH-shaped: an omitted field preserves what the row carries (a bare
+re-grant on an idempotent provisioning path must not quietly turn a trial perpetual), an
+explicit null clears it, and any effective change is a renewal audited with before/after.
+
 ### 4.4 The platform actor and the admin audit log
 
 The one thing that must not be retrofitted. Every control-plane mutation:

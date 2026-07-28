@@ -1,4 +1,6 @@
 import type {
+  EntitlementGrant,
+  EntitlementGrantInput,
   QueryScopeInput,
   ReadScopeTableInput,
   Scope,
@@ -115,8 +117,15 @@ export class ControlPlaneClient {
     return this.call('/tenants', { method: 'POST', body: JSON.stringify(input) });
   }
 
-  grantEntitlement(tenantId: TenantId, key: string): Promise<string[]> {
-    return this.call(`/tenants/${tenantId}/entitlements/${key}`, { method: 'PUT' });
+  grantEntitlement(
+    tenantId: TenantId,
+    key: string,
+    plan?: EntitlementGrantInput,
+  ): Promise<EntitlementGrant[]> {
+    return this.call(`/tenants/${tenantId}/entitlements/${key}`, {
+      method: 'PUT',
+      body: plan === undefined ? undefined : JSON.stringify(plan),
+    });
   }
 
   provisionScope(input: ClientProvisionScopeInput): Promise<Scope> {
@@ -145,7 +154,7 @@ export class ControlPlaneClient {
     return this.call(`/tenants/${tenantId}/scopes/${scopeId}`, undefined, true);
   }
 
-  listEntitlements(tenantId: TenantId): Promise<string[]> {
+  listEntitlements(tenantId: TenantId): Promise<EntitlementGrant[]> {
     return this.call(`/tenants/${tenantId}/entitlements`);
   }
 

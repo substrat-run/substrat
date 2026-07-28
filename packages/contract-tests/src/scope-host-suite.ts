@@ -2183,12 +2183,71 @@ export function scopeHostContractSuite(
       // Granting the flag loads the module for this tenant.
       await host.admin.grantEntitlement(staff, t4, 'billed');
       await expect(stub.invoke<string>('billed/act')).resolves.toBe('ran');
-      expect(await host.admin.listEntitlements(staff, t4)).toContain('billed');
+      const held = await host.admin.listEntitlements(staff, t4);
+      expect(held.map((e) => e.entitlementKey)).toContain('billed');
+      // A bare grant is #33's null plan: a perpetual boolean flag, stamped.
+      const billed = held.find((e) => e.entitlementKey === 'billed')!;
+      expect(billed.expiresAt).toBeNull();
+      expect(billed.quota).toBeNull();
+      expect(billed.plan).toBeNull();
+      expect(billed.grantedBy).toBe(staff);
+      expect(billed.grantedAt).not.toBeNull();
 
       // Revoking it takes the operation away again — as if never registered.
       await host.admin.revokeEntitlement(staff, t4, 'billed');
       await expect(stub.invoke('billed/act')).rejects.toThrow(/not entitled/);
-      expect(await host.admin.listEntitlements(staff, t4)).not.toContain('billed');
+      expect((await host.admin.listEntitlements(staff, t4)).map((e) => e.entitlementKey)).not.toContain('billed');
+    });
+
+    it('fails closed on an expired grant, which stays listed for renewal (#33)', async () => {
+      const stub = await host.getScope(alice, t4, s4);
+      const past = new Date(Date.now() - 60_000).toISOString();
+      const future = new Date(Date.now() + 3_600_000).toISOString();
+
+      // A grant that has lapsed gates exactly like a revoke…
+      await host.admin.grantEntitlement(staff, t4, 'billed', { expiresAt: past });
+      await expect(stub.invoke('billed/act')).rejects.toThrow(/not entitled/);
+      // …but the row is NOT gone: a lapsed trial must look lapsed, not never-granted.
+      const lapsed = (await host.admin.listEntitlements(staff, t4)).find(
+        (e) => e.entitlementKey === 'billed',
+      );
+      expect(lapsed?.expiresAt).toBe(past);
+
+      // Renewal is just a re-grant with a live expiry.
+      await host.admin.grantEntitlement(staff, t4, 'billed', { expiresAt: future });
+      await expect(stub.invoke<string>('billed/act')).resolves.toBe('ran');
+
+      await host.admin.revokeEntitlement(staff, t4, 'billed');
+    });
+
+    it('round-trips plan fields, preserves them on a bare re-grant, clears on null (#33)', async () => {
+      await host.admin.grantEntitlement(staff, t4, 'billed', {
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        quota: 500,
+        plan: 'pro',
+      });
+      const read = async () =>
+        (await host.admin.listEntitlements(staff, t4)).find((e) => e.entitlementKey === 'billed')!;
+      let g = await read();
+      expect(g.quota).toBe(500);
+      expect(g.plan).toBe('pro');
+      expect(g.expiresAt).not.toBeNull();
+
+      // A bare re-grant (the idempotent provisioning path) must NOT erase the
+      // plan — omitted preserves; only explicit null clears.
+      await host.admin.grantEntitlement(staff, t4, 'billed');
+      g = await read();
+      expect(g.quota).toBe(500);
+      expect(g.plan).toBe('pro');
+      expect(g.expiresAt).not.toBeNull();
+
+      await host.admin.grantEntitlement(staff, t4, 'billed', { expiresAt: null, quota: null, plan: null });
+      g = await read();
+      expect(g.expiresAt).toBeNull();
+      expect(g.quota).toBeNull();
+      expect(g.plan).toBeNull();
+
+      await host.admin.revokeEntitlement(staff, t4, 'billed');
     });
 
     it('audits grant/revoke idempotently and records the SKU flag', async () => {
@@ -2202,6 +2261,23 @@ export function scopeHostContractSuite(
       );
       expect(grants).toHaveLength(1);
       expect(grants[0]!.actor).toBe(staff);
+
+      // A re-grant that CHANGES the plan is a renewal — audited, with the old
+      // plan in `before` (#33). The audit row is the grant's history.
+      const until = new Date(Date.now() + 3_600_000).toISOString();
+      await host.admin.grantEntitlement(staff, t4, 'audited-sku', { expiresAt: until, plan: 'pro' });
+      const renewals = (await host.admin.auditLog(staff, { tenantId: t4 })).filter(
+        (r) =>
+          r.action === 'grantEntitlement' &&
+          (r.after as { entitlementKey: string }).entitlementKey === 'audited-sku',
+      );
+      expect(renewals).toHaveLength(2);
+      const renewal = renewals[renewals.length - 1]!;
+      expect((renewal.before as { plan: string | null }).plan).toBeNull();
+      expect((renewal.after as { plan: string | null; expiresAt: string | null })).toMatchObject({
+        plan: 'pro',
+        expiresAt: until,
+      });
 
       await host.admin.revokeEntitlement(staff, t4, 'audited-sku');
       const revokes = (await host.admin.auditLog(staff, { tenantId: t4 })).filter(

@@ -141,11 +141,39 @@ describe('control-plane API', () => {
   it('grants, lists and revokes entitlements', async () => {
     expect(await (await req(`/tenants/${t1}/entitlements`)).json()).toEqual([]);
 
+    // A bodyless PUT is the pre-#33 bare flag grant: a perpetual boolean.
     const granted = await json(`/tenants/${t1}/entitlements/workorder`, 'PUT');
-    expect(await granted.json()).toEqual(['workorder']);
+    expect(await granted.json()).toMatchObject([
+      { entitlementKey: 'workorder', expiresAt: null, quota: null, plan: null },
+    ]);
 
     const revoked = await json(`/tenants/${t1}/entitlements/workorder`, 'DELETE');
     expect(await revoked.json()).toEqual([]);
+  });
+
+  it('carries the plan half (#33) in the PUT body; a bare re-grant preserves it', async () => {
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    const granted = await json(`/tenants/${t1}/entitlements/workorder`, 'PUT', {
+      expiresAt: until,
+      quota: 500,
+      plan: 'pro',
+    });
+    expect(await granted.json()).toMatchObject([
+      { entitlementKey: 'workorder', expiresAt: until, quota: 500, plan: 'pro' },
+    ]);
+
+    // PATCH semantics across HTTP: an idempotent bodyless re-grant (retried
+    // provisioning) must not erase the plan and turn a trial perpetual.
+    const regranted = await json(`/tenants/${t1}/entitlements/workorder`, 'PUT');
+    expect(await regranted.json()).toMatchObject([
+      { entitlementKey: 'workorder', expiresAt: until, quota: 500, plan: 'pro' },
+    ]);
+
+    // Malformed plan fields are refused at the Zod boundary.
+    expect((await json(`/tenants/${t1}/entitlements/workorder`, 'PUT', { quota: -1 })).status).toBe(400);
+    expect((await json(`/tenants/${t1}/entitlements/workorder`, 'PUT', { expiresAt: 'tomorrow' })).status).toBe(400);
+
+    await json(`/tenants/${t1}/entitlements/workorder`, 'DELETE');
   });
 
   // -- identity mirror (builder-plane.md §4) --------------------------------
