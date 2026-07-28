@@ -124,6 +124,29 @@ describe('createWfpModulesFetcher', () => {
     expect(new TextDecoder().decode(modules.find((m) => m.name === 'worker.js')!.content)).toBe('export default {}');
   });
 
+  it('parses multipart parts that carry no filename (Cloudflare read-back shape, #308)', async () => {
+    // Cloudflare's GET /content is not an echo of the PUT: a module part may arrive with
+    // `Content-Disposition: form-data; name="worker.js"` and NO `filename=`, which the
+    // web-standard FormData parser exposes as a string, not a File. Build the body by hand
+    // (FormData's third arg would force a filename) to reproduce that exact wire shape.
+    const boundary = '----wfp-test';
+    const body =
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="worker.js"\r\n` +
+      `Content-Type: application/javascript+module\r\n\r\n` +
+      `export default {}\r\n` +
+      `--${boundary}--\r\n`;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body, { headers: { 'content-type': `multipart/form-data; boundary=${boundary}` } })),
+    );
+    const fetchModules = createWfpModulesFetcher({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
+    const modules = await fetchModules('callout-01k');
+    expect(modules).toHaveLength(1);
+    expect(modules[0]!.name).toBe('worker.js');
+    expect(new TextDecoder().decode(modules[0]!.content)).toBe('export default {}');
+  });
+
   it('parses a single-module response via cf-entrypoint', async () => {
     vi.stubGlobal(
       'fetch',
