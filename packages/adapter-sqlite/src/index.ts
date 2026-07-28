@@ -312,6 +312,7 @@ interface TenantRow {
   name: string;
   status: string;
   created_at: string;
+  deleting_at: string | null;
 }
 
 interface ScopeRow {
@@ -545,7 +546,10 @@ export class SqliteScopeHost implements ScopeHost {
         slug TEXT NOT NULL,
         name TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        -- When the tenant last entered the deleting state; NULL otherwise. The
+        -- grace-window reap sweep ages a tenant off this (§4.8), mirroring archived_at.
+        deleting_at TEXT
       );
       -- The scope directory (§3.2). slug/kind/name/vertical are nullable HERE but
       -- required (except vertical) by the scope contract: the column set must be
@@ -1897,6 +1901,7 @@ export class SqliteScopeHost implements ScopeHost {
         name: r.name,
         status: r.status,
         createdAt: r.created_at,
+        deletingAt: r.deleting_at ?? null,
       });
     const readTenant = (id: TenantId): Tenant | undefined => {
       const r = this.directory.prepare('SELECT * FROM tenants WHERE tenant_id = ?').get(id) as
@@ -3074,9 +3079,26 @@ export class SqliteScopeHost implements ScopeHost {
       setTenantStatus: async (actor: PlatformActorId, tenantId: TenantId, status: TenantStatus) => {
         const before = readTenant(tenantId);
         if (!before) throw new Error(`unknown tenant: ${tenantId}`);
-        this.directory
-          .prepare('UPDATE tenants SET status = ? WHERE tenant_id = ?')
-          .run(status, tenantId);
+        // `reaped` is terminal and destroys data — it is unreachable here and only
+        // ever set by reapTenant, so a plain status flip cannot forge a tombstone
+        // over live data (§4.8, the tenant analogue of reapScope's archived-only gate).
+        if (status === 'reaped') {
+          throw new Error(
+            `tenant ${tenantId} cannot be set to 'reaped' via setTenantStatus — reap goes through reapTenant (control-plane.md §4.8)`,
+          );
+        }
+        // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
+        // entering `deleting` stamps, leaving it (an un-delete) clears — exactly the
+        // shape suspendScope/archiveScope use for archived_at.
+        if (status === 'deleting') {
+          this.directory
+            .prepare('UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?')
+            .run(status, new Date().toISOString(), tenantId);
+        } else {
+          this.directory
+            .prepare('UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?')
+            .run(status, tenantId);
+        }
         this.recordAdmin(
           actor,
           'setTenantStatus',
@@ -3304,6 +3326,53 @@ export class SqliteScopeHost implements ScopeHost {
         }
         rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
         await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped');
+      },
+      reapTenant: async (actor: PlatformActorId, tenantId: TenantId) => {
+        // The terminal tenant reap (§4.8), the tenant analogue of reapScope. The
+        // caller (the reap route / grace-window sweep) has already reaped every scope's
+        // storage above the kernel; this clears the tenant's directory-side PII/config
+        // and flips the row to a `reaped` tombstone. Only a `deleting` tenant may be
+        // reaped — an illegal source fails closed, like reapScope's archived-only gate.
+        const before = readTenant(tenantId);
+        if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+        if (before.status !== 'deleting') {
+          throw new Error(
+            `tenant ${tenantId} is ${before.status}, not deleting — only a deleting tenant may be reaped`,
+          );
+        }
+        // Clear the tenant's directory-side rows. Idempotent (set-to-empty), so a crash
+        // mid-reap converges on retry. KEPT as the tombstone: the `tenants` row itself
+        // and `_substrat_admin_log` (the compliance witness — never swept). Scope rows
+        // were already reaped individually and stay as their own tombstones.
+        const tables = [
+          '_substrat_identities', // PII: external subjects/emails bound to principals
+          '_substrat_identity_pools', // the tenant's IdP topology declarations
+          '_substrat_tenant_tuples', // membership + tenant-level grants
+          '_substrat_roles', // operator-defined roles
+          '_substrat_entitlements', // per-tenant SKU flags
+          'orgs', // K-22 org records
+        ];
+        const clear = this.directory.transaction(() => {
+          for (const table of tables) {
+            this.directory.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId);
+          }
+          this.directory
+            .prepare(`UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?`)
+            .run(tenantId);
+        });
+        clear();
+        // Evict the in-memory role cache for this tenant (the one directory table
+        // mirrored in memory) so a reaped role never resolves after the DELETE.
+        for (const cacheKey of [...this.roles.keys()]) {
+          if (cacheKey.startsWith(`${tenantId}/`)) this.roles.delete(cacheKey);
+        }
+        this.recordAdmin(
+          actor,
+          'reapTenant',
+          { tenantId },
+          { status: before.status },
+          { status: 'reaped' },
+        );
       },
       grantEntitlement: async (
         actor: PlatformActorId,
@@ -3968,6 +4037,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureIdentityKey();
     this.ensureAdminLogTenantNullable();
     this.ensureColumn(this.directory, '_substrat_admin_log', 'caused_by', 'caused_by TEXT');
+    // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
+    this.ensureColumn(this.directory, 'tenants', 'deleting_at', 'deleting_at TEXT');
     // K-21's tombstone on tenant-level tuples (membership lives here).
     this.ensureColumn(this.directory, '_substrat_tenant_tuples', 'revoked_at', 'revoked_at TEXT');
     // builder-plane.md Phase 1b: who owns a vertical (NULL = platform-owned).

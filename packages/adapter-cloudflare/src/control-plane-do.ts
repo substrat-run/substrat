@@ -40,6 +40,7 @@ interface TenantRow {
   name: string;
   status: string;
   created_at: string;
+  deleting_at: string | null;
 }
 
 /** An entitlement grant as stored (#33) — nulls = the pre-widening boolean flag. */
@@ -249,7 +250,10 @@ const DIRECTORY_DDL = `
     slug TEXT NOT NULL,
     name TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    -- When the tenant last entered the deleting state; NULL otherwise. The
+    -- grace-window reap sweep ages a tenant off this (§4.8), mirroring archived_at.
+    deleting_at TEXT
   );
   -- slug/kind/name/vertical are nullable here but required (except vertical) by
   -- the scope contract — the column set must match whether the table was created
@@ -626,6 +630,8 @@ export class ControlPlaneDO extends DurableObject {
     for (const ddl of SCOPE_COLUMNS_ADDED) {
       this.addColumn('scopes', ddl);
     }
+    // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
+    this.addColumn('tenants', 'deleting_at TEXT');
     // K-21's tombstone on tenant-level tuples (membership lives here).
     this.addColumn('_substrat_tenant_tuples', 'revoked_at TEXT');
     this.addColumn('_substrat_admin_log', 'caused_by TEXT');
@@ -682,6 +688,7 @@ export class ControlPlaneDO extends DurableObject {
       name: r.name,
       status: r.status,
       createdAt: r.created_at,
+      deletingAt: r.deleting_at ?? null,
     } as Tenant;
   }
 
@@ -720,7 +727,66 @@ export class ControlPlaneDO extends DurableObject {
   setTenantStatus(tenantId: string, status: TenantStatus): string {
     const before = this.readTenant(tenantId);
     if (!before) throw new Error(`unknown tenant: ${tenantId}`);
-    this.sql.exec('UPDATE tenants SET status = ? WHERE tenant_id = ?', status, tenantId);
+    // `reaped` is terminal and destroys data — unreachable here, only ever set by
+    // reapTenant, so a plain status flip cannot forge a tombstone over live data
+    // (§4.8, the tenant analogue of reapScope's archived-only gate).
+    if (status === 'reaped') {
+      throw new Error(
+        `tenant ${tenantId} cannot be set to 'reaped' via setTenantStatus — reap goes through reapTenant (control-plane.md §4.8)`,
+      );
+    }
+    // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
+    // entering `deleting` stamps, leaving it (an un-delete) clears — the same shape
+    // transitionScope uses for archived_at.
+    if (status === 'deleting') {
+      this.sql.exec(
+        'UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?',
+        status,
+        new Date().toISOString(),
+        tenantId,
+      );
+    } else {
+      this.sql.exec(
+        'UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?',
+        status,
+        tenantId,
+      );
+    }
+    return before.status;
+  }
+
+  /**
+   * The terminal tenant reap (§4.8), the tenant analogue of reapScope. The caller
+   * has already reaped every scope's storage above the DO; this clears the tenant's
+   * directory-side PII/config rows and flips the row to a `reaped` tombstone. Only a
+   * `deleting` tenant may be reaped — an illegal source fails closed. Returns the
+   * previous status (for the audit before/after). Idempotent: set-to-empty DELETEs
+   * plus the status flip converge on a re-run after a partial failure.
+   */
+  reapTenant(tenantId: string): string {
+    const before = this.readTenant(tenantId);
+    if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+    if (before.status !== 'deleting') {
+      throw new Error(
+        `tenant ${tenantId} is ${before.status}, not deleting — only a deleting tenant may be reaped`,
+      );
+    }
+    // KEPT as the tombstone: the `tenants` row itself and `_substrat_admin_log` (the
+    // compliance witness — never swept). Scope rows were already reaped individually.
+    for (const table of [
+      '_substrat_identities', // PII: external subjects/emails bound to principals
+      '_substrat_identity_pools', // the tenant's IdP topology declarations
+      '_substrat_tenant_tuples', // membership + tenant-level grants
+      '_substrat_roles', // operator-defined roles
+      '_substrat_entitlements', // per-tenant SKU flags
+      'orgs', // K-22 org records
+    ]) {
+      this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
+    }
+    this.sql.exec(
+      "UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?",
+      tenantId,
+    );
     return before.status;
   }
 

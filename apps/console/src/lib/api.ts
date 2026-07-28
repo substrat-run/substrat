@@ -131,6 +131,9 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       post<Tenant>('/tenants', input),
     setTenantStatus: (id: TenantId, status: TenantStatus) =>
       call<Tenant>(`/tenants/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+    // Reap a deleting tenant NOW (§4.8) — skips the grace window: every scope reaped,
+    // PII/config directory rows cleared, the tenant row kept as a `reaped` tombstone.
+    reapTenant: (id: TenantId) => post<Tenant>(`/tenants/${id}/reap`),
 
     listEntitlements: (id: TenantId) => call<EntitlementGrant[]>(`/tenants/${id}/entitlements`),
     grantEntitlement: (id: TenantId, key: string, plan?: EntitlementGrantInput) =>

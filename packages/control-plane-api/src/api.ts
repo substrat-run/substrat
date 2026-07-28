@@ -252,7 +252,13 @@ const auditLogQuery = z.object({
   action: z.array(adminAction).optional(),
   since: z.string().optional(),
   until: z.string().optional(),
-  limit: z.coerce.number().int().positive().max(1000).optional(),
+  // Defaulted, not merely capped: the admin log is append-only and never swept (the
+  // retention decision — it is the compliance witness, control-plane.md §4.4/§4.8), so
+  // it only grows. An unbounded `GET /admin-log` would dump the whole table; a default
+  // page keeps the external read bounded while `nextCursor` still walks the entire log.
+  // The KERNEL call stays deliberately unbounded (an in-process caller that wants
+  // everything asks for everything) — only this HTTP egress vector is bounded by default.
+  limit: z.coerce.number().int().positive().max(1000).default(200),
   cursor: z.string().optional(),
   order: z.enum(['asc', 'desc']).optional(),
 });
@@ -403,6 +409,46 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // is this layer's to guarantee.
     await admin.setTenantStatus(c.get('actor'), tenantId, status);
     return c.json(await admin.getTenant(c.get('actor'), tenantId));
+  });
+
+  // Reap a DELETING tenant now (control-plane.md §4.8) — the staff "reap now" that skips
+  // the grace window, the tenant analogue of the scope reap route below. Refuses a tenant
+  // that is not `deleting` (409): a reap only ever follows the reversible delete state, and
+  // starting/reversing it is the ordinary `PATCH …/status` transition above. Every scope is
+  // reaped FIRST (archive-if-needed → the vertical wipes its co-located DO → `reapScope`,
+  // the same storage-before-row ordering the scope route keeps) so no scope's bytes outlive
+  // the tenant, then `reapTenant` clears the directory. Staff/service only (not in
+  // BUILDER_ROUTES). Idempotent: a crash mid-reap leaves the tenant `deleting`, and a retry
+  // (or the grace-window sweep) converges — reaped scopes are skipped, reapTenant re-checks.
+  app.post('/tenants/:tenantId/reap', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const actor = c.get('actor');
+    const tenant = await admin.getTenant(actor, tenantId);
+    if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
+    if (tenant.status !== 'deleting') {
+      return c.json(
+        {
+          error: `tenant ${tenantId} is ${tenant.status}, not deleting — only a deleting tenant may be reaped`,
+        },
+        409,
+      );
+    }
+    try {
+      for (const scope of await admin.listScopes(actor, { tenantId })) {
+        if (scope.status === 'reaped') continue;
+        if (scope.status !== 'archived') await admin.archiveScope(actor, tenantId, scope.id);
+        const vertical = await verticalForScope(c, scope);
+        if (vertical) await vertical.deleteScope({ scopeId: scope.id });
+        await admin.reapScope(actor, tenantId, scope.id);
+      }
+      await admin.reapTenant(actor, tenantId);
+      return c.json(await admin.getTenant(actor, tenantId));
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
   });
 
   // -- entitlements (§4.3) ---------------------------------------------------

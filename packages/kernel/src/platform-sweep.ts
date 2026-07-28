@@ -81,6 +81,26 @@ export interface PlatformSweepOptions {
    */
   reapScopeFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
   /**
+   * Also reap tenants past their grace window (control-plane.md §4.8): any tenant in
+   * `deleting` whose `deletingAt` is older than this many days has every scope reaped
+   * and its PII/config directory rows cleared, moving it to `reaped` (a tombstone).
+   * UNSET (the default) skips the phase entirely — like `reapArchivedAfterDays`, the
+   * reap is irreversible, so a deployment must name a retention window before the sweep
+   * will ever destroy a tenant's data. A tenant with a null `deletingAt` (flipped before
+   * the column shipped) is never auto-reaped and must be reaped by hand.
+   */
+  reapDeletingAfterDays?: number;
+  /**
+   * How the reap phase reaps one due tenant. The default composes the existing
+   * `reapScopeFn` seam: for each of the tenant's non-reaped scopes it archives (if
+   * needed) then reaps via `reapScopeFn`, and finally clears the directory via
+   * `host.admin.reapTenant`. Because it rides `reapScopeFn`, the CONTROL-PLANE cron
+   * gets the orchestrated per-scope reap (wipe each DO in its vertical deployment) for
+   * free just by setting `reapScopeFn` — it need not override this. Supplied only to
+   * fully replace the tenant-reap behavior.
+   */
+  reapTenantFn?: (tenantId: TenantId) => Promise<void>;
+  /**
    * Also reconcile migrations (kernel-design §5.3, #49): walk the directory for
    * live scopes behind this host's frontier or failed, wake each with
    * `migrateScope`, back off between retries of a failing scope, and report
@@ -141,6 +161,8 @@ export interface PlatformSweepReport {
   snapshotsReaped: number;
   /** Long-archived primary scopes reaped by `reapScope` this pass (§4.4). */
   archivedScopesReaped: number;
+  /** Tenants past their grace window reaped this pass (§4.8). */
+  tenantsReaped: number;
   /**
    * The migration-reconciliation phase's report (§5.3, #49), or null when the
    * phase was disabled or the host predates `migrateScope`. Note null vs a
@@ -150,7 +172,11 @@ export interface PlatformSweepReport {
    */
   migrations: MigrationSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
-  errors: { kind: 'drain' | 'sweep' | 'gc' | 'reap' | 'migrate'; id: string; error: string }[];
+  errors: {
+    kind: 'drain' | 'sweep' | 'gc' | 'reap' | 'reap-tenant' | 'migrate';
+    id: string;
+    error: string;
+  }[];
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -204,6 +230,7 @@ export async function runPlatformSweep(
     connectionsSkipped: 0,
     snapshotsReaped: 0,
     archivedScopesReaped: 0,
+    tenantsReaped: 0,
     migrations: null,
     errors: [],
   };
@@ -373,6 +400,53 @@ export async function runPlatformSweep(
         report.archivedScopesReaped += 1;
       } catch (err) {
         report.errors.push({ kind: 'reap', id: s.id, error: message(err) });
+      }
+    });
+  }
+
+  // -- reap tenants past their grace window (control-plane.md §4.8) ------------
+  // A tenant flipped to `deleting` sits in a reversible grace window; once it is older
+  // than the retention window, reclaim it. Runs AFTER the scope reap above so a tenant's
+  // scopes are gone before the tenant row becomes a tombstone. Opt-in and irreversible,
+  // exactly like the scope reap. The default `reapTenantFn` composes the same
+  // `reapScopeFn` seam used above (archive-if-needed → reap each scope), then clears the
+  // directory via `reapTenant` — so the control-plane cron's orchestrated per-scope reap
+  // applies here for free. `reapTenant` re-checks the `deleting` status below the seam,
+  // so a row that changed underneath fails closed there.
+  if (options.reapDeletingAfterDays !== undefined && options.reapDeletingAfterDays >= 0) {
+    const cutoff = new Date(
+      Date.now() - options.reapDeletingAfterDays * 86_400_000,
+    ).toISOString();
+    const tenants = await host.admin.listTenants(options.actor);
+    const due = tenants.filter(
+      (t) => t.status === 'deleting' && t.deletingAt !== null && t.deletingAt <= cutoff,
+    );
+    const reapOneScope =
+      options.reapScopeFn ??
+      ((tenantId: TenantId, scopeId: ScopeId) =>
+        host.admin.reapScope(options.actor, tenantId, scopeId));
+    const reapTenant =
+      options.reapTenantFn ??
+      (async (tenantId: TenantId) => {
+        // Co-located default: reap every one of the tenant's scopes through the scope
+        // seam (archive-if-needed first — reapScope only accepts `archived`), then clear
+        // the tenant's directory rows. A scope already `reaped` is skipped.
+        const scopes = await host.admin.listScopes(options.actor, { tenantId });
+        for (const s of scopes) {
+          if (s.status === 'reaped') continue;
+          if (s.status !== 'archived') {
+            await host.admin.archiveScope(options.actor, tenantId, s.id);
+          }
+          await reapOneScope(tenantId, s.id);
+        }
+        await host.admin.reapTenant(options.actor, tenantId);
+      });
+    await mapBounded(due, concurrency, async (t) => {
+      try {
+        await reapTenant(t.id);
+        report.tenantsReaped += 1;
+      } catch (err) {
+        report.errors.push({ kind: 'reap-tenant', id: t.id, error: message(err) });
       }
     });
   }

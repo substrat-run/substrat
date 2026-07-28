@@ -28,6 +28,8 @@ export interface TenantDetailProps {
 
 export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, onBack, onChanged, onToast }: TenantDetailProps) {
   const [confirmSuspend, setConfirmSuspend] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmReap, setConfirmReap] = useState(false);
   const [armed, setArmed] = useState('');
   const [granting, setGranting] = useState(false);
   const [sku, setSku] = useState(KNOWN_SKUS[0]!);
@@ -35,8 +37,6 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, onB
   const [expiry, setExpiry] = useState('');
   const [quota, setQuota] = useState('');
   const [plan, setPlan] = useState('');
-
-  const active = tenant.status === 'active';
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     try {
@@ -106,16 +106,72 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, onB
         <Button variant="secondary" onClick={onBack}>
           All tenants
         </Button>
-        {active ? (
-          <Button variant="danger" onClick={() => setConfirmSuspend(true)}>
-            Suspend tenant
-          </Button>
-        ) : (
+        {tenant.status === 'active' && (
+          <>
+            <Button variant="danger" onClick={() => setConfirmSuspend(true)}>
+              Suspend tenant
+            </Button>
+            <Button variant="danger" onClick={() => setConfirmDelete(true)}>
+              Delete tenant
+            </Button>
+          </>
+        )}
+        {tenant.status === 'suspended' && (
           <Button onClick={() => run(() => api.setTenantStatus(tenant.id, 'active'), 'Tenant unsuspended', tenant.slug)}>
             Unsuspend tenant
           </Button>
         )}
+        {tenant.status === 'deleting' && (
+          <>
+            <Button onClick={() => run(() => api.setTenantStatus(tenant.id, 'active'), 'Deletion cancelled', `${tenant.slug} restored`)}>
+              Un-delete
+            </Button>
+            <Button variant="danger" onClick={() => setConfirmReap(true)}>
+              Reap now
+            </Button>
+          </>
+        )}
+        {/* `reaped` is terminal — the data is gone; only the tombstone remains. */}
       </div>
+      {tenant.status === 'deleting' && (
+        <div
+          style={{
+            background: 'var(--status-danger-bg)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 8,
+            padding: '10px 12px',
+            fontSize: 12.5,
+            color: 'var(--text-secondary)',
+            lineHeight: '18px',
+          }}
+        >
+          <strong>Marked for deletion.</strong> Every scope fails closed now, but nothing is destroyed yet —
+          <strong> Un-delete</strong> restores the tenant. After the retention window (or <strong>Reap now</strong>)
+          all scope data and the tenant's identities, roles, entitlements, and orgs are permanently erased; the tenant
+          row and audit log survive as a tombstone.
+          {tenant.deletingAt && (
+            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
+              {' '}· deleting since {tenant.deletingAt.slice(0, 10)}
+            </span>
+          )}
+        </div>
+      )}
+      {tenant.status === 'reaped' && (
+        <div
+          style={{
+            background: 'var(--status-danger-bg)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 8,
+            padding: '10px 12px',
+            fontSize: 12.5,
+            color: 'var(--text-secondary)',
+            lineHeight: '18px',
+          }}
+        >
+          <strong>Reaped.</strong> This tenant's data was permanently destroyed. The row and audit log are kept as a
+          tombstone and the slug stays burned — there is no restore.
+        </div>
+      )}
 
       <Card
         title="Scopes in this tenant"
@@ -245,6 +301,94 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, onB
           <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
             {scopes.length} scope{scopes.length === 1 ? '' : 's'} affected · a paying customer goes dark.
           </span>
+          <Input
+            label="Type the tenant slug to arm this action"
+            mono
+            placeholder={tenant.slug}
+            value={armed}
+            onChange={(e) => setArmed(e.target.value)}
+          />
+        </div>
+      </Dialog>
+
+      {/* Start the reversible grace window (§4.8). A plain status flip to `deleting`
+          — every scope fails closed like a suspend, but no data is reclaimed until a
+          reap. Same type-to-arm friction as suspend. */}
+      <Dialog
+        open={confirmDelete}
+        title={`Delete tenant ${tenant.slug}?`}
+        danger
+        confirmLabel="Start deletion"
+        width={520}
+        onConfirm={
+          armed === tenant.slug
+            ? () => {
+                setConfirmDelete(false);
+                setArmed('');
+                void run(
+                  () => api.setTenantStatus(tenant.id, 'deleting'),
+                  'Deletion started',
+                  'Reversible during the grace window',
+                );
+              }
+            : undefined
+        }
+        onCancel={() => {
+          setConfirmDelete(false);
+          setArmed('');
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
+            This marks the tenant for deletion. Every scope <strong>fails closed</strong> immediately, but{' '}
+            <strong>no data is reclaimed yet</strong> — you can <strong>Un-delete</strong> to restore it. After the
+            retention window (or a staff <strong>Reap now</strong>) every scope's storage is wiped and the tenant's
+            identities, roles, entitlements, and orgs are <strong>permanently destroyed</strong>. The tenant row and
+            audit log are kept as a tombstone.
+          </p>
+          <Input
+            label="Type the tenant slug to arm this action"
+            mono
+            placeholder={tenant.slug}
+            value={armed}
+            onChange={(e) => setArmed(e.target.value)}
+          />
+        </div>
+      </Dialog>
+
+      {/* Reap now (§4.8) — skip the grace window and destroy the tenant. Irreversible:
+          every scope is reaped and the PII/config directory rows are cleared, the row +
+          admin log kept as a tombstone. The same type-to-arm gate the scope reap uses. */}
+      <Dialog
+        open={confirmReap}
+        title={`Reap tenant ${tenant.slug} now?`}
+        danger
+        confirmLabel="Reap tenant"
+        width={520}
+        onConfirm={
+          armed === tenant.slug
+            ? () => {
+                setConfirmReap(false);
+                setArmed('');
+                void run(
+                  () => api.reapTenant(tenant.id),
+                  'Tenant reaped',
+                  `${scopes.length} scope${scopes.length === 1 ? '' : 's'} destroyed · tombstone kept`,
+                );
+              }
+            : undefined
+        }
+        onCancel={() => {
+          setConfirmReap(false);
+          setArmed('');
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
+            <strong>Irreversible.</strong> This skips the grace window and destroys the tenant now: every scope's
+            storage is wiped and its identities, roles, entitlements, and orgs are deleted. The tenant row and admin
+            log survive as a tombstone (the slug stays burned). <strong>There is no restore.</strong>
+          </p>
           <Input
             label="Type the tenant slug to arm this action"
             mono

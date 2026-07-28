@@ -1,7 +1,22 @@
 import { z } from 'zod';
 import { instant, orgId, scopeId, slug, tenantId } from './ids.js';
 
-export const tenantStatus = z.enum(['active', 'suspended', 'deleting']);
+export const tenantStatus = z.enum([
+  'active',
+  'suspended',
+  // The reversible grace state before deletion (control-plane.md §4.1/§4.8): `getScope`
+  // fails closed for every scope under the tenant exactly as `suspended` does, so the
+  // tenant is inert, but no data has been reclaimed yet. `active` again (an un-delete)
+  // restores it. A tenant sits here until a staff reap or the retention window elapses.
+  'deleting',
+  // Terminal, past `deleting` (control-plane.md §4.8): every scope's DO storage has been
+  // reaped and the tenant's PII/config directory rows cleared, but the `tenants` row
+  // survives as a tombstone (audit history + burned slug) and `_substrat_admin_log` is
+  // kept whole (the compliance witness — never swept). Unlike `deleting` this is NOT
+  // reversible — the bytes are gone. Read gates fail closed on it exactly like a missing
+  // tenant. Reached only from `deleting` via the audited `reapTenant` action.
+  'reaped',
+]);
 export type TenantStatus = z.infer<typeof tenantStatus>;
 
 export const tenant = z.object({
@@ -10,6 +25,10 @@ export const tenant = z.object({
   name: z.string().min(1),
   status: tenantStatus,
   createdAt: instant,
+  // When the tenant last entered `deleting`, or null when it is not being deleted. The
+  // reap sweep ages a tenant off this to decide when the grace window has elapsed
+  // (control-plane.md §4.8) — mirrors `scope.archivedAt`. Cleared on un-delete.
+  deletingAt: instant.nullable(),
 });
 export type Tenant = z.infer<typeof tenant>;
 

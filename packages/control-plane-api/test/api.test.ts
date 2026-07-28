@@ -770,6 +770,55 @@ describe('control-plane API', () => {
     expect((await delegated.request(`/tenants/${tR}/scopes/${sR}`, { headers: auth })).status).toBe(200);
   });
 
+  it('tenant reap: refuses a non-deleting tenant (409), then reaps every scope via the vertical and keeps the tombstone (§4.8)', async () => {
+    const tR = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tR, slug: 'tenant-reap-co', name: 'Tenant Reap Co' });
+    // Two scopes in different states: an active one (must be archived first) and an
+    // already-archived one. Both must have their storage wiped through the vertical.
+    const sActive = scopeId.parse(ulid());
+    const sArch = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tR, scopeId: sActive, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, tR, sActive);
+    await host.provisionScope(staff, { tenantId: tR, scopeId: sArch, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, tR, sArch);
+    await host.admin.archiveScope(staff, tR, sArch);
+
+    const deletes: string[] = [];
+    const fakeVertical = {
+      deleteScope: async (input: { scopeId: string }) => {
+        deletes.push(input.scopeId);
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    const djson = (path: string, method: string) => delegated.request(path, { method, headers: auth });
+
+    // An active tenant is refused BEFORE any scope is touched — reap only follows delete.
+    const early = await djson(`/tenants/${tR}/reap`, 'POST');
+    expect(early.status).toBe(409);
+    expect((await early.json()).error).toMatch(/not deleting/);
+    expect(deletes).toEqual([]);
+
+    // Mark for deletion, then reap now: every scope's storage is wiped through the
+    // vertical and the tenant lands as a `reaped` tombstone.
+    await host.admin.setTenantStatus(staff, tR, 'deleting');
+    const reaped = await djson(`/tenants/${tR}/reap`, 'POST');
+    expect(reaped.status).toBe(200);
+    expect(await reaped.json()).toMatchObject({ status: 'reaped' });
+    // Both scopes were wiped through the vertical (active one archived first, en route).
+    expect(deletes.sort()).toEqual([sActive, sArch].sort());
+    // Both scope rows are `reaped` tombstones…
+    expect((await host.admin.getScopeRecord(staff, tR, sActive))!.status).toBe('reaped');
+    expect((await host.admin.getScopeRecord(staff, tR, sArch))!.status).toBe('reaped');
+    // …the tenant row survives as a tombstone (resolvable, status reaped)…
+    expect((await host.admin.getTenant(staff, tR))!.status).toBe('reaped');
+    // …and a second reap is refused (terminal).
+    expect((await djson(`/tenants/${tR}/reap`, 'POST')).status).toBe(409);
+  });
+
   // -- roles (§4.5) ----------------------------------------------------------
 
   it('lists roles and filters by tenant and source', async () => {

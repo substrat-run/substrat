@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { platformActorId, connectionId, scopeId, tenantId } from '@substrat-run/contracts';
-import type { MigrationFailure, MigrationStraggler, Scope } from '@substrat-run/contracts';
+import type { MigrationFailure, MigrationStraggler, Scope, Tenant } from '@substrat-run/contracts';
 import { runPlatformSweep, startPlatformSweeper } from '../src/platform-sweep.js';
 import type { ConnectorSweeper } from '../src/platform-sweep.js';
 import type { FetchLike, MigrateScopeOutcome, ScopeHost } from '../src/scope-host.js';
@@ -567,5 +567,143 @@ describe('runPlatformSweep — reap long-archived scopes (§4.4)', () => {
     });
     expect(viaFn).toEqual([old.id]);
     expect(report.archivedScopesReaped).toBe(1);
+  });
+});
+
+describe('runPlatformSweep — reap deleting tenants (§4.8)', () => {
+  const OLD = '2020-01-01T00:00:00.000Z';
+  const base = { actor: ACTOR, fetch: FETCH, sweepers: {}, drainRetries: false } as const;
+
+  const tenantRow = (id: string, deletingAt: string | null, status = 'deleting'): Tenant =>
+    ({ id, slug: 's', name: 'n', status, createdAt: OLD, deletingAt }) as Tenant;
+
+  /**
+   * A host exposing the reads/writes the tenant-reap phase and its default reaper touch:
+   * listTenants, listScopes (by tenant), archiveScope, reapScope, reapTenant. Calls are
+   * captured so the test can assert the archive-then-reap-then-reapTenant orchestration.
+   */
+  function reapHost(
+    tenants: Tenant[],
+    scopesByTenant: Record<string, Scope[]>,
+    calls: string[],
+  ): ScopeHost {
+    return {
+      admin: {
+        listTenants: async () => tenants,
+        listScopes: async (_a: unknown, filter?: { tenantId?: string }) =>
+          filter?.tenantId ? (scopesByTenant[filter.tenantId] ?? []) : [],
+        listConnections: async () => [],
+        archiveScope: async (_a: unknown, _t: unknown, s: string) => {
+          calls.push(`archive:${s}`);
+        },
+        reapScope: async (_a: unknown, _t: unknown, s: string) => {
+          calls.push(`reapScope:${s}`);
+        },
+        reapTenant: async (_a: unknown, t: string) => {
+          calls.push(`reapTenant:${t}`);
+        },
+      },
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+    } as unknown as ScopeHost;
+  }
+
+  const scopeRow = (id: string, tid: string, status: string): Scope =>
+    ({
+      id,
+      tenantId: tid,
+      slug: 's',
+      status,
+      vertical: null,
+      schemaVersion: '0',
+      migrationFailure: null,
+      forkedFrom: null,
+      archivedAt: null,
+    }) as Scope;
+
+  it('is opt-in: no retention window ⇒ the phase never runs', async () => {
+    const calls: string[] = [];
+    const report = await runPlatformSweep(reapHost([tenantRow(T, OLD)], {}, calls), { ...base });
+    expect(calls).toEqual([]);
+    expect(report.tenantsReaped).toBe(0);
+  });
+
+  it('reaps deleting tenants past the window; skips recent, null-age, and non-deleting', async () => {
+    const due = tenantRow(genId(), OLD);
+    const recent = tenantRow(genId(), new Date().toISOString());
+    const unknownAge = tenantRow(genId(), null); // deleting before the column shipped
+    const active = tenantRow(genId(), null, 'active');
+    const calls: string[] = [];
+    const report = await runPlatformSweep(
+      reapHost([due, recent, unknownAge, active], { [due.id]: [] }, calls),
+      { ...base, reapDeletingAfterDays: 30 },
+    );
+    expect(calls).toEqual([`reapTenant:${due.id}`]);
+    expect(report.tenantsReaped).toBe(1);
+  });
+
+  it('the default reaper archives-then-reaps each scope, then clears the directory', async () => {
+    const due = tenantRow(genId(), OLD);
+    const s1 = scopeRow(sid(), due.id, 'active'); // needs archiving first
+    const s2 = scopeRow(sid(), due.id, 'archived'); // reap directly
+    const s3 = scopeRow(sid(), due.id, 'reaped'); // already done — skipped
+    const calls: string[] = [];
+    const report = await runPlatformSweep(
+      reapHost([due], { [due.id]: [s1, s2, s3] }, calls),
+      { ...base, reapDeletingAfterDays: 0 },
+    );
+    expect(calls).toEqual([
+      `archive:${s1.id}`,
+      `reapScope:${s1.id}`,
+      `reapScope:${s2.id}`, // already archived — no archive call
+      `reapTenant:${due.id}`, // directory cleared only after every scope is reaped
+    ]);
+    expect(report.tenantsReaped).toBe(1);
+  });
+
+  it('the default reaper routes per-scope reaps through reapScopeFn (CP orchestration)', async () => {
+    const due = tenantRow(genId(), OLD);
+    const s1 = scopeRow(sid(), due.id, 'archived');
+    const calls: string[] = [];
+    const viaFn: string[] = [];
+    await runPlatformSweep(reapHost([due], { [due.id]: [s1] }, calls), {
+      ...base,
+      reapDeletingAfterDays: 0,
+      reapScopeFn: async (_t, s) => {
+        viaFn.push(s);
+      },
+    });
+    expect(viaFn).toEqual([s1.id]); // the vertical-orchestrated wipe, not host.admin.reapScope
+    expect(calls).toEqual([`reapTenant:${due.id}`]); // reapScope did NOT go through the host
+  });
+
+  it('reapTenantFn fully overrides the default tenant reaper', async () => {
+    const due = tenantRow(genId(), OLD);
+    const viaFn: string[] = [];
+    const report = await runPlatformSweep(reapHost([due], { [due.id]: [] }, []), {
+      ...base,
+      reapDeletingAfterDays: 30,
+      reapTenantFn: async (t) => {
+        viaFn.push(t);
+      },
+    });
+    expect(viaFn).toEqual([due.id]);
+    expect(report.tenantsReaped).toBe(1);
+  });
+
+  it('a per-tenant reap failure is recorded under reap-tenant and stepped over', async () => {
+    const a = tenantRow(genId(), OLD);
+    const b = tenantRow(genId(), OLD);
+    const done: string[] = [];
+    const report = await runPlatformSweep(reapHost([a, b], { [a.id]: [], [b.id]: [] }, []), {
+      ...base,
+      reapDeletingAfterDays: 0,
+      reapTenantFn: async (t) => {
+        if (t === a.id) throw new Error('directory offline');
+        done.push(t);
+      },
+    });
+    expect(done).toEqual([b.id]); // b still reaped despite a failing
+    expect(report.tenantsReaped).toBe(1);
+    expect(report.errors).toEqual([{ kind: 'reap-tenant', id: a.id, error: 'directory offline' }]);
   });
 });

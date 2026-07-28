@@ -192,6 +192,7 @@ interface ControlPlaneStub {
   createTenant(id: string, slug: string, name: string, createdAt: string): Promise<Tenant | null>;
   setTenantStatus(tenantId: string, status: TenantStatus): Promise<string>;
   setTenantName(tenantId: string, name: string): Promise<string>;
+  reapTenant(tenantId: string): Promise<string>;
   getTenant(tenantId: string): Promise<Tenant | undefined>;
   listTenants(): Promise<Tenant[]>;
   provisionScope(
@@ -2105,6 +2106,14 @@ export class CloudflareScopeHost implements ScopeHost {
         const before = await this.cp.setTenantName(tenantId, name);
         if (before === name) return; // no-op is not audited — nothing changed
         await this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before }, { name });
+      },
+      reapTenant: async (actor, tenantId) => {
+        // Directory-side terminal reap (§4.8). The caller reaped every scope's storage
+        // first (archive-if-needed → reapScope in the vertical deployment); the DO clears
+        // the tenant's PII/config rows and flips the row to a `reaped` tombstone, keeping
+        // the row + admin log. Only a `deleting` tenant may be reaped (checked in the DO).
+        const before = await this.cp.reapTenant(tenantId);
+        await this.recordAdmin(actor, 'reapTenant', { tenantId }, { status: before }, { status: 'reaped' });
       },
       listTenants: async (actor): Promise<Tenant[]> => {
         const tenants = (await this.cp.listTenants()).map((t) => tenantSchema.parse(t));

@@ -193,9 +193,10 @@ A `tenants` table in the directory, persisting the `tenant` contract that alread
 `createTenant` becomes a real idempotent control-plane operation instead of a side effect
 of minting a ULID.
 
-`status: active | suspended | deleting` acquires meaning: `suspended` fails `getScope` for
-every scope under the tenant — fails closed, the same path as K-3 — which is what makes
-non-payment or an incident containable without deleting anything.
+`status: active | suspended | deleting | reaped` acquires meaning: `suspended` fails `getScope`
+for every scope under the tenant — fails closed, the same path as K-3 — which is what makes
+non-payment or an incident containable without deleting anything. `deleting` and `reaped` are
+the tenant delete lifecycle; see §4.8.
 
 ### 4.2 Scope lifecycle
 
@@ -273,6 +274,18 @@ provenance exists exactly as long as every grant write flows through this audite
 Any future write path that touches tuples without landing here (a scope-local mint, a
 migration backfill) silently destroys provenance; per §4.2's algebra rule, that is a
 decision-log event, not a patch.
+
+**Retention: the admin log is never swept ([#36](https://github.com/substrat-run/substrat/issues/36)).**
+Because it is the sole witness of grant provenance (above), and because Tier-2 directory
+history is kept indefinitely for bokföringslagen (kernel-design §5.3), the admin log has **no
+TTL and no retention sweeper** — a decision, not a gap. Its only cost is unbounded growth, and
+the mitigation is a bound on *reads*, not on the record: the HTTP read surface (`GET /admin-log`)
+**defaults** a page size rather than dumping the whole table, and `nextCursor` still walks the
+entire log (ULID order is chronological, so the last row's id is the cursor). The in-process
+`auditLog(filter)` stays deliberately unbounded — an internal caller that wants everything asks
+for everything; a silent cap there would let a truncated page pass for the whole log. When a
+tenant is reaped (§4.8) its scope data and PII directory rows are destroyed, but its admin-log
+rows are **kept** — the witness of what was done to that tenant must outlive the tenant.
 
 ### 4.5 The console
 
@@ -540,6 +553,54 @@ the directory on the request hot path, so a cached route that keeps serving a
 suspended tenant blunts what §7 calls "a live weapon". That is the same tension as
 the entitlement check — hot path or cached with event invalidation — and it should be
 settled once, for both.
+
+### 4.8 Tenant delete lifecycle ([#36](https://github.com/substrat-run/substrat/issues/36))
+
+The tenant analogue of the §4.4 scope reap. Before this, `deleting` was a dead status —
+written once (a dashboard team-delete) and never consumed, so a tenant marked for deletion
+kept every byte forever. The lifecycle closes that:
+
+```
+active ──delete──▶ deleting ──(grace window / staff "reap now")──▶ reaped   [terminal tombstone]
+  ▲                   │
+  └──── un-delete ────┘   (restore during the grace window)
+```
+
+- **`deleting` is a reversible grace state.** It is an ordinary `setTenantStatus` transition
+  (not a distinct action — like suspend, its before/after status is the record), so it fails
+  `getScope` closed for every scope, exactly like `suspended`. Entering it stamps `deletingAt`;
+  leaving it (an un-delete → `active`) clears it. **No data is reclaimed here** — the scopes are
+  merely inert, and the tenant restores whole. Deliberately *not* eager: the tenant gate already
+  makes the scopes fail closed, so archiving them on entry would only make the reversal harder.
+- **`reaped` is terminal.** Every scope is reaped (§4.4's storage wipe, per scope) and the
+  tenant's PII/config directory rows — identities and identity pools, membership tuples, roles,
+  entitlements, orgs — are cleared. The `tenants` row is **kept as a tombstone** (burned slug +
+  audit history) and the admin log is **kept whole** (§4.4's retention decision). Irreversible:
+  only a `deleting` tenant may be reaped, and `reaped` never returns to `active`. `reapTenant` is
+  the tenant-level analogue of `reapScope` and is directory-side only — the per-scope byte-wipe
+  runs above the kernel (a hosted scope's DO is CP-less), so the caller reaps every scope first,
+  then clears the directory.
+
+**Keep vs clear.** The line is the same one the §4.4 scope reap draws, lifted to the tenant:
+destroy the data (scope storage) and the PII/config (identities, tuples, roles, entitlements,
+orgs); keep the *witness and the burned name* (the `tenants` row + the admin log). A reaped
+tenant reads like a missing one at the gate but is still visible as a tombstone in the console.
+
+**Two ways to reap**, both staff-gated and both riding one seam:
+
+1. **Reap now** — `POST /tenants/:t/reap`, refused unless the tenant is `deleting` (409). The
+   console arms it with the same type-the-slug gate the scope reap uses. Skips the grace window.
+2. **The grace-window sweep** — `runPlatformSweep`'s tenant-reap phase reaps any `deleting`
+   tenant whose `deletingAt` is older than `TENANT_RETENTION_DAYS` (the tenant counterpart of
+   `SCOPE_RETENTION_DAYS`). **Opt-in and unset by default** — the reap is irreversible, so a
+   deployment must name a window before the sweep ever destroys a tenant; a null `deletingAt`
+   (marked before the column shipped) is never auto-reaped. The default reaper composes the
+   scope-reap seam (archive-if-needed → wipe each scope's DO in its vertical deployment →
+   `reapScope`), so the control plane's orchestrated per-scope wipe applies here for free.
+
+**Not tenant export.** GDPR Art. 20 portability (a full-tenant dump across scopes + directory
+rows) is a separate piece; the per-scope `exportScope` seam it builds on already exists (§5.4's
+admin-query RPC, `GET …/scopes/:s/export`).
 
 ## 5. Billing: meter, do not bill
 
