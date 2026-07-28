@@ -35,6 +35,8 @@ export {
   deploymentRefFor,
   stableDeploymentRefFor,
   nextMigrationTag,
+  DeployUploadError,
+  upstreamStatusOf,
 } from './deploy.js';
 export type { DeployVerticalFn, VerticalBundle, DeclaredBinding, DeployManifest } from './deploy.js';
 export { createWfpUploader, createWfpModulesFetcher } from './wfp.js';

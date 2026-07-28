@@ -8,6 +8,7 @@ import { permissionKey, platformActorId, principalId, scopeId, tenantId, type En
 import {
   createControlPlaneApi,
   ControlPlaneError,
+  DeployUploadError,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
@@ -1369,17 +1370,47 @@ describe('control-plane API — deploy', () => {
     });
   });
 
-  it('surfaces an upload failure as a 502 with detail, not a blank 500', async () => {
+  it('surfaces an upload throw with no upstream status as a 502 with detail, not a blank 500', async () => {
     const boom = createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       deployVertical: async () => {
-        throw new Error('WfP upload failed (400): compatibility flag nodejs_compat required');
+        throw new Error('WfP upload failed (500): namespace unreachable');
       },
     });
     const res = await boom.request('/verticals/boom/deploy', { method: 'POST', headers: auth, body: form(manifest()) });
     expect(res.status).toBe(502);
     expect((await res.json()).detail).toMatch(/WfP upload failed/);
+  });
+
+  it('answers a bad-bundle rejection (upstream 4xx) as a 422, not a 502 that reads as an outage (#307)', async () => {
+    const boom = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      deployVertical: async () => {
+        // A module-top-level throw surfaces as CF 10021 inside a 400 — the builder's own
+        // script, well-formed HTTP but refused.
+        throw new DeployUploadError(400, "WfP upload failed (400): {\"errors\":[{\"code\":10021,\"message\":\"Uncaught Error: api catalog drift\"}]}");
+      },
+    });
+    const res = await boom.request('/verticals/boom/deploy', { method: 'POST', headers: auth, body: form(manifest()) });
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error).toBe('deploy rejected');
+    expect(body.detail).toMatch(/api catalog drift/);
+  });
+
+  it('keeps an upstream 5xx (a platform failure) as a 502', async () => {
+    const boom = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      deployVertical: async () => {
+        throw new DeployUploadError(503, 'WfP upload failed (503): upstream unavailable');
+      },
+    });
+    const res = await boom.request('/verticals/boom/deploy', { method: 'POST', headers: auth, body: form(manifest()) });
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toBe('deploy upload failed');
   });
 
   it("forwards a vertical's own D1 binding (with its database id) to the uploader", async () => {

@@ -67,6 +67,29 @@ export type DeployVerticalFn = (
 ) => Promise<void>;
 
 /**
+ * A failed upload that carries the UPSTREAM runtime's HTTP status, so the deploy handler
+ * can distinguish a bad-bundle rejection (a 4xx — the builder's own script is at fault,
+ * well-formed HTTP but refused) from a platform failure (a 5xx). Part of the seam
+ * contract, not the CF transport: a `DeployVerticalFn` throwing this lets the handler
+ * answer honestly instead of collapsing every upload failure to a 502 that reads as a
+ * gateway outage (#307). Any other throw has no upstream status and stays a 502.
+ */
+export class DeployUploadError extends Error {
+  constructor(
+    readonly upstreamStatus: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'DeployUploadError';
+  }
+}
+
+/** The upstream runtime status a `DeployVerticalFn` upload failed with, or undefined for any other throw. */
+export function upstreamStatusOf(e: unknown): number | undefined {
+  return e instanceof DeployUploadError ? e.upstreamStatus : undefined;
+}
+
+/**
  * Download the module contents of a script already in the namespace — what promote and
  * backout re-upload from (the archive script is the platform's bundle store; nothing
  * else retains the built bytes). Host-injected like `DeployVerticalFn`.

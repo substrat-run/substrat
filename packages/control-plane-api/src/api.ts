@@ -40,6 +40,7 @@ import {
   deploymentRefFor,
   stableDeploymentRefFor,
   nextMigrationTag,
+  upstreamStatusOf,
 } from './deploy.js';
 import type { DeployVerticalFn, FetchVerticalModulesFn } from './deploy.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
@@ -1376,13 +1377,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         bindings: manifest.bindings,
       });
     } catch (e) {
-      // The upload to the runtime failed (e.g. Cloudflare rejected the script). This is
-      // a platform/runtime error, not a bad request — surface the detail (the builder is
+      // The upload to the runtime failed. Surface the detail (the builder is
       // authenticated) rather than the anonymous 500 the generic handler would give, so a
-      // push failure is diagnosable without reading worker logs.
+      // push failure is diagnosable without reading worker logs. The version label is NOT
+      // consumed here: registration/publish happen only AFTER a successful upload (below),
+      // so a failed push leaves the same --version reusable (#307).
+      //
+      // Answer the upstream status honestly: a runtime 4xx is a bad-bundle rejection — the
+      // builder's own script (e.g. a module-top-level throw → CF 10021), well-formed HTTP
+      // but refused — so a 422, not a 502 that reads as a platform outage. A 5xx (or any
+      // throw with no upstream status) is a platform failure and stays a 502.
       const detail = e instanceof Error ? e.message : String(e);
-      console.error('deploy.upload.failed', { slug, deploymentRef, detail });
-      return c.json({ error: 'deploy upload failed', detail }, 502);
+      const upstream = upstreamStatusOf(e);
+      console.error('deploy.upload.failed', { slug, deploymentRef, detail, upstream });
+      return upstream !== undefined && upstream >= 400 && upstream < 500
+        ? c.json({ error: 'deploy rejected', detail }, 422)
+        : c.json({ error: 'deploy upload failed', detail }, 502);
     }
 
     // Register-then-publish, both idempotent-ish below the seam: a first push of a

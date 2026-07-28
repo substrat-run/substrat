@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createWfpUploader, createWfpModulesFetcher } from '../src/wfp.js';
+import { createWfpUploader, createWfpModulesFetcher, clip } from '../src/wfp.js';
+import { upstreamStatusOf } from '../src/deploy.js';
 import type { VerticalBundle } from '../src/deploy.js';
 
 /**
@@ -160,5 +161,56 @@ describe('createWfpModulesFetcher', () => {
     const modules = await fetchModules('callout-01k');
     expect(modules).toHaveLength(1);
     expect(modules[0]!.name).toBe('worker.js');
+  });
+});
+
+/**
+ * A failed upload must reach the caller diagnosable (#307): the upstream CF error body is
+ * carried through — clipped only WITH a marker, never mid-token — and the throw carries the
+ * upstream CF status so the deploy handler can answer a bad bundle as a client error, not a
+ * blanket 502 that reads as a platform outage.
+ */
+describe('createWfpUploader — upload failure', () => {
+  async function uploadWith(status: number, body: string): Promise<unknown> {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status })));
+    const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
+    return upload('callout-01k', bundle).then(
+      () => undefined,
+      (e) => e,
+    );
+  }
+
+  it('carries the upstream CF status so the caller can tell a bad bundle from a platform fault', async () => {
+    const badBundle = await uploadWith(400, '{"errors":[{"code":10021,"message":"Uncaught Error"}]}');
+    expect(upstreamStatusOf(badBundle)).toBe(400);
+    const platform = await uploadWith(503, 'upstream unavailable');
+    expect(upstreamStatusOf(platform)).toBe(503);
+  });
+
+  it('marks a clipped body explicitly instead of ending mid-token', async () => {
+    // A 3000-char CF error list (the shape that ended '…eka/set-budg' with no marker).
+    const long = 'op/' + 'x'.repeat(3000);
+    const e = (await uploadWith(400, long)) as Error;
+    expect(e.message).toContain('… [truncated, ');
+    expect(e.message).toMatch(/\[truncated, \d+ chars omitted\]$/);
+    // The default 2000-char cap, applied to the body (not the whole message).
+    expect(e.message).toContain(`[truncated, ${long.length - 2000} chars omitted]`);
+  });
+
+  it('leaves a short body whole', async () => {
+    const e = (await uploadWith(400, 'compatibility flag nodejs_compat required')) as Error;
+    expect(e.message).toContain('compatibility flag nodejs_compat required');
+    expect(e.message).not.toContain('truncated');
+  });
+});
+
+describe('clip', () => {
+  it('returns a within-cap body unchanged', () => {
+    expect(clip('short', 100)).toBe('short');
+    expect(clip('x'.repeat(100), 100)).toBe('x'.repeat(100));
+  });
+
+  it('appends an explicit marker with the omitted count when over the cap', () => {
+    expect(clip('x'.repeat(105), 100)).toBe(`${'x'.repeat(100)} … [truncated, 5 chars omitted]`);
   });
 });

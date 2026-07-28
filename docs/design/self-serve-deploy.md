@@ -156,7 +156,14 @@ structural defense in model B.
   WfP-scoped CF credential): authenticates the builder → validates the declared bindings
   against §4 → uploads to the `substrat-verticals` namespace under `deploymentRef =
   <builder>-<slug>@<version>` → records a **pending** `verticalVersion`. It never promotes or
-  binds — admission does, separately.
+  binds — admission does, separately. A version **label is consumed only on a successful
+  upload**: the endpoint records the pending version *after* the upload returns, so a push
+  that fails at the upload step (a bad-bundle rejection, e.g. a module-top-level throw) never
+  registers the label and the same `--version` is reusable on retry. The failure is answered
+  honestly — a runtime 4xx as a `422 deploy rejected` (the builder's script), a 5xx as a
+  `502` — with the upstream error body carried through intact (clipped only with an explicit
+  `… [truncated, N chars omitted]` marker, never mid-token). CI schemes that bump on every
+  run (e.g. `github.run_number`) still spend the number on their own side regardless.
 - **deploymentRef namespacing** gains a builder prefix, because slugs are now customer-chosen
   and must not collide across builders.
 
