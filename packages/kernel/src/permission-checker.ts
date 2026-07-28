@@ -35,10 +35,21 @@ export interface PermissionChecker {
 /** Convenience for the overwhelmingly common case. */
 export const asPrincipal = (id: PrincipalId): CheckSubject => ({ kind: 'principal', id });
 
+/**
+ * A refused check. The message constructor stays the public surface modules use
+ * (`throw new PermissionDenied('…')` for their own policy denials). `assertAllowed`
+ * additionally attaches the denied `permission` and the `node` it was checked at (K-35),
+ * so the host can record the denial (actor, permission, where) without re-parsing the
+ * message — and a plain message-only denial simply carries neither and is not recorded.
+ */
 export class PermissionDenied extends Error {
-  constructor(message: string) {
+  readonly permission?: PermissionKey;
+  readonly node?: Node;
+  constructor(message: string, detail?: { permission: PermissionKey; node: Node }) {
     super(message);
     this.name = 'PermissionDenied';
+    this.permission = detail?.permission;
+    this.node = detail?.node;
   }
 }
 
@@ -48,7 +59,10 @@ export function assertAllowed(decision: Decision): asserts decision is Extract<
   { allowed: true }
 > {
   if (!decision.allowed) {
-    throw new PermissionDenied(`permission denied: ${decision.checked}`);
+    throw new PermissionDenied(`permission denied: ${decision.checked}`, {
+      permission: decision.checked,
+      node: decision.node,
+    });
   }
 }
 

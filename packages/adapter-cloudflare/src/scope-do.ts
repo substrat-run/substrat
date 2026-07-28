@@ -5,10 +5,12 @@ import {
   eventId,
   instant,
   objectRef,
+  grantRefFromProof,
   principalId,
   type DomainEvent,
   type DomainEventInput,
   type EntityRef,
+  type EventAuthorization,
   type PermissionKey,
   type PrincipalId,
   type ScopeId,
@@ -23,6 +25,7 @@ import {
 import {
   ulid,
   assertReadOnlyQuery,
+  PermissionDenied,
   type ConsumerHandler,
   type GuardPredicate,
   type ModuleRegistration,
@@ -31,6 +34,7 @@ import {
   type PermissionChecker,
   type SqlMigration,
 } from '@substrat-run/kernel';
+import type { CheckSubject } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
@@ -84,6 +88,7 @@ interface OutboxRow {
   entity_id: string;
   pii_class: string;
   subject_id: string | null;
+  authorization: string | null;
   payload: string | null;
 }
 
@@ -103,6 +108,23 @@ const KERNEL_DDL = `
     pii_class TEXT NOT NULL,
     subject_id TEXT,
     payload TEXT,
+    -- K-34: the checks the emitting operation passed (JSON [{permission, grant?}]).
+    -- NULL on rows written before the field existed -- honestly unrecorded, not empty.
+    authorization TEXT,
+    drained_at TEXT
+  );
+  -- K-35: refused permission checks. A denial rolls its operation back, so it is
+  -- recorded here OUTSIDE that transaction, on the deny path -- the one event where an
+  -- actor's intent and the permission model visibly disagree, witnessed by no other log.
+  -- Drains rather than expires (K-24's split): drained_at marks a shipped row.
+  CREATE TABLE IF NOT EXISTS _substrat_denials (
+    id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    permission TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    scope_id TEXT,
+    operation TEXT,
+    at TEXT NOT NULL,
     drained_at TEXT
   );
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
@@ -314,6 +336,10 @@ export function defineScopeDO(
         // consumer dead-letter.
         'ALTER TABLE _substrat_deliveries ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
         'ALTER TABLE _substrat_deliveries ADD COLUMN next_attempt_at TEXT',
+        // K-34: the authorization column on a scope DO created before it existed. Nullable,
+        // so legacy outbox rows read as "unrecorded". (_substrat_denials is a new table,
+        // covered by KERNEL_DDL's IF NOT EXISTS with no ALTER.)
+        'ALTER TABLE _substrat_outbox ADD COLUMN authorization TEXT',
       ]) {
         try {
           this.sql.exec(alter);
@@ -592,6 +618,16 @@ export function defineScopeDO(
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, input);
           });
         } catch (err) {
+          // K-35: the transaction has rolled back; record a refused check now, as its own
+          // write (outside that transaction), so the denial survives the rollback.
+          if (err instanceof PermissionDenied) {
+            this.recordDenial(
+              connectionId ? { kind: 'connection', id: connectionId } : { kind: 'principal', id: principal },
+              tenantId,
+              operation,
+              err,
+            );
+          }
           throw toRpcError(err);
         }
         // Post-commit: drain the outbox to consumers, each delivery its own txn.
@@ -1035,6 +1071,37 @@ export function defineScopeDO(
       }
     }
 
+    /**
+     * K-35: record a refused check into the scope's denial log. Called from the invoke
+     * catch after the storage transaction has rolled back, so this write is its own and
+     * survives — the whole point, since the denial is the write the operation could not make.
+     */
+    private recordDenial(
+      subject: CheckSubject,
+      tenantId: TenantId,
+      operation: string,
+      err: PermissionDenied,
+    ): void {
+      // Only an ENFORCED denial (assertAllowed, which attaches the checked permission +
+      // node) is recorded. A module's own hand-thrown `new PermissionDenied('…')` carries
+      // no permission key and is left to the module.
+      if (!err.permission || !err.node) return;
+      const actor =
+        subject.kind === 'connection' ? { connection: subject.id } : (subject.id as PrincipalId);
+      this.sql.exec(
+        `INSERT INTO _substrat_denials
+           (id, actor, permission, tenant_id, scope_id, operation, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ulid(),
+        JSON.stringify(actor),
+        err.permission,
+        err.node.tenantId,
+        err.node.scopeId ?? null,
+        operation,
+        new Date().toISOString(),
+      );
+    }
+
     private parseOutboxRow(row: OutboxRow): DomainEvent {
       return domainEvent.parse({
         id: row.id,
@@ -1047,6 +1114,7 @@ export function defineScopeDO(
         entity: { entityType: row.entity_type, entityId: row.entity_id },
         piiClass: row.pii_class,
         ...(row.subject_id ? { subjectId: row.subject_id } : {}),
+        ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
         payload: row.payload === null ? undefined : JSON.parse(row.payload),
       });
     }
@@ -1063,6 +1131,10 @@ export function defineScopeDO(
       const checker = this.checker;
       const relations = this.relations;
       const sql = this.sql;
+      // K-34: the checks that passed in THIS operation (a fresh context is built per
+      // invoke, so this does not leak across operations). `emit` snapshots it; a
+      // system/override actor is unconditionally allowed, so its checks are not recorded.
+      const passed: EventAuthorization[] = [];
       return {
         tenantId,
         scopeId,
@@ -1077,12 +1149,13 @@ export function defineScopeDO(
             tenantId,
             scopeId,
             actor: systemActor ?? (connectionId ? { connection: connectionId } : principal),
+            ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
           });
           sql.exec(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
-                entity_type, entity_id, pii_class, subject_id, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                entity_type, entity_id, pii_class, subject_id, authorization, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -1094,31 +1167,42 @@ export function defineScopeDO(
             full.entity.entityId,
             full.piiClass,
             full.subjectId ?? null,
+            full.authorization ? JSON.stringify(full.authorization) : null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },
-        check: (permission: PermissionKey, entity?: EntityRef) =>
-          systemActor
-            ? Promise.resolve({
-                allowed: true as const,
-                proof: [
-                  {
-                    subject: objectRef.parse(
-                      `system:${systemActor.system.replace(/[^a-zA-Z0-9_.-]/g, '-')}`,
-                    ),
-                    relation: `granted:${permission}`,
-                    object: objectRef.parse(`scope:${scopeId}`),
-                  },
-                ],
-              })
-            : checker.check(
-                connectionId
-                  ? { kind: 'connection', id: connectionId }
-                  : { kind: 'principal', id: principal },
-                permission,
-                { tenantId, scopeId },
-                entity,
-              ),
+        check: async (permission: PermissionKey, entity?: EntityRef) => {
+          if (systemActor) {
+            return {
+              allowed: true as const,
+              proof: [
+                {
+                  subject: objectRef.parse(
+                    `system:${systemActor.system.replace(/[^a-zA-Z0-9_.-]/g, '-')}`,
+                  ),
+                  relation: `granted:${permission}`,
+                  object: objectRef.parse(`scope:${scopeId}`),
+                },
+              ],
+            };
+          }
+          const decision = await checker.check(
+            connectionId
+              ? { kind: 'connection', id: connectionId }
+              : { kind: 'principal', id: principal },
+            permission,
+            { tenantId, scopeId },
+            entity,
+          );
+          if (decision.allowed) {
+            const grant = grantRefFromProof(permission, decision.proof);
+            const entry: EventAuthorization = grant ? { permission, grant } : { permission };
+            if (!passed.some((p) => p.permission === entry.permission && p.grant === entry.grant)) {
+              passed.push(entry);
+            }
+          }
+          return decision;
+        },
         link: (child: EntityRef, parent: EntityRef) => {
           const allowed = relations.get(child.entityType);
           if (!allowed?.has(parent.entityType)) {

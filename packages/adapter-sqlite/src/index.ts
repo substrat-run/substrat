@@ -32,6 +32,7 @@ import {
   verticalChannel,
   verticalVersion,
   objectRef,
+  grantRefFromProof,
   org as orgSchema,
   orgMembership,
   principalId,
@@ -54,6 +55,7 @@ import {
   type CreateTenantInput,
   type DomainEvent,
   type DomainEventInput,
+  type EventAuthorization,
   type EntitlementGrant,
   type EntitlementGrantInput,
   type EntityRef,
@@ -122,6 +124,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  PermissionDenied,
   type PermissionChecker,
   type ProvisionScopeInput,
   type RoleFilter,
@@ -192,6 +195,24 @@ const KERNEL_DDL = `
     pii_class TEXT NOT NULL,
     subject_id TEXT,
     payload TEXT,
+    -- K-34: the checks the emitting operation passed (JSON [{permission, grant?}]).
+    -- NULL on rows written before the field existed — honestly unrecorded, not empty.
+    authorization TEXT,
+    drained_at TEXT
+  );
+  -- K-35: refused permission checks. A denial rolls its operation back, so it is
+  -- recorded here OUTSIDE that transaction, on the deny path — the one event where an
+  -- actor's intent and the permission model visibly disagree, and which no other log
+  -- witnesses (the admin log records changes, the outbox records allowed mutations).
+  -- Drains rather than expires (K-24's split): drained_at marks a shipped row.
+  CREATE TABLE IF NOT EXISTS _substrat_denials (
+    id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    permission TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    scope_id TEXT,
+    operation TEXT,
+    at TEXT NOT NULL,
     drained_at TEXT
   );
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
@@ -470,6 +491,7 @@ interface OutboxRow {
   entity_id: string;
   pii_class: string;
   subject_id: string | null;
+  authorization: string | null;
   payload: string | null;
 }
 
@@ -1350,7 +1372,6 @@ export class SqliteScopeHost implements ScopeHost {
     rt: ScopeRuntime,
     subject: CheckSubject,
   ): ScopeStub {
-    const ctx = this.operationContext(rt, subject);
     const operations = this.operations;
 
     return {
@@ -1372,6 +1393,9 @@ export class SqliteScopeHost implements ScopeHost {
           );
         }
         return rt.actor.enqueue(async () => {
+          // Fresh per operation: the context carries the K-34 authorization accumulator,
+          // which must not leak across operations (invokes are serialized per scope).
+          const ctx = this.operationContext(rt, subject);
           const clonedInput = structuredClone(input);
           rt.db.exec('BEGIN IMMEDIATE');
           let result: O;
@@ -1384,6 +1408,9 @@ export class SqliteScopeHost implements ScopeHost {
             rt.db.exec('COMMIT');
           } catch (err) {
             rt.db.exec('ROLLBACK');
+            // K-35: a refused check rolled the operation back. Record it now — a fresh
+            // statement in autocommit, AFTER the rollback, so the denial survives it.
+            if (err instanceof PermissionDenied) this.recordDenial(rt, subject, operation, err);
             throw err;
           }
           // Post-commit, still inside the actor task: drain outbox → consumers,
@@ -1706,6 +1733,40 @@ export class SqliteScopeHost implements ScopeHost {
     }
   }
 
+  /**
+   * K-35: record a refused check into the scope's denial log. Called from the invoke
+   * catch AFTER `ROLLBACK`, so this INSERT runs in autocommit and survives — the whole
+   * point, since the denial is exactly the write the rolled-back operation could not make.
+   */
+  private recordDenial(
+    rt: ScopeRuntime,
+    subject: CheckSubject,
+    operation: string,
+    err: PermissionDenied,
+  ): void {
+    // Only an ENFORCED denial (assertAllowed, which attaches the checked permission +
+    // node) is recorded. A module's own hand-thrown `new PermissionDenied('…')` is its
+    // policy, carries no permission key, and is left to the module.
+    if (!err.permission || !err.node) return;
+    const actor =
+      subject.kind === 'connection' ? { connection: subject.id } : (subject.id as PrincipalId);
+    rt.db
+      .prepare(
+        `INSERT INTO _substrat_denials
+           (id, actor, permission, tenant_id, scope_id, operation, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        ulid(),
+        JSON.stringify(actor),
+        err.permission,
+        err.node.tenantId,
+        err.node.scopeId ?? null,
+        operation,
+        new Date().toISOString(),
+      );
+  }
+
   private parseOutboxRow(row: OutboxRow): DomainEvent {
     return domainEvent.parse({
       id: row.id,
@@ -1718,6 +1779,7 @@ export class SqliteScopeHost implements ScopeHost {
       entity: { entityType: row.entity_type, entityId: row.entity_id },
       piiClass: row.pii_class,
       ...(row.subject_id ? { subjectId: row.subject_id } : {}),
+      ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
       payload: row.payload === null ? undefined : JSON.parse(row.payload),
     });
   }
@@ -3946,6 +4008,11 @@ export class SqliteScopeHost implements ScopeHost {
     const principal = subject.id as PrincipalId;
     const checker = this.checker;
     const relations = this.relations;
+    // K-34: the checks that passed in THIS operation. The context is created per invoke
+    // (see buildStub), so this accumulates one operation's authorizations; `emit` snapshots
+    // whatever has passed up to that point. A system/override actor is unconditionally
+    // allowed, so its checks are not authorizations and are not recorded.
+    const passed: EventAuthorization[] = [];
     return {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
@@ -3962,13 +4029,14 @@ export class SqliteScopeHost implements ScopeHost {
           actor:
             overrideActor ??
             (subject.kind === 'connection' ? { connection: subject.id } : principal),
+          ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
         });
         rt.db
           .prepare(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
-                entity_type, entity_id, pii_class, subject_id, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                entity_type, entity_id, pii_class, subject_id, authorization, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             full.id,
@@ -3982,24 +4050,40 @@ export class SqliteScopeHost implements ScopeHost {
             full.entity.entityId,
             full.piiClass,
             full.subjectId ?? null,
+            full.authorization ? JSON.stringify(full.authorization) : null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
       },
-      check: (permission, entity?) =>
-        overrideActor
-          ? Promise.resolve({
-              allowed: true as const,
-              proof: [
-                {
-                  subject: objectRef.parse(
-                    `system:${overrideActor.system.replace(/[^a-zA-Z0-9_.-]/g, '-')}`,
-                  ),
-                  relation: `granted:${permission}`,
-                  object: objectRef.parse(`scope:${rt.scopeId}`),
-                },
-              ],
-            })
-          : checker.check(subject, permission, { tenantId: rt.tenantId, scopeId: rt.scopeId }, entity),
+      check: async (permission, entity?) => {
+        if (overrideActor) {
+          return {
+            allowed: true as const,
+            proof: [
+              {
+                subject: objectRef.parse(
+                  `system:${overrideActor.system.replace(/[^a-zA-Z0-9_.-]/g, '-')}`,
+                ),
+                relation: `granted:${permission}`,
+                object: objectRef.parse(`scope:${rt.scopeId}`),
+              },
+            ],
+          };
+        }
+        const decision = await checker.check(
+          subject,
+          permission,
+          { tenantId: rt.tenantId, scopeId: rt.scopeId },
+          entity,
+        );
+        if (decision.allowed) {
+          const grant = grantRefFromProof(permission, decision.proof);
+          const entry: EventAuthorization = grant ? { permission, grant } : { permission };
+          if (!passed.some((p) => p.permission === entry.permission && p.grant === entry.grant)) {
+            passed.push(entry);
+          }
+        }
+        return decision;
+      },
       link: (child: EntityRef, parent: EntityRef) => {
         const allowed = relations.get(child.entityType);
         if (!allowed?.has(parent.entityType)) {
@@ -4136,6 +4220,10 @@ export class SqliteScopeHost implements ScopeHost {
     // consumer dead-letter.
     this.ensureColumn(db, '_substrat_deliveries', 'attempts', 'attempts INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn(db, '_substrat_deliveries', 'next_attempt_at', 'next_attempt_at TEXT');
+    // K-34: the authorization column on a scope DB created before it existed. Nullable,
+    // so legacy outbox rows read as "unrecorded" — the honest value. (_substrat_denials
+    // is a whole new table, so KERNEL_DDL's IF NOT EXISTS covers it with no ALTER.)
+    this.ensureColumn(db, '_substrat_outbox', 'authorization', 'authorization TEXT');
     const appliedMigrations = new Set<string>(
       (
         db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {

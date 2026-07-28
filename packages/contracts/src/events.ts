@@ -4,6 +4,7 @@ import {
   eventId,
   instant,
   moduleId,
+  permissionKey,
   principalId,
   scopeId,
   tenantId,
@@ -38,6 +39,27 @@ export const systemActor = z.object({ system: moduleId });
 export const connectorActor = z.object({ connection: z.string().min(1) });
 export const actor = z.union([principalId, systemActor, connectorActor]);
 export type Actor = z.infer<typeof actor>;
+
+/**
+ * What authorized a mutation (K-34). Each entry is a permission the emitting operation
+ * checked-and-passed; `grant` — present only when the allow resolved through a
+ * `granted:<perm>` tuple (an entity or node capability grant) rather than a role bundle —
+ * is that granting tuple's `object`, which names WHICH grant (e.g. `workorder:01J…`,
+ * `scope:01J…`). Absent `grant` ⇒ authorized by a role.
+ *
+ * Kernel-stamped: module code can neither supply it (it is not on `DomainEventInput`) nor
+ * suppress it. The full proof chain is deliberately NOT persisted — `explain` re-derives
+ * chains on demand; what re-derivation cannot recover, once tuples have since changed, is
+ * which permission and grant were consulted at write time. That pointer is what is kept.
+ */
+export const eventAuthorization = z.object({
+  permission: permissionKey,
+  grant: z
+    .string()
+    .regex(/^[a-z0-9_-]+:[^\s]+$/)
+    .optional(),
+});
+export type EventAuthorization = z.infer<typeof eventAuthorization>;
 
 const piiInvariant = (
   val: { piiClass: PiiClass; subjectId?: unknown },
@@ -79,6 +101,9 @@ export const domainEvent = z
     entity: entityRef,
     piiClass,
     subjectId: dataSubjectId.optional(),
+    // K-34: the checks the emitting operation passed — stamped kernel-side, absent on
+    // events written before the field existed (honestly unrecorded, not empty).
+    authorization: z.array(eventAuthorization).optional(),
     payload: z.unknown(),
   })
   .superRefine(piiInvariant);

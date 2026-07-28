@@ -154,6 +154,26 @@ export const decision = z.discriminatedUnion('allowed', [
 ]);
 export type Decision = z.infer<typeof decision>;
 
+/**
+ * The grant an allow resolved through (K-34), for stamping onto an emitted event's
+ * `authorization`. Every allow proof ends with a `granted:<permission>` tuple, but a ROLE
+ * expansion's has subject `role:<key>` while a capability grant's has a principal / org /
+ * connection subject — only the latter names a grant. Returns that granting tuple's
+ * `object` (the entity or node it targets), or `undefined` when the allow came via a role
+ * (or, defensively, when no matching tuple is present).
+ */
+export function grantRefFromProof(
+  permission: string,
+  proof: readonly RelationTuple[],
+): string | undefined {
+  const rel = `granted:${permission}`;
+  for (let i = proof.length - 1; i >= 0; i--) {
+    const t = proof[i];
+    if (t && t.relation === rel) return t.subject.startsWith('role:') ? undefined : t.object;
+  }
+  return undefined;
+}
+
 export const effectivePermissions = z.object({
   principalId,
   node,
