@@ -996,13 +996,23 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
   // The vertical's version registry AND the version THIS scope is actually pinned to
   // (the router dispatches on the latter). They differ when prod moved after install —
   // which is exactly the "the tab says 0.0.12 but I run 0.0.9" confusion this answers.
-  const [deployment, boundVersionId] = cp
-    ? await Promise.all([verticalDeploymentFromCp(cp, appRow.vertical_slug), cp.boundVersionId(scope)])
+  // `mine` decides `owned`: whether the app's vertical is one this tenant pushed, which
+  // is what makes prod promotion self-serve (while private) instead of a staff action —
+  // the UI words the tab differently for each.
+  const [deployment, boundVersionId, mine] = cp
+    ? await Promise.all([verticalDeploymentFromCp(cp, appRow.vertical_slug), cp.boundVersionId(scope), cp.listVerticals()])
     : await Promise.all([
         verticalDeploymentFromHost(host, STAFF, appRow.vertical_slug),
         host.admin.getScopeRecord(STAFF, node.tenantId, scope).then((r) => r?.verticalVersionId ?? null),
+        host.admin.listVerticals(STAFF).then((vs) => vs.filter((v) => v.ownerTenant === node.tenantId)),
       ]);
-  return c.json({ ...deployment, boundVersionId });
+  const ownRecord = mine.find((v) => v.slug === appRow.vertical_slug);
+  return c.json({
+    ...deployment,
+    owned: !!ownRecord,
+    listed: ownRecord ? !!ownRecord.listed : deployment.listed,
+    boundVersionId,
+  });
 });
 
 /**

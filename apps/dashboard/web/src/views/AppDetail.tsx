@@ -279,6 +279,13 @@ function Deployments({ app }: { app: AppRow }) {
   const running = bound ?? (dep.boundVersionId == null ? prodVersion : undefined);
   // An update is offered when prod points somewhere other than where this scope is pinned.
   const updateAvailable = !!prod && prod.versionId !== dep.boundVersionId;
+  // Owned + private ⇒ prod promotion is self-serve (Verticals page); listed hands prod
+  // back to staff, and someone else's vertical was never this team's to promote.
+  const selfServe = !!dep.owned && !dep.listed;
+  // The stuck state this tab must not leave unexplained: the newest admitted version
+  // isn't what prod points at, so no update can be offered until someone promotes it.
+  const newestAdmitted = dep.versions.find((v) => v.admission === 'admitted');
+  const awaitingPromotion = !updateAvailable && !!newestAdmitted && newestAdmitted.id !== prod?.versionId;
   const COLS = '1fr 1.2fr 1.6fr 1.4fr';
 
   const doUpdate = async () => {
@@ -333,6 +340,16 @@ function Deployments({ app }: { app: AppRow }) {
           <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Not serving a registry version yet — a pushed version must be admitted and promoted.</span>
         )}
         <div style={{ flex: 1 }} />
+        {awaitingPromotion && (
+          <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>
+            <MonoTag>{newestAdmitted.version}</MonoTag> is admitted but not in <b>prod</b>
+            {selfServe ? (
+              <> — <a href="#/verticals" style={{ color: 'var(--text-brand)' }}>promote it on Verticals →</a></>
+            ) : (
+              <> — the Substrat team promotes it</>
+            )}
+          </span>
+        )}
         {updateAvailable && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {prodVersion && <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>Update available → <MonoTag>{prodVersion.version}</MonoTag></span>}
@@ -362,7 +379,13 @@ function Deployments({ app }: { app: AppRow }) {
           </div>
         );
       })()}
-      <HonestyBanner>Read live from the registry. “Running” is the version this app’s scope is pinned to — what the router serves. Versions are managed by the Substrat team; promotion to prod is a staff action, and updating rebinds this app to the current prod version.</HonestyBanner>
+      <HonestyBanner>
+        {selfServe ? (
+          <>Read live from the registry. “Running” is the version this app’s scope is pinned to — what the router serves. This vertical is yours: promote a version to <b>prod</b> on the <a href="#/verticals" style={{ color: 'inherit' }}>Verticals page</a>, then updating here rebinds this app to it.</>
+        ) : (
+          <>Read live from the registry. “Running” is the version this app’s scope is pinned to — what the router serves. Versions are managed by the Substrat team; promotion to prod is a staff action, and updating rebinds this app to the current prod version.</>
+        )}
+      </HonestyBanner>
       {dep.versions.length === 0 ? (
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No versions pushed to the registry yet.</div>
       ) : (
