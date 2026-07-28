@@ -99,7 +99,9 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
  *
  * Cloudflare answers with `multipart/form-data` for a multi-module script and with the
  * bare module body (entrypoint named in `cf-entrypoint`) for a single-module one; both
- * shapes are handled with web-standard parsing only.
+ * shapes are handled with web-standard parsing only. In the multipart shape, a module
+ * part need not carry `filename=` — the response is Cloudflare's format, not an echo of
+ * the uploader's — so a part that parses as a string (not a File) is still a module.
  */
 export function createWfpModulesFetcher(
   opts: Pick<WfpUploaderOptions, 'accountId' | 'namespace' | 'apiToken'>,
@@ -120,15 +122,37 @@ export function createWfpModulesFetcher(
       const form = await res.formData();
       const modules: VerticalBundle['modules'] = [];
       for (const [name, value] of form.entries()) {
+        // A `metadata` part (if Cloudflare includes one) describes the script; it is not
+        // a module and must not be re-uploaded as one.
+        if (name === 'metadata') continue;
         if (value instanceof File) {
           modules.push({
             name,
             content: new Uint8Array(await value.arrayBuffer()),
             contentType: value.type || 'application/javascript+module',
           });
+        } else {
+          // A multipart part whose Content-Disposition carries no `filename=` is exposed
+          // by the web-standard FormData parser (workerd and undici alike) as a STRING,
+          // not a File. The GET /content response format is Cloudflare's choice, not an
+          // echo of the filenames the uploader set, so a text module round-trips as a
+          // string — carry it as a module rather than dropping it.
+          modules.push({
+            name,
+            content: new TextEncoder().encode(value),
+            contentType: 'application/javascript+module',
+          });
         }
       }
-      if (!modules.length) throw new Error(`WfP content for '${deploymentRef}' held no modules`);
+      if (!modules.length) {
+        // Say what actually arrived — the content-type and the received part names — so a
+        // read-back that yields nothing is diagnosable from the one log line, not a source
+        // trace.
+        throw new Error(
+          `WfP content for '${deploymentRef}' held no modules ` +
+            `(content-type: ${contentType}; parts: ${[...form.keys()].join(', ') || 'none'})`,
+        );
+      }
       return modules;
     }
     const entry = res.headers.get('cf-entrypoint');
