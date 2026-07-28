@@ -47,7 +47,7 @@ describe('ControlPlaneClient — the connect seam', () => {
 
     // Registered and active → the gate passes and the entitlement is visible.
     await expect(client.assertScopeActive(T, S)).resolves.toBeUndefined();
-    expect(await client.listEntitlements(T)).toContain('notes');
+    expect((await client.listEntitlements(T)).map((e) => e.entitlementKey)).toContain('notes');
 
     // The console suspends the scope on the control plane → the vertical's gate
     // now fails closed, across the HTTP boundary.

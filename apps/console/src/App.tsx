@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
+import type { EntitlementGrant, HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
 import { Card, Toast } from './components';
 import { ConsoleShell } from './ConsoleShell';
 import type { ViewKey } from './ConsoleShell';
@@ -96,7 +96,7 @@ export function App() {
 
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [scopes, setScopes] = useState<Scope[]>([]);
-  const [entitlements, setEntitlements] = useState<Map<TenantId, string[]>>(new Map());
+  const [entitlements, setEntitlements] = useState<Map<TenantId, EntitlementGrant[]>>(new Map());
   const [hostnames, setHostnames] = useState<HostnameBinding[]>([]);
 
   // Dev mode authenticates with the actor header; session mode with the cookie.

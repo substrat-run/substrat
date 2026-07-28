@@ -42,6 +42,16 @@ interface TenantRow {
   created_at: string;
 }
 
+/** An entitlement grant as stored (#33) — nulls = the pre-widening boolean flag. */
+export interface EntitlementRow {
+  entitlement_key: string;
+  expires_at: string | null;
+  quota: number | null;
+  plan: string | null;
+  granted_at: string | null;
+  granted_by: string | null;
+}
+
 /** The raw role row; `permissions` is a JSON blob in a TEXT column. */
 /** A connection row as the DO stores it (#101). Never carries the credential. */
 export interface ConnectionDoRow {
@@ -383,9 +393,17 @@ const DIRECTORY_DDL = `
     source TEXT NOT NULL,
     PRIMARY KEY (tenant_id, role_key)
   );
+  -- #33 widens the SKU flag into a plan: expires_at is enforced at the gate
+  -- (lazy-at-read); quota/plan are expression the builder portal consumes;
+  -- granted_at/granted_by NULL only on rows born before the widening.
   CREATE TABLE IF NOT EXISTS _substrat_entitlements (
     tenant_id TEXT NOT NULL,
     entitlement_key TEXT NOT NULL,
+    expires_at TEXT,
+    quota INTEGER,
+    plan TEXT,
+    granted_at TEXT,
+    granted_by TEXT,
     PRIMARY KEY (tenant_id, entitlement_key)
   );
   CREATE TABLE IF NOT EXISTS _substrat_identity_pools (
@@ -618,6 +636,13 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('verticals', 'serving_do_classes TEXT');
     this.addColumn('verticals', 'serving_migration_tag TEXT');
     this.addColumn('vertical_versions', 'manifest_json TEXT');
+    // #33: the SKU flag learns to express a plan. All nullable — a legacy row
+    // reads as a perpetual boolean flag, exactly its pre-widening semantics.
+    this.addColumn('_substrat_entitlements', 'expires_at TEXT');
+    this.addColumn('_substrat_entitlements', 'quota INTEGER');
+    this.addColumn('_substrat_entitlements', 'plan TEXT');
+    this.addColumn('_substrat_entitlements', 'granted_at TEXT');
+    this.addColumn('_substrat_entitlements', 'granted_by TEXT');
     this.sql.exec("UPDATE scopes SET slug = lower(scope_id) WHERE slug IS NULL");
     this.sql.exec("UPDATE scopes SET kind = 'scope' WHERE kind IS NULL");
     this.sql.exec('UPDATE scopes SET name = slug WHERE name IS NULL');
@@ -1375,51 +1400,119 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   // -- entitlements (control-plane.md §4.3) -----------------------------------
+  // #33: the flag carries plan fields. The PATCH merge (omitted preserves, null
+  // clears) lives HERE so there is exactly one implementation per adapter; the
+  // host audits from the before/after this returns.
 
-  /** INSERT OR IGNORE; return whether it changed (idempotent). */
-  grantEntitlement(tenantId: string, key: string): boolean {
-    if (this.tenantHoldsEntitlement(tenantId, key)) return false;
-    this.sql.exec(
-      `INSERT OR IGNORE INTO _substrat_entitlements (tenant_id, entitlement_key)
-       VALUES (?, ?)`,
-      tenantId,
-      key,
+  private readEntitlement(tenantId: string, key: string): EntitlementRow | null {
+    return (
+      (this.sql
+        .exec(
+          `SELECT entitlement_key, expires_at, quota, plan, granted_at, granted_by
+           FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?`,
+          tenantId,
+          key,
+        )
+        .toArray()[0] as unknown as EntitlementRow | undefined) ?? null
     );
-    return true;
   }
 
-  /** DELETE; return whether it changed (idempotent). */
-  revokeEntitlement(tenantId: string, key: string): boolean {
-    if (!this.tenantHoldsEntitlement(tenantId, key)) return false;
+  /**
+   * Upsert; returns before/after for the host's audit row, `changed: false` when
+   * the merged result equals what the row already carried (not audited upstream).
+   */
+  grantEntitlement(
+    tenantId: string,
+    key: string,
+    input: { expiresAt?: string | null; quota?: number | null; plan?: string | null },
+    actor: string,
+  ): { changed: boolean; before: EntitlementRow | null; after: EntitlementRow } {
+    const existing = this.readEntitlement(tenantId, key);
+    const next = {
+      expiresAt: input.expiresAt !== undefined ? input.expiresAt : (existing?.expires_at ?? null),
+      quota: input.quota !== undefined ? input.quota : (existing?.quota ?? null),
+      plan: input.plan !== undefined ? input.plan : (existing?.plan ?? null),
+    };
+    if (
+      existing &&
+      existing.expires_at === next.expiresAt &&
+      existing.quota === next.quota &&
+      existing.plan === next.plan
+    ) {
+      return { changed: false, before: existing, after: existing };
+    }
+    // granted_at/granted_by restamp on every effective change: a renewal is a
+    // new grant act, and the full history is the admin log.
+    const now = new Date().toISOString();
+    this.sql.exec(
+      `INSERT INTO _substrat_entitlements
+         (tenant_id, entitlement_key, expires_at, quota, plan, granted_at, granted_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (tenant_id, entitlement_key) DO UPDATE SET
+         expires_at = excluded.expires_at,
+         quota = excluded.quota,
+         plan = excluded.plan,
+         granted_at = excluded.granted_at,
+         granted_by = excluded.granted_by`,
+      tenantId,
+      key,
+      next.expiresAt,
+      next.quota,
+      next.plan,
+      now,
+      actor,
+    );
+    return {
+      changed: true,
+      before: existing,
+      after: {
+        entitlement_key: key,
+        expires_at: next.expiresAt,
+        quota: next.quota,
+        plan: next.plan,
+        granted_at: now,
+        granted_by: actor,
+      },
+    };
+  }
+
+  /** DELETE; returns the removed row (the host's audit `before`), null if none. */
+  revokeEntitlement(tenantId: string, key: string): EntitlementRow | null {
+    const existing = this.readEntitlement(tenantId, key);
+    if (!existing) return null;
     this.sql.exec(
       'DELETE FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
       tenantId,
       key,
     );
-    return true;
+    return existing;
   }
 
   tenantHoldsEntitlement(tenantId: string, key: string): boolean {
+    // An expired grant fails closed, exactly as if revoked (#33) — evaluated
+    // lazily at check time like tuple expiry; the row survives for renewal.
     return (
       this.sql
         .exec(
-          'SELECT 1 FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
+          `SELECT 1 FROM _substrat_entitlements
+           WHERE tenant_id = ? AND entitlement_key = ?
+             AND (expires_at IS NULL OR expires_at > ?)`,
           tenantId,
           key,
+          new Date().toISOString(),
         )
         .toArray()[0] !== undefined
     );
   }
 
-  listEntitlements(tenantId: string): string[] {
-    return (
-      this.sql
-        .exec(
-          'SELECT entitlement_key FROM _substrat_entitlements WHERE tenant_id = ? ORDER BY entitlement_key',
-          tenantId,
-        )
-        .toArray() as unknown as { entitlement_key: string }[]
-    ).map((r) => r.entitlement_key);
+  listEntitlements(tenantId: string): EntitlementRow[] {
+    return this.sql
+      .exec(
+        `SELECT entitlement_key, expires_at, quota, plan, granted_at, granted_by
+         FROM _substrat_entitlements WHERE tenant_id = ? ORDER BY entitlement_key`,
+        tenantId,
+      )
+      .toArray() as unknown as EntitlementRow[];
   }
 
   // -- identity pools (K-23) --------------------------------------------------

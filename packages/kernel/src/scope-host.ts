@@ -15,6 +15,8 @@ import type {
   Decision,
   DomainEvent,
   DomainEventInput,
+  EntitlementGrant,
+  EntitlementGrantInput,
   EntityRef,
   IdentityLink,
   IdentityPool,
@@ -922,12 +924,21 @@ export interface HostAdmin {
   // entitlement is a per-tenant SKU flag; a module whose key the tenant does not
   // hold does not load for that tenant — its operations do not resolve, exactly
   // as if it had never been registered. Granting one is the point of the console.
+  // Widened by #33 to express a plan: expiry (enforced here, fail-closed at the
+  // gate), quota and tier (expression only — the builder portal counts, D-33).
 
-  /** Turn a SKU flag on for a tenant. Idempotent; audited. */
+  /**
+   * Turn a SKU flag on for a tenant, optionally carrying plan fields. Idempotent
+   * and audited only when something changed; a re-grant with different fields is
+   * an UPDATE (renewal, tier change) audited with before/after. Omitted plan
+   * fields preserve the row's current values — explicit null clears (see
+   * `entitlementGrantInput`).
+   */
   grantEntitlement(
     actor: PlatformActorId,
     tenantId: TenantId,
     entitlementKey: string,
+    plan?: EntitlementGrantInput,
   ): Promise<void>;
   /** Turn it off. A tenant's scopes lose access to that module's operations. */
   revokeEntitlement(
@@ -935,8 +946,12 @@ export interface HostAdmin {
     tenantId: TenantId,
     entitlementKey: string,
   ): Promise<void>;
-  /** The tenant's held SKU flags (control-plane.md §5 meter 2). */
-  listEntitlements(actor: PlatformActorId, tenantId: TenantId): Promise<string[]>;
+  /**
+   * The tenant's grants with their plan fields (control-plane.md §5 meter 2).
+   * Includes expired rows — gate-dead but visible, so a lapsed trial can be
+   * renewed rather than looking never-granted.
+   */
+  listEntitlements(actor: PlatformActorId, tenantId: TenantId): Promise<EntitlementGrant[]>;
 
   // -- identity (D-16; control-plane.md §6) ----------------------------------
   // The neutral seam an auth adapter maps into. An external identity

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
+import type { EntitlementGrant, EntitlementGrantInput, HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, Select, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { effectiveStatus, statusLabel, statusTone, tenantTone } from '../lib/fleet';
@@ -19,7 +19,7 @@ export interface TenantDetailProps {
   api: Api;
   tenant: Tenant;
   scopes: Scope[];
-  entitlements: string[];
+  entitlements: EntitlementGrant[];
   hostnames: HostnameBinding[];
   onBack: () => void;
   onChanged: () => void;
@@ -31,6 +31,10 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, onB
   const [armed, setArmed] = useState('');
   const [granting, setGranting] = useState(false);
   const [sku, setSku] = useState(KNOWN_SKUS[0]!);
+  // The plan half of a grant (#33) — all optional; blank = a bare perpetual flag.
+  const [expiry, setExpiry] = useState('');
+  const [quota, setQuota] = useState('');
+  const [plan, setPlan] = useState('');
 
   const active = tenant.status === 'active';
 
@@ -131,19 +135,37 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, onB
           <span style={{ fontSize: 13, color: 'var(--text-placeholder)' }}>No keys held — no billed module loads for this tenant.</span>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {entitlements.map((k) => (
-              <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Tag mono>{k}</Tag>
-                <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)', flex: 1 }}>held</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => run(() => api.revokeEntitlement(tenant.id, k), 'Entitlement revoked', `${k} · operations stop resolving`)}
-                >
-                  Revoke
-                </Button>
-              </div>
-            ))}
+            {entitlements.map((g) => {
+              // Mirrors the gate's lazy-at-read predicate: expired = fails closed.
+              const expired = g.expiresAt !== null && g.expiresAt <= new Date().toISOString();
+              return (
+                <div key={g.entitlementKey} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <Tag mono>{g.entitlementKey}</Tag>
+                  {g.plan && <Tag>{g.plan}</Tag>}
+                  {g.quota !== null && <Tag mono>×{g.quota}</Tag>}
+                  <span style={{ fontSize: 12.5, color: expired ? 'var(--status-danger-fg)' : 'var(--text-tertiary)', flex: 1 }}>
+                    {expired
+                      ? `expired ${g.expiresAt!.slice(0, 10)} · fails closed`
+                      : g.expiresAt
+                        ? `held · expires ${g.expiresAt.slice(0, 10)}`
+                        : 'held'}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      run(
+                        () => api.revokeEntitlement(tenant.id, g.entitlementKey),
+                        'Entitlement revoked',
+                        `${g.entitlementKey} · operations stop resolving`,
+                      )
+                    }
+                  >
+                    Revoke
+                  </Button>
+                </div>
+              );
+            })}
           </div>
         )}
       </Card>
@@ -236,15 +258,60 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, onB
       <Dialog
         open={granting}
         title="Grant entitlement"
-        description="Idempotent and audited. Granting a held key changes nothing."
+        description="Idempotent and audited. Re-granting with different plan fields is a renewal; blank fields leave what the grant already carries."
         confirmLabel="Grant"
         onConfirm={() => {
+          // Blank = omitted (PATCH semantics: the store preserves current values).
+          const planInput: EntitlementGrantInput = {};
+          if (expiry.trim() !== '') {
+            const at = new Date(expiry.trim());
+            if (Number.isNaN(at.getTime())) {
+              onToast('Refused', `not a date: ${expiry}`, 'danger');
+              return;
+            }
+            planInput.expiresAt = at.toISOString() as EntitlementGrant['expiresAt'];
+          }
+          if (quota.trim() !== '') {
+            const n = Number(quota.trim());
+            if (!Number.isInteger(n) || n <= 0) {
+              onToast('Refused', `quota must be a positive integer: ${quota}`, 'danger');
+              return;
+            }
+            planInput.quota = n;
+          }
+          if (plan.trim() !== '') planInput.plan = plan.trim();
           setGranting(false);
-          void run(() => api.grantEntitlement(tenant.id, sku), 'Entitlement granted', sku);
+          void run(() => api.grantEntitlement(tenant.id, sku, planInput), 'Entitlement granted', sku);
         }}
         onCancel={() => setGranting(false)}
       >
-        <Select label="SKU key" options={KNOWN_SKUS} value={sku} onChange={(e) => setSku(e.target.value)} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Select label="SKU key" options={KNOWN_SKUS} value={sku} onChange={(e) => setSku(e.target.value)} />
+          <Input
+            label="Expires"
+            hint="Optional — a date (UTC midnight) or full ISO instant. Past it, the grant fails closed like a revoke; the row stays for renewal."
+            mono
+            placeholder="2026-08-31"
+            value={expiry}
+            onChange={(e) => setExpiry(e.target.value)}
+          />
+          <Input
+            label="Quota"
+            hint="Optional — plan quantity for this key. Recorded, not enforced here (#33)."
+            mono
+            placeholder="500"
+            value={quota}
+            onChange={(e) => setQuota(e.target.value)}
+          />
+          <Input
+            label="Plan"
+            hint="Optional — tier grouping, e.g. pro."
+            mono
+            placeholder="pro"
+            value={plan}
+            onChange={(e) => setPlan(e.target.value)}
+          />
+        </div>
       </Dialog>
     </div>
   );

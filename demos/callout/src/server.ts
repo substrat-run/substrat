@@ -204,8 +204,14 @@ if (cpUrl) {
     try {
       for (const t of tenants) {
         await cpClient.createTenant({ id: t.id, slug: t.slug, name: t.name });
-        for (const key of await host.admin.listEntitlements(registrar, t.id)) {
-          await cpClient.grantEntitlement(t.id, key);
+        for (const e of await host.admin.listEntitlements(registrar, t.id)) {
+          // Mirror the whole grant (#33) — expiry/quota/plan travel with the key,
+          // or the shared plane would see a trial as perpetual.
+          await cpClient.grantEntitlement(t.id, e.entitlementKey, {
+            expiresAt: e.expiresAt,
+            quota: e.quota,
+            plan: e.plan,
+          });
         }
       }
       for (const s of scopes) {

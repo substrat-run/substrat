@@ -19,6 +19,8 @@ import {
   connection,
   connectionGrant,
   connectionSecret,
+  entitlementGrant,
+  entitlementGrantInput,
   subjectRef,
   createConnectionInput,
   moduleManifest,
@@ -42,6 +44,7 @@ import {
   type CreateOrgInput,
   type CreateTenantInput,
   type DomainEvent,
+  type EntitlementGrant,
   type EntityRef,
   type IdentityLink,
   type IdentityPool,
@@ -112,6 +115,7 @@ import type {
   ChannelHistoryRow,
   ChannelRow,
   ConnectionDoRow,
+  EntitlementRow,
   HostnameRow,
   OrgRow,
   RoleRow,
@@ -288,10 +292,15 @@ interface ControlPlaneStub {
     object: string,
     includeRevoked: boolean,
   ): Promise<{ subject: string; revoked_at: string | null }[]>;
-  grantEntitlement(tenantId: string, key: string): Promise<boolean>;
-  revokeEntitlement(tenantId: string, key: string): Promise<boolean>;
+  grantEntitlement(
+    tenantId: string,
+    key: string,
+    input: { expiresAt?: string | null; quota?: number | null; plan?: string | null },
+    actor: string,
+  ): Promise<{ changed: boolean; before: EntitlementRow | null; after: EntitlementRow }>;
+  revokeEntitlement(tenantId: string, key: string): Promise<EntitlementRow | null>;
   tenantHoldsEntitlement(tenantId: string, key: string): Promise<boolean>;
-  listEntitlements(tenantId: string): Promise<string[]>;
+  listEntitlements(tenantId: string): Promise<EntitlementRow[]>;
   insertConnection(row: {
     id: string;
     tenantId: string;
@@ -2186,20 +2195,55 @@ export class CloudflareScopeHost implements ScopeHost {
         transitionScope(actor, 'archiveScope', tenantId, scopeId, ['provisioning', 'active', 'suspended'], 'archived'),
       unarchiveScope: async (actor, tenantId, scopeId) =>
         transitionScope(actor, 'unarchiveScope', tenantId, scopeId, ['archived'], 'active'),
-      grantEntitlement: async (actor, tenantId, entitlementKey) => {
-        const changed = await this.cp.grantEntitlement(tenantId, entitlementKey);
-        if (!changed) return; // idempotent
-        await this.recordAdmin(actor, 'grantEntitlement', { tenantId }, null, { entitlementKey });
+      grantEntitlement: async (actor, tenantId, entitlementKey, plan?) => {
+        const input = entitlementGrantInput.parse(plan ?? {});
+        const result = await this.cp.grantEntitlement(tenantId, entitlementKey, input, actor);
+        if (!result.changed) return; // idempotent — an unchanged grant is not audited
+        await this.recordAdmin(
+          actor,
+          'grantEntitlement',
+          { tenantId },
+          result.before
+            ? {
+                entitlementKey,
+                expiresAt: result.before.expires_at,
+                quota: result.before.quota,
+                plan: result.before.plan,
+              }
+            : null,
+          {
+            entitlementKey,
+            expiresAt: result.after.expires_at,
+            quota: result.after.quota,
+            plan: result.after.plan,
+          },
+        );
       },
       revokeEntitlement: async (actor, tenantId, entitlementKey) => {
-        const changed = await this.cp.revokeEntitlement(tenantId, entitlementKey);
-        if (!changed) return; // nothing held, nothing changed
-        await this.recordAdmin(actor, 'revokeEntitlement', { tenantId }, { entitlementKey }, null);
+        const removed = await this.cp.revokeEntitlement(tenantId, entitlementKey);
+        if (!removed) return; // nothing held, nothing changed
+        await this.recordAdmin(
+          actor,
+          'revokeEntitlement',
+          { tenantId },
+          { entitlementKey, expiresAt: removed.expires_at, quota: removed.quota, plan: removed.plan },
+          null,
+        );
       },
-      listEntitlements: async (actor, tenantId): Promise<string[]> => {
-        const keys = await this.cp.listEntitlements(tenantId);
-        await this.recordAccess(actor, 'listEntitlements', { tenantId }, null, keys.length);
-        return keys;
+      listEntitlements: async (actor, tenantId): Promise<EntitlementGrant[]> => {
+        const rows = await this.cp.listEntitlements(tenantId);
+        const grants = rows.map((r) =>
+          entitlementGrant.parse({
+            entitlementKey: r.entitlement_key,
+            expiresAt: r.expires_at,
+            quota: r.quota,
+            plan: r.plan,
+            grantedAt: r.granted_at,
+            grantedBy: r.granted_by,
+          }),
+        );
+        await this.recordAccess(actor, 'listEntitlements', { tenantId }, null, grants.length);
+        return grants;
       },
       registerIdentityPool: async (actor, input: IdentityPool) => {
         const parsed = identityPool.parse(input);

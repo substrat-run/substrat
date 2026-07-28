@@ -3,6 +3,7 @@ import {
   adminAction,
   channelName,
   createTenantInput,
+  entitlementGrantInput,
   hostname as hostnameSchema,
   hostnameRegion,
   hostnameStatus,
@@ -402,7 +403,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.put('/tenants/:tenantId/entitlements/:key', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    await admin.grantEntitlement(c.get('actor'), tenantId, c.req.param('key'));
+    // The body is the plan half (#33) and optional — a bodyless PUT is the
+    // pre-widening bare flag grant, and PATCH semantics in the store mean it
+    // preserves whatever plan fields the grant already carries.
+    const plan = entitlementGrantInput.parse(await c.req.json().catch(() => ({})));
+    await admin.grantEntitlement(c.get('actor'), tenantId, c.req.param('key'), plan);
     return c.json(await admin.listEntitlements(c.get('actor'), tenantId));
   });
 

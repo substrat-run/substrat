@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { HostnameBinding, MigrationProgress, Scope, Tenant, TenantId } from '@substrat-run/contracts';
+import type { EntitlementGrant, HostnameBinding, MigrationProgress, Scope, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, KeyValue, Table, Tabs, Tag } from '../components';
 import type { TableColumn } from '../components';
 import {
@@ -18,7 +18,7 @@ export interface ScopesProps {
   api: Api;
   scopes: Scope[];
   tenants: Map<TenantId, Tenant>;
-  entitlements: Map<TenantId, string[]>;
+  entitlements: Map<TenantId, EntitlementGrant[]>;
   hostnames: HostnameBinding[];
   onChanged: () => void;
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;

@@ -7,6 +7,8 @@ import {
   createTenantInput,
   domainEvent,
   domainEventInput,
+  entitlementGrant,
+  entitlementGrantInput,
   eventId,
   identityLink,
   identityPool,
@@ -52,6 +54,8 @@ import {
   type CreateTenantInput,
   type DomainEvent,
   type DomainEventInput,
+  type EntitlementGrant,
+  type EntitlementGrantInput,
   type EntityRef,
   type CreateOrgInput,
   type IdentityLink,
@@ -690,9 +694,18 @@ export class SqliteScopeHost implements ScopeHost {
       );
       -- Per-tenant SKU flags (control-plane.md §4.3). A module loads for a tenant
       -- only if the tenant holds its manifest.entitlementKey — default-deny.
+      -- #33 widens the flag into a plan: expires_at is enforced at the gate
+      -- (lazy-at-read, like tuple expiry); quota/plan are expression the builder
+      -- portal consumes; granted_at/granted_by are stamped platform-side and
+      -- NULL only on rows born before the widening.
       CREATE TABLE IF NOT EXISTS _substrat_entitlements (
         tenant_id TEXT NOT NULL,
         entitlement_key TEXT NOT NULL,
+        expires_at TEXT,
+        quota INTEGER,
+        plan TEXT,
+        granted_at TEXT,
+        granted_by TEXT,
         PRIMARY KEY (tenant_id, entitlement_key)
       );
       -- The identity seam (D-16; control-plane.md §6). An external identity
@@ -1790,10 +1803,17 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   private tenantHoldsEntitlement(tenantId: TenantId, key: string): boolean {
+    // An expired grant fails closed, exactly as if revoked (#33) — evaluated
+    // lazily at check time like tuple expiry (never swept; the row survives for
+    // renewal). ISO instants compare lexically.
     return (
       this.directory
-        .prepare('SELECT 1 FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?')
-        .get(tenantId, key) !== undefined
+        .prepare(
+          `SELECT 1 FROM _substrat_entitlements
+           WHERE tenant_id = ? AND entitlement_key = ?
+             AND (expires_at IS NULL OR expires_at > ?)`,
+        )
+        .get(tenantId, key, new Date().toISOString()) !== undefined
     );
   }
 
@@ -3166,36 +3186,110 @@ export class SqliteScopeHost implements ScopeHost {
         transitionScope(actor, 'archiveScope', tenantId, scopeId, ['provisioning', 'active', 'suspended'], 'archived'),
       unarchiveScope: async (actor, tenantId, scopeId) =>
         transitionScope(actor, 'unarchiveScope', tenantId, scopeId, ['archived'], 'active'),
-      grantEntitlement: async (actor: PlatformActorId, tenantId: TenantId, entitlementKey: string) => {
-        const info = this.directory
+      grantEntitlement: async (
+        actor: PlatformActorId,
+        tenantId: TenantId,
+        entitlementKey: string,
+        plan?: EntitlementGrantInput,
+      ) => {
+        const input = entitlementGrantInput.parse(plan ?? {});
+        const existing = this.directory
           .prepare(
-            `INSERT OR IGNORE INTO _substrat_entitlements (tenant_id, entitlement_key)
-             VALUES (?, ?)`,
+            'SELECT expires_at, quota, plan FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
           )
-          .run(tenantId, entitlementKey);
-        // Idempotent: granting a held flag changed nothing, so it is not audited.
-        if (info.changes === 0) return;
-        this.recordAdmin(actor, 'grantEntitlement', { tenantId }, null, { entitlementKey });
+          .get(tenantId, entitlementKey) as
+          | { expires_at: string | null; quota: number | null; plan: string | null }
+          | undefined;
+        // PATCH semantics (entitlementGrantInput): omitted preserves, null clears —
+        // a bare re-grant on an idempotent provisioning path must not erase a
+        // trial's expiry and quietly turn it perpetual.
+        const next = {
+          expiresAt: input.expiresAt !== undefined ? input.expiresAt : (existing?.expires_at ?? null),
+          quota: input.quota !== undefined ? input.quota : (existing?.quota ?? null),
+          plan: input.plan !== undefined ? input.plan : (existing?.plan ?? null),
+        };
+        // Idempotent: a grant that changes nothing is not audited.
+        if (
+          existing &&
+          existing.expires_at === next.expiresAt &&
+          existing.quota === next.quota &&
+          existing.plan === next.plan
+        ) {
+          return;
+        }
+        const now = new Date().toISOString();
+        // granted_at/granted_by restamp on every effective change: a renewal is a
+        // new grant act, and the full history is the admin log below.
+        this.directory
+          .prepare(
+            `INSERT INTO _substrat_entitlements
+               (tenant_id, entitlement_key, expires_at, quota, plan, granted_at, granted_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (tenant_id, entitlement_key) DO UPDATE SET
+               expires_at = excluded.expires_at,
+               quota = excluded.quota,
+               plan = excluded.plan,
+               granted_at = excluded.granted_at,
+               granted_by = excluded.granted_by`,
+          )
+          .run(tenantId, entitlementKey, next.expiresAt, next.quota, next.plan, now, actor);
+        this.recordAdmin(
+          actor,
+          'grantEntitlement',
+          { tenantId },
+          existing
+            ? { entitlementKey, expiresAt: existing.expires_at, quota: existing.quota, plan: existing.plan }
+            : null,
+          { entitlementKey, ...next },
+        );
       },
       revokeEntitlement: async (actor: PlatformActorId, tenantId: TenantId, entitlementKey: string) => {
-        const info = this.directory
+        const existing = this.directory
           .prepare(
-            'DELETE FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
+            'SELECT expires_at, quota, plan FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
           )
+          .get(tenantId, entitlementKey) as
+          | { expires_at: string | null; quota: number | null; plan: string | null }
+          | undefined;
+        if (!existing) return; // nothing held, nothing changed
+        this.directory
+          .prepare('DELETE FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?')
           .run(tenantId, entitlementKey);
-        if (info.changes === 0) return; // nothing held, nothing changed
-        this.recordAdmin(actor, 'revokeEntitlement', { tenantId }, { entitlementKey }, null);
+        this.recordAdmin(
+          actor,
+          'revokeEntitlement',
+          { tenantId },
+          { entitlementKey, expiresAt: existing.expires_at, quota: existing.quota, plan: existing.plan },
+          null,
+        );
       },
-      listEntitlements: async (actor, tenantId: TenantId): Promise<string[]> => {
-        const keys = (
+      listEntitlements: async (actor, tenantId: TenantId): Promise<EntitlementGrant[]> => {
+        const grants = (
           this.directory
             .prepare(
-              'SELECT entitlement_key FROM _substrat_entitlements WHERE tenant_id = ? ORDER BY entitlement_key',
+              `SELECT entitlement_key, expires_at, quota, plan, granted_at, granted_by
+               FROM _substrat_entitlements WHERE tenant_id = ? ORDER BY entitlement_key`,
             )
-            .all(tenantId) as { entitlement_key: string }[]
-        ).map((r) => r.entitlement_key);
-        this.recordAccess(actor, 'listEntitlements', { tenantId }, null, keys.length);
-        return keys;
+            .all(tenantId) as {
+            entitlement_key: string;
+            expires_at: string | null;
+            quota: number | null;
+            plan: string | null;
+            granted_at: string | null;
+            granted_by: string | null;
+          }[]
+        ).map((r) =>
+          entitlementGrant.parse({
+            entitlementKey: r.entitlement_key,
+            expiresAt: r.expires_at,
+            quota: r.quota,
+            plan: r.plan,
+            grantedAt: r.granted_at,
+            grantedBy: r.granted_by,
+          }),
+        );
+        this.recordAccess(actor, 'listEntitlements', { tenantId }, null, grants.length);
+        return grants;
       },
       registerIdentityPool: async (actor: PlatformActorId, input: IdentityPool) => {
         const parsed = identityPool.parse(input);
@@ -3771,6 +3865,17 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'verticals', 'serving_do_classes', 'serving_do_classes TEXT');
     this.ensureColumn(this.directory, 'verticals', 'serving_migration_tag', 'serving_migration_tag TEXT');
     this.ensureColumn(this.directory, 'vertical_versions', 'manifest_json', 'manifest_json TEXT');
+    // #33: the SKU flag learns to express a plan. All nullable — a legacy row
+    // reads as a perpetual boolean flag, exactly its pre-widening semantics.
+    for (const [col, ddl] of [
+      ['expires_at', 'expires_at TEXT'],
+      ['quota', 'quota INTEGER'],
+      ['plan', 'plan TEXT'],
+      ['granted_at', 'granted_at TEXT'],
+      ['granted_by', 'granted_by TEXT'],
+    ] as const) {
+      this.ensureColumn(this.directory, '_substrat_entitlements', col, ddl);
+    }
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,

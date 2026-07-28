@@ -73,6 +73,53 @@ export const adminAction = z.enum([
 export type AdminAction = z.infer<typeof adminAction>;
 
 /**
+ * One entitlement grant, widened from a bare SKU flag to express a plan (#33):
+ * quota, expiry, tier. The paying customer is the vertical builder (D-33), so
+ * these fields describe the builder's subscription — the tenants underneath are
+ * what the plan is measured in.
+ *
+ * `expiresAt` is the subscription boundary and the one field the kernel itself
+ * enforces: an expired grant fails closed at the per-invoke gate, exactly as if
+ * revoked — checked lazily at read like permission tuples, never swept. The row
+ * stays visible in `listEntitlements` so a lapsed trial can be renewed.
+ *
+ * `quota` and `plan` are expression only: the store records "500 work orders/mo
+ * on 'pro'" but counting usage against it is the consumer's job (the builder
+ * portal, control-plane.md §5's meters). A null quota is today's boolean flag;
+ * a null plan is an ungrouped key.
+ */
+export const entitlementGrant = z.object({
+  // min(1), not the manifest's key regex: this shape READS the store back, and a
+  // console-granted legacy key must round-trip rather than brick the list.
+  entitlementKey: z.string().min(1),
+  /** Null = perpetual. ISO instant, compared lexically against now at the gate. */
+  expiresAt: instant.nullable(),
+  /** Plan quantity for this key. Null = plain on/off SKU flag. Never enforced here. */
+  quota: z.number().int().positive().nullable(),
+  /** Tier grouping ('pro') — makes a plan data instead of operator convention. */
+  plan: z.string().min(1).nullable(),
+  /** Stamped platform-side at grant. Null only on rows born before #33. */
+  grantedAt: instant.nullable(),
+  grantedBy: platformActorId.nullable(),
+});
+export type EntitlementGrant = z.infer<typeof entitlementGrant>;
+
+/**
+ * The plan half of a grant call. PATCH semantics, deliberately: an omitted field
+ * PRESERVES what the row already carries, an explicit null clears it. Re-granting
+ * on an idempotent path (re-provisioning grants keys freely) must not silently
+ * turn a trial perpetual by erasing its expiry.
+ */
+export const entitlementGrantInput = z.object({
+  expiresAt: instant.nullable().optional(),
+  quota: z.number().int().positive().nullable().optional(),
+  plan: z.string().min(1).nullable().optional(),
+});
+// `z.input`, not `z.infer`: callers hand in plain ISO strings; the adapters
+// parse (and brand) at the boundary.
+export type EntitlementGrantInput = z.input<typeof entitlementGrantInput>;
+
+/**
  * The neutral identity seam (D-16; control-plane.md §6 "principal derivation").
  * An auth adapter at the edge (Better Auth, an OIDC issuer, …) authenticates a
  * user and maps its external identity to a Substrat principal + home node. The

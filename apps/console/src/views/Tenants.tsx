@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Scope, Tenant, TenantId } from '@substrat-run/contracts';
+import type { EntitlementGrant, Scope, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, SubIcon, SubIcons, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { ulid } from '@substrat-run/kernel';
@@ -11,7 +11,7 @@ export interface TenantsProps {
   api: Api;
   tenants: Tenant[];
   scopes: Scope[];
-  entitlements: Map<TenantId, string[]>;
+  entitlements: Map<TenantId, EntitlementGrant[]>;
   onOpen: (id: TenantId) => void;
   onChanged: () => void;
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
@@ -50,13 +50,13 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
     {
       header: 'Entitlements',
       render: (t) => {
-        const keys = entitlements.get(t.id) ?? [];
-        if (keys.length === 0) return <span style={{ color: 'var(--text-placeholder)' }}>—</span>;
+        const grants = entitlements.get(t.id) ?? [];
+        if (grants.length === 0) return <span style={{ color: 'var(--text-placeholder)' }}>—</span>;
         return (
           <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
-            {keys.map((k) => (
-              <Tag key={k} mono>
-                {k}
+            {grants.map((g) => (
+              <Tag key={g.entitlementKey} mono>
+                {g.entitlementKey}
               </Tag>
             ))}
           </span>
