@@ -1,5 +1,17 @@
-import { nextMigrationTag } from './deploy.js';
+import { DeployUploadError, nextMigrationTag } from './deploy.js';
 import type { DeployVerticalFn, FetchVerticalModulesFn, VerticalBundle } from './deploy.js';
+
+/**
+ * Bound a (potentially large, untrusted) upstream error body before it rides inside a
+ * thrown Error and a JSON response — but mark the cut EXPLICITLY. The old bare
+ * `.slice(0, 400)` ended mid-token (`…eka/set-budg`) with no sign anything was omitted,
+ * so a reader could not tell a real operation name from a severed string, nor that the
+ * rest of the list existed (#307). A generous cap keeps an unbounded body from flooding
+ * the log while the marker states exactly how much was dropped.
+ */
+export function clip(body: string, max = 2000): string {
+  return body.length <= max ? body : `${body.slice(0, max)} … [truncated, ${body.length - max} chars omitted]`;
+}
 
 /**
  * A `DeployVerticalFn` that uploads a bundle into a Workers-for-Platforms **dispatch
@@ -86,8 +98,13 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      // Surfaced as a 502-ish deploy failure by the caller; not a sandbox refusal.
-      throw new Error(`WfP upload failed (${res.status}) for '${deploymentRef}': ${body.slice(0, 400)}`);
+      // Carry the upstream CF status so the caller can answer a 4xx bad-bundle rejection
+      // as a client error and a 5xx as a platform failure — not both as a blanket 502.
+      // The body is clipped WITH a marker, never mid-token (#307); not a sandbox refusal.
+      throw new DeployUploadError(
+        res.status,
+        `WfP upload failed (${res.status}) for '${deploymentRef}': ${clip(body)}`,
+      );
     }
   };
 }
@@ -114,7 +131,7 @@ export function createWfpModulesFetcher(
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       throw new Error(
-        `WfP content read failed (${res.status}) for '${deploymentRef}': ${body.slice(0, 400)}`,
+        `WfP content read failed (${res.status}) for '${deploymentRef}': ${clip(body)}`,
       );
     }
     const contentType = res.headers.get('content-type') ?? '';
