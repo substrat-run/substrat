@@ -9,6 +9,47 @@ import { envVarSpec, capability } from './manifest.js';
 // boundary and runs the §4 sandbox contract against the result. One schema,
 // two parses, no drift.
 
+/**
+ * The runtime baseline a `runtimeNeeds` vertical builds against — the platform picks the
+ * compatibility date, the builder never does. Advancing it is a platform release concern
+ * (re-push under the new baseline), exactly like a kernel upgrade.
+ */
+export const RUNTIME_BASELINE = '2025-01-01';
+
+/**
+ * One of the vertical's OWN stores: a durable state class the code exports, reached in the
+ * worker through `binding`. This is the substrate-vocabulary side of what the wire manifest
+ * calls `doClasses` + a `durable_object_namespace` binding — the §4 sandbox contract already
+ * guarantees a vertical binds nothing BUT its own stores, so own-stores is the entire
+ * vocabulary; there is nothing else a builder could legitimately say.
+ */
+export const storeNeed = z.object({
+  /** How the worker reaches it: `env.<binding>`. SCREAMING_SNAKE, like an env key. */
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  /** The exported class implementing the store. */
+  class: z.string().min(1),
+});
+export type StoreNeed = z.infer<typeof storeNeed>;
+
+/**
+ * What a vertical needs from the runtime, in substrate vocabulary (package.json
+ * `substrat.runtimeNeeds`). A vertical authored with this section never writes deploy
+ * config for a specific substrate — the CLI derives that at push time (D-38: builders
+ * keep the substrate vocabulary; the Cloudflare mapping lives behind the platform).
+ * Datastores beyond own stores (e.g. a relational database) are deliberately absent:
+ * those are platform-PROVISIONED, never bundle-declared (self-serve-deploy.md §4).
+ */
+export const runtimeNeeds = z.object({
+  /** The worker entry module, relative to the vertical root (e.g. `src/worker.ts`). */
+  entry: z.string().min(1),
+  /** Needs Node built-ins at runtime (crypto/streams shims — e.g. Better Auth). */
+  needsNodeCompat: z.boolean().default(false),
+  /** Command to run before bundling (SPA build, asset generation). Runs in the vertical root. */
+  build: z.string().min(1).optional(),
+  stores: z.array(storeNeed).default([]),
+});
+export type RuntimeNeeds = z.infer<typeof runtimeNeeds>;
+
 /** A binding the uploaded worker declares, as far as the sandbox contract check needs it. */
 export const declaredBinding = z.object({
   type: z.string().min(1),

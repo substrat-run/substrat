@@ -89,19 +89,52 @@ the CLI just works.
 cd my-vertical && substrat push
 ```
 
-Run it from the vertical's directory (the one with `wrangler.jsonc` + `package.json`) and it
-needs no flags: the **slug** and **name** come from a `"substrat": { "slug", "name" }` block in
-`package.json` (or are derived from the package name), and the **version** defaults to the
-registry's latest, patch-bumped — so you never hand-track it. Override any with `--slug`,
-`--name`, or `--version`. This:
+Run it from the vertical's directory and it needs no flags: the **slug** and **name** come from
+a `"substrat": { "slug", "name" }` block in `package.json` (or are derived from the package
+name), and the **version** defaults to the registry's latest, patch-bumped — so you never
+hand-track it. Override any with `--slug`, `--name`, or `--version`.
 
-1. **Builds the bundle** with `wrangler deploy --dry-run --outdir` — running your vertical's own
-   `build.command` first. workerd cannot bundle in the isolate, so the build always happens on
-   your side; the endpoint only ever receives a *built* worker.
-2. **Reads your `wrangler.jsonc`** for the declared surface that travels with the bundle: your
-   own Durable Object classes, your own D1 databases (e.g. a Better-Auth `AUTH_DB`), the
-   compatibility date and flags (a vertical needing `nodejs_compat` can't start without them),
-   and the entry module. A vertical's *own* stores travel with it; the platform's do not.
+What you declare is **what your vertical needs from the runtime, in Substrat terms** — a
+`runtimeNeeds` block in the same `substrat` section. You never write Cloudflare deploy config;
+the CLI derives it at push time:
+
+```json
+{
+  "substrat": {
+    "slug": "helpdesk",
+    "runtimeNeeds": {
+      "entry": "src/worker.ts",
+      "needsNodeCompat": true,
+      "build": "pnpm --dir app build && node scripts/gen-assets.mjs",
+      "stores": [
+        { "binding": "SCOPE", "class": "ScopeDO" },
+        { "binding": "AUTH", "class": "IdentityDO" }
+      ]
+    }
+  }
+}
+```
+
+- `entry` — your worker's entry module.
+- `needsNodeCompat` — set it if you use Node built-ins at runtime (Better Auth does).
+- `build` — an optional command to run before bundling (an SPA build, asset generation).
+- `stores` — your vertical's **own** durable state classes and the binding each is reached
+  through (`env.SCOPE`). This is the whole vocabulary on purpose: the sandbox contract refuses
+  everything except your own stores anyway, so there is nothing else to say. The compatibility
+  date is the **platform's** runtime baseline — you never pick it.
+
+(If you already maintain a `wrangler.jsonc` — the demos in this repo do, for local
+`wrangler dev` — the CLI still reads it when no `runtimeNeeds` block is present. When both
+exist, `runtimeNeeds` wins.)
+
+A push then:
+
+1. **Builds the bundle** with `wrangler deploy --dry-run --outdir` against the derived config —
+   running your `build` command first. workerd cannot bundle in the isolate, so the build always
+   happens on your side; the endpoint only ever receives a *built* worker.
+2. **Assembles the manifest** that travels with the bundle — your own store classes and
+   bindings, the runtime baseline and flags, the entry module — from the same derived config
+   the bundler consumed, so what you declared and what you shipped cannot drift.
 3. **Computes digests** — manifest, permission (from the bindings), migration (from the DO
    classes) — the same digest-diff surface the checkpoints read.
 4. **POSTs the bundle + manifest** to `{cp}/verticals/{slug}/deploy`, authenticated with your
