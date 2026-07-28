@@ -1,5 +1,150 @@
 # @substrat-run/control-plane-api
 
+## 0.24.0
+
+### Minor Changes
+
+- 72b1128: Entitlements express a plan (#33): the two-column SKU flag grows `expiresAt`,
+  `quota`, `plan` and `grantedAt`/`grantedBy`. Expiry is the one field the kernel
+  itself enforces — an expired grant fails closed at the per-invoke gate exactly as
+  if revoked, checked lazily at read like tuple expiry (never swept), and the row
+  stays in `listEntitlements` so a lapsed trial reads as lapsed rather than
+  never-granted. Quota and tier are expression only, per the D-33 reframe: they
+  describe the builder's subscription, and counting usage against them is the
+  builder portal's job — which is why plan _expression_ lands ahead of billing
+  (#39 stays blocked on meters). Grant calls are PATCH-shaped: omitted fields
+  preserve what the row carries (a bare re-grant on an idempotent provisioning
+  path cannot silently turn a trial perpetual), explicit null clears, and any
+  effective change is a renewal audited with before/after. `listEntitlements` now
+  returns `EntitlementGrant[]` instead of `string[]`; the PUT route accepts the
+  plan as an optional body (a bodyless PUT stays the bare-flag grant); both
+  adapters widen `_substrat_entitlements` with nullable columns via the existing
+  ensure-column path, so legacy rows read as perpetual boolean flags — exactly
+  their old semantics. The console shows and edits the plan half; Callout's boot
+  mirror forwards whole grants so the shared plane never sees a trial as
+  perpetual.
+- 92d1aa1: The platform delivers a tenant's entitlements WITH provisioning, so a dispatched vertical
+  projects them (#310) — completing the seam #304 left open.
+
+  #304 projected entitlements into a scope but left the platform→dispatched-vertical path un-wired:
+  a freshly provisioned CP-less scope received no entitlements, so its `entitlements_enforced` marker
+  stayed off and the gate trusted upstream (only expiry, carried on the row, enforced locally).
+
+  - **`ProvisionInstanceInput` gains `entitlements`**, delivered on the provision payload.
+  - **The control-plane gathers them itself** at the single provision choke point
+    (`POST /verticals/:slug/instances`) via `admin.listEntitlements` — platform-authoritative, never
+    trusting the caller's body. Console and dashboard both route through that endpoint, so one
+    injection covers every production path.
+  - **The demo verticals (callout, meridian, manyfold)** parse `entitlements` (reusing the
+    `entitlementGrant` contract) and hand them to `provisionScopeLocal`, which projects them and flips
+    enforcement on.
+
+  Propagation of a later grant/revoke to an already-live dispatched worker **rides a re-provision**
+  (the idempotent K-31 call, the same channel role-definition changes use) rather than a new
+  push-on-grant fan-out; expiry keeps enforcing locally meanwhile. A dedicated push channel stays
+  available if a future SLA needs sub-re-provision revocation latency. Decision D-42.
+
+- d4bf108: The workspace pin travels with a push and is honored, never silently reinterpreted. The
+  CLI sends the project's pinned workspace (`substrat.tenant`) as a form field alongside
+  the bundle; the deploy route resolves who the push is FOR before anything reaches the
+  namespace. For a builder the pin must match the authenticated workspace — a mismatch is
+  a 403 naming both sides, instead of a push that lands somewhere the project didn't say.
+  For staff the pin is what was previously dropped on the floor: a pinned staff push now
+  claims `<tenantSlug>/<slug>` owned by that tenant — prefixed, dashboard-visible, and
+  self-admitting, exactly as the equivalent builder push — closing the dual-hat footgun
+  where a staff-roster account (which can never authenticate as a builder, staff being the
+  superset tried first) pushed verticals its own workspace could neither see nor
+  self-serve. A bare slug already owned by the pinned tenant stays addressable as itself;
+  unpinned staff pushes keep the platform-owned behavior; old CLIs that send no pin are
+  unaffected on every path. `effectiveSlug` is now idempotent so a builder may address its
+  own vertical by the full registry id a deploy response returns, and the CLI's same-run
+  `--promote` uses exactly that id (with the version bump computed across both the
+  prefixed and legacy-bare lineages).
+- 4c275df: The hosted-vertical sandbox is a positive binding allowlist, not a denylist (#302).
+  `assertSandboxContract` used to refuse a known-bad shortlist — `CONTROL_PLANE`, `service`
+  bindings, cross-script DO — and allow **everything else by omission**: KV, Queues, R2, and
+  analytics were never named or validated, and an unrecognized binding type sailed straight
+  through. "What passes" was an emergent property of what the denylist forgot to ban, so a
+  builder couldn't predict admission and the platform couldn't say what it permitted.
+
+  Inverted: a vertical may now declare only its OWN resources, from one written set —
+  `ADMISSIBLE_BINDING_TYPES` in `@substrat-run/contracts`, so the CLI can predict admission
+  from the same list the control plane enforces. Permitted are its `durable_object_namespace`
+  (own class only — no `script_name`, `class_name` ∈ declared `doClasses`) and own data stores:
+  `d1`, `kv_namespace`, `queue`, `r2_bucket`, `analytics_engine`, plus inert `secret_text` /
+  `plain_text` config. Anything else is refused **by omission**, with a message that names the
+  offending binding and its type and points at self-serve-deploy.md §4.1.
+
+  Two posture calls, now documented rather than incidental: own→own **`service` bindings stay
+  rejected** (a hosted vertical is one serving script — no own sibling to bind, and platform
+  reach is the router, K-27); own **`d1` stays admitted**, but its `database_id` ownership is
+  still unproven and trusted under model-B human admission until platform provisioning injects
+  the id (#301). `CONTROL_PLANE` is refused by **name** whatever type it claims, so a
+  masquerading binding can't slip through the type check.
+
+  `type` stays a free string at the schema layer on purpose: a refused type produces a named,
+  actionable rejection instead of a generic Zod parse error. Decision D-40; §4.1 enumerates the
+  full permitted/rejected/why table.
+
+- d4bf108: Surface hostname binding is operator-facing (K-26 multi-surface exposure — the Egeryds
+  EKA ask). The vertical side always worked: one scope, one worker, one bundle, and
+  `readRoutedNode(...).surface` decides which app the hostname serves. What was missing
+  was any way to GIVE a second surface a URL; `bindHostname` existed but nothing
+  operator-facing called it.
+
+  The dashboard's Domains tab is now real: it lists an app's bindings (hostname, surface,
+  status, canonical), mints a platform hostname for a surface (`crm.global…` + `eka` →
+  `crm-eka.global…`, live immediately — it rides the wildcard cert), records a custom
+  domain as `pending` into the §4.2 lifecycle, and unbinds with the canonical-demotion
+  rule stated in the UI. The default hostname is refused for removal — deleting the app
+  retires it. Both mutations gate on `dashboard:provision-app` in the caller's own scope
+  and land on the activity trail as `hostname-bound` / `hostname-unbound` (migration 0009
+  widens the event CHECK, rebuild-and-copy like 0005–0008). A custom-domain form never
+  accepts platform names — that path is the mint, so labels can't be squatted cross-tenant.
+
+  The control plane's hostname routes join `BUILDER_ROUTES`, tenant-narrowed: a builder
+  lists only its own tenant's rows (a foreign `tenantId` in the query loses silently),
+  binds only into its own tenant, never supplies `region` (an EU-residency claim, K-30),
+  and a foreign hostname on status/unbind reads 404 — indistinguishable from absent. CLI
+  parity rides that: `substrat hostnames <slug>` lists an install's bindings,
+  `… bind <slug> --surface eka [--domain …] [--scope …]` mints or records, `… unbind
+<hostname>` removes.
+
+  Verticals may declare their surfaces — package.json `substrat.surfaces: [{ name,
+label }]` rides the deploy manifest to the registry like `envSpec` (metadata, not
+  behavior, not in any digest; the anchor #111's per-surface operation-sets extend
+  later). The declaration buys the Domains tab a picker instead of free text, and a
+  push-time warning naming any hostname still bound to a surface the new version stopped
+  declaring — the same spirit as the permission-surface gate, advisory tier. Free-text
+  surfaces stay valid everywhere; declaring nothing opts out of the check.
+
+### Patch Changes
+
+- b06730e: Fix the in-place serve failing with "held no modules" on promote (#308). The WfP content
+  reader (`createWfpModulesFetcher`) read the bundle back from a version's archive script and
+  kept only parts where `value instanceof File`, with no `else`. But Cloudflare's `GET /content`
+  is not an echo of the upload: a multipart module part whose `Content-Disposition` carries no
+  `filename=` is exposed by the web-standard `FormData` parser (workerd and undici alike) as a
+  **string**, not a `File`. Every such part was silently dropped, `modules` came back empty, and
+  promote failed the in-place serve — the version was admitted but never served, leaving scopes
+  pinned to the previous code.
+
+  The reader now accepts both shapes: a string part becomes a module (`TextEncoder`-encoded),
+  a `metadata` part (if present) is skipped, and the "held no modules" error reports the
+  content-type and received part names so a future read-back that yields nothing is diagnosable
+  from one log line. Regression test added with a hand-built multipart body that omits
+  `filename=` — the shape the prior fixture, which passed filenames explicitly, could never
+  reproduce. Introduced by the in-place deploy path (#286 / #287).
+
+- Updated dependencies [72b1128]
+- Updated dependencies [1cfce31]
+- Updated dependencies [aa503c2]
+- Updated dependencies [5a3ef82]
+- Updated dependencies [4c275df]
+- Updated dependencies [d4bf108]
+  - @substrat-run/contracts@0.24.0
+  - @substrat-run/kernel@0.24.0
+
 ## 0.23.0
 
 ### Patch Changes

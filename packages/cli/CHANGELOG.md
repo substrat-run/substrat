@@ -1,5 +1,93 @@
 # @substrat-run/cli
 
+## 0.8.0
+
+### Minor Changes
+
+- 5a3ef82: Ship the vertical's declared permission surface in the deploy manifest (D-39).
+
+  The permission registry — every key + description a registered manifest declares, the
+  role templates provisioning defines, and the entity-grant shapes — existed only at build
+  time as `demos/*/PERMISSIONS.md`. The deploy manifest carried `ownerGrants` and a
+  `digests.permission` HASH of that surface, so the platform committed (at promotion) to
+  content it did not hold, and the dashboard kept a hardcoded third copy. Worse, the digest
+  was a placeholder: it hashed the worker's `bindings`, not any permission content, so the
+  "permissions changed" promotion checkpoint fired on binding changes and missed real
+  permission changes.
+
+  Now `deployManifest` carries a first-class `registry` (`permissionRegistry`:
+  `permissions[]` with `declaredBy`, `roles[]`, `entityGrants[]`), and `digests.permission`
+  is its content hash. `tools/permission-diff.mts` emits a machine-readable
+  `permissions.json` next to `PERMISSIONS.md` — from the SAME `MODULES` + `ROLES` +
+  `ENTITY_GRANTS` the host registers — CI-checked with `--check`, so it cannot drift from
+  what is enforced and it never requires the CLI to load (or execute) module code. `push`
+  reads that checked-in artifact and injects it; the digest is a canonical, formatting-
+  independent hash of the surface, so it moves iff a key, description, role, or grant shape
+  moves. Additive and optional (D-28): a vertical shipping no registry hashes the empty
+  surface (never bindings again), and the control-plane trust-boundary parse accepts the
+  new field unchanged.
+
+  This is what a tenant-facing permissions view (and a real version-to-version admission
+  diff) consume without new backend plumbing.
+
+- d4bf108: The workspace pin travels with a push and is honored, never silently reinterpreted. The
+  CLI sends the project's pinned workspace (`substrat.tenant`) as a form field alongside
+  the bundle; the deploy route resolves who the push is FOR before anything reaches the
+  namespace. For a builder the pin must match the authenticated workspace — a mismatch is
+  a 403 naming both sides, instead of a push that lands somewhere the project didn't say.
+  For staff the pin is what was previously dropped on the floor: a pinned staff push now
+  claims `<tenantSlug>/<slug>` owned by that tenant — prefixed, dashboard-visible, and
+  self-admitting, exactly as the equivalent builder push — closing the dual-hat footgun
+  where a staff-roster account (which can never authenticate as a builder, staff being the
+  superset tried first) pushed verticals its own workspace could neither see nor
+  self-serve. A bare slug already owned by the pinned tenant stays addressable as itself;
+  unpinned staff pushes keep the platform-owned behavior; old CLIs that send no pin are
+  unaffected on every path. `effectiveSlug` is now idempotent so a builder may address its
+  own vertical by the full registry id a deploy response returns, and the CLI's same-run
+  `--promote` uses exactly that id (with the version bump computed across both the
+  prefixed and legacy-bare lineages).
+- d4bf108: Surface hostname binding is operator-facing (K-26 multi-surface exposure — the Egeryds
+  EKA ask). The vertical side always worked: one scope, one worker, one bundle, and
+  `readRoutedNode(...).surface` decides which app the hostname serves. What was missing
+  was any way to GIVE a second surface a URL; `bindHostname` existed but nothing
+  operator-facing called it.
+
+  The dashboard's Domains tab is now real: it lists an app's bindings (hostname, surface,
+  status, canonical), mints a platform hostname for a surface (`crm.global…` + `eka` →
+  `crm-eka.global…`, live immediately — it rides the wildcard cert), records a custom
+  domain as `pending` into the §4.2 lifecycle, and unbinds with the canonical-demotion
+  rule stated in the UI. The default hostname is refused for removal — deleting the app
+  retires it. Both mutations gate on `dashboard:provision-app` in the caller's own scope
+  and land on the activity trail as `hostname-bound` / `hostname-unbound` (migration 0009
+  widens the event CHECK, rebuild-and-copy like 0005–0008). A custom-domain form never
+  accepts platform names — that path is the mint, so labels can't be squatted cross-tenant.
+
+  The control plane's hostname routes join `BUILDER_ROUTES`, tenant-narrowed: a builder
+  lists only its own tenant's rows (a foreign `tenantId` in the query loses silently),
+  binds only into its own tenant, never supplies `region` (an EU-residency claim, K-30),
+  and a foreign hostname on status/unbind reads 404 — indistinguishable from absent. CLI
+  parity rides that: `substrat hostnames <slug>` lists an install's bindings,
+  `… bind <slug> --surface eka [--domain …] [--scope …]` mints or records, `… unbind
+<hostname>` removes.
+
+  Verticals may declare their surfaces — package.json `substrat.surfaces: [{ name,
+label }]` rides the deploy manifest to the registry like `envSpec` (metadata, not
+  behavior, not in any digest; the anchor #111's per-surface operation-sets extend
+  later). The declaration buys the Domains tab a picker instead of free text, and a
+  push-time warning naming any hostname still bound to a surface the new version stopped
+  declaring — the same spirit as the permission-surface gate, advisory tier. Free-text
+  surfaces stay valid everywhere; declaring nothing opts out of the check.
+
+### Patch Changes
+
+- Updated dependencies [72b1128]
+- Updated dependencies [1cfce31]
+- Updated dependencies [aa503c2]
+- Updated dependencies [5a3ef82]
+- Updated dependencies [4c275df]
+- Updated dependencies [d4bf108]
+  - @substrat-run/contracts@0.24.0
+
 ## 0.7.0
 
 ### Minor Changes

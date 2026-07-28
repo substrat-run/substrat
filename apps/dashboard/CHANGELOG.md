@@ -1,5 +1,83 @@
 # @substrat-run/dashboard
 
+## 0.8.0
+
+### Minor Changes
+
+- d4bf108: Surface hostname binding is operator-facing (K-26 multi-surface exposure — the Egeryds
+  EKA ask). The vertical side always worked: one scope, one worker, one bundle, and
+  `readRoutedNode(...).surface` decides which app the hostname serves. What was missing
+  was any way to GIVE a second surface a URL; `bindHostname` existed but nothing
+  operator-facing called it.
+
+  The dashboard's Domains tab is now real: it lists an app's bindings (hostname, surface,
+  status, canonical), mints a platform hostname for a surface (`crm.global…` + `eka` →
+  `crm-eka.global…`, live immediately — it rides the wildcard cert), records a custom
+  domain as `pending` into the §4.2 lifecycle, and unbinds with the canonical-demotion
+  rule stated in the UI. The default hostname is refused for removal — deleting the app
+  retires it. Both mutations gate on `dashboard:provision-app` in the caller's own scope
+  and land on the activity trail as `hostname-bound` / `hostname-unbound` (migration 0009
+  widens the event CHECK, rebuild-and-copy like 0005–0008). A custom-domain form never
+  accepts platform names — that path is the mint, so labels can't be squatted cross-tenant.
+
+  The control plane's hostname routes join `BUILDER_ROUTES`, tenant-narrowed: a builder
+  lists only its own tenant's rows (a foreign `tenantId` in the query loses silently),
+  binds only into its own tenant, never supplies `region` (an EU-residency claim, K-30),
+  and a foreign hostname on status/unbind reads 404 — indistinguishable from absent. CLI
+  parity rides that: `substrat hostnames <slug>` lists an install's bindings,
+  `… bind <slug> --surface eka [--domain …] [--scope …]` mints or records, `… unbind
+<hostname>` removes.
+
+  Verticals may declare their surfaces — package.json `substrat.surfaces: [{ name,
+label }]` rides the deploy manifest to the registry like `envSpec` (metadata, not
+  behavior, not in any digest; the anchor #111's per-surface operation-sets extend
+  later). The declaration buys the Domains tab a picker instead of free text, and a
+  push-time warning naming any hostname still bound to a surface the new version stopped
+  declaring — the same spirit as the permission-surface gate, advisory tier. Free-text
+  surfaces stay valid everywhere; declaring nothing opts out of the check.
+
+### Patch Changes
+
+- 5fda01e: The app Overview now lists every surface's public URL, not just the default one. A
+  vertical that fronts more than one surface (K-26 — the Egeryds EKA shape) had its second
+  surface's hostname reachable only from Settings → Domains; the Overview's Production card
+  and the header's Visit button both hardcoded the app row's single default hostname
+  (surface `app`), so the second URL was invisible on the page the dashboard links to.
+
+  Overview reads the app's full hostname bindings (the same source the Domains tab uses)
+  and renders one URL row per surface — each surface's canonical active binding, the
+  default surface first, then the vertical's declared surface order — tagged with the
+  surface name and label. The OpenAPI / API-docs row stays single: the API is one per app,
+  surfaces are UI skins of the same vertical. The header's Visit button becomes a dropdown
+  of surfaces when there is more than one, a plain button otherwise. Single-surface apps
+  are unchanged, and when the hostnames endpoint isn't backed (embedded/dev) the render
+  falls back to the single default hostname.
+
+- d1022d0: Export & import moved from the Previews tab to the Data tab. It operates on the app's
+  data wholesale, so Data is where a user looks for it; its only tie to Previews — the
+  safety preview an import forks first — is now named in the success message ("… in the
+  Previews tab") instead of relying on the list being on the same screen. The Previews
+  tab refetches on open, so the explicit refresh callback is gone.
+- Updated dependencies [72b1128]
+- Updated dependencies [92d1aa1]
+- Updated dependencies [1cfce31]
+- Updated dependencies [aa503c2]
+- Updated dependencies [5a3ef82]
+- Updated dependencies [4c275df]
+- Updated dependencies [d4bf108]
+- Updated dependencies [d4bf108]
+- Updated dependencies [f610140]
+  - @substrat-run/contracts@0.24.0
+  - @substrat-run/kernel@0.24.0
+  - @substrat-run/adapter-cloudflare@0.24.0
+  - @substrat-run/demo-callout@0.1.12
+  - @substrat-run/demo-meridian@0.2.9
+  - @substrat-run/demo-manyfold@0.1.10
+  - @substrat-run/engine-invites@0.0.21
+  - @substrat-run/engine-invoicing@0.3.22
+  - @substrat-run/engine-protocol@0.4.16
+  - @substrat-run/engine-workorder@0.3.22
+
 ## 0.7.0
 
 ### Minor Changes
