@@ -1,4 +1,5 @@
 import { buildOpenApiDocument, type ApiCatalog } from '@substrat-run/contracts';
+import { meridianManifest } from './manifest.js';
 import {
   accrueInput,
   createEmployeeInput,
@@ -11,7 +12,6 @@ import {
   instanceIdInput,
   issueContractInput,
   logTimeInput,
-  meridianManifest,
   meridianModule,
   payrollExportInput,
   requestLeaveInput,

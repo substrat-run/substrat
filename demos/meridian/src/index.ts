@@ -1,4 +1,5 @@
-export { meridianModule, meridianManifest, HR_PERM } from './module.js';
+export { meridianModule } from './module.js';
+export { meridianManifest, HR_PERM } from './manifest.js';
 export type {
   EmployeeRow,
   LeaveTypeRow,

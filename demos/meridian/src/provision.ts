@@ -10,7 +10,8 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
-import { meridianModule, HR_PERM } from './module.js';
+import { meridianModule } from './module.js';
+import { HR_PERM } from './manifest.js';
 
 /**
  * Provisioning ONE instance of this vertical — what a customer receives.

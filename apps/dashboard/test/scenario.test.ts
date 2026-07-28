@@ -9,7 +9,8 @@ import { protocolModule, PROTOCOL_PERM } from '@substrat-run/engine-protocol';
 import { workorderModule } from '@substrat-run/engine-workorder';
 import { invoicingModule } from '@substrat-run/engine-invoicing';
 import { calloutModule } from '@substrat-run/demo-callout/module';
-import { meridianModule, HR_PERM } from '@substrat-run/demo-meridian/module';
+import { meridianModule } from '@substrat-run/demo-meridian/module';
+import { HR_PERM } from '@substrat-run/demo-meridian/manifest';
 import {
   MODULES,
   provisionDashboard,

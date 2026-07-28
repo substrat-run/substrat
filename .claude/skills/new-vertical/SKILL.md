@@ -9,7 +9,9 @@ A vertical is a private package under `demos/<name>/` that composes the publishe
 engines with its own vocabulary, tables, pricing, roles, and screens. The reference
 is **Callout** (`demos/callout`) — read these five files before writing anything:
 
-1. `demos/callout/src/module.ts` — manifest, migrations, operations, the pricing moment
+1. `demos/callout/src/manifest.ts` — the declarative surface (permission consts +
+   `moduleManifest.parse`); `src/migrations.ts` — the append-only journal;
+   `src/module.ts` — operations, the pricing moment, and the `ModuleRegistration` wiring
 2. `demos/callout/src/seed.ts` — host construction, roles, grants, seed world
 3. `demos/callout/src/server.ts` — thin Hono wrapper, one route per operation
 4. `demos/callout/test/scenario.test.ts` — the headless end-to-end scenario
@@ -38,14 +40,24 @@ Package name `@substrat-run/demo-<name>`, `"private": true`. Register the dev sc
 pass-through in the root `package.json` only if asked. Workspace globs already cover
 `demos/*` and `demos/*/app`.
 
-### 3. Module (`src/module.ts`)
+### 3. Module — three files
 
-- `moduleManifest.parse({...})`: id, version, `kernelContract: '^0.0.1'`, permission
-  declarations (key + human description — these feed the permission diff), events
-  emits/consumes, `attachmentTargets`, `entityRelations` (child → parent edges the
-  permission walk follows, e.g. `bike → customer`), `entitlementKey`.
-- Migrations: `SqlMigration[]`, tables prefixed `<name>_`, TEXT ids, ISO-8601 TEXT
-  timestamps, decimal/money as TEXT. Append-only forever after.
+Split the module across three files so the declarative shape reads without wading
+through operations (mirror Callout):
+
+- **`src/manifest.ts`** — the vertical's declarative surface: the permission-key consts
+  (`SC_PERM = { … permissionKey.parse('…') }`) **and** `moduleManifest.parse({...})`
+  (id, version, `kernelContract: '^0.0.1'`, permission declarations — key + human
+  description, these feed the permission diff — events emits/consumes,
+  `attachmentTargets`, `entityRelations` (child → parent edges the permission walk
+  follows, e.g. `bike → customer`), `entitlementKey`). Keep the perm consts beside the
+  manifest's `permissions` list — they're the same keys twice, so "add a permission" is
+  a single-file edit. Operations `import { SC_PERM } from './manifest.js'`.
+- **`src/migrations.ts`** — `export const <name>Migrations`: `SqlMigration[]`, tables
+  prefixed `<name>_`, TEXT ids, ISO-8601 TEXT timestamps, decimal/money as TEXT.
+  Append-only forever after. Any `boundary-lint-allow R5` extraction block lives here
+  with the migration it guards.
+- **`src/module.ts`** — imports both, holds the operations and the `ModuleRegistration`.
 - Operations: `OperationHandler<Input, Output>`; first line is always
   `assertAllowed(await ctx.check(...))`; validate inputs with Zod where they aren't
   already typed; `ctx.link(child, parent)` when creating entities with declared
