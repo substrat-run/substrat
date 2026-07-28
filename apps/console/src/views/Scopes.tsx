@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { EntitlementGrant, HostnameBinding, MigrationProgress, Scope, Tenant, TenantId } from '@substrat-run/contracts';
-import { Badge, Button, Card, KeyValue, Table, Tabs, Tag } from '../components';
+import { Badge, Button, Card, Dialog, Input, KeyValue, Table, Tabs, Tag } from '../components';
 import type { TableColumn } from '../components';
 import {
   availableActions,
@@ -111,6 +111,12 @@ function MigrationProgressCard({ progress, tenants }: { progress: MigrationProgr
 export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChanged, onToast }: ScopesProps) {
   const [tab, setTab] = useState('all');
   const [selected, setSelected] = useState<Scope>();
+  // Reap is the one irreversible scope action, so it is armed behind a type-the-slug
+  // dialog (the TenantDetail suspend pattern) rather than the bare `run()` the reversible
+  // actions use. `confirmReap` keeps the dialog open independently of `selected`, which
+  // `run()` clears on success.
+  const [confirmReap, setConfirmReap] = useState(false);
+  const [reapArmed, setReapArmed] = useState('');
   // Null until it loads; stays null where the API predates /fleet/migrations —
   // the card simply does not render, nothing else degrades.
   const [migrations, setMigrations] = useState<MigrationProgress | null>(null);
@@ -142,7 +148,7 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
       scopes.filter((s) => {
         const eff = effectiveStatus(s, tenants.get(s.tenantId));
         if (tab === 'suspended') return isSuspended(eff);
-        if (tab === 'archived') return eff === 'archived' || eff === 'archiving';
+        if (tab === 'archived') return eff === 'archived' || eff === 'archiving' || eff === 'reaped';
         return true;
       }),
     [scopes, tenants, tab],
@@ -277,6 +283,13 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
                   Archive
                 </Button>
               )}
+              {/* Reap frees the scope's DO storage for good — the one unrestorable action,
+                  so it opens the type-to-arm dialog instead of acting on click. */}
+              {actions.includes('reap') && (
+                <Button variant="danger" onClick={() => { setReapArmed(''); setConfirmReap(true); }}>
+                  Reap storage
+                </Button>
+              )}
               <Button variant="secondary" onClick={() => setSelected(undefined)}>
                 Close
               </Button>
@@ -315,8 +328,19 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
                   ]
                 : []),
               { label: 'Created', value: selected.createdAt.slice(0, 10), mono: true },
+              // Only meaningful once archived; drives the auto-reap age (§4.4).
+              ...(selected.archivedAt
+                ? [{ label: 'Archived', value: selected.archivedAt.slice(0, 10), mono: true }]
+                : []),
             ]}
           />
+          {eff === 'reaped' && (
+            <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              Storage reaped — this scope's Durable Object was wiped (§4.4). The row is kept
+              as a tombstone for the audit trail and to keep its slug burned; there is no
+              restore.
+            </p>
+          )}
           {selected.migrationFailure && (
             <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
               This scope failed closed and is serving nothing — the schema count above is
@@ -338,6 +362,57 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
           )}
         </Card>
       )}
+
+      {/* Reap confirmation — the type-to-arm gate (TenantDetail suspend precedent). Reap
+          is the one scope action with no restore: it wipes the DO storage for good. The
+          slug must be typed to enable Confirm; an unarmed dialog passes onConfirm=undefined,
+          which the Dialog renders as a disabled button. */}
+      <Dialog
+        open={confirmReap && !!selected}
+        title={selected ? `Reap ${scopeHandle(selected, tenants)}?` : 'Reap scope?'}
+        danger
+        confirmLabel="Reap storage"
+        width={520}
+        onConfirm={
+          selected && reapArmed === selected.slug
+            ? () => {
+                const target = selected;
+                setConfirmReap(false);
+                setReapArmed('');
+                void run(
+                  () => api.reapScope(target.tenantId, target.id),
+                  'Storage reaped',
+                  `${target.slug} · Durable Object wiped, tombstone kept`,
+                );
+              }
+            : undefined
+        }
+        onCancel={() => {
+          setConfirmReap(false);
+          setReapArmed('');
+        }}
+      >
+        {selected && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
+              This permanently wipes the scope's Durable Object storage — every table, event,
+              and migration record. It <strong>cannot be undone</strong>: unlike archive, there
+              is no restore. The directory row is kept as a tombstone (audit trail + burned slug).
+            </p>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              {selected.vertical ? `Vertical ${selected.vertical}` : 'No vertical bound'}
+              {selected.archivedAt ? ` · archived ${selected.archivedAt.slice(0, 10)}` : ''}
+            </span>
+            <Input
+              label="Type the scope slug to arm this action"
+              mono
+              placeholder={selected.slug}
+              value={reapArmed}
+              onChange={(e) => setReapArmed(e.target.value)}
+            />
+          </div>
+        )}
+      </Dialog>
     </div>
   );
 }

@@ -336,6 +336,8 @@ interface ScopeRow {
   expires_at: string | null;
   /** The dispatch script this scope's data lives in (#286); null = per-version dispatch. */
   serving_ref: string | null;
+  /** When the scope last entered `archived` (§4.4); null if never archived. */
+  archived_at: string | null;
   created_at: string;
 }
 
@@ -582,6 +584,9 @@ export class SqliteScopeHost implements ScopeHost {
         -- The dispatch script this scope's data lives in (#286). NULL = legacy
         -- per-version dispatch (the bound version's own script).
         serving_ref TEXT,
+        -- When the scope last entered the archived state (§4.4). Drives the reap sweep's
+        -- age filter; null for scopes that never archived, cleared on unarchive.
+        archived_at TEXT,
         created_at TEXT NOT NULL
       );
       -- The hostname map (K-26). A single environment-wide router resolves against
@@ -1078,9 +1083,13 @@ export class SqliteScopeHost implements ScopeHost {
       // The `scopes_tenant_slug` UNIQUE index makes this fail closed either way;
       // checking first is what turns a SQLITE_CONSTRAINT into a sentence naming
       // the scope that already holds the slug. An `archived` scope (a deleted app) has
-      // released its name — it is excluded so the slug can be reclaimed by a new scope.
+      // released its name, and `reaped` is past archived — both excluded so the slug can
+      // be reclaimed by a new scope. The unique index is partial on the same predicate,
+      // so a retained tombstone row never blocks the reuse this pre-check permits.
       const slugOwner = this.directory
-        .prepare("SELECT scope_id FROM scopes WHERE tenant_id = ? AND slug = ? AND status != 'archived'")
+        .prepare(
+          "SELECT scope_id FROM scopes WHERE tenant_id = ? AND slug = ? AND status NOT IN ('archived', 'reaped')",
+        )
         .get(input.tenantId, record.slug) as { scope_id: string } | undefined;
       if (slugOwner) {
         throw new Error(
@@ -2028,6 +2037,7 @@ export class SqliteScopeHost implements ScopeHost {
         forkedAt: r.forked_at,
         expiresAt: r.expires_at,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
+        archivedAt: r.archived_at ?? null,
         createdAt: r.created_at,
       });
 
@@ -2055,7 +2065,20 @@ export class SqliteScopeHost implements ScopeHost {
             `(allowed from: ${from.join('|')})`,
         );
       }
-      this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
+      // Stamp/clear archived_at so the reap sweep can age scopes (§4.4). Entering
+      // `archived` records when; `unarchive` (→ active, a restore) clears it so a later
+      // re-archive dates from the new event; `reaped` keeps it as terminal history.
+      if (to === 'archived') {
+        this.directory
+          .prepare('UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?')
+          .run(to, new Date().toISOString(), scopeId);
+      } else if (to === 'active') {
+        this.directory
+          .prepare('UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?')
+          .run(to, scopeId);
+      } else {
+        this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
+      }
       // The audit target carries the scope's vertical (control-plane.md §4.4:
       // "vertical stays null until §4.2 lifecycle actions that name one"). It is
       // read from the scope rather than passed in, so the trail cannot disagree
@@ -2333,10 +2356,13 @@ export class SqliteScopeHost implements ScopeHost {
               WHERE h.hostname = ?`,
           )
           .get(parsed.hostname) as { scope_id: string; scope_status: string | null } | undefined;
-        if (existing && existing.scope_id !== parsed.scopeId && existing.scope_status !== 'archived') {
+        const holderReleased =
+          existing?.scope_status === 'archived' || existing?.scope_status === 'reaped';
+        if (existing && existing.scope_id !== parsed.scopeId && !holderReleased) {
           // A hostname is globally unique and routes to exactly one place. Silently
           // rebinding it would move another tenant's traffic. Exception: the holder is
-          // ARCHIVED (a deleted app) — it released the name, so the rebind reclaims it.
+          // ARCHIVED or REAPED (a deleted app, storage since wiped) — it released the
+          // name, so the rebind reclaims it.
           throw new Error(`hostname '${parsed.hostname}' is already bound to another scope`);
         }
         // Exactly one canonical per (scope, surface): "which one do certs and
@@ -3250,6 +3276,35 @@ export class SqliteScopeHost implements ScopeHost {
         transitionScope(actor, 'archiveScope', tenantId, scopeId, ['provisioning', 'active', 'suspended'], 'archived'),
       unarchiveScope: async (actor, tenantId, scopeId) =>
         transitionScope(actor, 'unarchiveScope', tenantId, scopeId, ['archived'], 'active'),
+      reapScope: async (actor, tenantId, scopeId) => {
+        // Reap an ARCHIVED scope's storage while keeping its directory row as a tombstone
+        // (§4.4). Only `archived` may be reaped — an illegal source fails closed. The
+        // STORAGE goes before the status flip (the ordering deleteSnapshot keeps): a crash
+        // between leaves an `archived` row over an emptied file and re-running converges,
+        // whereas flipping first would strand a live file under a `reaped` row reap never
+        // revisits. Hostnames were released at archive and the row survives, so — unlike
+        // deleteSnapshot — neither is touched here.
+        const rec = this.directory
+          .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string; status: string } | undefined;
+        if (!rec || rec.tenant_id !== tenantId) {
+          throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        }
+        if (rec.status !== 'archived') {
+          throw new Error(
+            `scope ${scopeId} is ${rec.status}, not archived — only an archived scope may be reaped`,
+          );
+        }
+        const key = `${tenantId}/${scopeId}`;
+        const rt = this.scopes.get(key);
+        if (rt) {
+          rt.db.close();
+          this.scopes.delete(key);
+          this.scopesById.delete(scopeId);
+        }
+        rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
+        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped');
+      },
       grantEntitlement: async (
         actor: PlatformActorId,
         tenantId: TenantId,
@@ -3960,6 +4015,7 @@ export class SqliteScopeHost implements ScopeHost {
       ['forked_at', 'forked_at TEXT'],
       ['expires_at', 'expires_at TEXT'],
       ['serving_ref', 'serving_ref TEXT'],
+      ['archived_at', 'archived_at TEXT'],
     ] as const) {
       if (!existing.has(column)) this.directory.exec(`ALTER TABLE scopes ADD COLUMN ${ddl}`);
     }
@@ -3972,8 +4028,17 @@ export class SqliteScopeHost implements ScopeHost {
     `);
     // Created after the backfill: a UNIQUE index over NULL slugs would permit the
     // duplicates it exists to forbid (SQLite treats NULLs as distinct).
+    //
+    // PARTIAL on the live statuses: an `archived` scope (a deleted app) and a `reaped`
+    // one keep their directory row as a tombstone but release their name (§4.4), so the
+    // slug must be reclaimable while the row survives — matching the CF adapter, which
+    // has no unique index and gates on the same pre-check. A full index would let the
+    // tombstone block the reuse the contract intends. DROP-then-create so a DB carrying
+    // the old full index (an escrow/self-host file) is migrated to the partial one.
+    this.directory.exec('DROP INDEX IF EXISTS scopes_tenant_slug');
     this.directory.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS scopes_tenant_slug ON scopes (tenant_id, slug)',
+      "CREATE UNIQUE INDEX IF NOT EXISTS scopes_tenant_slug ON scopes (tenant_id, slug) " +
+        "WHERE status NOT IN ('archived', 'reaped')",
     );
     this.directory.exec('CREATE UNIQUE INDEX IF NOT EXISTS tenants_slug ON tenants (slug)');
     this.directory.exec(

@@ -62,6 +62,25 @@ export interface PlatformSweepOptions {
    */
   deleteSnapshotFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
   /**
+   * Also reap long-archived scopes (control-plane.md §4.4): any scope in `archived`
+   * whose `archivedAt` is older than this many days has its DO storage wiped and moves
+   * to `reaped` (Cloudflare never GCs a Durable Object, so nothing else frees it). The
+   * directory row survives as a tombstone. UNSET (the default) skips the phase entirely
+   * — auto-reap is opt-in, and irreversible, so a deployment must name a retention
+   * window before the sweep will ever delete an app's data. A scope with a null
+   * `archivedAt` (archived before this column shipped) is never auto-reaped — it has no
+   * knowable age — and must be reaped by hand.
+   */
+  reapArchivedAfterDays?: number;
+  /**
+   * How the reap phase reaps one archived scope. Defaults to `host.admin.reapScope` —
+   * right when host and storage share a deployment (self-host, a vertical's own sweep).
+   * The CONTROL-PLANE cron overrides it with the orchestrated reap (§4.4): wipe the
+   * scope's storage in the vertical deployment that actually holds it (its DO is
+   * CP-less), then the in-process reap for the directory transition + audit.
+   */
+  reapScopeFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
+  /**
    * Also reconcile migrations (kernel-design §5.3, #49): walk the directory for
    * live scopes behind this host's frontier or failed, wake each with
    * `migrateScope`, back off between retries of a failing scope, and report
@@ -120,6 +139,8 @@ export interface PlatformSweepReport {
   connectionsSkipped: number;
   /** Expired forks reaped by `deleteSnapshot` this pass. */
   snapshotsReaped: number;
+  /** Long-archived primary scopes reaped by `reapScope` this pass (§4.4). */
+  archivedScopesReaped: number;
   /**
    * The migration-reconciliation phase's report (§5.3, #49), or null when the
    * phase was disabled or the host predates `migrateScope`. Note null vs a
@@ -129,7 +150,7 @@ export interface PlatformSweepReport {
    */
   migrations: MigrationSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
-  errors: { kind: 'drain' | 'sweep' | 'gc' | 'migrate'; id: string; error: string }[];
+  errors: { kind: 'drain' | 'sweep' | 'gc' | 'reap' | 'migrate'; id: string; error: string }[];
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -182,6 +203,7 @@ export async function runPlatformSweep(
     connectionsSwept: 0,
     connectionsSkipped: 0,
     snapshotsReaped: 0,
+    archivedScopesReaped: 0,
     migrations: null,
     errors: [],
   };
@@ -325,6 +347,32 @@ export async function runPlatformSweep(
         report.snapshotsReaped += 1;
       } catch (err) {
         report.errors.push({ kind: 'gc', id: s.id, error: message(err) });
+      }
+    });
+  }
+
+  // -- reap long-archived scopes (control-plane.md §4.4) ----------------------
+  // Free the storage of scopes archived longer than the retention window — Cloudflare
+  // never garbage-collects a Durable Object, so an archived app's bytes persist forever
+  // otherwise. Opt-in: skipped unless a retention window is configured, because the reap
+  // is irreversible. A null `archivedAt` (archived before the column shipped) has no
+  // knowable age and is left for a manual reap. `reapScope` re-checks the `archived`
+  // status below the seam, so a row that changed underneath fails closed there.
+  if (options.reapArchivedAfterDays !== undefined && options.reapArchivedAfterDays >= 0) {
+    const cutoff = new Date(
+      Date.now() - options.reapArchivedAfterDays * 86_400_000,
+    ).toISOString();
+    const archived = await host.admin.listScopes(options.actor, { status: ['archived'] });
+    const due = archived.filter((s) => s.archivedAt !== null && s.archivedAt <= cutoff);
+    const reap =
+      options.reapScopeFn ??
+      ((tenantId: TenantId, scopeId: ScopeId) => host.admin.reapScope(options.actor, tenantId, scopeId));
+    await mapBounded(due, concurrency, async (s) => {
+      try {
+        await reap(s.tenantId, s.id);
+        report.archivedScopesReaped += 1;
+      } catch (err) {
+        report.errors.push({ kind: 'reap', id: s.id, error: message(err) });
       }
     });
   }

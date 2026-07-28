@@ -102,6 +102,8 @@ export interface ScopeRow {
   expires_at: string | null;
   /** The dispatch script this scope's data lives in (#286); null = per-version dispatch. */
   serving_ref: string | null;
+  /** When the scope last entered `archived` (§4.4); null if never archived. */
+  archived_at: string | null;
   created_at: string;
 }
 
@@ -277,6 +279,10 @@ const DIRECTORY_DDL = `
     forked_from TEXT,
     forked_at TEXT,
     expires_at TEXT,
+    -- When the scope last entered the archived state (§4.4). Drives the reap sweep's age
+    -- filter (archived longer than N days); null for scopes that never archived. Stamped
+    -- by transitionScope on the edge into archived, cleared on unarchive.
+    archived_at TEXT,
     -- The scope's data lives in THIS dispatch script (#286). NULL = legacy per-version
     -- dispatch (the bound version's own script). Set at provision once the vertical has
     -- a serving script, or by adopt-serving when a legacy scope's data is moved over.
@@ -511,6 +517,7 @@ const SCOPE_COLUMNS_ADDED = [
   'forked_at TEXT',
   'expires_at TEXT',
   'serving_ref TEXT',
+  'archived_at TEXT',
 ] as const;
 
 export class ControlPlaneDO extends DurableObject {
@@ -648,8 +655,17 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE scopes SET name = slug WHERE name IS NULL');
     // After the backfill: a UNIQUE index over NULL slugs would permit the
     // duplicates it exists to forbid (SQLite treats NULLs as distinct).
+    //
+    // PARTIAL on the live statuses: an `archived` scope (a deleted app) and a `reaped`
+    // one keep their directory row as a tombstone but release their name (§4.4), so a new
+    // scope must be able to reclaim the slug while the tombstone survives — the same
+    // predicate `provisionScope`'s slug pre-check uses. A full index would let the
+    // tombstone block the reuse the contract intends. DROP-then-create migrates a
+    // directory DO carrying the old full index across a deploy.
+    this.sql.exec('DROP INDEX IF EXISTS scopes_tenant_slug');
     this.sql.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS scopes_tenant_slug ON scopes (tenant_id, slug)',
+      "CREATE UNIQUE INDEX IF NOT EXISTS scopes_tenant_slug ON scopes (tenant_id, slug) " +
+        "WHERE status NOT IN ('archived', 'reaped')",
     );
     this.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS tenants_slug ON tenants (slug)');
     this.sql.exec(
@@ -766,10 +782,14 @@ export class ControlPlaneDO extends DurableObject {
     const existed =
       this.sql.exec('SELECT 1 FROM scopes WHERE scope_id = ?', scopeId).toArray()[0] !== undefined;
     if (!existed) {
-      // An `archived` scope (a deleted app) has released its name — excluded so the slug
-      // can be reclaimed by a new scope.
+      // An `archived` scope (a deleted app) has released its name — and `reaped` is past
+      // archived, so it too has released it — both excluded so the slug can be reclaimed.
       const slugOwner = this.sql
-        .exec("SELECT scope_id FROM scopes WHERE tenant_id = ? AND slug = ? AND status != 'archived'", tenantId, record.slug)
+        .exec(
+          "SELECT scope_id FROM scopes WHERE tenant_id = ? AND slug = ? AND status NOT IN ('archived', 'reaped')",
+          tenantId,
+          record.slug,
+        )
         .toArray()[0] as { scope_id: string } | undefined;
       if (slugOwner) {
         throw new Error(
@@ -950,7 +970,25 @@ export class ControlPlaneDO extends DurableObject {
           `(allowed from: ${from.join('|')})`,
       );
     }
-    this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
+    // Stamp/clear archived_at so the reap sweep can age scopes. Entering `archived`
+    // records when; `unarchive` (→ active, a restore per §4.2) clears it so a later
+    // re-archive dates from the new event. `reaped` keeps it — it is terminal history.
+    if (to === 'archived') {
+      this.sql.exec(
+        'UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?',
+        to,
+        new Date().toISOString(),
+        scopeId,
+      );
+    } else if (to === 'active') {
+      this.sql.exec(
+        'UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?',
+        to,
+        scopeId,
+      );
+    } else {
+      this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
+    }
     return { status: row.status, vertical: row.vertical };
   }
 

@@ -56,6 +56,10 @@ export const adminAction = z.enum([
   'unsuspendScope', // §4.2
   'archiveScope', // §4.2
   'unarchiveScope',
+  // §4.4 — the terminal reap: wipe an archived scope's DO storage (Cloudflare never GCs a
+  // DO) while keeping its directory row as a tombstone. Irreversible, so it only leaves
+  // `archived`, never `active`. Unlike `deleteSnapshot` this reaps a PRIMARY scope, not a fork.
+  'reapScope',
   'activateScope', // §4.2 — an explicit restore, never a silent flag flip
   'grantEntitlement', // §4.3 — the SKU flag turned on for a tenant
   'revokeEntitlement', // §4.3

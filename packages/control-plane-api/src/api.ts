@@ -731,6 +731,40 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
+  // Reap an ARCHIVED primary scope (control-plane.md §4.4): free its DO storage —
+  // Cloudflare never garbage-collects a Durable Object, so a deleted app's bytes persist
+  // forever otherwise — while keeping the directory row as a tombstone. A POST verb, not
+  // DELETE: DELETE means "remove the record" (and is already the fork hard-delete above),
+  // whereas reap KEEPS the row and just moves it to `reaped`. Staff/service only — not in
+  // BUILDER_ROUTES. The archived-only refusal is surfaced HERE before any delegation (the
+  // vertical must never be asked to wipe a live scope) and re-checked below the seam by
+  // reapScope. Same storage-before-row ordering as deleteSnapshot: the vertical wipes its
+  // co-located DO first, then the in-process reapScope flips the status and audits.
+  app.post('/tenants/:tenantId/scopes/:scopeId/reap', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (scope.status !== 'archived') {
+      return c.json(
+        { error: `scope ${scopeId} is ${scope.status}, not archived — only an archived scope may be reaped` },
+        409,
+      );
+    }
+    try {
+      const vertical = await verticalForScope(c, scope);
+      if (vertical) await vertical.deleteScope({ scopeId });
+      await admin.reapScope(actor, tenantId, scopeId);
+      return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
   // The governed pull (preview-and-snapshots.md §6/§8) — the ONE route that
   // deliberately hands scope BYTES to the caller, which is why every §6 layer sits
   // on it: staff-only (not in BUILDER_ROUTES), K-3 cross-checked, K-24 audited (the

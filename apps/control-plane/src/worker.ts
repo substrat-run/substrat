@@ -70,6 +70,14 @@ interface Env extends OidcEnv {
   /** Local dev / test only: trust the `x-platform-actor` header. NEVER on a real deploy. */
   ALLOW_DEV_ACTOR?: string;
   /**
+   * Days a scope may sit `archived` before the sweep reaps its DO storage (§4.4).
+   * Cloudflare never GCs a Durable Object, so an archived app's bytes persist forever
+   * until this fires. UNSET disables auto-reap entirely — the reap is irreversible, so a
+   * deployment opts in by naming a window; manual reap from the console is unaffected.
+   * Parsed as an integer number of days.
+   */
+  SCOPE_RETENTION_DAYS?: string;
+  /**
    * Shared secret presented to a vertical when provisioning an instance (K-31).
    * Must match that vertical's own `PLATFORM_SECRET`. Unset means instance creation
    * is unavailable, and the route says so rather than failing obscurely.
@@ -216,6 +224,18 @@ const SERVICE_ACTOR = platformActorId.parse('01JZ00000000000000000000SV');
 const SWEEP_ACTOR = platformActorId.parse('01JZ00000000000000000000SW');
 
 /**
+ * `SCOPE_RETENTION_DAYS` → the sweep's `reapArchivedAfterDays`, or `undefined` when
+ * unset/blank/invalid so the kernel skips the reap phase. A non-negative integer only:
+ * a garbled value must disable auto-reap, never coerce to `0` and reap everything the
+ * next sweep sees. `0` is honored (reap on the first pass) — an operator can ask for it.
+ */
+function parseRetentionDays(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
+/**
  * The verticals this control plane can provision into (K-31).
  *
  * Discovered from the bindings rather than listed in code, so adding a vertical is a
@@ -302,10 +322,29 @@ export default {
         }
         await host.deleteSnapshot(SWEEP_ACTOR, tenantId, scopeId);
       },
+      // §4.4 storage reap — opt-in via SCOPE_RETENTION_DAYS. Same orchestrated shape as
+      // the snapshot delete: wipe the scope's DO in the vertical deployment that holds it
+      // (its storage is CP-less), then the in-process reapScope for the directory
+      // transition + audit. Left unset ⇒ the kernel skips the phase, so a deployment that
+      // has not chosen a retention window never auto-deletes an app's data.
+      reapArchivedAfterDays: parseRetentionDays(env.SCOPE_RETENTION_DAYS),
+      reapScopeFn: async (tenantId, scopeId) => {
+        const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
+        if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+          const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
+          if (vertical) await vertical.deleteScope({ scopeId });
+        }
+        await host.admin.reapScope(SWEEP_ACTOR, tenantId, scopeId);
+      },
     });
-    if (report.snapshotsReaped > 0 || report.errors.length > 0) {
+    if (
+      report.snapshotsReaped > 0 ||
+      report.archivedScopesReaped > 0 ||
+      report.errors.length > 0
+    ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
+        archivedScopesReaped: report.archivedScopesReaped,
         errors: report.errors,
       });
     }

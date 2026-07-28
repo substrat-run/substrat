@@ -2162,6 +2162,68 @@ export function scopeHostContractSuite(
       );
     });
 
+    // -- reap: the terminal storage wipe (control-plane.md §4.4) ---------------
+
+    it('archive stamps archivedAt; unarchive clears it (§4.4)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t3, scopeId: s, jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t3, s);
+      // Active: no archival timestamp yet.
+      const [active] = await host.admin.listScopes(staff, { tenantId: t3, status: ['active'] }).then(
+        (rows) => rows.filter((r) => r.id === s),
+      );
+      expect(active?.archivedAt).toBeNull();
+      // Archiving stamps it…
+      await host.admin.archiveScope(staff, t3, s);
+      const archived = (await host.admin.getScopeRecord(staff, t3, s))!;
+      expect(archived.status).toBe('archived');
+      expect(archived.archivedAt).not.toBeNull();
+      // …and un-archiving (a restore) clears it, so a later re-archive dates fresh.
+      await host.admin.unarchiveScope(staff, t3, s);
+      const restored = (await host.admin.getScopeRecord(staff, t3, s))!;
+      expect(restored.archivedAt).toBeNull();
+    });
+
+    it('reapScope wipes storage, keeps the tombstone row, and fails getScope closed (§4.4)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t3, scopeId: s, slug: 'reap-me', jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t3, s);
+      // Reap refuses a live (active) scope — only archived may be reaped.
+      await expect(host.admin.reapScope(staff, t3, s)).rejects.toThrow(/not archived/);
+
+      await host.admin.archiveScope(staff, t3, s);
+      await host.admin.reapScope(staff, t3, s);
+
+      // The directory row SURVIVES as a tombstone, now `reaped`.
+      const rec = (await host.admin.getScopeRecord(staff, t3, s))!;
+      expect(rec.status).toBe('reaped');
+      // getScope fails closed on the reaped scope, exactly like a missing one.
+      await expect(host.getScope(alice, t3, s)).rejects.toThrow(/scope not active|unknown scope/);
+      // Audited as reapScope against the right scope + actor.
+      const reapEntry = (await host.admin.auditLog(staff, { tenantId: t3 })).find(
+        (r) => r.action === 'reapScope' && r.scopeId === s,
+      );
+      expect(reapEntry?.actor).toBe(staff);
+    });
+
+    it('a reaped scope releases its slug for reuse; reap is terminal (§4.4)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t3, scopeId: s, slug: 'recyclable', jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t3, s);
+      await host.admin.archiveScope(staff, t3, s);
+      await host.admin.reapScope(staff, t3, s);
+
+      // The name is free again: a fresh scope may claim the reaped scope's slug.
+      const fresh = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t3, scopeId: fresh, slug: 'recyclable', jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t3, fresh);
+      await expect(host.getScope(alice, t3, fresh)).resolves.toBeDefined();
+
+      // Terminal: a reaped scope cannot be unarchived (bytes are gone) or reaped again.
+      await expect(host.admin.unarchiveScope(staff, t3, s)).rejects.toThrow(/illegal scope transition/);
+      await expect(host.admin.reapScope(staff, t3, s)).rejects.toThrow(/not archived/);
+    });
+
     it('rejects a lifecycle transition on a scope not under the named tenant', async () => {
       await expect(host.admin.suspendScope(staff, t1, s3)).rejects.toThrow(
         /unknown scope for tenant/,
