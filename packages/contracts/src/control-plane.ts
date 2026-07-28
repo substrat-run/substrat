@@ -45,8 +45,16 @@ export const adminAction = z.enum([
   'unbindHostname', // the inverse of bindHostname — a hard delete; the history is this log
   'pruneAccessLog', // K-24 — deleting drained access rows is itself a mutation // K-23 — a provider declares its topology before it may link
   'createTenant', // §4.1
-  'setTenantStatus', // §4.1 — before/after carry the transitioned status
+  // §4.1/§4.8 — before/after carry the transitioned status. Starting the delete grace
+  // window (→ deleting) and un-deleting (→ active) are ordinary status transitions here,
+  // exactly as suspend/unsuspend are — the reap that follows is its own action below.
+  'setTenantStatus',
   'setTenantName', // §4.1 — display rename only; the slug (in registry ids) never moves
+  // §4.8 — the terminal tenant reap: wipe every scope's storage (via reapScope) and clear
+  // the tenant's PII/config directory rows, keeping the `tenants` row + admin log as a
+  // tombstone. Irreversible, so it only leaves `deleting`, never `active`. The tenant-level
+  // analogue of reapScope.
+  'reapTenant',
   'provisionScope', // §4.2 — the first scope-lifecycle transition (→ active)
   'importScope', // preview-and-snapshots.md §3 — provision a scope + load a dump (fork)
   'restoreScope', // §8's write half — load a dump into an EXISTING scope in place (backup restore / backout)

@@ -782,7 +782,11 @@ export interface HostAdmin {
   /**
    * Transition a tenant's status. `suspended` fails `getScope` closed for every
    * scope under the tenant (K-3's path) — the containment lever for non-payment
-   * or an incident, reversible without deleting anything.
+   * or an incident, reversible without deleting anything. `deleting` (§4.8) does
+   * the same read-closed containment but marks the tenant for reap: entering it
+   * stamps `deletingAt`, leaving it (an un-delete back to `active`) clears it, so
+   * the grace-window sweep can age the tenant off that timestamp. `reaped` is
+   * terminal and NOT reachable here — it is only ever reached via `reapTenant`.
    */
   setTenantStatus(
     actor: PlatformActorId,
@@ -795,6 +799,24 @@ export interface HostAdmin {
    * immutable here by omission — renaming display must not orphan a vertical.
    */
   setTenantName(actor: PlatformActorId, tenantId: TenantId, name: string): Promise<void>;
+  /**
+   * deleting → reaped. The terminal tenant reap (control-plane.md §4.8), the
+   * tenant-level analogue of `reapScope`: clear the tenant's PII/config directory
+   * rows (identities + identity pools, membership tuples, roles, entitlements,
+   * orgs) and flip the `tenants` row to `reaped`, KEEPING that row as a tombstone
+   * (burned slug + audit history) and `_substrat_admin_log` whole (the compliance
+   * witness — never swept). Irreversible: the PII is gone, so `reaped` never
+   * returns to `active`, and only a `deleting` tenant may be reaped (an illegal
+   * source status fails closed).
+   *
+   * DIRECTORY-SIDE ONLY, deliberately: the tenant's scopes hold the domain bytes,
+   * and wiping those runs ABOVE the kernel (a hosted scope's DO is CP-less, reached
+   * via the vertical's `deleteScope`). The caller — the reap route and the
+   * grace-window sweep — reaps every scope first (archive-if-needed → `reapScope`),
+   * then calls this to clear the directory. Idempotent: re-running after a partial
+   * failure converges (the DELETEs and the status flip are all set-to-empty).
+   */
+  reapTenant(actor: PlatformActorId, tenantId: TenantId): Promise<void>;
   /** The tenant registry — the directory's inventory (control-plane.md §4.5 console item 1). */
   listTenants(actor: PlatformActorId): Promise<Tenant[]>;
   getTenant(actor: PlatformActorId, tenantId: TenantId): Promise<Tenant | undefined>;
@@ -1260,7 +1282,10 @@ export interface AuditLogFilter {
   /**
    * Page size. Unset means unbounded — kept as the default because the read is
    * `AdminLogEntry[]`, and a silent cap would let a caller mistake a truncated
-   * page for the whole log. The console always passes one.
+   * page for the whole log. The console always passes one. (The log is never
+   * swept — it is the compliance witness, control-plane.md §4.4/§4.8 — so the
+   * bound against dumping an ever-growing table lives on the HTTP read surface,
+   * `GET /admin-log`, which DEFAULTS a page rather than leaving it unbounded.)
    */
   limit?: number;
   /**

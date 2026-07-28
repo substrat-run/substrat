@@ -78,6 +78,14 @@ interface Env extends OidcEnv {
    */
   SCOPE_RETENTION_DAYS?: string;
   /**
+   * How many days a tenant may sit in `deleting` before the sweep reaps it (§4.8): every
+   * scope reaped, PII/config directory rows cleared, the tenant row left as a tombstone.
+   * The tenant-level counterpart of `SCOPE_RETENTION_DAYS`. UNSET disables auto-reap — the
+   * reap is irreversible, so a deployment opts in by naming a grace window; the console's
+   * "reap now" is unaffected. Parsed as an integer number of days.
+   */
+  TENANT_RETENTION_DAYS?: string;
+  /**
    * Shared secret presented to a vertical when provisioning an instance (K-31).
    * Must match that vertical's own `PLATFORM_SECRET`. Unset means instance creation
    * is unavailable, and the route says so rather than failing obscurely.
@@ -336,15 +344,23 @@ export default {
         }
         await host.admin.reapScope(SWEEP_ACTOR, tenantId, scopeId);
       },
+      // §4.8 tenant reap — opt-in via TENANT_RETENTION_DAYS. The kernel's default
+      // `reapTenantFn` composes the `reapScopeFn` above (archive-if-needed → wipe each
+      // scope's DO in its vertical deployment → reapScope), then clears the directory via
+      // reapTenant — so the orchestrated per-scope wipe applies here without a separate
+      // override. Left unset ⇒ the kernel skips the phase.
+      reapDeletingAfterDays: parseRetentionDays(env.TENANT_RETENTION_DAYS),
     });
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
+      report.tenantsReaped > 0 ||
       report.errors.length > 0
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
         archivedScopesReaped: report.archivedScopesReaped,
+        tenantsReaped: report.tenantsReaped,
         errors: report.errors,
       });
     }

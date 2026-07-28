@@ -5,6 +5,7 @@ import {
   moduleManifest,
   orgId,
   AUTO_ADMISSION_NOTE,
+  permissionKey,
   platformActorId,
   principalId,
   scopeId,
@@ -2222,6 +2223,87 @@ export function scopeHostContractSuite(
       // Terminal: a reaped scope cannot be unarchived (bytes are gone) or reaped again.
       await expect(host.admin.unarchiveScope(staff, t3, s)).rejects.toThrow(/illegal scope transition/);
       await expect(host.admin.reapScope(staff, t3, s)).rejects.toThrow(/not archived/);
+    });
+
+    // -- tenant delete lifecycle (control-plane.md §4.8) ----------------------
+
+    it('delete stamps deletingAt and fails getScope closed; un-delete restores (§4.8)', async () => {
+      const t = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: `del-${t.toLowerCase()}`, name: 'Del' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t, s);
+      await expect(host.getScope(alice, t, s)).resolves.toBeDefined();
+
+      // Entering `deleting` stamps deletingAt and fails the scope closed (like suspend).
+      await host.admin.setTenantStatus(staff, t, 'deleting');
+      const deleting = (await host.admin.getTenant(staff, t))!;
+      expect(deleting.status).toBe('deleting');
+      expect(deleting.deletingAt).not.toBeNull();
+      await expect(host.getScope(alice, t, s)).rejects.toThrow(/not active/);
+
+      // Un-delete (→ active) is a full restore and clears deletingAt.
+      await host.admin.setTenantStatus(staff, t, 'active');
+      const restored = (await host.admin.getTenant(staff, t))!;
+      expect(restored.status).toBe('active');
+      expect(restored.deletingAt).toBeNull();
+      await expect(host.getScope(alice, t, s)).resolves.toBeDefined();
+    });
+
+    it('reapTenant clears PII/config rows, keeps the tombstone + admin log, fails closed (§4.8)', async () => {
+      const t = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      const org = orgId.parse(ulid());
+      const person = principalId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: `reap-${t.toLowerCase()}`, name: 'Reap Co' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t, s);
+      // Seed the directory-side rows a reap must clear.
+      await host.admin.defineRole(staff, t, { key: 'tech', permissions: [permissionKey.parse('thing:read')], source: 'vertical' });
+      await host.admin.grantEntitlement(staff, t, 'workorder');
+      await host.admin.createOrg(staff, { id: org, tenantId: t, slug: 'acme', name: 'Acme' });
+      await host.admin.registerIdentityPool(staff, { provider: `oidc:reap-${t.toLowerCase()}`, topology: 'tenant-bound', tenantId: t });
+      await host.admin.linkIdentity(staff, { provider: `oidc:reap-${t.toLowerCase()}`, externalId: 'x1', principal: person, tenantId: t });
+      expect(await host.admin.listEntitlements(staff, t)).toHaveLength(1);
+      expect((await host.admin.listOrgs(staff, t)).filter((o) => o.id === org)).toHaveLength(1);
+      expect((await host.admin.resolveIdentity(t, `oidc:reap-${t.toLowerCase()}`, 'x1'))?.principal).toBe(person);
+
+      // Reap only follows the reversible delete state.
+      await expect(host.admin.reapTenant(staff, t)).rejects.toThrow(/not deleting/);
+
+      // The caller reaps the scope first (the sweep/route orchestrates this above the
+      // kernel); reapTenant itself is directory-side only.
+      await host.admin.setTenantStatus(staff, t, 'deleting');
+      await host.admin.archiveScope(staff, t, s);
+      await host.admin.reapScope(staff, t, s);
+      await host.admin.reapTenant(staff, t);
+
+      // The tenant row SURVIVES as a `reaped` tombstone…
+      const tomb = (await host.admin.getTenant(staff, t))!;
+      expect(tomb.status).toBe('reaped');
+      expect(tomb.slug).toBe(`reap-${t.toLowerCase()}`); // slug stays burned
+      // …its scope fails closed like a missing one…
+      await expect(host.getScope(alice, t, s)).rejects.toThrow(/not active|unknown scope/);
+      // …and the PII/config rows are gone.
+      expect(await host.admin.listEntitlements(staff, t)).toHaveLength(0);
+      expect((await host.admin.listOrgs(staff, t)).filter((o) => o.id === org)).toHaveLength(0);
+      expect(await host.admin.resolveIdentity(t, `oidc:reap-${t.toLowerCase()}`, 'x1')).toBeUndefined();
+
+      // The admin log is KEPT WHOLE — the witness outlives the tenant — and records the reap.
+      const log = await host.admin.auditLog(staff, { tenantId: t });
+      expect(log.some((r) => r.action === 'createTenant')).toBe(true);
+      const reapEntry = log.find((r) => r.action === 'reapTenant')!;
+      expect(reapEntry.actor).toBe(staff);
+      expect((reapEntry.before as { status: string }).status).toBe('deleting');
+      expect((reapEntry.after as { status: string }).status).toBe('reaped');
+
+      // Terminal: `reaped` is unreachable via setTenantStatus and reapTenant refuses it.
+      await expect(host.admin.setTenantStatus(staff, t, 'reaped')).rejects.toThrow(/cannot be set to 'reaped'/);
+      await expect(host.admin.reapTenant(staff, t)).rejects.toThrow(/not deleting/);
+    });
+
+    it('rejects reapTenant on an unknown tenant', async () => {
+      await expect(host.admin.reapTenant(staff, tenantId.parse(ulid()))).rejects.toThrow(/unknown tenant/);
     });
 
     it('rejects a lifecycle transition on a scope not under the named tenant', async () => {
