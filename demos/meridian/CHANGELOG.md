@@ -1,5 +1,18 @@
 # @substrat-run/demo-hr
 
+## 0.2.8
+
+### Patch Changes
+
+- Updated dependencies [6a86837]
+  - @substrat-run/contracts@0.23.0
+  - @substrat-run/connector-scrive@0.1.13
+  - @substrat-run/engine-protocol@0.4.15
+  - @substrat-run/adapter-cloudflare@0.23.0
+  - @substrat-run/adapter-sqlite@0.23.0
+  - @substrat-run/control-plane-api@0.23.0
+  - @substrat-run/kernel@0.23.0
+
 ## 0.2.7
 
 ### Patch Changes
