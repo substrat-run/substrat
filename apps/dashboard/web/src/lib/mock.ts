@@ -1,4 +1,4 @@
-import type { AppRow, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow } from './api';
+import type { AppHostnamesView, AppRow, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -111,6 +111,20 @@ export const MOCK_SNAPSHOTS: SnapshotRow[] = [
     createdAt: ago(9 * 86400e3),
   },
 ];
+
+/** Domains-tab sample for the first mock app: default + a second surface + a pending custom domain. */
+export const MOCK_APP_HOSTNAMES: AppHostnamesView = {
+  bindings: [
+    { hostname: 'acme-hr.substrat.run', surface: 'app', status: 'active', canonical: true, createdAt: ago(30 * 86400e3) },
+    { hostname: 'acme-hr-eka.substrat.run', surface: 'eka', status: 'active', canonical: true, createdAt: ago(2 * 86400e3) },
+    { hostname: 'hr.acme.com', surface: 'app', status: 'pending', canonical: false, createdAt: ago(3600e3) },
+  ],
+  surfaces: [
+    { name: 'app', label: 'Acme HR' },
+    { name: 'eka', label: 'Economy admin' },
+  ],
+  defaultHostname: 'acme-hr.substrat.run',
+};
 
 export const MOCK_APPS: AppRow[] = [
   { id: '1', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical_slug: 'protocol', name: 'Acme HR', status: 'active', hostname: 'acme-hr.substrat.run', created_by: 'dana@acme.com', created_at: ago(2 * 3600e3) },

@@ -24,6 +24,26 @@ import { instant, scopeId, tenantId, verticalSlug } from './ids.js';
 export const surfaceName = z.string().min(1).max(32);
 
 /**
+ * A surface a vertical DECLARES it serves (package.json `substrat.surfaces` → the
+ * deploy manifest → the registry). Labels only, today — the kernel and router stay
+ * indifferent; what the declaration buys is operator UX: a hostname-binding picker
+ * instead of free text, and a push-time warning when a version stops declaring a
+ * surface that hostnames are still bound to. Free-text `surfaceName` remains valid
+ * everywhere — an undeclared surface is not an error.
+ *
+ * This object is also the anchor #111 ("app as a first-class surface") extends when a
+ * surface grows into a real authority boundary: a per-surface OPERATION-SET (the
+ * scoped subset an app token may call, and the filter its OAS view is cut by) attaches
+ * HERE, as optional additive fields — never as a second, competing surface list. Until
+ * then the declaration must not be read as enforcement: it names, it does not gate.
+ */
+export const declaredSurface = z.object({
+  name: surfaceName,
+  label: z.string().min(1).max(80),
+});
+export type DeclaredSurface = z.infer<typeof declaredSurface>;
+
+/**
  * Where the hostname's traffic may be processed.
  *
  * The DO jurisdiction (K-7) pins storage and execution and is fixed at provisioning.

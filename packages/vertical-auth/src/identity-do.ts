@@ -4,6 +4,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
 import * as schema from './auth-schema.js';
 import type { AuthProvider, AuthSubject } from './provider.js';
+import { resolveCookieDomain } from './cookie-domain.js';
 
 /**
  * The per-tenant IDENTITY Durable Object — one per tenant, running its OWN Better Auth
@@ -216,7 +217,7 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /** A Better Auth instance over THIS DO's SQLite, trusting the caller's origin. */
-  private auth(origin: string) {
+  private auth(origin: string, cookieDomain?: string | null) {
     const db = drizzle(this.ctx.storage, { schema });
     return betterAuth({
       database: drizzleAdapter(db, { provider: 'sqlite', schema }),
@@ -225,6 +226,12 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
       secret: this.authSecret,
       baseURL: origin,
       trustedOrigins: [origin],
+      // Shared login across a scope's surfaces (crm.…, eka.… — one parent domain): the
+      // session cookie rides `Domain=…` instead of host-only. Verified everywhere already
+      // (one per-tenant secret, this DO); the attribute is the only thing that was missing.
+      ...(cookieDomain
+        ? { advanced: { crossSubDomainCookies: { enabled: true, domain: cookieDomain } } }
+        : {}),
     });
   }
 
@@ -232,10 +239,19 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * The DO's HTTP surface (used only when Better Auth is the chosen provider). `/__session`
    * resolves the request to an `AuthSubject`; everything else is a Better Auth request. The
    * worker forwards requests here; Better Auth never runs in the worker.
+   *
+   * `x-substrat-cookie-domain` is the worker relaying the scope's delivered `substrat:auth`
+   * cookie-domain choice (the DO can't look it up itself — this fetch carries no scope id).
+   * The stub is reachable only from the worker, so the header is as trusted as the config;
+   * it is still re-validated against the request host before it touches a Set-Cookie.
    */
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const auth = this.auth(url.origin);
+    const cookieDomain = resolveCookieDomain(
+      request.headers.get('x-substrat-cookie-domain') ?? undefined,
+      url.hostname,
+    );
+    const auth = this.auth(url.origin, cookieDomain);
     if (url.pathname === '/__session') {
       const session = await auth.api.getSession({ headers: request.headers });
       const subject: AuthSubject | null = session?.user
@@ -266,10 +282,23 @@ export type IdentityStub = {
  * The `AuthProvider` backed by a tenant's identity-DO stub (the `better-auth-do` config).
  * `handle` forwards the raw request; `resolve` asks the DO's `/__session` probe, carrying
  * the request's cookies. The worker holds only this — never Better Auth itself.
+ *
+ * `cookieDomain` (the scope's delivered `substrat:auth` choice) rides to the DO as a
+ * header because the worker holds the config and the DO holds Better Auth — see fetch().
  */
-export function doAuthProvider(stub: Pick<IdentityStub, 'fetch'>, origin: string): AuthProvider {
+export function doAuthProvider(
+  stub: Pick<IdentityStub, 'fetch'>,
+  origin: string,
+  opts?: { cookieDomain?: string },
+): AuthProvider {
+  const forward = (request: Request): Request => {
+    if (!opts?.cookieDomain) return request;
+    const relayed = new Request(request);
+    relayed.headers.set('x-substrat-cookie-domain', opts.cookieDomain);
+    return relayed;
+  };
   return {
-    handle: (request) => stub.fetch(request),
+    handle: (request) => stub.fetch(forward(request)),
     async resolve(headers) {
       const res = await stub.fetch(new Request(`${origin}/__session`, { headers }));
       return (await res.json()) as AuthSubject | null;

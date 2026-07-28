@@ -295,6 +295,28 @@ export interface AppEnvView {
   values: AppEnvValue[];
 }
 
+/** One hostname bound to the app's scope (the Domains tab). */
+export interface AppHostnameRow {
+  hostname: string;
+  surface: string;
+  status: string;
+  canonical: boolean;
+  createdAt: string | null;
+}
+
+/** A surface the app's vertical declares it serves — the Domains tab's picker. */
+export interface DeclaredSurface {
+  name: string;
+  label: string;
+}
+
+/** `GET /api/apps/:scope/hostnames` — bindings + declared surfaces + the untouchable default. */
+export interface AppHostnamesView {
+  bindings: AppHostnameRow[];
+  surfaces: DeclaredSurface[];
+  defaultHostname: string | null;
+}
+
 /** The app's stored Identity choice — the clientSecret is write-only, never echoed. */
 export interface AppAuthRecord {
   mode: 'oidc';
@@ -497,6 +519,20 @@ export const api = {
   /** Remove one env var. */
   deleteAppEnv: (scopeId: string, key: string) =>
     call<void>(`/apps/${encodeURIComponent(scopeId)}/env/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  /** The app's hostname bindings + the vertical's declared surfaces (Domains tab). */
+  appHostnames: (scopeId: string) => call<AppHostnamesView>(`/apps/${encodeURIComponent(scopeId)}/hostnames`),
+  /** Bind a hostname to a surface: platform-minted (`domain` omitted, lands active) or a custom domain (lands pending). */
+  addAppHostname: (scopeId: string, input: { surface: string; domain?: string }) =>
+    call<AppHostnameRow>(`/apps/${encodeURIComponent(scopeId)}/hostnames`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** Unbind one hostname (the default hostname is refused). */
+  removeAppHostname: (scopeId: string, hostname: string) =>
+    call<{ deleted: string }>(
+      `/apps/${encodeURIComponent(scopeId)}/hostnames/${encodeURIComponent(hostname)}`,
+      { method: 'DELETE' },
+    ),
   /** The app's Identity choice (secret redacted) + its OIDC callback URL. */
   appAuth: (scopeId: string) => call<AppAuthView>(`/apps/${encodeURIComponent(scopeId)}/auth`),
   /** Update the Identity choice; a blank clientSecret keeps the stored one. */

@@ -202,22 +202,3 @@ it needs.
    the spec document them in the same document with the `cookie` scheme, or does a portal
    audience deserve a filtered document? (Leaning: one document; the permission system
    already answers who can call what.)
-
-## 8. Resolved since (2026-07-27)
-
-- **Same origin, confirmed.** A docs subdomain (prefix or `-docs` suffix) was considered
-  and rejected for the authenticated surface: origins are per-host, `sb_session` is
-  host-only, so any second hostname either breaks try-it (CORS + credentials — the
-  machinery §2.3 rejected) or demands a second sign-in and demonstrates the API against
-  the wrong base URL. The `-docs` **suffix** (one label — the wildcard cert covers it;
-  the router already routes by surface) is banked as the shape of the future *public*
-  docs surface, where no session exists and the argument vanishes; try-it there targets
-  the canonical host with per-tenant API keys.
-- **Route override: manifest field, deferred until wanted.** `/api/docs` +
-  `/openapi.json` stay the default convention. When a vertical needs a different path,
-  the override is an optional additive manifest field (`apiDocs: { specPath?, docsPath? }`
-  — NOT the existing `api` field, which names the checked-in artifact), and it is only
-  buildable as a trio: manifest field + the vertical's route wiring reading it + the
-  registry/dashboard passing it through to the AppDetail link. A convention override the
-  dashboard cannot discover breaks the link exactly when someone uses the feature, so the
-  field ships with the discovery plumbing or not at all.

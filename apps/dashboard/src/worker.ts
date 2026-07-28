@@ -31,7 +31,7 @@ import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
+import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
@@ -1356,6 +1356,98 @@ app.delete('/api/apps/:scopeId/env/:key', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   await dash.invoke('dashboard/delete-app-env', { appScopeId: appRow.app_scope_id, key: c.req.param('key') });
   return c.body(null, 204);
+});
+
+/**
+ * The app's hostname bindings (the Domains tab; K-26 multi-surface). One scope can
+ * front more than one app — the hostname decides which surface the vertical serves
+ * (`readRoutedNode(...).surface`), so giving a surface a URL is exactly a binding.
+ * GET lists the bindings plus the vertical's DECLARED surfaces (registry ladder,
+ * same as the env-spec: pushed verticals declare them in package.json `substrat.surfaces`)
+ * so the UI offers a picker; free text stays valid — the declaration is UX, not contract.
+ */
+app.get('/api/apps/:scopeId/hostnames', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const bindings = await listAppHostnames(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  // Declared surfaces: local registry first, then the shared plane's catalog for a
+  // vertical pushed there — the same lookup ladder the Env tab's spec uses.
+  await ensureCatalog(host, STAFF);
+  const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === appRow.vertical_slug);
+  let surfaces = registered?.surfaces;
+  if (!surfaces) {
+    const cp = controlPlaneFor(c.env, node.tenantId);
+    const remote = cp ? (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug) : undefined;
+    surfaces = remote?.surfaces ?? [];
+  }
+  return c.json({ bindings, surfaces, defaultHostname: appRow.hostname });
+});
+
+/**
+ * Bind a hostname to a surface of this app. A platform hostname (`domain` omitted)
+ * is minted from the app's own label and lands ACTIVE — it rides the wildcard cert.
+ * A custom domain lands PENDING and walks the §4.2 lifecycle. Same authority as
+ * managing the app; recorded on the activity trail (`hostname-bound`).
+ */
+app.post('/api/apps/:scopeId/hostnames', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const body = z
+    .object({ surface: z.string().min(1).max(32), domain: z.string().min(1).max(253).optional() })
+    .parse(await c.req.json());
+  try {
+    const bound = await addAppHostname(host, {
+      node,
+      appScopeId: scopeId.parse(appRow.app_scope_id),
+      surface: body.surface,
+      ...(body.domain ? { customDomain: body.domain } : {}),
+      appHostname: appRow.hostname,
+      controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    });
+    return c.json(bound, 201);
+  } catch (e) {
+    if (e instanceof Error && /permission denied/.test(e.message)) throw e;
+    throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind hostname' });
+  }
+});
+
+/** Unbind one hostname. The app's default hostname is refused (409) — deleting the app retires it. */
+app.delete('/api/apps/:scopeId/hostnames/:hostname', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  try {
+    await removeAppHostname(host, {
+      node,
+      appScopeId: scopeId.parse(appRow.app_scope_id),
+      hostname: c.req.param('hostname'),
+      defaultHostname: appRow.hostname,
+      controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    });
+  } catch (e) {
+    if (e instanceof Error && /permission denied/.test(e.message)) throw e;
+    const message = e instanceof Error ? e.message : 'could not unbind hostname';
+    throw new HTTPException(/not bound/.test(message) ? 404 : 409, { message });
+  }
+  return c.json({ deleted: c.req.param('hostname').toLowerCase() });
 });
 
 /**

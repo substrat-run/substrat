@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type Deployment, type DumpTable, type MigrationBookmark, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type Deployment, type DumpTable, type MigrationBookmark, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
-import { DEV_MOCK, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
@@ -1128,19 +1128,178 @@ function EnvVars({ app }: { app: AppRow }) {
   );
 }
 
-function AppDomains() {
-  const COLS = '2.4fr 1.4fr 1fr 40px';
+/**
+ * Domains (K-26 multi-surface): one scope can front several apps — the hostname
+ * decides which surface the vertical serves, so this tab is where a second surface
+ * (or a custom domain) gets its URL. A platform hostname is minted from the app's
+ * own label and is live immediately (it rides the wildcard cert); a custom domain
+ * lands `pending` and walks the DNS-validation lifecycle. The default hostname can't
+ * be removed here — deleting the app retires it.
+ */
+function AppDomains({ app }: { app: AppRow }) {
+  const [view, setView] = useState<AppHostnamesView | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const [surface, setSurface] = useState('');
+  const [domain, setDomain] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [toRemove, setToRemove] = useState<AppHostnameRow | null>(null);
+
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setView(MOCK_APP_HOSTNAMES);
+      return;
+    }
+    let live = true;
+    setView(null);
+    setErr(null);
+    api
+      .appHostnames(app.app_scope_id)
+      .then((v) => live && setView(v))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id, nonce]);
+
+  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load hostnames — {err}</div>;
+  if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading hostnames…</div>;
+
+  const surfaceLabel = (name: string) => view.surfaces.find((s) => s.name === name)?.label;
+  const statusKind = (s: string) => (s === 'active' ? 'success' : s === 'failed' ? 'danger' : 'info');
+
+  const add = async () => {
+    const chosen = surface.trim();
+    if (!chosen) {
+      setNote('Name the surface the hostname should serve — e.g. app, or a second surface your vertical renders.');
+      return;
+    }
+    setAdding(true);
+    setNote(null);
+    try {
+      const bound = await api.addAppHostname(app.app_scope_id, {
+        surface: chosen,
+        ...(domain.trim() ? { domain: domain.trim() } : {}),
+      });
+      setNote(
+        bound.status === 'active'
+          ? `${bound.hostname} is live.`
+          : `${bound.hostname} recorded — it goes live once DNS validation and the certificate complete.`,
+      );
+      setSurface('');
+      setDomain('');
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!toRemove) return;
+    try {
+      if (!DEV_MOCK) await api.removeAppHostname(app.app_scope_id, toRemove.hostname);
+      setNote(`${toRemove.hostname} unbound.`);
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setToRemove(null);
+    }
+  };
+
+  const COLS = '2.4fr 1fr 1.4fr 1fr 40px';
   return (
-    <div style={{ ...card, overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
-        <span>Hostname</span><span>Status</span><span>Added</span><span />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ ...card, overflow: 'hidden' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+          <span>Hostname</span><span>Surface</span><span>Status</span><span>Added</span><span />
+        </div>
+        {view.bindings.length === 0 && (
+          <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No hostnames bound yet.</div>
+        )}
+        {view.bindings.map((h) => {
+          const isDefault = view.defaultHostname !== null && h.hostname === view.defaultHostname;
+          return (
+            <div key={h.hostname} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 44, padding: '0 16px', fontSize: 13, borderBottom: '1px solid var(--border-subtle)' }}>
+              {h.status === 'active' ? (
+                <a href={`https://${h.hostname}`} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  {h.hostname}<Ic name="external" size={11} />
+                </a>
+              ) : (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-secondary)' }}>{h.hostname}</span>
+              )}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <MonoTag color="var(--text-secondary)">{h.surface}</MonoTag>
+                {surfaceLabel(h.surface) && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{surfaceLabel(h.surface)}</span>}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Pill kind={statusKind(h.status)}>{h.status.charAt(0).toUpperCase() + h.status.slice(1)}</Pill>
+                {h.canonical && <MonoTag color="var(--text-tertiary)">canonical</MonoTag>}
+                {isDefault && <MonoTag color="var(--text-tertiary)">default</MonoTag>}
+              </span>
+              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.createdAt ? shortDate(h.createdAt) : '—'}</span>
+              {isDefault ? <span /> : (
+                <button type="button" aria-label={`Remove ${h.hostname}`} onClick={() => setToRemove(h)} style={iconBtn}>
+                  <Ic name="trash" size={14} />
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 40, padding: '0 16px', fontSize: 13 }}>
-        <a href="#" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}>hr.acme.com<Ic name="external" size={11} /></a>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Pill kind="success">Active</Pill><MonoTag color="var(--text-tertiary)">primary</MonoTag></span>
-        <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>Jul 21, 2026</span>
-        <RowActions />
+
+      <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <Eyebrow>Add hostname</Eyebrow>
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          Pick the surface the hostname should serve. Leave the domain blank to mint a platform
+          hostname (live immediately — <span style={{ fontFamily: 'var(--font-mono)' }}>{view.defaultHostname ? `${view.defaultHostname.split('.')[0]}-<surface>.${view.defaultHostname.split('.').slice(1).join('.')}` : '<app>-<surface>.global.substrat.run'}</span>),
+          or enter your own domain to start DNS validation.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+          {view.surfaces.length > 0 ? (
+            <Select
+              label="Surface"
+              value={surface}
+              onChange={(e) => setSurface(e.target.value)}
+              options={[
+                { value: '', label: 'Choose a surface…' },
+                ...view.surfaces.map((s) => ({ value: s.name, label: `${s.label} (${s.name})` })),
+              ]}
+              style={{ width: 260 }}
+            />
+          ) : (
+            <Input label="Surface" placeholder="e.g. eka" mono value={surface} onChange={(e) => setSurface(e.target.value)} style={{ width: 200 }} />
+          )}
+          <Input label="Custom domain (optional)" placeholder="eka.example.com" mono value={domain} onChange={(e) => setDomain(e.target.value)} style={{ width: 260 }} />
+          <Button onClick={add} disabled={adding}>{adding ? 'Binding…' : 'Add hostname'}</Button>
+        </div>
+        {note && <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</span>}
       </div>
+
+      <Dialog
+        open={toRemove !== null}
+        title={`Remove ${toRemove?.hostname ?? ''}?`}
+        danger
+        confirmLabel="Remove hostname"
+        onCancel={() => setToRemove(null)}
+        onConfirm={remove}
+      >
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          Requests to <span style={{ fontFamily: 'var(--font-mono)' }}>{toRemove?.hostname}</span> stop
+          resolving the moment you confirm.
+          {toRemove?.canonical && (
+            <>
+              {' '}This is the <span style={{ fontFamily: 'var(--font-mono)' }}>canonical</span> hostname for
+              surface <span style={{ fontFamily: 'var(--font-mono)' }}>{toRemove.surface}</span> — removing it
+              leaves that surface without a canonical name until you bind another (binding a new canonical
+              demotes any existing one automatically).
+            </>
+          )}
+        </div>
+      </Dialog>
     </div>
   );
 }
@@ -1163,7 +1322,7 @@ function Settings({ app, section, onSection, onDeleted, authServers }: { app: Ap
       <Tabs tabs={SETTINGS_SECTIONS} value={section} onChange={onSection} />
       {section === 'general' && <GeneralSettings app={app} onDeleted={onDeleted} authServers={authServers} />}
       {section === 'environment' && <EnvVars app={app} />}
-      {section === 'domains' && <AppDomains />}
+      {section === 'domains' && <AppDomains app={app} />}
       {section === 'integrations' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 16 }}>
           {INTEGRATIONS.slice(0, 2).map((i) => <IntegrationCard key={i.name} integ={i} />)}

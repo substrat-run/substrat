@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { permissionKey } from './ids.js';
 import { envVarSpec, capability } from './manifest.js';
+import { declaredSurface } from './routing.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
 // module files (self-serve-deploy.md). It lives here — not in the transport
@@ -81,6 +82,9 @@ export const deployManifest = z.object({
   entitlements: z.array(z.string()).optional(),
   provides: z.array(capability).optional(),
   requires: z.array(capability).optional(),
+  /** The surfaces the vertical serves (package.json `substrat.surfaces`, K-26 multi-surface) —
+   *  labels only, carried to the registry for the hostname-binding picker. Metadata, not code. */
+  surfaces: z.array(declaredSurface).optional(),
   /** Computed by the builder's toolchain; what the promotion checkpoint compares. */
   digests: z.object({
     manifest: z.string().min(1),

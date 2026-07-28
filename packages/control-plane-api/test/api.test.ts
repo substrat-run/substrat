@@ -1197,6 +1197,116 @@ describe('control-plane API — deploy', () => {
     expect(registered?.envSpec?.find((s) => s.key === 'API_TOKEN')?.secret).toBe(true);
   });
 
+  it('carries declared surfaces to the registry, and warns when a bound surface is dropped', async () => {
+    // First push declares both surfaces — the registry carries them (K-26; the
+    // dashboard's hostname-binding picker), like envSpec: metadata, never behavior.
+    const surfaces = [
+      { name: 'app', label: 'Egeryds CRM' },
+      { name: 'eka', label: 'EKA — ekonomernas avstämning' },
+    ];
+    const first = await push('surfy', form(manifest({ surfaces })));
+    expect(first.status).toBe(201);
+    expect((await first.json()).warnings).toBeUndefined();
+    const registered = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'surfy');
+    expect(registered?.surfaces).toEqual(surfaces);
+
+    // A hostname is bound to surface 'eka' of a scope running the vertical...
+    const t = tenantId.parse(ulid());
+    const sc = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'surfy-co', name: 'Surfy' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: sc, vertical: 'surfy', jurisdiction: 'global' });
+    await host.admin.activateScope(staff, t, sc);
+    await host.admin.bindHostname(staff, {
+      hostname: 'crm-eka.global.substrat.run', tenantId: t, scopeId: sc, surface: 'eka', region: null, canonical: true,
+    });
+
+    // ...so a version that stops declaring 'eka' pushes fine but NAMES the drift —
+    // the URL keeps resolving (routing never keys on the declaration); the warning is
+    // the same spirit as the permission-surface gate, advisory tier.
+    const second = await push('surfy', form(manifest({ version: '0.1.1', surfaces: [surfaces[0]] })));
+    expect(second.status).toBe(201);
+    const body = await second.json();
+    expect(body.warnings).toHaveLength(1);
+    expect(body.warnings[0]).toContain('crm-eka.global.substrat.run');
+    expect(body.warnings[0]).toContain(`surface 'eka'`);
+
+    // A push declaring NOTHING opts out of the check — no warning, not a false one.
+    const third = await push('surfy', form(manifest({ version: '0.1.2' })));
+    expect((await third.json()).warnings).toBeUndefined();
+
+    // A malformed declaration is refused at the Zod boundary, like any manifest field.
+    expect((await push('surfy', form(manifest({ version: '0.1.3', surfaces: [{ name: '' }] })))).status).toBe(400);
+  });
+
+  /**
+   * The workspace pin (package.json `substrat.tenant`) travels with the push and is
+   * HONORED for staff: the claim lands prefixed and owned exactly as the equivalent
+   * builder push — not platform-owned with the pin silently dropped. This is the
+   * dual-hat footgun: staff auth is a superset tried first, so an account on the
+   * staff roster can never push as a builder, and before this its pinned pushes
+   * claimed slugs the pinned workspace could neither see nor self-serve.
+   */
+  describe('the pinned workspace on a staff push', () => {
+    const sesamy = tenantId.parse(ulid());
+    beforeAll(async () => {
+      await host.admin.createTenant(staff, { id: sesamy, slug: 'sesamy', name: 'Sesamy' });
+    });
+    const pinned = (slug: string, pin: string, over: Record<string, unknown> = {}) => {
+      const fd = form(manifest(over));
+      fd.set('tenant', pin);
+      return push(slug, fd);
+    };
+
+    it('claims the slug for the pinned tenant — prefixed, owned, self-admitting', async () => {
+      const res = await pinned('crm', 'sesamy');
+      expect(res.status).toBe(201);
+      // Prefixed like a builder push, and ADMITTED: owned + unlisted is a PRIVATE
+      // vertical, so the version self-admits instead of waiting for a staff vouch.
+      expect(await res.json()).toMatchObject({ verticalSlug: 'sesamy/crm', admission: 'admitted' });
+      const row = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'sesamy/crm');
+      expect(row?.ownerTenant).toBe(sesamy);
+    });
+
+    it('accepts the tenant ID as the pin, and a re-push is idempotent', async () => {
+      const res = await pinned('crm', sesamy, { version: '0.1.1' });
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ verticalSlug: 'sesamy/crm', admission: 'admitted' });
+    });
+
+    it('keeps a legacy BARE row owned by the pin addressable as itself', async () => {
+      // A hand-registered bare slug owned by the tenant (predates prefixed claims):
+      // the pinned push lands on it rather than forking a prefixed twin.
+      await app.request('/verticals', {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'legacy', name: 'legacy', source: 'cli', ownerTenant: sesamy }),
+      });
+      const res = await pinned('legacy', 'sesamy');
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ verticalSlug: 'legacy', admission: 'admitted' });
+    });
+
+    it('404s an unknown workspace pin instead of guessing an owner', async () => {
+      expect((await pinned('crm', 'nope')).status).toBe(404);
+    });
+
+    it("does not collide with a platform-owned bare name — the pin's claim is prefixed", async () => {
+      // 'fsm' was claimed platform-owned by the unpinned test above; the pinned push
+      // of the same bare name lands under the tenant prefix — no 403, no clobber.
+      const res = await pinned('fsm', 'sesamy');
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ verticalSlug: 'sesamy/fsm' });
+      const bare = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'fsm');
+      expect(bare?.ownerTenant).toBeNull();
+    });
+
+    it('an unpinned staff push keeps the platform-owned behavior, pending admission', async () => {
+      const res = await push('plain', form(manifest()));
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ verticalSlug: 'plain', admission: 'pending' });
+    });
+  });
+
   it('surfaces an upload failure as a 502 with detail, not a blank 500', async () => {
     const boom = createControlPlaneApi({
       host,
@@ -1344,10 +1454,12 @@ describe('control-plane API — builder authz', () => {
 
   it('confines a builder to the vertical-management surface (default-deny)', async () => {
     // None of these are on the builder allowlist — a builder gets 403, not the data.
+    // (`/hostnames` moved ONTO the allowlist, tenant-narrowed — its confinement is
+    // covered by the hostname-map describe below.)
     expect((await acmeReq('/tenants')).status).toBe(403);
     expect((await acmeReq('/scopes')).status).toBe(403);
     expect((await acmeReq('/admin-log')).status).toBe(403);
-    expect((await acmeReq('/hostnames')).status).toBe(403);
+    expect((await acmeReq('/roles')).status).toBe(403);
     // Provisioning an instance is a scope action, not vertical management → 403.
     expect(
       (await acmeReq('/verticals/helpdesk/instances', 'POST', {
@@ -1485,6 +1597,39 @@ describe('control-plane API — builder authz', () => {
     ]);
   });
 
+  it('honors or refuses a builder push’s workspace pin — never silently redirects it', async () => {
+    const fd = (pin?: string, version = '0.1.0') => {
+      const f = new FormData();
+      f.set('manifest', JSON.stringify({
+        version, entry: 'worker.js', compatibilityDate: '2025-01-01',
+        doClasses: ['ScopeDO'],
+        bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
+        digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+      }));
+      f.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
+      if (pin) f.set('tenant', pin);
+      return f;
+    };
+    // Pinned to a DIFFERENT workspace: refused with the mismatch named — the builder's
+    // workspace is fixed by auth, and intent is never silently reinterpreted.
+    const wrong = await app.request('/verticals/pinned/deploy', { method: 'POST', headers: { [BUILDER_HEADER]: acme }, body: fd(otherSlug) });
+    expect(wrong.status).toBe(403);
+    expect((await wrong.json()).error).toMatch(/pinned to workspace/);
+    // Pinned to its OWN workspace (slug or id): unchanged claim under its prefix.
+    const right = await app.request('/verticals/pinned/deploy', { method: 'POST', headers: { [BUILDER_HEADER]: acme }, body: fd(acmeSlug) });
+    expect(right.status).toBe(201);
+    expect(await right.json()).toMatchObject({ verticalSlug: `${acmeSlug}/pinned` });
+    const byId = await app.request('/verticals/pinned/deploy', { method: 'POST', headers: { [BUILDER_HEADER]: acme }, body: fd(acme, '0.1.1') });
+    expect(byId.status).toBe(201);
+  });
+
+  it('lets a builder address its own vertical by FULL id too — effectiveSlug is idempotent', async () => {
+    // The deploy response returns the full registry id (`verticalSlug`); follow-up
+    // calls (the CLI's same-run --promote) send it back. That must not double-prefix.
+    const versions = await (await acmeReq(`/verticals/${encodeURIComponent(`${acmeSlug}/helpdesk`)}/versions`)).json();
+    expect(versions.map((v: { id: string }) => v.id)).toEqual([v1]);
+  });
+
   it("a PRIVATE vertical is the owner's end to end: push lands admitted, prod self-serves, history reads back", async () => {
     // `reports` was pushed through the deploy path above and never listed, so its
     // version self-admitted (builder-plane.md §4-revised) — no staff step anywhere.
@@ -1502,6 +1647,85 @@ describe('control-plane API — builder authz', () => {
     // own 404s indistinguishably from an absent one.
     expect(await (await otherReq('/verticals/reports/channels/prod/history')).json()).toEqual([]);
     expect((await otherReq('/verticals/nonexistent/channels/prod/history')).status).toBe(404);
+  });
+
+  /**
+   * The hostname map, tenant-narrowed (K-26 multi-surface exposure): a builder binds
+   * a URL to a surface of ITS OWN scopes — the self-serve the dashboard already
+   * performs for it over the service token, now first-class for the CLI. The
+   * narrowing is the whole test: a foreign tenant's rows must be invisible (list),
+   * unnameable (bind), and indistinguishable from absent (status/unbind → 404).
+   */
+  describe('the hostname map, tenant-narrowed', () => {
+    const acmeScope = scopeId.parse(ulid());
+    const otherScope = scopeId.parse(ulid());
+
+    beforeAll(async () => {
+      // Directory rows for both builder tenants and one scope each, staff-provisioned
+      // (provisioning stays outside the builder allowlist — only bindings are self-serve).
+      for (const [t, slug, scope] of [
+        [acme, acmeSlug, acmeScope],
+        [other, otherSlug, otherScope],
+      ] as const) {
+        await staffReq('/tenants', 'POST', { id: t, slug, name: slug });
+        await staffReq('/scopes', 'POST', {
+          tenantId: t, scopeId: scope, slug: `${slug}-crm`, name: 'CRM', vertical: 'helpdesk', jurisdiction: 'global',
+        });
+      }
+      await staffReq('/hostnames', 'POST', {
+        hostname: `other-crm.global.substrat.run`, tenantId: other, scopeId: otherScope, surface: 'app', canonical: true,
+      });
+    });
+
+    it('lets a builder bind a surface hostname on its own scope — and only its own tenant', async () => {
+      const res = await acmeReq('/hostnames', 'POST', {
+        hostname: 'acme-crm-eka.global.substrat.run', tenantId: acme, scopeId: acmeScope, surface: 'eka', canonical: true,
+      });
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ surface: 'eka', status: 'pending', canonical: true });
+      // ...and may activate it (a platform hostname rides the wildcard cert).
+      expect(
+        (await acmeReq('/hostnames/acme-crm-eka.global.substrat.run/status', 'PATCH', { status: 'active' })).status,
+      ).toBe(200);
+      // Naming another tenant in the body is refused outright.
+      expect(
+        (await acmeReq('/hostnames', 'POST', {
+          hostname: 'squat.global.substrat.run', tenantId: other, scopeId: otherScope, surface: 'app',
+        })).status,
+      ).toBe(403);
+      // The region column is an EU-residency claim (K-30) — never builder-suppliable.
+      expect(
+        (await acmeReq('/hostnames', 'POST', {
+          hostname: 'eu-claim.example.com', tenantId: acme, scopeId: acmeScope, surface: 'app', region: 'eu',
+        })).status,
+      ).toBe(403);
+    });
+
+    it('narrows a builder’s list to its own tenant — a foreign tenantId in the query loses silently', async () => {
+      const mine = await (await acmeReq('/hostnames')).json();
+      expect(mine.map((h: { hostname: string }) => h.hostname)).toEqual(['acme-crm-eka.global.substrat.run']);
+      const widened = await (await acmeReq(`/hostnames?tenantId=${other}`)).json();
+      expect(widened.map((h: { hostname: string }) => h.hostname)).toEqual(['acme-crm-eka.global.substrat.run']);
+      // Staff still see the whole map.
+      const all = await (await staffReq('/hostnames')).json();
+      expect(all.map((h: { hostname: string }) => h.hostname).sort()).toEqual([
+        'acme-crm-eka.global.substrat.run', 'other-crm.global.substrat.run',
+      ]);
+    });
+
+    it('404s a builder acting on a foreign hostname — indistinguishable from absent', async () => {
+      expect(
+        (await acmeReq('/hostnames/other-crm.global.substrat.run/status', 'PATCH', { status: 'failed' })).status,
+      ).toBe(404);
+      expect((await acmeReq('/hostnames/other-crm.global.substrat.run', 'DELETE')).status).toBe(404);
+      // The foreign row survived untouched.
+      const rows = await (await staffReq(`/hostnames?scopeId=${otherScope}`)).json();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ hostname: 'other-crm.global.substrat.run', status: 'pending' });
+      // Its own binding it may unbind.
+      expect((await acmeReq('/hostnames/acme-crm-eka.global.substrat.run', 'DELETE')).status).toBe(200);
+      expect(await (await acmeReq('/hostnames')).json()).toEqual([]);
+    });
   });
 });
 

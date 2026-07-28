@@ -12,6 +12,7 @@ import {
 } from '@substrat-run/oidc-rp';
 import type { AuthProvider, AuthSubject } from './provider.js';
 import { oidcAuthProvider } from './oidc.js';
+import { resolveCookieDomain } from './cookie-domain.js';
 
 /**
  * Standard OIDC as a full RELYING PARTY `AuthProvider` — the browser-login counterpart
@@ -36,6 +37,13 @@ export interface OidcRpConfig {
   sessionSecret: string;
   /** Expected `aud` for PRESENTED bearer tokens (the API-client path), if the issuer sets one. */
   audience?: string;
+  /**
+   * Share the login across every surface under this parent domain (`egeryds.se` covers
+   * `crm.` and `eka.` alike) — the session cookie is set with `Domain=…` instead of
+   * host-only. Delivered per scope (`substrat:auth`), validated against the request host
+   * where the cookie is set (cookie-domain.ts); invalid ⇒ host-only, never broken sign-in.
+   */
+  cookieDomain?: string;
 }
 
 const envOf = (cfg: OidcRpConfig): OidcEnv => ({
@@ -46,7 +54,7 @@ const envOf = (cfg: OidcRpConfig): OidcEnv => ({
 });
 
 /** Serialize one Set-Cookie value — HttpOnly, Lax, path=/ (the oidc-rp mount's flags). */
-function cookie(name: string, value: string, origin: string, maxAge: number): string {
+function cookie(name: string, value: string, origin: string, maxAge: number, domain?: string | null): string {
   const parts = [
     `${name}=${encodeURIComponent(value)}`,
     'Path=/',
@@ -54,8 +62,21 @@ function cookie(name: string, value: string, origin: string, maxAge: number): st
     'HttpOnly',
     'SameSite=Lax',
   ];
+  if (domain) parts.push(`Domain=${domain}`);
   if (origin.startsWith('https:')) parts.push('Secure');
   return parts.join('; ');
+}
+
+/**
+ * Set the session cookie, host-only or domain-wide. A domain cookie and a host-only
+ * cookie with the same name are DISTINCT cookies to the browser, and a stale host-only
+ * one (from before `cookieDomain` was configured) would shadow the shared session on
+ * this hostname — so setting the domain variant also clears the host-only one, and
+ * clearing (logout) always clears both.
+ */
+function sessionCookies(value: string, origin: string, maxAge: number, domain: string | null): string[] {
+  if (!domain) return [cookie(SESSION_COOKIE, value, origin, maxAge)];
+  return [cookie(SESSION_COOKIE, value, origin, maxAge, domain), cookie(SESSION_COOKIE, '', origin, 0)];
 }
 
 function redirectWith(location: string, cookies: string[]): Response {
@@ -83,6 +104,10 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
   async function handle(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const origin = url.origin;
+    // The flow cookie stays HOST-ONLY even with a cookieDomain: the code flow begins and
+    // completes on one hostname (redirect_uri is this origin's callback), and a domain-wide
+    // flow cookie would only let two surfaces' concurrent logins clobber each other.
+    const domain = resolveCookieDomain(cfg.cookieDomain, url.hostname);
 
     if (url.pathname === '/api/auth/login') {
       const screen = url.searchParams.get('screen_hint');
@@ -101,7 +126,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
         const { session, returnTo } = await completeLogin(env, origin, url, flow);
         return redirectWith(safePath(returnTo) ?? '/', [
           clearFlow,
-          cookie(SESSION_COOKIE, session, origin, SESSION_MAXAGE),
+          ...sessionCookies(session, origin, SESSION_MAXAGE, domain),
         ]);
       } catch (err) {
         // Loud in the logs, opaque to the browser — same stance as the oidc-rp mount.
@@ -112,7 +137,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
 
     if (url.pathname === '/api/auth/logout') {
       return redirectWith(safePath(url.searchParams.get('returnTo')) ?? '/', [
-        cookie(SESSION_COOKIE, '', origin, 0),
+        ...sessionCookies('', origin, 0, domain),
       ]);
     }
 

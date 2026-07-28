@@ -26,6 +26,7 @@ import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
 import { pullScope, restoreScope, resolveTenantId } from './scope.js';
+import { listVerticalHostnames, bindSurfaceHostname, unbindHostname, formatHostnames } from './hostnames.js';
 
 const argv = process.argv.slice(2);
 
@@ -73,6 +74,14 @@ Usage:
                                               load a backup into an existing hosted scope,
                                               REPLACING its data (a pull's .sqlite, a local
                                               adapter-sqlite scope file, or a .dump.json)
+  substrat hostnames <slug>                   list an install's hostname bindings
+  substrat hostnames bind <slug> --surface <s> [--domain <d>] [--scope <id>]
+                                              give a surface a URL: no --domain mints a
+                                              platform hostname (live immediately);
+                                              --domain records a custom domain (pending
+                                              until DNS validation completes)
+  substrat hostnames unbind <hostname>        remove a binding (the surface's canonical
+                                              flag moves only when you bind a new one)
 
 'substrat push' defaults everything from the vertical's package.json — run it from inside the
 directory with no flags. Override any of: --slug, --name, --version. The slug/name come from a
@@ -216,26 +225,36 @@ async function cmdPush(): Promise<void> {
   }
   const { controlPlaneUrl, header, as } = auth;
   console.log(`authenticating with ${as}`);
-  // Version defaults to the registry's latest, patch-bumped — no hand-tracking. --version wins.
-  const version = flag('version') ?? (await nextVersion(controlPlaneUrl, header, slug, meta.versionSeed));
+  // Version defaults to the registry's latest, patch-bumped — no hand-tracking. --version
+  // wins. A pinned push may land on `<tenant>/<slug>` or a legacy bare row the pin owns,
+  // so both lineages feed the bump (nextVersion takes the max across them).
+  const versionSlugs = tenant ? [`${tenant}/${slug}`, slug] : [slug];
+  const version = flag('version') ?? (await nextVersion(controlPlaneUrl, header, versionSlugs, meta.versionSeed));
   console.log(`pushing ${tenant ? `${tenant}/` : ''}${slug}@${version}${name && name !== slug ? ` (${name})` : ''} …`);
   const v = await push({
-    dir, slug, version, name,
+    dir, slug, version, name, tenant,
     envSpec: meta.envSpec,
     ownerGrants: meta.ownerGrants,
     entitlements: meta.entitlements,
     provides: meta.provides,
     requires: meta.requires,
+    surfaces: meta.surfaces,
     controlPlaneUrl, authHeader: header,
   });
-  console.log(`✓ pushed. version ${v.id} (${version}) is ${v.admission}; deploymentRef=${v.deploymentRef}`);
+  console.log(`✓ pushed ${v.verticalSlug ?? slug}. version ${v.id} (${version}) is ${v.admission}; deploymentRef=${v.deploymentRef}`);
+  // Advisory, same spirit as the permission-surface gate: a bound surface the new
+  // version stopped declaring keeps serving, but probably not what its users expect.
+  for (const w of v.warnings ?? []) console.warn(`⚠ ${w}`);
   // `--promote <channel>` completes the deploy in the same run — the merge-to-main
   // workflow's shape. A private vertical's push is already admitted, so this succeeds
   // immediately; a listed vertical's lands pending and the refusal below names why.
+  // Addressed by the REGISTRY id the deploy actually landed on (`verticalSlug`), not the
+  // bare name — for staff the two differ, and effectiveSlug keeps the full id valid for
+  // builders too.
   const promoteTo = flag('promote');
   if (promoteTo) {
-    const ch = await promote({ controlPlaneUrl, header, slug, channel: promoteTo, versionId: v.id });
-    console.log(`✓ ${slug} → ${ch.channel} now points at ${version}`);
+    const ch = await promote({ controlPlaneUrl, header, slug: v.verticalSlug ?? slug, channel: promoteTo, versionId: v.id });
+    console.log(`✓ ${v.verticalSlug ?? slug} → ${ch.channel} now points at ${version}`);
   } else if (v.admission === 'admitted') {
     console.log('  promote it to a channel to go live (or push with --promote prod).');
   } else {
@@ -334,6 +353,69 @@ async function cmdScope(): Promise<void> {
   });
 }
 
+/**
+ * Surface hostname bindings (K-26 multi-surface — the CLI half of the dashboard's
+ * Domains tab). Tenant-narrowed server-side: a builder session or push token reaches
+ * only its own workspace's rows; staff pass --tenant to act for one.
+ */
+async function cmdHostnames(): Promise<void> {
+  const sub = argv[1];
+  const usage =
+    'usage: substrat hostnames <slug> [--tenant <id-or-slug>]\n' +
+    '       substrat hostnames bind <slug> --surface <s> [--domain <d>] [--scope <id>] [--tenant <t>]\n' +
+    '       substrat hostnames unbind <hostname> [--tenant <t>]';
+  const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+
+  if (sub === 'unbind') {
+    const hostname = argv[2];
+    if (!hostname || hostname.startsWith('--')) {
+      console.error(usage);
+      process.exit(1);
+    }
+    console.log(`authenticating with ${as}`);
+    await unbindHostname(controlPlaneUrl, header, hostname);
+    console.log(`✓ ${hostname.toLowerCase()} unbound — requests to it stop resolving`);
+    return;
+  }
+
+  const slug = sub === 'bind' ? argv[2] : sub;
+  if (!slug || slug.startsWith('--')) {
+    console.error(usage);
+    process.exit(1);
+  }
+  console.log(`authenticating with ${as}`);
+  const tenantId = await resolveTenantId(
+    controlPlaneUrl,
+    header,
+    flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant,
+  );
+
+  if (sub === 'bind') {
+    const surface = flag('surface');
+    if (!surface) {
+      console.error(usage);
+      process.exit(1);
+    }
+    const domain = flag('domain');
+    const bound = await bindSurfaceHostname({
+      controlPlaneUrl, header, tenantId, slug, surface,
+      ...(domain ? { domain } : {}),
+      ...(flag('scope') ? { scope: flag('scope')! } : {}),
+    });
+    if (bound.status === 'active') {
+      console.log(`✓ https://${bound.hostname} serves surface '${surface}'`);
+    } else {
+      console.log(`✓ ${bound.hostname} recorded (${bound.status}) for surface '${surface}'`);
+      console.log('  it goes live once DNS validation and certificate issuance complete');
+    }
+    return;
+  }
+
+  const rows = await listVerticalHostnames(controlPlaneUrl, header, tenantId, slug);
+  console.log(formatHostnames(rows));
+  if (rows.some((r) => r.canonical)) console.log('\n* = canonical for its (scope, surface)');
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -366,6 +448,8 @@ async function main(): Promise<void> {
       return cmdWhoami();
     case 'scope':
       return cmdScope();
+    case 'hostnames':
+      return cmdHostnames();
     case 'help':
     case '--help':
     case '-h':

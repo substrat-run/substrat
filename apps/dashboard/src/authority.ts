@@ -51,6 +51,17 @@ export class ControlPlaneError extends Error {
   }
 }
 
+/** One hostname binding as the CP returns it (a subset of contracts' HostnameBinding). */
+export interface HostnameBindingRow {
+  hostname: string;
+  scopeId: string;
+  surface: string;
+  status: string;
+  statusNote?: string | null;
+  canonical: boolean;
+  createdAt: string;
+}
+
 /** A fork's directory row, as the Snapshots tab needs it (a subset of the CP's Scope). */
 export interface SnapshotRecord {
   id: string;
@@ -200,11 +211,11 @@ export class TenantNarrowedControlPlane {
    * same posture as `listVerticals` above, plus the public (`listed`) tier.
    */
   async listCatalog(): Promise<
-    Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[] }>
+    Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }> }>
   > {
     const all =
       (await this.call<
-        Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[] }>
+        Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }> }>
       >('/verticals')) ?? [];
     return all
       .filter((v) => v.listed || v.ownerTenant === this.tenantId)
@@ -219,6 +230,8 @@ export class TenantNarrowedControlPlane {
         // The declared env-spec rides the registry too (manifest → push → here), so
         // the Env tab renders a form for a pushed vertical without loading its code.
         envSpec: v.envSpec,
+        // Declared surfaces ride the same way — the Domains tab's picker.
+        surfaces: v.surfaces,
       }));
   }
 
@@ -479,10 +492,27 @@ export class TenantNarrowedControlPlane {
     });
   }
 
-  /** The hostnames bound to one scope (tenant-pinned) — the copy's preview URL. */
-  listHostnames(scopeId: ScopeId): Promise<Array<{ hostname: string; status: string }>> {
+  /** The hostnames bound to one scope (tenant-pinned) — the Domains list and
+   *  the copy's preview URL. Full binding rows: the surface/canonical/status columns
+   *  are exactly what the settings section renders. */
+  listHostnames(scopeId: ScopeId): Promise<HostnameBindingRow[]> {
     const q = new URLSearchParams({ tenantId: this.tenantId, scopeId });
-    return this.call<Array<{ hostname: string; status: string }>>(`/hostnames?${q}`);
+    return this.call<HostnameBindingRow[]>(`/hostnames?${q}`);
+  }
+
+  /**
+   * Unbind one hostname FROM ONE OF THIS TENANT'S SCOPES. The CP's DELETE is
+   * staff-wide over the service token, so the narrowing is here, like everything
+   * else in this class: the hostname must appear in the pinned tenant's own scope's
+   * bindings before the delete is sent — a foreign hostname reads as not bound,
+   * never as deletable.
+   */
+  async unbindHostname(scopeId: ScopeId, hostname: string): Promise<void> {
+    const own = await this.listHostnames(scopeId);
+    if (!own.some((h) => h.hostname === hostname.toLowerCase())) {
+      throw new ControlPlaneError(404, `hostname '${hostname}' is not bound to this app`);
+    }
+    return this.call(`/hostnames/${encodeURIComponent(hostname)}`, { method: 'DELETE' });
   }
 
   /**

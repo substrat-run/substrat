@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { instant, permissionKey, tenantId, verticalSlug } from './ids.js';
 import { envVarSpec, capability } from './manifest.js';
+import { declaredSurface } from './routing.js';
 
 /**
  * The vertical + version registry (#31 step 1; D-33's milestone one).
@@ -48,6 +49,14 @@ export const vertical = z.object({
   ownerGrants: z.array(permissionKey).optional(),
   provides: z.array(capability).optional(),
   requires: z.array(capability).optional(),
+  /**
+   * The surfaces the vertical declares it serves (K-26 multi-surface; labels only —
+   * nothing platform-side branches on them). Rides the same install_spec bag as the
+   * fields above: a hostname-binding picker for the dashboard, and a push-time warning
+   * when a bound surface vanishes from a new version's declaration. Optional and
+   * additive (D-28); free-text surfaces stay valid for a vertical that declares none.
+   */
+  surfaces: z.array(declaredSurface).optional(),
   /**
    * Published to the PUBLIC marketplace (marketplace-publish.md §2/§5). `false` = private to
    * its `ownerTenant`. First-party verticals are seeded `true`; a builder vertical flips it via
@@ -107,7 +116,7 @@ export const verticalServingState = z.object({
 export type VerticalServingState = z.infer<typeof verticalServingState>;
 
 export const registerVerticalInput = vertical
-  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, listed: true })
+  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, surfaces: true, listed: true })
   .extend({
   // Optional on input — a staff/platform push omits it (⇒ platform-owned).
   ownerTenant: tenantId.nullable().default(null),

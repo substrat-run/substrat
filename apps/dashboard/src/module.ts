@@ -257,6 +257,29 @@ export const dashboardMigrations = [
       CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
     `,
   },
+  {
+    version: '0009-app-hostname-events',
+    sql: `
+      -- Widen the event kinds for the Domains tab (K-26 multi-surface exposure):
+      -- 'hostname-bound' (a surface got a URL — platform-minted or a custom domain)
+      -- and 'hostname-unbound' (a binding was removed; the detail names it). Same
+      -- rebuild-and-copy shape as 0005/0007/0008 — SQLite can't ALTER a CHECK, and
+      -- the shipped migrations stay untouched (append-only).
+      CREATE TABLE dashboard_app_events_new (
+        id           TEXT PRIMARY KEY,
+        app_scope_id TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('created','active','failed','deleted','updated','snapshotted','snapshot-deleted','data-exported','data-restored','hostname-bound','hostname-unbound')),
+        detail       TEXT,
+        actor        TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      INSERT INTO dashboard_app_events_new (id, app_scope_id, kind, detail, actor, created_at)
+        SELECT id, app_scope_id, kind, detail, actor, created_at FROM dashboard_app_events;
+      DROP TABLE dashboard_app_events;
+      ALTER TABLE dashboard_app_events_new RENAME TO dashboard_app_events;
+      CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
+    `,
+  },
 ];
 
 export interface DashboardAppRow {
@@ -297,7 +320,7 @@ export interface AppEnvValue {
 export interface DashboardAppEventRow {
   id: string;
   app_scope_id: string;
-  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored';
+  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored' | 'hostname-bound' | 'hostname-unbound';
   detail: string | null;
   actor: string;
   created_at: string;
@@ -440,6 +463,26 @@ const restoreAppDataOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok:
   assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
   const input = snapshotAppInput.parse(raw);
   recordAppEvent(ctx, input.appScopeId, 'data-restored', input.detail ?? null);
+  return { ok: true };
+};
+
+/**
+ * Authorize + record a hostname binding on one of this team's apps (K-26 multi-
+ * surface). Same check-then-effect split as a snapshot: this asserts and writes the
+ * trail entry; the platform effect (the directory bind, tenant-narrowed) follows.
+ */
+const bindAppHostnameOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'hostname-bound', input.detail ?? null);
+  return { ok: true };
+};
+
+/** The inverse record: a hostname was unbound from this app (the detail names it). */
+const unbindAppHostnameOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'hostname-unbound', input.detail ?? null);
   return { ok: true };
 };
 
@@ -958,6 +1001,8 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/delete-app-snapshot': deleteAppSnapshotOp as OperationHandler<never, unknown>,
     'dashboard/export-app-data': exportAppDataOp as OperationHandler<never, unknown>,
     'dashboard/restore-app-data': restoreAppDataOp as OperationHandler<never, unknown>,
+    'dashboard/bind-app-hostname': bindAppHostnameOp as OperationHandler<never, unknown>,
+    'dashboard/unbind-app-hostname': unbindAppHostnameOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-failed': markAppFailedOp as OperationHandler<never, unknown>,
     'dashboard/app-events': appEventsOp as OperationHandler<never, unknown>,
     'dashboard/list-apps': listAppsOp as OperationHandler<never, unknown>,

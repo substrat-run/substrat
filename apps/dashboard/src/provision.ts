@@ -828,3 +828,180 @@ async function bindDefaultHostname(
   }
   return null;
 }
+
+// -- surface hostnames (the Domains tab; K-26 multi-surface) -----------------
+// A scope can front more than one app — the CRM and its absorbed economy-admin
+// surface share one scope, one worker, one bundle; the hostname decides which
+// chrome you get (`readRoutedNode(...).surface`). The vertical's side already
+// works; these helpers are the operator-facing half: give a surface a URL.
+
+/** One binding as the Domains tab renders it. */
+export interface AppHostnameRow {
+  hostname: string;
+  surface: string;
+  status: string;
+  canonical: boolean;
+  createdAt: string | null;
+}
+
+/** The bindings on one app's scope — default hostname, surface hostnames, custom domains. */
+export async function listAppHostnames(
+  host: ScopeHost,
+  input: { node: DashboardNode; appScopeId: ScopeId; controlPlane?: TenantNarrowedControlPlane },
+): Promise<AppHostnameRow[]> {
+  let rows: AppHostnameRow[];
+  if (input.controlPlane) {
+    rows = (await input.controlPlane.listHostnames(input.appScopeId)).map((h) => ({
+      hostname: h.hostname,
+      surface: h.surface,
+      status: h.status,
+      canonical: h.canonical,
+      createdAt: h.createdAt ?? null,
+    }));
+  } else {
+    const staff = platformActorId.parse(ulid());
+    rows = (await host.admin.listHostnames(staff, { scopeId: input.appScopeId })).map((h) => ({
+      hostname: h.hostname,
+      surface: h.surface,
+      status: h.status,
+      canonical: h.canonical,
+      createdAt: h.createdAt,
+    }));
+  }
+  return rows.sort((a, b) => (a.createdAt ?? '') < (b.createdAt ?? '') ? -1 : 1);
+}
+
+/**
+ * Bind a hostname to one surface of an app (the Domains tab's add).
+ *
+ * Two forms, per the §4.2 lifecycle: a PLATFORM hostname is minted from the app's
+ * own default label (`crm.global.…` + surface `eka` → `crm-eka.global.…`) and lands
+ * `active` immediately — it rides the existing wildcard cert, there is no DNS dance.
+ * A CUSTOM domain is recorded `pending` and walks pending → verifying → active as
+ * validation and cert issuance actually happen (a later, staff/automation step) —
+ * never marked active by wishing.
+ *
+ * The binding is canonical only when its (scope, surface) has no binding yet: adding
+ * an alias never silently demotes the URL a surface already serves on (the demotion
+ * rule stays an explicit choice, surfaced by the UI, not a side effect of adding).
+ */
+export async function addAppHostname(
+  host: ScopeHost,
+  input: {
+    node: DashboardNode;
+    appScopeId: ScopeId;
+    surface: string;
+    /** A custom domain to bind (else a platform hostname is minted for the surface). */
+    customDomain?: string;
+    /** The app's default hostname — the label source for a platform mint. */
+    appHostname?: string | null;
+    controlPlane?: TenantNarrowedControlPlane;
+  },
+): Promise<AppHostnameRow> {
+  const surface = input.surface.trim();
+  if (!surface || surface.length > 32) throw new Error(`invalid surface name '${input.surface}'`);
+  const existing = await listAppHostnames(host, input);
+  const canonical = !existing.some((h) => h.surface === surface);
+
+  const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
+  const bind = async (hostname: string, active: boolean): Promise<void> => {
+    if (input.controlPlane) {
+      await input.controlPlane.bindHostname({ hostname, scopeId: input.appScopeId, surface, canonical });
+      if (active) await input.controlPlane.setHostnameStatus(hostname, 'active');
+    } else {
+      const staff = platformActorId.parse(ulid());
+      await host.admin.bindHostname(staff, {
+        hostname,
+        tenantId: input.node.tenantId,
+        scopeId: input.appScopeId,
+        surface,
+        region: null,
+        canonical,
+      });
+      if (active) await host.admin.setHostnameStatus(staff, hostname, 'active');
+    }
+  };
+
+  if (input.customDomain) {
+    const hostname = input.customDomain.trim().toLowerCase();
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(hostname)) {
+      throw new Error(`'${input.customDomain}' is not a valid domain name`);
+    }
+    // Platform names are minted from the app's own label, never typed in — a free-text
+    // path onto *.substrat.run would be a squatting vector for other tenants' labels.
+    const platformBase = (input.appHostname ?? '').split('.').slice(1).join('.');
+    if (hostname.endsWith('.substrat.run') || (platformBase && hostname.endsWith(`.${platformBase}`))) {
+      throw new Error(`'${hostname}' is a platform name — add it as a platform hostname for the surface instead`);
+    }
+    await scope.invoke('dashboard/bind-app-hostname', {
+      appScopeId: input.appScopeId,
+      detail: `${hostname} (surface '${surface}')`,
+    });
+    await bind(hostname, false);
+    return { hostname, surface, status: 'pending', canonical, createdAt: null };
+  }
+
+  // Platform mint. The app's default label carries the tenant suffix already
+  // (`crm-sesamy`), so the surface rides between label and domain; the scope tail is
+  // the collision belt, same ladder as the default hostname's.
+  if (!input.appHostname || !input.appHostname.includes('.')) {
+    throw new Error('the app has no platform hostname to derive a surface hostname from');
+  }
+  const [label, ...rest] = input.appHostname.toLowerCase().split('.');
+  const surfaceLabel = slugify(surface);
+  const tail = input.appScopeId.toLowerCase().slice(-4);
+  const candidates = [`${label}-${surfaceLabel}`, `${label}-${surfaceLabel}-${tail}`].map(
+    (l) => `${l}.${rest.join('.')}`,
+  );
+  await scope.invoke('dashboard/bind-app-hostname', {
+    appScopeId: input.appScopeId,
+    detail: `${candidates[0]} (surface '${surface}')`,
+  });
+  let lastError: unknown;
+  for (const hostname of candidates) {
+    try {
+      await bind(hostname, true);
+      return { hostname, surface, status: 'active', canonical, createdAt: null };
+    } catch (e) {
+      lastError = e; // Global-uniqueness collision or transient — try the tailed label.
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('could not bind a platform hostname');
+}
+
+/**
+ * Remove one binding from an app. The DEFAULT hostname is refused — it is the URL
+ * provisioning promised and the row the dashboard stores; retiring it is an app
+ * lifecycle decision (delete), not a Domains-tab row action. Unbinding a canonical
+ * leaves the surface's aliases as they are — the caller's UI states the rule.
+ */
+export async function removeAppHostname(
+  host: ScopeHost,
+  input: {
+    node: DashboardNode;
+    appScopeId: ScopeId;
+    hostname: string;
+    /** The app's stored default hostname (refused for removal). */
+    defaultHostname?: string | null;
+    controlPlane?: TenantNarrowedControlPlane;
+  },
+): Promise<void> {
+  const hostname = input.hostname.trim().toLowerCase();
+  if (input.defaultHostname && hostname === input.defaultHostname.toLowerCase()) {
+    throw new Error(`'${hostname}' is the app's default hostname — delete the app to retire it`);
+  }
+  const bound = await listAppHostnames(host, input);
+  const row = bound.find((h) => h.hostname === hostname);
+  if (!row) throw new Error(`'${hostname}' is not bound to this app`);
+  const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
+  await scope.invoke('dashboard/unbind-app-hostname', {
+    appScopeId: input.appScopeId,
+    detail: `${hostname} (surface '${row.surface}')`,
+  });
+  if (input.controlPlane) {
+    await input.controlPlane.unbindHostname(input.appScopeId, hostname);
+  } else {
+    const staff = platformActorId.parse(ulid());
+    await host.admin.unbindHostname(staff, hostname);
+  }
+}
