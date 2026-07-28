@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, z, type PermissionKey, type TenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, z, type PermissionKey, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
@@ -31,7 +31,7 @@ import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
+import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
 import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
@@ -1223,6 +1223,51 @@ app.delete('/api/apps/:scopeId/snapshots/:snapshotId', async (c) => {
     controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
   });
   return c.json({ deleted: snap.id });
+});
+
+/**
+ * Export & import (preview-and-snapshots.md §8 — the dashboard half of the CLI's
+ * `scope pull`/`scope restore`). GET hands back the app's data as a dump the CLI
+ * and the Import button both accept; connected mode arrives MASKED from the CP
+ * (this surface has no break-glass). POST loads an uploaded dump into the app,
+ * replacing its data wholesale — the helper forks a safety copy first, so the
+ * response names the fork to back out to. Same authority as managing the app.
+ */
+app.get('/api/apps/:scopeId/export', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const dump = await exportAppData(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  return c.json(dump);
+});
+
+app.post('/api/apps/:scopeId/restore', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  // The upload is a pulled export or a local `.dump.json` — only `tables` matters
+  // here; any tenantId/scopeId in the file are provenance, never authority.
+  const body = z.object({ tables: z.array(scopeDumpTable).min(1) }).parse(await c.req.json());
+  const result = await restoreAppData(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    tables: body.tables,
+    appHostname: appRow.hostname,
+    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+  });
+  return c.json(result);
 });
 
 /**

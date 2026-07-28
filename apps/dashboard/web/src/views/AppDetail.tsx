@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type Deployment, type MigrationBookmark, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type Deployment, type DumpTable, type MigrationBookmark, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
 import { DEV_MOCK, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -199,6 +199,14 @@ function toTimelineItem(e: AppEvent): { dot: TimelineDot; body: React.ReactNode;
       return { dot: 'neutral', body: <>Deleted</>, time };
     case 'updated':
       return { dot: 'success', body: <>Updated{e.detail ? <> · <span style={{ fontFamily: 'var(--font-mono)' }}>{e.detail}</span></> : null}</>, time };
+    case 'snapshotted':
+      return { dot: 'info', body: <>Test copy taken{e.detail ? <> · {e.detail}</> : null}</>, time };
+    case 'snapshot-deleted':
+      return { dot: 'neutral', body: <>Test copy deleted{e.detail ? <> · <span style={{ fontFamily: 'var(--font-mono)' }}>{e.detail}</span></> : null}</>, time };
+    case 'data-exported':
+      return { dot: 'info', body: <>Data exported{e.detail ? <> · {e.detail}</> : null}</>, time };
+    case 'data-restored':
+      return { dot: 'danger', body: <>Data replaced by import{e.detail ? <> · {e.detail}</> : null}</>, time };
     case 'created':
     default:
       return { dot: 'info', body: <>Provisioning started{e.detail ? <> · <span style={{ fontFamily: 'var(--font-mono)' }}>{e.detail}</span></> : null}</>, time };
@@ -526,6 +534,119 @@ function Previews({ app }: { app: AppRow }) {
           ))}
         </div>
       )}
+      <ExportImport app={app} onChanged={() => setNonce((n) => n + 1)} />
+    </div>
+  );
+}
+
+/**
+ * Export & import (preview-and-snapshots.md §8 — the dashboard half of the CLI's
+ * `scope pull`/`scope restore`). Export downloads the app's data as a `.dump.json`
+ * the CLI accepts; Import replaces the app's data with an uploaded dump — behind a
+ * danger dialog, and always after the platform forks a safety preview (which is
+ * why `onChanged` refreshes the preview list above).
+ */
+function ExportImport({ app, onChanged }: { app: AppRow; onChanged: () => void }) {
+  const [exporting, setExporting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [pending, setPending] = useState<{ name: string; tables: DumpTable[]; rows: number } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const doExport = async () => {
+    setExporting(true);
+    setNote(null);
+    try {
+      if (DEV_MOCK) {
+        setNote('Export is not available in the preview.');
+        return;
+      }
+      const dump = await api.exportAppData(app.app_scope_id);
+      const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${dump.tenantId}__${dump.scopeId}.dump.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      const rows = dump.tables.reduce((n, t) => n + t.rows.length, 0);
+      setNote(
+        dump.masked
+          ? `Exported ${dump.tables.length} tables (${rows} rows). Personal data is redacted in this file — full-fidelity export is a CLI/staff affordance.`
+          : `Exported ${dump.tables.length} tables (${rows} rows), full fidelity — treat the file as production data.`,
+      );
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const onFile = async (file: File | undefined) => {
+    setNote(null);
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as { tables?: DumpTable[] };
+      if (!Array.isArray(parsed.tables) || parsed.tables.length === 0) {
+        throw new Error(`${file.name} is not a scope dump (no tables) — expected a .dump.json export`);
+      }
+      const rows = parsed.tables.reduce((n, t) => n + (Array.isArray(t.rows) ? t.rows.length : 0), 0);
+      setPending({ name: file.name, tables: parsed.tables, rows });
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const doRestore = async () => {
+    if (!pending) return;
+    setRestoring(true);
+    setNote(null);
+    try {
+      if (DEV_MOCK) {
+        setNote('Import is not available in the preview.');
+      } else {
+        const r = await api.restoreAppData(app.app_scope_id, pending.tables);
+        setNote(`Imported ${r.tables} tables — the app now serves the uploaded data. The previous data lives on as preview ${shortId(r.safetyCopyId)} above.`);
+        onChanged();
+      }
+      setPending(null);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  return (
+    <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <Eyebrow>Export &amp; import</Eyebrow>
+        <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Download this app’s data, or replace it with a dump — an export from here, <span style={{ fontFamily: 'var(--font-mono)' }}>substrat scope pull</span>, or a local dev world (<span style={{ fontFamily: 'var(--font-mono)' }}>.dump.json</span>; for <span style={{ fontFamily: 'var(--font-mono)' }}>.sqlite</span> files use <span style={{ fontFamily: 'var(--font-mono)' }}>substrat scope restore</span>).
+        </span>
+        <div style={{ flex: 1 }} />
+        <Button onClick={doExport} disabled={exporting}>{exporting ? 'Exporting…' : 'Export data'}</Button>
+        <Button variant="secondary" onClick={() => fileRef.current?.click()} disabled={restoring}>Import data…</Button>
+        <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={(e) => onFile(e.target.files?.[0])} />
+      </div>
+      {note && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{note}</div>}
+      <Dialog
+        open={pending !== null}
+        title={`Replace ${app.name}’s data?`}
+        danger
+        confirmLabel={restoring ? 'Importing…' : 'Replace data'}
+        confirmDisabled={restoring}
+        onCancel={() => setPending(null)}
+        onConfirm={doRestore}
+      >
+        <div style={{ background: 'var(--status-danger-bg)', borderRadius: 6, padding: '12px 14px', fontSize: 12.5, color: 'var(--status-danger-fg)', lineHeight: 1.6 }}>
+          Importing <span style={{ fontFamily: 'var(--font-mono)' }}>{pending?.name}</span> ({pending?.tables.length} tables, {pending?.rows} rows):
+          <div>→ ALL current data in {app.name} is replaced by the file’s</div>
+          <div>→ a preview of today’s data is created first (kept 7 days)</div>
+          <div>→ a PII-masked export restores <span style={{ fontFamily: 'var(--font-mono)' }}>[masked]</span> over real values</div>
+        </div>
+      </Dialog>
     </div>
   );
 }

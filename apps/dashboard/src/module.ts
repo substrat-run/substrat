@@ -234,6 +234,29 @@ export const dashboardMigrations = [
       CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
     `,
   },
+  {
+    version: '0008-app-data-events',
+    sql: `
+      -- Widen the event kinds for the Export & import card (preview-and-snapshots.md
+      -- §8): 'data-exported' (the app's data left as a dump) and 'data-restored' (an
+      -- uploaded dump replaced the app's data; the detail names the safety copy).
+      -- Same rebuild-and-copy shape as 0005/0007 — SQLite can't ALTER a CHECK, and
+      -- the shipped migrations stay untouched (append-only).
+      CREATE TABLE dashboard_app_events_new (
+        id           TEXT PRIMARY KEY,
+        app_scope_id TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('created','active','failed','deleted','updated','snapshotted','snapshot-deleted','data-exported','data-restored')),
+        detail       TEXT,
+        actor        TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      INSERT INTO dashboard_app_events_new (id, app_scope_id, kind, detail, actor, created_at)
+        SELECT id, app_scope_id, kind, detail, actor, created_at FROM dashboard_app_events;
+      DROP TABLE dashboard_app_events;
+      ALTER TABLE dashboard_app_events_new RENAME TO dashboard_app_events;
+      CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
+    `,
+  },
 ];
 
 export interface DashboardAppRow {
@@ -274,7 +297,7 @@ export interface AppEnvValue {
 export interface DashboardAppEventRow {
   id: string;
   app_scope_id: string;
-  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted';
+  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored';
   detail: string | null;
   actor: string;
   created_at: string;
@@ -393,6 +416,30 @@ const deleteAppSnapshotOp: OperationHandler<z.infer<typeof snapshotAppInput>, { 
   assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
   const input = snapshotAppInput.parse(raw);
   recordAppEvent(ctx, input.appScopeId, 'snapshot-deleted', input.detail ?? null);
+  return { ok: true };
+};
+
+/**
+ * Authorize + record an export of the app's data (preview-and-snapshots.md §8's
+ * governed pull, from the dashboard). Same check-then-effect split as a snapshot:
+ * this asserts and writes the trail entry; the dump itself is the platform effect.
+ */
+const exportAppDataOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'data-exported', input.detail ?? null);
+  return { ok: true };
+};
+
+/**
+ * Authorize + record a restore INTO the app (§8's write half): an uploaded dump
+ * replaces the app's data wholesale. The safety copy taken just before is part of
+ * the recorded detail, so the trail names the fork to back out to.
+ */
+const restoreAppDataOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = snapshotAppInput.parse(raw);
+  recordAppEvent(ctx, input.appScopeId, 'data-restored', input.detail ?? null);
   return { ok: true };
 };
 
@@ -909,6 +956,8 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/update-app': updateAppOp as OperationHandler<never, unknown>,
     'dashboard/snapshot-app': snapshotAppOp as OperationHandler<never, unknown>,
     'dashboard/delete-app-snapshot': deleteAppSnapshotOp as OperationHandler<never, unknown>,
+    'dashboard/export-app-data': exportAppDataOp as OperationHandler<never, unknown>,
+    'dashboard/restore-app-data': restoreAppDataOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-failed': markAppFailedOp as OperationHandler<never, unknown>,
     'dashboard/app-events': appEventsOp as OperationHandler<never, unknown>,
     'dashboard/list-apps': listAppsOp as OperationHandler<never, unknown>,

@@ -103,7 +103,7 @@ export interface AppRow {
 export interface AppEvent {
   id: string;
   app_scope_id: string;
-  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated';
+  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored';
   /** Failure reason / bound hostname / the version move / the vertical slug — depending on `kind`. */
   detail: string | null;
   actor: string;
@@ -180,6 +180,31 @@ export interface SnapshotRow {
   createdAt: string;
   /** The copy's preview hostname (`app--s1a2b.…`), when one is bound. */
   url?: string | null;
+}
+
+/** One table of an app-data dump (mirrors the platform's ScopeDumpTable). */
+export interface DumpTable {
+  name: string;
+  ddl: string;
+  columns: string[];
+  rows: unknown[][];
+}
+
+/** `GET /api/apps/:id/export` — the app's data as a dump the CLI also accepts. */
+export interface AppDataDump {
+  tenantId: string;
+  scopeId: string;
+  capturedAt: string;
+  /** True when PII columns arrived redacted (always, in connected mode). */
+  masked: boolean;
+  tables: DumpTable[];
+}
+
+/** `POST /api/apps/:id/restore` — what the import did, incl. the fork to back out to. */
+export interface RestoreResult {
+  restored: string;
+  tables: number;
+  safetyCopyId: string;
 }
 
 /** One importable repo the tenant's GitHub connection can see (worker's github.ts shape). */
@@ -446,6 +471,15 @@ export const api = {
       `/apps/${encodeURIComponent(scopeId)}/snapshots/${encodeURIComponent(snapshotId)}`,
       { method: 'DELETE' },
     ),
+  /** The app's data as a downloadable dump (PII-masked in connected mode). */
+  exportAppData: (scopeId: string) => call<AppDataDump>(`/apps/${encodeURIComponent(scopeId)}/export`),
+  /** Replace the app's data with an uploaded dump; a safety copy is forked first. */
+  restoreAppData: (scopeId: string, tables: DumpTable[]) =>
+    call<RestoreResult>(`/apps/${encodeURIComponent(scopeId)}/restore`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tables }),
+    }),
   /** The app's env-spec + current values (secrets masked). */
   appEnv: (scopeId: string) => call<AppEnvView>(`/apps/${encodeURIComponent(scopeId)}/env`),
   /** Upsert env values; an empty value leaves a key unchanged (untouched secret). */

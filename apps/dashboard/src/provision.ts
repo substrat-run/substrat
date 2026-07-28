@@ -6,6 +6,8 @@ import {
   type PlatformActorId,
   type PrincipalId,
   type RoleDefinition,
+  type ScopeDump,
+  type ScopeDumpTable,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
@@ -621,6 +623,78 @@ export async function deleteAppSnapshot(
   const staff = platformActorId.parse(ulid());
   await host.deleteSnapshot(staff, input.node.tenantId, input.snapshotScopeId);
 }
+
+/**
+ * Export an app's data as a dump (preview-and-snapshots.md §8, from the dashboard) —
+ * the file the CLI's `scope restore` (and the Import button below) accepts back.
+ * Authorize + record in the caller's own dashboard scope, then read tenant-narrowed.
+ * CONNECTED, the CP is the gate: the dump arrives MASKED (no break-glass from this
+ * surface) and jurisdiction-checked, and the CP writes its own access-log entry.
+ * EMBEDDED there is no trust boundary to cross — the host's files already sit on the
+ * operator's own disk — so the dump is the full read, flagged `masked: false`.
+ */
+export async function exportAppData(
+  host: ScopeHost,
+  input: { node: DashboardNode; appScopeId: ScopeId; controlPlane?: TenantNarrowedControlPlane },
+): Promise<ScopeDump & { masked: boolean }> {
+  const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
+  await scope.invoke('dashboard/export-app-data', {
+    appScopeId: input.appScopeId,
+    detail: input.controlPlane ? 'masked export' : 'full export (embedded)',
+  });
+  if (input.controlPlane) return input.controlPlane.exportScope(input.appScopeId);
+  const staff = platformActorId.parse(ulid());
+  const dump = await host.admin.exportScope(staff, input.node.tenantId, input.appScopeId);
+  return { ...dump, masked: false };
+}
+
+/**
+ * Load an uploaded dump into an app's existing scope, replacing its data wholesale
+ * (§8's write half — how a locally-built world lands on a hosted app). The safety
+ * copy comes FIRST: restore is the one dashboard action that destroys data, so the
+ * pre-restore state must survive as a fork the user can back out to (its id is in
+ * the returned record and on the activity trail). `snapshotApp` also carries the
+ * authorization — same authority, checked before any effect.
+ */
+export async function restoreAppData(
+  host: ScopeHost,
+  input: {
+    node: DashboardNode;
+    appScopeId: ScopeId;
+    tables: ScopeDumpTable[];
+    /** The app's bound hostname — gives the safety copy a preview URL. */
+    appHostname?: string | null;
+    controlPlane?: TenantNarrowedControlPlane;
+  },
+): Promise<{ restored: ScopeId; tables: number; safetyCopyId: string }> {
+  const safety = await snapshotApp(host, {
+    node: input.node,
+    appScopeId: input.appScopeId,
+    ttlDays: RESTORE_SAFETY_TTL_DAYS,
+    appHostname: input.appHostname,
+    controlPlane: input.controlPlane,
+  });
+  const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
+  await scope.invoke('dashboard/restore-app-data', {
+    appScopeId: input.appScopeId,
+    detail: `${input.tables.length} tables; safety copy ${safety.id}`,
+  });
+  if (input.controlPlane) {
+    await input.controlPlane.restoreScope(input.appScopeId, input.tables);
+  } else {
+    const staff = platformActorId.parse(ulid());
+    await host.restoreScope(staff, input.node.tenantId, input.appScopeId, {
+      tenantId: input.node.tenantId,
+      scopeId: input.appScopeId,
+      capturedAt: new Date().toISOString(),
+      tables: input.tables,
+    });
+  }
+  return { restored: input.appScopeId, tables: input.tables.length, safetyCopyId: safety.id };
+}
+
+/** Long enough to notice a bad restore; short enough that safety copies self-reap. */
+const RESTORE_SAFETY_TTL_DAYS = 7;
 
 /**
  * CONNECTED mode: provision through the shared control plane, tenant-narrowed —
