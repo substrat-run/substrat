@@ -105,6 +105,31 @@ export const entitlementGrant = z.object({
 export type EntitlementGrant = z.infer<typeof entitlementGrant>;
 
 /**
+ * What an operation handler reads through `ctx.entitlement(key)` / `ctx.entitlements()`
+ * (#304) — the request-time, in-scope view of a grant. A deliberately narrower shape than
+ * `entitlementGrant`: it drops the audit fields (`grantedAt`/`grantedBy`) a running vertical
+ * has no business acting on, and it only ever names a **currently-held** entitlement —
+ * expiry is applied at read (an expired grant is absent from the view, exactly as it is
+ * absent from the gate), so a returned view is by construction live.
+ *
+ * `plan` and `quota` are carried but **not** enforced by the kernel (#33): the vertical
+ * reads the number and enforces its own quota; the kernel enforces only presence + expiry.
+ * On a hosted vertical this is read from the scope-local projection (scope-local-permissions.md),
+ * never a control-plane binding.
+ */
+export const entitlementView = z.object({
+  /** The entitlement/SKU key. */
+  key: z.string().min(1),
+  /** Tier grouping ('pro'), or null for an ungrouped key. Expression only — not enforced. */
+  plan: z.string().min(1).nullable(),
+  /** Plan quantity, or null for a plain on/off flag. Expression only — the vertical counts usage. */
+  quota: z.number().int().positive().nullable(),
+  /** Null = perpetual. A non-null value is always in the future (an expired grant is not viewable). */
+  expiresAt: instant.nullable(),
+});
+export type EntitlementView = z.infer<typeof entitlementView>;
+
+/**
  * The plan half of a grant call. PATCH semantics, deliberately: an omitted field
  * PRESERVES what the row already carries, an explicit null clears it. Re-granting
  * on an idempotent path (re-provisioning grants keys freely) must not silently

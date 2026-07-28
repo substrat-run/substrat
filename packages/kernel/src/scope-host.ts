@@ -17,6 +17,7 @@ import type {
   DomainEventInput,
   EntitlementGrant,
   EntitlementGrantInput,
+  EntitlementView,
   EntityRef,
   IdentityLink,
   IdentityPool,
@@ -94,6 +95,19 @@ export interface OperationContext {
   emit(event: DomainEventInput): void;
   /** Node-level check; pass `entity` for per-entity checks (portal access, §4.2 rule 3). */
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
+  /**
+   * Read one of the tenant's currently-held entitlements at request time (#304) — the
+   * sanctioned way a hosted vertical gates a feature or enforces its own quota WITHOUT a
+   * control-plane binding. Returns the live view (`key`, `plan`, `quota`, `expiresAt`) or
+   * `null` when the tenant does not hold the key or the grant has expired — expiry is applied
+   * at read, so a non-null result is always live. `plan`/`quota` are expression only: the
+   * kernel enforces presence + expiry (that is the per-operation entitlement gate), the
+   * vertical decides what `quota` means. On a hosted vertical this reads the scope-local
+   * projection (scope-local-permissions.md); on a console-managed one it reads the directory.
+   */
+  entitlement(key: string): Promise<EntitlementView | null>;
+  /** Every entitlement the tenant currently holds (expired grants excluded), as read views. */
+  entitlements(): Promise<EntitlementView[]>;
   /**
    * Record a relation tuple child→parent (K-16) — the write path for the
    * permission evaluator's entity-edge rule (design doc §4.2 rule 3). The

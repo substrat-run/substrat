@@ -1,9 +1,18 @@
 import { env } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { warmControlPlane } from './do-warmup.js';
-import { orgId, permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import {
+  orgId,
+  permissionKey,
+  platformActorId,
+  principalId,
+  scopeId,
+  tenantId,
+  type EntitlementGrant,
+} from '@substrat-run/contracts';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
+  billedMod,
   connectorTestFetch,
   permissionContractSuite,
   scopeHostContractSuite,
@@ -361,5 +370,74 @@ describe('scope-local permissions — a CP-less host (Phase 3)', () => {
     await expect(
       host.admin.createTenant(platformActorId.parse(ulid()), { id: t, slug: `x-${t.toLowerCase()}`, name: 'X' }),
     ).rejects.toThrow(/control plane unavailable/);
+  });
+});
+
+/**
+ * #304, the hosted-vertical case: a CP-less scope enforces + reads its entitlements from the
+ * PROJECTION passed at provision, with no control-plane binding. This is the whole point —
+ * the coordinator's `cp.tenantHoldsEntitlement` is a trusting no-op here, so the DO's projected
+ * view is the only source of truth. Registers `billedMod` on the coordinator so its operations
+ * carry `requiredEntitlement` (the DO already closes over it), the one thing the ad-hoc Phase 3
+ * host above does not do.
+ */
+describe('scope-local entitlements — a CP-less hosted vertical (#304)', () => {
+  let host: CloudflareScopeHost;
+  const owner = principalId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const enforced = scopeId.parse(ulid()); // provisioned WITH 'billed' → strict, held
+  const strict = scopeId.parse(ulid()); // provisioned WITH entitlements:[] → strict, NOT held
+  const legacy = scopeId.parse(ulid()); // provisioned WITHOUT entitlements → trust-upstream
+  const grant = (entitlementKey: string, over: Partial<EntitlementGrant> = {}): EntitlementGrant => ({
+    entitlementKey,
+    expiresAt: null,
+    quota: null,
+    plan: null,
+    grantedAt: null,
+    grantedBy: null,
+    ...over,
+  });
+  const provision = (scopeId: typeof enforced, entitlements?: EntitlementGrant[]) =>
+    host.provisionScopeLocal({
+      tenantId: t,
+      scopeId,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [permissionKey.parse('billed:use')], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+      entitlements,
+    });
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(billedMod); // populates the coordinator's operation→SKU map
+    await provision(enforced, [grant('billed', { quota: 250, plan: 'pro' })]);
+    await provision(strict, []); // entitlements projected, but 'billed' not among them
+    await provision(legacy); // no entitlements projected — pre-#304 shape
+  });
+
+  afterAll(async () => host.close());
+
+  it('runs a gated operation and reads the projected grant via ctx.entitlement — no CP', async () => {
+    const stub = await host.getScope(owner, t, enforced);
+    await expect(stub.invoke<string>('billed/act')).resolves.toBe('ran');
+    expect(await stub.invoke('billed/read-entitlement', 'billed')).toEqual({
+      key: 'billed',
+      plan: 'pro',
+      quota: 250,
+      expiresAt: null,
+    });
+  });
+
+  it('fails closed on a projected scope that does NOT hold the SKU (strict enforcement)', async () => {
+    const stub = await host.getScope(owner, t, strict);
+    await expect(stub.invoke('billed/act')).rejects.toThrow(/not entitled/);
+  });
+
+  it('trusts upstream on a scope provisioned before entitlements were projected (no false denial)', async () => {
+    const stub = await host.getScope(owner, t, legacy);
+    await expect(stub.invoke<string>('billed/act')).resolves.toBe('ran');
   });
 });

@@ -58,6 +58,7 @@ import {
   type EventAuthorization,
   type EntitlementGrant,
   type EntitlementGrantInput,
+  type EntitlementView,
   type EntityRef,
   type CreateOrgInput,
   type IdentityLink,
@@ -4098,6 +4099,43 @@ export class SqliteScopeHost implements ScopeHost {
              VALUES (?, 'parent', ?)`,
           )
           .run(`${child.entityType}:${child.entityId}`, `${parent.entityType}:${parent.entityId}`);
+      },
+      // #304: the request-time entitlement read. The pure adapter is single-process, so the
+      // directory is local — no projection needed; it reads `_substrat_entitlements` straight,
+      // with the same expiry-at-read filter as the gate (#33), and the SAME contract the DO
+      // adapter satisfies through its scope-local projection. `plan`/`quota` are exposed, not
+      // enforced — the kernel gates presence + expiry, the vertical decides what quota means.
+      entitlement: async (key: string): Promise<EntitlementView | null> => {
+        const row = this.directory
+          .prepare(
+            `SELECT entitlement_key, plan, quota, expires_at FROM _substrat_entitlements
+             WHERE tenant_id = ? AND entitlement_key = ? AND (expires_at IS NULL OR expires_at > ?)`,
+          )
+          .get(rt.tenantId, key, new Date().toISOString()) as
+          | { entitlement_key: string; plan: string | null; quota: number | null; expires_at: string | null }
+          | undefined;
+        return row
+          ? { key: row.entitlement_key, plan: row.plan, quota: row.quota, expiresAt: row.expires_at as EntitlementView['expiresAt'] }
+          : null;
+      },
+      entitlements: async (): Promise<EntitlementView[]> => {
+        const rows = this.directory
+          .prepare(
+            `SELECT entitlement_key, plan, quota, expires_at FROM _substrat_entitlements
+             WHERE tenant_id = ? AND (expires_at IS NULL OR expires_at > ?)`,
+          )
+          .all(rt.tenantId, new Date().toISOString()) as {
+          entitlement_key: string;
+          plan: string | null;
+          quota: number | null;
+          expires_at: string | null;
+        }[];
+        return rows.map((r) => ({
+          key: r.entitlement_key,
+          plan: r.plan,
+          quota: r.quota,
+          expiresAt: r.expires_at as EntitlementView['expiresAt'],
+        }));
       },
     };
   }

@@ -237,6 +237,17 @@ Grant calls are PATCH-shaped: an omitted field preserves what the row carries (a
 re-grant on an idempotent provisioning path must not quietly turn a trial perpetual), an
 explicit null clears it, and any effective change is a renewal audited with before/after.
 
+**Read at request time, without the CP binding ([#304](https://github.com/substrat-run/substrat/issues/304)).**
+Gating module loading is not the same as letting a running vertical *read* its plan: a hosted
+vertical needs `quota`/`plan`/`tier` at request time to gate a feature or enforce its own quota,
+and it may not hold the forbidden `CONTROL_PLANE` binding. Entitlements are therefore **projected
+into each scope** alongside roles/tuples (scope-local-permissions.md): `ctx.entitlement(key)` /
+`ctx.entitlements()` read the projection locally (a console-managed scope reads it over the same
+RPC the permission checker uses), and the per-operation gate fails closed against the projected
+view. A grant/revoke fans out to invalidate. This is **open question 5's answer** — cached in
+scope DOs with event invalidation, the same project-on-write mechanism §4 (below) says to settle
+once for both the entitlement check and the routing/suspension cache, not to answer twice.
+
 ### 4.4 The platform actor and the admin audit log
 
 The one thing that must not be retrofitted. Every control-plane mutation:
