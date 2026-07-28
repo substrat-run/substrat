@@ -1,5 +1,7 @@
 import type {
   PrincipalId,
+  ScopeDump,
+  ScopeDumpTable,
   ScopeId,
   ScopeQueryResult,
   ScopeTable,
@@ -450,6 +452,31 @@ export class TenantNarrowedControlPlane {
    *  discarding every write since. The scope DO enforces the 24h freshness window. */
   rewindScope(scopeId: ScopeId, bookmark: string): Promise<{ rewindingTo: string }> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/rewind`, { bookmark });
+  }
+
+  // -- export / restore (preview-and-snapshots.md §8 — the dashboard half) ----
+  // The CLI's `scope pull`/`scope restore` seam, reached tenant-pinned. The CP is
+  // the gate on both: the export lands MASKED (this client never sends `?full=true` —
+  // the break-glass stays a staff/CLI affordance) and jurisdiction-gated; the
+  // restore is audited on the shared plane and delegated into the deployment that
+  // actually serves the scope.
+
+  /** The scope's data as a dump — always the masked form from this seam. */
+  exportScope(scopeId: ScopeId): Promise<ScopeDump & { masked: boolean }> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/export`);
+  }
+
+  /**
+   * Load a dump into the app's EXISTING scope, replacing its data wholesale.
+   * tenantId/scopeId in the body are provenance; the URL says where it lands.
+   */
+  restoreScope(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ restored: string; tables: number }> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/restore`, {
+      tenantId: this.tenantId,
+      scopeId,
+      capturedAt: new Date().toISOString(),
+      tables,
+    });
   }
 
   /** The hostnames bound to one scope (tenant-pinned) — the copy's preview URL. */
