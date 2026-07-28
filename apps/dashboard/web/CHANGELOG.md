@@ -1,5 +1,37 @@
 # @substrat-run/dashboard-web
 
+## 0.2.0
+
+### Minor Changes
+
+- 22b1f97: Export & import from the dashboard (preview-and-snapshots.md §8's dashboard half):
+  the Snapshots tab grows an Export & import card. Export downloads the app's data as
+  a `.dump.json` the CLI's `scope restore` also accepts — in connected mode it arrives
+  PII-masked from the control plane's governed export route (the full-fidelity
+  break-glass stays a CLI/staff affordance); embedded mode returns the full read
+  (`masked: false`), since the host's files already sit on the operator's own disk.
+  Import replaces the app's data wholesale with an uploaded dump (a pulled export or a
+  locally built world), always forking a TTL'd safety copy first so the pre-restore
+  state survives as a snapshot to back out to. Both halves gate on
+  `dashboard:provision-app` in the caller's own scope and land on the app's activity
+  trail as `data-exported` / `data-restored` (migration 0008 widens the event CHECK,
+  rebuild-and-copy like 0005/0007). New tenant-narrowed CP wrappers `exportScope` /
+  `restoreScope` reach the existing staff routes over the service binding.
+
+### Patch Changes
+
+- 6a22014: The app Deployments tab no longer dead-ends a builder on their own vertical. The
+  per-app deployments read now says whether the app's vertical is one the tenant
+  pushed (`owned`, with the real `listed` flag alongside), and the tab words itself
+  accordingly: for an owned private vertical the banner says promotion is self-serve
+  and links to the Verticals page instead of claiming prod is a staff action (true
+  only for listed/foreign verticals). When the newest admitted version isn't what
+  prod points at — the exact state where no "Update to latest" can be offered — the
+  Running card now explains why and links to the promote button (or names the staff
+  handoff, for the non-owned case) rather than showing nothing.
+- Updated dependencies [6a86837]
+  - @substrat-run/contracts@0.23.0
+
 ## 0.1.10
 
 ### Patch Changes
