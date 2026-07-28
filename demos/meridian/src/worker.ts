@@ -16,7 +16,7 @@
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, z } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, z } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import {
   assertPlatformCall,
@@ -223,6 +223,10 @@ const provisionInstanceBody = z.object({
   owner: principalId,
   slug: z.string().min(1),
   name: z.string().min(1),
+  // #310: the tenant's entitlements, projected into the scope so ctx.entitlement + the
+  // per-operation gate work here without a control-plane binding (#304). Optional so an
+  // older platform (or one that hasn't granted any) provisions unchanged.
+  entitlements: z.array(entitlementGrant).optional(),
 });
 
 const app = new Hono<{ Bindings: Env }>();
@@ -294,6 +298,7 @@ app.post('/internal/provision', async (c) => {
     owner: body.owner,
     roles: ROLES,
     ownerRoleKey: 'hr-admin',
+    entitlements: body.entitlements,
   });
   // Record the owner seat: whoever first signs in and reaches this scope claims it (becomes
   // hr-admin), whichever provider verifies them. This is how a provisioned instance becomes

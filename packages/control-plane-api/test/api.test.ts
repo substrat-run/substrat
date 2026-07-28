@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -404,6 +404,40 @@ describe('control-plane API', () => {
     const res = await delegated.request(`/tenants/${t1}/scopes/${sR}/tables`, { headers: auth });
     expect(res.status).toBe(501);
     expect(((await res.json()) as { error: string }).error).toContain('does not implement');
+  });
+
+  it('gathers the tenant entitlements itself and delivers them WITH provisioning (#310)', async () => {
+    const sE = scopeId.parse(ulid());
+    const owner = principalId.parse(ulid());
+    // The tenant holds a plan on the shared control plane BEFORE the vertical is asked.
+    await host.admin.grantEntitlement(staff, t1, 'housing', { quota: 25, plan: 'pro' });
+
+    let captured: { entitlements?: EntitlementGrant[] } | undefined;
+    const fakeVertical = {
+      provisionInstance: async (input: { entitlements?: EntitlementGrant[] }) => {
+        captured = input;
+        return { tenantId: t1, scopeId: sE, owner };
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+
+    // The request body carries NO entitlements — the platform is authoritative and gathers them.
+    const res = await delegated.request('/verticals/demo-vert/instances', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ tenantId: t1, scopeId: sE, owner, slug: 'acme-hr', name: 'Acme HR' }),
+    });
+    expect(res.status).toBe(201);
+    // The full grant view (quota/plan) reached the vertical, gathered by the platform itself.
+    expect(captured?.entitlements?.find((e) => e.entitlementKey === 'housing')).toMatchObject({
+      entitlementKey: 'housing',
+      quota: 25,
+      plan: 'pro',
+    });
   });
 
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------

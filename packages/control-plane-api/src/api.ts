@@ -966,10 +966,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: `no deployment is bound for vertical '${slug}'` }, 501);
     }
     const input = provisionInstanceBody.parse(await c.req.json());
+    // #310: the platform is the authoritative source of the tenant's entitlements — it
+    // gathers them HERE (not from the caller's body) and delivers them WITH provisioning so
+    // the CP-less vertical projects them and enforces plan/quota/expiry at request time
+    // (#304). A vertical predating the field ignores it; grant/revoke AFTER provision ride
+    // a re-provision (this endpoint is idempotent, K-31), meanwhile expiry still enforces
+    // locally because the projected row carries it.
+    const entitlements = await admin.listEntitlements(c.get('actor'), input.tenantId);
     try {
-      const instance = await vertical.provisionInstance(
-        input as Parameters<VerticalClient['provisionInstance']>[0],
-      );
+      const instance = await vertical.provisionInstance({
+        ...(input as Parameters<VerticalClient['provisionInstance']>[0]),
+        entitlements,
+      });
       return c.json(instance, 201);
     } catch (e) {
       // Propagate the vertical's own status rather than collapsing it to a 500. A
