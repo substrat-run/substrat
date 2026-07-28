@@ -1,3 +1,4 @@
+import { ADMISSIBLE_BINDING_TYPES } from '@substrat-run/contracts';
 import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /**
@@ -12,11 +13,13 @@ import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
  * 1. **The platform holds the Cloudflare credential, never the builder** (D-34). The
  *    upload itself is `DeployVerticalFn`, injected by the host (the Worker holds the
  *    WfP-scoped token) so this package stays host-agnostic and unit-testable.
- * 2. **The sandbox contract** (self-serve-deploy.md §4): a vertical gets its OWN DO
- *    classes only — never the platform's `CONTROL_PLANE` binding, cross-script reach,
- *    or a service binding to a platform worker. `assertSandboxContract` refuses an
- *    upload that declares more, *before* it reaches the namespace. That structural
- *    refusal — not inspecting minified code — is the primary defence.
+ * 2. **The sandbox contract** (self-serve-deploy.md §4): a vertical may declare only its
+ *    OWN resources, from a positive allowlist (`ADMISSIBLE_BINDING_TYPES`) — its DO
+ *    classes and own data stores, never the platform's `CONTROL_PLANE` binding,
+ *    cross-script reach, a service binding, or any type the allowlist doesn't name.
+ *    `assertSandboxContract` refuses an upload that declares more, *before* it reaches
+ *    the namespace. That structural refusal — not inspecting minified code — is the
+ *    primary defence.
  */
 
 // The manifest schema itself lives in @substrat-run/contracts (deploy.ts there) so the
@@ -73,46 +76,66 @@ export type FetchVerticalModulesFn = (
 ) => Promise<VerticalBundle['modules']>;
 
 /**
- * The §4 sandbox contract. Throws (mapped to a 4xx by errors.ts via "deploy refused")
- * if the declared bindings would give the vertical reach into platform infrastructure.
+ * A refused binding type the builder is most likely to reach for, paired with the reason
+ * it is not admissible — so the rejection teaches rather than just says "no". Anything not
+ * in `ADMISSIBLE_BINDING_TYPES` and not named here still refuses, with the generic reason.
+ */
+const NAMED_REFUSALS: Record<string, string> = {
+  service:
+    'a vertical is one serving script; it reaches the platform through the router (K-27), never a service binding',
+  dispatch_namespace:
+    "the platform's Workers-for-Platforms dispatch fabric is never a vertical's to bind",
+};
+
+/**
+ * The §4 sandbox contract. Throws (mapped to a 4xx by errors.ts via "deploy refused") if a
+ * declared binding is not one of the vertical's OWN admissible resources — a positive
+ * ALLOWLIST (`ADMISSIBLE_BINDING_TYPES` in contracts), so a type the check never anticipated
+ * is refused by omission, not allowed by it. Every refusal names the offending binding and
+ * its type and points at the doc section, so a builder can predict admission from the same
+ * list the CLI carries.
  *
- * What it REFUSES is the platform's own infrastructure: the `CONTROL_PLANE` directory,
- * a service binding to a platform worker, and any DO binding that is not one of the
- * vertical's own classes (cross-script, or a class it didn't declare). Everything a
- * vertical legitimately owns falls through and is allowed — its own `ScopeDO`, and its
- * own data stores like a `d1` binding for a Better-Auth `AUTH_DB` (self-serve-deploy.md
- * §4: "no `AUTH_DB` it did not create", i.e. its OWN store is fine).
+ * The load-bearing refusals: the `CONTROL_PLANE` directory (by name, whatever type it claims);
+ * a `service` binding (a vertical is one serving script — no own sibling, and platform reach
+ * is the router, K-27); a `dispatch_namespace` (the platform's WfP fabric); and any DO binding
+ * that is not one of the vertical's OWN classes (cross-script, or a class it didn't declare).
+ * Admitted own resources: its `ScopeDO`/state classes, and own data stores — `d1` (e.g. a
+ * Better-Auth `AUTH_DB`), `kv_namespace`, `queue`, `r2_bucket`, `analytics_engine`, and inert
+ * `secret_text`/`plain_text` config.
  *
- * Open question (§4, model B): a `d1` binding names a `database_id`, and this check does
- * not yet prove the vertical *owns* that id rather than pointing at another tenant's DB.
- * Under model B that gap is closed by human admission — a person trusts the builder's
- * declared bindings before the version can serve — not by this structural check. When
- * self-serve opens wider, per-vertical store PROVISIONING (the platform mints the D1 and
- * injects the id) replaces a bundle-chosen id; that is a deploy-pipeline change, not here.
+ * Open question (§4, model B): a `d1` binding names a `database_id`, and this check does not
+ * yet prove the vertical *owns* that id rather than pointing at another tenant's DB. Under
+ * model B that gap is closed by human admission — a person trusts the builder's declared
+ * bindings before the version can serve — not by this structural check. When self-serve opens
+ * wider, per-vertical store PROVISIONING (the platform mints the D1 and injects the id)
+ * replaces a bundle-chosen id (#301); that is a deploy-pipeline change, not here.
  */
 export function assertSandboxContract(m: DeployManifest): void {
   const own = new Set(m.doClasses);
+  const admissible = new Set<string>(ADMISSIBLE_BINDING_TYPES);
+  const doc = 'self-serve-deploy.md §4';
   for (const b of m.bindings) {
+    const refuse = (why: string): never => {
+      throw new Error(`deploy refused: binding '${b.name}' (type '${b.type}') — ${why} (${doc})`);
+    };
+    // The directory binding is refused by NAME, whatever type it claims, because the whole
+    // point of masquerading would be to slip the type check.
     if (b.name === 'CONTROL_PLANE') {
-      throw new Error(
-        `deploy refused: binding 'CONTROL_PLANE' is the platform's directory, not a vertical's`,
-      );
+      refuse("'CONTROL_PLANE' is the platform's directory, not a vertical's");
     }
-    if (b.type === 'service') {
-      throw new Error(
-        `deploy refused: service binding '${b.name}' — a vertical reaches the platform through the router (K-27), never a binding`,
-      );
+    // Allowlist: a type not among the vertical's own admissible resources is refused — with a
+    // teachable reason where we have one, the generic one otherwise.
+    if (!admissible.has(b.type)) {
+      refuse(NAMED_REFUSALS[b.type] ?? `type '${b.type}' is not an admissible own-resource binding type`);
     }
+    // Admissible-but-constrained: an own DO class only — never cross-script, never a class the
+    // bundle didn't declare.
     if (b.type === 'durable_object_namespace') {
       if (b.script_name) {
-        throw new Error(
-          `deploy refused: cross-script DO binding '${b.name}' (script '${b.script_name}') — a vertical may bind only its OWN DO classes`,
-        );
+        refuse(`cross-script DO binding (script '${b.script_name}') — a vertical may bind only its OWN DO classes`);
       }
       if (b.class_name && !own.has(b.class_name)) {
-        throw new Error(
-          `deploy refused: DO binding '${b.name}' → '${b.class_name}', not one of the vertical's own classes [${m.doClasses.join(', ') || 'none'}]`,
-        );
+        refuse(`DO class '${b.class_name}' is not one of the vertical's own classes [${m.doClasses.join(', ') || 'none'}]`);
       }
     }
   }

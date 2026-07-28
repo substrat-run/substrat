@@ -52,7 +52,44 @@ export const runtimeNeeds = z.object({
 });
 export type RuntimeNeeds = z.infer<typeof runtimeNeeds>;
 
-/** A binding the uploaded worker declares, as far as the sandbox contract check needs it. */
+/**
+ * The §4 sandbox allowlist: the binding types a hosted vertical may declare, because each
+ * is one of its OWN resources and carries no reach into platform infrastructure. This is a
+ * POSITIVE allowlist — anything not named here is refused (self-serve-deploy.md §4), the
+ * inverse of the original allow-by-omission denylist. It lives in `contracts` so both ends
+ * speak one list: the CLI can predict admission, the control plane enforces it, and "what
+ * passes" is a written set rather than an emergent property of what the check forgot to ban.
+ *
+ * Notable exclusions and why they are refused, not merely absent:
+ * - `service` — a hosted vertical is ONE serving script (the DO is the app); it reaches the
+ *   platform through the router (K-27), never a service binding. No own sibling to bind.
+ * - `dispatch_namespace` — the platform's Workers-for-Platforms fabric, never a vertical's.
+ * - anything managed/egress-shaped (`ai`, `browser`, `vectorize`, `hyperdrive`, `send_email`,
+ *   `mtls_certificate`) — the outside world is a connector concern, and outbound policy is an
+ *   open question (§6 / #303); least-privilege means these are refused until decided.
+ *
+ * Caveat on `d1`: admissible as an own relational store (e.g. a Better-Auth `AUTH_DB`), but
+ * the check does not yet PROVE the declared `database_id` is the vertical's own rather than
+ * another tenant's — trusted under model-B human admission; platform provisioning closes that
+ * gap (#301). A `durable_object_namespace` is admissible only for the vertical's OWN classes
+ * (no `script_name`, `class_name` ∈ declared `doClasses`) — the control plane checks that.
+ */
+export const ADMISSIBLE_BINDING_TYPES = [
+  'durable_object_namespace', // the vertical's own ScopeDO / state classes (own class only)
+  'd1', // an own relational store (id ownership deferred to #301)
+  'kv_namespace', // an own KV namespace
+  'queue', // an own queue (producer binding)
+  'r2_bucket', // an own R2 bucket
+  'analytics_engine', // an own Analytics Engine dataset
+  'secret_text', // an own secret (survives deploys via keep_bindings, #286)
+  'plain_text', // an own inline config value (inert, no authority)
+] as const;
+export type AdmissibleBindingType = (typeof ADMISSIBLE_BINDING_TYPES)[number];
+
+/** A binding the uploaded worker declares, as far as the sandbox contract check needs it.
+ *  `type` stays a free string here — the §4 allowlist (`ADMISSIBLE_BINDING_TYPES`) is enforced
+ *  by the control plane, not the schema, so a refused type produces a *named* rejection that
+ *  points at the doc rather than a generic Zod parse error the builder can't act on. */
 export const declaredBinding = z.object({
   type: z.string().min(1),
   name: z.string().min(1),
