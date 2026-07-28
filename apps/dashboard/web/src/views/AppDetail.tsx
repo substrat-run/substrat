@@ -24,6 +24,86 @@ const TAB_ALIASES: Record<string, string> = {
   integrations: 'settings/integrations',
 };
 
+/** One visitable public URL — a surface the app fronts (K-26), or the lone default. */
+type SurfaceUrl = { surface: string | null; label: string | null; hostname: string };
+
+/**
+ * One visitable URL per surface the app fronts (K-26): a vertical can serve several
+ * surfaces, each with its own canonical hostname. Prefers the full binding set — each
+ * surface's canonical active hostname — and falls back to the app row's single default
+ * hostname while that's loading / when the endpoint isn't backed. The default surface
+ * sorts first (it's the primary "Visit" target); the rest follow the vertical's declared
+ * surface order.
+ */
+function deriveSurfaceUrls(hostnames: AppHostnamesView | null, fallbackHostname: string | null): SurfaceUrl[] {
+  const active = (hostnames?.bindings ?? []).filter((b) => b.status === 'active');
+  if (hostnames && active.length > 0) {
+    const bySurface = new Map<string, AppHostnameRow[]>();
+    for (const b of active) bySurface.set(b.surface, [...(bySurface.get(b.surface) ?? []), b]);
+    const labelOf = (name: string) => hostnames.surfaces.find((s) => s.name === name)?.label ?? null;
+    const defaultSurface = hostnames.bindings.find((b) => b.hostname === hostnames.defaultHostname)?.surface;
+    const order = (name: string) => {
+      if (name === defaultSurface) return -1;
+      const i = hostnames.surfaces.findIndex((s) => s.name === name);
+      return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+    };
+    return [...bySurface.entries()]
+      .sort(([a], [b]) => order(a) - order(b))
+      .map(([name, list]) => ({
+        surface: name as string | null,
+        label: labelOf(name),
+        hostname: (list.find((b) => b.canonical) ?? list[0]!).hostname,
+      }));
+  }
+  return fallbackHostname ? [{ surface: null, label: null, hostname: fallbackHostname }] : [];
+}
+
+/**
+ * The header's "Visit" control: a plain button for a single-surface app, a dropdown of
+ * every surface's public URL when the vertical fronts more than one. Follows the popover
+ * pattern used elsewhere (a fixed backdrop closes on outside click; the menu is anchored
+ * to the button).
+ */
+function VisitControl({ surfaces }: { surfaces: SurfaceUrl[] }) {
+  const [open, setOpen] = useState(false);
+  if (surfaces.length === 0) return null;
+  if (surfaces.length === 1) {
+    const only = surfaces[0]!;
+    return <Button onClick={() => window.open(`https://${only.hostname}`, '_blank')}>Visit ↗</Button>;
+  }
+  return (
+    <div style={{ position: 'relative', display: 'inline-flex' }}>
+      <Button onClick={() => setOpen((o) => !o)}>Visit ▾</Button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 150 }} />
+          <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 151, minWidth: 260, background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 10, boxShadow: 'var(--shadow-popover)', overflow: 'hidden', padding: 4 }}>
+            {surfaces.map((s) => (
+              <button
+                key={s.hostname}
+                type="button"
+                onClick={() => {
+                  window.open(`https://${s.hostname}`, '_blank');
+                  setOpen(false);
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', border: 0, borderRadius: 6, background: 'none', cursor: 'pointer', textAlign: 'left' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-inset)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: 1, minWidth: 0 }}>
+                  <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>{s.label ?? s.surface}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-tertiary)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{s.hostname}</span>
+                </div>
+                <Ic name="external" size={12} />
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function AppDetail({
   app,
   tab,
@@ -43,6 +123,28 @@ export function AppDetail({
   const statusLabel = app.status === 'provisioning' ? 'Provisioning' : app.status === 'failed' ? 'Failed' : 'Active';
   const [main, sub] = (TAB_ALIASES[tab] ?? tab).split('/');
 
+  // The app's surface hostnames (K-26): the header's Visit control and the Overview
+  // Production card both list a URL per surface, so the fetch lives here — one source,
+  // shared down. Null while loading / when the endpoint isn't backed → the derivation
+  // falls back to the app row's single default hostname.
+  const [hostnames, setHostnames] = useState<AppHostnamesView | null>(null);
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setHostnames(MOCK_APP_HOSTNAMES);
+      return;
+    }
+    let live = true;
+    setHostnames(null);
+    api
+      .appHostnames(app.app_scope_id)
+      .then((v) => live && setHostnames(v))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+  const surfaceUrls = deriveSurfaceUrls(hostnames, app.hostname);
+
   return (
     <Page>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -53,7 +155,7 @@ export function AppDetail({
         </button>
         <Pill kind={statusKind} pulse={app.status === 'provisioning'}>{statusLabel}</Pill>
         <div style={{ flex: 1 }} />
-        {app.hostname && <Button onClick={() => window.open(`https://${app.hostname}`, '_blank')}>Visit ↗</Button>}
+        <VisitControl surfaces={surfaceUrls} />
         <button type="button" aria-label="More actions" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6, border: '1px solid var(--border-default)', background: 'var(--surface-card)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
           <Ic name="dots" size={16} />
         </button>
@@ -65,7 +167,7 @@ export function AppDetail({
         onChange={onTab}
       />
 
-      {main === 'overview' && <Overview app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} />}
+      {main === 'overview' && <Overview app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} surfaceUrls={surfaceUrls} />}
       {main === 'data' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <DataBrowser app={app} />
@@ -97,7 +199,7 @@ function KV({ label, children, last }: { label: string; children: React.ReactNod
   );
 }
 
-function Overview({ app, meta, statusKind, statusLabel }: { app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string }) {
+function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
   // The app's REAL audit trail (created / active / failed+reason / deleted). Dev-preview
   // shows a representative sample; a live deploy reads it from the worker.
@@ -132,6 +234,9 @@ function Overview({ app, meta, statusKind, statusLabel }: { app: AppRow; meta: {
     : undefined;
   const versionLabel = runningVersion ? `v${runningVersion.version}` : dep ? '—' : '…';
   const updateAvailable = !!dep && !!prodVersionId && prodVersionId !== dep.boundVersionId;
+  // One visitable URL per surface (K-26), derived once by the parent and shared with the
+  // header's Visit control — see deriveSurfaceUrls.
+  const multiSurface = surfaceUrls.length > 1;
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -155,11 +260,17 @@ function Overview({ app, meta, statusKind, statusLabel }: { app: AppRow; meta: {
           <Eyebrow>Production</Eyebrow>
           {app.hostname ? (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, height: 32, padding: '0 10px', background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 6, ...mono, color: 'var(--text-primary)' }}>{app.hostname}</span>
-                <IconBox label="Copy hostname"><CopyButton text={app.hostname} size={14} /></IconBox>
-                <Button variant="secondary" onClick={() => window.open(`https://${app.hostname}`, '_blank')}>Visit ↗</Button>
-              </div>
+              {surfaceUrls.map((s) => (
+                <div key={s.hostname} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, height: 32, padding: '0 10px', background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 6, ...mono, color: 'var(--text-primary)', overflow: 'hidden' }}>
+                    {multiSurface && s.surface && <MonoTag color="var(--text-tertiary)">{s.surface}</MonoTag>}
+                    <span style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{s.hostname}</span>
+                    {multiSurface && s.label && <span style={{ fontSize: 12, fontFamily: 'var(--font-sans)', color: 'var(--text-tertiary)' }}>{s.label}</span>}
+                  </span>
+                  <IconBox label={`Copy ${s.surface ?? 'hostname'} URL`}><CopyButton text={s.hostname} size={14} /></IconBox>
+                  <Button variant="secondary" onClick={() => window.open(`https://${s.hostname}`, '_blank')}>Visit ↗</Button>
+                </div>
+              ))}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, height: 32, padding: '0 10px', background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 6, ...mono, color: 'var(--text-primary)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{`https://${app.hostname}/openapi.json`}</span>
                 <IconBox label="Copy OpenAPI URL"><CopyButton text={`https://${app.hostname}/openapi.json`} size={14} /></IconBox>
