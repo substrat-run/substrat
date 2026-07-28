@@ -51,10 +51,23 @@ binding.
 | **Entity walk** (declared parent edges, depth ≤ 4) | ScopeDO SQL | already local |
 | **Role definitions** (`getRole`) | ControlPlaneDO | hot-path CP read |
 | **Role assignments** at tenant level, **tenant grants**, **org membership** | ControlPlaneDO | hot-path CP read |
-| **Entitlements** | coordinator, at module-load / provision | **not** per-op — not a hot-path read |
+| **Entitlements** | ScopeDO (projected), else ControlPlaneDO | **projected** (#304) |
 
 So the checker's `ControlPlaneReader` is the **sole** per-request CP dependency. Everything
 it returns can instead be **projected into the ScopeDO** and read locally.
+
+**Entitlements ride the same projection (#304).** They used to be a coordinator-only,
+trust-at-provision check — which gated *module loading* but gave a hosted vertical no way to
+read plan/quota/tier at *request time* without the forbidden `CONTROL_PLANE` binding. They are
+now projected into the scope's `_substrat_entitlements` alongside roles/tuples: `ctx.entitlement`
+reads them locally, and the per-operation gate fails closed against the projection. A grant or
+revoke is a tenant-level write, so it fans out to invalidate — the same project-on-write /
+event-invalidation shape as roles, which is exactly kernel open-question 5's answer. Expiry is
+applied at **read** (an expired grant is absent from the view and the gate), and `plan`/`quota`
+are carried but not kernel-enforced — the vertical reads the number and enforces its own quota.
+Enforcement flips **per scope** the first time entitlements are projected (an `entitlements_enforced`
+marker): a scope provisioned before #304 keeps trusting upstream until a fan-out / reconcile /
+re-provision back-fills it, so the switch strands no live scope.
 
 ## 4. The model — projection on write
 
@@ -112,9 +125,11 @@ never needs a tenant projection at all — and the `CONTROL_PLANE` binding disap
 ## 7. What this does NOT change
 
 The four-rule tuple algebra and its proof-carrying allow; K-21 tombstone semantics; the
-router's node assertion and secret; entitlement gating at provision; the shared control plane
-as the **directory** (tenants, scopes, hostnames, lifecycle) the router reads. This is about
-*where permission tuples are read*, nothing else.
+router's node assertion and secret; the shared control plane as the **directory** (tenants,
+scopes, hostnames, lifecycle) the router reads. This is about *where permission tuples —
+and now entitlements (#304) — are read*, nothing else. (Entitlement *gating* was provision-only
+before #304; it now reads the projection at request time, but the grant of an entitlement is
+still a control-plane act.)
 
 ## 8. Staged plan (each stage behind the permission/migration checkpoints)
 

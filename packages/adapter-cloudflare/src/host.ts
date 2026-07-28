@@ -427,6 +427,8 @@ interface ScopeStubRpc {
     tenantId: TenantId,
     scopeId: ScopeId,
     connectionId?: string,
+    /** The SKU the operation requires (#304) — enforced DO-side for a scope-local scope. */
+    requiredEntitlement?: string,
   ): Promise<unknown>;
   writeTuple(
     subject: string,
@@ -436,11 +438,14 @@ interface ScopeStubRpc {
   ): Promise<void>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
-  /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local. */
+  /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local.
+   *  `entitlements` (#304) rides the same snapshot — preserve-on-undefined, so a role-only re-projection
+   *  leaves projected entitlements untouched. */
   applyProjection(
     tenantId: string,
     roles: { role_key: string; permissions: string; source: string }[],
     tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[],
+    entitlements?: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[],
   ): Promise<void>;
   /** Read-only introspection of this scope's DB (§5.4 admin-query RPC). */
   introspectTables(): Promise<ScopeTable[]>;
@@ -1210,8 +1215,11 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId,
       scopeId,
       invoke: async <O, I>(operation: string, input?: I): Promise<O> => {
-        // Entitlement gate (§4.3): a module loads for a tenant only if the tenant
-        // holds its SKU flag. Fails closed the same way withdrawal does.
+        // Entitlement gate (§4.3): a module loads for a tenant only if the tenant holds its
+        // SKU flag. The COORDINATOR gates the console-managed path against the shared CP
+        // (`cp.tenantHoldsEntitlement`); for a hosted/CP-less scope that call is a trusting
+        // no-op, so the SAME `requiredKey` is passed to the DO, which fails closed against
+        // its PROJECTED entitlements (#304). One or the other enforces, never neither.
         const requiredKey = operationEntitlement.get(operation);
         if (requiredKey && !(await cp.tenantHoldsEntitlement(tenantId, requiredKey))) {
           return Promise.reject(
@@ -1227,6 +1235,7 @@ export class CloudflareScopeHost implements ScopeHost {
           tenantId,
           scopeId,
           connectionId,
+          requiredKey,
         )) as O;
         await this.drainExecutors(tenantId, scopeId);
         return result;
@@ -2218,6 +2227,10 @@ export class CloudflareScopeHost implements ScopeHost {
             plan: result.after.plan,
           },
         );
+        // #304: an entitlement change is a tenant-level write, so it fans out into the
+        // tenant's projected scopes — the invalidation half of the OQ5 answer. A no-op
+        // unless scope-local projection is on; the reconcile sweep repairs any drop.
+        await this.fanOut(tenantId);
       },
       revokeEntitlement: async (actor, tenantId, entitlementKey) => {
         const removed = await this.cp.revokeEntitlement(tenantId, entitlementKey);
@@ -2229,6 +2242,9 @@ export class CloudflareScopeHost implements ScopeHost {
           { entitlementKey, expiresAt: removed.expires_at, quota: removed.quota, plan: removed.plan },
           null,
         );
+        // The revoke must reach the projected scopes so a running vertical stops honouring
+        // the entitlement — a dropped fan-out here would leave it enforcing a stale grant.
+        await this.fanOut(tenantId);
       },
       listEntitlements: async (actor, tenantId): Promise<EntitlementGrant[]> => {
         const rows = await this.cp.listEntitlements(tenantId);
@@ -2593,28 +2609,38 @@ export class CloudflareScopeHost implements ScopeHost {
   // its scopes, which then evaluate permissions from their own storage. Cost moves
   // from the request hot path (every check) to the admin write path (rare).
 
-  /** The tenant's current roles + tenant-level tuples, in the shape the ScopeDO stores. */
+  /** The tenant's current roles + tenant-level tuples + entitlements, in the shape the ScopeDO
+   *  stores. Entitlements (#304) ride the same projection so a hosted scope reads plan/quota/
+   *  expiry locally; expiry is applied at READ (in the scope), so the full list is carried. */
   private async tenantProjection(
     tenantId: TenantId,
   ): Promise<{
     roles: { role_key: string; permissions: string; source: string }[];
     tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[];
+    entitlements: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[];
   }> {
-    const [roleRows, tuples] = await Promise.all([
+    const [roleRows, tuples, entitlementRows] = await Promise.all([
       this.cp.listRoles({ tenantId }),
       this.cp.dumpTenantTuples(tenantId),
+      this.cp.listEntitlements(tenantId),
     ]);
     return {
       roles: roleRows.map((r) => ({ role_key: r.role_key, permissions: r.permissions, source: r.source })),
       tuples,
+      entitlements: entitlementRows.map((e) => ({
+        entitlement_key: e.entitlement_key,
+        expires_at: e.expires_at,
+        quota: e.quota,
+        plan: e.plan,
+      })),
     };
   }
 
   /** Project the tenant's current state into ONE scope + flip it to local. */
   private async projectScope(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     if (!this.scopeLocalPermissions) return;
-    const { roles, tuples } = await this.tenantProjection(tenantId);
-    await this.scopeStub(scopeId).applyProjection(tenantId, roles, tuples);
+    const { roles, tuples, entitlements } = await this.tenantProjection(tenantId);
+    await this.scopeStub(scopeId).applyProjection(tenantId, roles, tuples, entitlements);
   }
 
   /**
@@ -2624,10 +2650,10 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private async fanOut(tenantId: TenantId): Promise<void> {
     if (!this.scopeLocalPermissions) return;
-    const { roles, tuples } = await this.tenantProjection(tenantId);
+    const { roles, tuples, entitlements } = await this.tenantProjection(tenantId);
     const scopes = await this.cp.listScopes({ tenantId });
     await Promise.all(
-      scopes.map((s) => this.scopeStub(s.scope_id as ScopeId).applyProjection(tenantId, roles, tuples)),
+      scopes.map((s) => this.scopeStub(s.scope_id as ScopeId).applyProjection(tenantId, roles, tuples, entitlements)),
     );
   }
 
@@ -2646,9 +2672,10 @@ export class CloudflareScopeHost implements ScopeHost {
    * the entry a CP-less vertical's `/internal/provision` calls. The shared control
    * plane already owns this scope's directory row + entitlements (the dashboard wrote
    * them before calling the vertical); here the vertical sets up only the scope's OWN
-   * state: migrate its modules, project the vertical's role definitions locally, grant
-   * the owner a role at scope level, and make the scope evaluate permissions from its
-   * own storage. No tenant-level tuples, no control plane.
+   * state: migrate its modules, project the vertical's role definitions locally, project
+   * the tenant's entitlements so the scope can read plan/quota/expiry at request time
+   * (#304), grant the owner a role at scope level, and make the scope evaluate permissions
+   * from its own storage. No tenant-level tuples, no control plane.
    */
   async provisionScopeLocal(input: {
     tenantId: TenantId;
@@ -2658,6 +2685,10 @@ export class CloudflareScopeHost implements ScopeHost {
     roles: RoleDefinition[];
     /** Which role the owner is assigned, at SCOPE level. */
     ownerRoleKey: string;
+    /** The tenant's entitlements, passed by the platform at provision (#304) — projected so
+     *  the scope's per-operation gate + `ctx.entitlement` read them locally. Absent ⇒ none
+     *  projected (the gate then fails closed for any gated operation until a projection lands). */
+    entitlements?: EntitlementGrant[];
   }): Promise<void> {
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
@@ -2665,6 +2696,19 @@ export class CloudflareScopeHost implements ScopeHost {
       input.tenantId,
       input.roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source })),
       [], // no tenant-level tuples — a CP-less vertical grants at scope level only
+      // Only PROJECT (and thereby switch on strict enforcement) when the platform actually
+      // supplies entitlements. Omitting them leaves the scope un-projected and trusting-
+      // upstream, so a vertical whose provision path predates #304 is never denied — it
+      // opts into enforcement the first time a projection carries entitlements (fanOut /
+      // reconcile / a re-provision that passes them).
+      input.entitlements
+        ? input.entitlements.map((e) => ({
+            entitlement_key: e.entitlementKey,
+            expires_at: e.expiresAt,
+            quota: e.quota,
+            plan: e.plan,
+          }))
+        : undefined,
     );
     await stub.writeTuple(
       `principal:${input.owner}`,

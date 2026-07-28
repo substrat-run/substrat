@@ -9,6 +9,7 @@ import {
   principalId,
   type DomainEvent,
   type DomainEventInput,
+  type EntitlementView,
   type EntityRef,
   type EventAuthorization,
   type PermissionKey,
@@ -198,6 +199,21 @@ const KERNEL_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+  -- The tenant's entitlements PROJECTED into this scope (#304), so a hosted vertical
+  -- reads plan/quota/expiry at request time from local storage instead of a forbidden
+  -- control-plane binding — the same projection-on-write model as roles/tuples above,
+  -- settling kernel open-question 5 (cache = the projection, invalidated by the fan-out).
+  -- No audit columns (granted_at/granted_by stay control-plane-side) and no tombstone:
+  -- applyProjection full-replaces, so a revoked grant is simply absent from the next
+  -- snapshot. Empty until projected — a console-managed scope reads over RPC instead.
+  CREATE TABLE IF NOT EXISTS _substrat_entitlements (
+    tenant_id TEXT NOT NULL,
+    entitlement_key TEXT NOT NULL,
+    expires_at TEXT,
+    quota INTEGER,
+    plan TEXT,
+    PRIMARY KEY (tenant_id, entitlement_key)
   );
 `;
 
@@ -596,10 +612,38 @@ export function defineScopeDO(
        * subject and the event actor, so those two can never disagree.
        */
       connectionId?: string,
+      /**
+       * The SKU the operation's module requires (#304), passed by the coordinator from its
+       * `operationEntitlement` map. Enforced HERE only for a scope-local (hosted) scope,
+       * where the control plane is unreachable by the sandbox contract and the projected
+       * entitlements are the source of truth. A console-managed scope is gated on the
+       * coordinator against the shared CP, so this is left undefined / a no-op there.
+       */
+      requiredEntitlement?: string,
     ): Promise<unknown> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
       if (!handler) throw new Error(`unknown operation: ${operation}`);
+      // #304 entitlement gate, scope-local path: fail closed on the projected view exactly as
+      // the coordinator fails closed against the CP. Only active once entitlements have been
+      // projected (the `entitlements_enforced` marker) — before that the scope trusts upstream,
+      // exactly as it did pre-#304, so a not-yet-back-filled scope is never wrongly denied.
+      if (requiredEntitlement && this.permissionSource() === 'local' && this.entitlementsEnforced()) {
+        const held = this.sql
+          .exec(
+            `SELECT 1 FROM _substrat_entitlements
+             WHERE tenant_id = ? AND entitlement_key = ? AND (expires_at IS NULL OR expires_at > ?)`,
+            tenantId,
+            requiredEntitlement,
+            new Date().toISOString(),
+          )
+          .toArray()[0];
+        if (!held) {
+          throw new Error(
+            `operation not entitled: ${operation} — tenant does not hold '${requiredEntitlement}'`,
+          );
+        }
+      }
       return this.queue.enqueue(async () => {
         let result: unknown;
         // The async transaction is the K-4 boundary: guards + handler + emits
@@ -1131,6 +1175,10 @@ export function defineScopeDO(
       const checker = this.checker;
       const relations = this.relations;
       const sql = this.sql;
+      // #304: entitlement reads pick the same local-vs-RPC reader the permission checker
+      // uses (projected scope → local table; console-managed → CP over RPC), resolved per
+      // call so a scope that flips to 'local' is picked up without rebuilding the context.
+      const entitlementReader = () => this.controlPlaneReader();
       // K-34: the checks that passed in THIS operation (a fresh context is built per
       // invoke, so this does not leak across operations). `emit` snapshots it; a
       // system/override actor is unconditionally allowed, so its checks are not recorded.
@@ -1218,7 +1266,21 @@ export function defineScopeDO(
             `${parent.entityType}:${parent.entityId}`,
           );
         },
+        entitlement: async (key: string): Promise<EntitlementView | null> => {
+          const held = await entitlementReader().listEntitlements(tenantId);
+          return held.find((e) => e.key === key) ?? null;
+        },
+        entitlements: (): Promise<EntitlementView[]> => entitlementReader().listEntitlements(tenantId),
       };
+    }
+
+    /** True once this scope has had entitlements projected at least once (#304) — the switch
+     *  from trust-upstream to strict fail-closed entitlement enforcement on the local path. */
+    private entitlementsEnforced(): boolean {
+      const row = this.sql
+        .exec(`SELECT value FROM _substrat_meta WHERE key = 'entitlements_enforced'`)
+        .toArray()[0] as { value: string } | undefined;
+      return row?.value === '1';
     }
 
     /** 'local' once this scope has been projected, else 'control-plane' (default). */
@@ -1244,15 +1306,35 @@ export function defineScopeDO(
           return createLocalControlPlaneReader(this.sql);
         }
         const stub = ns.get(ns.idFromName('control-plane')) as unknown as ControlPlaneReader;
+        // The CP DO's `listEntitlements` returns raw rows (all keys, incl. expired) — a
+        // different shape than the reader's view, so it is reached through a raw cast and
+        // filtered/mapped here. Expiry is applied at read, matching the local reader.
+        const rawStub = stub as unknown as {
+          listEntitlements(tenantId: string): Promise<
+            { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[]
+          >;
+        };
         return {
           tenantTuples: (tenantId, subject, relationPrefix) =>
             stub.tenantTuples(tenantId, subject, relationPrefix),
           getRole: (tenantId, key) => stub.getRole(tenantId, key),
+          listEntitlements: async (tenantId): Promise<EntitlementView[]> => {
+            const now = new Date().toISOString();
+            return (await rawStub.listEntitlements(tenantId))
+              .filter((r) => r.expires_at === null || r.expires_at > now)
+              .map((r) => ({
+                key: r.entitlement_key,
+                plan: r.plan,
+                quota: r.quota,
+                expiresAt: r.expires_at as EntitlementView['expiresAt'],
+              }));
+          },
         };
       };
       return {
         tenantTuples: (tenantId, subject, relationPrefix) => pick().tenantTuples(tenantId, subject, relationPrefix),
         getRole: (tenantId, key) => pick().getRole(tenantId, key),
+        listEntitlements: (tenantId) => pick().listEntitlements(tenantId),
       };
     }
 
@@ -1332,6 +1414,12 @@ export function defineScopeDO(
       tenantId: string,
       roles: { role_key: string; permissions: string; source: string }[],
       tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[],
+      /** The tenant's entitlements (#304) — projected alongside roles/tuples so a hosted
+       *  vertical reads them locally. **Preserve-on-undefined**: omitting it (a role-only
+       *  re-projection like the restore repair) leaves the projected entitlements untouched,
+       *  while passing a list — even `[]` — full-replaces them. This keeps pre-#304 callers
+       *  from silently wiping a scope's entitlements. */
+      entitlements?: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[],
     ): Promise<void> {
       await this.queue.enqueue(() => {
         this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
@@ -1357,6 +1445,29 @@ export function defineScopeDO(
             t.object,
             t.expires_at,
             t.revoked_at,
+          );
+        }
+        if (entitlements !== undefined) {
+          this.sql.exec(`DELETE FROM _substrat_entitlements WHERE tenant_id = ?`, tenantId);
+          for (const e of entitlements) {
+            this.sql.exec(
+              `INSERT OR REPLACE INTO _substrat_entitlements
+                 (tenant_id, entitlement_key, expires_at, quota, plan)
+               VALUES (?, ?, ?, ?, ?)`,
+              tenantId,
+              e.entitlement_key,
+              e.expires_at,
+              e.quota,
+              e.plan,
+            );
+          }
+          // #304: once a scope has been projected WITH entitlements even once, its gate
+          // switches from trust-upstream to strict fail-closed (a missing/expired key
+          // denies). Left unset, a scope provisioned before #304 keeps trusting upstream
+          // until a projection (fanOut / reconcile / re-provision) back-fills it — so the
+          // enforcement flip is per-scope and never strands an un-back-filled scope.
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('entitlements_enforced', '1')`,
           );
         }
         this.sql.exec(

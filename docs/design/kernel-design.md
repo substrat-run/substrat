@@ -960,8 +960,14 @@ externalization convention is day one; translations are not).
    a failing or lagging sink block the others, is the watermark per-sink, and does a read
    model sink need its own replay path when a projection schema changes?
 4. Skew-window declaration format in the manifest — per-migration or per-release?
-5. Tenant-root DO scope: is entitlement checking on its hot path (every module load) or
-   cached in scope DOs with event invalidation?
+5. ~~Tenant-root DO scope: is entitlement checking on its hot path (every module load) or
+   cached in scope DOs with event invalidation?~~ **Answered (#304): cached in scope DOs
+   with event invalidation** — entitlements are **projected** into each scope alongside
+   roles/tuples (scope-local-permissions.md), so a hosted vertical reads plan/quota/expiry
+   locally (`ctx.entitlement`) and the per-operation gate fails closed against the projection;
+   a grant/revoke fans out to invalidate. This is the SAME answer K-26/K-30 defer the routing
+   cache to — one mechanism (project-on-write), settled once for both, per control-plane.md
+   §4's "two things this defers".
 6. `EntityRef.entityId` format — require ULIDs from modules, or accept opaque strings and
    forbid ordering semantics?
 7. ~~Shape B EU-residency wording.~~ **Answered (K-30).** D1 supports a **jurisdiction**

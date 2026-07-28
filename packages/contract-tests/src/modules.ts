@@ -466,6 +466,12 @@ export const billedMod: ModuleRegistration = {
   manifest: billedModManifest,
   operations: {
     'billed/act': (() => 'ran') as OperationHandler<never, unknown>,
+    // #304: read the request-time entitlement view. Gated on 'billed' like every op in this
+    // module, so the tenant holds 'billed' when it runs; the KEY read is the operation input,
+    // letting a test read a held key, an absent key (→ null), or an expired one (→ null).
+    'billed/read-entitlement': (async (ctx, key) =>
+      ctx.entitlement(key as string)) as OperationHandler<string, unknown>,
+    'billed/list-entitlements': (async (ctx) => ctx.entitlements()) as OperationHandler<never, unknown>,
   },
 };
 
@@ -477,6 +483,10 @@ export const permMod: ModuleRegistration = {
     'perm/authorized-emit': authorizedEmitOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
     'perm/read-denials': readDenialsOp as OperationHandler<never, unknown>,
+    // #304: read the request-time entitlement view — used by the scope-local (projected)
+    // and CP-less path tests to prove a hosted vertical reads entitlements without a CP.
+    'perm/read-entitlement': (async (ctx, key) =>
+      ctx.entitlement(key as string)) as OperationHandler<string, unknown>,
   },
 };
 

@@ -2250,6 +2250,36 @@ export function scopeHostContractSuite(
       await host.admin.revokeEntitlement(staff, t4, 'billed');
     });
 
+    it('exposes the tenant grant to an operation via ctx.entitlement, dropping expired keys (#304)', async () => {
+      const stub = await host.getScope(alice, t4, s4);
+      const future = new Date(Date.now() + 3_600_000).toISOString();
+      // Hold 'billed' so the (billed-gated) read operation itself resolves, granted with a full plan.
+      await host.admin.grantEntitlement(staff, t4, 'billed', { expiresAt: future, quota: 500, plan: 'pro' });
+
+      // The held grant reads back as a view — the plan/quota/expiry a vertical gates features on.
+      expect(await stub.invoke('billed/read-entitlement', 'billed')).toEqual({
+        key: 'billed',
+        plan: 'pro',
+        quota: 500,
+        expiresAt: future,
+      });
+      // ctx.entitlements() lists every currently-held grant as a view.
+      const all = (await stub.invoke<{ key: string }[]>('billed/list-entitlements')) ?? [];
+      expect(all.map((e) => e.key)).toContain('billed');
+
+      // A key the tenant does not hold reads as null — the vertical branches on it, no throw.
+      expect(await stub.invoke('billed/read-entitlement', 'never-granted')).toBeNull();
+
+      // An expired grant is dropped at read, exactly as it is dropped at the gate (#33).
+      await host.admin.grantEntitlement(staff, t4, 'aux-sku', {
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+      expect(await stub.invoke('billed/read-entitlement', 'aux-sku')).toBeNull();
+
+      await host.admin.revokeEntitlement(staff, t4, 'billed');
+      await host.admin.revokeEntitlement(staff, t4, 'aux-sku');
+    });
+
     it('audits grant/revoke idempotently and records the SKU flag', async () => {
       // Re-grant twice: only the first is a real change, so only one row.
       await host.admin.grantEntitlement(staff, t4, 'audited-sku');

@@ -2,6 +2,7 @@ import {
   objectRef,
   subjectRef,
   type Decision,
+  type EntitlementView,
   type EntityRef,
   type Node,
   type PermissionKey,
@@ -36,10 +37,13 @@ interface TupleRow {
   revoked_at: string | null;
 }
 
-/** The slice of the ControlPlaneDO the checker consults for tenant-level data. */
+/** The slice of the ControlPlaneDO the checker (and the entitlement read surface) consult for
+ *  tenant-level data. `listEntitlements` returns only CURRENTLY-HELD grants (expiry applied at
+ *  read), so "the tenant holds key K" is exactly "K is in the returned list" — #304. */
 export interface ControlPlaneReader {
   tenantTuples(tenantId: string, subject: string, relationPrefix: string): Promise<TupleRow[]>;
   getRole(tenantId: string, key: string): Promise<RoleDefinition | undefined>;
+  listEntitlements(tenantId: string): Promise<EntitlementView[]>;
 }
 
 export interface DoCheckerDeps {
@@ -86,6 +90,29 @@ export function createLocalControlPlaneReader(sql: SqlStorage): ControlPlaneRead
         .toArray()[0] as { role_key: string; permissions: string; source: string } | undefined;
       if (!row) return undefined;
       return { key: row.role_key, permissions: JSON.parse(row.permissions), source: row.source } as RoleDefinition;
+    },
+    async listEntitlements(tenantId): Promise<EntitlementView[]> {
+      // Only currently-held grants: an expired row is absent from the view exactly as it is
+      // absent from the gate (#33/#304). ISO instants compare lexically, evaluated at read.
+      const rows = sql
+        .exec(
+          `SELECT entitlement_key, plan, quota, expires_at FROM _substrat_entitlements
+           WHERE tenant_id = ? AND (expires_at IS NULL OR expires_at > ?)`,
+          tenantId,
+          new Date().toISOString(),
+        )
+        .toArray() as unknown as {
+        entitlement_key: string;
+        plan: string | null;
+        quota: number | null;
+        expires_at: string | null;
+      }[];
+      return rows.map((r) => ({
+        key: r.entitlement_key,
+        plan: r.plan,
+        quota: r.quota,
+        expiresAt: r.expires_at as EntitlementView['expiresAt'],
+      }));
     },
   };
 }
