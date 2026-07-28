@@ -88,17 +88,49 @@ Whatever the model, a customer's uploaded worker must be structurally incapable 
 platform infrastructure. This is what WfP dispatch buys and what the upload metadata must
 enforce:
 
-- **Its own `ScopeDO` only.** A customer vertical defines and binds its *own* DO classes
-  (`defineScopeDO` — the vertical IS a DO). It gets **no `CONTROL_PLANE` binding, no platform
-  secrets, no `AUTH_DB` it did not create.** The platform's control-plane DO and secrets are
-  never in a customer script's binding set — the uploader rejects an upload that declares them.
+- **Its own resources only.** A customer vertical defines and binds its *own* DO classes
+  (`defineScopeDO` — the vertical IS a DO) and its own data stores. It gets **no `CONTROL_PLANE`
+  binding, no platform secrets, no `AUTH_DB` it did not create.** The platform's control-plane
+  DO and secrets are never in a customer script's binding set — the uploader rejects an upload
+  that declares them.
 - **No ambient authority.** `PLATFORM_SECRET`/`ROUTER_SECRET` are the platform's; a customer
   worker verifies the *router's* secret (K-27) to trust an inbound node, but never holds the
   platform's. It cannot call the control plane as the platform.
 - **Provisioning stays pull (K-31).** The customer worker cannot create tenants/entitlements;
   the platform calls *it* to provision, exactly as today.
 - **Outbound + resource limits.** WfP per-script CPU/subrequest caps; an outbound policy is an
-  open question (§6) but the default is least-privilege.
+  open question (§6 / #303) but the default is least-privilege.
+
+### 4.1 The binding allowlist (positive, not by omission)
+
+Admission is a **positive allowlist**, not a denylist: a binding type the check never
+anticipated is refused *by omission*, never allowed by it. The permitted set is one list
+(`ADMISSIBLE_BINDING_TYPES` in `packages/contracts/src/deploy.ts`), shared by the CLI (so a
+builder can predict admission) and enforced by the control plane (`assertSandboxContract`).
+Every refusal names the offending binding and its type and points here.
+
+| Binding type | Verdict | Why |
+|---|---|---|
+| `durable_object_namespace` | **Permitted** — own class only | The vertical's own `ScopeDO`/state classes. Refused if it carries a `script_name` (cross-script) or a `class_name` the bundle didn't declare in `doClasses`. |
+| `d1` | **Permitted** — own store | An own relational store (e.g. a Better-Auth `AUTH_DB`). See the ownership caveat below. |
+| `kv_namespace` | **Permitted** — own store | An own KV namespace. |
+| `queue` | **Permitted** — own store | An own queue (producer binding). |
+| `r2_bucket` | **Permitted** — own store | An own R2 bucket. |
+| `analytics_engine` | **Permitted** — own dataset | An own Analytics Engine dataset. |
+| `secret_text` / `plain_text` | **Permitted** — inert config | Own secrets (survive deploys via `keep_bindings`, #286) and inline config values; no reach into platform infrastructure. |
+| `service` | **Rejected** | A hosted vertical is **one serving script** (the DO *is* the app) — there is no own sibling worker to bind, and platform reach is the router (K-27), never a binding. Reconsider only if multi-script verticals are ever introduced. |
+| `dispatch_namespace` | **Rejected** | The platform's Workers-for-Platforms fabric — never a vertical's to bind. |
+| `ai`, `browser`, `vectorize`, `hyperdrive`, `send_email`, `mtls_certificate`, … | **Rejected** | Managed/egress-shaped capabilities: the outside world is a connector concern, and outbound policy is an open question (§6 / #303). Least-privilege refuses them until decided. |
+| any other / unrecognized type | **Rejected** | Not on the allowlist ⇒ refused, by construction. |
+| `CONTROL_PLANE` (by **name**, any type) | **Rejected** | The platform's directory binding, refused by name whatever type it claims — masquerading as a permitted type must not slip it through. |
+
+**D1 ownership caveat (model B).** A `d1` binding names a `database_id`, and the check does
+**not** yet prove the vertical *owns* that id rather than pointing at another tenant's DB. Under
+model B that gap is closed by **human admission** — a named, accountable builder's declared
+bindings are trusted before a version can serve — not by this structural check. When self-serve
+opens wider, per-vertical store **provisioning** (the platform mints the D1 and injects the id)
+replaces a bundle-chosen id; that work is tracked in **#301**, a deploy-pipeline change, not a
+change to this list.
 
 If an uploaded bundle's declared bindings exceed this contract, the deploy endpoint refuses it
 before it ever reaches the namespace. That refusal — not code inspection — is the primary
