@@ -1431,6 +1431,12 @@ export function defineScopeDO(
        *  while passing a list — even `[]` — full-replaces them. This keeps pre-#304 callers
        *  from silently wiping a scope's entitlements. */
       entitlements?: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[],
+      /** Scope-level tuples (e.g. the owner's role grant at provision) upserted into
+       *  `_substrat_tuples` in this SAME transaction, additively (#332). Preserve-on-undefined:
+       *  omitting it leaves existing scope tuples untouched, so a role-only re-projection keeps
+       *  the owner grant. Passing them here (rather than a follow-up `writeTuple`) is what makes
+       *  provision atomic — the grant and the enforcement flip land together or not at all. */
+      scopeTuples?: { subject: string; relation: string; object: string; expires_at: string | null }[],
     ): Promise<void> {
       await this.queue.enqueue(() => {
         this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
@@ -1481,10 +1487,60 @@ export function defineScopeDO(
             `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('entitlements_enforced', '1')`,
           );
         }
+        // #332: scope-level grants (the owner's role tuple at provision) are written in the
+        // SAME enqueued unit as the projection and the enforcement flip below. Additive upsert
+        // — NOT a full replace — so existing scope tuples are preserved. This is what keeps a
+        // scope from ever being left "roles projected, permission_source=local, zero tuples" by
+        // a write that lands the projection but drops before a follow-up owner grant.
+        for (const st of scopeTuples ?? []) {
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at)
+             VALUES (?, ?, ?, ?, NULL)`,
+            st.subject,
+            st.relation,
+            st.object,
+            st.expires_at,
+          );
+        }
+        // #332: only switch on strict local enforcement when SOMEONE actually holds a role.
+        // A projection that leaves role definitions but no live principal→role grant would make
+        // every check fail closed — a scope serving nothing but denials, unfixable from inside.
+        // Leave `permission_source` as-is instead; a reconcile that restores the owner grant
+        // re-runs this and flips safely. (A CP-less vertical uses the local reader regardless of
+        // this flag, so the owner grant is written above in the same unit — this guard is the
+        // belt to that suspenders, and it protects the CP-backed flip outright.)
+        if (roles.length > 0 && !this.hasLiveRoleGrant(tenantId)) return;
         this.sql.exec(
           `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('permission_source', 'local')`,
         );
       });
+    }
+
+    /** True if any live (non-revoked, unexpired) principal→role grant exists for this tenant,
+     *  at scope OR tenant level — the precondition for switching on strict local enforcement so a
+     *  projection never enables fail-closed evaluation against an empty tuple table (#332). */
+    private hasLiveRoleGrant(tenantId: string): boolean {
+      const now = new Date().toISOString();
+      const scope = this.sql
+        .exec(
+          `SELECT 1 FROM _substrat_tuples
+           WHERE relation LIKE 'role:%' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+           LIMIT 1`,
+          now,
+        )
+        .toArray();
+      if (scope.length > 0) return true;
+      return (
+        this.sql
+          .exec(
+            `SELECT 1 FROM _substrat_tenant_tuples
+             WHERE tenant_id = ? AND relation LIKE 'role:%' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+             LIMIT 1`,
+            tenantId,
+            now,
+          )
+          .toArray().length > 0
+      );
     }
   };
 }

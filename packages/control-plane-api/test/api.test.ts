@@ -443,6 +443,62 @@ describe('control-plane API', () => {
     });
   });
 
+  // -- #332: builder-triggerable recovery for a scope bricked to zero tuples ---
+
+  it('re-provisions a scope to repair the #332 lockout — delegates to the vertical, no owner, re-gathered entitlements', async () => {
+    const sP = scopeId.parse(ulid());
+    const owner = principalId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sP, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sP);
+    await host.admin.grantEntitlement(staff, t1, 'housing', { quota: 10, plan: 'pro' });
+
+    let captured: { tenantId?: string; scopeId?: string; owner?: string; entitlements?: EntitlementGrant[] } | undefined;
+    const fakeVertical = {
+      reconcileInstance: async (input: { tenantId: string; scopeId: string; entitlements?: EntitlementGrant[] }) => {
+        captured = input;
+        return { tenantId: t1, scopeId: sP, owner };
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+
+    // The request body is empty — the platform delivers no owner (it never persisted one) and
+    // gathers the tenant's entitlements itself, exactly as at provision.
+    const res = await delegated.request(`/tenants/${t1}/scopes/${sP}/provision`, { method: 'POST', headers: auth });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ scopeId: sP, owner });
+    expect(captured).toMatchObject({ tenantId: t1, scopeId: sP });
+    expect(captured?.owner).toBeUndefined(); // the vertical re-sources the owner; the CP never sends one
+    expect(captured?.entitlements?.find((e) => e.entitlementKey === 'housing')).toMatchObject({ quota: 10, plan: 'pro' });
+  });
+
+  it("relays the vertical's reconcile refusal (no owner of record) instead of collapsing to 500", async () => {
+    const sN = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sN, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sN);
+    const refusing = {
+      reconcileInstance: async () => {
+        throw new ControlPlaneError(409, 'no owner of record for scope — cannot reconcile; re-run the full install');
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': refusing },
+    });
+    const res = await delegated.request(`/tenants/${t1}/scopes/${sN}/provision`, { method: 'POST', headers: auth });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/no owner of record/);
+  });
+
+  it('404s a provision for a scope the tenant does not own', async () => {
+    const res = await json(`/tenants/${t1}/scopes/${scopeId.parse(ulid())}/provision`, 'POST', {});
+    expect(res.status).toBe(404);
+  });
+
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------
 
   it('delivers per-instance config through the vertical that owns the scope', async () => {

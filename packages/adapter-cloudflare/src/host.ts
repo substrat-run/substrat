@@ -459,6 +459,8 @@ interface ScopeStubRpc {
     roles: { role_key: string; permissions: string; source: string }[],
     tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[],
     entitlements?: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[],
+    /** Scope-level tuples (e.g. the owner grant) written in the same unit as the flip (#332). */
+    scopeTuples?: { subject: string; relation: string; object: string; expires_at: string | null }[],
   ): Promise<void>;
   /** Read-only introspection of this scope's DB (§5.4 admin-query RPC). */
   introspectTables(): Promise<ScopeTable[]>;
@@ -2820,12 +2822,19 @@ export class CloudflareScopeHost implements ScopeHost {
             plan: e.plan,
           }))
         : undefined,
-    );
-    await stub.writeTuple(
-      `principal:${input.owner}`,
-      `role:${input.ownerRoleKey}`,
-      `scope:${input.scopeId}`,
-      null,
+      // #332: the owner's scope-level role grant rides the SAME projection unit as the
+      // enforcement flip, rather than a separate `writeTuple` after it. A drop between the two
+      // used to leave the scope "roles projected, source=local, zero tuples" — enforcing nothing
+      // but denials, with no builder-facing lever to fix it. Atomic now: grant and flip land
+      // together, and the empty-tuple guard in `applyProjection` refuses the flip if they don't.
+      [
+        {
+          subject: `principal:${input.owner}`,
+          relation: `role:${input.ownerRoleKey}`,
+          object: `scope:${input.scopeId}`,
+          expires_at: null,
+        },
+      ],
     );
   }
 

@@ -54,6 +54,13 @@ const SCHEMA_STATEMENTS: string[] = [
   `CREATE TABLE IF NOT EXISTS identity (scope_id TEXT NOT NULL, sub TEXT NOT NULL, principal TEXT NOT NULL, PRIMARY KEY (scope_id, sub))`,
   // The owner seat waiting to be claimed: set at provision, consumed by the first login.
   `CREATE TABLE IF NOT EXISTS pending_owner (scope_id TEXT PRIMARY KEY, principal TEXT NOT NULL)`,
+  // The DURABLE owner of record: also set at provision, but NEVER consumed (#332). `pending_owner`
+  // is gone the moment the owner first signs in, so it can't answer "who owns this scope" after
+  // that. This can — it's the vertical's own memory of the owner, in the per-tenant IdentityDO
+  // (a different DO from the scope's data DO), so it survives a scope-DO storage wipe. A builder-
+  // triggered reconcile reads it to re-establish the owner's role grant without the platform
+  // secret and without the CP having to persist an owner it doesn't otherwise track.
+  `CREATE TABLE IF NOT EXISTS owner_of_record (scope_id TEXT PRIMARY KEY, principal TEXT NOT NULL)`,
   // Outstanding member invites (the post-setup join path). Each is a pre-minted principal +
   // role the admin already granted at scope level, waiting for a login to claim it by token.
   // Only the token's HASH is stored — the token itself lives in the accept link, never here.
@@ -133,9 +140,27 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return { config, sessionSecret: secret };
   }
 
-  /** Record the owner seat to be claimed by the first login into this scope (called at provision). */
+  /**
+   * Record the owner seat at provision. Writes BOTH the transient `pending_owner` (claimed +
+   * consumed by the first login) and the durable `owner_of_record` (#332, never consumed) in one
+   * call, so the vertical always retains who the owner is even after the seat has been claimed.
+   * Idempotent — the reconciliation sweep re-runs it.
+   */
   async setPendingOwner(scopeId: string, principal: string): Promise<void> {
     this.ctx.storage.sql.exec('INSERT OR REPLACE INTO pending_owner (scope_id, principal) VALUES (?, ?)', scopeId, principal);
+    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO owner_of_record (scope_id, principal) VALUES (?, ?)', scopeId, principal);
+  }
+
+  /**
+   * The scope's durable owner of record, or null if this scope was never provisioned through this
+   * DO (a legacy scope predating #332, or a slug typo). Read by the reconcile path to re-grant the
+   * owner their role after a scope-DO wipe left the scope enforcing against an empty tuple table.
+   */
+  async getOwnerOfRecord(scopeId: string): Promise<string | null> {
+    const row = [...this.ctx.storage.sql.exec('SELECT principal FROM owner_of_record WHERE scope_id = ?', scopeId)][0] as
+      | { principal: string }
+      | undefined;
+    return row?.principal ?? null;
   }
 
   /**
@@ -269,6 +294,7 @@ export type IdentityStub = {
   setScopeConfig(scopeId: string, entries: Array<{ key: string; value: string }>): Promise<void>;
   authWiring(scopeId: string): Promise<{ config: Record<string, string>; sessionSecret: string }>;
   setPendingOwner(scopeId: string, principal: string): Promise<void>;
+  getOwnerOfRecord(scopeId: string): Promise<string | null>;
   needsSetup(scopeId: string): Promise<boolean>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;
   createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void>;

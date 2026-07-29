@@ -172,6 +172,40 @@ app.post('/internal/provision', async (c) => {
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
 });
 
+const reconcileBody = z.object({ tenantId, scopeId, entitlements: z.array(entitlementGrant).optional() });
+
+// Repair a site stuck at the #332 lockout — roles projected but no principal holding one, so the
+// scope enforces against an empty tuple table and every login denies. The builder can't reach the
+// platform-secret-gated /internal/provision, so the control plane calls this on their behalf. It
+// re-sources the owner from this vertical's durable owner-of-record (in the per-tenant IdentityDO,
+// which survives a scope-DO wipe) and re-runs the idempotent provision. No owner in the body — the
+// platform never persisted one. Platform-secret gated; idempotent.
+app.post('/internal/reconcile', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const body = reconcileBody.parse(await c.req.json());
+  const node = { tenantId: body.tenantId, scopeId: body.scopeId };
+  const owner = await identityDo(c.env, node).getOwnerOfRecord(body.scopeId);
+  if (!owner) {
+    throw new HTTPException(409, {
+      message: `no owner of record for site ${body.scopeId} — cannot reconcile; re-run the full install`,
+    });
+  }
+  await hostFor(c.env).provisionScopeLocal({
+    tenantId: body.tenantId,
+    scopeId: body.scopeId,
+    owner: principalId.parse(owner),
+    roles: ROLES,
+    ownerRoleKey: 'admin',
+    entitlements: body.entitlements,
+  });
+  return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner });
+});
+
 // Read-only scope-table introspection for the console/dashboard Data view (platform-gated).
 function gatePlatform(c: { env: Env; req: { raw: Request } }): void {
   try {
