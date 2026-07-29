@@ -1,5 +1,131 @@
 # @substrat-run/control-plane-api
 
+## 0.25.0
+
+### Minor Changes
+
+- e612b98: Reap archived scopes (§4.4): free the Durable Object storage that Cloudflare never
+  garbage-collects. Deleting an app archives its scope — a tombstone-only transition that
+  keeps the directory row but leaves the scope DO holding every byte forever. This adds a
+  terminal `reaped` state past `archived`: `reapScope` wipes the DO's storage while keeping
+  the directory row (audit history + burned slug), the one irreversible scope transition, so
+  it only ever leaves `archived`, `getScope` fails closed on it, and its slug is released for
+  reuse. Delivered two ways over one seam — the storage wipe reaches the vertical's own
+  deployment (a hosted scope's DO is CP-less) via the same `deleteScope` dispatch the snapshot
+  GC uses: a staff-only `POST /tenants/:t/scopes/:s/reap` (armed in the console behind a
+  type-the-slug dialog, since there is no restore), and a `runPlatformSweep` phase that reaps
+  scopes archived longer than `SCOPE_RETENTION_DAYS` — opt-in and unset by default, because
+  the reap cannot be undone. Both adapters gain an additive `archived_at` column (stamped on
+  archive, cleared on unarchive) to age the sweep, and their `(tenant_id, slug)` unique index
+  becomes partial on the live statuses so a retained tombstone never blocks the slug reuse the
+  pre-check already intends — closing a latent gap where archived slugs could not actually be
+  reclaimed.
+- caedb1c: A prod promote no longer strands a legacy scope's data, and the in-place serve is honest and
+  complete end-to-end (#321). #287 shipped the serve-in-place, but existing (pre-#286) scopes were
+  never migrated onto the stable serving script, so every promote re-stranded them: the private-
+  vertical rebind cascade advanced a legacy scope's version to the incoming version's fresh,
+  empty per-version dispatch script, `0001-init` re-ran against empty storage, and the app rendered
+  a no-access page that read as an auth bug rather than data loss.
+
+  - **Adopt-before-rebind on promote.** For a dispatch-backed vertical, the host rebind cascade is
+    skipped (an embedded vertical, with no per-version script, keeps it) and the control-plane-api
+    prod-promote handler owns adopt-then-rebind in the correct order: after a successful in-place
+    serve, each still-legacy owned scope is adopted onto the stable serving script — its bytes moved
+    off the per-version script _before_ any version pointer advances — then rebound. Retry-safe:
+    nothing rebinds until the adopt succeeds, so a failed serve strands nothing and a re-promote
+    resumes. A shared `adoptScopeOntoServing` primitive backs both this and the explicit endpoint.
+
+  - **A builder-triggerable backfill for existing installs.** `substrat scope adopt-serving <scopeId>`
+    migrates one legacy scope; `--vertical <slug>` (and `POST /verticals/:slug/adopt-serving`)
+    backfills every still-legacy scope of a vertical. Idempotent.
+
+  - **`scope restore` accepts an adapter-sqlite scope file and errors actionably.** `importDump`/
+    `loadDump` re-assert the kernel spine after the drop-then-replay, so a dump that omits
+    `_substrat_roles`/`_substrat_tenant_tuples` (an adapter-sqlite scope file keeps them in its
+    directory db) no longer leaves the target missing spine tables and crashing a later check with a
+    bare `no such table` → the detail-less `internal error` the field report hit. The restore route
+    returns an actionable 422 instead of the generic 500.
+
+  - **A failed in-place serve stops reading as "deployed."** `servingVersionId` is added to the
+    channel surface (`VerticalChannel` + both adapters' `listChannels`): a prod promote moves the
+    channel pointer before the serve, so when the serve fails `servingVersionId !== versionId` is the
+    honest signal that the scopes still run the previous code. `substrat versions`, the dashboard
+    deployments view, and the console surface the divergence and prompt a re-promote.
+
+  - **An empty role projection is a platform condition, not only a per-app 403.** A new
+    `GET /tenants/:t/scopes/:s/health` reports `roleProjectionEmpty` for an active scope whose served
+    DO has zero projected roles (the silent state the field report chased through a migration-journal
+    diff); the console Scopes detail raises it as a flagged condition.
+
+  Prevents future stranding and gives a migration path for existing installs. Recovering data already
+  stranded by an earlier bad promote (locating the specific prior per-version script) is a separate
+  ops task, out of scope here.
+
+- f0df69a: Tenant delete with a grace window (§4.8, #36): reclaim a deleted tenant's data instead of
+  stranding it forever. `deleting` was a dead status — written once (a dashboard team-delete)
+  and never consumed, so a tenant marked for deletion kept every byte. This finishes the
+  lifecycle as the tenant analogue of §4.4's scope reap.
+
+  `tenantStatus` gains a terminal `reaped` past `deleting`, and the `tenants` row gains a
+  `deletingAt` timestamp (stamped on entering `deleting`, cleared on un-delete) so the grace
+  window can be aged. `deleting` stays a reversible pause — every scope already fails `getScope`
+  closed under a non-active tenant, so nothing is destroyed until a reap, and an un-delete (→
+  `active`) restores the tenant whole. `reapTenant` (new on `HostAdmin`, directory-side only)
+  clears the tenant's PII/config directory rows — identities and identity pools, membership
+  tuples, roles, entitlements, orgs — and flips the row to a `reaped` tombstone, keeping the
+  `tenants` row (burned slug + history) and `_substrat_admin_log` whole. It refuses any tenant
+  not in `deleting`; `reaped` is unreachable via `setTenantStatus`.
+
+  Delivered over one seam, two ways: a staff-only `POST /tenants/:t/reap` ("reap now", armed in
+  the console behind a type-the-slug dialog, refused with 409 unless the tenant is `deleting`),
+  and a `runPlatformSweep` phase that reaps tenants whose `deletingAt` is older than
+  `TENANT_RETENTION_DAYS` — opt-in and unset by default, because the reap is irreversible. The
+  per-scope byte-wipe runs above the kernel: the reaper archives-if-needed then reaps each scope
+  through the existing `reapScopeFn` seam (so the control plane's orchestrated per-scope wipe
+  applies for free), then clears the directory via `reapTenant`.
+
+  Also settles #36's retention question: the admin log is the compliance witness (bokföringslagen
+  §5.3) and is deliberately **never swept** — no TTL. The bound against dumping an ever-growing
+  table lives on the read surface instead: `GET /admin-log` now defaults a page size (the
+  in-process `auditLog` stays unbounded, so an internal caller that wants everything still gets it,
+  and `nextCursor` walks the whole log).
+
+  Full-tenant export (GDPR Art. 20 portability) is intentionally out of scope here — the per-scope
+  `exportScope` seam it builds on already exists.
+
+### Patch Changes
+
+- 487db9a: Deploy-failure reporting is honest end-to-end (#307). A `substrat push` of a vertical that
+  throws at module import time (e.g. an "api catalog drift" self-check) builds, dry-runs clean,
+  uploads, and is then refused by Workers-for-Platforms with CF 10021 — and the failure that
+  came back was undiagnosable in two ways.
+
+  - **The upstream error was truncated mid-token.** The WfP error body was clipped with a bare
+    `body.slice(0, 400)`, so it ended `…eka/set-budg` — no marker, no closing brace, the rest of
+    the list invisible, and no way to tell a real operation name from a severed string. A new
+    `clip(body, max = 2000)` helper carries the body through whole up to a generous cap and, when
+    it must clip, appends an explicit `… [truncated, N chars omitted]` instead of cutting silently.
+
+  - **A bad bundle read as a platform outage.** Every upload failure collapsed to a `502`, even a
+    Cloudflare `4xx` that is the builder's own script being refused — sending the reader hunting
+    for a platform problem first. The uploader now throws `DeployUploadError` carrying the upstream
+    status (part of the deploy seam, `upstreamStatusOf`), and the deploy endpoint answers a runtime
+    `4xx` as `422 deploy rejected` (well-formed HTTP, semantically refused — the builder's fault),
+    keeping `5xx`/unknown as `502 deploy upload failed`.
+
+  Also clarified: a version **label is consumed only on a successful upload**. The endpoint records
+  the pending version _after_ the upload returns, so a push that fails at the upload step never
+  registers the label and the same `--version` is reusable on retry (documented in
+  self-serve-deploy.md §5). Booting the isolate at build time to catch import-time throws locally
+  (the issue's third ask) is intentionally not done here — it would add a Workers runtime dependency
+  to the CLI; the honest remote error is the mitigation.
+
+- Updated dependencies [e612b98]
+- Updated dependencies [caedb1c]
+- Updated dependencies [f0df69a]
+  - @substrat-run/contracts@0.25.0
+  - @substrat-run/kernel@0.25.0
+
 ## 0.24.0
 
 ### Minor Changes

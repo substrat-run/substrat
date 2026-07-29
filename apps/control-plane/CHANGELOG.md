@@ -1,5 +1,68 @@
 # @substrat-run/control-plane
 
+## 0.4.0
+
+### Minor Changes
+
+- e612b98: Reap archived scopes (§4.4): free the Durable Object storage that Cloudflare never
+  garbage-collects. Deleting an app archives its scope — a tombstone-only transition that
+  keeps the directory row but leaves the scope DO holding every byte forever. This adds a
+  terminal `reaped` state past `archived`: `reapScope` wipes the DO's storage while keeping
+  the directory row (audit history + burned slug), the one irreversible scope transition, so
+  it only ever leaves `archived`, `getScope` fails closed on it, and its slug is released for
+  reuse. Delivered two ways over one seam — the storage wipe reaches the vertical's own
+  deployment (a hosted scope's DO is CP-less) via the same `deleteScope` dispatch the snapshot
+  GC uses: a staff-only `POST /tenants/:t/scopes/:s/reap` (armed in the console behind a
+  type-the-slug dialog, since there is no restore), and a `runPlatformSweep` phase that reaps
+  scopes archived longer than `SCOPE_RETENTION_DAYS` — opt-in and unset by default, because
+  the reap cannot be undone. Both adapters gain an additive `archived_at` column (stamped on
+  archive, cleared on unarchive) to age the sweep, and their `(tenant_id, slug)` unique index
+  becomes partial on the live statuses so a retained tombstone never blocks the slug reuse the
+  pre-check already intends — closing a latent gap where archived slugs could not actually be
+  reclaimed.
+- f0df69a: Tenant delete with a grace window (§4.8, #36): reclaim a deleted tenant's data instead of
+  stranding it forever. `deleting` was a dead status — written once (a dashboard team-delete)
+  and never consumed, so a tenant marked for deletion kept every byte. This finishes the
+  lifecycle as the tenant analogue of §4.4's scope reap.
+
+  `tenantStatus` gains a terminal `reaped` past `deleting`, and the `tenants` row gains a
+  `deletingAt` timestamp (stamped on entering `deleting`, cleared on un-delete) so the grace
+  window can be aged. `deleting` stays a reversible pause — every scope already fails `getScope`
+  closed under a non-active tenant, so nothing is destroyed until a reap, and an un-delete (→
+  `active`) restores the tenant whole. `reapTenant` (new on `HostAdmin`, directory-side only)
+  clears the tenant's PII/config directory rows — identities and identity pools, membership
+  tuples, roles, entitlements, orgs — and flips the row to a `reaped` tombstone, keeping the
+  `tenants` row (burned slug + history) and `_substrat_admin_log` whole. It refuses any tenant
+  not in `deleting`; `reaped` is unreachable via `setTenantStatus`.
+
+  Delivered over one seam, two ways: a staff-only `POST /tenants/:t/reap` ("reap now", armed in
+  the console behind a type-the-slug dialog, refused with 409 unless the tenant is `deleting`),
+  and a `runPlatformSweep` phase that reaps tenants whose `deletingAt` is older than
+  `TENANT_RETENTION_DAYS` — opt-in and unset by default, because the reap is irreversible. The
+  per-scope byte-wipe runs above the kernel: the reaper archives-if-needed then reaps each scope
+  through the existing `reapScopeFn` seam (so the control plane's orchestrated per-scope wipe
+  applies for free), then clears the directory via `reapTenant`.
+
+  Also settles #36's retention question: the admin log is the compliance witness (bokföringslagen
+  §5.3) and is deliberately **never swept** — no TTL. The bound against dumping an ever-growing
+  table lives on the read surface instead: `GET /admin-log` now defaults a page size (the
+  in-process `auditLog` stays unbounded, so an internal caller that wants everything still gets it,
+  and `nextCursor` walks the whole log).
+
+  Full-tenant export (GDPR Art. 20 portability) is intentionally out of scope here — the per-scope
+  `exportScope` seam it builds on already exists.
+
+### Patch Changes
+
+- Updated dependencies [487db9a]
+- Updated dependencies [e612b98]
+- Updated dependencies [caedb1c]
+- Updated dependencies [f0df69a]
+  - @substrat-run/control-plane-api@0.25.0
+  - @substrat-run/contracts@0.25.0
+  - @substrat-run/kernel@0.25.0
+  - @substrat-run/adapter-cloudflare@0.25.0
+
 ## 0.3.8
 
 ### Patch Changes
