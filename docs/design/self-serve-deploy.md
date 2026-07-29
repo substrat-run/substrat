@@ -124,13 +124,25 @@ Every refusal names the offending binding and its type and points here.
 | any other / unrecognized type | **Rejected** | Not on the allowlist ⇒ refused, by construction. |
 | `CONTROL_PLANE` (by **name**, any type) | **Rejected** | The platform's directory binding, refused by name whatever type it claims — masquerading as a permitted type must not slip it through. |
 
-**D1 ownership caveat (model B).** A `d1` binding names a `database_id`, and the check does
-**not** yet prove the vertical *owns* that id rather than pointing at another tenant's DB. Under
-model B that gap is closed by **human admission** — a named, accountable builder's declared
-bindings are trusted before a version can serve — not by this structural check. When self-serve
-opens wider, per-vertical store **provisioning** (the platform mints the D1 and injects the id)
-replaces a bundle-chosen id; that work is tracked in **#301**, a deploy-pipeline change, not a
-change to this list.
+**D1 ownership caveat (model B).** A static shared `d1` binding names a `database_id`, and the
+check does **not** prove the vertical *owns* that id rather than pointing at another tenant's DB.
+Under model B that gap is closed by **human admission** — a named, accountable builder's declared
+bindings are trusted before a version can serve — not by this structural check.
+
+**Per-tenant relational stores (#301) close the gap by construction, not by trust.** A vertical
+whose model is one SQL database *per tenant* (a latency-sensitive multi-tenant auth/OIDC provider
+is the motivating case) declares a **`tenantStoreNeed`** in `runtimeNeeds.tenantStores` — not a
+`d1` binding. Because the platform mints one database **per tenant** in the tenant lifecycle and
+injects it, the builder supplies **no `database_id`**: there is nothing to declare and nothing to
+trust. A per-tenant store therefore never rides this binding allowlist at all — it is a *need* the
+platform provisions, not a *binding* the bundle carries. This is distinct from a single shared D1
+(one database for every tenant) and from an own DO (one per scope). The seam is
+`provisionTenantStore` (platform mints + records + hands over a handle) and `openTenantStore` (the
+vertical opens what it was handed and runs its own migrations, inside the K-31 fail-closed
+ready-gate). The store handle's `ref` is opaque — a D1 `database_id` on Cloudflare, a per-tenant
+`.sqlite` file on the pure adapter (dev/CI/self-host), so one vertical runs unchanged on both.
+The vocabulary, directory ledger and pure-adapter implementation land first; live Cloudflare D1
+minting is the tracked follow-up.
 
 If an uploaded bundle's declared bindings exceed this contract, the deploy endpoint refuses it
 before it ever reaches the namespace. That refusal — not code inspection — is the primary

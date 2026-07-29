@@ -34,12 +34,52 @@ export const storeNeed = z.object({
 export type StoreNeed = z.infer<typeof storeNeed>;
 
 /**
+ * A **per-tenant relational store** the platform provisions and hands to the vertical —
+ * one independent SQL database *per tenant* (D1 on Cloudflare, a separate `.sqlite` file
+ * on the pure adapter), reached in the worker through `binding` (#301). This is the third
+ * distinct store shape, and the vocabulary keeps them apart on purpose:
+ *
+ * - `storeNeed` (own DO)          — the vertical's own durable class, one DO **per scope**.
+ * - a static shared `d1` binding  — ONE database shared across every tenant (a build-time id).
+ * - `tenantStoreNeed` (this)      — one relational DB **per tenant**, PLATFORM-minted.
+ *
+ * The load-bearing difference from a static `d1` binding: the builder supplies **no
+ * database id**. The platform mints it per tenant in the tenant lifecycle and injects it,
+ * which is what closes the ownership gap a bundle-chosen id left open (self-serve-deploy.md
+ * §4, `control-plane-api/src/deploy.ts`). Because there is no id to declare, a per-tenant
+ * store is a `runtimeNeeds` NEED, never a `declaredBinding` — nothing about it is bound
+ * statically on the shared serving script.
+ */
+export const tenantStoreNeed = z.object({
+  /** How the worker reaches this tenant's store: `host.tenantStore(tenantId, <binding>)`. */
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  /** The store shape. Only `relational` today; a literal so widening it is an explicit, additive change. */
+  kind: z.literal('relational').default('relational'),
+});
+export type TenantStoreNeed = z.infer<typeof tenantStoreNeed>;
+
+/**
+ * A platform-minted per-tenant store, as handed to the vertical at provision (K-31) and
+ * resolvable again at request time. `ref` is **opaque to the vertical**: a D1 `database_id`
+ * on Cloudflare, a per-tenant `.sqlite` path token on the pure adapter. The vertical opens
+ * it through the host (`openTenantStore`) and never parses it — that indirection is what
+ * lets one vertical run unchanged against D1 in production and separate SQLite files locally.
+ */
+export const tenantStoreHandle = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  kind: z.literal('relational'),
+  ref: z.string().min(1),
+});
+export type TenantStoreHandle = z.infer<typeof tenantStoreHandle>;
+
+/**
  * What a vertical needs from the runtime, in substrate vocabulary (package.json
  * `substrat.runtimeNeeds`). A vertical authored with this section never writes deploy
  * config for a specific substrate — the CLI derives that at push time (D-38: builders
  * keep the substrate vocabulary; the Cloudflare mapping lives behind the platform).
- * Datastores beyond own stores (e.g. a relational database) are deliberately absent:
- * those are platform-PROVISIONED, never bundle-declared (self-serve-deploy.md §4).
+ * A single shared relational database is still not bundle-declarable here; a PER-TENANT
+ * relational store is, via `tenantStores` — the platform provisions it (self-serve-deploy.md
+ * §4), so the vertical declares the NEED and never a database id.
  */
 export const runtimeNeeds = z.object({
   /** The worker entry module, relative to the vertical root (e.g. `src/worker.ts`). */
@@ -49,6 +89,10 @@ export const runtimeNeeds = z.object({
   /** Command to run before bundling (SPA build, asset generation). Runs in the vertical root. */
   build: z.string().min(1).optional(),
   stores: z.array(storeNeed).default([]),
+  /** Per-tenant relational stores the platform provisions and hands over (#301). NOT bound
+   *  statically — the CLI does not emit a wrangler binding for these, precisely because there
+   *  is one database per tenant, minted in the tenant lifecycle rather than at deploy. */
+  tenantStores: z.array(tenantStoreNeed).default([]),
 });
 export type RuntimeNeeds = z.infer<typeof runtimeNeeds>;
 
@@ -151,6 +195,11 @@ export const deployManifest = z.object({
   compatibilityFlags: z.array(z.string().min(1)).default([]),
   doClasses: z.array(z.string().min(1)).default([]),
   bindings: z.array(declaredBinding).default([]),
+  /** Per-tenant relational stores the platform provisions per tenant (#301) — carried so
+   *  admission surfaces them and the tenant lifecycle knows what to mint. NOT `bindings`:
+   *  there is no static binding for a per-tenant store, so it never rides the sandbox
+   *  allowlist; the platform mints one database per tenant and injects the id. */
+  tenantStores: z.array(tenantStoreNeed).default([]),
   /** The vertical's declared env-spec (from its package.json `substrat.envSpec`), stored on
    *  the registry so a host/console renders a config form for it. Optional + validated here. */
   envSpec: z.array(envVarSpec).optional(),

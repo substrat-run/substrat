@@ -9,6 +9,7 @@ import type {
   ScopeTable,
   ScopeTablePage,
   TenantId,
+  TenantStoreHandle,
 } from '@substrat-run/contracts';
 import { PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
 import { ControlPlaneError } from './client.js';
@@ -71,6 +72,16 @@ export interface ProvisionInstanceInput {
    * row) enforces locally.
    */
   entitlements?: EntitlementGrant[];
+  /**
+   * Per-tenant relational stores the platform MINTED for this tenant (#301), handed over
+   * WITH provisioning so the vertical opens each (`host.openTenantStore(handle)`) and runs
+   * its OWN store migrations against it before the callback returns — the same fail-closed,
+   * idempotent, retryable K-31 ready-gate that guards scope migrations now also guards the
+   * store, so there is no ready-but-empty-DB race. `ref` is opaque; the vertical never
+   * parses it. A vertical that predates the field ignores it (its body parse strips unknown
+   * keys). One handle per declared `tenantStoreNeed.binding`.
+   */
+  tenantStores?: TenantStoreHandle[];
 }
 
 export interface ConfigureInstanceInput {

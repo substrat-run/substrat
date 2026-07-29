@@ -65,6 +65,7 @@ describe('readRuntimeNeeds', () => {
       entry: 'src/worker.ts',
       needsNodeCompat: false,
       stores: [],
+      tenantStores: [],
     });
   });
 

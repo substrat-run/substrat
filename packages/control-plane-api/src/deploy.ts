@@ -126,12 +126,16 @@ const NAMED_REFUSALS: Record<string, string> = {
  * Better-Auth `AUTH_DB`), `kv_namespace`, `queue`, `r2_bucket`, `analytics_engine`, and inert
  * `secret_text`/`plain_text` config.
  *
- * Open question (§4, model B): a `d1` binding names a `database_id`, and this check does not
- * yet prove the vertical *owns* that id rather than pointing at another tenant's DB. Under
- * model B that gap is closed by human admission — a person trusts the builder's declared
- * bindings before the version can serve — not by this structural check. When self-serve opens
- * wider, per-vertical store PROVISIONING (the platform mints the D1 and injects the id)
- * replaces a bundle-chosen id (#301); that is a deploy-pipeline change, not here.
+ * The static shared `d1` binding names a `database_id`, and this check does not prove the
+ * vertical *owns* that id rather than pointing at another tenant's DB — a gap closed under
+ * model B by human admission (a person trusts the builder's declared bindings), not by this
+ * structural check. The way OUT of that trust is a `tenantStoreNeed`: a **per-tenant** store
+ * carries NO id (the platform mints one per tenant in the tenant lifecycle and injects it,
+ * #301), so it is a `runtimeNeeds` need rather than a `declaredBinding` and never rides this
+ * allowlist at all — there is no bundle-chosen id left to trust. A vertical migrating from a
+ * single shared D1 to platform-provisioned per-tenant stores is how the ownership question
+ * stops applying. (The kernel seam — `provisionTenantStore`/`openTenantStore` — and the pure
+ * adapter land first; live Cloudflare D1 minting is the follow-up.)
  */
 export function assertSandboxContract(m: DeployManifest): void {
   const own = new Set(m.doClasses);

@@ -426,6 +426,21 @@ A→B hatch has no vendor-side support in either direction. If Shape A holds, Sh
 not ship at v1, which retires questions 7 and 10. This document treats shape choice as
 per-vertical configuration, which is why it lives on the `Scope` row.
 
+**Update (#301): per-tenant D1 returns as an opt-in *additional* store, not a replacement.**
+Shape B was rejected as the *primary scope store* — the reasoning above stands. But a distinct
+need surfaced: a vertical whose data model is genuinely one SQL database **per tenant** (a
+latency-sensitive multi-tenant auth/OIDC provider is the motivating case) wants strong per-tenant
+isolation, an independent migration journal, and a portable/independently-restorable tenant DB.
+That is offered as a **per-tenant relational store a vertical declares alongside its scope DO**
+(`tenantStoreNeed` in `runtimeNeeds.tenantStores`, self-serve-deploy.md §4), NOT as Shape A being
+swapped out: the scope DO remains the primary store and the spine; the per-tenant D1 is an extra
+own-store the platform provisions per tenant and hands over. Crucially the platform **mints and
+injects the database id** (closing the ownership gap a bundle-chosen id left open), and the pure
+adapter mimics it faithfully as a **separate `.sqlite` file per tenant** — the same file-per-unit
+grain the scope DBs already use — so the whole path is exercised in dev/CI without Cloudflare.
+`storageShape` on the `Scope` row is the marker that a scope participates; the store lifecycle is
+the `provisionTenantStore`/`openTenantStore` seam on `ScopeHost`.
+
 ### 5.3 Migrations and version skew
 
 - Modules own their tables and Drizzle migrations (D-6). The kernel owns the *journal
