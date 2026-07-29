@@ -16,8 +16,13 @@ subpath). K-26/K-27.
 - **Not one per jurisdiction.** The router is stateless and holds nothing regional, so a per-region
   router would duplicate the cert/DNS lifecycle and buy nothing. *Verticals*, by contrast, **do**
   deploy per jurisdiction (K-30): `substrat-fsm-eu` binds EU storage and cannot reach US data — a
-  worker that *cannot* beats one that merely chooses not to. So `verticalFor` keys on
-  `(slug, region)`, and the router refuses a request whose edge region contradicts the directory.
+  worker that *cannot* beats one that merely chooses not to. The router itself does **not** enforce
+  region: `verticalFor(env, target)` keys on the resolved route's `deploymentRef` (the Workers-for-Platforms
+  dispatch handle) and falls back to the static `VERTICAL_<SLUG>` binding — `target.region` is carried
+  but never re-checked here. Residency is pinned by configuration, not by a code branch in the router:
+  Regional Services pins TLS termination and processing at the edge, *ahead* of this worker, and the
+  DO jurisdiction pins storage and execution (K-7). Re-checking region in the router would be a third
+  enforcement point that can only ever disagree with those two.
 
 This does not erode the decision against bundling verticals into one DO class (D-30): a router
 *forwards*; deployments stay separate, and upgrade on their own schedules.
@@ -40,8 +45,17 @@ own, so a client cannot forge a node.
 ## Status
 
 The hostname → node resolution, the trust boundary, and dispatch are built. Hostname
-*provisioning* — the custom-hostnames API, DNS validation, cert issuance — is not, so a binding is
-made `active` by hand and a wildcard under a domain we control carries it until then. The static
-`VERTICAL_<SLUG>` service-binding map is the milestone-one shape; customer-pushed verticals move
-the lookup to a Workers-for-Platforms dispatch namespace, which changes `verticalFor` and nothing
-else.
+*provisioning* is built too: [`packages/control-plane-api`](https://github.com/substrat-run/substrat/tree/main/packages/control-plane-api)'s
+custom-hostname provisioner drives the Cloudflare-for-SaaS `custom_hostnames` API end to end —
+`create` registers a hostname and returns the DNS records the tenant publishes, `check` polls
+validation + certificate state, `remove` retires it — with public-suffix enforcement (a tenant can't
+claim `co.uk`), wired through the control plane's `/hostnames` routes. A platform hostname is live
+immediately under the wildcard cert; a custom domain lands `pending` and walks the DNS-validation
+lifecycle, and only an `active` binding resolves. The provisioner is injected, so a self-host or dev
+environment with no CF-for-SaaS zone simply records the binding `pending` and never issues.
+
+Dispatch runs both shapes. When the resolved route carries a `deploymentRef`, the router dispatches
+through the Workers-for-Platforms namespace (`env.DISPATCH.get(deploymentRef)`) — this is how
+customer-pushed verticals are reached, and it is built. The static `VERTICAL_<SLUG>` service-binding
+map — the milestone-one shape — remains as the fallback for a route with no bound version. All of it
+lives inside `verticalFor`; nothing else in the router changes between the two.

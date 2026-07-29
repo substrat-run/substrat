@@ -41,6 +41,19 @@ in detail, skip straight to step 2 and confirm your reading of it instead of re-
 flattering.** Tell the user what already exists and what they are actually signing up to
 build. Be specific and be honest.
 
+**First, list the engines that actually exist. Do not trust the list below:**
+
+```sh
+npm search @substrat-run --json | grep -E '"name"|"description"'
+```
+
+Substrat publishes frequently and this file is hand-maintained, so the inventory below
+goes stale between releases — `engine-booking` and `engine-invites` both appeared the day
+this section was last written, and `connector-scrive` two days later. A missing engine
+does not fail loudly: it silently becomes Tier 3, and you hand the user an estimate for
+work that already exists. That is the single most expensive mistake available at this
+step. Run the search, then read the `dist/index.d.ts` of anything that looks relevant.
+
 Coverage is not a percentage. It has four tiers:
 
 ### Tier 0 — the kernel. Always. Free.
@@ -71,6 +84,20 @@ Imported directly; their in-scope functions run in **your** transaction.
 - **`@substrat-run/engine-protocol`** — checklists/inspections with templates, responses,
   and signatures. Contributes the `protocol/all-signed` guard predicate, so you can
   declare in your manifest that an operation is blocked until a protocol is signed.
+- **`@substrat-run/engine-booking`** — reservations. Owns exactly one invariant:
+  *concurrent allocations against a resource never exceed its capacity over any
+  overlapping interval*. States `held → confirmed → in_service → completed`, plus
+  `expired`/`cancelled`/`no_show`; holds carry an expiry, so an unanswered request expires
+  instead of sitting forever. Capacity with `join`/`leave`, `availability()`, `move`,
+  typed `SlotUnavailable`. It knows **nothing** about pricing, opening hours, recurrence,
+  cancellation windows or timezones — all vertical policy; it compares absolute instants
+  and never does calendar arithmetic. Note `booking:hold` and `booking:confirm` are
+  separate permissions, so an approval workflow is a *grant shape*, not custom logic.
+- **`@substrat-run/engine-invites`** — how a person joins an org they are not in.
+  Identifiers are stored **hashed and never returned**, so the invite surface can never
+  answer "is this person on the platform"; and an invitation confers nothing until
+  accepted. Reach for it before hand-rolling any invite flow — those two properties are
+  easy to lose and expensive to lose.
 
 ### Tier 2 — engines you feed by event
 
@@ -79,7 +106,23 @@ Imported directly; their in-scope functions run in **your** transaction.
 - **`@substrat-run/engine-invoicing`** — invoice basis (`invoice basis`) and lines,
   immutable after export. It consumes `workorder.completed` **and**
   `commerce.order-placed`. So an e-commerce vertical that imports zero engines still gets
-  invoicing by emitting an event.
+  invoicing by emitting an event. Its consumer find-or-creates the customer's *open*
+  basis and appends — that is the monthly-accrual model, free. It ignores orders where
+  `paymentMethod !== 'invoice'`. It has **no tax/VAT concept**; say so before an EU user
+  discovers it.
+
+### Tier 2b — connectors, for anything off-box
+
+Module code may not touch the network (rule 2), so a third party is reached by a
+**connector**: `host.registerConnector(id, eventType, handler, options)`, with retry
+policy, timeout, dead letters and per-connection state. The handler runs *outside* the
+scope transaction and gets `ctx.connection(provider)`.
+
+- **`@substrat-run/connector-scrive`** — Scrive eSign / Swedish BankID, driven by
+  `protocol.signatures-requested`. Also the reference for writing your own: delivery is
+  at-least-once, so it keys a dispatch ledger in connector state and returns early on
+  redelivery. **Copy that idempotency.** Granting door access twice is harmless; charging
+  a card twice is not.
 
 ### Tier 3 — yours
 
@@ -135,7 +178,9 @@ package.json          deps below; scripts: dev, server, test, typecheck, lint:bo
 tsconfig.json         strict; module NodeNext
 vitest.config.ts      include: test/**/*.test.ts
 CLAUDE.md             the rules, for every future session (see step 8)
-src/module.ts         manifest + migrations + operations  ← module code
+src/manifest.ts       moduleManifest.parse({ … }) + PERM consts  ← module code
+src/migrations.ts     the SqlMigration[]  ← module code
+src/module.ts         imports manifest + migrations; holds operations + registration  ← module code
 src/seed.ts           host, tenants, roles, grants, seed world  ← harness
 src/server.ts         thin Hono wrapper, one route per operation  ← harness
 test/scenario.test.ts the scenario, including the denials
@@ -161,7 +206,13 @@ import { z, entityRef, money, moduleManifest } from '@substrat-run/contracts';
 surface: `node_modules/@substrat-run/engine-workorder/dist/index.d.ts` is the reference
 for in-scope functions, `PERM` keys, and types. Read it before composing.
 
-### `src/module.ts`
+### `src/manifest.ts`, `src/migrations.ts`, `src/module.ts`
+
+The manifest, the migrations, and the operations live in **three separate files** (Callout
+is the reference: `manifest.ts` holds the `PERM` consts + `moduleManifest.parse`,
+`migrations.ts` exports the `SqlMigration[]`, and `module.ts` imports both and holds only
+the operations + the `ModuleRegistration`). Keep the split — the linter and the tests
+expect it.
 
 - `moduleManifest.parse({ … })` — id, version, `kernelContract: '^0.0.1'`, `permissions`
   (key + human description; these feed the permission diff), `events` emits/consumes,
@@ -265,10 +316,26 @@ see other customers' data?*
 
 Only if the user asks. Local-first is a legitimate stopping point.
 
-Substrat runs on Cloudflare via `@substrat-run/adapter-cloudflare` (Durable Objects), and
-`demos/callout` in the Substrat repo is the reference for the Worker topology. Be honest about
-the state of it: **custom hostname provisioning is not built yet** — a deploy lands on a
-`workers.dev` URL, not `theirbrand.com`. Say that before they ask.
+Substrat runs on Cloudflare via `@substrat-run/adapter-cloudflare` (Durable Objects).
+`demos/callout` and `demos/meridian` are the references for the Worker topology (own ScopeDO
++ IdentityDO). A vertical declares what it needs at runtime with a `substrat.runtimeNeeds`
+block in `package.json` (stores, node-compat, build) instead of hand-authoring wrangler
+config — though the demos still ship an authored `wrangler.jsonc` today.
+
+The deploy path is the authenticated CLI, and the author never holds a Cloudflare token:
+
+- `substrat login` / `substrat whoami` — authenticate against the control plane.
+- `substrat push` — push the vertical; the version auto-bumps. A **private** (tenant-owned)
+  vertical is admitted automatically; a **listed/shared** one waits for staff admission.
+- `substrat promote <slug> --channel dev|staging|prod --version … [--ack-permissions]
+  [--ack-migrations]` — the owner promotes every channel, **prod included**, for their own
+  private vertical. Merge-to-main is the deploy.
+- `substrat hostnames bind <slug> --surface <s> [--domain <d>]` — custom hostnames **are
+  built**: with no `--domain` the platform mints a hostname that's live immediately; with
+  `--domain` it records a custom domain pending DNS validation (`substrat hostnames verify`).
+- Updates deploy **in place** from one stable script — data carries forward, migrations run
+  against prod data, and backout is a time-boxed PITR rewind. `substrat scope pull` /
+  `scope restore` export and reload a scope's data.
 
 Before deploying: the `x-principal` dev header **must** be gone. It is a dev affordance,
 and shipping it is a cross-tenant hole with a UI.
@@ -292,7 +359,9 @@ consumers). `seed.ts` / `server.ts` are harness and exempt.
 1. **Data access is `ctx.sql` only.** Never import `better-sqlite3`, an adapter, or
    `node:*` in module code.
 2. **No `fetch` / network in module code.** It would hold the scope's transaction open on
-   a third party.
+   a third party. The sanctioned path is a **connector** (Tier 2b) — emit a fat event,
+   register a handler that runs outside the transaction. Never conclude an integration is
+   impossible because of this rule; it has an answer.
 3. **Never write `_substrat_*` tables.** Reads are fine (timelines are projections);
    writes forge the audit spine.
 4. **Another module's tables are private.** Never `SELECT` from `workorder_*` — use the

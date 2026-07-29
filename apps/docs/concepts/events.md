@@ -27,13 +27,30 @@ type DomainEvent = {
   occurredAt: Instant;  // stamped by kernel
   tenantId: TenantId;   // stamped by kernel
   scopeId: ScopeId;     // stamped by kernel
-  actor: PrincipalId | { system: ModuleId }; // stamped from the stub's context
+  actor: PrincipalId | { system: ModuleId } | { connection: string }; // stamped from the stub's context
   entity: EntityRef;
   piiClass: 'none' | 'pseudonymous' | 'direct';
   subjectId?: DataSubjectId;
+  authorization?: EventAuthorization[]; // K-34 — stamped kernel-side (see below)
   payload: unknown;
 };
 ```
+
+The `actor` is one of three things, and never a person who wasn't one: a `PrincipalId`, a
+`{ system: ModuleId }` for a consumer running under a system actor, or a
+`{ connection: string }` when a **connector** effected the write — an external provider's
+callback acting through a connection. A connector that read as a human in the audit trail
+would be worse than one that could not act at all, so it gets its own member rather than a
+synthetic principal.
+
+`authorization` records, per mutation, **which checks the emitting operation passed** (K-34):
+each entry names a permission that was checked-and-passed, plus — when the allow resolved
+through a capability grant rather than a role bundle — a ref to the granting tuple
+(`workorder:01J…`, `scope:01J…`). It is stamped kernel-side (module code can neither supply
+nor suppress it) and absent on events written before the field existed. The full proof chain
+is not persisted — `explain` re-derives chains on demand; what re-derivation cannot recover
+once tuples have changed is *which* permission and grant were consulted at write time, and
+that pointer is what the envelope keeps.
 
 A vertical cannot mislabel an event's origin, backdate it, attribute it to someone else,
 or skip emitting where an engine emits — because the fields aren't parameters and the

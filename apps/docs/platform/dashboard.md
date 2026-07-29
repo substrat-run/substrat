@@ -25,16 +25,28 @@ instead of being re-invented. The Vercel analogy maps almost one-to-one:
 | Domains | **hostname bindings** |
 | Integrations | **connections** (Scrive, Fortnox) |
 | "New Project from a template" | **create instance** (catalog → provision) |
-| Preview / staging data | **[snapshot](/concepts/snapshots)** — a test copy of an app's data |
+| Preview / staging data | **[preview](/concepts/snapshots)** — a test copy of an app's data ("snapshot" stays the internal name) |
 
 Concretely: a customer *is* a tenant; sign-up bootstraps that tenant, one **dashboard scope** (the
 customer's home), and the signer as its **owner**. A customer's apps are **scopes** in that same
-tenant. The dashboard scope's own operations are the account actions — `dashboard/provision-app`,
-`dashboard/list-apps`, `dashboard/mark-app-active`, `dashboard/delete-app` — each a real vertical
-operation whose first line is a permission check. Provisioning an app is
-`assertAllowed(ctx.check('dashboard:provision-app'))` then a **tenant-narrowed** `provisionScope`
-into the caller's own tenant: the kernel refuses a caller without the key before anything is
-created, and cannot provision into someone else's tenant by construction.
+tenant. The dashboard scope's own operations are the account actions — every self-service affordance
+in the UI is a real vertical operation whose first line is a permission check. They fall into a
+handful of groups:
+
+- **App lifecycle** — `provision-app`, `mark-app-active`, `mark-app-failed`, `list-apps`,
+  `app-events`, `update-app`, `delete-app`.
+- **Data & previews** — `snapshot-app`, `delete-app-snapshot`, `export-app-data`, `restore-app-data`.
+- **Hostnames** — `bind-app-hostname`, `unbind-app-hostname`.
+- **Environment** — `set-app-env`, `list-app-env`, `delete-app-env`.
+- **Identity** — `set-app-auth`, `get-app-auth`.
+- **Members & invites** — `init-team`, `invite-member`, `accept-invite`, `preview-invite`,
+  `resend-invite`, `revoke-invite`, `list-members`, `remove-member`, `leave-self`, `delete-team`.
+- **Connections** — `begin-connection`.
+
+Provisioning an app is `assertAllowed(ctx.check('dashboard:provision-app'))` then a
+**tenant-narrowed** `provisionScope` into the caller's own tenant: the kernel refuses a caller
+without the key before anything is created, and cannot provision into someone else's tenant by
+construction.
 
 ## Auth
 
@@ -43,58 +55,106 @@ Login is [AuthHero OIDC](/concepts/identity#two-real-choices-made-differently) t
 gate, the Dashboard does a **JIT tenant bootstrap**: a new user's first sign-in provisions their
 own tenant and dashboard scope, and makes them its owner.
 
-## Deployments
+## The app detail: five tabs
+
+Opening an app lands on its detail page, whose tab bar is five real nouns —
+**Overview · Data · Deployments · Previews · Settings**. The day-to-day configuration surfaces
+(Environment, Domains, Integrations) live as sections *inside* Settings rather than as top-level
+tabs, so the bar stays short. Old `snapshots` / `env` / `domains` / `integrations` tab URLs are
+aliased to their new homes, so bookmarks and in-flight links keep working.
+
+### Overview
+
+Real fields from the app row: the vertical, the **running version** (the version the app's scope is
+actually pinned to — what the router serves, not a hardcoded label), status, created-by, scope id,
+and a live activity timeline read from the app's own audit trail. A **Production** card lists one
+public URL per surface the vertical fronts (K-26), each with a copy button and a *Visit*. Beside it
+an **API card** surfaces the app's OpenAPI document (`/openapi.json`) and an *API docs* link into the
+app's [Scalar](https://scalar.com) reference — which rides the app's own session, so you sign in to
+the app first.
+
+### Data
+
+A read-only browser of the app's **own** database: the vertical's tables on one side (with the
+`_substrat_*` spine grouped apart), a paged view of the selected table on the other, and a
+collapsible **SQL console** for the one read-only `SELECT` the table browser can't express. Read-only
+is enforced below the seam — raw writes would bypass the event log and forge invariants — and every
+read is audited. Below it sits **Export & import**: *Export* downloads the app's data as a
+`.dump.json` the CLI accepts (personal data redacted unless it's a staff/CLI full-fidelity export);
+*Import* replaces the app's data with an uploaded dump, behind a danger dialog and always after the
+platform forks a safety preview first.
+
+### Deployments
 
 For a customer who *builds* a vertical (not just instantiates one from the catalog), the
 **Deployments** tab is the builder-facing mirror of the staff [console](/platform/console)'s
 Verticals view — narrowed to the verticals **this workspace owns** (the ones it
-[pushed with the CLI](/guide/deploying)). Per vertical: each version's admission state, and
-which channel points where. A builder self-serves `dev`/`staging` promotion right here;
-`prod` is shown read-only, because production promotion and admission stay a platform decision
-(model B). The tenant is ambient from the session, and every read and promotion is checked to
-be one of the caller's own verticals — the dashboard's shared-plane credential can't be turned
-into a lever on another tenant's deployment.
+[pushed with the CLI](/guide/deploying)). Per vertical: each version's admission state, and which
+channel points where. "Running" is the version this app's scope is pinned to (what the router
+dispatches on), not the vertical's prod channel — they diverge when prod moves after install. A
+builder self-serves `dev`/`staging` promotion right here; `prod` promotion is self-serve for an
+**owned, private** vertical but a platform decision for a **listed** one (model B). Every read and
+promotion is checked to be one of the caller's own verticals — the dashboard's shared-plane
+credential can't be turned into a lever on another tenant's deployment.
 
-## Snapshots
+When prod points somewhere other than where this app is pinned, **Update to latest** rebinds it. Two
+safety affordances sit alongside it. A **Snapshot data first** checkbox (on by default) takes a copy
+before a migration-crossing update, so a bad upgrade has a rollback point — a code-only update
+snapshots nothing, because the platform compares migration digests, not the checkbox. And after a
+migration, a time-boxed **Back out** offer appears while the pre-migration bookmark is inside the
+window the platform honors (~24h): rewinding the whole database to just before the migration —
+*discarding everything written since* — an honest first-hours backout, not a merge. For anything
+older, restore a preview instead.
 
-Each app has a **Snapshots** tab — [test copies](/concepts/snapshots) of the app's data.
-**Create test copy** forks the app's entire database into an independent copy with a retention
-choice (1/7/30 days, or keep until deleted); the list shows each copy's provenance and a live
-expiry countdown; expired copies are reaped by the platform's scheduled sweep. A copy is
-unmistakably *not* the live app: it receives no traffic, integrations are off, and deleting it
-is safe by construction — the platform refuses to hard-delete anything that isn't a copy.
+### Previews
 
-The same machinery backs the **"Snapshot data first"** checkbox (on by default) next to
-*Update to latest* in the Deployments tab: an update whose migrations changed takes a copy
-before the rebind, so a bad upgrade has a rollback point. A code-only update skips the copy —
-the platform compares migration digests, not the checkbox.
+Each app has a **Previews** tab — [test copies](/concepts/snapshots) of the app's data. ("Preview" is
+the user-facing noun; "snapshot" stays the internal name for the data artifact.) **Create preview**
+forks the app's entire database into an independent copy with a retention choice (1/7/30 days, or keep
+until deleted); the list shows each copy's provenance, its own URL, and a live expiry countdown;
+expired copies are reaped by the platform's scheduled sweep. A preview is unmistakably *not* the live
+app: it receives no traffic, integrations are off, and deleting it is safe by construction — the
+platform refuses to hard-delete anything that isn't a copy. The same machinery backs the *Snapshot
+data first* checkbox in Deployments (above) and the safety copy taken before a data import.
 
-Authorization is the same key that manages apps (`dashboard:provision-app`), checked in-scope
-before any platform effect; the fork itself runs inside the app's own deployment, so
+Authorization is the same key that manages apps (`dashboard:provision-app`), checked in-scope before
+any platform effect; the fork itself runs inside the app's own deployment, so
 [no app data crosses to the platform](/concepts/snapshots#where-the-data-goes-and-doesn-t).
 
-## App configuration (the Env tab)
+### Settings
 
-Each app has an **Env** tab for its environment/configuration. It is not a free-form key/value
-editor — it is a form **generated from the vertical's declared [`envSpec`](/concepts/modules#declared-environment-envspec)**:
-each field carries the manifest's label, description, placeholder, and `required`/`secret`
-flags. A vertical opts in by declaring `envSpec`; one that declares nothing shows no fields.
-The spec is read from the **registry** (where `registerVertical` stored it), so a pushed
-builder vertical gets a config form exactly like a builtin, without the dashboard bundling its
-code.
+Configuration, not daily-driver surfaces — gathered under one tab with its own sections, each keeping
+its own URL (`settings/environment` …) so deep links survive:
 
-Values are stored per app and authorized by the same grant that provisions apps
-(`dashboard:provision-app`). Secret values are **write-only**: masked, never returned by the
-API, and left blank to keep. Delivery to the running app follows the app's shape — a hosted
-vertical (one shared script across many tenants' scopes) reads its per-tenant config at runtime
-rather than through per-app worker secrets.
+- **General** — rename the app, read its kind, and the danger zone (deleting an app deprovisions its
+  scope for real; the audit history is retained). It also carries the **Identity** card: the
+  `substrat:auth` choice made at install (which issuer the app trusts), readable and editable after
+  the fact — the client secret is write-only.
+- **Environment** — the former *Env* tab. Not a free-form key/value editor, but a form **generated
+  from the vertical's declared [`envSpec`](/concepts/modules#declared-environment-envspec)**: each
+  field carries the manifest's label, description, placeholder, and `required`/`secret` flags. The
+  spec is read from the **registry** (where `registerVertical` stored it), so a pushed builder
+  vertical gets a config form exactly like a builtin, without the dashboard bundling its code. Values
+  are per app; secret values are **write-only** — masked, never returned by the API, left blank to
+  keep. Delivery follows the app's shape: a hosted vertical reads its per-tenant config at runtime
+  rather than through per-app worker secrets.
+- **Domains** — custom-hostname binding (K-26 multi-surface). One scope can front several surfaces,
+  and the hostname decides which surface the vertical serves. A **platform** hostname is minted from
+  the app's label and is live immediately (it rides the wildcard cert); a **custom** domain lands
+  `pending` and walks DNS validation + certificate issuance, going live only when `active`. The
+  default hostname can't be removed here — deleting the app retires it. Backed by
+  `dashboard/bind-app-hostname` / `unbind-app-hostname`.
+- **Integrations** — third-party **connections** (Scrive, Fortnox), begun with
+  `dashboard/begin-connection` and its signed OAuth handshake.
 
 ## Status
 
 Built and connected — self-service sign-up bootstraps a tenant, the catalog offers a real
 [Callout](/verticals/callout) entry, and provisioning runs through the tenant-narrowed control-plane
-seam (an app becomes a live scope; deleting one deprovisions it for real). Builders manage their
-pushed verticals in the Deployments tab (above). It is served as a React SPA bundled into its
-worker. The full designed surface (members, domains, connections, billing) is the roadmap the
-[design note](https://github.com/substrat-run/substrat/blob/main/docs/design/dashboard.md) lays
-out; provisioning, the app lifecycle, and builder deployments are the parts that exist today.
+seam (an app becomes a live scope; deleting one deprovisions it for real). Most of the designed
+surface is now shipped: the app lifecycle, builder **Deployments**, a read-only **Data** browser with
+export/import, **Previews**, per-app **Environment**, custom **Domains**, team **members** (invite /
+accept / remove / leave, with a Team view), and third-party **connections** (an Integrations view).
+Billing and the plan are the main pieces still on the roadmap the
+[design note](https://github.com/substrat-run/substrat/blob/main/docs/design/dashboard.md) lays out.
+It is served as a React SPA bundled into its worker; the account menu lives in the sidebar footer.

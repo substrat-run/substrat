@@ -101,8 +101,20 @@ is no half-loaded engine, no operation that exists but refuses, no code path whe
 unlicensed invariant is half-enforced. A tenant either has the work-order engine or does not
 have it.
 
-That bluntness is what makes entitlements safe to enforce at the boundary rather than
+That bluntness is what makes the *load gate* safe to enforce at the boundary rather than
 sprinkled through business logic.
+
+**The flag also carries a plan.** Since #33 an entitlement is not only an on/off SKU: it
+carries a `plan` — `quota`, `expiresAt`, and a `tier` — that a vertical reads at request time
+through `ctx.entitlement(key)` / `ctx.entitlements()` to gate features and enforce quota
+*within* a module it already holds. So entitlements are the load gate **and** a
+feature/plan surface — the earlier "not a feature flag" line was too absolute. The kernel
+enforces two things itself: presence (the load gate above) and **expiry**, which fails closed
+at the gate exactly as a revoke would; `quota` and `tier` are expression only — the vertical
+reads the number and enforces its own meaning. For a **hosted** vertical these are read from a
+**scope-local projection**, so gating a feature needs no control-plane binding. It is the same
+mechanism as the load gate and, like it, **uncached today** (a DO-cached variant is the open
+benchmark).
 
 ## Why the admin console isn't a vertical
 

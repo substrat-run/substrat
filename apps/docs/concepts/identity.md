@@ -27,7 +27,7 @@ _substrat_identities (
   principal_id TEXT,   -- the Substrat principal it resolves to
   tenant_id    TEXT,
   scope_id     TEXT,   -- NULL = tenant-level home
-  PRIMARY KEY (provider, external_id)
+  PRIMARY KEY (tenant_id, provider, external_id)
 )
 ```
 
@@ -79,7 +79,7 @@ tenant's hostname, or carried a pool-scoped token.
 **"Which tenants is this login in?"** is a separate call, and central-only:
 
 ```ts
-await host.admin.listIdentityTenants(provider, externalId); // → TenantId[]
+await host.admin.listIdentityTenants(actor, provider, externalId); // → TenantId[]
 ```
 
 It throws on a tenant-bound pool. Not because the answer would leak — the caller already

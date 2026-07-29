@@ -21,6 +21,9 @@ The views map onto the directory the control plane owns:
 - **Create instance** — the catalog → provision flow: pick a vertical, pin it to a version,
   provision a scope for a tenant.
 - **Domains** — hostname bindings the [router](/platform/router) resolves.
+- **Observability** — the fleet view: per-service invocation metrics and recent logs, read over the
+  control plane's provider-neutral observability seam. Tier-3 numbers — sampled, approximate, never
+  money — so everything is a rate or a latency, nothing an exact count.
 - **Permissions** — the permission surface (keys → roles) read back from the directory.
 - **Admin log** — the append-only audit trail, every entry named to the `PlatformActorId` that
   caused it, with a JSON diff of what changed.

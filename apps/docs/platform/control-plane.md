@@ -22,6 +22,25 @@ it to answer a permission check.
 The transport in front of the DO is [`@substrat-run/control-plane-api`](https://github.com/substrat-run/substrat/tree/main/packages/control-plane-api)
 — the audited `HostAdmin` surface, the same one the CLI's deploy endpoint and the Console call.
 
+## What it manages now
+
+Beyond the base registry, a few capabilities have landed that are worth naming:
+
+- **Tenant delete with a grace window.** `deleting` is a reversible, read-closed containment state that
+  stamps `deletingAt`; a scheduled **grace-window sweep** ages the tenant off that timestamp and then
+  `reapTenant` clears the directory PII/config rows (identities, membership tuples, roles, entitlements,
+  orgs) while keeping the `tenants` row as a burned-slug tombstone and the admin log whole.
+- **Reaping an archived scope's DO storage.** Cloudflare never garbage-collects a Durable Object, so
+  `reapScope` (archived → reaped) wipes the scope DO's storage explicitly — an archived app stops
+  costing storage only once it is reaped.
+- **Entitlements delivered with provisioning.** Entitlements are per-tenant SKU flags the kernel enforces
+  per operation (`manifest.entitlementKey`); a scope reads its currently-held entitlements at request
+  time, and the control plane is what projects them.
+- **The hosted-vertical sandbox as a positive allowlist.** A pushed vertical's declared bindings are
+  checked against a positive allowlist (`ADMISSIBLE_BINDING_TYPES`) — anything not named is refused. It
+  is this sandbox contract, not a staff read of an opaque digest, that lets a **private** vertical's
+  version land admitted automatically (its blast radius is its own tenant).
+
 ## Auth posture — fail closed
 
 Secure by default: a real `wrangler deploy` sets no dev-actor escape hatch, so every request

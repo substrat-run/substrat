@@ -88,7 +88,7 @@ Substrat is pre-release (0.x). What exists today:
 | Invoicing engine | [`@substrat-run/engine-invoicing`](/engines/invoicing/) | Seed |
 | Protocol / checklist engine | [`@substrat-run/engine-protocol`](/engines/protocol/) | Seed |
 | Invites engine | [`@substrat-run/engine-invites`](/engines/invites/) | Seed |
-| Scrive connector (e-signing, BankID) | [`@substrat-run/connector-scrive`](/connectors/scrive) | Published `0.1.0` |
+| Scrive connector (e-signing, BankID) | [`@substrat-run/connector-scrive`](/connectors/scrive) | Published `0.1.15` |
 | The `substrat` CLI — authenticated deploy (`login`, `push`) | [`@substrat-run/cli`](/guide/deploying) | Working |
 | Platform surfaces — [control plane](/platform/control-plane), [console](/platform/console), [router](/platform/router), [dashboard](/platform/dashboard) | private deployments | Working (self-serve deploy foundation) |
 | Callout (field service) — the canonical composition; first CP-less pushable vertical | [`demos/callout`](/verticals/callout) | Working |
@@ -96,6 +96,7 @@ Substrat is pre-release (0.x). What exists today:
 | RallyPoint (padel club) — the booking invariant shape | [`demos/rally`](/verticals/rallypoint) | Working |
 | Kallkälla (coffee shop) — two audiences, one API; commerce | [`demos/shop`](/verticals/shop) | Working |
 | Meridian (HR) — leave/absence, time, expenses, onboarding; one role-adaptive app | [`demos/meridian`](/verticals/meridian) | Working |
+| Manyfold (headless CMS) — multi-scope, *site = scope*; the editorial lifecycle as the invariant | [`demos/manyfold`](/verticals/manyfold) | Working |
 
 Interfaces change without notice until the first vertical ships.
 

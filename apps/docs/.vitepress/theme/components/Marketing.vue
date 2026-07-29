@@ -75,8 +75,10 @@ const pkgs = [
   ['@substrat-run/adapter-cloudflare', 'Durable-Object scope host — production', 'Working'],
   ['@substrat-run/contract-tests', 'The conformance suite both adapters pass unchanged', 'Working'],
   ['@substrat-run/engine-workorder', 'Work orders, time & material', 'Seed'],
+  ['@substrat-run/engine-booking', 'Reservations — resource × interval, one allocation invariant, no locks', 'Seed'],
   ['@substrat-run/engine-invoicing', 'Invoice basis, immutable exports', 'Seed'],
   ['@substrat-run/engine-protocol', 'Checklists & protocols', 'Seed'],
+  ['@substrat-run/engine-invites', 'Invitations — verified hashed identifier, accept-required', 'Seed'],
 ];
 
 const repo = 'https://github.com/substrat-run/substrat';
