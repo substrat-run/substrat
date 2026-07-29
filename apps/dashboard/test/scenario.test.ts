@@ -744,7 +744,8 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
     expect(hd.displaySlug).toBe('helpdesk');
     // Newest-first: 0.2.0 (v2) before 0.1.0 (v1).
     expect(hd.versions.map((v) => v.id)).toEqual([v2, v1]);
-    expect(hd.channels).toContainEqual({ channel: 'dev', versionId: v2 });
+    // dev has no in-place serve, so servingVersionId is null (#321 is a prod concept).
+    expect(hd.channels).toContainEqual({ channel: 'dev', versionId: v2, servingVersionId: null });
 
     // The other tenant sees only its own.
     expect((await listDeploymentsFromHost(host, staff, other)).map((d) => d.slug)).toEqual(['billing']);

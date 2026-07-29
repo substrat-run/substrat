@@ -14,6 +14,9 @@ interface Version {
 interface Channel {
   channel: string;
   versionId: string;
+  // What prod's stable serving script actually runs (#286/#321). Differs from versionId
+  // when an in-place serve failed: the channel was promoted but the scopes run old code.
+  servingVersionId?: string | null;
 }
 
 async function getJson<T>(url: string, header: Record<string, string>): Promise<T> {
@@ -37,11 +40,26 @@ export async function printVersions(controlPlaneUrl: string, header: Record<stri
     return;
   }
 
+  // A prod promote whose in-place serve failed leaves the channel pointing at the new
+  // version while the scopes still run the old one (#321). Report the SERVING truth, and
+  // flag the divergence, rather than labelling the promoted-but-not-live version 'prod'.
+  const prod = channels.find((c) => c.channel === 'prod');
+  const serving = prod?.servingVersionId ?? null;
+  const stalled = prod && serving !== null && serving !== prod.versionId;
+
   const byVersion = new Map<string, string[]>();
+  const tag = (versionId: string, label: string) => {
+    const list = byVersion.get(versionId) ?? [];
+    list.push(label);
+    byVersion.set(versionId, list);
+  };
   for (const c of channels) {
-    const list = byVersion.get(c.versionId) ?? [];
-    list.push(c.channel);
-    byVersion.set(c.versionId, list);
+    if (c.channel === 'prod' && stalled) {
+      tag(c.versionId, 'prod(promoted)'); // moved the pointer, but not serving
+      if (serving) tag(serving, 'prod(serving)'); // what the scopes actually run
+    } else {
+      tag(c.versionId, c.channel);
+    }
   }
 
   // Newest first (the id is a ULID — lexicographic order is chronological).
@@ -54,4 +72,10 @@ export async function printVersions(controlPlaneUrl: string, header: Record<stri
   const fmt = (cells: string[]) => cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join('  ');
   console.log(fmt(headers));
   for (const r of rows) console.log(fmt(r));
+  if (stalled) {
+    console.log(
+      `\n⚠ prod: version ${prod!.versionId} is promoted but NOT serving — the in-place serve failed,\n` +
+        `  scopes still run ${serving}. Promote prod again to retry the serve.`,
+    );
+  }
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant } from '@substrat-run/contracts';
+import { permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeDumpTable } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -12,6 +12,8 @@ import {
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
+  deploymentRefFor,
+  stableDeploymentRefFor,
 } from '../src/index.js';
 
 /**
@@ -485,6 +487,52 @@ describe('control-plane API', () => {
       entries: [{ key: 'A', value: '1' }],
     });
     expect(res.status).toBe(501);
+  });
+
+  it('refuses a table-less restore with an actionable 422, not a bare internal error (#321)', async () => {
+    const sB = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sB, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sB);
+    const res = await json(`/tenants/${t1}/scopes/${sB}/restore`, 'POST', {
+      tenantId: t1,
+      scopeId: sB,
+      capturedAt: new Date().toISOString(),
+      tables: [],
+    });
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toMatch(/no tables/);
+  });
+
+  it('flags an active scope with an empty role projection as a platform condition (#321)', async () => {
+    const sH = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sH, vertical: 'health-vert' });
+    await host.admin.activateScope(staff, t1, sH);
+    const rolesOf = (rowCount: number) =>
+      ({
+        listScopeTables: async () => [
+          { name: '_substrat_roles', rowCount, system: true },
+          { name: 'customers', rowCount: 3, system: false },
+        ],
+      }) as unknown as VerticalClient;
+
+    // Empty projection on an ACTIVE scope: identity resolves but every check denies — the
+    // silent failure the field report chased. It must read as a platform condition.
+    const emptyApp = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'health-vert': rolesOf(0) },
+    });
+    const empty = await (await emptyApp.request(`/tenants/${t1}/scopes/${sH}/health`, { headers: auth })).json();
+    expect(empty).toMatchObject({ status: 'active', roleCount: 0, roleProjectionEmpty: true });
+
+    // A populated projection is healthy — the flag is not raised.
+    const healthyApp = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'health-vert': rolesOf(4) },
+    });
+    const healthy = await (await healthyApp.request(`/tenants/${t1}/scopes/${sH}/health`, { headers: auth })).json();
+    expect(healthy).toMatchObject({ roleCount: 4, roleProjectionEmpty: false });
   });
 
   it("propagates the vertical's own refusal status instead of collapsing to 500", async () => {
@@ -1999,5 +2047,222 @@ describe('control-plane API — observability proxy', () => {
     const asBuilder = { [BUILDER_HEADER]: builderTenant, 'content-type': 'application/json' };
     expect((await app.request('/observability/metrics', { headers: asBuilder })).status).toBe(403);
     expect((await app.request('/observability/logs', { headers: asBuilder })).status).toBe(403);
+  });
+});
+
+/**
+ * #321: a LEGACY scope's data must survive a prod promote. Pre-#286, a legacy scope
+ * (servingRef null) routes through its bound version's per-version dispatch script; a
+ * naive promote rebinds it to the incoming version's fresh, empty script and strands the
+ * data (`0001-init` re-runs against empty storage). This drives the WHOLE promote path
+ * against a STATEFUL dispatch fake — per-script scope storage the export/restore verbs
+ * actually read and write. That fidelity is exactly what the no-op deploy fake lacked,
+ * and the reason the bug shipped green: a promote must ADOPT a legacy scope onto the
+ * stable serving script (moving its bytes) before it advances the version pointer.
+ */
+describe('control-plane API — adopt-on-promote (#321)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+  const staff = platformActorId.parse(ulid());
+  const auth = { [DEV_ACTOR_HEADER]: staff };
+
+  // A Durable Object namespace, modelled: data belongs to the SCRIPT it was written
+  // under. ref → (scopeId → dump tables). Rerouting a scope to a different script that
+  // was never written its bytes resolves EMPTY — the whole hazard #321 is about.
+  let scripts: Map<string, Map<string, ScopeDumpTable[]>>;
+  let failServeRef: string | null; // when set, an upload to THIS ref throws (a flaky serve)
+
+  const ensure = (ref: string) => {
+    let s = scripts.get(ref);
+    if (!s) scripts.set(ref, (s = new Map()));
+    return s;
+  };
+  const clientFor = (ref: string) =>
+    ({
+      exportScope: async (sc: string) => ensure(ref).get(sc) ?? [],
+      restoreScope: async (_t: string, sc: string, tables: ScopeDumpTable[]) => {
+        ensure(ref).set(sc, tables);
+        return { tables: tables.length };
+      },
+    }) as unknown as VerticalClient;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-adopt-'));
+    scripts = new Map();
+    failServeRef = null;
+    host = new SqliteScopeHost({ dir });
+    app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      deployVertical: async (ref) => {
+        if (ref === failServeRef) throw new Error('WfP upload failed (500): namespace unreachable');
+        ensure(ref); // registering a script creates its (empty) storage namespace
+      },
+      fetchVerticalModules: async () => [
+        { name: 'worker.js', content: new Uint8Array([1]), contentType: 'application/javascript+module' },
+      ],
+      resolveVerticalRef: async (ref) => clientFor(ref),
+      resolveVerticalVersion: async (slug, versionId) => clientFor(deploymentRefFor(slug, versionId)),
+    });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const manifest = (over: Record<string, unknown> = {}) => ({
+    version: '0.1.0',
+    entry: 'worker.js',
+    compatibilityDate: '2025-01-01',
+    doClasses: ['ScopeDO'],
+    bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
+    digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+    ...over,
+  });
+  // A staff push pinned to a tenant registers `<tenantSlug>/crm` owned + auto-admitted
+  // (private) — a dispatch-backed vertical, so `deploymentRef` is set and the serve path
+  // engages. The pin isolates each test on its own prefixed vertical.
+  const push = (pinTenantSlug: string, m: Record<string, unknown>) => {
+    const fd = new FormData();
+    fd.set('manifest', JSON.stringify(m));
+    fd.set('tenant', pinTenantSlug);
+    fd.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
+    return app.request('/verticals/crm/deploy', { method: 'POST', headers: auth, body: fd });
+  };
+  const promote = (slug: string, versionId: string) =>
+    app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ versionId }),
+    });
+  const customers: ScopeDumpTable = {
+    name: 'customers',
+    ddl: 'CREATE TABLE customers(name TEXT)',
+    columns: ['name'],
+    rows: [['Acme AB']],
+  };
+
+  // Set up a legacy scope: push v1, provision the scope BEFORE any prod promote (so it is
+  // born servingRef-null), bind it to v1, and seed its data into v1's per-version script.
+  const legacyScope = async (pin: string) => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: pin, name: pin });
+    const v1res = await push(pin, manifest({ version: '0.1.0' }));
+    const v1 = await v1res.json();
+    const slug: string = v1.verticalSlug;
+    const sc = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: sc, vertical: slug });
+    await host.admin.activateScope(staff, t, sc);
+    await host.admin.bindScopeVersion(staff, t, sc, v1.id);
+    ensure(deploymentRefFor(slug, v1.id)).set(sc, [customers]); // its data lives on v1's script
+    return { t, slug, sc, v1: v1.id as string };
+  };
+
+  it('keeps a legacy scope’s data across a prod promote — adopted onto the serving script, not stranded', async () => {
+    const { t, slug, sc, v1 } = await legacyScope('adopt-co');
+    // Sanity: the scope is legacy (no serving ref yet) and its data is on v1's script.
+    expect((await host.admin.getScopeRecord(staff, t, sc))?.servingRef ?? null).toBeNull();
+
+    const v2res = await push('adopt-co', manifest({ version: '0.2.0' }));
+    const v2 = (await v2res.json()).id as string;
+    const res = await promote(slug, v2);
+    expect(res.status).toBe(200);
+
+    const stable = stableDeploymentRefFor(slug);
+    const rec = await host.admin.getScopeRecord(staff, t, sc);
+    // The invariant: the scope now routes to the STABLE serving script, not v2's
+    // per-version archive script, and its version pointer advanced.
+    expect(rec?.servingRef).toBe(stable);
+    expect(rec?.verticalVersionId).toBe(v2);
+    // The bytes followed: the serving script holds the row; the fresh v2 archive script
+    // was NEVER written the scope (that is what stranding would have looked like).
+    expect(scripts.get(stable)?.get(sc)).toEqual([customers]);
+    expect(scripts.get(deploymentRefFor(slug, v2))?.has(sc)).toBeFalsy();
+    // v1's script is left intact (data-first: the adopt copies, it does not move).
+    expect(scripts.get(deploymentRefFor(slug, v1))?.get(sc)).toEqual([customers]);
+  });
+
+  it('a failed in-place serve strands nothing — the retry adopts the still-intact data', async () => {
+    const { t, slug, sc, v1 } = await legacyScope('retry-co');
+    const v2 = (await (await push('retry-co', manifest({ version: '0.2.0' }))).json()).id as string;
+    const stable = stableDeploymentRefFor(slug);
+
+    // First promote: the serve upload fails.
+    failServeRef = stable;
+    const failed = await promote(slug, v2);
+    expect(failed.status).toBe(502);
+    expect((await failed.json()).error).toMatch(/in-place serve failed/);
+    // Nothing was rebound or stranded: the scope is untouched, its data still on v1.
+    const mid = await host.admin.getScopeRecord(staff, t, sc);
+    expect(mid?.servingRef ?? null).toBeNull();
+    expect(mid?.verticalVersionId).toBe(v1);
+    expect(scripts.get(deploymentRefFor(slug, v1))?.get(sc)).toEqual([customers]);
+    expect(scripts.get(stable)?.get(sc)).toBeUndefined();
+
+    // Retry: the serve succeeds and the still-intact data is adopted.
+    failServeRef = null;
+    const ok = await promote(slug, v2);
+    expect(ok.status).toBe(200);
+    const rec = await host.admin.getScopeRecord(staff, t, sc);
+    expect(rec?.servingRef).toBe(stable);
+    expect(rec?.verticalVersionId).toBe(v2);
+    expect(scripts.get(stable)?.get(sc)).toEqual([customers]);
+  });
+
+  it('backfills every still-legacy scope of a vertical in one call (idempotent)', async () => {
+    const { t, slug, sc } = await legacyScope('backfill-co');
+    // A second legacy scope on the same vertical.
+    const sc2 = scopeId.parse(ulid());
+    const v1 = (await host.admin.getScopeRecord(staff, t, sc))!.verticalVersionId!;
+    await host.provisionScope(staff, { tenantId: t, scopeId: sc2, vertical: slug });
+    await host.admin.activateScope(staff, t, sc2);
+    await host.admin.bindScopeVersion(staff, t, sc2, v1);
+    ensure(deploymentRefFor(slug, v1)).set(sc2, [customers]);
+
+    // Promote so a serving script exists, but adopt only the FIRST scope automatically by
+    // pretending the second predates it: it is already active + legacy, so the vertical-
+    // wide backfill must pick it up. (Both are adopted by the promote; re-running the
+    // backfill must then be a no-op — the idempotency the runbook depends on.)
+    const v2 = (await (await push('backfill-co', manifest({ version: '0.2.0' }))).json()).id as string;
+    expect((await promote(slug, v2)).status).toBe(200);
+
+    const res = await app.request(`/verticals/${encodeURIComponent(slug)}/adopt-serving`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Both scopes are already on the serving script after the promote → all reported as
+    // already-adopted, none freshly adopted. A second run never double-moves data.
+    expect(body.adopted).toEqual([]);
+    expect([...body.alreadyAdopted].sort()).toEqual([sc, sc2].sort());
+    const stable = stableDeploymentRefFor(slug);
+    expect(scripts.get(stable)?.get(sc)).toEqual([customers]);
+    expect(scripts.get(stable)?.get(sc2)).toEqual([customers]);
+  });
+
+  it('reports prod’s SERVING version, not the promoted pointer, when an in-place serve fails (#321)', async () => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'serve-co', name: 'serve-co' });
+    const v1 = await (await push('serve-co', manifest({ version: '0.1.0' }))).json();
+    const slug: string = v1.verticalSlug;
+    expect((await promote(slug, v1.id)).status).toBe(200); // serving := v1
+
+    const v2 = (await (await push('serve-co', manifest({ version: '0.2.0' }))).json()).id as string;
+    failServeRef = stableDeploymentRefFor(slug); // the next in-place serve upload throws
+    const failed = await promote(slug, v2);
+    expect(failed.status).toBe(502); // pointer moved to v2, but the serve failed
+    failServeRef = null;
+
+    const channels = await (
+      await app.request(`/verticals/${encodeURIComponent(slug)}/channels`, { headers: auth })
+    ).json();
+    const prod = channels.find((c: { channel: string }) => c.channel === 'prod');
+    // The channel pointer is honestly recorded (it IS an audited promotion decision)...
+    expect(prod.versionId).toBe(v2);
+    // ...but the serving truth is surfaced alongside it: the scopes still run v1. This is
+    // what stops `versions` reporting v2 as deployed when it is not.
+    expect(prod.servingVersionId).toBe(v1.id);
   });
 });

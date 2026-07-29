@@ -759,6 +759,38 @@ export function scopeHostContractSuite(
         const vCol = page.columns.indexOf('v');
         expect(page.rows.map((r) => r[vCol])).toContain('post-restore-write');
       });
+
+      it('accepts a dump missing kernel-spine tables — the spine is re-asserted, not left absent (#321)', async () => {
+        // A backup captured from a WORLD that stores some `_substrat_*` tables ELSEWHERE
+        // (an `@substrat-run/adapter-sqlite` scope file keeps roles/tuples in its DIRECTORY
+        // db), or simply a partial dump, omits spine tables the target must have. Before
+        // #321 the restore's frontier refresh read `_substrat_migrations` straight after the
+        // replay and raised a bare `no such table` → a detail-less 500. Restore must instead
+        // re-create the missing spine (empty) so the load completes.
+        //
+        // A dedicated throwaway scope: the stripped restore drops this scope's migration
+        // frontier, so it must not be one the rest of the shared suite depends on.
+        const spineScope = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: spineScope,
+          jurisdiction: 'eu',
+          vertical: 'connector-vertical',
+        });
+        await host.admin.activateScope(staff, t1, spineScope);
+        const backup = await host.admin.exportScope(staff, t1, spineScope);
+        expect(backup.tables.some((t) => t.name === '_substrat_migrations')).toBe(true);
+        const stripped = {
+          ...backup,
+          tables: backup.tables.filter((t) => t.name !== '_substrat_migrations'),
+        };
+        // Pre-#321 this rejected (the frontier read hit `no such table`); now it completes.
+        await expect(host.restoreScope(staff, t1, spineScope, stripped)).resolves.toBeUndefined();
+        // The spine is present, not absent — introspection reads the scope without crashing,
+        // and the re-created `_substrat_migrations` is back.
+        const tables = await host.admin.listScopeTables(staff, t1, spineScope);
+        expect(tables.some((t) => t.name === '_substrat_migrations')).toBe(true);
+      });
     });
 
     // -- snapshot & auto-snapshot on bind (preview-and-snapshots.md §3/§4) -----
