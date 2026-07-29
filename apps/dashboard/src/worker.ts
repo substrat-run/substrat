@@ -965,6 +965,102 @@ app.get('/api/apps', async (c) => {
 });
 
 /**
+ * The account-level Domains view (#305, §4.7). A "domain" here is a CUSTOM hostname —
+ * the platform `*.substrat.run` default each app already rides is managed automatically
+ * and not listed (it is exactly each app's `hostname`, so it is subtracted out). Each row
+ * carries the app it fronts, its issuance status, and — while `pending`/`verifying`/
+ * `failed` — the DNS records the tenant must publish. Empty when the control plane is not
+ * connected (dev), like the rest of the CONNECTED-mode surface.
+ */
+app.get('/api/domains', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) return c.json([]);
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appName = new Map(apps.map((a) => [a.app_scope_id, a.name]));
+  // Each app's auto-managed default hostname — subtracted so the list shows only the
+  // custom domains a tenant added on top (the platform mint is not a "domain" to manage).
+  const defaults = new Set(apps.map((a) => a.hostname).filter(Boolean) as string[]);
+  const rows = await cp.listTenantHostnames().catch(() => []);
+  const domains = rows
+    .filter((h) => !defaults.has(h.hostname))
+    .map((h) => ({
+      hostname: h.hostname,
+      appScopeId: h.scopeId,
+      app: appName.get(h.scopeId) ?? h.scopeId,
+      surface: h.surface,
+      status: h.status,
+      statusNote: h.statusNote ?? null,
+      primary: h.canonical,
+      createdAt: h.createdAt,
+      validationRecords: h.validationRecords ?? [],
+    }));
+  return c.json(domains);
+});
+
+const bindDomainBody = z.object({
+  hostname: z.string().trim().min(1).max(253),
+  appScopeId: z.string().min(1),
+  surface: z.string().trim().min(1).default('app'),
+});
+
+/**
+ * Add a custom domain to one of the tenant's apps (§4.7). The app must be the caller's
+ * own — verified against list-apps — and the bind kicks off Cloudflare-for-SaaS issuance
+ * in the control plane; the row comes back `verifying` with the DNS records to publish.
+ * Bound as a non-canonical alias so the app's working default is never demoted out from
+ * under it — the domain serves the moment it validates, alongside the default.
+ */
+app.post('/api/domains', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'control plane not connected' });
+  const body = bindDomainBody.parse(await c.req.json());
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  if (!apps.some((a) => a.app_scope_id === body.appScopeId)) {
+    throw new HTTPException(404, { message: 'app not found' });
+  }
+  const row = await cp.bindHostname({
+    hostname: body.hostname.toLowerCase(),
+    scopeId: scopeId.parse(body.appScopeId),
+    surface: body.surface,
+    canonical: false,
+  });
+  return c.json(row, 201);
+});
+
+/** Re-poll a custom domain's issuance ("check again"). Tenant-narrowed by the CP. */
+app.post('/api/domains/:hostname/verify', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'control plane not connected' });
+  return c.json(await cp.verifyHostname(c.req.param('hostname')));
+});
+
+/** Remove a custom domain — releases the CF custom hostname and drops the binding. */
+app.delete('/api/domains/:hostname', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'control plane not connected' });
+  const name = c.req.param('hostname').toLowerCase();
+  const own = await cp.listTenantHostnames().catch(() => []);
+  const match = own.find((h) => h.hostname === name);
+  if (!match) throw new HTTPException(404, { message: 'domain not found' });
+  await cp.unbindHostname(scopeId.parse(match.scopeId), name);
+  return c.json({ deleted: name });
+});
+
+/**
  * One app's audit trail (Activity panel) — created / active / failed(+reason) / deleted.
  * Read from the caller's OWN dashboard scope, so the events are naturally tenant-scoped:
  * another tenant's app-scope-id has no events here.

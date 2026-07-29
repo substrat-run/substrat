@@ -32,6 +32,7 @@ import type {
   PlatformActorId,
   ChannelName,
   ChannelHistoryEntry,
+  DnsRecord,
   HostnameBinding,
   HostnameStatus,
   PromotionAcknowledgement,
@@ -741,6 +742,24 @@ export interface HostAdmin {
     note?: string,
   ): Promise<void>;
   /**
+   * Record the outcome of a Cloudflare-for-SaaS issuance step (§4.7) — status plus the
+   * CF custom-hostname id and the DNS records the tenant must publish. This is what the
+   * control-plane's issuance path (bind of a custom domain) and the reconcile poll write
+   * through; a plain status flip stays `setHostnameStatus`. The `customHostnameId` is
+   * written on create and left untouched (`undefined`) on later polls, so the handle a
+   * poll needs is never lost.
+   */
+  setHostnameIssuance(
+    actor: PlatformActorId,
+    hostname: string,
+    fields: {
+      status: HostnameStatus;
+      note?: string | null;
+      customHostnameId?: string | null;
+      validationRecords: DnsRecord[];
+    },
+  ): Promise<void>;
+  /**
    * Remove a hostname binding — the inverse of `bindHostname`.
    *
    * A hard DELETE, not a tombstone, and deliberately so: a hostname row is
@@ -753,7 +772,7 @@ export interface HostAdmin {
   unbindHostname(actor: PlatformActorId, hostname: string): Promise<void>;
   listHostnames(
     actor: PlatformActorId,
-    filter?: { tenantId?: TenantId; scopeId?: ScopeId },
+    filter?: { tenantId?: TenantId; scopeId?: ScopeId; status?: HostnameStatus },
   ): Promise<HostnameBinding[]>;
 
   /**

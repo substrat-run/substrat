@@ -343,6 +343,38 @@ export interface AppAuthUpdateResult {
   note?: string;
 }
 
+/** A DNS record the tenant must publish for a custom domain (§4.7). */
+export interface DnsRecord {
+  type: 'hostname' | 'txt';
+  name: string;
+  value: string;
+  status: string | null;
+}
+
+/** One custom domain row for the account-level Domains view (`GET /api/domains`). */
+export interface DomainRow {
+  hostname: string;
+  appScopeId: string;
+  /** The app (vertical install) this domain fronts. */
+  app: string;
+  surface: string;
+  status: 'pending' | 'verifying' | 'active' | 'failed';
+  statusNote: string | null;
+  /** Canonical for its (scope, surface) — the "primary" tag. */
+  primary: boolean;
+  createdAt: string;
+  /** DNS records to publish while it is not yet active. */
+  validationRecords: DnsRecord[];
+}
+
+/** The raw binding a bind/verify returns (`POST /api/domains`, `/verify`). */
+export interface HostnameBinding {
+  hostname: string;
+  status: 'pending' | 'verifying' | 'active' | 'failed';
+  statusNote?: string | null;
+  validationRecords?: DnsRecord[];
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -445,6 +477,14 @@ export const api = {
   listApps: () => call<AppRow[]>('/apps'),
   createApp: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice }) =>
     call<AppRow>('/apps', { method: 'POST', body: JSON.stringify(input) }),
+  // -- custom domains (§4.7) -------------------------------------------------
+  listDomains: () => call<DomainRow[]>('/domains'),
+  addDomain: (input: { hostname: string; appScopeId: string; surface?: string }) =>
+    call<HostnameBinding>('/domains', { method: 'POST', body: JSON.stringify(input) }),
+  verifyDomain: (hostname: string) =>
+    call<HostnameBinding>(`/domains/${encodeURIComponent(hostname)}/verify`, { method: 'POST' }),
+  removeDomain: (hostname: string) =>
+    call<void>(`/domains/${encodeURIComponent(hostname)}`, { method: 'DELETE' }),
   deleteApp: (id: string) => call<void>(`/apps/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   retryApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/retry`, { method: 'POST' }),
   appEvents: (scopeId: string) => call<AppEvent[]>(`/apps/${encodeURIComponent(scopeId)}/events`),

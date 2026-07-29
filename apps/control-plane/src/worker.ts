@@ -30,6 +30,9 @@ import {
   createWfpUploader,
   createWfpModulesFetcher,
   createCfObservabilityReader,
+  createCustomHostnameProvisioner,
+  reconcilePendingHostnames,
+  isCustomHostname,
   firstBuilderAuth,
   firstPlatformActorAuth,
   pushTokenBuilderAuth,
@@ -37,6 +40,7 @@ import {
   sessionPlatformAuth,
   UNSAFE_devPlatformActorAuth,
   type DeployVerticalFn,
+  type CustomHostnameProvisioner,
   type PlatformActorAuth,
 } from '@substrat-run/control-plane-api';
 import { VerticalClient } from '@substrat-run/control-plane-api';
@@ -106,6 +110,18 @@ interface Env extends OidcEnv {
   CF_ACCOUNT_ID?: string;
   DISPATCH_NAMESPACE?: string;
   /**
+   * Cloudflare-for-SaaS custom-hostname issuance (#305, §4.7). The zone whose fallback
+   * origin fronts tenant apps (the `substrat.run` zone), the CNAME value tenants point a
+   * custom domain at, and the comma-separated base domains a PLATFORM hostname is minted
+   * under (those ride the wildcard cert and skip issuance). Absent CF_SAAS_ZONE_ID ⇒ a
+   * custom bind records `pending` and issuance never runs (dev / self-host). The token +
+   * account are the same CF_* credential the WfP uploader uses; it needs SSL/custom-
+   * hostname write on the zone as well.
+   */
+  CF_SAAS_ZONE_ID?: string;
+  CF_SAAS_ROUTING_TARGET?: string;
+  PLATFORM_BASE_DOMAINS?: string;
+  /**
    * The WfP dispatch namespace holding pushed verticals — the control plane reaches one
    * to provision an instance of it (orchestration.md §5.4), the mirror of the router.
    */
@@ -134,6 +150,27 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
     // router calls, so a pushed vertical is provisionable + servable with no per-vertical
     // secret setup (wrangler can't set secrets on a dispatch-namespace script anyway).
     injectSecrets: { PLATFORM_SECRET: env.PLATFORM_SECRET, ROUTER_SECRET: env.ROUTER_SECRET },
+  });
+}
+
+/** The list of base domains a PLATFORM hostname is minted under (#305). */
+function platformBaseDomains(env: Env): string[] {
+  return (env.PLATFORM_BASE_DOMAINS ?? '')
+    .split(',')
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** The Cloudflare-for-SaaS custom-hostname provisioner, when a SaaS zone is configured (#305). */
+function provisionHostnameFor(env: Env): CustomHostnameProvisioner | undefined {
+  if (!env.CF_API_TOKEN || !env.CF_SAAS_ZONE_ID) return undefined;
+  return createCustomHostnameProvisioner({
+    zoneId: env.CF_SAAS_ZONE_ID,
+    apiToken: env.CF_API_TOKEN,
+    // Where a tenant points DNS — the SaaS fallback ingress. Defaults to a conventional
+    // `edge.<first base domain>` when unset, so a standard deployment needs no extra var.
+    routingTarget:
+      env.CF_SAAS_ROUTING_TARGET ?? `edge.${platformBaseDomains(env)[0] ?? 'substrat.run'}`,
   });
 }
 
@@ -364,6 +401,25 @@ export default {
         errors: report.errors,
       });
     }
+
+    // #305 §4.7 — the custom-hostname reconcile pass: poll every `verifying` domain
+    // (→ active/failed) and retry any `pending` custom bind whose create never landed.
+    // This is what makes issuance self-heal without a human flipping status by hand. It
+    // needs a CF-for-SaaS zone; without one (dev/self-host) the provisioner is undefined
+    // and the pass is skipped. Contained per-row, so a bad domain never sinks the sweep.
+    const provisioner = provisionHostnameFor(env);
+    if (provisioner) {
+      const bases = platformBaseDomains(env);
+      const hostnameReport = await reconcilePendingHostnames({
+        admin: host.admin,
+        actor: SWEEP_ACTOR,
+        provisioner,
+        isCustom: (h) => isCustomHostname(h, bases),
+      });
+      if (hostnameReport.activated || hostnameReport.failed || hostnameReport.created || hostnameReport.errors.length) {
+        console.log('hostname-reconcile', hostnameReport);
+      }
+    }
   },
 
   fetch(request: Request, env: Env): Response | Promise<Response> {
@@ -412,6 +468,10 @@ export default {
         deployVertical: deployVerticalFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
         observability: observabilityFor(env),
+        // #305 §4.7 — a custom-domain bind drives Cloudflare-for-SaaS issuance; a
+        // platform mint under one of these base domains rides the wildcard.
+        provisionHostname: provisionHostnameFor(env),
+        platformBaseDomains: platformBaseDomains(env),
       }),
     );
 

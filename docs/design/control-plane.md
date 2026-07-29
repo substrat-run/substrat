@@ -18,12 +18,17 @@ unaudited until it lands (#43).
 
 §4.7's **hostname map and router** are built: the directory data and its lifecycle in
 both adapters, and `apps/router` — the environment-wide worker that resolves a hostname
-and dispatches over a service binding. The three staff actions are on the audited HTTP surface and in
+and dispatches over a service binding. The staff actions are on the audited HTTP surface and in
 the console's **Domains** view, and the console's per-scope portal link now reads the
 scope's canonical hostname instead of a `VITE_PORTAL_BASE` env var. Hostname
-**provisioning** (the Cloudflare for SaaS custom-hostnames API, DNS validation, cert
-issuance) is still unbuilt, so bindings are set `active` by hand; a wildcard under a
-domain we control is enough to demo without it. Also still unbuilt: §5's meters; **capability-grant enumeration** — a grant is a tuple in the
+**provisioning** is now built (#305): binding a custom domain drives the Cloudflare for
+SaaS custom-hostnames API through `pending → verifying → active|failed` — DNS-record
+issuance on bind, and a scheduled reconcile pass that polls validation + cert state (no
+more setting `active` by hand). A PLATFORM hostname under a base domain we control still
+rides the wildcard and skips issuance. Registrable-suffix (PSL) isolation is enforced at
+bind (`@substrat-run/psl`), so a custom domain that is a bare public suffix is refused.
+The `verifying` state and the `custom_hostname_id` / `validation_records` columns are
+the issuance record. Also still unbuilt: §5's meters; **capability-grant enumeration** — a grant is a tuple in the
 scope's own database, so listing them needs §5.4's admin-query RPC, unlike roles which are
 directory-local (this is the sharpest remaining consequence of §7's "no back door into scope
 DBs"); and **four-eyes approval**, which §6 says the action list should settle — the action
@@ -416,12 +421,25 @@ env var. This is what #31 step 4 builds.
 `hostname → (tenant, scope, vertical, surface, region)` from directory data and
 dispatches to the vertical's worker.
 
-The map half is built: `bindHostname` / `setHostnameStatus` / `listHostnames` on
-`HostAdmin`, and `resolveHostname` — which takes **no actor and is not logged**, the
-same machine-path carve-out `resolveIdentity` gets (K-24), because it runs once per
-request. It resolves only `active` bindings, and deliberately does **not** re-check
-suspension: `getScope` owns that, and a second enforcement point is a second thing
-that can disagree.
+The map half is built: `bindHostname` / `setHostnameStatus` / `setHostnameIssuance` /
+`listHostnames` on `HostAdmin`, and `resolveHostname` — which takes **no actor and is not
+logged**, the same machine-path carve-out `resolveIdentity` gets (K-24), because it runs
+once per request. It resolves only `active` bindings, and deliberately does **not**
+re-check suspension: `getScope` owns that, and a second enforcement point is a second
+thing that can disagree.
+
+The **issuance** half is built too (#305). A custom-domain bind no longer stops at a
+`pending` row a human flips: the control plane calls Cloudflare for SaaS
+(`custom_hostnames`) through an injected `CustomHostnameProvisioner` seam — created on
+bind (→ `verifying`, with the DNS records the tenant must publish stored on the row), and
+polled by a scheduled reconcile pass (`reconcilePendingHostnames`) to `active` or
+`failed`. The seam is injected like the WfP uploader, so the transport package holds no
+Cloudflare credential and the builder never holds one (D-34). A PLATFORM hostname minted
+under a base domain we control (`PLATFORM_BASE_DOMAINS`) rides the wildcard cert and is set
+`active` on bind — no per-hostname CF call. Binding is guarded by the vendored Public
+Suffix List (`@substrat-run/psl`): a custom domain that is a bare public suffix (`co.uk`,
+`pages.dev`) is refused, because a cookie on it would span tenants (D-35). Absent a SaaS
+zone (dev / self-host), a custom bind records `pending` and issuance simply does not run.
 
 Not one router per vertical: cert and DNS lifecycle in one place means a new
 vertical gets custom domains for free instead of repeating the Cloudflare for SaaS
@@ -546,7 +564,8 @@ scope's jurisdiction.
 
 **Hostname provisioning is scope lifecycle, not a string.** The custom-hostnames API,
 DNS validation and certificate issuance are states a scope passes through (§4.2), not
-a column someone sets.
+a column someone sets — now built as `pending → verifying → active|failed` driven by the
+`CustomHostnameProvisioner` seam and the reconcile pass (#305, §4.7 above).
 
 **Cache invalidation gets open question 5's answer, not a second one.** Routing puts
 the directory on the request hot path, so a cached route that keeps serving a

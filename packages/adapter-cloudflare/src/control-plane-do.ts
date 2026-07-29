@@ -119,6 +119,10 @@ export interface HostnameRow {
   status_note: string | null;
   canonical: number;
   created_at: string;
+  /** Cloudflare-for-SaaS custom-hostname id (§4.7); null for a platform hostname. */
+  custom_hostname_id: string | null;
+  /** DNS records to publish, as a JSON array of dnsRecord; null/empty for a platform hostname. */
+  validation_records: string | null;
 }
 
 export interface VerticalRow {
@@ -303,9 +307,17 @@ const DIRECTORY_DDL = `
     status        TEXT NOT NULL,
     status_note   TEXT,
     canonical     INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    -- Cloudflare-for-SaaS issuance (§4.7): the custom-hostname id CF returns, and the
+    -- DNS records the tenant must publish (JSON array of dnsRecord). NULL for a platform
+    -- hostname (it rides the wildcard cert) and for a custom domain still pending.
+    custom_hostname_id  TEXT,
+    validation_records  TEXT
   );
   CREATE INDEX IF NOT EXISTS hostnames_scope ON hostnames (scope_id, surface);
+  -- The reconcile sweep polls every hostname mid-issuance (pending/verifying) — an
+  -- index keeps that pass from scanning the whole map as the fleet grows.
+  CREATE INDEX IF NOT EXISTS hostnames_status ON hostnames (status);
   CREATE TABLE IF NOT EXISTS verticals (
     slug         TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -632,6 +644,9 @@ export class ControlPlaneDO extends DurableObject {
     }
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
     this.addColumn('tenants', 'deleting_at TEXT');
+    // §4.7 custom-hostname issuance: CF's hostname id + the DNS records to publish (JSON).
+    this.addColumn('hostnames', 'custom_hostname_id TEXT');
+    this.addColumn('hostnames', 'validation_records TEXT');
     // K-21's tombstone on tenant-level tuples (membership lives here).
     this.addColumn('_substrat_tenant_tuples', 'revoked_at TEXT');
     this.addColumn('_substrat_admin_log', 'caused_by TEXT');
@@ -1164,11 +1179,14 @@ export class ControlPlaneDO extends DurableObject {
     hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null;
     surface: string; region: string | null; canonical: boolean; createdAt: string;
   }): void {
+    // INSERT OR REPLACE resets issuance columns to NULL — a (re)bind starts a fresh
+    // lifecycle, so any prior CF hostname id / DNS records must not linger onto the new
+    // one. `pending` is the birth state; issuance moves it from there.
     this.sql.exec(
       `INSERT OR REPLACE INTO hostnames
          (hostname, tenant_id, scope_id, vertical_slug, surface, region,
-          status, status_note, canonical, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`,
+          status, status_note, canonical, created_at, custom_hostname_id, validation_records)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, NULL, NULL)`,
       h.hostname, h.tenantId, h.scopeId, h.verticalSlug, h.surface, h.region,
       h.canonical ? 1 : 0, h.createdAt,
     );
@@ -1181,15 +1199,48 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
+  /**
+   * Record the result of a Cloudflare-for-SaaS issuance step (§4.7) — the status the
+   * poll resolved to, plus the CF hostname id and the DNS records to publish. The CF id
+   * is written once (on create) and preserved on later reconciles (poll passes leave it
+   * `undefined`); the DNS records and status are refreshed each pass. This is the only
+   * writer that moves a hostname off `pending` into `verifying`/`active`/`failed` for a
+   * custom domain.
+   */
+  setHostnameIssuance(
+    hostname: string,
+    fields: {
+      status: string;
+      note: string | null;
+      customHostnameId?: string | null;
+      validationRecords: string | null;
+    },
+  ): void {
+    if (fields.customHostnameId !== undefined) {
+      this.sql.exec(
+        `UPDATE hostnames
+            SET status = ?, status_note = ?, custom_hostname_id = ?, validation_records = ?
+          WHERE hostname = ?`,
+        fields.status, fields.note, fields.customHostnameId, fields.validationRecords, hostname,
+      );
+    } else {
+      this.sql.exec(
+        `UPDATE hostnames SET status = ?, status_note = ?, validation_records = ? WHERE hostname = ?`,
+        fields.status, fields.note, fields.validationRecords, hostname,
+      );
+    }
+  }
+
   deleteHostname(hostname: string): void {
     this.sql.exec('DELETE FROM hostnames WHERE hostname = ?', hostname);
   }
 
-  listHostnames(filter: { tenantId?: string; scopeId?: string }): HostnameRow[] {
+  listHostnames(filter: { tenantId?: string; scopeId?: string; status?: string }): HostnameRow[] {
     const where: string[] = [];
     const params: string[] = [];
     if (filter.tenantId) { where.push('tenant_id = ?'); params.push(filter.tenantId); }
     if (filter.scopeId) { where.push('scope_id = ?'); params.push(filter.scopeId); }
+    if (filter.status) { where.push('status = ?'); params.push(filter.status); }
     let sql = 'SELECT * FROM hostnames';
     if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
     sql += ' ORDER BY hostname';

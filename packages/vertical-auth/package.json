@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@substrat-run/oidc-rp": "workspace:^",
+    "@substrat-run/psl": "workspace:^",
     "better-auth": "^1.6.23",
     "drizzle-orm": "^0.45.2",
     "jose": "^6.2.3"

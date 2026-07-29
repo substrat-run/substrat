@@ -11,16 +11,25 @@
  * validation degrades to a host-only cookie — sessions simply don't share — because a
  * misdelivered config must never break sign-in.
  *
- * What this check CANNOT catch is a registrable-suffix domain like `substrat.run`
- * itself, which would share sessions across tenants. That is guarded upstream: the
- * platform refuses to deliver its own apex, and the PSL listing of the tenant-apps
- * domain makes browsers reject such a cookie outright.
+ * The registrable-suffix half is now enforced HERE too, not only upstream (#305, D-35):
+ * a configured domain that is itself a public suffix — `co.uk`, `pages.dev`, or any
+ * multi-level registry suffix a label-count check would miss — is rejected via the
+ * vendored Public Suffix List (`@substrat-run/psl`). A cookie on a public suffix spans
+ * every tenant registered under it, so it must never be honoured. The platform's own
+ * apex (`substrat.run`) is an ordinary registrable domain, NOT a public suffix, so it is
+ * additionally guarded upstream (the platform refuses to deliver it as a cookie-domain).
  */
+import { isPublicSuffix } from '@substrat-run/psl';
+
 export function resolveCookieDomain(configured: string | undefined, host: string): string | null {
   if (!configured) return null;
   const domain = configured.trim().toLowerCase().replace(/^\./, '');
   if (!domain.includes('.')) return null; // a bare TLD is never a session boundary
   const h = host.toLowerCase();
   if (h !== domain && !h.endsWith(`.${domain}`)) return null; // browser would reject it anyway
+  // Registrable-suffix guard (D-35): a cookie whose Domain is a public suffix — `co.uk`,
+  // `pages.dev`, any multi-level registry suffix a label-count check misses — spans every
+  // tenant under it. Reject it; the session degrades to host-only rather than leaking.
+  if (isPublicSuffix(domain)) return null;
   return domain;
 }
