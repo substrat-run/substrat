@@ -195,3 +195,59 @@ export async function restoreScope(opts: {
   console.log(`✓ restored ${tables.length} tables (${rows} rows) into scope ${opts.scopeId}`);
   console.log('  the scope now serves the backup — its previous data was replaced.');
 }
+
+/**
+ * `substrat scope adopt-serving <scopeId>` — the builder-triggerable backfill (#286/#321):
+ * move a LEGACY scope's data off its per-version dispatch script onto its vertical's stable
+ * serving script, so a promote stops re-stranding it. Idempotent: an already-adopted scope
+ * reports so and does nothing. Server-side is the gate (staff/owner, audited).
+ */
+export async function adoptScopeServing(opts: {
+  controlPlaneUrl: string;
+  header: Record<string, string>;
+  tenantId: string;
+  scopeId: string;
+}): Promise<void> {
+  const res = await fetch(
+    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
+      `/scopes/${encodeURIComponent(opts.scopeId)}/adopt-serving`,
+    { method: 'POST', headers: { ...opts.header, 'content-type': 'application/json' } },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `adopt-serving refused: ${res.status} ${res.statusText}`);
+  }
+  const body = (await res.json()) as { servingRef?: string; alreadyAdopted?: boolean; tables?: number };
+  if (body.alreadyAdopted) {
+    console.log(`✓ scope ${opts.scopeId} already serves from ${body.servingRef} — nothing to do.`);
+  } else {
+    console.log(`✓ adopted scope ${opts.scopeId} onto ${body.servingRef} (${body.tables ?? 0} tables moved).`);
+  }
+}
+
+/**
+ * `substrat scope adopt-serving --vertical <slug>` — backfill EVERY still-legacy scope of a
+ * vertical in one call. The whole-install migration a promote-per-scope would be tedious for.
+ */
+export async function adoptVerticalServing(opts: {
+  controlPlaneUrl: string;
+  header: Record<string, string>;
+  slug: string;
+}): Promise<void> {
+  const res = await fetch(
+    `${opts.controlPlaneUrl}/verticals/${encodeURIComponent(opts.slug)}/adopt-serving`,
+    { method: 'POST', headers: { ...opts.header, 'content-type': 'application/json' } },
+  );
+  const body = (await res.json().catch(() => null)) as
+    | { adopted?: string[]; alreadyAdopted?: string[]; error?: string }
+    | null;
+  if (!res.ok) {
+    // A per-scope failure reports what it managed before stopping — a re-run resumes.
+    const done = (body?.adopted?.length ?? 0) + (body?.alreadyAdopted?.length ?? 0);
+    throw new Error(`${body?.error ?? `adopt-serving refused: ${res.status}`}${done ? ` (adopted ${done} before stopping)` : ''}`);
+  }
+  const adopted = body?.adopted ?? [];
+  const already = body?.alreadyAdopted ?? [];
+  console.log(`✓ ${opts.slug}: adopted ${adopted.length} scope(s), ${already.length} already on the serving script.`);
+  for (const s of adopted) console.log(`  + ${s}`);
+}

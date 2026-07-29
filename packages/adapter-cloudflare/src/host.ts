@@ -1863,7 +1863,18 @@ export class CloudflareScopeHost implements ScopeHost {
         // private vertical cannot have — this fires for no one else. Snapshots and
         // forks (forked_from set) keep their frontier untouched, and a rebind that
         // crosses a migration digest snapshots first (fork-before-promote, §4).
-        if (channel === 'prod') {
+        //
+        // EXCEPTION (#321): a DISPATCH-BACKED vertical (its version has a
+        // `deployment_ref`) serves in place off a stable script. Rebinding a legacy
+        // scope's version HERE would reroute it to the incoming version's per-version
+        // dispatch script — a fresh, empty Durable Object namespace — stranding its
+        // data before the in-place serve can adopt it. So the control-plane-api promote
+        // handler owns adopt-then-rebind for those, in the correct order (serve →
+        // adopt legacy scopes onto the serving script → advance versions). We skip the
+        // rebind here for them. An EMBEDDED vertical (no per-version script;
+        // deployment_ref null — builtins, the contract tests) has no such hazard and
+        // keeps the rebind here, which is the only place it happens for that path.
+        if (channel === 'prod' && !incoming.deployment_ref) {
           const owning = await this.cp.readVertical(verticalSlug);
           if (owning && owning.owner_tenant !== null && !owning.listed) {
             const bound = (
@@ -1896,6 +1907,10 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       listChannels: async (actor, verticalSlug: string) => {
         const rows = await this.cp.listChannels(verticalSlug);
+        // The serving script runs ONE version (#286); surface it on the prod row so a
+        // failed in-place serve (channel moved, serve did not) reads honestly instead of
+        // claiming the new version is live (#321).
+        const serving = (await this.cp.readVertical(verticalSlug))?.serving_version_id ?? null;
         await this.recordAccess(actor, 'listChannels', {}, { verticalSlug }, rows.length);
         return rows.map((r) =>
           verticalChannel.parse({
@@ -1903,6 +1918,7 @@ export class CloudflareScopeHost implements ScopeHost {
             channel: r.channel,
             versionId: r.version_id,
             updatedAt: r.updated_at,
+            servingVersionId: r.channel === 'prod' ? serving : null,
           }),
         );
       },

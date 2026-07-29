@@ -120,6 +120,10 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
   // Null until it loads; stays null where the API predates /fleet/migrations —
   // the card simply does not render, nothing else degrades.
   const [migrations, setMigrations] = useState<MigrationProgress | null>(null);
+  // Role-projection health for the selected scope (#321): fetched lazily on select, so
+  // the fleet list stays one directory read while a detail view still reveals the silent
+  // "active but zero roles" condition. Null = not-yet/unavailable (degrades to nothing).
+  const [health, setHealth] = useState<{ roleProjectionEmpty: boolean; roleCount: number | null } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,6 +139,27 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
       cancelled = true;
     };
   }, [api, scopes]);
+
+  // Probe the selected scope's role projection. Only an ACTIVE scope can exhibit the
+  // silent-deny condition; skip the call otherwise.
+  useEffect(() => {
+    setHealth(null);
+    if (!selected) return;
+    const eff = effectiveStatus(selected, tenants.get(selected.tenantId));
+    if (eff !== 'active') return;
+    let cancelled = false;
+    api
+      .scopeHealth(selected.tenantId, selected.id)
+      .then((h) => {
+        if (!cancelled) setHealth({ roleProjectionEmpty: h.roleProjectionEmpty, roleCount: h.roleCount });
+      })
+      .catch(() => {
+        if (!cancelled) setHealth(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, selected, tenants]);
 
   const counts = useMemo(() => fleetCounts(scopes, tenants), [scopes, tenants]);
   const tenantList = useMemo(() => [...tenants.values()], [tenants]);
@@ -334,6 +359,17 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
                 : []),
             ]}
           />
+          {health?.roleProjectionEmpty && (
+            <div style={{ margin: '12px 0 0', display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <Badge status="danger">Empty role projection</Badge>
+              <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: '18px' }}>
+                This active scope serves traffic from a Durable Object whose <code>_substrat_roles</code>{' '}
+                projection is empty — identity resolves but <strong>every permission check denies</strong>, so
+                the app renders a no-access page (#321). Usually a scope stranded on a fresh serving script:
+                re-project its roles, or run <code>substrat scope adopt-serving</code> if it never adopted.
+              </p>
+            </div>
+          )}
           {eff === 'reaped' && (
             <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
               Storage reaped — this scope's Durable Object was wiped (§4.4). The row is kept

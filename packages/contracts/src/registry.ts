@@ -210,6 +210,16 @@ export const verticalChannel = z.object({
   channel: channelName,
   versionId: z.string().min(1),
   updatedAt: instant,
+  /**
+   * What the stable serving script (#286) is ACTUALLY running for this vertical — only
+   * meaningful for `prod`, which serves in place. A prod promote moves `versionId`
+   * (the pointer, audited) BEFORE the in-place serve; `servingVersionId` advances only
+   * after a serve succeeds. So `servingVersionId !== versionId` on prod is the honest
+   * signal that a serve failed (or is mid-flight): the channel was promoted but the
+   * scopes still run the previous code (#321). Null for dev/staging (no in-place serve)
+   * and for a vertical with no serving script yet.
+   */
+  servingVersionId: z.string().min(1).nullish(),
 });
 export type VerticalChannel = z.infer<typeof verticalChannel>;
 

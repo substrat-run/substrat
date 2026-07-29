@@ -1189,6 +1189,12 @@ export class SqliteScopeHost implements ScopeHost {
         const stmt = db.prepare(`INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`);
         for (const row of t.rows) stmt.run(...(row as unknown[]));
       }
+      // Re-assert the per-scope kernel spine (#321): a partial dump (or one from a world
+      // that stores some `_substrat_*` tables elsewhere) may omit spine tables this scope
+      // must have — e.g. `_substrat_migrations`, which the frontier refresh below reads.
+      // KERNEL_DDL is all IF NOT EXISTS, so it fills only the gaps and never disturbs a
+      // table the dump carried.
+      db.exec(KERNEL_DDL);
     });
     load(tables);
     // The frontier came in with the dump — refresh the cached applied-migration set so
@@ -2773,7 +2779,16 @@ export class SqliteScopeHost implements ScopeHost {
         // private vertical cannot have — this fires for no one else. Snapshots and
         // forks (forked_from set) keep their frontier untouched, and a rebind that
         // crosses a migration digest snapshots first (fork-before-promote, §4).
-        if (channel === 'prod') {
+        //
+        // EXCEPTION (#321): a DISPATCH-BACKED vertical (its version has a
+        // `deploymentRef`) serves in place off a stable script. Rebinding a legacy
+        // scope's version HERE would reroute it to the incoming version's per-version
+        // dispatch script — a fresh, empty scope store — stranding its data before the
+        // in-place serve can adopt it. The control-plane-api promote handler owns
+        // adopt-then-rebind for those (serve → adopt legacy scopes → advance versions),
+        // so we skip the rebind here. An EMBEDDED vertical (deploymentRef null) has no
+        // per-version script and keeps the rebind here. See adapter-cloudflare parity.
+        if (channel === 'prod' && !incoming.deploymentRef) {
           const owning = readVertical(verticalSlug);
           if (owning && owning.ownerTenant !== null && !owning.listed) {
             const bound = this.directory
@@ -2820,6 +2835,15 @@ export class SqliteScopeHost implements ScopeHost {
         const rows = this.directory
           .prepare('SELECT * FROM vertical_channels WHERE vertical_slug = ? ORDER BY channel')
           .all(verticalSlug) as ChannelRow[];
+        // The serving script runs ONE version (#286); surface it on the prod row so a
+        // failed in-place serve reads honestly instead of claiming the new version is
+        // live (#321). Parity with the Cloudflare host.
+        const serving =
+          (
+            this.directory
+              .prepare('SELECT serving_version_id FROM verticals WHERE slug = ?')
+              .get(verticalSlug) as { serving_version_id: string | null } | undefined
+          )?.serving_version_id ?? null;
         this.recordAccess(actor, 'listChannels', {}, { verticalSlug }, rows.length);
         return rows.map((r) =>
           verticalChannel.parse({
@@ -2827,6 +2851,7 @@ export class SqliteScopeHost implements ScopeHost {
             channel: r.channel,
             versionId: r.version_id,
             updatedAt: r.updated_at,
+            servingVersionId: r.channel === 'prod' ? serving : null,
           }),
         );
       },

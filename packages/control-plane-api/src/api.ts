@@ -575,6 +575,93 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return options.verticals?.[slug] ?? (await options.resolveVertical?.(slug, actor));
   };
 
+  /**
+   * Move ONE legacy scope's data off its per-version dispatch script onto its vertical's
+   * stable serving script (#286/#321), then flip routing. The one primitive behind both
+   * the explicit `adopt-serving` endpoint and the automatic adoption a prod promote runs.
+   *
+   * Ordering is data-first: export from the script that holds the data TODAY (the scope's
+   * current dispatch — resolved BEFORE any version rebind), restore into the serving
+   * script (which re-projects the vertical's roles), and only then `setScopeServingRef` +
+   * advance the version pointer. A crash before the flip leaves the scope serving its old
+   * script intact, and the adopt retries idempotently. Already-adopted scopes short-circuit.
+   * Throws `ControlPlaneError` so callers surface an actionable status, never a bare 500.
+   */
+  const adoptScopeOntoServing = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ servingRef: string; alreadyAdopted?: boolean; tables?: number }> => {
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) {
+      throw new ControlPlaneError(404, `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
+    if (scope.servingRef) return { servingRef: scope.servingRef, alreadyAdopted: true };
+    if (!scope.vertical) {
+      throw new ControlPlaneError(409, 'scope has no vertical — nothing to adopt onto');
+    }
+    const serving = await admin.verticalServing(actor, scope.vertical);
+    if (!serving) {
+      throw new ControlPlaneError(
+        409,
+        `vertical '${scope.vertical}' has no serving script yet — promote a version to prod first`,
+      );
+    }
+    const source = await verticalForScope(c, scope);
+    const dest = await options.resolveVerticalRef?.(serving.ref);
+    if (!source || !dest) {
+      throw new ControlPlaneError(501, 'adopt-serving needs dispatch resolution for both ends');
+    }
+    const dump = await source.exportScope(scopeId);
+    const restored = await dest.restoreScope(tenantId, scopeId, dump);
+    // Data landed — only now flip routing and move the version pointer.
+    await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
+    await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+    return { servingRef: serving.ref, tables: restored.tables };
+  };
+
+  /**
+   * After a prod in-place serve, own the owned-scope adopt+rebind the host cascade
+   * delegated to us for a dispatch-backed vertical (#321): adopt any still-legacy scope
+   * onto the serving script (data survives), and advance every owned scope's version
+   * pointer to the promoted version so Update stops offering a crossing already made.
+   *
+   * Gated exactly where the host cascade would have run: PRIVATE (owned, unlisted) only,
+   * active non-fork scopes only. Runs only when a serving script exists — i.e. the serve
+   * actually happened (dispatch-backed + deploy configured); for an embedded vertical the
+   * host cascade already rebound, and `verticalServing` is null, so this is a no-op.
+   * Idempotent and retry-safe: the host cascade never rebound these scopes, so their data
+   * is still findable on a retry after a failed serve.
+   */
+  const adoptAndRebindOwnedScopes = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    slug: string,
+    versionId: string,
+  ): Promise<void> => {
+    const actor = c.get('actor');
+    const serving = await admin.verticalServing(actor, slug);
+    if (!serving) return; // embedded / not dispatch-backed — the host cascade handled rebinds
+    const v = await verticalOf(actor, slug);
+    if (!v || v.ownerTenant === null || v.listed) return; // private only, like the host cascade
+    const owned = (
+      await admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug, status: ['active'] })
+    ).filter((s) => !s.forkedFrom);
+    for (const s of owned) {
+      if (!s.servingRef) {
+        // Adopt: export from the scope's current (un-rebound) dispatch → serving script,
+        // then bind to the serving version. Data-first, so a failure here leaves the
+        // scope intact on its old script for the next promote to retry.
+        await adoptScopeOntoServing(c, s.tenantId, s.id);
+      } else if (s.verticalVersionId !== versionId) {
+        // Already on the serving script (born there, or adopted earlier): routing is
+        // pinned to servingRef, so advancing the version pointer only affects Update
+        // offers. Snapshot on a migration-digest crossing (fork-before-promote, §4).
+        await admin.bindScopeVersion(actor, s.tenantId, s.id, versionId, { snapshot: true });
+      }
+    }
+  };
+
   app.get('/tenants/:tenantId/scopes/:scopeId/tables', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -586,6 +673,36 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? await vertical.listScopeTables(scopeId)
         : await admin.listScopeTables(c.get('actor'), tenantId, scopeId),
     );
+  });
+
+  // Scope health (#321, criterion #3). The silent failure the field report chased was an
+  // ACTIVE scope serving traffic from a DO whose `_substrat_roles` projection is EMPTY:
+  // identity resolves, every permission check denies, and it reads as a per-app 403 rather
+  // than a platform condition. Surface it as one. The role count comes from the SAME
+  // introspection the Data view uses (the serving script the router actually dispatches to),
+  // so it reflects the DO in front of live traffic — reusing existing plumbing rather than
+  // a new scope-DO route. `roleProjectionEmpty` on an active scope is the flag a console
+  // fleet view raises; a scope whose roles live off-DO (adapter-sqlite's directory) reports
+  // a null count and is not flagged.
+  app.get('/tenants/:tenantId/scopes/:scopeId/health', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    const tables = vertical
+      ? await vertical.listScopeTables(scopeId)
+      : await admin.listScopeTables(c.get('actor'), tenantId, scopeId);
+    const roles = tables.find((t) => t.name === '_substrat_roles');
+    const roleCount = roles ? roles.rowCount : null;
+    const roleProjectionEmpty = scope.status === 'active' && roleCount === 0;
+    return c.json({
+      scopeId,
+      status: scope.status,
+      servingRef: scope.servingRef ?? null,
+      roleCount,
+      roleProjectionEmpty,
+    });
   });
 
   app.get('/tenants/:tenantId/scopes/:scopeId/tables/:table', async (c) => {
@@ -871,6 +988,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     const dump = scopeDump.parse(await c.req.json());
+    // A backup with no tables is not a scope dump — name that plainly rather than letting
+    // the empty replay reach the checker and surface as a bare `internal error` (#321).
+    if (dump.tables.length === 0) {
+      return c.json({ error: 'restore refused: the backup has no tables — not a scope dump' }, 422);
+    }
     try {
       await host.restoreScope(actor, tenantId, scopeId, dump);
       const vertical = await verticalForScope(c, scope);
@@ -880,7 +1002,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       }
-      throw e;
+      // A restore throw is driven by the caller-supplied dump (a shape the target cannot
+      // load, a DDL the engine rejects), so DISCLOSE it as an actionable 422 rather than
+      // collapsing to the generic 500 `internal error` mapError would produce (#321,
+      // secondary obs #2). The route is staff/owner-gated and the detail is about the
+      // dump the caller sent, not another tenant's state.
+      const detail = e instanceof Error ? e.message : String(e);
+      return c.json({ error: 'restore failed — the backup could not be loaded', detail }, 422);
     }
   });
 
@@ -934,51 +1062,60 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
-  // #286: adopt a LEGACY scope onto its vertical's stable serving script — the
-  // one-time data hop off per-version dispatch. Export from the script that holds
-  // the data today (the bound version's), restore into the serving script (which
-  // re-projects the vertical's roles), then flip routing. Ordering is data-first:
-  // a crash before the flip leaves the scope serving from its old script, intact,
-  // and the adopt retries idempotently. The scope's version pointer moves to the
-  // serving version in the same act, so Update stops offering a crossing it
-  // already made.
+  // #286/#321: adopt a LEGACY scope onto its vertical's stable serving script — the
+  // one-time data hop off per-version dispatch, and the builder-triggerable backfill for
+  // installs that predate the in-place serve. The whole body lives in
+  // `adoptScopeOntoServing` (shared with the automatic adoption a prod promote runs);
+  // here it is just mapped to a JSON response.
   app.post('/tenants/:tenantId/scopes/:scopeId/adopt-serving', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
-    const actor = c.get('actor');
-    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    if (scope.servingRef) {
-      return c.json({ adopted: scopeId, servingRef: scope.servingRef, alreadyAdopted: true });
-    }
-    if (!scope.vertical) {
-      return c.json({ error: 'scope has no vertical — nothing to adopt onto' }, 409);
-    }
-    const serving = await admin.verticalServing(actor, scope.vertical);
-    if (!serving) {
-      return c.json(
-        { error: `vertical '${scope.vertical}' has no serving script yet — promote a version to prod first` },
-        409,
-      );
-    }
-    const source = await verticalForScope(c, scope);
-    const dest = await options.resolveVerticalRef?.(serving.ref);
-    if (!source || !dest) {
-      return c.json({ error: 'adopt-serving needs dispatch resolution for both ends' }, 501);
-    }
     try {
-      const dump = await source.exportScope(scopeId);
-      const restored = await dest.restoreScope(tenantId, scopeId, dump);
-      // Data landed — only now flip routing and move the version pointer.
-      await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
-      await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
-      return c.json({ adopted: scopeId, servingRef: serving.ref, tables: restored.tables });
+      const r = await adoptScopeOntoServing(c, tenantId, scopeId);
+      return c.json({ adopted: scopeId, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       }
       throw e;
     }
+  });
+
+  // Backfill EVERY still-legacy active scope of a vertical in one call — the vertical-wide
+  // trigger for an install that predates the in-place serve. Owner or staff (owned-slug
+  // checked by the confinement middleware). Idempotent: already-adopted scopes are skipped
+  // and reported. A per-scope failure stops the run and surfaces which scope failed, so a
+  // re-run resumes from there (each adopt is data-first and retry-safe).
+  app.post('/verticals/:slug/adopt-serving', async (c) => {
+    const p = c.get('principal');
+    const slug = effectiveSlug(p, c.req.param('slug'));
+    const actor = c.get('actor');
+    if (p.kind === 'builder') {
+      const v = await verticalOf(actor, slug);
+      if (!v || v.ownerTenant !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
+    }
+    const v = await verticalOf(actor, slug);
+    if (!v) return c.json({ error: `unknown vertical '${slug}'` }, 404);
+    if (v.ownerTenant === null) {
+      return c.json({ error: 'adopt-serving is a private-vertical operation' }, 409);
+    }
+    const owned = (
+      await admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug })
+    ).filter((s) => !s.forkedFrom && s.status === 'active');
+    const adopted: string[] = [];
+    const alreadyAdopted: string[] = [];
+    try {
+      for (const s of owned) {
+        const r = await adoptScopeOntoServing(c, s.tenantId, s.id);
+        (r.alreadyAdopted ? alreadyAdopted : adopted).push(s.id);
+      }
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message, adopted, alreadyAdopted }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+    return c.json({ vertical: slug, adopted, alreadyAdopted });
   });
 
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a
@@ -1340,6 +1477,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (channel === 'prod') {
       try {
         await serveVersionInPlace(c.get('actor'), slug, versionId);
+        // Adopt any still-legacy owned scope onto the serving script and advance every
+        // owned scope's version — the rebind the host cascade delegated to us for a
+        // dispatch-backed vertical (#321), in the correct order (serve → adopt → rebind),
+        // so a legacy scope's data survives the promote instead of being stranded on a
+        // fresh per-version script. Retry-safe: nothing rebound these scopes yet.
+        await adoptAndRebindOwnedScopes(c, slug, versionId);
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
         console.error('serve.inplace.failed', { slug, versionId, detail });

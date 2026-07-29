@@ -152,6 +152,13 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       call<MigrationProgress>(`/fleet/migrations${query({ vertical })}`),
     getScope: (tenantId: TenantId, scopeId: ScopeId) =>
       call<Scope>(`/tenants/${tenantId}/scopes/${scopeId}`),
+    // Scope health (#321): an ACTIVE scope with a resolvable serving script but an empty
+    // role projection serves traffic every check denies — surfaced as a platform condition
+    // here instead of only as a per-app 403.
+    scopeHealth: (tenantId: TenantId, scopeId: ScopeId) =>
+      call<{ scopeId: ScopeId; status: string; servingRef: string | null; roleCount: number | null; roleProjectionEmpty: boolean }>(
+        `/tenants/${tenantId}/scopes/${scopeId}/health`,
+      ),
     provisionScope: (input: {
       tenantId: TenantId;
       scopeId: ScopeId;

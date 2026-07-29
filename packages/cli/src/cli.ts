@@ -25,7 +25,7 @@ import { printVersions } from './versions.js';
 import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
-import { pullScope, restoreScope, resolveTenantId } from './scope.js';
+import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing } from './scope.js';
 import { listVerticalHostnames, bindSurfaceHostname, unbindHostname, formatHostnames } from './hostnames.js';
 
 const argv = process.argv.slice(2);
@@ -74,6 +74,10 @@ Usage:
                                               load a backup into an existing hosted scope,
                                               REPLACING its data (a pull's .sqlite, a local
                                               adapter-sqlite scope file, or a .dump.json)
+  substrat scope adopt-serving <scopeId>      migrate a legacy scope onto its vertical's
+                                              stable serving script so promotes stop
+                                              stranding its data (idempotent). Use
+                                              --vertical <slug> to backfill every scope.
   substrat hostnames <slug>                   list an install's hostname bindings
   substrat hostnames bind <slug> --surface <s> [--domain <d>] [--scope <id>]
                                               give a surface a URL: no --domain mints a
@@ -322,18 +326,36 @@ async function cmdScope(): Promise<void> {
   const scope = argv[2];
   const usage =
     'usage: substrat scope pull <scopeId> [--full] [--out <dir>] [--tenant <id-or-slug>]\n' +
-    '       substrat scope restore <scopeId> --file <backup.sqlite|.dump.json> [--tenant <id-or-slug>]';
-  if ((sub !== 'pull' && sub !== 'restore') || !scope || scope.startsWith('--')) {
+    '       substrat scope restore <scopeId> --file <backup.sqlite|.dump.json> [--tenant <id-or-slug>]\n' +
+    '       substrat scope adopt-serving <scopeId> [--tenant <id-or-slug>]\n' +
+    '       substrat scope adopt-serving --vertical <slug>';
+  const known = sub === 'pull' || sub === 'restore' || sub === 'adopt-serving';
+  // adopt-serving --vertical takes no positional scopeId; every other form requires one.
+  const wantsScope = !(sub === 'adopt-serving' && flag('vertical'));
+  if (!known || (wantsScope && (!scope || scope.startsWith('--')))) {
     console.error(usage);
     process.exit(1);
   }
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   console.log(`authenticating with ${as}`);
+  if (sub === 'adopt-serving' && flag('vertical')) {
+    await adoptVerticalServing({ controlPlaneUrl, header, slug: flag('vertical')! });
+    return;
+  }
+  // Past the vertical-wide branch, every form needs a scopeId (the guard above enforced it).
+  if (!scope) {
+    console.error(usage);
+    process.exit(1);
+  }
   const tenantId = await resolveTenantId(
     controlPlaneUrl,
     header,
     flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant,
   );
+  if (sub === 'adopt-serving') {
+    await adoptScopeServing({ controlPlaneUrl, header, tenantId, scopeId: scope });
+    return;
+  }
   if (sub === 'restore') {
     const file = flag('file');
     if (!file) {

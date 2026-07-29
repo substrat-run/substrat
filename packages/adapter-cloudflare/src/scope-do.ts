@@ -1037,6 +1037,17 @@ export function defineScopeDO(
         const insert = `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`;
         for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
       }
+      // Re-assert the kernel spine (#321). A dump captured from a WORLD that stores some
+      // `_substrat_*` tables ELSEWHERE carries only a subset — an `@substrat-run/adapter-
+      // sqlite` scope file, for instance, keeps `_substrat_roles`/`_substrat_tenant_tuples`
+      // in its DIRECTORY database, so its per-scope dump omits them. Replaying such a dump
+      // verbatim would leave this DO missing those spine tables, and the very next
+      // permission check would raise a bare `no such table: _substrat_roles`. KERNEL_DDL is
+      // all IF NOT EXISTS, so this recreates only what the dump did not carry (empty), and
+      // never disturbs a table the dump DID bring. Roles land empty here and are re-projected
+      // by the restore's repair leg (host.projectRolesLocal) — the spine's job is only to
+      // exist so the checker can read it.
+      for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
       // The frontier arrived with the dump — refresh the in-memory applied set so a
       // later migrate() builds on the imported state, not the provisioning state.
       this.applied.clear();

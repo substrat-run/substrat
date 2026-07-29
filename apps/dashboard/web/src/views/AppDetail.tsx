@@ -410,6 +410,12 @@ function Deployments({ app }: { app: AppRow }) {
   // isn't what prod points at, so no update can be offered until someone promotes it.
   const newestAdmitted = dep.versions.find((v) => v.admission === 'admitted');
   const awaitingPromotion = !updateAvailable && !!newestAdmitted && newestAdmitted.id !== prod?.versionId;
+  // Prod was promoted but its in-place serve failed (#321): the channel points at a version
+  // the scopes are NOT running. Surface it — this is exactly the silent state the field
+  // report spent a migration-journal diff to uncover.
+  const serveStalled = !!prod && prod.servingVersionId != null && prod.servingVersionId !== prod.versionId;
+  const promotedVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.versionId) : undefined;
+  const servingVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.servingVersionId) : undefined;
   const COLS = '1fr 1.2fr 1.6fr 1.4fr';
 
   const doUpdate = async () => {
@@ -485,6 +491,20 @@ function Deployments({ app }: { app: AppRow }) {
           </div>
         )}
       </div>
+      {serveStalled && (
+        <div style={{ ...card, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderColor: 'var(--status-danger-fg)' }}>
+          <Pill kind="warning">serve failed</Pill>
+          <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+            <b>prod</b> was promoted to <MonoTag>{promotedVersion?.version ?? prod!.versionId}</MonoTag> but its in-place
+            serve failed — your app still runs <MonoTag>{servingVersion?.version ?? prod!.servingVersionId}</MonoTag>.
+            {selfServe ? (
+              <> Re-promote on <a href="#/verticals" style={{ color: 'var(--text-brand)' }}>Verticals →</a> to retry the serve.</>
+            ) : (
+              <> The Substrat team can re-promote it to retry.</>
+            )}
+          </span>
+        </div>
+      )}
       {note && <div style={{ ...card, padding: '10px 16px', fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</div>}
       {(() => {
         // The time-boxed backout offer (#286): shown only while the newest

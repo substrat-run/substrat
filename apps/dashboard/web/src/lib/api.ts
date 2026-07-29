@@ -145,7 +145,10 @@ export interface Deployment {
    */
   owned?: boolean;
   versions: DeploymentVersion[];
-  channels: Array<{ channel: string; versionId: string }>;
+  // `servingVersionId` is what prod's stable serving script actually runs (#321): when it
+  // differs from a prod channel's `versionId`, the promote moved the pointer but the
+  // in-place serve failed — scopes still run the old code.
+  channels: Array<{ channel: string; versionId: string; servingVersionId?: string | null }>;
   /**
    * The version THIS scope is actually pinned to (the router dispatches on it) — set on
    * the per-app deployments read. It can lag the `prod` channel: an app installed when

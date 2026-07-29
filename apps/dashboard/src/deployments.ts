@@ -44,7 +44,7 @@ export interface Deployment {
   listed: boolean;
   /** Newest-first (the id is a ULID — lexicographic order is chronological). */
   versions: DeploymentVersion[];
-  channels: Array<{ channel: string; versionId: string }>;
+  channels: Array<{ channel: string; versionId: string; servingVersionId?: string | null }>;
 }
 
 interface RawVertical {
@@ -67,7 +67,7 @@ interface RawVersion {
 function shape(
   v: RawVertical,
   versions: RawVersion[],
-  channels: Array<{ channel: string; versionId: string }>,
+  channels: Array<{ channel: string; versionId: string; servingVersionId?: string | null }>,
 ): Deployment {
   const i = v.slug.indexOf('/');
   return {
@@ -103,8 +103,13 @@ function shape(
       }));
     })(),
     // Normalize: the host returns full VerticalChannel rows (verticalSlug, updatedAt);
-    // the view needs only which version each channel points at.
-    channels: channels.map((c) => ({ channel: c.channel, versionId: c.versionId })),
+    // the view needs which version each channel points at, plus what prod is ACTUALLY
+    // serving (#321) so a failed in-place serve reads honestly instead of "deployed".
+    channels: channels.map((c) => ({
+      channel: c.channel,
+      versionId: c.versionId,
+      servingVersionId: c.servingVersionId ?? null,
+    })),
   };
 }
 
