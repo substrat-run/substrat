@@ -307,6 +307,54 @@ app.post('/internal/provision', async (c) => {
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
 });
 
+/** A reconcile carries no owner — the vertical re-sources it from its own owner-of-record (#332). */
+const reconcileInstanceBody = z.object({
+  tenantId,
+  scopeId,
+  entitlements: z.array(entitlementGrant).optional(),
+});
+
+/**
+ * Repair a scope stuck at the #332 lockout: role definitions projected but no principal holding a
+ * role (e.g. a promote recreated this scope's DO storage, #321), so `permission_source = 'local'`
+ * enforces against an empty tuple table and every login denies. The builder can't call the
+ * platform-secret-gated `/internal/provision`, so the control plane calls THIS on their behalf
+ * after checking they own the vertical. It re-sources the owner from this vertical's durable
+ * owner-of-record — which lives in the per-tenant IdentityDO, a different DO from the wiped scope
+ * DO, so it survives — and re-runs the idempotent provision. No owner in the body: the platform
+ * never persisted one. Platform-secret gated; NOT under /api/*. Idempotent.
+ */
+app.post('/internal/reconcile', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const body = reconcileInstanceBody.parse(await c.req.json());
+  const owner = await identityDo(c.env, {
+    tenantId: body.tenantId,
+    scopeId: body.scopeId,
+  }).getOwnerOfRecord(body.scopeId);
+  if (!owner) {
+    // No owner of record: a scope never provisioned through this vertical (a legacy install
+    // predating owner-of-record, or a wrong scope id). There is nobody to re-grant, so refuse
+    // actionably rather than silently succeed against a scope that would still deny every login.
+    throw new HTTPException(409, {
+      message: `no owner of record for scope ${body.scopeId} — cannot reconcile; re-run the full install`,
+    });
+  }
+  await hostFor(c.env).provisionScopeLocal({
+    tenantId: body.tenantId,
+    scopeId: body.scopeId,
+    owner: principalId.parse(owner),
+    roles: ROLES,
+    ownerRoleKey: 'hr-admin',
+    entitlements: body.entitlements,
+  });
+  return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner });
+});
+
 /**
  * Read-only introspection of a scope's OWN database on the platform's instruction
  * (kernel-design §5.4's admin-query RPC) — this is what the console/dashboard "Data"

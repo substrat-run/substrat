@@ -25,7 +25,7 @@ import { printVersions } from './versions.js';
 import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
-import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing } from './scope.js';
+import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope } from './scope.js';
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
@@ -336,9 +336,10 @@ async function cmdScope(): Promise<void> {
   const usage =
     'usage: substrat scope pull <scopeId> [--full] [--out <dir>] [--tenant <id-or-slug>]\n' +
     '       substrat scope restore <scopeId> --file <backup.sqlite|.dump.json> [--tenant <id-or-slug>]\n' +
+    '       substrat scope provision <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope adopt-serving <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope adopt-serving --vertical <slug>';
-  const known = sub === 'pull' || sub === 'restore' || sub === 'adopt-serving';
+  const known = sub === 'pull' || sub === 'restore' || sub === 'provision' || sub === 'adopt-serving';
   // adopt-serving --vertical takes no positional scopeId; every other form requires one.
   const wantsScope = !(sub === 'adopt-serving' && flag('vertical'));
   if (!known || (wantsScope && (!scope || scope.startsWith('--')))) {
@@ -363,6 +364,10 @@ async function cmdScope(): Promise<void> {
   );
   if (sub === 'adopt-serving') {
     await adoptScopeServing({ controlPlaneUrl, header, tenantId, scopeId: scope });
+    return;
+  }
+  if (sub === 'provision') {
+    await provisionScope({ controlPlaneUrl, header, tenantId, scopeId: scope });
     return;
   }
   if (sub === 'restore') {

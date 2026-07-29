@@ -189,8 +189,11 @@ export async function restoreScope(opts: {
     },
   );
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `restore refused: ${res.status} ${res.statusText}`);
+    // The CP shapes an unloadable-dump failure as `{ error, detail }` (#321); surface the detail
+    // too, or the builder sees only a generic message and can't act on it (#332).
+    const body = (await res.json().catch(() => null)) as { error?: string; detail?: string } | null;
+    const base = body?.error ?? `restore refused: ${res.status} ${res.statusText}`;
+    throw new Error(body?.detail ? `${base} — ${body.detail}` : base);
   }
   console.log(`✓ restored ${tables.length} tables (${rows} rows) into scope ${opts.scopeId}`);
   console.log('  the scope now serves the backup — its previous data was replaced.');
@@ -223,6 +226,33 @@ export async function adoptScopeServing(opts: {
   } else {
     console.log(`✓ adopted scope ${opts.scopeId} onto ${body.servingRef} (${body.tables ?? 0} tables moved).`);
   }
+}
+
+/**
+ * `substrat scope provision <scopeId>` — recover a scope stuck at "roles projected, zero tuples"
+ * (#332): the enforcement flip switched on against an empty tuple table, so every login denies and
+ * the owner is locked out with no lever. This re-runs the vertical's idempotent provision through
+ * the control plane, which re-sources the owner from the vertical's own owner-of-record and restores
+ * the grant. Authenticated with the builder's existing CP token — the platform secret never leaves
+ * the control plane. Idempotent: safe to re-run on an already-healthy scope.
+ */
+export async function provisionScope(opts: {
+  controlPlaneUrl: string;
+  header: Record<string, string>;
+  tenantId: string;
+  scopeId: string;
+}): Promise<void> {
+  const res = await fetch(
+    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
+      `/scopes/${encodeURIComponent(opts.scopeId)}/provision`,
+    { method: 'POST', headers: { ...opts.header, 'content-type': 'application/json' } },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `provision refused: ${res.status} ${res.statusText}`);
+  }
+  const body = (await res.json()) as { owner?: string };
+  console.log(`✓ reconciled scope ${opts.scopeId} — owner ${body.owner ?? '(unknown)'} re-granted; logins restored.`);
 }
 
 /**

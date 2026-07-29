@@ -375,6 +375,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Re-poll issuance ("check again") — self-serve for the scope's own tenant (#305).
     { method: 'POST', re: /\/hostnames\/[^/]+\/verify$/ },
     { method: 'DELETE', re: /\/hostnames\/[^/]+$/ },
+    // Recover a scope stuck at "roles projected, zero tuples" (#332) — re-provision a scope the
+    // builder's OWN vertical runs. Ownership is re-checked in the handler; the allowlist alone is
+    // not authz. This is the only scope-level route a builder may reach.
+    { method: 'POST', re: /\/scopes\/[^/]+\/provision$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -741,6 +745,36 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       roleCount,
       roleProjectionEmpty,
     });
+  });
+
+  // #332: re-provision a scope stuck at "roles projected, zero tuples" — the enforcement flip
+  // switched on against an empty tuple table, so every login denies and the owner is locked out
+  // with no lever (the platform secret is the CP's, not the builder's). This is that lever: the
+  // CP re-runs the vertical's idempotent provision on the builder's behalf. The vertical re-sources
+  // the owner from its own owner-of-record; the platform never hands over PLATFORM_SECRET. Builder
+  // or staff — a builder only for a scope running a vertical its own tenant owns (mirrors
+  // adopt-serving). Entitlements are re-gathered here, authoritative, exactly as at provision (#310).
+  app.post('/tenants/:tenantId/scopes/:scopeId/provision', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const p = c.get('principal');
+    if (p.kind === 'builder') {
+      const v = scope.vertical ? await verticalOf(actor, scope.vertical) : undefined;
+      if (!v || v.ownerTenant !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
+    }
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return c.json({ error: `no deployment is bound for scope ${scopeId}` }, 501);
+    const entitlements = await admin.listEntitlements(actor, tenantId);
+    try {
+      const result = await vertical.reconcileInstance({ tenantId, scopeId, entitlements });
+      return c.json(result);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      throw e;
+    }
   });
 
   app.get('/tenants/:tenantId/scopes/:scopeId/tables/:table', async (c) => {

@@ -99,6 +99,24 @@ export interface ProvisionedInstance {
   owner: PrincipalId;
 }
 
+export interface ReconcileInstanceInput {
+  /** The scope's tenant — a CP-less vertical shards its identity/owner store per tenant
+   *  (Meridian's IdentityDO is addressed by tenant id), and re-sourcing the owner needs it. */
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  /** The tenant's entitlements, gathered by the platform and re-projected on reconcile, exactly
+   *  as at provision (#310). Deliberately NO owner: the platform never persisted one — the
+   *  vertical re-sources it from its own durable owner-of-record. */
+  entitlements?: EntitlementGrant[];
+}
+
+export interface ReconciledInstance {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  /** The owner the vertical re-granted, echoed back so the caller can report who was restored. */
+  owner: PrincipalId;
+}
+
 export class VerticalClient {
   constructor(private readonly options: VerticalClientOptions) {}
 
@@ -142,6 +160,19 @@ export class VerticalClient {
    */
   async configureInstance(input: ConfigureInstanceInput): Promise<void> {
     await this.postInternal<unknown>('/internal/configure', input, 'configure');
+  }
+
+  /**
+   * Re-provision an EXISTING instance to repair the #332 lockout: a scope left with role
+   * definitions projected but no principal holding a role — `permission_source = 'local'`, zero
+   * tuples — enforces nothing but denials, and the builder cannot reach the platform-secret-gated
+   * `/internal/provision` to fix it. This is the builder-triggerable repair the control plane makes
+   * on their behalf (after checking ownership): it carries NO owner — the platform never persisted
+   * one — so the vertical re-sources the owner from its own durable owner-of-record and re-runs the
+   * idempotent provision. Entitlements are re-gathered and re-delivered exactly as at provision.
+   */
+  async reconcileInstance(input: ReconcileInstanceInput): Promise<ReconciledInstance> {
+    return this.postInternal<ReconciledInstance>('/internal/reconcile', input, 'reconcile');
   }
 
   /**

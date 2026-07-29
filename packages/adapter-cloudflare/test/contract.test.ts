@@ -441,3 +441,90 @@ describe('scope-local entitlements — a CP-less hosted vertical (#304)', () => 
     await expect(stub.invoke<string>('billed/act')).resolves.toBe('ran');
   });
 });
+
+/**
+ * #332: a CP-less scope can be left "role definitions projected, permission_source = 'local',
+ * zero tuples" — a scope enforcing nothing but denials, unfixable from inside (the owner is
+ * signed in and linked to a principal that holds no role). Two guarantees close the hole:
+ * `provisionScopeLocal` writes the owner's grant in the SAME unit as the enforcement flip (so a
+ * partial write can never brick it), and a reconcile — re-running provisioning with the owner the
+ * vertical still remembers — repairs a scope that reached the bricked state another way (e.g. a
+ * promote that recreated the scope-DO storage, #321).
+ */
+describe('#332 — recovery from a scope bricked to zero tuples (CP-less)', () => {
+  let host: CloudflareScopeHost;
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const ADMIN = permissionKey.parse('perm:admin');
+
+  const provision = (scope: typeof s): Promise<void> =>
+    host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: scope,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [ADMIN], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+  const probe = async (): Promise<boolean> =>
+    (await (await host.getScope(owner, t, s)).invoke<{ allowed: boolean }>('perm/probe', { permission: ADMIN }))
+      .allowed;
+
+  // Raw DO stub — reproduce the brick and read the enforcement flag exactly as #332 diagnosed it.
+  type RawStub = {
+    revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
+    applyProjection(
+      tenantId: string,
+      roles: { role_key: string; permissions: string; source: string }[],
+      tuples: unknown[],
+      entitlements?: unknown[],
+      scopeTuples?: { subject: string; relation: string; object: string; expires_at: string | null }[],
+    ): Promise<void>;
+    introspectQuery(sql: string): Promise<{ rows: unknown[][] }>;
+  };
+  const rawStub = (scope: string): RawStub => env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as RawStub;
+  const permissionSource = async (scope: string): Promise<string | undefined> =>
+    (
+      await rawStub(scope).introspectQuery("SELECT value FROM _substrat_meta WHERE key = 'permission_source'")
+    ).rows[0]?.[0] as string | undefined;
+
+  beforeAll(async () => {
+    // No control plane — the CP-less hosted-vertical shape the issue is about.
+    host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    await provision(s);
+  });
+  afterAll(async () => host.close());
+
+  it('provisions atomically — owner served and enforcement flipped to local in one unit', async () => {
+    expect(await probe()).toBe(true);
+    expect(await permissionSource(s)).toBe('local');
+  });
+
+  it('reproduces the lockout: with the owner grant revoked, every check denies', async () => {
+    // A scope-DO storage wipe leaves role defs projected + source = 'local' but no principal→role
+    // tuple. Tombstoning the owner grant is that exact state — the scope enforces against nothing.
+    await rawStub(s).revokeTuple(`principal:${owner}`, `role:office-admin`, `scope:${s}`, new Date().toISOString());
+    expect(await probe()).toBe(false);
+  });
+
+  it('a reconcile (re-provision with the owner the vertical still knows) restores access', async () => {
+    await provision(s); // what the builder-triggered /internal/reconcile does after reading owner_of_record
+    expect(await probe()).toBe(true);
+  });
+
+  it('applyProjection refuses to switch on strict enforcement against an empty tuple table', async () => {
+    const fresh = scopeId.parse(ulid());
+    const roleDef = { role_key: 'office-admin', permissions: JSON.stringify([ADMIN]), source: 'vertical' };
+    // Roles projected but nobody holds one → the flip is refused (else every check fails closed).
+    await rawStub(fresh).applyProjection(t, [roleDef], []);
+    expect(await permissionSource(fresh)).toBeUndefined();
+    // The same projection carrying the owner grant in the same unit → now safe, and it flips.
+    await rawStub(fresh).applyProjection(t, [roleDef], [], undefined, [
+      { subject: `principal:${owner}`, relation: 'role:office-admin', object: `scope:${fresh}`, expires_at: null },
+    ]);
+    expect(await permissionSource(fresh)).toBe('local');
+  });
+});
