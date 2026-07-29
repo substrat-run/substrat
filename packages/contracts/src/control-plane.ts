@@ -57,6 +57,7 @@ export const adminAction = z.enum([
   // analogue of reapScope.
   'reapTenant',
   'provisionScope', // §4.2 — the first scope-lifecycle transition (→ active)
+  'provisionTenantStore', // #301 — mint a per-tenant relational store for a hosted vertical
   'importScope', // preview-and-snapshots.md §3 — provision a scope + load a dump (fork)
   'restoreScope', // §8's write half — load a dump into an EXISTING scope in place (backup restore / backout)
   'rewindScope', // #286's backout — PITR-rewind a scope to a pre-migration bookmark (schema AND data)

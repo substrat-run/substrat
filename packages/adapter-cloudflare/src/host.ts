@@ -78,6 +78,7 @@ import {
   type TenantId,
   type TenantRole,
   type TenantStatus,
+  type TenantStoreHandle,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -108,6 +109,8 @@ import {
   type ScopeFilter,
   type ScopeHost,
   type ScopeStub,
+  type TenantRelationalStore,
+  type TenantStoreProvisionInput,
 } from '@substrat-run/kernel';
 import type {
   AccessLogRow,
@@ -1030,6 +1033,27 @@ export class CloudflareScopeHost implements ScopeHost {
         record,
       );
     }
+  }
+
+  // Per-tenant relational stores (#301). The vocabulary, directory ledger and pure-adapter
+  // implementation land first; the LIVE Cloudflare D1 create/bind/HTTP-query is the second
+  // step (it needs real CF API calls that cannot be exercised on the local/SQLite path).
+  // Until then these fail loudly rather than silently no-op — a hosted vertical that declares
+  // a `tenantStoreNeed` must not appear provisioned while its store does not exist.
+  async provisionTenantStore(
+    _actor: PlatformActorId,
+    input: TenantStoreProvisionInput,
+  ): Promise<TenantStoreHandle> {
+    throw new Error(
+      `provisionTenantStore is not yet wired on Cloudflare (#301, PR-2: live D1 minting) — ` +
+        `tenant=${input.tenantId} vertical=${input.vertical} binding=${input.binding}`,
+    );
+  }
+
+  openTenantStore(handle: TenantStoreHandle): TenantRelationalStore {
+    throw new Error(
+      `openTenantStore is not yet wired on Cloudflare (#301, PR-2: live D1 binding) — binding=${handle.binding}`,
+    );
   }
 
   async importScope(

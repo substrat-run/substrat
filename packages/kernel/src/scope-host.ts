@@ -57,6 +57,7 @@ import type {
   Tenant,
   TenantId,
   TenantRole,
+  TenantStoreHandle,
   Vertical,
   VerticalChannel,
   VerticalVersion,
@@ -1255,6 +1256,35 @@ export interface ProvisionScopeInput {
   expiresAt?: string;
 }
 
+/** What `provisionTenantStore` needs to mint (or idempotently re-resolve) a per-tenant
+ *  relational store (#301). Keyed by (tenant, vertical, binding) — the same tenant can hold
+ *  one store per declared `tenantStoreNeed.binding`, and two verticals never share one. */
+export interface TenantStoreProvisionInput {
+  tenantId: TenantId;
+  /** The vertical the store belongs to — its `tenantStoreNeed` binding is scoped to it. */
+  vertical: string;
+  /** The declared `tenantStoreNeed.binding` this store satisfies (SCREAMING_SNAKE). */
+  binding: string;
+}
+
+/**
+ * A live per-tenant relational store the vertical reached through the host (#301) — the
+ * thing `openTenantStore` hands back. Deliberately the SAME `query`/`exec` shape as
+ * `ScopedSql`, so a vertical's own-store code reads identically to its scope-DB code, plus
+ * a `native` escape hatch for a library (e.g. Better Auth) that wants the raw driver.
+ *
+ * `native` is `unknown` at the contract on purpose: a `better-sqlite3` `Database` on the
+ * pure adapter, a `D1Database` on Cloudflare. The vertical narrows it in its own
+ * runtime-specific harness — exactly the node/worker split a hosted vertical already has —
+ * which is what lets one vertical run unchanged against D1 in prod and a `.sqlite` file locally.
+ */
+export interface TenantRelationalStore {
+  query<T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[];
+  exec(sql: string, params?: readonly SqlValue[]): { changes: number };
+  /** The underlying driver, for a library that needs it. Adapter-typed; `unknown` here. */
+  readonly native: unknown;
+}
+
 /**
  * Narrow `listRoles` (control-plane.md §4.5 console item 4 — the permission
  * diff's runtime half).
@@ -1336,6 +1366,32 @@ export interface ScopeHost {
    * closed. Jurisdiction is fixed here forever (K-7).
    */
   provisionScope(actor: PlatformActorId, input: ProvisionScopeInput): Promise<void>;
+
+  /**
+   * Mint (or idempotently re-resolve) a **per-tenant relational store** and return the
+   * platform-minted handle (#301). The platform — never the vertical — does this, because
+   * on Cloudflare it holds the credential that creates a D1 (D-34); the vertical only ever
+   * OPENS what it is handed (`openTenantStore`). Idempotent: called again for the same
+   * (tenant, vertical, binding) it returns the existing store's handle rather than minting
+   * a second one, so a retried provision cannot orphan a database.
+   *
+   * The returned `handle.ref` is opaque — a D1 `database_id` on Cloudflare, a per-tenant
+   * `.sqlite` path token on the pure adapter — and is what closes the ownership gap a
+   * bundle-chosen id left open (self-serve-deploy.md §4): the id is minted here, not declared.
+   */
+  provisionTenantStore(
+    actor: PlatformActorId,
+    input: TenantStoreProvisionInput,
+  ): Promise<TenantStoreHandle>;
+
+  /**
+   * Open a per-tenant relational store the platform minted (#301) for reads/writes — the
+   * request-time and provision-time reach the vertical uses (e.g. to run its OWN store
+   * migrations against a freshly-handed store before the provision callback returns,
+   * preserving the K-31 fail-closed/idempotent/retry ready-gate). Takes the opaque handle
+   * from `provisionTenantStore`; never parses `ref` in vertical code.
+   */
+  openTenantStore(handle: TenantStoreHandle): TenantRelationalStore;
 
   /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of

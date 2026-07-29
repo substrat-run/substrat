@@ -28,6 +28,8 @@ export type {
   ScopeStub,
   SqlMigration,
   SqlValue,
+  TenantRelationalStore,
+  TenantStoreProvisionInput,
 } from './scope-host.js';
 export { backoffAt, resolveRetryPolicy } from './scope-host.js';
 export { unconfiguredSecretBox, webCryptoSecretBox } from './secret-box.js';

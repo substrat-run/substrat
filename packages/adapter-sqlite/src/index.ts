@@ -93,6 +93,7 @@ import {
   type TenantId,
   type TenantRole,
   type TenantStatus,
+  type TenantStoreHandle,
   SCOPE_TABLE_PAGE_DEFAULT,
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
@@ -135,6 +136,8 @@ import {
   type ScopeStub,
   type SqlMigration,
   type SqlValue,
+  type TenantRelationalStore,
+  type TenantStoreProvisionInput,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -510,6 +513,10 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly directory: Database.Database;
   private readonly scopes = new Map<string, ScopeRuntime>();
   private readonly scopesById = new Map<string, ScopeRuntime>();
+  /** Per-tenant relational stores (#301), opened lazily and cached by `ref` (the bare
+   *  `.sqlite` filename). The pure-adapter analogue of a per-tenant D1 — one file per
+   *  (tenant, vertical, binding), physically separate from the scope DBs. */
+  private readonly tenantStoreDbs = new Map<string, Database.Database>();
   private readonly operations = new Map<string, OperationHandler<never, unknown>>();
   private readonly modules = new Map<string, RegisteredModule>();
   /** operation name → guards declared before it, in registration order (K-17). */
@@ -622,6 +629,21 @@ export class SqliteScopeHost implements ScopeHost {
       );
       CREATE INDEX IF NOT EXISTS hostnames_scope ON hostnames (scope_id, surface);
       CREATE INDEX IF NOT EXISTS hostnames_status ON hostnames (status);
+      -- Per-tenant relational stores (#301). One row per (tenant, vertical, binding): the
+      -- platform-minted per-tenant store a vertical declared as a tenantStoreNeed. ref
+      -- is the opaque store handle — a per-tenant .sqlite path token here, a D1
+      -- database_id on Cloudflare. The row is the idempotency + reap ledger: a retried
+      -- provision re-resolves the SAME ref rather than minting a second database, and the
+      -- platform knows what to tear down when a tenant is reaped (no orphaned databases).
+      CREATE TABLE IF NOT EXISTS tenant_stores (
+        tenant_id  TEXT NOT NULL,
+        vertical   TEXT NOT NULL,
+        binding    TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        ref        TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, vertical, binding)
+      );
       -- The vertical + version registry (#31). A scope binds to a VERSION, so
       -- dev/staging/prod are the same vertical pinned differently, and a preview
       -- deployment is a version nothing has been promoted to yet.
@@ -1151,6 +1173,92 @@ export class SqliteScopeHost implements ScopeHost {
         record,
       );
     }
+  }
+
+  async provisionTenantStore(
+    actor: PlatformActorId,
+    input: TenantStoreProvisionInput,
+  ): Promise<TenantStoreHandle> {
+    // Fail closed on an unknown/inactive tenant, exactly as provisionScope does: a store
+    // for a tenant that does not exist is the same "FK string" hole (§4.1). A store is
+    // minted only for a tenant the directory actually knows and is serving.
+    const tenantRow = this.directory
+      .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
+      .get(input.tenantId) as { status: string } | undefined;
+    if (!tenantRow) {
+      throw new Error(`cannot provision tenant store under unknown tenant: ${input.tenantId}`);
+    }
+    if (tenantRow.status !== 'active') {
+      throw new Error(
+        `cannot provision tenant store under non-active tenant (status: ${tenantRow.status}): ${input.tenantId}`,
+      );
+    }
+    // Idempotent on (tenant, vertical, binding): a retried provision re-resolves the SAME
+    // store rather than minting a second database (the K-31 ready-gate retries the whole
+    // callback, so this must be safe to re-run). An existing row short-circuits before any
+    // file is touched and is NOT re-audited — nothing changed.
+    const existing = this.directory
+      .prepare(
+        'SELECT kind, ref FROM tenant_stores WHERE tenant_id = ? AND vertical = ? AND binding = ?',
+      )
+      .get(input.tenantId, input.vertical, input.binding) as
+      | { kind: string; ref: string }
+      | undefined;
+    if (existing) {
+      return { binding: input.binding, kind: 'relational', ref: existing.ref };
+    }
+    // The opaque handle `ref` is a bare `.sqlite` filename, prefixed `tstore__` so it can
+    // never collide with a scope DB (`${tenantId}__${scopeId}.sqlite`). It is deterministic
+    // from the key, but the row — not the convention — is the source of truth (on Cloudflare
+    // the ref is a D1 database_id CF assigns, which is not derivable). ULID keeps two
+    // verticals' identically-bound stores distinct even if a slug is ever reused.
+    const ref = `tstore__${input.tenantId}__${input.vertical}__${input.binding}__${ulid()}.sqlite`;
+    // Physically mint the database now, so a successful mint means the file exists (matching
+    // "the platform mints the store"); the vertical then runs its OWN migrations against it.
+    this.tenantStoreDb(ref);
+    this.directory
+      .prepare(
+        `INSERT INTO tenant_stores (tenant_id, vertical, binding, kind, ref, created_at)
+         VALUES (?, ?, ?, 'relational', ?, ?)`,
+      )
+      .run(input.tenantId, input.vertical, input.binding, ref, new Date().toISOString());
+    this.recordAdmin(
+      actor,
+      'provisionTenantStore',
+      { tenantId: input.tenantId, vertical: input.vertical },
+      null,
+      { binding: input.binding, kind: 'relational', ref },
+    );
+    return { binding: input.binding, kind: 'relational', ref };
+  }
+
+  openTenantStore(handle: TenantStoreHandle): TenantRelationalStore {
+    // `ref` is platform-minted, but treat it as untrusted at the open boundary (parse,
+    // don't trust): a bare filename only, so a crafted `ref` can never escape `this.dir`.
+    if (handle.ref.includes('/') || handle.ref.includes('\\') || handle.ref.includes('..')) {
+      throw new Error(`invalid tenant-store ref (must be a bare filename): ${handle.ref}`);
+    }
+    const db = this.tenantStoreDb(handle.ref);
+    return {
+      query: <T = Record<string, SqlValue>>(sql: string, params: readonly SqlValue[] = []): T[] =>
+        db.prepare(sql).all(...params) as T[],
+      exec: (sql: string, params: readonly SqlValue[] = []) => {
+        const info = db.prepare(sql).run(...params);
+        return { changes: info.changes };
+      },
+      native: db,
+    };
+  }
+
+  /** Open (and cache) a per-tenant relational store file by its bare-filename `ref`. */
+  private tenantStoreDb(ref: string): Database.Database {
+    let db = this.tenantStoreDbs.get(ref);
+    if (!db) {
+      db = new Database(join(this.dir, ref));
+      db.pragma('journal_mode = WAL');
+      this.tenantStoreDbs.set(ref, db);
+    }
+    return db;
   }
 
   async importScope(

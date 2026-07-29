@@ -220,6 +220,10 @@ export async function push(
     compatibilityFlags,
     doClasses,
     bindings,
+    // Per-tenant relational stores (#301) travel as a NEED, not a binding: there is no
+    // static database id to declare (the platform mints one per tenant), so they never
+    // appear in `bindings`/wrangler — only here, for admission + the tenant lifecycle.
+    ...(needs?.tenantStores?.length ? { tenantStores: needs.tenantStores } : {}),
     // The vertical's declared config surface, carried to the registry (control-plane-side
     // validated) so the platform renders a settings form for it. Not part of any admission
     // digest — it's metadata, not code.
