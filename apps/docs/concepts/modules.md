@@ -57,15 +57,29 @@ Field by field:
 | `attachmentTargets` | entity types that accept attachments (documents, comments), and which permission gates reading them | kernel attachment services |
 | `entityRelations` | parent edges (`workorder → facility`) that permission flows along | the [permission evaluator](/concepts/permissions) |
 | `entitlementKey` | the SKU flag that gates loading this module for a tenant | entitlements / billing |
+| `ownerGrants` | permissions a fresh install's owner holds on day one (marketplace install); scope-provisioning verticals only | dashboard install, registry |
+| `entitlements` | the full entitlement set an install grants (own + composed); absent ⇒ derive from `entitlementKey` | entitlements, registry |
+| `provides` / `requires` | named capabilities this vertical offers (`oidc-issuer`) or delegates to — wired tenant-side via the connection store | capability wiring, registry |
 | `envSpec` | declared environment variables (label, description, placeholder, `required`, `secret`) a deployment must provide | host/console config forms — carried on the registry (see below) |
 | `guards` | manifest-declared operation pre-conditions: a named predicate the kernel runs inside the operation's transaction, before the handler (a throw blocks it) | kernel |
 | `withdraws` | operation names whose default binding this module suppresses — the name stops resolving, so a vertical can re-offer the transition behind its own guarded operation | kernel operation resolver |
 | `searchables` | entity types and fields registered for tenant-scoped search | search service |
 | `api` | path to the emitted OpenAPI for the module's HTTP surface, if any | tooling / SDK generation |
 | `ui` | routes, nav items, entity views, widgets — permission-keyed, composed into the vertical's app at build time | app shell |
+| `ui.settingsPanels` | permission-keyed settings screens the shell mounts for the app | app shell |
 
 Every field past `entitlementKey` is **optional and additive** (decision 28): a manifest that
 omits them still parses, and adding one never breaks an existing module.
+
+**The permission surface becomes a registry at push.** The keys and descriptions, role
+templates, and entity-grant *shapes* a vertical declares are assembled at `substrat push`
+into the deploy manifest as a machine-readable `registry` — the twin of the checked-in
+`PERMISSIONS.md`, carrying a content-hash `digests.permission` (D-39). It is built from the
+same `MODULES` + `ROLES` + `ENTITY_GRANTS` the host registers, so it cannot drift from what
+is enforced, and it is consumed by **version admission** (a real permission diff between two
+versions of a vertical) and by any tenant-facing permissions view. The runtime grant table is
+deliberately *not* in it: minted capability grants are scope-local tuples, reached only
+through the admin-query RPC.
 
 Two fields deserve special mention:
 

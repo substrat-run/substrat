@@ -18,7 +18,9 @@ type Tenant = {
   id: TenantId;          // branded ULID
   slug: string;          // stable, URL-safe, unique
   name: string;
-  status: 'active' | 'suspended' | 'deleting';
+  status: 'active' | 'suspended' | 'deleting' | 'reaped'; // 'reaped' = terminal, bytes gone
+  deletingAt: Instant | null; // set when it entered 'deleting'; null otherwise. The reap
+                              // sweep ages a tenant off this to decide the grace window.
   createdAt: Instant;
 };
 
@@ -30,10 +32,15 @@ type Scope = {
   slug: string;          // unique within the tenant
   kind: string;          // YOUR vocabulary: 'brf', 'branch', 'brand', 'clinic'…
   name: string;
-  status: 'provisioning' | 'active' | 'suspended' | 'archiving' | 'archived';
+  status: 'provisioning' | 'active' | 'suspended' | 'archiving' | 'archived' | 'reaped';
+                         // 'reaped' = terminal past 'archived'; DO storage gone, no restore
   storageShape: 'A' | 'B';
   jurisdiction: 'eu' | 'us' | 'global';  // fixed at provisioning; 'global' is unconstrained
-  schemaVersion: string; // last applied migration journal entry
+  vertical: string | null;          // which vertical's deployment executes this scope
+  verticalVersionId: string | null; // the registered version it runs (null if pre-registry)
+  schemaVersion: string; // COUNT of applied (module, version) pairs, as a string.
+                         // '0' = provisioned, nothing applied yet. Compared against the
+                         // host's registered migration total to answer "which are behind".
   // Non-null when the scope's last migration attempt FAILED. The scope fails
   // closed and serves nothing; this is what stops it rendering as healthy.
   migrationFailure: {
@@ -42,6 +49,11 @@ type Scope = {
     attempts: number;       // consecutive failures
     lastAttemptAt: Instant;
   } | null;
+  forkedFrom: ScopeId | null; // fork provenance: the scope this was copied FROM (importScope),
+  forkedAt: Instant | null;   // and when — both null for a normally-provisioned scope
+  expiresAt: Instant | null;  // when a fork stops being retained (GC); null = no expiry
+  servingRef?: string | null; // the dispatch script this scope's data DO lives in (#286)
+  archivedAt: Instant | null; // when it last entered 'archived'; null if never / on unarchive
   createdAt: Instant;
 };
 ```
@@ -113,6 +125,14 @@ a vertical, is [The platform layer](/concepts/platform).
 The choice is per-scope, fixed at provisioning, and invisible to module code — the
 scope-host contract is identical either way. On the pure-SQLite adapter both shapes are
 one SQLite file per scope.
+
+`storageShape` is not the only store a vertical can hold. Orthogonal to shape A/B, a
+vertical can declare a **per-tenant relational store** (`tenantStoreNeed`) — one independent
+SQL database *per tenant* (D1 on Cloudflare, a separate `.sqlite` file on the pure adapter),
+which the platform mints and injects (`provisionTenantStore`) and the vertical opens through
+the host (`openTenantStore`). It's a third, platform-minted store shape — an own-store concept
+(an auth DB, say), distinct from both the per-scope execution domain and a single shared `d1`
+binding.
 
 ## Addressing is capability-shaped
 

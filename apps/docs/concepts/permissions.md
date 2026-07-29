@@ -58,6 +58,14 @@ Entity-narrowed grants are how portal users (a customer, a board member, a
 subcontractor) see only *their* facilities and orders inside a shared scope. Grants can
 also target an **organization**; members reach them via membership.
 
+A **connection** is a first-class grant subject too — not only principals and orgs. A
+connector (an external provider acting through a connection) can hold a capability grant
+without pretending to be a person: `host.admin.grantToConnection(...)`, and a check's
+subject is polymorphic (`{ kind: 'principal' | 'connection', id }`). A connection is keyed
+`(tenant, vertical, provider)`, so granting it one permission reaches only that tenant's
+scopes running that vertical — the blast radius of a leaked provider token is one permission
+on one vertical's data, readable in a diff.
+
 Organizations are a real directory record, not a string you make up at the call site:
 
 ```ts
@@ -148,6 +156,31 @@ unrepresentable. This powers:
 - **view-as-user** — render any screen as any principal, with real decisions;
 - **the human-readable permission diff** — the review artifact for the permission
   checkpoint: who gains what, where in the tree.
+
+And it carries past the request: when an operation emits, the kernel stamps onto the event
+envelope which permission(s) it checked-and-passed and — when the allow came through a
+capability grant rather than a role — a ref to the granting tuple (`authorization`, K-34).
+The full chain is re-derivable by `explain`; what re-derivation cannot recover once tuples
+have since changed is *which* permission and grant were consulted at write time. That pointer
+is what the envelope keeps, so a mutation carries its own proof of authority
+([Events & audit](/concepts/events)). Decisions carry proof forward, not only at the instant
+they are made.
+
+## Denials are recorded
+
+An allow leaves its trace on the event it authorized; a **denial** has no event to ride, so
+it is captured on its own. When an enforced check refuses, the kernel writes a row to a
+scope-local `_substrat_denials` table (`id`, `actor`, `permission`, `tenant_id`, `scope_id`,
+`operation`, `at`, `drained_at`) — the one moment where an actor's intent and the permission
+model visibly disagree, and which no other log witnesses (the admin log records changes, the
+outbox records *allowed* mutations). Because a denial rolls its operation back, the row is
+written **outside** that transaction, at the operation boundary after the rollback, so the
+record survives the very failure it describes.
+
+This is **not** the K-24 staff-directory read log (`_substrat_access_log`): that records
+control-plane *reads* against the directory; `_substrat_denials` records refused checks inside
+a scope. Two different tables for two different facts. Both *drain* rather than expire —
+`drained_at` marks a row shipped onward, and only a drained row may be pruned.
 
 ## In operations
 

@@ -40,7 +40,7 @@ It is interesting for four reasons the other demos can't show:
 | **Engines composed** | [`booking`](/engines/booking/) · [`invoicing`](/engines/invoicing/) · [`invites`](/engines/invites/) |
 | **Own tables** | `rally_venue` · `rally_members` · `rally_wallet_entries` (append-only) · `rally_credit_packs` · `rally_plans` · `rally_subscriptions` · `rally_courts` · `rally_venue_hours` · `rally_court_hours` · `rally_closures` · `rally_price_rules` · `rally_bookings` · `rally_matches` · `rally_invited_player` |
 | **Roles** | `club-admin` (tenant) · `receptionist` / `coach` (scope) — players are grants, not a role |
-| **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/rally/PERMISSIONS.md) — 15 keys, 3 roles |
+| **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/rally/PERMISSIONS.md) — 18 keys · 4 modules · 3 roles |
 | **Apps** | player (mobile, `:5277`) · manager console (desktop, `:5278`) over one API (`:8877`) |
 | **Status** | demo seed — the social/player tier and payment rail are deliberately out of scope (below) |
 
@@ -188,8 +188,11 @@ pnpm --filter @substrat-run/demo-rally dev
 # console  http://localhost:5278
 ```
 
-The executable spec is two suites, **34 tests**:
+The executable spec is three suites, **45 tests**:
 
+- `test/provision.test.ts` — provisioning one RallyPoint instance: exactly one tenant and one
+  scope (no cast, no second company), the owner getting `club-admin` and nobody else a role,
+  and that provisioning twice doubles nothing.
 - `test/scenario.test.ts` — the invariants, called directly: the lost race, lazy hold expiry,
   seasonal pricing to the öre, wallet atomicity, portal isolation, the cross-tenant attack.
 - `test/flows.test.ts` — the same journeys walked through the **real HTTP routes**, ending

@@ -15,14 +15,14 @@ events: {
 | Event | v | piiClass | Payload |
 |---|---|---|---|
 | `protocol.instantiated` | 1 | none | instance id, template `(key, version)`, entity |
-| `protocol.response-recorded` | 1 | none | instance id, response id, item key, value |
+| `protocol.response-recorded` | 1 | pseudonymous | instance id, response id, item key, value |
 | `protocol.content-bound` | 1 | none | instance id, document type, content ref, bound hash |
 | `protocol.signatures-requested` | 1 | none | content hash, method, parties (label, kind, request id) |
 | `protocol.signature-declined` | 1 | none | request id, party label, outcome, reason |
 | `protocol.signatures-cancelled` | 1 | none | instance id, how many were withdrawn, reason |
 | `protocol.signed` | 1 | pseudonymous | signatory, content hash, **frozen answers** |
 | `protocol.countersigned` | 1 | pseudonymous | signatory, counter-signatory, hash, **frozen answers** |
-| `protocol.voided` | 1 | none | instance id, reason |
+| `protocol.voided` | 1 | pseudonymous | instance id, entity, previous status, reason |
 
 `protocol.signatures-requested` is the connector's dispatch order: it carries the hash, the
 parties and the content ref, so an executor never needs a read back into the scope to know

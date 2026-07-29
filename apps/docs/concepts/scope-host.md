@@ -30,6 +30,11 @@ interface ScopeStub {
 
 Operation names are module-namespaced: `'workorder/create'`, `'invoicing/export'`.
 
+This is a teaching subset. The live `ScopeHost` has since grown a per-tenant relational
+store (`provisionTenantStore` / `openTenantStore`), scope import/restore/snapshot
+(`importScope`, `restoreScope`, `snapshotScope`), and connector methods — surfaces the rest
+of these docs introduce where they belong.
+
 ## What a handler sees
 
 ```ts
@@ -40,6 +45,8 @@ interface OperationContext {
   readonly sql: ScopedSql;          // synchronous, scope-local SQL
   emit(event: DomainEventInput): void;
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
+  entitlement(key: string): Promise<EntitlementView | null>;
+  entitlements(): Promise<EntitlementView[]>;
   link(child: EntityRef, parent: EntityRef): void;
 }
 ```
@@ -50,6 +57,14 @@ interface OperationContext {
   timestamp, tenant, scope, actor). See [Events & audit](/concepts/events).
 - **`check`** asks the permission checker about the ambient principal at the ambient
   node, optionally narrowed to one entity. See [Permissions](/concepts/permissions).
+- **`entitlement`** / **`entitlements`** read the tenant's currently-held
+  entitlements at request time — the sanctioned way a hosted vertical gates a feature
+  or enforces its own quota *without* a control-plane binding. `entitlement(key)`
+  returns the live `EntitlementView` (`key`, `plan`, `quota`, `expiresAt`) or `null`
+  when the tenant does not hold the key; expiry is applied at read, so a non-null
+  result is always live. The kernel enforces presence + expiry; the vertical decides
+  what `quota` means. On a hosted vertical this reads a scope-local projection. See
+  [The platform layer](/concepts/platform#entitlements-gate-modules-not-features).
 - **`link`** records a child→parent relation tuple (e.g. work order → facility) used by
   the permission evaluator's entity-edge rule. The relation must be declared in a
   registered module's `entityRelations`. Idempotent.

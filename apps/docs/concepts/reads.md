@@ -114,6 +114,15 @@ columnar and seconds-scale by construction: it is for **reporting, reconciliatio
 and cross-scope history**. It is not a UI list view, and treating it as one is a category
 error.
 
+## A fourth surface: the per-tenant store
+
+Distinct from the three read paths, a vertical can also hold a **per-tenant relational store**
+(`tenantStoreNeed`, opened at runtime through `host.openTenantStore`) — one independent SQL
+database per tenant that the platform mints and injects. It is an *own-store* concept, the way
+a vertical might keep an auth database, **not** a read-scaling tier: reach for it when a
+vertical genuinely needs its own relational store outside the per-scope execution domain, not
+to make scope reads faster. Scope reads still follow the three paths above.
+
 ## Why not global read replicas?
 
 Because the operational record shouldn't leave, for three reasons:

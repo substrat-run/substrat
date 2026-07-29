@@ -35,6 +35,13 @@ pnpm add @substrat-run/adapter-cloudflare
   an inbound `hostname → RouteTarget` (tenant, scope, `deploymentRef`, `verticalSlug`) for
   Workers-for-Platforms dynamic dispatch. The environment [router](/platform/router) is built on
   it.
+- **`definePlatformSweeperDO`** — the alarm-driven Durable Object that runs the platform's
+  scheduled maintenance. A singleton (`PLATFORM_SWEEPER_NAME`) whose `alarm()` runs one
+  `runPlatformSweep` pass — reaping expired previews, an archived scope's DO storage, and
+  connection reconciliations — then re-arms itself. A DO alarm, not a cron, because a
+  hosted vertical pushed into a dispatch namespace gets no `triggers.crons`; `ensureArmed()`
+  is idempotent and self-arms from code. The workerd analogue of the kernel's node-side
+  `startPlatformSweeper`.
 
 ## Usage (a Worker)
 
