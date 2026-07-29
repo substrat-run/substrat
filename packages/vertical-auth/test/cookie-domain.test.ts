@@ -32,6 +32,15 @@ describe('resolveCookieDomain', () => {
     expect(resolveCookieDomain('se', HOST)).toBeNull();
   });
 
+  it('rejects a public suffix even when the host is under it (D-35 PSL guard)', () => {
+    // `co.uk` and `pages.dev` look like ordinary two-label domains, but they are
+    // registrable suffixes — a cookie on them spans every tenant, so it must degrade.
+    expect(resolveCookieDomain('co.uk', 'acme.co.uk')).toBeNull();
+    expect(resolveCookieDomain('pages.dev', 'acme.pages.dev')).toBeNull();
+    // The registrable domain one level down is fine.
+    expect(resolveCookieDomain('acme.co.uk', 'crm.acme.co.uk')).toBe('acme.co.uk');
+  });
+
   it('passes through absence unchanged (host-only is the default)', () => {
     expect(resolveCookieDomain(undefined, HOST)).toBeNull();
     expect(resolveCookieDomain('', HOST)).toBeNull();

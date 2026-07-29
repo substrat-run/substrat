@@ -84,6 +84,31 @@ export const hostnameStatus = z.enum(['pending', 'verifying', 'active', 'failed'
 export type HostnameStatus = z.infer<typeof hostnameStatus>;
 
 /**
+ * A DNS record the tenant must publish for Cloudflare for SaaS to validate ownership
+ * and route traffic. Two kinds ride the same shape:
+ *
+ * - `hostname`  — the routing CNAME (`legal.acme.com → edge.substrat.run`). Present as
+ *   soon as the custom hostname is created.
+ * - `txt`       — a DCV (domain-control-validation) TXT record, when the cert uses TXT
+ *   validation (`_cf-custom-hostname.legal.acme.com`). CNAME-validated certs omit it.
+ *
+ * The dashboard renders these verbatim ("add this record with your DNS provider"), so
+ * the shape is exactly name/value/type — what a DNS UI asks for, nothing router- or
+ * Cloudflare-specific. `status` mirrors Cloudflare's per-record validation state when
+ * known, so a half-validated domain can say *which* record is still missing.
+ */
+export const dnsRecord = z.object({
+  type: z.enum(['hostname', 'txt']),
+  /** The record name to create (`legal` or the full `_cf-custom-hostname.legal.acme.com`). */
+  name: z.string().min(1),
+  /** The record value (`edge.substrat.run`, or the DCV token). */
+  value: z.string().min(1),
+  /** Cloudflare's validation state for this record, when reported. Null before a poll. */
+  status: z.string().nullable().default(null),
+});
+export type DnsRecord = z.infer<typeof dnsRecord>;
+
+/**
  * A hostname, normalized to lower case.
  *
  * DNS is case-insensitive, so `ACME.example.com` and `acme.example.com` are the same
@@ -114,6 +139,21 @@ export const hostnameBinding = z.object({
    */
   canonical: z.boolean(),
   createdAt: instant,
+  /**
+   * Cloudflare-for-SaaS custom-hostname id (`ch_…`), once issuance has been asked of
+   * Cloudflare — the handle the reconcile poll and cert lifecycle read. Null for a
+   * platform hostname (it rides the wildcard cert; no per-hostname CF object) and for a
+   * custom domain still `pending` (recorded, nothing asked of Cloudflare yet). Added
+   * additively (§4.7 issuance): a reader that predates issuance sees null and behaves
+   * exactly as before.
+   */
+  customHostnameId: z.string().nullable().default(null),
+  /**
+   * The DNS records the tenant must publish, surfaced through the whole lifecycle so
+   * "the domain does not work yet" can say *why*. Populated when the custom hostname is
+   * created; empty for a platform hostname. See `dnsRecord`.
+   */
+  validationRecords: z.array(dnsRecord).default([]),
 });
 export type HostnameBinding = z.infer<typeof hostnameBinding>;
 

@@ -11,6 +11,14 @@
  * walks the §4.2 DNS-validation lifecycle.
  */
 
+/** A DNS record the tenant must publish (contracts' dnsRecord). */
+export interface DnsRecordRow {
+  type: 'hostname' | 'txt';
+  name: string;
+  value: string;
+  status: string | null;
+}
+
 /** One binding row as the control plane returns it (contracts' HostnameBinding). */
 export interface HostnameRow {
   hostname: string;
@@ -22,6 +30,8 @@ export interface HostnameRow {
   statusNote: string | null;
   canonical: boolean;
   createdAt: string;
+  customHostnameId: string | null;
+  validationRecords: DnsRecordRow[];
 }
 
 async function request<T>(url: string, header: Record<string, string>, init?: RequestInit): Promise<T> {
@@ -70,7 +80,7 @@ export async function bindSurfaceHostname(opts: {
   domain?: string;
   /** Disambiguates when the tenant runs several installs of the vertical. */
   scope?: string;
-}): Promise<{ hostname: string; status: string; canonical: boolean }> {
+}): Promise<{ hostname: string; status: string; canonical: boolean; validationRecords?: DnsRecordRow[] }> {
   const base = opts.controlPlaneUrl.replace(/\/$/, '');
   const rows = await listVerticalHostnames(opts.controlPlaneUrl, opts.header, opts.tenantId, opts.slug);
   const scopes = [...new Set(rows.map((h) => h.scopeId))];
@@ -93,8 +103,16 @@ export async function bindSurfaceHostname(opts: {
     });
 
   if (opts.domain) {
+    // A custom domain: the control plane records the row and drives Cloudflare-for-SaaS
+    // issuance (§4.7). It comes back `verifying` with the DNS records to publish — surface
+    // them so the operator knows what to set. No manual status flip: issuance decides.
     const bound = await bind(opts.domain.toLowerCase());
-    return { hostname: bound.hostname, status: bound.status, canonical };
+    return {
+      hostname: bound.hostname,
+      status: bound.status,
+      canonical,
+      validationRecords: bound.validationRecords ?? [],
+    };
   }
 
   // Platform mint: the install's default label + the surface, on the same base domain.
@@ -111,17 +129,31 @@ export async function bindSurfaceHostname(opts: {
   let lastError: Error | undefined;
   for (const hostname of candidates) {
     try {
-      await bind(hostname);
-      await request(`${base}/hostnames/${encodeURIComponent(hostname)}/status`, opts.header, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'active' }),
-      });
-      return { hostname, status: 'active', canonical };
+      // A platform hostname rides the wildcard cert — the control plane sets it `active`
+      // on bind (§4.7), so no PATCH-to-active round-trip here. `bound.status` is the truth.
+      const bound = await bind(hostname);
+      return { hostname, status: bound.status, canonical };
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e)); // collision — try the tailed label
     }
   }
   throw lastError ?? new Error('could not bind a platform hostname');
+}
+
+/**
+ * Re-poll a custom hostname's Cloudflare-for-SaaS issuance ("check again") — CI/support
+ * parity with the dashboard's button. Returns the row with its refreshed status +
+ * records. Tenant-narrowed server-side: a foreign hostname is a 404.
+ */
+export async function verifyHostname(
+  controlPlaneUrl: string,
+  header: Record<string, string>,
+  hostname: string,
+): Promise<HostnameRow> {
+  const base = controlPlaneUrl.replace(/\/$/, '');
+  return request<HostnameRow>(`${base}/hostnames/${encodeURIComponent(hostname)}/verify`, header, {
+    method: 'POST',
+  });
 }
 
 /** Unbind one hostname. Tenant-narrowed server-side: a foreign hostname is a 404. */
@@ -132,6 +164,20 @@ export async function unbindHostname(
 ): Promise<void> {
   const base = controlPlaneUrl.replace(/\/$/, '');
   await request(`${base}/hostnames/${encodeURIComponent(hostname)}`, header, { method: 'DELETE' });
+}
+
+/**
+ * Render the DNS records a tenant must publish for a custom domain to validate —
+ * printed after a custom `bind` so the operator can copy them into their DNS provider.
+ * Empty (a platform mint, or issuance not yet run) prints nothing.
+ */
+export function formatDnsRecords(records: DnsRecordRow[]): string {
+  if (records.length === 0) return '';
+  const lines = records.map((r) => {
+    const kind = r.type === 'hostname' ? 'CNAME' : 'TXT';
+    return `  ${kind.padEnd(6)} ${r.name}  →  ${r.value}${r.status ? `  (${r.status})` : ''}`;
+  });
+  return ['Publish these DNS records, then re-check with `substrat hostnames verify`:', ...lines].join('\n');
 }
 
 /** Render bindings as the aligned table `substrat hostnames <slug>` prints. */

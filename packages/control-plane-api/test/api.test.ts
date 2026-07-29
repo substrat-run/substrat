@@ -2266,3 +2266,116 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect(prod.servingVersionId).toBe(v1.id);
   });
 });
+
+/**
+ * Custom-hostname issuance end-to-end (#305, §4.7). A stub provisioner stands in for
+ * Cloudflare for SaaS — the control plane's job is to drive it: a custom bind kicks off
+ * `create` (→ `verifying` + DNS records), a platform mint rides the wildcard (→ `active`
+ * with no CF call), `/verify` re-polls, and a bare public suffix is refused at the door.
+ */
+describe('control-plane API — custom-hostname issuance (#305)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+
+  const staff = platformActorId.parse(ulid());
+  const t1 = tenantId.parse(ulid());
+  const s1 = scopeId.parse(ulid());
+  const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  const json = (path: string, method: string, body?: unknown) =>
+    app.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+  // A scripted provisioner: `create` hands back verifying + a TXT record; `check` reads
+  // whatever the current test told it to return next.
+  let nextCheck: { customHostnameId: string; status: 'verifying' | 'active' | 'failed'; note: string | null; records: never[] };
+  const removed: string[] = [];
+  const provisioner = {
+    create: async (hostname: string) => ({
+      customHostnameId: 'ch_' + hostname,
+      status: 'verifying' as const,
+      note: null,
+      records: [
+        { type: 'hostname' as const, name: hostname, value: 'edge.substrat.run', status: 'pending' },
+        { type: 'txt' as const, name: '_cf.' + hostname, value: 'tok', status: null },
+      ],
+    }),
+    check: async () => nextCheck,
+    remove: async (id: string) => {
+      removed.push(id);
+    },
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-api-issuance-'));
+    host = new SqliteScopeHost({ dir });
+    app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      provisionHostname: provisioner as never,
+      platformBaseDomains: ['substrat.run'],
+    });
+    await host.admin.createTenant(staff, { id: t1, slug: 'acme-co', name: 'Acme Co' });
+    await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'demo-vert' });
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a platform mint rides the wildcard — straight to active, no CF call', async () => {
+    const res = await json('/hostnames', 'POST', {
+      hostname: 'acme-app.substrat.run',
+      tenantId: t1,
+      scopeId: s1,
+      surface: 'app',
+      canonical: true,
+    });
+    const body = await res.json();
+    expect(body.status).toBe('active');
+    expect(body.customHostnameId).toBeNull();
+    expect(await host.admin.resolveHostname('acme-app.substrat.run')).toMatchObject({ scopeId: s1 });
+  });
+
+  it('a custom bind kicks off issuance — verifying, with DNS records to publish', async () => {
+    const res = await json('/hostnames', 'POST', {
+      hostname: 'legal.acme.com',
+      tenantId: t1,
+      scopeId: s1,
+      surface: 'app',
+      canonical: true,
+    });
+    const body = await res.json();
+    expect(body.status).toBe('verifying');
+    expect(body.customHostnameId).toBe('ch_legal.acme.com');
+    const cname = body.validationRecords.find((r: { type: string }) => r.type === 'hostname');
+    const txt = body.validationRecords.find((r: { type: string }) => r.type === 'txt');
+    expect(cname).toBeTruthy();
+    expect(txt).toMatchObject({ name: '_cf.legal.acme.com' });
+    // Not servable until it goes active.
+    expect(await host.admin.resolveHostname('legal.acme.com')).toBeUndefined();
+  });
+
+  it('/verify re-polls and flips to active when Cloudflare validates', async () => {
+    nextCheck = { customHostnameId: 'ch_legal.acme.com', status: 'active', note: null, records: [] };
+    const res = await json('/hostnames/legal.acme.com/verify', 'POST');
+    expect((await res.json()).status).toBe('active');
+    expect(await host.admin.resolveHostname('legal.acme.com')).toMatchObject({ scopeId: s1 });
+  });
+
+  it('refuses a bare public suffix at the door (D-35 registrable-suffix guard)', async () => {
+    const res = await json('/hostnames', 'POST', {
+      hostname: 'co.uk',
+      tenantId: t1,
+      scopeId: s1,
+      surface: 'app',
+    });
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toMatch(/public suffix/);
+  });
+
+  it('unbinding a custom hostname releases the Cloudflare object', async () => {
+    await json('/hostnames/legal.acme.com', 'DELETE');
+    expect(removed).toContain('ch_legal.acme.com');
+  });
+});

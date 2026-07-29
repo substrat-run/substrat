@@ -42,6 +42,7 @@ export const adminAction = z.enum([
   'setScopeServingRef',
   'bindHostname', // K-26 — the hostname map
   'setHostnameStatus', // #31 step 2 — where the two human checkpoints fire
+  'setHostnameIssuance', // #305 §4.7 — a Cloudflare-for-SaaS issuance step (create/poll) result
   'unbindHostname', // the inverse of bindHostname — a hard delete; the history is this log
   'pruneAccessLog', // K-24 — deleting drained access rows is itself a mutation // K-23 — a provider declares its topology before it may link
   'createTenant', // §4.1

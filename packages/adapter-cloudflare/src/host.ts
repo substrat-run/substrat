@@ -243,8 +243,17 @@ interface ControlPlaneStub {
     surface: string; region: string | null; canonical: boolean; createdAt: string;
   }): Promise<void>;
   setHostnameStatus(hostname: string, status: string, note: string | null): Promise<void>;
+  setHostnameIssuance(
+    hostname: string,
+    fields: {
+      status: string;
+      note: string | null;
+      customHostnameId?: string | null;
+      validationRecords: string | null;
+    },
+  ): Promise<void>;
   deleteHostname(hostname: string): Promise<void>;
-  listHostnames(filter: { tenantId?: string; scopeId?: string }): Promise<HostnameRow[]>;
+  listHostnames(filter: { tenantId?: string; scopeId?: string; status?: string }): Promise<HostnameRow[]>;
   readVertical(slug: string): Promise<VerticalRow | undefined>;
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null, listed?: number | null): Promise<void>;
@@ -1268,6 +1277,8 @@ export class CloudflareScopeHost implements ScopeHost {
         statusNote: r.status_note,
         canonical: r.canonical === 1,
         createdAt: r.created_at,
+        customHostnameId: r.custom_hostname_id,
+        validationRecords: r.validation_records ? JSON.parse(r.validation_records) : [],
       });
 
     const mapVertical = (r: VerticalRow): Vertical =>
@@ -1615,6 +1626,33 @@ export class CloudflareScopeHost implements ScopeHost {
           { status, note: note ?? null },
         );
       },
+      setHostnameIssuance: async (actor, raw, fields) => {
+        const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
+        const row = await this.cp.readHostname(hostname);
+        if (!row) throw new Error(`unknown hostname '${hostname}'`);
+        // A poll that finds nothing changed (same status, same records, id already set)
+        // is not an event — skip the write and the audit entry, so the reconcile sweep
+        // does not flood the admin log with no-op rows every interval.
+        const recordsJson = JSON.stringify(fields.validationRecords);
+        const idUnchanged =
+          fields.customHostnameId === undefined || fields.customHostnameId === row.custom_hostname_id;
+        if (row.status === fields.status && (row.validation_records ?? '[]') === recordsJson && idUnchanged) {
+          return;
+        }
+        await this.cp.setHostnameIssuance(hostname, {
+          status: fields.status,
+          note: fields.note ?? null,
+          customHostnameId: fields.customHostnameId,
+          validationRecords: fields.validationRecords.length ? recordsJson : null,
+        });
+        await this.recordAdmin(
+          actor,
+          'setHostnameIssuance',
+          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
+          { status: row.status },
+          { status: fields.status, note: fields.note ?? null },
+        );
+      },
       unbindHostname: async (actor, raw: string) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
         const row = await this.cp.readHostname(hostname);
@@ -1632,6 +1670,7 @@ export class CloudflareScopeHost implements ScopeHost {
         const rows = await this.cp.listHostnames({
           tenantId: filter?.tenantId,
           scopeId: filter?.scopeId,
+          status: filter?.status,
         });
         await this.recordAccess(
           actor,

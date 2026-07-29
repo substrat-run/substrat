@@ -376,6 +376,8 @@ interface HostnameRow {
   status_note: string | null;
   canonical: number;
   created_at: string;
+  custom_hostname_id: string | null;
+  validation_records: string | null;
 }
 
 const mapHostname = (r: HostnameRow): HostnameBinding =>
@@ -390,6 +392,8 @@ const mapHostname = (r: HostnameRow): HostnameBinding =>
     statusNote: r.status_note,
     canonical: r.canonical === 1,
     createdAt: r.created_at,
+    customHostnameId: r.custom_hostname_id,
+    validationRecords: r.validation_records ? JSON.parse(r.validation_records) : [],
   });
 
 interface VerticalRow {
@@ -610,9 +614,14 @@ export class SqliteScopeHost implements ScopeHost {
         status        TEXT NOT NULL,
         status_note   TEXT,
         canonical     INTEGER NOT NULL DEFAULT 0,
-        created_at    TEXT NOT NULL
+        created_at    TEXT NOT NULL,
+        -- Cloudflare-for-SaaS issuance (§4.7): CF's custom-hostname id + the DNS records
+        -- to publish (JSON). NULL for a platform hostname / a still-pending custom domain.
+        custom_hostname_id  TEXT,
+        validation_records  TEXT
       );
       CREATE INDEX IF NOT EXISTS hostnames_scope ON hostnames (scope_id, surface);
+      CREATE INDEX IF NOT EXISTS hostnames_status ON hostnames (status);
       -- The vertical + version registry (#31). A scope binds to a VERSION, so
       -- dev/staging/prod are the same vertical pinned differently, and a preview
       -- deployment is a version nothing has been promoted to yet.
@@ -2385,10 +2394,12 @@ export class SqliteScopeHost implements ScopeHost {
         }
         this.directory
           .prepare(
+            // INSERT OR REPLACE resets issuance columns — a (re)bind starts a fresh
+            // lifecycle, so any prior CF hostname id / DNS records must not linger.
             `INSERT OR REPLACE INTO hostnames
                (hostname, tenant_id, scope_id, vertical_slug, surface, region,
-                status, status_note, canonical, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`,
+                status, status_note, canonical, created_at, custom_hostname_id, validation_records)
+             VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, NULL, NULL)`,
           )
           .run(
             parsed.hostname,
@@ -2428,6 +2439,57 @@ export class SqliteScopeHost implements ScopeHost {
           { status, note: note ?? null },
         );
       },
+      setHostnameIssuance: async (actor, raw, fields) => {
+        const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
+        const row = this.directory
+          .prepare(
+            'SELECT tenant_id, scope_id, status, custom_hostname_id, validation_records FROM hostnames WHERE hostname = ?',
+          )
+          .get(hostname) as
+          | {
+              tenant_id: string;
+              scope_id: string;
+              status: string;
+              custom_hostname_id: string | null;
+              validation_records: string | null;
+            }
+          | undefined;
+        if (!row) throw new Error(`unknown hostname '${hostname}'`);
+        const recordsJson = fields.validationRecords.length
+          ? JSON.stringify(fields.validationRecords)
+          : null;
+        const idUnchanged =
+          fields.customHostnameId === undefined || fields.customHostnameId === row.custom_hostname_id;
+        // A poll that changes nothing is not an event — skip it, so the reconcile sweep
+        // does not append a no-op admin-log row every interval.
+        if (
+          row.status === fields.status &&
+          (row.validation_records ?? null) === recordsJson &&
+          idUnchanged
+        ) {
+          return;
+        }
+        if (fields.customHostnameId !== undefined) {
+          this.directory
+            .prepare(
+              'UPDATE hostnames SET status = ?, status_note = ?, custom_hostname_id = ?, validation_records = ? WHERE hostname = ?',
+            )
+            .run(fields.status, fields.note ?? null, fields.customHostnameId, recordsJson, hostname);
+        } else {
+          this.directory
+            .prepare(
+              'UPDATE hostnames SET status = ?, status_note = ?, validation_records = ? WHERE hostname = ?',
+            )
+            .run(fields.status, fields.note ?? null, recordsJson, hostname);
+        }
+        this.recordAdmin(
+          actor,
+          'setHostnameIssuance',
+          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
+          { status: row.status },
+          { status: fields.status, note: fields.note ?? null },
+        );
+      },
       unbindHostname: async (actor, raw: string) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
         const row = this.directory
@@ -2450,6 +2512,7 @@ export class SqliteScopeHost implements ScopeHost {
         const params: string[] = [];
         if (filter?.tenantId) { where.push('tenant_id = ?'); params.push(filter.tenantId); }
         if (filter?.scopeId) { where.push('scope_id = ?'); params.push(filter.scopeId); }
+        if (filter?.status) { where.push('status = ?'); params.push(filter.status); }
         let sql = 'SELECT * FROM hostnames';
         if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
         sql += ' ORDER BY hostname';
@@ -4064,6 +4127,9 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, '_substrat_admin_log', 'caused_by', 'caused_by TEXT');
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
     this.ensureColumn(this.directory, 'tenants', 'deleting_at', 'deleting_at TEXT');
+    // §4.7 custom-hostname issuance: CF's hostname id + the DNS records to publish (JSON).
+    this.ensureColumn(this.directory, 'hostnames', 'custom_hostname_id', 'custom_hostname_id TEXT');
+    this.ensureColumn(this.directory, 'hostnames', 'validation_records', 'validation_records TEXT');
     // K-21's tombstone on tenant-level tuples (membership lives here).
     this.ensureColumn(this.directory, '_substrat_tenant_tuples', 'revoked_at', 'revoked_at TEXT');
     // builder-plane.md Phase 1b: who owns a vertical (NULL = platform-owned).

@@ -52,6 +52,14 @@ export class ControlPlaneError extends Error {
 }
 
 /** One hostname binding as the CP returns it (a subset of contracts' HostnameBinding). */
+/** A DNS record a tenant must publish for a custom domain (contracts' dnsRecord). */
+export interface DnsRecordRow {
+  type: 'hostname' | 'txt';
+  name: string;
+  value: string;
+  status: string | null;
+}
+
 export interface HostnameBindingRow {
   hostname: string;
   scopeId: string;
@@ -60,6 +68,10 @@ export interface HostnameBindingRow {
   statusNote?: string | null;
   canonical: boolean;
   createdAt: string;
+  /** Cloudflare-for-SaaS issuance (§4.7): null for a platform mint. */
+  customHostnameId?: string | null;
+  /** DNS records to publish for a custom domain; empty for a platform mint. */
+  validationRecords?: DnsRecordRow[];
 }
 
 /** A fork's directory row, as the Snapshots tab needs it (a subset of the CP's Scope). */
@@ -177,9 +189,39 @@ export class TenantNarrowedControlPlane {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/archive`);
   }
 
-  /** Bind the default hostname so the router (reading this directory) can resolve it. */
-  bindHostname(input: { hostname: string; scopeId: ScopeId; surface: string; canonical: boolean }): Promise<void> {
-    return this.post('/hostnames', { tenantId: this.tenantId, region: null, ...input });
+  /**
+   * Bind a hostname so the router (reading this directory) can resolve it. Returns the
+   * post-issuance row: a platform mint comes back `active`, a custom domain `verifying`
+   * with the DNS records to publish (§4.7). The default-hostname bind at provision ignores
+   * the return; the Domains UI reads it.
+   */
+  bindHostname(input: {
+    hostname: string;
+    scopeId: ScopeId;
+    surface: string;
+    canonical: boolean;
+  }): Promise<HostnameBindingRow> {
+    return this.call<HostnameBindingRow>('/hostnames', {
+      method: 'POST',
+      body: JSON.stringify({ tenantId: this.tenantId, region: null, ...input }),
+    });
+  }
+
+  /**
+   * Re-poll a custom domain's Cloudflare-for-SaaS issuance ("check again"). Tenant-pinned
+   * like the rest of this class: the hostname must belong to one of the tenant's scopes,
+   * which the control plane enforces (a foreign hostname reads as 404).
+   */
+  verifyHostname(hostname: string): Promise<HostnameBindingRow> {
+    return this.call<HostnameBindingRow>(`/hostnames/${encodeURIComponent(hostname)}/verify`, {
+      method: 'POST',
+    });
+  }
+
+  /** Every hostname across all of this tenant's scopes — the account-level Domains list. */
+  listTenantHostnames(): Promise<HostnameBindingRow[]> {
+    const q = new URLSearchParams({ tenantId: this.tenantId });
+    return this.call<HostnameBindingRow[]>(`/hostnames?${q}`);
   }
 
   setHostnameStatus(hostname: string, status: 'active' | 'pending' | 'failed', note?: string): Promise<void> {

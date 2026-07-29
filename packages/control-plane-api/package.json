@@ -30,6 +30,7 @@
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
+    "@substrat-run/psl": "workspace:^",
     "hono": "^4.6.0"
   },
   "devDependencies": {

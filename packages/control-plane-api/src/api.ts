@@ -45,6 +45,11 @@ import {
 import type { DeployVerticalFn, FetchVerticalModulesFn } from './deploy.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import type { ObservabilityReader } from './observability.js';
+import {
+  isCustomHostname,
+  validateBindableHostname,
+  type CustomHostnameProvisioner,
+} from './custom-hostnames.js';
 
 export interface ControlPlaneApiOptions {
   host: ScopeHost;
@@ -134,6 +139,23 @@ export interface ControlPlaneApiOptions {
    * means forgetting that costs a feature, never a leak.
    */
   observability?: ObservabilityReader;
+  /**
+   * Issues + polls Cloudflare-for-SaaS custom hostnames (#305, §4.7) — host-injected
+   * like `deployVertical`, so this package holds no Cloudflare credential (D-34). When
+   * present, binding a CUSTOM domain kicks off issuance (create → `verifying` + DNS
+   * records) instead of leaving a bare `pending` row that only a manual status flip
+   * could clear. Absent ⇒ a custom bind records `pending` and issuance never runs (the
+   * self-host / dev shape, where there is no CF-for-SaaS zone).
+   */
+  provisionHostname?: CustomHostnameProvisioner;
+  /**
+   * The platform's base domains — the wildcard-covered zones a PLATFORM hostname is
+   * minted under (`substrat.run`, `global.substrat.run`, …). A bind AT or UNDER one of
+   * these rides the wildcard cert and goes straight to `active`; anything else is a
+   * custom domain and walks issuance. Empty/absent ⇒ every bind is treated as custom
+   * (correct for a deployment that mints no platform hostnames).
+   */
+  platformBaseDomains?: string[];
 }
 
 // `actor` is the audited subject for every HostAdmin call (staff or builder alike).
@@ -350,6 +372,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/hostnames$/ },
     { method: 'POST', re: /\/hostnames$/ },
     { method: 'PATCH', re: /\/hostnames\/[^/]+\/status$/ },
+    // Re-poll issuance ("check again") — self-serve for the scope's own tenant (#305).
+    { method: 'POST', re: /\/hostnames\/[^/]+\/verify$/ },
     { method: 'DELETE', re: /\/hostnames\/[^/]+$/ },
   ];
   app.use('*', async (c, next) => {
@@ -368,6 +392,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'invalid request', issues: err.issues }, 400);
     }
     const { status, body } = mapError(err);
+    // A 500 is, by definition, a throw whose message `mapError` did not recognise — so the
+    // client gets a GENERIC body that discloses nothing, and until now nothing recorded WHAT
+    // threw either. That left every unmapped failure (e.g. a raw SQLite constraint from a
+    // registry write, or a deploy that 500s with no detail) undiagnosable without reproducing
+    // it. Log the real error + the request that provoked it, server-side only, so the worker
+    // tail names the cause. Mapped 4xx are honest refusals — no log needed.
+    if (status >= 500) {
+      console.error('control-plane.unhandled', {
+        method: c.req.method,
+        path: c.req.path,
+        detail: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+    }
     return c.json(body, status);
   });
 
@@ -1764,6 +1802,57 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(await admin.listHostnames(c.get('actor'), filter));
   });
 
+  // Which base domains ride the platform wildcard cert (go straight to `active`);
+  // everything else is a custom domain that walks Cloudflare-for-SaaS issuance (§4.7).
+  const platformBaseDomains = options.platformBaseDomains ?? [];
+  const custom = (hostname: string) => isCustomHostname(hostname, platformBaseDomains);
+
+  /**
+   * Drive a freshly-bound (or re-checked) hostname through issuance (§4.7):
+   *
+   *   - a PLATFORM mint rides the wildcard cert → flip straight to `active`;
+   *   - a CUSTOM domain, when a provisioner is configured → `create` (on first bind) or
+   *     `check` (a re-verify), persisting status + DNS records + the CF id;
+   *   - a custom domain with NO provisioner (self-host/dev) → left `pending`.
+   *
+   * Failures are swallowed to a `failed`/`pending` note rather than thrown: a bind that
+   * recorded the row must still return 201, and the reconcile sweep retries.
+   */
+  const runIssuance = async (
+    actor: PlatformActorId,
+    row: Awaited<ReturnType<typeof admin.listHostnames>>[number],
+  ): Promise<void> => {
+    if (!custom(row.hostname)) {
+      // Platform mint: rides *.<base> — no per-hostname CF object, immediately servable.
+      if (row.status !== 'active') await admin.setHostnameStatus(actor, row.hostname, 'active');
+      return;
+    }
+    if (!options.provisionHostname) return; // no CF-for-SaaS zone here; stays pending
+    try {
+      const issuance = row.customHostnameId
+        ? await options.provisionHostname.check(row.customHostnameId)
+        : await options.provisionHostname.create(row.hostname);
+      await admin.setHostnameIssuance(actor, row.hostname, {
+        status: issuance.status,
+        note: issuance.note,
+        // Only write the id on create; a re-check leaves it untouched (undefined).
+        customHostnameId: row.customHostnameId ? undefined : issuance.customHostnameId,
+        validationRecords: issuance.records,
+      });
+    } catch (err) {
+      // Record the failure as a note but keep the row — the sweep re-attempts. Never
+      // turn a transient CF error into a lost binding.
+      await admin.setHostnameIssuance(actor, row.hostname, {
+        status: 'failed',
+        note: err instanceof Error ? err.message : String(err),
+        validationRecords: row.validationRecords,
+      });
+    }
+  };
+
+  const hostnameRow = async (c: Context<{ Variables: Vars }>, name: string) =>
+    (await admin.listHostnames(c.get('actor'), {})).find((h) => h.hostname === name.toLowerCase());
+
   app.post('/hostnames', async (c) => {
     const p = c.get('principal');
     const input = bindHostnameBody.parse(await c.req.json());
@@ -1776,11 +1865,38 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         return c.json({ error: 'region is derived from the scope, not chosen on a binding' }, 403);
       }
     }
+    // Registrable-suffix guard (#305, D-35): a custom domain must be a real registrable
+    // name, never a bare public suffix whose cookie would span tenants. Platform mints
+    // skip it — they are the platform's own registrable domain by construction.
+    if (custom(input.hostname)) {
+      const bad = validateBindableHostname(input.hostname);
+      if (bad) return c.json({ error: bad }, 422);
+    }
     await admin.bindHostname(c.get('actor'), input);
     const bound = (await admin.listHostnames(c.get('actor'), { scopeId: input.scopeId })).find(
       (h) => h.hostname === input.hostname,
     );
-    return c.json(bound, 201);
+    if (bound) await runIssuance(c.get('actor'), bound);
+    // Re-read so the response carries the post-issuance status + DNS records the caller
+    // (dashboard / CLI) renders — a custom bind comes back `verifying` with records.
+    const out = (await admin.listHostnames(c.get('actor'), { scopeId: input.scopeId })).find(
+      (h) => h.hostname === input.hostname,
+    );
+    return c.json(out ?? bound, 201);
+  });
+
+  // Re-poll a custom hostname's issuance ("check again" in the dashboard). Tenant-narrowed
+  // like the other hostname routes; a platform mint or an already-active row is a no-op
+  // re-affirm. Idempotent and safe to hammer — it just reflects Cloudflare's current state.
+  app.post('/hostnames/:hostname/verify', async (c) => {
+    const name = c.req.param('hostname');
+    if (c.get('principal').kind === 'builder' && !(await tenantHostname(c, name))) {
+      return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
+    }
+    const row = await hostnameRow(c, name);
+    if (!row) return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
+    await runIssuance(c.get('actor'), row);
+    return c.json(await hostnameRow(c, name));
   });
 
   app.patch('/hostnames/:hostname/status', async (c) => {
@@ -1807,6 +1923,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const name = c.req.param('hostname');
     if (c.get('principal').kind === 'builder' && !(await tenantHostname(c, name))) {
       return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
+    }
+    // Release the Cloudflare custom hostname before dropping the row, or the CF object
+    // leaks (billable, and it would block a future rebind of the same name). Best-effort:
+    // a CF failure must not strand the unbind — the row still goes, and a leaked CF
+    // hostname is a cleanup nuisance, not a routing hazard. `remove` already tolerates 404.
+    const row = await hostnameRow(c, name);
+    if (row?.customHostnameId && options.provisionHostname) {
+      await options.provisionHostname.remove(row.customHostnameId).catch(() => {});
     }
     await admin.unbindHostname(c.get('actor'), name);
     return c.json({ deleted: name.toLowerCase() });

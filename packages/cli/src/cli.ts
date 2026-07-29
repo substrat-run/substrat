@@ -26,7 +26,14 @@ import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing } from './scope.js';
-import { listVerticalHostnames, bindSurfaceHostname, unbindHostname, formatHostnames } from './hostnames.js';
+import {
+  listVerticalHostnames,
+  bindSurfaceHostname,
+  unbindHostname,
+  verifyHostname,
+  formatHostnames,
+  formatDnsRecords,
+} from './hostnames.js';
 
 const argv = process.argv.slice(2);
 
@@ -84,6 +91,8 @@ Usage:
                                               platform hostname (live immediately);
                                               --domain records a custom domain (pending
                                               until DNS validation completes)
+  substrat hostnames verify <hostname>        re-poll a custom domain's DNS/cert issuance
+                                              and print any records still to publish
   substrat hostnames unbind <hostname>        remove a binding (the surface's canonical
                                               flag moves only when you bind a new one)
 
@@ -385,6 +394,7 @@ async function cmdHostnames(): Promise<void> {
   const usage =
     'usage: substrat hostnames <slug> [--tenant <id-or-slug>]\n' +
     '       substrat hostnames bind <slug> --surface <s> [--domain <d>] [--scope <id>] [--tenant <t>]\n' +
+    '       substrat hostnames verify <hostname> [--tenant <t>]\n' +
     '       substrat hostnames unbind <hostname> [--tenant <t>]';
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
 
@@ -397,6 +407,24 @@ async function cmdHostnames(): Promise<void> {
     console.log(`authenticating with ${as}`);
     await unbindHostname(controlPlaneUrl, header, hostname);
     console.log(`✓ ${hostname.toLowerCase()} unbound — requests to it stop resolving`);
+    return;
+  }
+
+  if (sub === 'verify') {
+    const hostname = argv[2];
+    if (!hostname || hostname.startsWith('--')) {
+      console.error(usage);
+      process.exit(1);
+    }
+    console.log(`authenticating with ${as}`);
+    const row = await verifyHostname(controlPlaneUrl, header, hostname);
+    if (row.status === 'active') {
+      console.log(`✓ https://${row.hostname} is live`);
+    } else {
+      console.log(`  ${row.hostname} is ${row.status}${row.statusNote ? ` — ${row.statusNote}` : ''}`);
+      const records = formatDnsRecords(row.validationRecords ?? []);
+      if (records) console.log(records);
+    }
     return;
   }
 
@@ -429,6 +457,8 @@ async function cmdHostnames(): Promise<void> {
     } else {
       console.log(`✓ ${bound.hostname} recorded (${bound.status}) for surface '${surface}'`);
       console.log('  it goes live once DNS validation and certificate issuance complete');
+      const records = formatDnsRecords(bound.validationRecords ?? []);
+      if (records) console.log(records);
     }
     return;
   }
