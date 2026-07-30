@@ -1167,6 +1167,33 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
 });
 
 /**
+ * The scopes an app spans — the Data tab's scope switcher (M4 of multi-scope-manyfold.md).
+ * A multi-scope vertical (Manyfold: one site per scope) has several; the Data tab browses one
+ * at a time and this lets the user pick which. Same authorization as the table reads: the app
+ * is resolved from the tenant-scoped `list-apps` (a foreign scope id 404s), and the list is
+ * tenant-narrowed to the app's vertical. Only browsable scopes (active/provisioning) are
+ * returned; the viewed app scope is flagged so the UI opens on it.
+ */
+app.get('/api/apps/:scopeId/scopes', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scopes = cp
+    ? await cp.listScopes(appRow.vertical_slug)
+    : await host.admin.listScopes(STAFF, { tenantId: node.tenantId, vertical: appRow.vertical_slug });
+  return c.json(
+    (scopes ?? [])
+      .filter((s) => s.status === 'active' || s.status === 'provisioning')
+      .map((s) => ({ scopeId: s.id, name: s.name, status: s.status, isDefault: s.id === appRow.app_scope_id })),
+  );
+});
+
+/**
  * One app's Data tab — a read-only window into the app's OWN database (kernel-design
  * §5.4's admin-query RPC). Two reads: the table list, and a bounded page of one table.
  *

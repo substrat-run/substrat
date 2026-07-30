@@ -81,6 +81,18 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(calls[6]!.method).toBe('PATCH');
   });
 
+  it('listScopes reads GET /scopes narrowed to the pinned tenant + vertical (Data-tab switcher)', async () => {
+    const { cp, calls } = harness(200, [
+      { id: S, tenantId: T, name: 'Cafe', status: 'active', vertical: 'manyfold' },
+    ]);
+    const scopes = await cp.listScopes('manyfold');
+
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.token).toBe('secret-token');
+    expect(calls[0]!.url).toBe(`https://cp/api/scopes?tenantId=${T}&vertical=manyfold`);
+    expect(scopes).toEqual([{ id: S, tenantId: T, name: 'Cafe', status: 'active', vertical: 'manyfold' }]);
+  });
+
   it('the tenant is not a parameter of any method — op code cannot name another', () => {
     const { cp } = harness();
     // The pinned tenant is exposed read-only; nothing accepts a tenantId argument.

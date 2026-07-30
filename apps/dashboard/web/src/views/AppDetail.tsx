@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AppPermissionsView, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
-import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
+import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AppPermissionsView, type AppScope, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
 import { Ic } from '../lib/icons';
@@ -1035,6 +1035,8 @@ const DATA_PAGE = 50;
  * Read-only by design — raw writes would bypass the event log and forge invariants.
  */
 function DataBrowser({ app }: { app: AppRow }) {
+  const [scopes, setScopes] = useState<AppScope[] | null>(null);
+  const [activeScope, setActiveScope] = useState<string>(app.app_scope_id);
   const [tables, setTables] = useState<ScopeTable[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -1042,8 +1044,30 @@ function DataBrowser({ app }: { app: AppRow }) {
   const [offset, setOffset] = useState(0);
   const [pageErr, setPageErr] = useState<string | null>(null);
 
-  // The table list. Auto-select the first non-system table (the vertical's own data
-  // is what you usually want), falling back to the first table of any kind.
+  // The scopes this app spans (M4). A multi-scope vertical (Manyfold: one site per scope) has
+  // several; the switcher below picks which one's database to browse. On 404/empty — or a
+  // single-scope app — this falls back to just the app scope, so no switcher shows and nothing
+  // changes for the common case.
+  const fallbackScopes: AppScope[] = [{ scopeId: app.app_scope_id, name: app.name, status: 'active', isDefault: true }];
+  useEffect(() => {
+    setActiveScope(app.app_scope_id);
+    if (DEV_MOCK) {
+      setScopes(MOCK_APP_SCOPES);
+      return;
+    }
+    let live = true;
+    api
+      .appScopes(app.app_scope_id)
+      .then((ss) => live && setScopes(ss.length ? ss : fallbackScopes))
+      .catch(() => live && setScopes(fallbackScopes));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app.app_scope_id, app.name]);
+
+  // The table list for the ACTIVE scope. Auto-select the first non-system table (the vertical's
+  // own data is what you usually want), falling back to the first table of any kind.
   useEffect(() => {
     if (DEV_MOCK) {
       setTables(MOCK_SCOPE_TABLES);
@@ -1051,8 +1075,11 @@ function DataBrowser({ app }: { app: AppRow }) {
       return;
     }
     let live = true;
+    setTables(null);
+    setErr(null);
+    setSelected(null);
     api
-      .appTables(app.app_scope_id)
+      .appTables(activeScope)
       .then((ts) => {
         if (!live) return;
         setTables(ts);
@@ -1062,7 +1089,7 @@ function DataBrowser({ app }: { app: AppRow }) {
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [activeScope]);
 
   // A page of the selected table. Refetch on table change (offset reset) or paging.
   useEffect(() => {
@@ -1081,13 +1108,13 @@ function DataBrowser({ app }: { app: AppRow }) {
     let live = true;
     setPage(null);
     api
-      .appTableRows(app.app_scope_id, selected, { limit: DATA_PAGE, offset })
+      .appTableRows(activeScope, selected, { limit: DATA_PAGE, offset })
       .then((p) => live && setPage(p))
       .catch((e) => live && setPageErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, selected, offset, tables]);
+  }, [activeScope, selected, offset, tables]);
 
   const pickTable = (name: string) => {
     setSelected(name);
@@ -1096,21 +1123,58 @@ function DataBrowser({ app }: { app: AppRow }) {
 
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load the database — {err}</div>;
   if (!tables) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading database…</div>;
-  if (tables.length === 0) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>This app’s database has no tables yet.</div>;
+
+  const list = scopes ?? fallbackScopes;
+  const multi = list.length > 1;
+  const activeName = list.find((s) => s.scopeId === activeScope)?.name ?? 'this scope';
+
+  const switcher = multi ? (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>Scope</span>
+      <Select
+        size="sm"
+        value={activeScope}
+        onChange={(e) => {
+          setActiveScope(e.target.value);
+          setOffset(0);
+        }}
+        options={list.map((s) => ({ value: s.scopeId, label: s.isDefault ? `${s.name} (app)` : s.name }))}
+        style={{ maxWidth: 260 }}
+      />
+    </div>
+  ) : null;
+
+  const banner = (
+    <HonestyBanner>
+      Read-only. {multi ? <>Browsing the <strong>{activeName}</strong> scope — this app spans {list.length} scopes. </> : null}
+      This is the app’s live database — one Durable Object per scope. Every read is audited. Rows can’t be edited here: writes go
+      through the app’s operations so the event log and invariants stay intact.
+    </HonestyBanner>
+  );
+
+  if (tables.length === 0)
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {banner}
+        {switcher}
+        <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>This scope’s database has no tables yet.</div>
+      </div>
+    );
 
   const own = tables.filter((t) => !t.system);
   const system = tables.filter((t) => t.system);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <HonestyBanner>Read-only. This is the app’s live database — the one Durable Object backing this scope. Every read is audited. Rows can’t be edited here: writes go through the app’s operations so the event log and invariants stay intact.</HonestyBanner>
+      {banner}
+      {switcher}
       <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16, alignItems: 'start' }}>
         <div style={{ ...card, overflow: 'hidden' }}>
           <TableGroup label="Tables" tables={own} selected={selected} onPick={pickTable} />
           {system.length > 0 && <TableGroup label="System" tables={system} selected={selected} onPick={pickTable} />}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
-          <SqlConsole app={app} />
+          <SqlConsole scopeId={activeScope} />
           <div style={{ ...card, overflow: 'hidden' }}>
             {!selected ? (
               <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Select a table.</div>
@@ -1135,7 +1199,7 @@ function DataBrowser({ app }: { app: AppRow }) {
  * rejects any write shape and rolls back regardless), so the worst a query can do here
  * is come back truncated or refused with the gate's message.
  */
-function SqlConsole({ app }: { app: AppRow }) {
+function SqlConsole({ scopeId }: { scopeId: string }) {
   const [open, setOpen] = useState(false);
   const [sql, setSql] = useState('');
   const [running, setRunning] = useState(false);
@@ -1152,7 +1216,7 @@ function SqlConsole({ app }: { app: AppRow }) {
     setRunning(true);
     setErr(null);
     api
-      .appQuery(app.app_scope_id, sql)
+      .appQuery(scopeId, sql)
       .then((r) => setResult(r))
       .catch((e) => {
         setResult(null);

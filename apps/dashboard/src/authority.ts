@@ -1,6 +1,7 @@
 import type {
   PermissionRegistry,
   PrincipalId,
+  Scope,
   ScopeDump,
   ScopeDumpTable,
   ScopeId,
@@ -604,6 +605,17 @@ export class TenantNarrowedControlPlane {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The tenant's scopes for one vertical — the Data tab's scope switcher (M4 of
+   * multi-scope-manyfold.md). Tenant-pinned: the CP filters by (tenant, vertical) so this only
+   * ever returns THIS tenant's scopes. A multi-scope vertical (e.g. Manyfold: one site per
+   * scope) returns several; a single-scope app, just the one.
+   */
+  listScopes(vertical: string): Promise<Scope[]> {
+    const q = new URLSearchParams({ tenantId: this.tenantId, vertical });
+    return this.call<Scope[]>(`/scopes?${q}`);
   }
 
   // -- read-only scope-DB introspection (§5.4 admin-query RPC; the Data tab) ---
