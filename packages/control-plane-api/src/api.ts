@@ -196,6 +196,19 @@ const provisionInstanceBody = z.object({
   config: z.record(z.string(), z.string()).optional(),
 });
 
+// A SIBLING scope added to an app the tenant already runs (multi-scope self-serve, M1 of
+// multi-scope-manyfold.md). `parentScopeId` is the existing app scope: it authorizes the add
+// (the tenant already runs this vertical) and donates the vertical + jurisdiction, so the
+// caller can never name a vertical it doesn't already have. `owner` is the vertical-domain
+// principal to seat as the new scope's owner (the same person who installed the app).
+const addSiblingScopeBody = z.object({
+  scopeId: scopeIdSchema,
+  parentScopeId: scopeIdSchema,
+  owner: z.string().min(1),
+  slug: z.string().min(1),
+  name: z.string().min(1),
+});
+
 const configureInstanceBody = z.object({
   entries: z.array(z.object({ key: z.string().min(1), value: z.string() })).min(1),
 });
@@ -401,6 +414,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // builder's OWN vertical runs. Ownership is re-checked in the handler; the allowlist alone is
     // not authz. This is the only scope-level route a builder may reach.
     { method: 'POST', re: /\/scopes\/[^/]+\/provision$/ },
+    // Add a SIBLING scope (a new "site") to an app the builder's own tenant already runs
+    // (multi-scope self-serve, M1). Tenant-narrowed + parent-authorized in the handler; the
+    // allowlist alone is not authz.
+    { method: 'POST', re: /\/tenants\/[^/]+\/scopes$/ },
     // Per-PR preview instances of the builder's OWN (private) vertical (preview-and-snapshots.md
     // §2/§9). Create/list/reap forks bound to an unpromoted PR version — ownership + private-only
     // are re-checked in each handler; the allowlist alone is not authz.
@@ -600,6 +617,65 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await host.provisionScope(c.get('actor'), input as Parameters<ScopeHost['provisionScope']>[1]);
     const record = await admin.getScopeRecord(c.get('actor'), input.tenantId, input.scopeId);
     return c.json(record, 201);
+  });
+
+  // Add a SIBLING scope — a new "site" — to an app the tenant already runs (multi-scope
+  // self-serve, M1 of multi-scope-manyfold.md). Runs the same provision → materialize-instance
+  // → activate sequence `createApp` runs for the first scope, but authorized differently: the
+  // `parentScopeId` app scope must already exist under this tenant, which is what proves the
+  // tenant is entitled to this vertical — and the new scope INHERITS the parent's vertical +
+  // jurisdiction, so the caller can never name a vertical it does not already run. A BUILDER is
+  // confined to its own tenant (the allowlist reaches this route; the tenant check below is the
+  // authz); staff may target any tenant. Idempotent on `scopeId` like every provision (K-31).
+  //
+  // No site-count quota is enforced here yet — that is an open product question
+  // (multi-scope-manyfold.md, "Quota policy"); when a cap lands it belongs right here, counting
+  // `admin.listScopes({ tenantId, vertical })` against the tenant's `sites` entitlement.
+  app.post('/tenants/:tenantId/scopes', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const input = addSiblingScopeBody.parse(await c.req.json());
+    const actor = c.get('actor');
+    const p = c.get('principal');
+    const hidden = { error: `unknown scope for tenant: (${tenantId}, ${input.parentScopeId})` } as const;
+    // A builder acts only within its own tenant; a foreign tenant is hidden as 404 (K-3),
+    // never distinguished from "no such scope".
+    if (p.kind === 'builder' && p.tenantId !== tenantId) return c.json(hidden, 404);
+    // The parent app scope must exist under this tenant and carry a vertical — that existence is
+    // the entitlement proof, and its vertical/jurisdiction are what the sibling inherits.
+    const parent = await admin.getScopeRecord(actor, tenantId, input.parentScopeId);
+    if (!parent || !parent.vertical) return c.json(hidden, 404);
+    // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the instance
+    // materializes leaves an inert provisioning row, never a live scope with no deployment.
+    await host.provisionScope(actor, {
+      tenantId,
+      scopeId: input.scopeId,
+      slug: input.slug,
+      name: input.name,
+      vertical: parent.vertical,
+      jurisdiction: parent.jurisdiction ?? undefined,
+    } as Parameters<ScopeHost['provisionScope']>[1]);
+    // Materialize the instance in the vertical's own deployment (schema + roles + owner seat) —
+    // the same call createApp makes. Resolve the vertical from the freshly-written scope row so
+    // it rides the parent's serving script (#286).
+    const created = await admin.getScopeRecord(actor, tenantId, input.scopeId);
+    const vertical = created ? await verticalForScope(c, created) : undefined;
+    if (!vertical) return c.json({ error: `no deployment is bound for vertical '${parent.vertical}'` }, 501);
+    const entitlements = await admin.listEntitlements(actor, tenantId);
+    try {
+      await vertical.provisionInstance({
+        tenantId,
+        scopeId: input.scopeId,
+        owner: principalIdSchema.parse(input.owner),
+        slug: input.slug,
+        name: input.name,
+        entitlements,
+      });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      throw e;
+    }
+    await admin.activateScope(actor, tenantId, input.scopeId);
+    return c.json(await admin.getScopeRecord(actor, tenantId, input.scopeId), 201);
   });
 
   app.get('/tenants/:tenantId/scopes/:scopeId', async (c) => {

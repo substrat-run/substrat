@@ -150,6 +150,17 @@ export class TenantNarrowedControlPlane {
     return this.post('/scopes', { tenantId: this.tenantId, ...input });
   }
 
+  /**
+   * Add a SIBLING scope — a new "site" — to an app the pinned tenant already runs
+   * (multi-scope self-serve, M1 of multi-scope-manyfold.md). The control plane authorizes it
+   * by `parentScopeId` (which must be one of this tenant's scopes), inherits that app's
+   * vertical + jurisdiction, and runs the full provision → materialize-instance → activate
+   * sequence server-side — so the caller supplies only the new scope's identity and owner.
+   */
+  addSiblingScope(input: { scopeId: ScopeId; parentScopeId: ScopeId; owner: PrincipalId; slug: string; name: string }): Promise<void> {
+    return this.post(`/tenants/${this.tenantId}/scopes`, input);
+  }
+
   /** Have the control plane call the vertical (K-31) to create the scope's data. */
   provisionInstance(
     verticalSlug: string,

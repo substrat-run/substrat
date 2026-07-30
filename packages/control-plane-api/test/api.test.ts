@@ -2576,3 +2576,104 @@ describe('control-plane API — custom-hostname issuance (#305)', () => {
     expect(removed).toContain('ch_legal.acme.com');
   });
 });
+
+/**
+ * M1 of multi-scope-manyfold.md: a builder adds a SIBLING scope (a new "site") to an app
+ * its own tenant already runs. Authorization is the parent app scope — its existence under
+ * the tenant proves the entitlement, and the sibling INHERITS its vertical, so a caller can
+ * never name a vertical it does not already run. Tenant-narrowed for a builder (K-3 existence
+ * hiding); the same provision → materialize-instance → activate sequence createApp runs.
+ */
+describe('control-plane API — add a sibling scope (M1)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+
+  const staff = platformActorId.parse(ulid());
+  const acme = tenantId.parse(ulid()); // the builder's tenant — runs 'demo-vert'
+  const other = tenantId.parse(ulid()); // a different tenant
+  const acmeActor = platformActorId.parse(ulid());
+  const parentScope = scopeId.parse(ulid());
+  const owner = principalId.parse(ulid());
+
+  const BUILDER_HEADER = 'x-test-builder';
+  const authenticateBuilder = (req: Request) =>
+    req.headers.get(BUILDER_HEADER) === acme
+      ? { actor: acmeActor, tenantId: acme, tenantSlug: 'acme-co' }
+      : null;
+
+  let captured: { scopeId?: string; owner?: string; slug?: string; entitlements?: EntitlementGrant[] } | undefined;
+  const fakeVertical = {
+    provisionInstance: async (input: { scopeId: string; owner: string; slug: string; entitlements?: EntitlementGrant[] }) => {
+      captured = input;
+      return { tenantId: acme, scopeId: input.scopeId, owner };
+    },
+  } as unknown as VerticalClient;
+
+  const asBuilder = { [BUILDER_HEADER]: acme, 'content-type': 'application/json' };
+  const post = (headers: Record<string, string>, tenant: string, body: unknown) =>
+    app.request(`/tenants/${tenant}/scopes`, { method: 'POST', headers, body: JSON.stringify(body) });
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-sibling-'));
+    host = new SqliteScopeHost({ dir });
+    app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      authenticateBuilder,
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    await host.admin.createTenant(staff, { id: acme, slug: 'acme-co', name: 'Acme' });
+    // The parent app scope — what proves acme runs 'demo-vert' and donates the vertical.
+    await host.provisionScope(staff, { tenantId: acme, scopeId: parentScope, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, acme, parentScope);
+    await host.admin.grantEntitlement(staff, acme, 'demo-vert', { quota: 5, plan: 'pro' });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a builder adds a sibling site under its own tenant — inherits the parent vertical, activates, seats the owner', async () => {
+    const sibling = scopeId.parse(ulid());
+    const res = await post(asBuilder, acme, {
+      scopeId: sibling,
+      parentScopeId: parentScope,
+      owner,
+      slug: 'second-site',
+      name: 'Second Site',
+    });
+    expect(res.status).toBe(201);
+    const record = (await res.json()) as { status: string; vertical: string | null };
+    expect(record.status).toBe('active'); // provision → materialize → activate, all server-side
+    expect(record.vertical).toBe('demo-vert'); // inherited from the parent, not caller-named
+    // The vertical materialized the instance with the seated owner and the platform-gathered plan.
+    expect(captured).toMatchObject({ scopeId: sibling, owner, slug: 'second-site' });
+    expect(captured?.entitlements?.find((e) => e.entitlementKey === 'demo-vert')).toMatchObject({
+      quota: 5,
+      plan: 'pro',
+    });
+  });
+
+  it('hides another tenant behind a 404 — a builder cannot add a scope outside its own tenant', async () => {
+    const res = await post(asBuilder, other, {
+      scopeId: scopeId.parse(ulid()),
+      parentScopeId: parentScope,
+      owner,
+      slug: 'x',
+      name: 'X',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('404s when the parent app scope does not exist under the tenant', async () => {
+    const res = await post(asBuilder, acme, {
+      scopeId: scopeId.parse(ulid()),
+      parentScopeId: scopeId.parse(ulid()), // no such scope
+      owner,
+      slug: 'x',
+      name: 'X',
+    });
+    expect(res.status).toBe(404);
+  });
+});

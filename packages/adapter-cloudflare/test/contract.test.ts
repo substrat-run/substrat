@@ -9,6 +9,7 @@ import {
   scopeId,
   tenantId,
   type EntitlementGrant,
+  type ScopeTable,
 } from '@substrat-run/contracts';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
@@ -370,6 +371,45 @@ describe('scope-local permissions — a CP-less host (Phase 3)', () => {
     await expect(
       host.admin.createTenant(platformActorId.parse(ulid()), { id: t, slug: `x-${t.toLowerCase()}`, name: 'X' }),
     ).rejects.toThrow(/control plane unavailable/);
+  });
+});
+
+/**
+ * #355 regression: `provisionScopeLocal` must apply the bundled modules' migrations
+ * AS PART OF provisioning — not lazily on the first `getScope`. The field symptom was
+ * a hosted vertical whose scope had roles projected but `_substrat_migrations = 0` and
+ * no own tables. This pins the invariant that provision alone lands the schema, so a
+ * freshly-provisioned scope is never born content-less.
+ */
+describe('provisionScopeLocal applies module migrations at provision (#355)', () => {
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+
+  it("creates the modules' own tables and journals them — before any getScope", async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    await host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [READ], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    // Read the DO directly: a CP-less host has no `admin.listScopeTables` (it throws).
+    // No `getScope`/`invoke` has run against this fresh scope id, so anything present
+    // here was applied by `provisionScopeLocal` itself, not by a lazy first open.
+    const stub = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+      introspectTables(): Promise<ScopeTable[]>;
+    };
+    const tables = await stub.introspectTables();
+    const journal = tables.find((tab) => tab.name === '_substrat_migrations');
+    expect(journal?.rowCount ?? 0).toBeGreaterThan(0); // the field bug was rowCount = 0
+    expect(tables.some((tab) => !tab.system)).toBe(true); // own tables exist, not just the spine
+    await host.close();
   });
 });
 
