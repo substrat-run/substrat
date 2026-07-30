@@ -360,6 +360,10 @@ are runtime data, audited but not human-gated.
 
 ### 5.1 The contract
 
+> For the contract stated substrate-neutrally — the four exposed surfaces, and a
+> concept-by-concept mapping onto a non-Cloudflare substrate (Kubernetes) — see
+> [platform-neutral-surface.md](platform-neutral-surface.md).
+
 ```ts
 interface ScopeHost {
   // Kernel authenticates the caller and mints the stub with trusted principal

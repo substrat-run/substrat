@@ -294,6 +294,10 @@ is to name the limit before anyone asks. The gap is narrowed, not closed, by the
 **compliance pack**: control mapping and evidence tooling published for self-hosters,
 giving their auditor a running start on a scope they now own entirely.
 
+For the exposed surface stated in one place — what a module declares, the four API
+surfaces the platform exposes, and a concept-by-concept mapping onto a non-Cloudflare
+substrate (Kubernetes) — see [design/platform-neutral-surface.md](design/platform-neutral-surface.md).
+
 **The triage rule, generalized.** Three buckets, decided per capability: (1) **kernel-owned**
 — anything that is enforcement input or a contract (tenancy tree, directory, permission
 model, event schema, entitlements, attachment contracts, module manifest, the integrations
