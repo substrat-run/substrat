@@ -8,7 +8,7 @@
  * The generic "Acme" tenant from the design handoff.
  */
 import type { IconName } from './icons';
-import type { AppEnvView } from './api';
+import type { AppEnvView, AppScope } from './api';
 
 /** Per-vertical display metadata — the "kind" label and its layer-accent colour. */
 export interface VerticalMeta {
@@ -280,6 +280,13 @@ export const APP_TABS: Array<{ value: string; label: string; count?: number; fut
 ];
 
 /** Dev-preview sample for the Data tab (no backend): a couple of tables of an app's DB. */
+// A multi-scope app in the preview, so the Data-tab scope switcher renders (both scopes show the
+// same mock tables — the preview has no live database).
+export const MOCK_APP_SCOPES: AppScope[] = [
+  { scopeId: '01JZ0MERIDIANAPPSCOPE0001', name: 'Meridian', status: 'active', isDefault: true },
+  { scopeId: '01JZ0MERIDIANSITE00000002', name: 'Second site', status: 'active', isDefault: false },
+];
+
 export const MOCK_SCOPE_TABLES: Array<{ name: string; rowCount: number; system: boolean }> = [
   { name: 'meridian_account', rowCount: 3, system: false },
   { name: 'meridian_session', rowCount: 7, system: false },

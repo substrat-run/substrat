@@ -298,6 +298,15 @@ export interface ScopeTable {
   system: boolean;
 }
 
+/** One scope an app spans — the Data tab's scope switcher (a multi-scope vertical has several). */
+export interface AppScope {
+  scopeId: string;
+  name: string;
+  status: string;
+  /** The app's primary scope — the one the Data tab opens on. */
+  isDefault: boolean;
+}
+
 /** A bounded page of one table (mirrors ScopeTablePage). Rows are positional, aligned to `columns`. */
 export interface ScopeTablePage {
   table: string;
@@ -537,6 +546,8 @@ export const api = {
   /** The declared permission surface (D-39, #336) of the version this app runs, plus the
    *  update target's, for the Permissions tab's table + update diff. */
   appPermissions: (scopeId: string) => call<AppPermissionsView>(`/apps/${encodeURIComponent(scopeId)}/permissions`),
+  /** The scopes an app spans (Data tab switcher) — several for a multi-scope vertical, one otherwise. */
+  appScopes: (scopeId: string) => call<AppScope[]>(`/apps/${encodeURIComponent(scopeId)}/scopes`),
   /** The tables of the app's own database (Data tab). */
   appTables: (scopeId: string) => call<ScopeTable[]>(`/apps/${encodeURIComponent(scopeId)}/tables`),
   /** A bounded page of one table of the app's database. */
