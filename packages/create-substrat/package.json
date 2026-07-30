@@ -23,7 +23,8 @@
     "create-substrat": "./index.js"
   },
   "files": [
-    "index.js"
+    "index.js",
+    "template"
   ],
   "engines": {
     "node": ">=20"

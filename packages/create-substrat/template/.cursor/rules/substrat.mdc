@@ -1,0 +1,11 @@
+---
+description: How to build or extend this Substrat vertical — the interview → scaffold → run → checkpoints flow. Fetch when starting a new vertical, adding an operation, engine, migration, or permission, or wiring the server.
+alwaysApply: false
+---
+
+Follow the full playbook in [`.substrat/playbook.md`](/.substrat/playbook.md) before
+scaffolding or extending the vertical. The always-on rules (module-code boundaries, the
+gates, the two human checkpoints) live in [`AGENTS.md`](/AGENTS.md) and are always in
+context — this rule is the on-demand *flow* on top of them.
+
+Never self-approve the migration diff or the permission diff.
