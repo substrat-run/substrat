@@ -120,6 +120,13 @@ interface Env extends OidcEnv {
    */
   CF_SAAS_ZONE_ID?: string;
   CF_SAAS_ROUTING_TARGET?: string;
+  /**
+   * DCV method for custom-hostname certs. Defaults to `http`: Cloudflare serves the
+   * validation token at its edge once the CNAME is live, so a tenant publishes a single
+   * record (the routing CNAME) and issuance is hands-off — nothing for us to serve. Set
+   * to `txt` for the two-record flow that can validate before the CNAME resolves.
+   */
+  CF_SAAS_SSL_METHOD?: string;
   PLATFORM_BASE_DOMAINS?: string;
   /**
    * The WfP dispatch namespace holding pushed verticals — the control plane reaches one
@@ -171,6 +178,9 @@ function provisionHostnameFor(env: Env): CustomHostnameProvisioner | undefined {
     // `edge.<first base domain>` when unset, so a standard deployment needs no extra var.
     routingTarget:
       env.CF_SAAS_ROUTING_TARGET ?? `edge.${platformBaseDomains(env)[0] ?? 'substrat.run'}`,
+    // `http` DCV (default) needs only the routing CNAME and validates at CF's edge; `txt`
+    // opts into the two-record flow. Anything but an explicit `txt` means `http`.
+    sslMethod: env.CF_SAAS_SSL_METHOD === 'txt' ? 'txt' : 'http',
   });
 }
 
