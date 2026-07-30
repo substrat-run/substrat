@@ -12,6 +12,7 @@ import { Observability } from './views/Observability';
 import { Login } from './views/Login';
 import { Permissions } from './views/Permissions';
 import { Scopes } from './views/Scopes';
+import { Settings } from './views/Settings';
 import { TenantDetail } from './views/TenantDetail';
 import { Tenants } from './views/Tenants';
 import { Verticals } from './views/Verticals';
@@ -49,7 +50,7 @@ interface Toast {
   status: 'success' | 'danger';
 }
 
-const VIEWS: ViewKey[] = ['tenants', 'scopes', 'domains', 'verticals', 'observability', 'admin-log', 'permissions'];
+const VIEWS: ViewKey[] = ['tenants', 'scopes', 'domains', 'verticals', 'observability', 'admin-log', 'permissions', 'settings'];
 
 /**
  * Navigation lives in the URL — which view, and any drilled-into tenant — so a
@@ -176,7 +177,7 @@ export function App() {
   const detail = openTenant ? tenantMap.get(openTenant) : undefined;
 
   const crumbs: BreadcrumbItem[] = [
-    { label: 'Fleet' },
+    { label: view === 'settings' ? 'Console' : 'Fleet' },
     { label: view === 'admin-log' ? 'Admin log' : view[0]!.toUpperCase() + view.slice(1), onClick: () => setOpenTenant(undefined) },
     ...(detail ? [{ label: detail.slug, mono: true }] : []),
   ];
@@ -287,6 +288,7 @@ export function App() {
       {view === 'observability' && <Observability api={api} />}
       {view === 'admin-log' && <AdminLog api={api} tenants={tenantMap} />}
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}
+      {view === 'settings' && <Settings />}
 
       {toast && (
         <div style={{ position: 'fixed', right: 24, bottom: 24, zIndex: 50 }}>
