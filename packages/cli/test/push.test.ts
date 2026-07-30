@@ -2,8 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runtimeNeeds, RUNTIME_BASELINE, type PermissionRegistry } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, readRegistry, permissionDigest } from '../src/push.js';
+import {
+  buildPermissionRegistry,
+  definePermissions,
+  runtimeNeeds,
+  RUNTIME_BASELINE,
+  type PermissionRegistry,
+} from '@substrat-run/contracts';
+import { wranglerConfigFor, readRuntimeNeeds, deriveRegistry, permissionDigest } from '../src/push.js';
 
 const scratch = (pkg?: unknown): string => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-test-'));
@@ -82,29 +88,75 @@ describe('readRuntimeNeeds', () => {
   });
 });
 
-describe('readRegistry — the declared permission surface shipped in the manifest (D-39)', () => {
-  const A = '@substrat-run/engine-a';
-  const registryFile = (registry: unknown): string => {
-    const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-reg-'));
-    writeFileSync(join(dir, 'permissions.json'), JSON.stringify(registry));
-    return dir;
-  };
-  const sample = {
-    permissions: [{ key: 'a:read', description: 'Read', declaredBy: [A] }],
-    roles: [{ key: 'staff', permissions: ['a:read'], source: 'vertical' }],
-    entityGrants: [{ entityType: 'order', permissions: ['a:read'] }],
-  };
-
-  it('reads and validates a checked-in permissions.json', () => {
-    expect(readRegistry(registryFile(sample))).toEqual(sample);
+describe('deriveRegistry — the declared permission surface, derived at push (D-41)', () => {
+  // The guard paths (absence is never a silent empty surface). The esbuild-bundle-and-import
+  // happy path can't run under vitest's module runner (it won't load a runtime temp file); it is
+  // covered end-to-end against real verticals in the build's node integration + the push dry-run,
+  // and the pure derivation it delegates to (`buildPermissionRegistry`) is unit-tested in contracts.
+  it('throws when package.json declares no substrat.permissions', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-noptr-'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x' }));
+    await expect(deriveRegistry(dir)).rejects.toThrow(/declares no permission surface/);
   });
 
-  it('is undefined when the vertical ships no registry', () => {
-    expect(readRegistry(mkdtempSync(join(tmpdir(), 'substrat-cli-noreg-')))).toBeUndefined();
+  it('throws when the declared entry does not exist', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-noent-'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ substrat: { permissions: 'missing.mjs' } }));
+    await expect(deriveRegistry(dir)).rejects.toThrow(/does not exist/);
+  });
+});
+
+describe('buildPermissionRegistry — the pure derivation deriveRegistry delegates to (D-41)', () => {
+  const mod = (id: string, perms: [string, string][]) => ({
+    manifest: { id, permissions: perms.map(([key, description]) => ({ key, description })) },
   });
 
-  it('rejects a malformed registry instead of shipping it', () => {
-    expect(() => readRegistry(registryFile({ permissions: [{ key: 'bad key' }] }))).toThrow();
+  it('derives declaredBy, sorts every array, and is order-independent', () => {
+    const surface = definePermissions({
+      // Deliberately unsorted; the output must be canonical regardless.
+      modules: [
+        mod('@substrat-run/engine-b', [['b:write', 'Write'], ['b:read', 'Read']]),
+        mod('@substrat-run/engine-a', [['a:read', 'Read']]),
+      ] as never,
+      roles: [
+        { key: 'staff', permissions: ['b:write', 'a:read'] as never, source: 'vertical' },
+        { key: 'admin', permissions: ['a:read'] as never, source: 'vertical' },
+      ],
+      entityGrants: [{ entityType: 'order', permissions: ['a:read'] as never }],
+    });
+    expect(buildPermissionRegistry(surface)).toEqual({
+      permissions: [
+        { key: 'a:read', description: 'Read', declaredBy: ['@substrat-run/engine-a'] },
+        { key: 'b:read', description: 'Read', declaredBy: ['@substrat-run/engine-b'] },
+        { key: 'b:write', description: 'Write', declaredBy: ['@substrat-run/engine-b'] },
+      ],
+      roles: [
+        { key: 'admin', permissions: ['a:read'], source: 'vertical' },
+        { key: 'staff', permissions: ['a:read', 'b:write'], source: 'vertical' },
+      ],
+      entityGrants: [{ entityType: 'order', permissions: ['a:read'] }],
+    });
+  });
+
+  it('folds a key declared by two modules into one entry carrying both', () => {
+    const reg = buildPermissionRegistry({
+      modules: [
+        mod('@substrat-run/engine-b', [['shared:key', 'Shared']]),
+        mod('@substrat-run/engine-a', [['shared:key', 'Shared']]),
+      ] as never,
+      roles: [],
+    });
+    expect(reg.permissions).toEqual([
+      { key: 'shared:key', description: 'Shared', declaredBy: ['@substrat-run/engine-a', '@substrat-run/engine-b'] },
+    ]);
+  });
+
+  it('yields an explicit empty registry for a surface that declares nothing', () => {
+    expect(buildPermissionRegistry({ modules: [], roles: [] })).toEqual({
+      permissions: [],
+      roles: [],
+      entityGrants: [],
+    });
   });
 });
 
@@ -135,8 +187,11 @@ describe('permissionDigest — the promotion "permissions changed" signal (D-39)
     expect(await permissionDigest(before)).not.toBe(await permissionDigest(after));
   });
 
-  it('an absent registry hashes the empty surface, not the worker bindings', async () => {
-    // Deterministic and independent of any binding/module content — the old placeholder bug.
-    expect(await permissionDigest(undefined)).toBe(await permissionDigest(reg([])));
+  it('hashes an explicit empty surface deterministically (there is no absent-registry path — D-41)', async () => {
+    // A vertical exposing nothing ships an explicit empty registry; its digest is content-only,
+    // never the worker bindings (the old placeholder bug).
+    expect(await permissionDigest(reg([]))).toBe(
+      await permissionDigest({ permissions: [], roles: [], entityGrants: [] } as PermissionRegistry),
+    );
   });
 });

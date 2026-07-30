@@ -6,7 +6,8 @@
   "description": "HR demo vertical (Meridian) — see spec/concept.md",
   "substrat": {
     "slug": "meridian",
-    "name": "Meridian"
+    "name": "Meridian",
+    "permissions": "src/provision.ts"
   },
   "type": "module",
   "exports": {

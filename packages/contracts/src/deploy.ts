@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { moduleId, permissionKey } from './ids.js';
-import { envVarSpec, capability } from './manifest.js';
-import { roleDefinition } from './permission.js';
+import { envVarSpec, capability, type ModuleManifest } from './manifest.js';
+import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
@@ -184,6 +184,78 @@ export const permissionRegistry = z.object({
 });
 export type PermissionRegistry = z.infer<typeof permissionRegistry>;
 
+/**
+ * A vertical's declared permission surface, as the **single typed source** — the input the
+ * permission checkpoint (`tools/permission-diff.mts`) and `substrat push` both read to derive
+ * the {@link permissionRegistry}. It is not the registry itself: keys carry no `declaredBy` yet
+ * (that is derived from `modules`), because this is what an author *writes*, once.
+ *
+ * `modules` is structural on purpose — a `ModuleRegistration[]` (kernel) is assignable, but
+ * `contracts` may not depend on the kernel, so it asks only for the `manifest` it reads.
+ */
+export interface PermissionsInput {
+  /** The modules the host registers — the source of every permission key + description. */
+  modules: readonly { manifest: ModuleManifest }[];
+  /** The role templates provisioning stamps into each tenant. */
+  roles: readonly RoleDefinition[];
+  /** Entity-narrowed grant shapes — keys reachable outside the role table (default none). */
+  entityGrants?: readonly EntityGrantShape[];
+}
+
+/**
+ * Declare a vertical's permission surface, once, in TypeScript. An identity helper: it pins the
+ * shape so a missing or mistyped field is a **compile error**, not a silently-skipped vertical,
+ * and returns a plain, side-effect-free object safe to import in any Node context to read the
+ * surface without running the vertical. A vertical exports the result and points at it from
+ * `package.json` `substrat.permissions`; the checkpoint discovers it there rather than from a
+ * by-name `seed.ts` re-export.
+ */
+export function definePermissions(input: PermissionsInput): PermissionsInput {
+  return input;
+}
+
+/**
+ * Derive the machine-readable {@link permissionRegistry} from a vertical's declared surface —
+ * the keys+descriptions each module declares (with `declaredBy`), the role templates, and the
+ * entity-grant shapes. `substrat push` calls this on the imported `permissions` entry to build
+ * what it ships in the manifest; the permission checkpoint uses the same function, so the
+ * derived surface is one code path with no room to disagree.
+ *
+ * Deterministic: every array is sorted (keys, roles, grants, and the members within each), so
+ * the output — and therefore `digests.permission` — is a pure function of content, independent
+ * of declaration order.
+ */
+export function buildPermissionRegistry(input: PermissionsInput): PermissionRegistry {
+  const cmp = (a: string, b: string) => a.localeCompare(b);
+  const sortKeys = <T extends string>(keys: readonly T[]): T[] => [...keys].sort(cmp);
+
+  const declaredBy = new Map<PermissionRegistryEntry['key'], { description: string; modules: Set<PermissionRegistryEntry['declaredBy'][number]> }>();
+  for (const m of input.modules) {
+    for (const p of m.manifest.permissions) {
+      const seen = declaredBy.get(p.key);
+      if (seen) seen.modules.add(m.manifest.id);
+      else declaredBy.set(p.key, { description: p.description, modules: new Set([m.manifest.id]) });
+    }
+  }
+
+  const roles = [...input.roles]
+    .sort((a, b) => cmp(a.key, b.key))
+    .map((r) => {
+      if (!r.source) throw new Error(`buildPermissionRegistry: role '${r.key}' has no source`);
+      return { key: r.key, permissions: sortKeys(r.permissions), source: r.source };
+    });
+
+  const permissions = [...declaredBy.entries()]
+    .map(([key, v]) => ({ key, description: v.description, declaredBy: [...v.modules].sort(cmp) }))
+    .sort((a, b) => cmp(a.key, b.key));
+
+  const entityGrants = [...(input.entityGrants ?? [])]
+    .sort((a, b) => cmp(a.entityType, b.entityType))
+    .map((g) => ({ entityType: g.entityType, permissions: sortKeys(g.permissions) }));
+
+  return { permissions, roles, entityGrants };
+}
+
 /** The JSON part a `substrat push` sends alongside the module files. */
 export const deployManifest = z.object({
   version: z.string().min(1),
@@ -212,11 +284,13 @@ export const deployManifest = z.object({
   /** The surfaces the vertical serves (package.json `substrat.surfaces`, K-26 multi-surface) —
    *  labels only, carried to the registry for the hostname-binding picker. Metadata, not code. */
   surfaces: z.array(declaredSurface).optional(),
-  /** The vertical's declared permission surface (D-39): keys+descriptions, role templates,
-   *  entity-grant shapes — the machine-readable PERMISSIONS.md. Optional + additive (D-28);
-   *  `digests.permission` is its content hash. Absent ⇒ the vertical ships no registry here
-   *  and the permission digest is over the empty surface. */
-  registry: permissionRegistry.optional(),
+  /** The vertical's declared permission surface (D-39/D-41): keys+descriptions, role templates,
+   *  entity-grant shapes — the machine-readable twin of PERMISSIONS.md, derived at push from the
+   *  vertical's `definePermissions(...)` entry. REQUIRED: a deployable vertical must declare its
+   *  surface (an explicit empty registry for one that genuinely exposes nothing), so absence is a
+   *  parse error at the trust boundary rather than a silent empty surface. `digests.permission` is
+   *  its content hash. */
+  registry: permissionRegistry,
   /** Computed by the builder's toolchain; what the promotion checkpoint compares. */
   digests: z.object({
     manifest: z.string().min(1),
@@ -228,3 +302,15 @@ export const deployManifest = z.object({
   }),
 });
 export type DeployManifest = z.infer<typeof deployManifest>;
+
+/**
+ * The same manifest for **reading persisted history**, where `registry` may be absent — a
+ * version pushed before it was carried (D-39) or before it was required (D-41). The push trust
+ * boundary always parses with the strict {@link deployManifest} (registry required), so a NEW
+ * push cannot omit it; only re-reads of already-stored manifests use this lenient form, so an
+ * old version stays readable and re-deployable in place (#286) instead of failing to parse.
+ */
+export const storedDeployManifest = deployManifest.extend({
+  registry: permissionRegistry.optional(),
+});
+export type StoredDeployManifest = z.infer<typeof storedDeployManifest>;

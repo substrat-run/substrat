@@ -1,4 +1,5 @@
 import {
+  definePermissions,
   orgId as orgIdSchema,
   platformActorId,
   scopeId as scopeIdSchema,
@@ -38,6 +39,13 @@ export const ROLES: RoleDefinition[] = Object.entries(MEMBER_ROLES).map(([key, p
   permissions: permissions as PermissionKey[],
   source: 'vertical',
 }));
+
+/**
+ * The single typed source for this vertical's permission surface — what the permission
+ * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
+ * No entity-narrowed grants: dashboard authority is role-based (team roles at the tenant node).
+ */
+export const permissions = definePermissions({ modules: MODULES, roles: ROLES });
 
 /**
  * Bring an already-provisioned tenant's role definitions up to date with the current

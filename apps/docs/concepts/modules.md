@@ -71,15 +71,29 @@ Field by field:
 Every field past `entitlementKey` is **optional and additive** (decision 28): a manifest that
 omits them still parses, and adding one never breaks an existing module.
 
-**The permission surface becomes a registry at push.** The keys and descriptions, role
-templates, and entity-grant *shapes* a vertical declares are assembled at `substrat push`
-into the deploy manifest as a machine-readable `registry` — the twin of the checked-in
-`PERMISSIONS.md`, carrying a content-hash `digests.permission` (D-39). It is built from the
-same `MODULES` + `ROLES` + `ENTITY_GRANTS` the host registers, so it cannot drift from what
-is enforced, and it is consumed by **version admission** (a real permission diff between two
-versions of a vertical) and by any tenant-facing permissions view. The runtime grant table is
-deliberately *not* in it: minted capability grants are scope-local tuples, reached only
-through the admin-query RPC.
+## Two manifests: authored in TypeScript, transported as JSON
+
+Worth being precise, because "manifest" names two things. The **module manifest** above is
+**TypeScript** — a typed object literal that `moduleManifest.parse(...)` validates. That
+`parse` is a correctness gate (a malformed manifest throws at load), *not* a sign you author
+JSON: you get full types, autocomplete, and refactoring across every field, and the keys in
+`permissions` are the same branded `PermissionKey`s your operations check.
+
+JSON appears in exactly one place — the **deploy manifest**, the envelope `substrat push`
+assembles and POSTs to the control plane. It's JSON because it crosses a process and trust
+boundary (the builder's CLI → the platform), and the same `deployManifest` schema re-parses it
+on the far side. So the shape you *edit* is typed TypeScript; the "one big JSON that gets
+parsed" is only the wire form, and only at the boundary where a wire form is unavoidable.
+
+**The permission surface travels in that envelope.** The keys and descriptions, role templates,
+and entity-grant *shapes* a vertical declares are carried in the deploy manifest as a
+`registry`, content-hashed as `digests.permission` (D-39). It's derived from the same declared
+surface the host registers (`MODULES` + `ROLES` + `ENTITY_GRANTS`), so it cannot drift from what
+is enforced, and `PERMISSIONS.md` is the human-readable render of that same surface — the review
+artifact for the permission checkpoint. Admission consumes it as a real permission diff between
+two versions; any tenant-facing permissions view reads it back. The runtime grant table is
+deliberately *not* in it: minted capability grants are scope-local tuples, reached only through
+the admin-query RPC.
 
 Two fields deserve special mention:
 

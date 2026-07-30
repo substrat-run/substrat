@@ -3,14 +3,7 @@ import { join } from 'node:path';
 import { platformActorId, principalId, scopeId, tenantId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ENTITY_GRANTS, MODULES, ROLES, provisionManyfold, type ManyfoldInstance } from './provision.js';
-
-/**
- * Re-exported because `tools/permission-diff.mts` reads MODULES/ROLES/ENTITY_GRANTS
- * from each vertical's seed to render the permission checkpoint — the same objects the
- * host registers, which is what stops the artifact drifting.
- */
-export { ENTITY_GRANTS, MODULES, ROLES, provisionManyfold, type ManyfoldInstance };
+import { MODULES, provisionManyfold, type ManyfoldInstance } from './provision.js';
 
 export function buildDemoHost(dir: string): SqliteScopeHost {
   const host = new SqliteScopeHost({ dir });

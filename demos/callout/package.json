@@ -6,7 +6,8 @@
   "description": "FSM demo vertical (Callout) — see spec/testrun.md",
   "substrat": {
     "slug": "callout",
-    "name": "Callout"
+    "name": "Callout",
+    "permissions": "src/provision.ts"
   },
   "type": "module",
   "exports": {

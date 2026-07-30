@@ -14,21 +14,12 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { registerScriveConnector } from '@substrat-run/connector-scrive';
 import {
   EMPLOYEE_SELF,
-  ENTITY_GRANTS,
   MODULES,
   provisionMeridian,
-  ROLES,
   VERTICAL,
   type MeridianInstance,
   type ScriveCredential,
 } from './provision.js';
-
-// Re-exported because `tools/permission-diff.mts` reads `MODULES`/`ROLES`/
-// `ENTITY_GRANTS` from each vertical's `seed.ts` to render the permission
-// checkpoint — the file it looks at is `seed.ts`, even though provisioning moved
-// to `provision.ts`. Without these, the tool skips Meridian and CI goes green
-// over an unreviewed permission surface. See demos/callout/src/seed.ts.
-export { ENTITY_GRANTS, MODULES, ROLES };
 
 /**
  * The demo world and the local (SQLite) host that runs it. The portable half —

@@ -33,7 +33,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@substrat-run/contracts": "workspace:^"
+    "@substrat-run/contracts": "workspace:^",
+    "esbuild": "^0.25.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
