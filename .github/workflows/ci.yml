@@ -30,6 +30,10 @@ jobs:
       # opted-in vertical's OpenAPI document from its operation catalog and fail
       # on drift — a surface change must appear in the PR diff.
       - run: pnpm lint:api --check
+      # The playbook-sync checkpoint: the create-substrat template playbook is a
+      # hand-adapted copy of the substrat skill, so fail if the skill moved without
+      # a human re-reconciling the playbook (tools/playbook-sync.mts).
+      - run: pnpm lint:playbook --check
       - run: pnpm -r typecheck
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM
