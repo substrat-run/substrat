@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  definePermissions,
   platformActorId,
   principalId,
   scopeId,
@@ -95,6 +96,13 @@ const portalPerms = [SHOP_PERM.orderRead];
 export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
   { entityType: 'customer', permissions: portalPerms },
 ];
+
+/**
+ * The single typed source for this vertical's permission surface — what the permission
+ * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
+ * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ */
+export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
 
 export function buildShopHost(dir: string): SqliteScopeHost {
   const host = new SqliteScopeHost({ dir });

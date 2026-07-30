@@ -83,6 +83,43 @@ an org nobody registered would otherwise look applied, resolve for nobody, and s
 up in the permission diff as though access had been conferred. Because the id is a ULID
 rather than a name, renaming an org cannot orphan the tuples that reference it.
 
+## From declaration to enforcement
+
+The **keys and role templates** are declared in TypeScript — the same objects the host
+registers ([module manifests](/concepts/modules) declare the keys, provisioning declares the
+roles). That declared surface is not trusted to stay honest by convention; it passes three
+successive gates on its way to a running scope:
+
+```mermaid
+flowchart TD
+  A["<b>Declared in TypeScript</b><br/>module manifests → keys + descriptions<br/>roles → templates · entity grants → shapes"]
+  A --> B["<b>Checkpoint</b> · pnpm lint:permissions<br/>renders PERMISSIONS.md, the review artifact<br/>CI --check fails the build on drift"]
+  A --> C["<b>Push</b> · substrat push<br/>the surface rides the deploy manifest as a registry<br/>content-hashed → digests.permission"]
+  C --> D["<b>Admission</b><br/>a real permission diff between two versions<br/>gates promotion — a widened surface is visible"]
+  D --> E["<b>Provisioning</b><br/>role templates projected into each tenant's<br/>_substrat_roles at write time"]
+  E --> F["<b>Runtime</b> · ctx.check<br/>reads scope-local tables only<br/>absent/empty projection = deny"]
+```
+
+Three kinds of honesty, at three altitudes:
+
+- **Review-time.** `PERMISSIONS.md` is the human-readable render of the surface — the artifact
+  for the [permission checkpoint](/concepts/modules). Because CI regenerates it with `--check`
+  and fails on any difference, a role that gains a key cannot merge without showing up in the
+  diff a reviewer must approve. The check reads the *same* declared objects the host registers,
+  so the artifact cannot drift from what is enforced.
+- **Deploy-time.** The surface is carried in the version's deploy manifest and content-hashed
+  as `digests.permission`, so **admission** can compute a genuine permission diff between the
+  running version and the incoming one. The declared surface is **immutable per version** — it
+  is a property of the code, frozen when that version is built.
+- **Request-time.** Roles and grants are *projected* into each scope's own tables at write
+  time; the checker reads only that local projection (see below), and an absent or empty
+  projection is a **deny**. Missing data can only ever remove authority, never confer it.
+
+This is the same layering the rest of the model rests on: the **declared** surface is a
+per-version code fact, **operator** state (a tenant's live roles) is a runtime-mutable table,
+and **minted** grants are scope-local tuples. None is a copy that can silently diverge from the
+others — each is the authority for its own layer.
+
 ## Evaluation: relationship tuples with a fixed algebra
 
 Internally, the built-in checker compiles the authored surface into relationship tuples

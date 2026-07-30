@@ -1,5 +1,6 @@
 import {
   connectionId,
+  definePermissions,
   platformActorId,
   type ConnectionId,
   type PermissionKey,
@@ -135,6 +136,13 @@ export const EMPLOYEE_SELF: PermissionKey[] = [
 export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
   { entityType: 'employee', permissions: EMPLOYEE_SELF },
 ];
+
+/**
+ * The single typed source for this vertical's permission surface — what the permission
+ * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
+ * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ */
+export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
 
 /**
  * Give an instance a live Scrive connection and the one grant that lets the

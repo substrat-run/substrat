@@ -1,4 +1,5 @@
 import {
+  definePermissions,
   platformActorId,
   type PermissionKey,
   type PrincipalId,
@@ -90,6 +91,13 @@ export const portalPerms = [WO.read];
 export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
   { entityType: 'customer', permissions: portalPerms },
 ];
+
+/**
+ * The single typed source for this vertical's permission surface — what the permission
+ * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
+ * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ */
+export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
 
 
 /** Idempotent: safe on every server start; demo data seeds only once. */

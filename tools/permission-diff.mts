@@ -43,10 +43,20 @@ interface EntityGrantLike {
   entityType: string;
   permissions: string[];
 }
-interface VerticalSource {
+/** The normalised surface render()/collectRegistry() consume — unchanged by the discovery move. */
+interface Surface {
   MODULES?: ModuleLike[];
   ROLES?: RoleLike[];
   ENTITY_GRANTS?: EntityGrantLike[];
+}
+/** What a vertical's declared entry (`substrat.permissions`) exports: a definePermissions() result. */
+interface PermissionsLike {
+  modules?: ModuleLike[];
+  roles?: RoleLike[];
+  entityGrants?: EntityGrantLike[];
+}
+interface VerticalModule {
+  permissions?: PermissionsLike;
 }
 
 const root = new URL('..', import.meta.url).pathname;
@@ -62,7 +72,7 @@ const byKey = <T extends { key: string }>(a: T, b: T) => a.key.localeCompare(b.k
 const sorted = (keys: string[]) => [...keys].sort((a, b) => a.localeCompare(b));
 const code = (s: string) => `\`${s}\``;
 
-function render(name: string, pkg: string, src: VerticalSource): string {
+function render(name: string, pkg: string, src: Surface): string {
   const modules = src.MODULES ?? [];
   const roles = [...(src.ROLES ?? [])].sort(byKey);
   const grants = [...(src.ENTITY_GRANTS ?? [])].sort((a, b) =>
@@ -176,54 +186,12 @@ function render(name: string, pkg: string, src: VerticalSource): string {
   return out.join('\n');
 }
 
-/**
- * The machine-readable twin of the markdown snapshot (D-39): the SAME registry, roles, and
- * grant shapes, as the JSON the deploy manifest carries (`permissionRegistry` in contracts).
- * `push` reads this checked-in file and injects it into the manifest, so the platform holds
- * the declared surface it already committed to via `digests.permission` — without the CLI
- * ever loading (and executing) the vertical's module code. Deterministic: arrays sorted, keys
- * in a fixed order, so `--check` is a byte compare and the digest a pure function of content.
- */
-function collectRegistry(rel: string, src: VerticalSource): {
-  permissions: { key: string; description: string; declaredBy: string[] }[];
-  roles: { key: string; permissions: string[]; source: string }[];
-  entityGrants: { entityType: string; permissions: string[] }[];
-} {
-  const modules = src.MODULES ?? [];
-  const declaredBy = new Map<string, { description: string; modules: Set<string> }>();
-  for (const m of modules) {
-    for (const p of m.manifest.permissions) {
-      const seen = declaredBy.get(p.key);
-      if (seen) seen.modules.add(m.manifest.id);
-      else declaredBy.set(p.key, { description: p.description, modules: new Set([m.manifest.id]) });
-    }
-  }
-  const roles = [...(src.ROLES ?? [])].sort(byKey).map((r) => {
-    if (!r.source) {
-      cannot(
-        `${rel}: role ${code(r.key)} has no \`source\`.\n` +
-          `  The manifest registry (D-39) records who declared each role; roleDefinition\n` +
-          `  requires it. Remedy: add \`source: '<moduleId>' | 'vertical'\` to the role.`,
-      );
-    }
-    return { key: r.key, permissions: sorted(r.permissions), source: r.source };
-  });
-  return {
-    permissions: [...declaredBy.entries()]
-      .map(([key, v]) => ({ key, description: v.description, declaredBy: [...v.modules].sort((a, b) => a.localeCompare(b)) }))
-      .sort(byKey),
-    roles,
-    entityGrants: [...(src.ENTITY_GRANTS ?? [])]
-      .sort((a, b) => a.entityType.localeCompare(b.entityType))
-      .map((g) => ({ entityType: g.entityType, permissions: sorted(g.permissions) })),
-  };
-}
-
 // Verticals live in demos/ (demo verticals) AND apps/ (real platform verticals —
-// e.g. apps/dashboard, the platform vertical). A vertical is any package with a
-// src/seed.ts; both trees are scanned so a real vertical outside demos/ still
-// enters the checkpoint.
-const verticals: { rel: string; dir: string }[] = [];
+// e.g. apps/dashboard, the platform vertical). A vertical declares WHERE its permission
+// surface lives via package.json `substrat.permissions` — a path to the module exporting a
+// `definePermissions(...)` result. Discovery keys off that declared pointer, not a magic
+// `src/seed.ts` re-export, so the location is a code fact rather than a naming convention.
+const verticals: { rel: string; dir: string; entry: string; pkg: string }[] = [];
 for (const group of ['demos', 'apps']) {
   const groupDir = join(root, group);
   let entries: string[];
@@ -234,38 +202,66 @@ for (const group of ['demos', 'apps']) {
   }
   for (const n of entries) {
     const dir = join(groupDir, n);
-    if (statSync(dir).isDirectory() && existsSync(join(dir, 'src/seed.ts'))) {
-      verticals.push({ rel: `${group}/${n}`, dir });
+    if (!statSync(dir).isDirectory()) continue;
+    const pkgPath = join(dir, 'package.json');
+    if (!existsSync(pkgPath)) continue;
+    const pkgJson = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+      name?: string;
+      substrat?: { permissions?: string };
+    };
+    const entry = pkgJson.substrat?.permissions;
+    if (!entry) {
+      // A package that looks like a vertical (has a seed) but declares no permissions entry
+      // would vanish from the checkpoint — worse than no checkpoint. Fail loudly, don't skip.
+      if (existsSync(join(dir, 'src/seed.ts'))) {
+        cannot(
+          `${group}/${n} looks like a vertical (has src/seed.ts) but declares no\n` +
+            `  \`substrat.permissions\` in package.json — it would be skipped and CI would go\n` +
+            `  green over a permission surface nobody reviewed.\n` +
+            `  Remedy: add \`"substrat": { "permissions": "src/provision.ts" }\` pointing at the\n` +
+            `  module that exports \`definePermissions(...)\`. See demos/callout.`,
+        );
+      }
+      continue;
     }
+    verticals.push({ rel: `${group}/${n}`, dir, entry, pkg: pkgJson.name ?? `${group}/${n}` });
   }
 }
 verticals.sort((a, b) => a.rel.localeCompare(b.rel));
 
-if (verticals.length === 0) cannot(`no vertical has a src/seed.ts under demos/ or apps/.`);
+if (verticals.length === 0) cannot(`no package under demos/ or apps/ declares substrat.permissions.`);
 
 const drifted: string[] = [];
-for (const { rel, dir } of verticals) {
+for (const { rel, dir, entry, pkg } of verticals) {
   const name = rel.slice(rel.indexOf('/') + 1);
-  const pkg = (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { name?: string }).name ?? rel;
 
-  const mod = (await import(pathToFileURL(join(dir, 'src/seed.ts')).href)) as VerticalSource;
-  // The vacuity plug: a vertical that exports neither would be silently skipped,
-  // and CI would go green over a permission surface nobody reviewed.
-  if (!mod.MODULES || !mod.ROLES) {
+  const mod = (await import(pathToFileURL(join(dir, entry)).href)) as VerticalModule;
+  const surface = mod.permissions;
+  // The vacuity plug: a declared entry that exports no `permissions` (or an empty one) would
+  // render a green light over nothing.
+  if (!surface || !surface.modules || !surface.roles) {
     cannot(
-      `${rel}/src/seed.ts exports ${!mod.MODULES ? 'no MODULES' : 'no ROLES'}.\n` +
+      `${rel}/${entry} exports no \`permissions\` (a definePermissions() result).\n` +
         `  Without it this vertical is skipped and CI goes green over a permission surface\n` +
         `  nobody reviewed — worse than having no checkpoint at all.\n` +
-        `  Remedy: export the array buildHost registers as MODULES, and the role table\n` +
-        `  seed defines as ROLES. See demos/callout/src/seed.ts.`,
+        `  Remedy: export \`const permissions = definePermissions({ modules, roles, entityGrants })\`.\n` +
+        `  See demos/callout/src/provision.ts.`,
     );
   }
+  // Normalise to the shape render()/collectRegistry() already consume, so their output — and
+  // therefore both artifacts — is byte-identical to the pre-migration seed.ts discovery.
+  const src: Surface = {
+    MODULES: surface.modules,
+    ROLES: surface.roles,
+    ENTITY_GRANTS: surface.entityGrants ?? [],
+  };
 
-  // Two artifacts from one source: the human snapshot (PERMISSIONS.md) and its
-  // machine-readable twin (permissions.json, D-39) that `push` ships in the manifest.
+  // The human snapshot (PERMISSIONS.md) is the one checked-in artifact — the review surface for
+  // the permission checkpoint. The machine-readable registry is no longer committed (D-41):
+  // `substrat push` derives it from the same `permissions` entry via `buildPermissionRegistry`,
+  // so there is no generated JSON in git to keep in sync.
   const artifacts: { path: string; content: string }[] = [
-    { path: join(dir, 'PERMISSIONS.md'), content: render(name, pkg, mod) },
-    { path: join(dir, 'permissions.json'), content: JSON.stringify(collectRegistry(rel, mod), null, 2) + '\n' },
+    { path: join(dir, 'PERMISSIONS.md'), content: render(name, pkg, src) },
   ];
 
   for (const { path, content } of artifacts) {

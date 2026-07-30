@@ -25,7 +25,7 @@ import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 // The manifest schema itself lives in @substrat-run/contracts (deploy.ts there) so the
 // CLI validates the exact shape this server parses — re-exported here so hosts keep
 // importing it from the transport package.
-export { deployManifest } from '@substrat-run/contracts';
+export { deployManifest, storedDeployManifest } from '@substrat-run/contracts';
 export type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /** A built vertical, ready to upload. `modules` are the bundled ESM parts. */

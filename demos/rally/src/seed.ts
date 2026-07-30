@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { z } from 'zod';
 import { join } from 'node:path';
 import {
+  definePermissions,
   platformActorId,
   principalId,
   scopeId,
@@ -153,6 +154,13 @@ export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }
   // every non-role capability is entity-bounded. These are scope-wide.
   { entityType: '(scope-wide, no entity)', permissions: portalScopePerms },
 ];
+
+/**
+ * The single typed source for this vertical's permission surface — what the permission
+ * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
+ * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ */
+export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
 
 /**
  * Seed one venue. Each scope is its own database, so hours, courts, tiers and

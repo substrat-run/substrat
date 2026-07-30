@@ -14,21 +14,13 @@ import {
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import {
-  ENTITY_GRANTS,
   MODULES,
-  ROLES,
   portalPerms,
   provisionCallout,
   type CalloutInstance,
 } from './provision.js';
 
-/**
- * Re-exported because `tools/permission-diff.mts` reads `MODULES`/`ROLES`/
- * `ENTITY_GRANTS` from each vertical's `seed.ts` to render the permission
- * checkpoint. They now live in `provision.ts`; this keeps the artifact reading the
- * same objects the host registers, which is the property that stops it drifting.
- */
-export { ENTITY_GRANTS, MODULES, ROLES, provisionCallout, type CalloutInstance };
+export { provisionCallout, type CalloutInstance };
 import { workorderModule, PERM as WO } from '@substrat-run/engine-workorder';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';

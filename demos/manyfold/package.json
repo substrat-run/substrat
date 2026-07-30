@@ -6,7 +6,8 @@
   "description": "CMS demo vertical (Manyfold) — multi-scope headless CMS, see spec/concept.md",
   "substrat": {
     "slug": "manyfold",
-    "name": "Manyfold"
+    "name": "Manyfold",
+    "permissions": "src/provision.ts"
   },
   "type": "module",
   "exports": {

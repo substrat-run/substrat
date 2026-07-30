@@ -2,14 +2,17 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { webcrypto } from 'node:crypto';
+import { build } from 'esbuild';
 import {
+  buildPermissionRegistry,
   deployManifest,
-  permissionRegistry,
   runtimeNeeds,
   RUNTIME_BASELINE,
   type DeclaredBinding,
   type PermissionRegistry,
+  type PermissionsInput,
   type RuntimeNeeds,
 } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
@@ -34,29 +37,72 @@ function stableStringify(v: unknown): string {
   return JSON.stringify(v);
 }
 
-const EMPTY_REGISTRY: PermissionRegistry = { permissions: [], roles: [], entityGrants: [] };
-
 /**
- * Read the vertical's generated permission registry (`permissions.json`), if present. The
- * file is emitted and CI-checked by `tools/permission-diff.mts` from the same `MODULES` +
- * `ROLES` + `ENTITY_GRANTS` the host registers, so it cannot drift from what is enforced —
- * and reading a checked-in artifact means `push` never has to load (and execute) the
- * vertical's module code. Absent ⇒ the vertical ships no permission surface here.
+ * Derive the vertical's permission registry (D-39/D-41) from its declared TypeScript surface —
+ * the single typed source. `package.json` `substrat.permissions` points at the module that
+ * exports a `definePermissions(...)` result; we bundle it (all packages left EXTERNAL, so a
+ * node-ful entry still resolves its own `node_modules` — including native addons — at import)
+ * into a temp module *inside* the vertical dir, then import it to read the surface as data and
+ * derive the registry with the same `buildPermissionRegistry` the permission checkpoint uses.
+ *
+ * The control plane never does this — it re-parses the wire manifest at the trust boundary
+ * (self-serve-deploy.md §4). `push` runs on the builder's own machine, so importing the
+ * builder's own entry is not a new trust boundary. A missing pointer, a missing entry, or an
+ * entry that exports no `permissions` is a hard error: a deployable vertical must declare its
+ * surface — absence is never silently an empty surface (D-41).
  */
-export function readRegistry(dir: string): PermissionRegistry | undefined {
-  const path = join(dir, 'permissions.json');
-  if (!existsSync(path)) return undefined;
-  return permissionRegistry.parse(JSON.parse(readFileSync(path, 'utf8')));
+export async function deriveRegistry(dir: string): Promise<PermissionRegistry> {
+  const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+    substrat?: { permissions?: string };
+  };
+  const entry = pkg.substrat?.permissions;
+  if (!entry) {
+    throw new Error(
+      `${basename(dir)} declares no permission surface. Add \`"substrat": { "permissions": "src/…" }\` ` +
+        `to package.json, pointing at the module that exports \`definePermissions(...)\`.`,
+    );
+  }
+  const entryPath = join(dir, entry);
+  if (!existsSync(entryPath)) {
+    throw new Error(`substrat.permissions points at "${entry}", which does not exist under ${dir}.`);
+  }
+  // Written INTO the vertical dir so Node resolves the externalised imports (@substrat-run/*,
+  // and any node addon a node-ful entry pulls) from the vertical's own node_modules. Removed
+  // immediately after import. The unique name avoids the ESM import cache across pushes.
+  const out = join(dir, `.substrat.permissions.${Date.now()}.mjs`);
+  try {
+    await build({
+      entryPoints: [entryPath],
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      packages: 'external',
+      outfile: out,
+      logLevel: 'silent',
+    });
+    // @vite-ignore: this is a real filesystem path imported at runtime, never a bundler input —
+    // the comment keeps vitest/vite from trying to resolve it through their transform pipeline.
+    const mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as { permissions?: PermissionsInput };
+    if (!mod.permissions) {
+      throw new Error(
+        `${entry} exports no \`permissions\`. Export ` +
+          `\`const permissions = definePermissions({ modules, roles, entityGrants })\`.`,
+      );
+    }
+    return buildPermissionRegistry(mod.permissions);
+  } finally {
+    rmSync(out, { force: true });
+  }
 }
 
 /**
- * The permission digest (D-39): a content hash of the vertical's declared permission
- * surface — what the promotion checkpoint compares to fire "permissions changed". Over the
- * empty surface when no registry ships, so the value is always meaningful (never the old
- * placeholder that hashed the worker's bindings and moved on unrelated changes).
+ * The permission digest (D-39): a content hash of the vertical's declared permission surface —
+ * what the promotion checkpoint compares to fire "permissions changed". A pure function of the
+ * registry CONTENT (formatting-independent), so it moves iff a key, description, role, or grant
+ * shape moves.
  */
-export async function permissionDigest(registry: PermissionRegistry | undefined): Promise<string> {
-  return sha256(Buffer.from(stableStringify(registry ?? EMPTY_REGISTRY)));
+export async function permissionDigest(registry: PermissionRegistry): Promise<string> {
+  return sha256(Buffer.from(stableStringify(registry)));
 }
 
 /** A tiny JSONC reader: strip // and block comments, then JSON.parse. */
@@ -205,9 +251,10 @@ export async function push(
   const modules = files.map((f) => ({ name: f, content: readFileSync(join(out, f)) }));
   const concat = Buffer.concat(modules.map((m) => m.content));
 
-  // The declared permission surface (D-39), read from the checked-in artifact — shipped in
-  // the manifest and hashed into digests.permission below.
-  const registry = readRegistry(opts.dir);
+  // The declared permission surface (D-39/D-41), DERIVED from the vertical's typed
+  // `definePermissions(...)` entry — shipped in the manifest and hashed into digests.permission
+  // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
+  const registry = await deriveRegistry(opts.dir);
 
   // Parsed with the SAME schema the control plane applies at the trust boundary
   // (contracts' deployManifest, re-parsed server-side in control-plane-api). Drift
@@ -236,9 +283,9 @@ export async function push(
     ...(opts.provides ? { provides: opts.provides } : {}),
     ...(opts.requires ? { requires: opts.requires } : {}),
     ...(opts.surfaces ? { surfaces: opts.surfaces } : {}),
-    // The declared permission surface travels with the bundle (D-39): keys+descriptions,
-    // role templates, entity-grant shapes. Its content hash is digests.permission.
-    ...(registry ? { registry } : {}),
+    // The declared permission surface travels with the bundle (D-39/D-41): keys+descriptions,
+    // role templates, entity-grant shapes. Required — its content hash is digests.permission.
+    registry,
     digests: {
       manifest: await sha256(concat),
       permission: await permissionDigest(registry),

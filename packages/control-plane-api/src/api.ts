@@ -37,6 +37,7 @@ import { maskDump } from './mask.js';
 import {
   assertSandboxContract,
   deployManifest,
+  storedDeployManifest,
   deploymentRefFor,
   stableDeploymentRefFor,
   nextMigrationTag,
@@ -1416,7 +1417,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
-    const registry = json ? (deployManifest.parse(JSON.parse(json)).registry ?? null) : null;
+    const registry = json ? (storedDeployManifest.parse(JSON.parse(json)).registry ?? null) : null;
     return c.json({ registry });
   });
 
@@ -1527,7 +1528,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         `version ${versionId} retained no manifest — pushed pre-#286; push it again to serve in place`,
       );
     }
-    const manifest = deployManifest.parse(JSON.parse(manifestJson));
+    const manifest = storedDeployManifest.parse(JSON.parse(manifestJson));
     const serving = await admin.verticalServing(actor, slug);
     const ref = serving?.ref ?? stableDeploymentRefFor(slug);
     const modules = await options.fetchVerticalModules(version.deploymentRef);

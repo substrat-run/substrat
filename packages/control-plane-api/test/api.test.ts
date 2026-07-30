@@ -1548,6 +1548,7 @@ describe('control-plane API — deploy', () => {
     doClasses: ['ScopeDO'],
     bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
     digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+    registry: { permissions: [], roles: [], entityGrants: [] },
     ...over,
   });
   function form(m: Record<string, unknown>, entryName = 'worker.js', body = 'export default {}') {
@@ -2003,6 +2004,7 @@ describe('control-plane API — builder authz', () => {
         doClasses: ['ScopeDO'],
         bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
         digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+        registry: { permissions: [], roles: [], entityGrants: [] },
       }));
       f.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
       return f;
@@ -2032,6 +2034,7 @@ describe('control-plane API — builder authz', () => {
         doClasses: ['ScopeDO'],
         bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
         digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+        registry: { permissions: [], roles: [], entityGrants: [] },
       }));
       f.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
       if (pin) f.set('tenant', pin);
@@ -2315,6 +2318,7 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     doClasses: ['ScopeDO'],
     bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
     digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+    registry: { permissions: [], roles: [], entityGrants: [] },
     ...over,
   });
   // A staff push pinned to a tenant registers `<tenantSlug>/crm` owned + auto-admitted

@@ -1,4 +1,5 @@
 import {
+  definePermissions,
   platformActorId,
   type PermissionKey,
   type PrincipalId,
@@ -62,6 +63,13 @@ export const ROLES: RoleDefinition[] = [
 
 /** No entity-narrowed grants: authority is role-based per site (node-level), not per-entity. */
 export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [];
+
+/**
+ * The single typed source for this vertical's permission surface — what the permission
+ * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
+ * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ */
+export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
 
 /** Idempotent-ish provisioning of one Manyfold instance. */
 export async function provisionManyfold(

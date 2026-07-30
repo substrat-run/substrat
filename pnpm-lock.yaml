@@ -1078,6 +1078,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
