@@ -24,10 +24,14 @@ import './tokens/effects.css';
 import './styles/vitepress.css';
 
 import Marketing from './components/Marketing.vue';
+import LayerStack from './components/LayerStack.vue';
+import RuntimeTopology from './components/RuntimeTopology.vue';
 
 export default {
   extends: DefaultTheme,
   enhanceApp({ app }) {
     app.component('Marketing', Marketing);
+    app.component('LayerStack', LayerStack);
+    app.component('RuntimeTopology', RuntimeTopology);
   },
 } satisfies Theme;
