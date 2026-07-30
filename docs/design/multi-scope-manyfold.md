@@ -31,11 +31,15 @@ single-scope today, and even that one scope never received Manyfold's schema.
 1. **App scope = the default site (site #1).** Faithful to Manyfold's no-hub model; the app
    scope holds content from day one. The current empty scope is therefore a **bug to fix**
    (M1), not an intended hub.
-2. **Self-serve via Path 1 — in-app entry, platform-mediated provisioning.** The "New site"
-   action lives in Manyfold's UI (owner-only) but hands off to a **tenant-narrowed builder
-   route** on the control plane that does the provisioning. The vertical stays sandbox-clean;
-   the *builder* principal (a tenant-scoped actor, already fail-closed-allowlisted) is the
-   authority. No new vertical→platform channel.
+2. **Self-serve is VERTICAL-managed, via platform intents (pull).** Site creation lives inside
+   Manyfold and is authorized by **Manyfold's own roles**, not the platform. (The earlier
+   dashboard-handoff idea was wrong: the person who manages sites is a Manyfold admin, *not* the
+   tenant's platform builder — they may have no dashboard account — and it would expose a platform
+   surface to vertical users.) Rather than have the vertical *call up* (which would open a hole in
+   the sandbox contract — a global secret, an outbound channel, egress), Manyfold **enqueues a
+   platform intent in its own scope DO**; the platform pulls and executes it. The sandbox contract
+   stays fully intact. This is a general platform primitive spec'd in
+   [`platform-intents.md`](./platform-intents.md); M3 is its first consumer.
 3. **Site registry lives in the per-tenant AUTH/Identity DO.** The vertical's own site switcher
    is CP-less and cannot call `listScopes`; it reads its site list from the per-tenant DO that
    already exists and survives scope wipes ([`worker.ts:91`](../../demos/manyfold/src/worker.ts)),
@@ -79,17 +83,32 @@ and it comes up with Manyfold's schema.
 
 **Exit:** the app's own UI lists and switches between real sites.
 
-### M3 — In-app "New site" (Path 1 handoff) — #358
+### M3 — Vertical-managed "New site" via a platform intent — #358
 
-- **Owner-only "New site"** in Manyfold's UI that deep-links to a dashboard builder flow
-  (e.g. `app.substrat.net/#/apps/:id/sites/new`). The tenant owner who installed Manyfold *is*
-  the builder, so they carry the right principal on the platform.
-- The dashboard flow calls the **M1 route**, then redirects back to Manyfold with the new site
-  selected (`x-scope`). The vertical never provisions — it navigates the owner to the platform
-  surface that does.
+Manyfold creates its own sites, authorized by its own roles, **without any upward call** — it
+enqueues a `provision-sibling` platform intent in its own scope DO and the platform pulls it.
+The full primitive (intent record, the `ctx.requestPlatform` kernel verb, the drain-executor,
+the router kick, the sweep backstop, and the authorization/isolation model) is specified in
+[`platform-intents.md`](./platform-intents.md). M3 is its first consumer:
 
-**Exit:** an owner creates a new site from the product without leaving the experience, and
-lands in it ready to add content.
+1. A Manyfold **admin** clicks *New site* in Manyfold's own UI (its origin, not the dashboard).
+2. `POST /api/sites` invokes `manyfold/request-site`, which checks Manyfold's own
+   `manyfold:manage-sites` permission and calls
+   `ctx.requestPlatform({ kind: 'provision-sibling', payload: { slug, name, owner } })`. It
+   returns `202` + the request id and sets the response header that triggers the router kick.
+3. The platform's `provision-sibling` handler — reading *this* scope's DO, so it knows the tenant
+   inherently — runs the M1 `provisionScope` + `provisionInstance` sequence for the sibling, which
+   calls back into `/internal/provision` and records the new site in the **M2 registry**.
+4. The UI polls `/api/sites`; the new site appears in seconds (router kick) and it switches to it.
+
+**Why this is safe and needs no sandbox change:** the vertical stays purely inbound (it writes
+to its own DO + sets a response header — both already allowed), so the sandbox contract is
+untouched. Authorization is Manyfold's own role; isolation is inherent (the platform executes an
+intent that physically lives in one tenant's DO, so it can only ever provision under that tenant);
+quota bounds volume. See `platform-intents.md` for the full argument.
+
+**Exit:** a Manyfold admin creates a new site from Manyfold, authorized by Manyfold's roles, and
+lands in it ready to add content — without touching the dashboard and without an upward call.
 
 ### M4 — Dashboard Data-tab scope switcher — #359
 
@@ -107,9 +126,9 @@ Now that an app can have >1 scope, make the Data tab honest:
 
 ## Explicit non-goals (what this does NOT standardize)
 
-- **No new vertical→platform channel.** Provisioning authority stays on the platform (Path 1);
-  the sandbox contract is untouched. (Path 2 — a tenant-pinned upward capability — is a possible
-  future K-decision, deliberately deferred.)
+- **No vertical→platform channel at all.** M3 adds *no* outbound capability: the vertical enqueues
+  a platform intent in its own DO and the platform pulls it ([`platform-intents.md`](./platform-intents.md)).
+  The sandbox contract is untouched — no injected URL, no egress hole, no secret-as-identity.
 - **No `/internal/scopes` verb / no per-vertical scope registry for the dashboard.** The Data-tab
   list is a control-plane directory read.
 - **No user-facing routing convention imposed on verticals.** How a vertical maps a request to a
