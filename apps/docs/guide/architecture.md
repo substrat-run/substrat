@@ -1,5 +1,15 @@
 # Architecture
 
+Substrat is one decomposition seen two ways: a stack of **layers** (what the code *is*)
+and a request path across **isolated databases** (how it *runs*). Both pictures are below.
+
+## The three layers
+
+Everything hangs off one split — humans and hard guarantees below the line, AI velocity
+above it. Every band is a real, shipping package.
+
+<LayerStack />
+
 ## Topology
 
 ```mermaid
@@ -68,6 +78,15 @@ runs green on the pure-SQLite adapter in Node *and* on the Cloudflare adapter in
 (serialization, clone boundary, fail-closed addressing, stamped envelopes). This is what
 makes local development deterministic, CI cloud-free, and the self-host/escrow story
 literally true — and it's how a vertical moves from laptop to Cloudflare with no code change.
+
+## The hosted runtime
+
+The topology above is adapter-neutral. Here is what it becomes on the **Cloudflare
+adapter** — the production shape. The one thing to hold onto: **every box is a Durable
+Object with its own SQLite.** There is no shared cluster; a tenant's data sits in its own
+isolated database, and the router's only job is to find the right door.
+
+<RuntimeTopology />
 
 ## Modules: how everything joins
 
