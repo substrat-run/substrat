@@ -21,6 +21,8 @@ const TEMPLATE = join(HERE, 'template');
 
 // Published today; Substrat is 0.x, so these are caret ranges on the current minor.
 const SUBSTRAT = '^0.29.0';
+// Engines version on their own line (0.3.x), independent of the kernel/contracts line.
+const ENGINES = '^0.3.27';
 const BOUNDARY_LINT = '^0.0.5';
 
 const DOCS = 'https://substrat.ahlstrand.es';
@@ -73,6 +75,8 @@ function packageJson(name) {
         '@substrat-run/kernel': SUBSTRAT,
         '@substrat-run/contracts': SUBSTRAT,
         '@substrat-run/adapter-sqlite': SUBSTRAT,
+        '@substrat-run/engine-workorder': ENGINES,
+        '@substrat-run/engine-invoicing': ENGINES,
         hono: '^4.6.0',
         '@hono/node-server': '^1.13.0',
         'better-sqlite3': '^12.0.0',
@@ -135,6 +139,10 @@ function readme(name) {
   return `# ${name}
 
 A multi-tenant business app built on [Substrat](${DOCS}).
+
+\`src/\` ships with a small **working reference vertical** (a bike-repair shop, green via
+\`npm test\`) — your worked example and starting point. The build flow reshapes it into your
+own domain; it is not meant to survive as-is.
 
 ## Build it
 

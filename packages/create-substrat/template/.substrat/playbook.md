@@ -5,7 +5,10 @@ the **flow**: interview the user, tell them honestly how much of their app alrea
 then build and run the part that doesn't. Read the whole thing before starting — the
 checkpoint in Step 6 is a hard stop.
 
-This project starts empty or near-empty. Work in the project root.
+This project ships with a small **working reference vertical** — a bike-repair shop on
+`engine-workorder` + `engine-invoicing`, green out of the box (`npm test`). It is your
+worked example and your starting point: you **reshape** it into the user's domain rather
+than building from an empty directory. Work in the project root.
 
 ---
 
@@ -139,16 +142,30 @@ Short. Recommend a default and move.
 
 ---
 
-## Step 4 — Scaffold
+## Step 4 — Reshape the reference
 
-Write a working project in the layout the linter and tests expect (see `AGENTS.md`). Don't
-generate route boilerplate you don't need, and don't invent structure.
+The scaffold already contains a working vertical in `src/` + `test/` — the bike-repair shop.
+**Read it first** (it's your Callout: the real, green implementation of every pattern this
+step describes), then reshape it into the user's domain from the interview:
 
-Dependencies: `@substrat-run/kernel`, `@substrat-run/contracts`,
-`@substrat-run/adapter-sqlite`, `hono`, `@hono/node-server`, `better-sqlite3`, plus
-whichever engines Tier 1/2 selected. Dev: `tsx`, `vitest`, `typescript`, `concurrently`,
-`@substrat-run/boundary-lint`. `better-sqlite3` is native — add
-`"pnpm": { "onlyBuiltDependencies": ["better-sqlite3"] }`.
+- **Rename the vocabulary** — `shop_customers`/`shop_bikes` → the user's nouns, the `shop/*`
+  operation names, the roles, the price-list shape. If the user's core noun maps onto a work
+  order (a repair, a job, an inspection, a case), most of the structure carries over
+  unchanged and you are editing labels and the pricing rule.
+- **Keep the load-bearing patterns** — the permission check as every operation's first line,
+  the pricing moment, the portal proof-walk, the two-tenant seed, the pinned-message
+  denials. These are what make it a Substrat vertical rather than a CRUD app; the reference
+  demonstrates each one working.
+- **Drop what the domain doesn't need, add its own tables** for anything the engines don't
+  own. If the user's core noun *isn't* work-order-shaped, you may replace more of `src/` —
+  but the seed/server/test scaffolding and the layout still hold.
+- **Re-run the gates as you go** (Step 5) — the reference is green, so any red is something
+  you just changed.
+
+The dependencies are already wired in `package.json` (the `@substrat-run/*` packages, `hono`,
+`better-sqlite3`; engines added as needed). If you compose a **different** engine, add it and
+read its surface — the engines are self-describing:
+`node_modules/@substrat-run/engine-*/dist/index.d.ts` is the reference; never guess at it.
 
 **Do NOT add `zod` as a dependency, and never `import { z } from 'zod'`** (rule 10). Import
 everything from contracts:
