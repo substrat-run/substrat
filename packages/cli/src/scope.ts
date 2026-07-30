@@ -15,6 +15,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
+import { orderTablesByForeignKeys } from './dump-order.js';
 
 interface DumpTable {
   name: string;
@@ -70,7 +71,9 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
   rmSync(path, { force: true });
   const db = new DatabaseSync(path);
   try {
-    for (const t of dump.tables) {
+    // Insert parents before children — this writer defers no FK check, so an
+    // FK-unordered dump would trip a constraint on the first child row.
+    for (const t of orderTablesByForeignKeys(dump.tables)) {
       db.exec(t.ddl);
       if (t.rows.length === 0) continue;
       const cols = t.columns.map((c) => `"${c}"`).join(', ');
@@ -130,7 +133,9 @@ async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
   if (!file.endsWith('.sqlite')) {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as { tables?: DumpTable[] };
     if (!Array.isArray(parsed.tables)) throw new Error(`${file} is not a scope dump (no tables)`);
-    return { tables: parsed.tables };
+    // FK-order before we POST — the server inserts in the order it receives, and an
+    // older control plane defers no FK check, so parents must arrive before children.
+    return { tables: orderTablesByForeignKeys(parsed.tables) };
   }
   let DatabaseSync: (typeof import('node:sqlite'))['DatabaseSync'];
   try {
@@ -149,7 +154,7 @@ async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
       const data = db.prepare(`SELECT * FROM "${t.name}"`).all() as Record<string, unknown>[];
       tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])) });
     }
-    return { tables };
+    return { tables: orderTablesByForeignKeys(tables) };
   } finally {
     db.close();
   }
