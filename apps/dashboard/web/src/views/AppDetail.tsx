@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type Deployment, type DumpTable, type MigrationBookmark, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AppPermissionsView, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV } from '../lib/demo';
-import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
@@ -175,6 +175,7 @@ export function AppDetail({
         </div>
       )}
       {main === 'deployments' && <Deployments app={app} />}
+      {main === 'permissions' && <Permissions app={app} />}
       {main === 'previews' && <Previews app={app} />}
       {main === 'settings' && (
         <Settings
@@ -556,6 +557,223 @@ function Deployments({ app }: { app: AppRow }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/** The role keys in one version's registry that hold a given permission key. */
+function rolesHolding(reg: PermissionRegistry, key: string): string[] {
+  return reg.roles.filter((r) => r.permissions.includes(key)).map((r) => r.key);
+}
+
+interface RegistryDiff {
+  addedKeys: string[];
+  removedKeys: string[];
+  changedKeys: string[];
+  /** Only roles that actually changed: gained/lost permissions, or appeared/vanished. */
+  roleChanges: Array<{ key: string; added: string[]; removed: string[]; isNew: boolean; isGone: boolean }>;
+}
+
+/**
+ * The version-to-version permission diff (#336): what the declared surface would gain, lose,
+ * or re-describe if this app updated from `from` to `to`. The security-relevant signal is a
+ * WIDENED role (one that gains permissions) or a genuinely new permission key — the reasons
+ * the promotion checkpoint asks a human to look before an update lands.
+ */
+function diffRegistries(from: PermissionRegistry, to: PermissionRegistry): RegistryDiff {
+  const fromKeys = new Map(from.permissions.map((p) => [p.key, p.description]));
+  const toKeys = new Map(to.permissions.map((p) => [p.key, p.description]));
+  const fromRoles = new Map(from.roles.map((r) => [r.key, r.permissions]));
+  const toRoles = new Map(to.roles.map((r) => [r.key, r.permissions]));
+  const roleChanges: RegistryDiff['roleChanges'] = [];
+  for (const key of new Set([...fromRoles.keys(), ...toRoles.keys()])) {
+    const before = fromRoles.get(key);
+    const after = toRoles.get(key);
+    const added = (after ?? []).filter((p) => !(before ?? []).includes(p));
+    const removed = (before ?? []).filter((p) => !(after ?? []).includes(p));
+    const isNew = !before && !!after;
+    const isGone = !!before && !after;
+    if (added.length || removed.length || isNew || isGone) roleChanges.push({ key, added, removed, isNew, isGone });
+  }
+  return {
+    addedKeys: [...toKeys.keys()].filter((k) => !fromKeys.has(k)),
+    removedKeys: [...fromKeys.keys()].filter((k) => !toKeys.has(k)),
+    changedKeys: [...toKeys.entries()].filter(([k, d]) => fromKeys.has(k) && fromKeys.get(k) !== d).map(([k]) => k),
+    roleChanges,
+  };
+}
+
+/**
+ * The Permissions tab (#336, D-39). The declared permission surface — keys, roles, and
+ * entity-grant shapes — of the version this app RUNS, read live from the manifest registry;
+ * plus, when an update is available, the version-to-version diff the permission-diff human
+ * checkpoint exists to surface. It only DISPLAYS: approving a widened role stays a human
+ * decision (the update itself is confirmed on the Deployments tab).
+ */
+function Permissions({ app }: { app: AppRow }) {
+  const [view, setView] = useState<AppPermissionsView | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setView(MOCK_APP_PERMISSIONS);
+      return;
+    }
+    let live = true;
+    setView(null);
+    setErr(null);
+    api
+      .appPermissions(app.app_scope_id)
+      .then((v) => live && setView(v))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+
+  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load permissions — {err}</div>;
+  if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading permissions…</div>;
+
+  const reg = view.running.registry;
+  const update = view.update;
+  const diff = update?.registry && reg ? diffRegistries(reg, update.registry) : null;
+  const diffChanged = !!diff && (diff.addedKeys.length > 0 || diff.removedKeys.length > 0 || diff.changedKeys.length > 0 || diff.roleChanges.length > 0);
+
+  // Group the keys by declaring engine (declaredBy) — the console's §1 grouping, so a reader
+  // sees "what does workorder let this app do" without re-deriving ownership from prefixes.
+  const groups = new Map<string, PermissionRegistryEntry[]>();
+  for (const p of reg?.permissions ?? []) {
+    const label = p.declaredBy.join(', ') || '—';
+    groups.set(label, [...(groups.get(label) ?? []), p]);
+  }
+  const COLS = '1.5fr 1.9fr 1fr';
+  const mono = { fontFamily: 'var(--font-mono)', fontSize: 12 } as const;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ ...card, padding: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <Eyebrow>Declared permissions</Eyebrow>
+        {view.running.version ? <MonoTag>{view.running.version}</MonoTag> : <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>no running version</span>}
+        <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>the surface this app runs</span>
+        <div style={{ flex: 1 }} />
+        {update && <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>Update available → <MonoTag>{update.version}</MonoTag></span>}
+      </div>
+
+      {update && (
+        diffChanged ? (
+          <div style={{ ...card, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Eyebrow>If you update</Eyebrow>
+              <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+                <MonoTag>{view.running.version}</MonoTag> → <MonoTag>{update.version}</MonoTag> — review before updating on the <a href="#/apps" style={{ color: 'var(--text-brand)' }}>Deployments tab</a>
+              </span>
+            </div>
+            {diff!.addedKeys.length > 0 && <DiffRow label="New permissions" kind="info">{diff!.addedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
+            {diff!.removedKeys.length > 0 && <DiffRow label="Removed" kind="danger">{diff!.removedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
+            {diff!.changedKeys.length > 0 && <DiffRow label="Description changed" kind="warning">{diff!.changedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
+            {diff!.roleChanges.map((rc) => (
+              <div key={rc.key} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Pill kind={rc.isGone ? 'neutral' : rc.added.length > 0 ? 'warning' : rc.isNew ? 'info' : 'neutral'}>
+                  {rc.isNew ? 'new role' : rc.isGone ? 'role removed' : rc.added.length > 0 ? 'role widened' : 'role narrowed'}
+                </Pill>
+                <MonoTag>{rc.key}</MonoTag>
+                <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {rc.added.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-info-fg)' }}>+{p}</span>)}
+                  {rc.removed.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-danger-fg)' }}>−{p}</span>)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ ...card, padding: '12px 16px', fontSize: 12.5, color: 'var(--text-secondary)' }}>
+            Update to <MonoTag>{update.version}</MonoTag> available — {update.registry ? 'no change to the declared permission surface.' : 'its permission surface couldn’t be read (pushed before manifests were retained).'}
+          </div>
+        )
+      )}
+
+      {!reg ? (
+        <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>
+          This version declares no permission surface{view.running.version ? '' : ' — no version is running yet'}. Verticals pushed before D-39, or those that declare no keys, ship no registry here.
+        </div>
+      ) : (
+        <>
+          {[...groups.entries()].map(([engine, perms]) => (
+            <div key={engine} style={{ ...card, overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 40, padding: '0 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+                <Eyebrow>{engine}</Eyebrow>
+                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{perms.length} permission{perms.length === 1 ? '' : 's'}</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 32, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+                <span>Key</span><span>Description</span><span>Roles</span>
+              </div>
+              {perms.map((p, i) => {
+                const holders = rolesHolding(reg, p.key);
+                return (
+                  <div key={p.key} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 40, padding: '8px 16px', fontSize: 13, borderBottom: i === perms.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
+                    <span style={mono}>{p.key}</span>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: 12.5 }}>{p.description}</span>
+                    <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {holders.length === 0 ? <span style={{ color: 'var(--text-tertiary)' }}>grant only</span> : holders.map((r) => <Pill key={r} kind="neutral">{r}</Pill>)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+
+          <div style={{ ...card, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 40, padding: '0 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+              <Eyebrow>Roles</Eyebrow>
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>who holds what</span>
+            </div>
+            {reg.roles.length === 0 ? (
+              <div style={{ padding: '14px 16px', fontSize: 12.5, color: 'var(--text-tertiary)' }}>This vertical declares no role templates.</div>
+            ) : (
+              reg.roles.map((r, i) => (
+                <div key={r.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '10px 16px', borderBottom: i === reg.roles.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 140 }}>
+                    <MonoTag>{r.key}</MonoTag>
+                    {r.source !== 'vertical' && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{r.source}</span>}
+                  </div>
+                  <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+                    {r.permissions.map((p) => <span key={p} style={{ ...mono, color: 'var(--text-secondary)' }}>{p}</span>)}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+
+          {reg.entityGrants.length > 0 && (
+            <div style={{ ...card, overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 40, padding: '0 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+                <Eyebrow>Entity grant shapes</Eyebrow>
+                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>per-entity, minted at runtime</span>
+              </div>
+              {reg.entityGrants.map((g, i) => (
+                <div key={g.entityType} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '10px 16px', borderBottom: i === reg.entityGrants.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
+                  <div style={{ minWidth: 140 }}><MonoTag>{g.entityType}</MonoTag></div>
+                  <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+                    {g.permissions.map((p) => <span key={p} style={{ ...mono, color: 'var(--text-secondary)' }}>{p}</span>)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      <HonestyBanner>
+        Read live from the version’s manifest registry (D-39). This is the app’s <b>declared</b> permission surface — the keys and role templates the vertical ships. The per-entity <b>grants</b> themselves are minted at runtime and are not shown here (only their shapes). Approving a widened role is a human decision: it happens when you update on the <a href="#/apps" style={{ color: 'inherit' }}>Deployments tab</a>, not here.
+      </HonestyBanner>
+    </div>
+  );
+}
+
+/** One labelled row of the update diff — a coloured pill and its affected keys. */
+function DiffRow({ label, kind, children }: { label: string; kind: 'info' | 'danger' | 'warning'; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <Pill kind={kind}>{label}</Pill>
+      <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{children}</span>
     </div>
   );
 }

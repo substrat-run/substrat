@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, z, type PermissionKey, type TenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, z, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
@@ -33,7 +33,7 @@ import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@s
 import { dashboardModule, type DashboardAppRow } from './module.js';
 import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
-import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, assertOwned } from './deployments.js';
+import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, versionRegistryFromHost, assertOwned } from './deployments.js';
 import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
 import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from './github.js';
@@ -1108,6 +1108,61 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
     owned: !!ownRecord,
     listed: ownRecord ? !!ownRecord.listed : deployment.listed,
     boundVersionId,
+  });
+});
+
+/**
+ * One app's Permissions tab (#336, D-39): the declared permission surface — keys,
+ * roles, entity-grant shapes — of the version this app actually RUNS, plus the version
+ * an available update would move it to, so the tab can diff the two before that update.
+ * This is the tenant-facing rendering of the permission-diff human checkpoint; it only
+ * READS the registry — approving a widened role stays a human decision on Verticals.
+ *
+ * Authorized in the caller's OWN dashboard scope like every app-scoped read: the app is
+ * resolved from the tenant-scoped `list-apps`, so a foreign scope id 404s. Connected mode
+ * reads the registry through the tenant-narrowed control plane; embedded mode reads the
+ * host's retained manifest with the platform STAFF actor.
+ */
+app.get('/api/apps/:scopeId/permissions', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const slug = appRow.vertical_slug;
+  // Same two reads the Deployments tab makes: the vertical's version registry + the version
+  // THIS scope is pinned to. "Running" is the router's truth (the bound version); an update
+  // diff compares against the prod channel head, not merely the newest push.
+  const [deployment, boundVersionId] = cp
+    ? await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)])
+    : await Promise.all([
+        verticalDeploymentFromHost(host, STAFF, slug),
+        host.admin.getScopeRecord(STAFF, node.tenantId, scope).then((r) => r?.verticalVersionId ?? null),
+      ]);
+  const prod = deployment.channels.find((ch) => ch.channel === 'prod');
+  // Fall back to the prod head only when the scope is unpinned (static binding) — mirrors
+  // the Deployments tab's `running` derivation exactly.
+  const runningId = boundVersionId ?? prod?.versionId ?? null;
+  const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
+  // An update is offered iff prod points somewhere other than where this scope is pinned.
+  const updateId = prod && prod.versionId !== boundVersionId ? prod.versionId : null;
+  const updateVersion = updateId ? deployment.versions.find((v) => v.id === updateId) : undefined;
+
+  const registryOf = (versionId: string | null): Promise<PermissionRegistry | null> => {
+    if (!versionId) return Promise.resolve(null);
+    return cp ? cp.versionRegistry(slug, versionId) : versionRegistryFromHost(host, STAFF, slug, versionId);
+  };
+  const [runningRegistry, updateRegistry] = await Promise.all([registryOf(runningId), registryOf(updateId)]);
+
+  return c.json({
+    running: { versionId: runningId, version: runningVersion?.version ?? null, registry: runningRegistry },
+    update: updateId
+      ? { versionId: updateId, version: updateVersion?.version ?? null, registry: updateRegistry }
+      : null,
   });
 });
 

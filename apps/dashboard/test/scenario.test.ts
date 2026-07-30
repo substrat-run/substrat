@@ -23,7 +23,7 @@ import {
   type DashboardAppRow,
   type DashboardNode,
 } from '../src/index.js';
-import { listDeploymentsFromHost, verticalDeploymentFromHost, assertOwned } from '../src/deployments.js';
+import { listDeploymentsFromHost, verticalDeploymentFromHost, versionRegistryFromHost, assertOwned } from '../src/deployments.js';
 import { ControlPlaneError } from '../src/authority.js';
 
 /**
@@ -769,6 +769,39 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
     // The app runs the PROD version — 0.0.9 — even though 0.0.10 exists but wasn't promoted.
     const prod = dep.channels.find((c) => c.channel === 'prod');
     expect(dep.versions.find((v) => v.id === prod?.versionId)?.version).toBe('0.0.9');
+  });
+
+  it('per-app: reads a version’s declared permission registry from its manifest (#336), null without one', async () => {
+    // The embedded-mode path behind the Permissions tab: parse the registry out of the
+    // version's retained manifest, and null for a version pushed before manifests existed.
+    await host.admin.registerVertical(staff, { slug: 'meridian', name: 'Meridian', source: 'builtin' });
+    const withReg = ulid();
+    const withoutReg = ulid();
+    const registry = {
+      permissions: [{ key: 'hr:person-read', description: 'View a person', declaredBy: ['meridian'] }],
+      roles: [{ key: 'admin', permissions: ['hr:person-read'], source: 'vertical' }],
+      entityGrants: [],
+    };
+    await host.admin.publishVersion(staff, {
+      id: withReg,
+      verticalSlug: 'meridian',
+      version: '0.2.0',
+      manifestDigest: 'm',
+      permissionDigest: 'p',
+      migrationDigest: 'g',
+      deploymentRef: `meridian-${withReg.toLowerCase()}`,
+      manifestJson: JSON.stringify({
+        version: '0.2.0',
+        entry: 'index.js',
+        compatibilityDate: '2026-07-01',
+        registry,
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      }),
+    });
+    await publish('meridian', '0.1.0', withoutReg); // no manifestJson
+
+    expect(await versionRegistryFromHost(host, staff, 'meridian', withReg)).toEqual(registry);
+    expect(await versionRegistryFromHost(host, staff, 'meridian', withoutReg)).toBeNull();
   });
 
   it('refuses to treat a slug the tenant does not own as promotable', async () => {

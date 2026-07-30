@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppRow, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow } from './api';
+import type { AppHostnamesView, AppPermissionsView, AppRow, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -85,6 +85,55 @@ export const MOCK_DEPLOYMENTS: Deployment[] = [
     channels: [],
   },
 ];
+
+/**
+ * Dev-preview sample for the Permissions tab (#336). Mirrors MOCK_DEPLOYMENTS[0]: the app
+ * runs 0.2.0 while prod moved to 0.3.0, so `update` is populated and the tab shows the
+ * version-to-version diff — 0.3.0 adds `helpdesk.ticket.reassign`, retires
+ * `helpdesk.ticket.escalate`, and widens the `agent` role.
+ */
+export const MOCK_APP_PERMISSIONS: AppPermissionsView = {
+  running: {
+    versionId: '01J2Q8Z3V9K4W7X2M5N6P7V200',
+    version: '0.2.0',
+    registry: {
+      permissions: [
+        { key: 'helpdesk:ticket-create', description: 'Open a new support ticket', declaredBy: ['helpdesk'] },
+        { key: 'helpdesk:ticket-comment', description: 'Add a reply to a ticket', declaredBy: ['helpdesk'] },
+        { key: 'helpdesk:ticket-close', description: 'Resolve and close a ticket', declaredBy: ['helpdesk'] },
+        { key: 'helpdesk:ticket-escalate', description: 'Escalate a ticket to a supervisor', declaredBy: ['helpdesk'] },
+        { key: 'workorder:job-read', description: 'View a linked field job', declaredBy: ['engine-workorder'] },
+      ],
+      roles: [
+        { key: 'agent', permissions: ['helpdesk:ticket-create', 'helpdesk:ticket-comment', 'helpdesk:ticket-close'], source: 'vertical' },
+        { key: 'supervisor', permissions: ['helpdesk:ticket-create', 'helpdesk:ticket-comment', 'helpdesk:ticket-close', 'helpdesk:ticket-escalate', 'workorder:job-read'], source: 'vertical' },
+      ],
+      entityGrants: [
+        { entityType: 'ticket', permissions: ['helpdesk:ticket-comment', 'helpdesk:ticket-close'] },
+      ],
+    },
+  },
+  update: {
+    versionId: '01J2Q8Z3V9K4W7X2M5N6P7V300',
+    version: '0.3.0',
+    registry: {
+      permissions: [
+        { key: 'helpdesk:ticket-create', description: 'Open a new support ticket', declaredBy: ['helpdesk'] },
+        { key: 'helpdesk:ticket-comment', description: 'Add a public or internal reply to a ticket', declaredBy: ['helpdesk'] },
+        { key: 'helpdesk:ticket-close', description: 'Resolve and close a ticket', declaredBy: ['helpdesk'] },
+        { key: 'helpdesk:ticket-reassign', description: 'Move a ticket to another agent or queue', declaredBy: ['helpdesk'] },
+        { key: 'workorder:job-read', description: 'View a linked field job', declaredBy: ['engine-workorder'] },
+      ],
+      roles: [
+        { key: 'agent', permissions: ['helpdesk:ticket-create', 'helpdesk:ticket-comment', 'helpdesk:ticket-close', 'helpdesk:ticket-reassign'], source: 'vertical' },
+        { key: 'supervisor', permissions: ['helpdesk:ticket-create', 'helpdesk:ticket-comment', 'helpdesk:ticket-close', 'helpdesk:ticket-reassign', 'workorder:job-read'], source: 'vertical' },
+      ],
+      entityGrants: [
+        { entityType: 'ticket', permissions: ['helpdesk:ticket-comment', 'helpdesk:ticket-close', 'helpdesk:ticket-reassign'] },
+      ],
+    },
+  },
+};
 
 const now = Date.parse('2026-07-22T18:00:00Z');
 const ago = (ms: number) => new Date(now - ms).toISOString();

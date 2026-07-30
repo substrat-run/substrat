@@ -1,4 +1,5 @@
 import type {
+  PermissionRegistry,
   PrincipalId,
   ScopeDump,
   ScopeDumpTable,
@@ -287,6 +288,24 @@ export class TenantNarrowedControlPlane {
       return (await this.call(`/verticals/${encodeURIComponent(verticalSlug)}/versions`)) ?? [];
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * The declared permission registry (D-39, #336) of ONE version — keys+descriptions,
+   * role templates, entity-grant shapes: the machine-readable PERMISSIONS.md that ships
+   * inside the version's manifest. `null` for a version that retained no manifest (pushed
+   * pre-#286) or declared no surface. Read by the app's Permissions tab; `null` on any
+   * non-200 so the caller treats "unknown" and "no surface" the same.
+   */
+  async versionRegistry(verticalSlug: string, versionId: string): Promise<PermissionRegistry | null> {
+    try {
+      const res = await this.call<{ registry: PermissionRegistry | null }>(
+        `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/registry`,
+      );
+      return res?.registry ?? null;
+    } catch {
+      return null;
     }
   }
 

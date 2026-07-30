@@ -1359,6 +1359,35 @@ describe('control-plane API — vertical registry', () => {
     expect((await json(`/verticals/fsm/versions/${v3}/reject`, 'POST', { note: 'no' })).status).toBe(200);
     expect((await json(`/verticals/fsm/versions/${v3}/admit`, 'POST')).status).toBe(409);
   });
+
+  // The permission registry read (D-39, #336) — the dashboard's Permissions tab consumes it.
+  it('serves the declared permission registry from a version’s retained manifest', async () => {
+    const v4 = ulid();
+    const registry = {
+      permissions: [{ key: 'fsm:job-create', description: 'Open a job', declaredBy: ['fsm'] }],
+      roles: [{ key: 'agent', permissions: ['fsm:job-create'], source: 'vertical' }],
+      entityGrants: [{ entityType: 'job', permissions: ['fsm:job-create'] }],
+    };
+    const manifestJson = JSON.stringify({
+      version: v4.slice(-6),
+      entry: 'index.js',
+      compatibilityDate: '2026-07-01',
+      registry,
+      digests: { manifest: 'm', permission: 'p', migration: 'g' },
+    });
+    await json('/verticals/fsm/versions', 'POST', version(v4, { manifestJson }));
+    const res = await get(`/verticals/fsm/versions/${v4}/registry`);
+    expect(res.status).toBe(200);
+    // The manifest round-trips through Zod (entityGrants defaults etc.), so match on shape.
+    expect(await res.json()).toEqual({ registry });
+  });
+
+  it('returns a null registry for a version that retained no manifest (pre-#286)', async () => {
+    // v1 was published from the bare `version()` fixture — no manifestJson.
+    const res = await get(`/verticals/fsm/versions/${v1}/registry`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ registry: null });
+  });
 });
 
 /**

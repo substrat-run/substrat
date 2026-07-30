@@ -230,4 +230,22 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(logCall).toContain('hours=24');
     expect(logCall).toContain('limit=50');
   });
+
+  // The permission-registry read (D-39, #336) the Permissions tab consumes.
+  it('versionRegistry reads one version’s declared surface at the right route', async () => {
+    const reg = {
+      permissions: [{ key: 'helpdesk:ticket-create', description: 'Open a ticket', declaredBy: ['helpdesk'] }],
+      roles: [{ key: 'agent', permissions: ['helpdesk:ticket-create'], source: 'vertical' }],
+      entityGrants: [],
+    };
+    const { cp, calls } = harness(200, { registry: reg });
+    const out = await cp.versionRegistry('acme/helpdesk', 'ver-1');
+    expect(out).toEqual(reg);
+    expect(calls[0]!.url).toBe('https://cp/api/verticals/acme%2Fhelpdesk/versions/ver-1/registry');
+  });
+
+  it('versionRegistry returns null on a non-200 (unknown/unreadable) rather than throwing', async () => {
+    const { cp } = harness(404, { error: 'not found' });
+    expect(await cp.versionRegistry('acme/helpdesk', 'ghost')).toBeNull();
+  });
 });
