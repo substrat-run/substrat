@@ -762,7 +762,7 @@ function Permissions({ app }: { app: AppRow }) {
       )}
 
       <HonestyBanner>
-        Read live from the version’s manifest registry (D-39). This is the app’s <b>declared</b> permission surface — the keys and role templates the vertical ships. The per-entity <b>grants</b> themselves are minted at runtime and are not shown here (only their shapes). Approving a widened role is a human decision: it happens when you update on the <a href="#/apps" style={{ color: 'inherit' }}>Deployments tab</a>, not here.
+        The <b>declared</b> permission surface the vertical ships, read live from its running version. Approving a widened role happens when you update on the <a href="#/apps" style={{ color: 'inherit' }}>Deployments tab</a>, not here.
       </HonestyBanner>
     </div>
   );
