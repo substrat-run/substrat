@@ -358,6 +358,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'POST', re: /\/verticals$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/versions$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/versions$/ },
+    // The declared permission registry of one version (D-39, #336) — owner-narrowed in the
+    // handler like the versions list; the builder-facing Permissions tab reads it.
+    { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/registry$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
@@ -1373,6 +1376,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await admin.publishVersion(c.get('actor'), input);
     const version = (await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === input.id);
     return c.json(version, 201);
+  });
+
+  // The declared permission registry (D-39, #336) that ships inside one version's manifest:
+  // keys+descriptions, role templates, entity-grant shapes — the machine-readable twin of
+  // PERMISSIONS.md. Owner-narrowed exactly like the versions list (a builder reading a vertical
+  // it does not own gets 404). `registry` is null for a version that retained no manifest
+  // (pushed pre-#286) or declared no surface. The dashboard renders and diffs it; the promotion
+  // permission-diff checkpoint stays the human gate — this route only reads.
+  app.get('/verticals/:slug/versions/:id/registry', async (c) => {
+    const p = c.get('principal');
+    const slug = effectiveSlug(p, c.req.param('slug'));
+    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
+    const registry = json ? (deployManifest.parse(JSON.parse(json)).registry ?? null) : null;
+    return c.json({ registry });
   });
 
   app.post('/verticals/:slug/versions/:id/admit', async (c) => {

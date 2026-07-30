@@ -122,6 +122,50 @@ export interface DeploymentVersion {
   createdAt: string;
 }
 
+/** One declared permission key (D-39, #336): the key, its description, and the module(s)
+ *  that declare it — the machine-readable §1 of PERMISSIONS.md. */
+export interface PermissionRegistryEntry {
+  key: string;
+  description: string;
+  declaredBy: string[];
+}
+/** A role template (D-39): a role key and the permission keys it holds. `source` is the
+ *  declaring module id, or `'vertical'` for a role the vertical composes itself. */
+export interface RoleDefinition {
+  key: string;
+  permissions: string[];
+  source: string;
+}
+/** An entity-narrowed grant SHAPE (D-39): which keys a per-entity grant carries. The grants
+ *  themselves are per-principal runtime tuples (control-plane §4.5) — only the shape is a code
+ *  fact, so only the shape ships in the manifest. */
+export interface EntityGrantShape {
+  entityType: string;
+  permissions: string[];
+}
+/** The vertical's declared permission surface for one version (D-39). */
+export interface PermissionRegistry {
+  permissions: PermissionRegistryEntry[];
+  roles: RoleDefinition[];
+  entityGrants: EntityGrantShape[];
+}
+/** One version + its declared registry — a running or update target on the Permissions tab. */
+export interface VersionRegistry {
+  versionId: string | null;
+  version: string | null;
+  /** `null` when the version retained no manifest (pushed pre-#286) or declared no surface. */
+  registry: PermissionRegistry | null;
+}
+/**
+ * The app's Permissions tab payload (#336): the declared surface of the version this app
+ * RUNS, plus the version an available update would move it to (`update`, else null) so the
+ * tab can diff the two before the update lands.
+ */
+export interface AppPermissionsView {
+  running: VersionRegistry;
+  update: VersionRegistry | null;
+}
+
 /** One PITR rewind point an app recorded before a migration pass (#286). */
 export interface MigrationBookmark {
   bookmark: string;
@@ -490,6 +534,9 @@ export const api = {
   appEvents: (scopeId: string) => call<AppEvent[]>(`/apps/${encodeURIComponent(scopeId)}/events`),
   /** The app's vertical version registry + channels + the version THIS scope actually runs (`boundVersionId`). */
   appDeployments: (scopeId: string) => call<Deployment>(`/apps/${encodeURIComponent(scopeId)}/deployments`),
+  /** The declared permission surface (D-39, #336) of the version this app runs, plus the
+   *  update target's, for the Permissions tab's table + update diff. */
+  appPermissions: (scopeId: string) => call<AppPermissionsView>(`/apps/${encodeURIComponent(scopeId)}/permissions`),
   /** The tables of the app's own database (Data tab). */
   appTables: (scopeId: string) => call<ScopeTable[]>(`/apps/${encodeURIComponent(scopeId)}/tables`),
   /** A bounded page of one table of the app's database. */

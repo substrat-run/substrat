@@ -1,4 +1,5 @@
-import type { PlatformActorId, TenantId } from '@substrat-run/contracts';
+import type { PermissionRegistry, PlatformActorId, TenantId } from '@substrat-run/contracts';
+import { deployManifest } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import type { TenantNarrowedControlPlane } from './authority.js';
 
@@ -152,6 +153,23 @@ export async function verticalDeploymentFromCp(cp: TenantNarrowedControlPlane, s
 }
 export async function verticalDeploymentFromHost(host: ScopeHost, actor: PlatformActorId, slug: string): Promise<Deployment> {
   return shape({ slug, name: slug, source: 'builtin', ownerTenant: null }, await host.admin.listVersions(actor, slug), await host.admin.listChannels(actor, slug));
+}
+
+/**
+ * One version's declared permission registry (D-39, #336) from the local host (embedded /
+ * single-process) — parsed out of the retained manifest with the platform actor. `null` for
+ * a version that retained no manifest (pushed pre-#286) or declared no surface. The connected
+ * path uses `cp.versionRegistry`, which does the same read behind the tenant-narrowed plane.
+ */
+export async function versionRegistryFromHost(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  slug: string,
+  versionId: string,
+): Promise<PermissionRegistry | null> {
+  const json = await host.admin.versionManifest(actor, slug, versionId);
+  if (!json) return null;
+  return deployManifest.parse(JSON.parse(json)).registry ?? null;
 }
 
 /**
