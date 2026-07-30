@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Ic, StrataGlyph, type IconName } from '../lib/icons';
 import { initials } from '../lib/format';
+import { VERSION_LABEL } from '../lib/version';
 import type { Team } from '../lib/api';
 
 export type NavKey =
@@ -141,6 +142,12 @@ export function DashShell(props: DashShellProps) {
           onToggleTheme={props.onToggleTheme}
           onSignOut={props.onSignOut}
         />
+        <div
+          style={{ padding: '6px 10px 0', fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}
+          title="Running dashboard build"
+        >
+          {VERSION_LABEL}
+        </div>
       </nav>
 
       {/* Main column */}

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Breadcrumbs, IconButton, SideNav, SubIcon, SubIcons } from './components';
 import type { BreadcrumbItem } from './components';
+import { VERSION_LABEL } from './lib/version';
 
 export type ViewKey = 'tenants' | 'scopes' | 'domains' | 'verticals' | 'observability' | 'admin-log' | 'permissions';
 
@@ -86,13 +87,13 @@ export function ConsoleShell({
           },
         ]}
         footer={
+          <div style={{ display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--border-subtle)' }}>
           <div
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              padding: '8px 10px',
-              borderTop: '1px solid var(--border-subtle)',
+              padding: '8px 10px 4px',
             }}
           >
             <span
@@ -143,6 +144,18 @@ export function ConsoleShell({
             <IconButton label="Toggle theme" size="sm" onClick={onToggleDark}>
               <SubIcon d={SubIcons.moon} size={14} />
             </IconButton>
+          </div>
+          <span
+            style={{
+              padding: '0 10px 8px',
+              fontSize: 11,
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--text-placeholder)',
+            }}
+            title="Running console build"
+          >
+            {VERSION_LABEL}
+          </span>
           </div>
         }
       />
