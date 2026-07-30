@@ -12,6 +12,7 @@ import {
   type PermissionRegistry,
   type RuntimeNeeds,
 } from '@substrat-run/contracts';
+import { warnIfStale } from './version.js';
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
@@ -261,6 +262,7 @@ export async function push(
     headers: opts.authHeader,
     body: form,
   });
+  warnIfStale(res.headers);
   const body = await res.text();
   if (!res.ok) {
     throw new Error(`push failed (${res.status}): ${body}`);
