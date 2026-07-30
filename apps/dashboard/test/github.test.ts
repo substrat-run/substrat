@@ -255,6 +255,32 @@ describe('GitHub App client', () => {
       expect(yaml).toContain('branches: [main]');
       expect(yaml).toContain('SUBSTRAT_CP_URL: https://console.example/api');
       expect(yaml).toContain('SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}');
+      // The deploy job now only fires on push — the same file also handles PRs.
+      expect(yaml).toContain("if: github.event_name == 'push'");
+    });
+
+    it('generates PR-preview jobs that create on open/sync and reap on close', () => {
+      const yaml = deployWorkflowYaml('main', 'hr-portal', 'https://console.example/api');
+      // The PR trigger drives both the create and the cleanup jobs.
+      expect(yaml).toContain('pull_request:');
+      expect(yaml).toContain('types: [opened, synchronize, reopened, closed]');
+      // Create/update on any non-close PR event; reap on close. Tag is the PR number, so
+      // successive pushes rebind the same preview and closing reaps exactly it.
+      expect(yaml).toContain(
+        "if: github.event_name == 'pull_request' && github.event.action != 'closed'",
+      );
+      expect(yaml).toContain(
+        "if: github.event_name == 'pull_request' && github.event.action == 'closed'",
+      );
+      expect(yaml).toContain(
+        'preview create . --slug hr-portal --tag pr-${{ github.event.number }}',
+      );
+      expect(yaml).toContain(
+        'preview delete --slug hr-portal --tag pr-${{ github.event.number }}',
+      );
+      // One run per PR at a time, and the create job can comment the URL back.
+      expect(yaml).toContain('concurrency: substrat-preview-${{ github.event.number }}');
+      expect(yaml).toContain('pull-requests: write');
     });
 
     it('surfaces missing App write-permissions as needsPermissions, before any write', async () => {

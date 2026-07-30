@@ -27,6 +27,7 @@ import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
 import { cliVersion } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope } from './scope.js';
+import { createPreview, deletePreview, listPreviews, formatPreviews, parseTtlHours } from './preview.js';
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
@@ -97,6 +98,15 @@ Usage:
                                               and print any records still to publish
   substrat hostnames unbind <hostname>        remove a binding (the surface's canonical
                                               flag moves only when you bind a new one)
+  substrat preview create [dir] --tag <tag>   push this tree and run it against a FORK of
+                    [--source-scope <id>] [--ttl 72h] [--surface app] [--refresh]
+                                              prod on its own --<tag> URL (private
+                                              verticals only). Re-running the same --tag
+                                              rebinds the new push onto the same fork;
+                                              --refresh re-forks from prod. --ttl is the
+                                              GC backstop (default 72h)
+  substrat preview delete --tag <tag> [--slug <s>]  reap a preview (idempotent)
+  substrat preview ls [--slug <s>]            list a vertical's active previews
 
 'substrat push' defaults everything from the vertical's package.json — run it from inside the
 directory with no flags. Override any of: --slug, --name, --version. The slug/name come from a
@@ -479,6 +489,106 @@ async function cmdHostnames(): Promise<void> {
   if (rows.some((r) => r.canonical)) console.log('\n* = canonical for its (scope, surface)');
 }
 
+/**
+ * Per-PR preview instances (preview-and-snapshots.md §2/§9). `create` pushes the working
+ * tree — so the bound version is exactly the PR's code — then forks prod and serves the
+ * pair on a `--<tag>` URL. Private verticals only (their pushes self-admit); the server
+ * refuses a listed vertical. `create` resolves its workspace like `push` (project pin) so
+ * a preview lands in the same workspace; `delete`/`ls` fall back to the login default.
+ */
+async function cmdPreview(): Promise<void> {
+  const sub = argv[1];
+  const usage =
+    'usage: substrat preview create [dir] --tag <tag> [--source-scope <id>] [--ttl 72h] [--surface <s>] [--refresh]\n' +
+    '       substrat preview delete --tag <tag> [--slug <slug>]\n' +
+    '       substrat preview ls [dir] [--slug <slug>]';
+  const isDelete = sub === 'delete' || sub === 'rm' || sub === 'down';
+  const isList = sub === 'ls' || sub === 'list';
+  if (sub !== 'create' && !isDelete && !isList) {
+    console.error(usage);
+    process.exit(1);
+  }
+
+  if (sub === 'create') {
+    const dir = argv[2] && !argv[2].startsWith('--') ? argv[2] : '.';
+    const tag = flag('tag');
+    if (!tag) {
+      console.error(usage);
+      process.exit(1);
+    }
+    const meta = readVerticalMeta(dir);
+    const slug = flag('slug') ?? meta.slug;
+    if (!slug) {
+      console.error('no --slug given and none in package.json');
+      process.exit(1);
+    }
+    // Workspace resolves exactly as `push` (project pin, never the login default) so the
+    // preview push lands in the same workspace the vertical is owned by.
+    let tenant = flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? meta.tenant;
+    let auth = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant, useDefaultTenant: false });
+    if (auth.kind === 'session' && !tenant) {
+      tenant = await pickWorkspace(auth, dir);
+      auth = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant, useDefaultTenant: false });
+    }
+    const { controlPlaneUrl, header, as } = auth;
+    console.log(`authenticating with ${as}`);
+    const versionSlugs = tenant ? [`${tenant}/${slug}`, slug] : [slug];
+    const version = flag('version') ?? (await nextVersion(controlPlaneUrl, header, versionSlugs, meta.versionSeed));
+    console.log(`pushing ${slug}@${version} for preview '${tag}' …`);
+    const pushed = await push({
+      dir, slug, version, name: meta.name, tenant,
+      envSpec: meta.envSpec,
+      ownerGrants: meta.ownerGrants,
+      entitlements: meta.entitlements,
+      provides: meta.provides,
+      requires: meta.requires,
+      surfaces: meta.surfaces,
+      controlPlaneUrl, authHeader: header,
+    });
+    const created = await createPreview({
+      controlPlaneUrl, header,
+      slug: pushed.verticalSlug ?? slug,
+      tag,
+      versionId: pushed.id,
+      ...(flag('source-scope') ? { sourceScopeId: flag('source-scope')! } : {}),
+      ...(parseTtlHours(flag('ttl')) ? { ttlHours: parseTtlHours(flag('ttl')) } : {}),
+      ...(flag('surface') ? { surface: flag('surface')! } : {}),
+      refresh: argv.includes('--refresh'),
+    });
+    console.log(`✓ preview '${tag}' ${created.reused ? 'updated' : 'created'} → ${created.url}`);
+    console.log(`  scope ${created.scopeId} runs version ${created.versionId} against a fork of prod`);
+    return;
+  }
+
+  if (isDelete) {
+    const tag = flag('tag');
+    if (!tag) {
+      console.error(usage);
+      process.exit(1);
+    }
+    const slug = flag('slug') ?? readVerticalMeta('.').slug;
+    if (!slug) {
+      console.error('no --slug given and none in package.json');
+      process.exit(1);
+    }
+    const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+    console.log(`authenticating with ${as}`);
+    const r = await deletePreview({ controlPlaneUrl, header, slug, tag });
+    console.log(r.deleted ? `✓ preview '${tag}' reaped (scope ${r.deleted})` : `preview '${tag}' was already gone`);
+    return;
+  }
+
+  // ls
+  const dir = argv[2] && !argv[2].startsWith('--') ? argv[2] : '.';
+  const slug = flag('slug') ?? readVerticalMeta(dir).slug;
+  if (!slug) {
+    console.error('no --slug given and none in package.json');
+    process.exit(1);
+  }
+  const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  console.log(formatPreviews(await listPreviews({ controlPlaneUrl, header, slug })));
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -513,6 +623,8 @@ async function main(): Promise<void> {
       return cmdScope();
     case 'hostnames':
       return cmdHostnames();
+    case 'preview':
+      return cmdPreview();
     case 'version':
     case '--version':
     case '-v':

@@ -234,7 +234,19 @@ over verticals, but reads/writes domain data across the boundary only through §
 
 ## 10. Open questions
 
-1. Retention/GC policy for preview vs. archive scopes (ephemeral-on-merge vs. deliberately kept).
+0. ~~Per-PR previews (composition of §2 × §9)~~ **Built + decided (2026-07-30, D-43).**
+   `substrat preview create/delete/ls` + the builder-reachable `/verticals/:slug/previews`
+   routes (`orchestratedPreview`) compose the primitives below into a per-PR flow: a PR
+   forks the tenant's prod scope, binds the pushed PR version to the fork (a private
+   vertical self-admits, so no admission relaxation — D-36), mints a non-canonical
+   `<label>--pr-N.<base>` hostname, and is reaped on PR close (with `expiresAt` GC as the
+   backstop). This is the §9 cross-version path (dump moves between deployments), so it
+   carries §6's gates: `global`-only, audited export, non-public preview URL. **Private
+   verticals only**; the listed tier waits on the same admission work as everything else.
+1. ~~Retention/GC policy for preview vs. archive scopes~~ **Decided:** previews are
+   ephemeral — reaped on PR close, and every preview carries an `expiresAt` (default 72h)
+   that the platform sweep enforces as the backstop for an abandoned one. Archives remain
+   the deliberately-kept case.
 2. Masking: declarative per-vertical redaction rules, or a generic PII-column sweep?
 3. Does a same-scope **code-only canary** (§2, top row) earn a `hostnames.vertical_version_id`
    override, or do we always fork? (Override reintroduces the "code B on data A" hazard unless
@@ -244,4 +256,6 @@ over verticals, but reads/writes domain data across the boundary only through §
    `provisionInstance` — infrastructure, not domain; no per-vertical opt-in.
 5. Cross-version preview: the dump transits the control plane between deployments — encrypted in
    flight, never at rest? Its own residency review under §6.
-6. Needs a decision-log number in [master-plan.md](../master-plan.md).
+6. ~~Needs a decision-log number in [master-plan.md](../master-plan.md).~~ **Done: D-43**
+   (per-PR previews). The broader snapshot/fork machinery this doc describes is tracked by
+   D-36/D-37 and the §9 "what this makes the build" list, most of which has shipped.

@@ -266,6 +266,38 @@ The staff gate returns only when you **widen the audience**: `substrat publish <
 vertical on the marketplace, and from then on its pushes land pending and its prod promotion is a
 staff decision again — because now *other* tenants can run your code against *their* data.
 
+## Preview a pull request — `substrat preview`
+
+Before a change is merged you can see it running — the PR's code against a **fork of your
+production data**, on its own URL:
+
+```bash
+substrat preview create . --tag pr-42          # push this tree, fork prod, serve the pair
+# ✓ preview 'pr-42' created → https://helpdesk-acme--pr-42.global.substrat.run
+substrat preview ls                            # what's live
+substrat preview delete --tag pr-42            # reap it (idempotent)
+```
+
+`create` pushes the working tree (so the version it binds is exactly the PR's code), forks
+your vertical's prod scope, binds the pushed version to the fork, and mints a non-canonical
+`--<tag>` hostname alongside your prod URL. Re-running the same `--tag` (what a new push to
+the PR does) **rebinds the new version onto the same fork**, so successive pushes roll their
+migrations forward on one copy — the rehearsal you actually want before a migration merges.
+`--refresh` starts over from a clean fork of prod. Every preview carries a TTL (`--ttl 72h`
+by default) so an abandoned one is garbage-collected even if it is never deleted.
+
+This is wired into the generated GitHub workflow for you: **opening or updating a PR creates
+or updates its preview and comments the URL; closing the PR reaps it.** If your vertical was
+set up before previews existed, re-run the dashboard's one-click CI setup (or copy the
+regenerated `.github/workflows/substrat-deploy.yml`) to pick up the PR jobs.
+
+Two limits worth knowing. Previews are for **private** verticals — they bind an unpromoted
+version, which only a private vertical's self-admission makes a self-serve act; a listed
+vertical's previews wait on the marketplace admission path. And the source scope must be
+`global`-jurisdiction: forking pins the copy's *execution*, so an `eu`/`us` scope is refused
+until Regional Services, the same residency gate as `scope pull`. The fork carries real data
+and its `--<tag>` URL is non-canonical and not public — treat it as production data.
+
 ## Watch it in the dashboard
 
 Everything above is mirrored in the [dashboard](/platform/dashboard)'s **Deployments** view: the

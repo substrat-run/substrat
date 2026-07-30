@@ -253,15 +253,11 @@ export async function setupRepoCi(
  * the diff to acknowledge).
  */
 export function deployWorkflowYaml(branch: string, slug: string, cpUrl: string): string {
-  return `name: Deploy to Substrat
-on:
-  push:
-    branches: [${branch}]
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  // The install block repeats across jobs (a committed file is self-contained — no
+  // reusable-workflow indirection to read). corepack picks the package manager from the
+  // lockfile; the repo's devDependencies must be on disk because `substrat push`/`preview`
+  // runs the repo's own wrangler build.
+  const setup = `      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           # 22+: corepack resolves the latest pnpm for lockfile-only repos, and pnpm 11
@@ -275,11 +271,76 @@ jobs:
           elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile
           elif [ -f package-lock.json ]; then npm ci
           else npm install
-          fi
+          fi`;
+  return `name: Deploy to Substrat
+on:
+  push:
+    branches: [${branch}]
+  # Per-PR previews (preview-and-snapshots.md §2/§9): open/update a PR → a preview instance
+  # running the PR's code against a FORK of prod on its own URL; close the PR → it's reaped
+  # (a TTL is the GC backstop for an abandoned one).
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+jobs:
+  deploy:
+    # Merge/push to ${branch} deploys prod. A private vertical's push lands admitted and its
+    # prod channel is self-serve, so the same run points prod at the new version.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+${setup}
       - run: npx @substrat-run/cli push . --slug ${slug} --version 0.1.\${{ github.run_number }} --promote prod
         env:
           SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: ${cpUrl}
+
+  preview:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    # Never overlap two runs for the same PR — a rapid re-push waits for the first.
+    concurrency: substrat-preview-\${{ github.event.number }}
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+${setup}
+      - name: Create/update preview
+        env:
+          SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
+          SUBSTRAT_CP_URL: ${cpUrl}
+        run: |
+          npx @substrat-run/cli preview create . --slug ${slug} --tag pr-\${{ github.event.number }} | tee preview.out
+          grep -oE 'https://[a-zA-Z0-9.-]+' preview.out | tail -1 > preview.url
+      - name: Comment the preview URL
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          URL=$(cat preview.url)
+          [ -z "$URL" ] && exit 0
+          BODY=$(printf '<!-- substrat-preview -->\\n🔎 **Substrat preview:** %s\\n\\n_Runs this PR's code against a fork of prod. Reaped when the PR closes._' "$URL")
+          REPO=\${{ github.repository }}
+          PR=\${{ github.event.number }}
+          ID=$(gh api "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.body | startswith("<!-- substrat-preview -->")) | .id' | head -1)
+          if [ -n "$ID" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$ID" -f body="$BODY" >/dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$BODY" >/dev/null
+          fi
+
+  preview_cleanup:
+    # Reap only — no repo build needed, so skip checkout/install and just run the CLI.
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    concurrency: substrat-preview-\${{ github.event.number }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Reap preview
+        env:
+          SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
+          SUBSTRAT_CP_URL: ${cpUrl}
+        run: npx @substrat-run/cli preview delete --slug ${slug} --tag pr-\${{ github.event.number }}
 `;
 }
 
