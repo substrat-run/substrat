@@ -56,13 +56,12 @@ interface Env {
 }
 
 /**
- * Which (tenant, SITE) this request is for. Tenant + home site come from the router
- * assertion (or the dev node). The app may select ANOTHER site of the SAME tenant via
- * `x-scope`; that scope is trusted only in that it must belong to the asserted tenant —
- * getScope re-checks the pair, and the site's own permissions gate access. Reaching a
- * different tenant's scope is impossible.
+ * The routed (tenant, HOME site) — from the router assertion (or the dev node), with NO
+ * app-level site selection applied. This is what the auth provider keys on (it needs only the
+ * tenant — one IdentityDO per tenant), and the base that `nodeFor` refines with the app's
+ * selected site.
  */
-function nodeFor(req: Request, env: Env): SiteNode {
+function baseNode(req: Request, env: Env): SiteNode {
   let routed;
   try {
     routed = readRoutedNode(req.headers, { expectedSecret: env.ROUTER_SECRET });
@@ -76,9 +75,29 @@ function nodeFor(req: Request, env: Env): SiteNode {
       ? DEV_NODE
       : null;
   if (!base) throw new HTTPException(503, { message: 'no scope was asserted for this request (missing router assertion)' });
+  return base;
+}
+
+/**
+ * Which (tenant, SITE) this request is for. Tenant + home site come from the router assertion
+ * (`baseNode`). The app may select ANOTHER site of the SAME tenant, either by scope id
+ * (`x-scope`) or — how the in-app switcher does it — by site slug (`x-site`), resolved through
+ * the tenant's own site registry (M2). Either way the selected scope is trusted only in that it
+ * belongs to the asserted tenant: the registry is per-tenant, and `getScope` re-checks the
+ * (tenant, scope) pair, so reaching a different tenant's scope is impossible.
+ */
+async function nodeFor(req: Request, env: Env): Promise<SiteNode> {
+  const base = baseNode(req, env);
   const requested = req.headers.get('x-scope');
-  const parsed = requested ? scopeId.safeParse(requested) : null;
-  return parsed?.success ? { tenantId: base.tenantId, scopeId: parsed.data } : base;
+  const byId = requested ? scopeId.safeParse(requested) : null;
+  if (byId?.success) return { tenantId: base.tenantId, scopeId: byId.data };
+  const site = req.headers.get('x-site');
+  if (site) {
+    const resolved = await identityDo(env, base).resolveSiteScope(site);
+    const bySlug = resolved ? scopeId.safeParse(resolved) : null;
+    if (bySlug?.success) return { tenantId: base.tenantId, scopeId: bySlug.data };
+  }
+  return base;
 }
 
 function hostFor(env: Env): CloudflareScopeHost {
@@ -100,7 +119,7 @@ function authProviderFor(env: Env, req: Request): AuthProvider {
     if (!env.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
     return oidcAuthProvider({ issuer: env.OIDC_ISSUER, ...(env.OIDC_AUDIENCE ? { audience: env.OIDC_AUDIENCE } : {}) });
   }
-  return doAuthProvider(identityDo(env, nodeFor(req, env)), originOf(req));
+  return doAuthProvider(identityDo(env, baseNode(req, env)), originOf(req));
 }
 
 /** Resolve the caller → a PrincipalId in the selected site (provider-agnostic). Null ⇒ nobody. */
@@ -111,7 +130,7 @@ async function principalFor(env: Env, req: Request): Promise<PrincipalId | null>
   }
   const subject = await authProviderFor(env, req).resolve(req.headers);
   if (!subject) return null;
-  const node = nodeFor(req, env);
+  const node = await nodeFor(req, env);
   const principal = await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub);
   return principal ? principalId.parse(principal) : null;
 }
@@ -120,7 +139,7 @@ const app = new Hono<{ Bindings: Env }>();
 
 // Open sign-up is allowed only during first-run setup or with a valid invite token.
 app.post('/api/auth/sign-up/email', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
+  const node = await nodeFor(c.req.raw, c.env);
   const id = identityDo(c.env, node);
   const token = new URL(c.req.raw.url).searchParams.get('invite');
   const allowed =
@@ -134,7 +153,7 @@ app.get('/api/session', async (c) => c.json(await authProviderFor(c.env, c.req.r
 
 // Who am I, in the selected site, and what may I do — needs-setup aware (first-run).
 app.get('/api/me', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
+  const node = await nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) {
     const needsSetup = await identityDo(c.env, node).needsSetup(node.scopeId);
@@ -144,6 +163,15 @@ app.get('/api/me', async (c) => {
   const who = (await scope.invoke('manyfold/whoami', undefined)) as { can: Record<string, boolean> };
   const subject = await authProviderFor(c.env, c.req.raw).resolve(c.req.raw.headers).catch(() => null);
   return c.json({ key: principal, display: subject?.name ?? subject?.email ?? 'You', site: node.scopeId, can: who.can });
+});
+
+// The tenant's sites — the in-app site switcher's list (M2). Tenant-level (not per-scope), so it
+// reads from `baseNode` (the routed tenant) and needs no site selection; the app calls it at
+// bootstrap, before a site is chosen. Empty until sites are provisioned. `{ slug, name }` mirrors
+// the dev server's shape; the app selects a site by slug via `x-site`, which `nodeFor` resolves.
+app.get('/api/sites', async (c) => {
+  const sites = await identityDo(c.env, baseNode(c.req.raw, c.env)).listSites();
+  return c.json(sites.map((s) => ({ slug: s.slug, name: s.name })));
 });
 
 const provisionBody = z.object({ tenantId, scopeId, owner: principalId, slug: z.string().min(1), name: z.string().min(1), entitlements: z.array(entitlementGrant).optional() }); // entitlements (#310): projected so ctx.entitlement + the gate work CP-lessly (#304)
@@ -168,7 +196,11 @@ app.post('/internal/provision', async (c) => {
     ownerRoleKey: 'admin',
     entitlements: body.entitlements,
   });
-  await identityDo(c.env, { tenantId: body.tenantId, scopeId: body.scopeId }).setPendingOwner(body.scopeId, body.owner);
+  const id = identityDo(c.env, { tenantId: body.tenantId, scopeId: body.scopeId });
+  await id.setPendingOwner(body.scopeId, body.owner);
+  // Remember this site in the vertical's own per-tenant registry (M2), so the app can list and
+  // switch between its sites without reaching the control-plane directory. Idempotent.
+  await id.recordSite(body.scopeId, body.slug, body.name);
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
 });
 
@@ -307,7 +339,7 @@ app.post('/internal/rewind', async (c) => {
 
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.
 async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
-  const node = nodeFor(c.req.raw, c.env);
+  const node = await nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
   return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
@@ -327,7 +359,7 @@ const inviteBody = z.object({ email: z.string().email().optional(), roleKey: z.s
 
 /** Who I am, for the members view (display + role) — needs-setup aware handled by /api/me. */
 app.get('/api/invites', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
+  const node = await nodeFor(c.req.raw, c.env);
   await requireAdmin(c);
   return c.json({ roles: ROLES.map((r) => r.key), invites: await identityDo(c.env, node).listInvites(node.scopeId) });
 });
@@ -335,7 +367,7 @@ app.get('/api/invites', async (c) => {
 /** Create an invite: mint a member principal, grant it the chosen role at scope level, record
  *  the invite by token HASH (the plaintext token rides only in the returned accept link). */
 app.post('/api/invites', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
+  const node = await nodeFor(c.req.raw, c.env);
   await requireAdmin(c);
   const { email, roleKey } = inviteBody.parse(await c.req.json());
   if (!ROLES.some((r) => r.key === roleKey)) throw new HTTPException(400, { message: `unknown role '${roleKey}'` });
@@ -347,7 +379,7 @@ app.post('/api/invites', async (c) => {
 });
 
 app.post('/api/invites/:principal/revoke', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
+  const node = await nodeFor(c.req.raw, c.env);
   await requireAdmin(c);
   await identityDo(c.env, node).revokeInvite(node.scopeId, c.req.param('principal'));
   return c.body(null, 204);
@@ -356,7 +388,7 @@ app.post('/api/invites/:principal/revoke', async (c) => {
 /** Accept an invite: the invitee has signed up (allowed by the token), and now binds their
  *  login to the pre-minted member principal. */
 app.post('/api/accept-invite', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
+  const node = await nodeFor(c.req.raw, c.env);
   const subject = await authProviderFor(c.env, c.req.raw).resolve(c.req.raw.headers);
   if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
