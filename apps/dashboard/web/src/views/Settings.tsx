@@ -4,6 +4,7 @@ import { Page } from '../components/layout';
 import { card } from '../components/ui';
 import { api, ApiError } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
+import { APP_SHA, APP_VERSION } from '../lib/version';
 
 /** Account settings — Organization tab (screen 1v). The danger zone is REAL. */
 export function Settings({ org }: { org: string }) {
@@ -16,6 +17,7 @@ export function Settings({ org }: { org: string }) {
         tabs={[
           { value: 'profile', label: 'Profile' },
           { value: 'organization', label: 'Organization' },
+          { value: 'about', label: 'About' },
           { value: 'danger', label: 'Danger zone' },
         ]}
         value={tab}
@@ -54,8 +56,32 @@ export function Settings({ org }: { org: string }) {
         </div>
       )}
 
+      {tab === 'about' && <AboutCard />}
+
       {tab === 'danger' && <DeleteOrgCard org={org} />}
     </Page>
+  );
+}
+
+/**
+ * The running build stamp — version + commit substituted in at build time (lib/version.ts).
+ * Lives here rather than the sidebar footer so the shell stays chrome and "which build am I
+ * on?" has a stable home under Settings.
+ */
+function AboutCard() {
+  return (
+    <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Running build</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', fontSize: 13, rowGap: 8 }}>
+        <span style={{ color: 'var(--text-tertiary)' }}>Version</span>
+        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>v{APP_VERSION}</span>
+        <span style={{ color: 'var(--text-tertiary)' }}>Commit</span>
+        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{APP_SHA}</span>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+        The dashboard build currently served to your browser.
+      </div>
+    </div>
   );
 }
 
