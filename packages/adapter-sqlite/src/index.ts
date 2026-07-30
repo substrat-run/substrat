@@ -1298,8 +1298,17 @@ export class SqliteScopeHost implements ScopeHost {
         .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
         .all() as { name: string }[];
       for (const { name } of existing) db.exec(`DROP TABLE IF EXISTS "${name}"`);
+      // Every table first, then every row. A dump is ordered by table NAME, which says
+      // nothing about foreign keys: a vertical whose child table sorts before its parent
+      // (`crm_bank_accounts` before `crm_vendors`) would fail the FK check on its first
+      // insert. Creating the whole schema up front fixes the reference targets, and
+      // `defer_foreign_keys` moves the row checks to this transaction's commit — by which
+      // point every parent row has landed, whatever order the tables arrived in. Deferral
+      // (rather than a topological sort) also survives what a sort cannot express: FK
+      // cycles, and self-referencing rows within one table.
+      db.pragma('defer_foreign_keys = ON');
+      for (const t of dumped) db.exec(t.ddl);
       for (const t of dumped) {
-        db.exec(t.ddl);
         if (t.rows.length === 0) continue;
         const cols = t.columns.map((c) => `"${c}"`).join(', ');
         const placeholders = t.columns.map(() => '?').join(', ');
@@ -1312,6 +1321,18 @@ export class SqliteScopeHost implements ScopeHost {
       // KERNEL_DDL is all IF NOT EXISTS, so it fills only the gaps and never disturbs a
       // table the dump carried.
       db.exec(KERNEL_DDL);
+      // Re-point scope-level grants at the scope they now live in. They are written as
+      // `object = scope:<scopeId>`, so a fork, a restore into a different scope, or #286's
+      // migration onto a stable script name all land rows naming a scope that is not this
+      // one. Nothing errors — the rows insert fine — but the proof walk never matches them,
+      // so `/me` reports a role while every `ctx.check` denies. Entity-level grants
+      // (`object = customer:<id>`) are untouched: those ids travel with the dump.
+      // `UPDATE OR REPLACE` because (subject, relation, object) is the primary key — a
+      // rewritten row collapses onto an existing one rather than failing the restore.
+      db.prepare(
+        `UPDATE OR REPLACE _substrat_tuples SET object = ?
+          WHERE object LIKE 'scope:%' AND object <> ?`,
+      ).run(`scope:${scopeId}`, `scope:${scopeId}`);
     });
     load(tables);
     // The frontier came in with the dump — refresh the cached applied-migration set so
