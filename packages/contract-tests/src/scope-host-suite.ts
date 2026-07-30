@@ -791,6 +791,99 @@ export function scopeHostContractSuite(
         const tables = await host.admin.listScopeTables(staff, t1, spineScope);
         expect(tables.some((t) => t.name === '_substrat_migrations')).toBe(true);
       });
+
+      it('loads a dump whose child table sorts before its parent — FK order is not alphabetical', async () => {
+        // A dump is ordered by table NAME. A vertical whose child sorts first (a CRM's
+        // `crm_bank_accounts` before `crm_vendors`) used to fail its first insert with a
+        // bare `FOREIGN KEY constraint failed`, because the parent's rows were not in yet.
+        const fkScope = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: fkScope,
+          jurisdiction: 'eu',
+          vertical: 'connector-vertical',
+        });
+        await host.admin.activateScope(staff, t1, fkScope);
+        const backup = await host.admin.exportScope(staff, t1, fkScope);
+
+        // Child BEFORE parent, exactly as `ORDER BY name` would hand them over.
+        const doctored = {
+          ...backup,
+          tables: [
+            {
+              name: 'aaa_child',
+              ddl: `CREATE TABLE aaa_child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES zzz_parent(id))`,
+              columns: ['id', 'parent_id'],
+              rows: [['c1', 'p1']] as unknown[][],
+            },
+            ...backup.tables,
+            {
+              name: 'zzz_parent',
+              ddl: `CREATE TABLE zzz_parent (id TEXT PRIMARY KEY)`,
+              columns: ['id'],
+              rows: [['p1']] as unknown[][],
+            },
+          ],
+        };
+
+        await expect(host.restoreScope(staff, t1, fkScope, doctored)).resolves.toBeUndefined();
+        const child = await host.admin.readScopeTable(staff, t1, fkScope, {
+          table: 'aaa_child',
+          limit: 10,
+          offset: 0,
+        });
+        expect(child.rows).toHaveLength(1);
+      });
+
+      it('re-points scope-level grants at the destination scope, so restored roles still resolve', async () => {
+        // Scope-level tuples name the scope they were captured from. Restored elsewhere
+        // verbatim they insert cleanly and match nothing, so `/me` shows a role while every
+        // check denies — the least debuggable failure this has. #286's migration onto
+        // stable script names restores every live scope, so this path is load-bearing.
+        const remapScope = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: remapScope,
+          jurisdiction: 'eu',
+          vertical: 'connector-vertical',
+        });
+        await host.admin.activateScope(staff, t1, remapScope);
+        const backup = await host.admin.exportScope(staff, t1, remapScope);
+
+        const foreignScope = scopeId.parse(ulid()); // the scope the dump "came from"
+        const tuples = backup.tables.find((t) => t.name === '_substrat_tuples');
+        expect(tuples).toBeDefined();
+        const doctored = {
+          ...backup,
+          tables: backup.tables.map((t) =>
+            t.name === '_substrat_tuples'
+              ? {
+                  ...t,
+                  columns: ['subject', 'relation', 'object'],
+                  rows: [
+                    ['principal:01ARZ3NDEKTSV4RRFFQ69G5FAV', 'role:admin', `scope:${foreignScope}`],
+                    // An entity-level grant: its id travels with the dump and must survive.
+                    ['principal:01ARZ3NDEKTSV4RRFFQ69G5FAV', 'granted:test:read', 'customer:c-1'],
+                  ] as unknown[][],
+                }
+              : t,
+          ),
+        };
+
+        await host.restoreScope(staff, t1, remapScope, doctored);
+
+        const page = await host.admin.readScopeTable(staff, t1, remapScope, {
+          table: '_substrat_tuples',
+          limit: 50,
+          offset: 0,
+        });
+        const objIdx = page.columns.indexOf('object');
+        const objects = page.rows.map((r) => String(r[objIdx]));
+        expect(objects).toContain(`scope:${remapScope}`);
+        expect(objects).not.toContain(`scope:${foreignScope}`);
+        // Entity-level grants are left exactly as they were.
+        expect(objects).toContain('customer:c-1');
+      });
     });
 
     // -- snapshot & auto-snapshot on bind (preview-and-snapshots.md §3/§4) -----

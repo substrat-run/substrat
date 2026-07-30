@@ -469,8 +469,11 @@ interface ScopeStubRpc {
   introspectQuery(sql: string): Promise<ScopeQueryResult>;
   /** Complete logical dump of this scope's DB (preview-and-snapshots.md §3). */
   exportDump(): Promise<ScopeDumpTable[]>;
-  /** Load a dump into this (freshly-provisioned) scope — the fork write side. */
-  importDump(tables: ScopeDumpTable[]): Promise<void>;
+  /**
+   * Load a dump into this (freshly-provisioned) scope — the fork write side.
+   * `destScopeId` re-points the dump's scope-level grants at the destination.
+   */
+  importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
@@ -866,7 +869,7 @@ export class CloudflareScopeHost implements ScopeHost {
     destScopeId: ScopeId,
   ): Promise<{ tables: number }> {
     const tables = await this.scopeStub(sourceScopeId).exportDump();
-    await this.scopeStub(destScopeId).importDump(tables);
+    await this.scopeStub(destScopeId).importDump(tables, destScopeId);
     return { tables: tables.length };
   }
 
@@ -877,7 +880,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * just replaces its own bytes with the dump's, migration frontier included.
    */
   async restoreScopeLocal(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ tables: number }> {
-    await this.scopeStub(scopeId).importDump(tables);
+    await this.scopeStub(scopeId).importDump(tables, scopeId);
     return { tables: tables.length };
   }
 
@@ -1072,7 +1075,7 @@ export class CloudflareScopeHost implements ScopeHost {
       forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
       forkedAt: input.forkedAt ?? dump.capturedAt,
     });
-    await this.scopeStub(input.scopeId).importDump(dump.tables);
+    await this.scopeStub(input.scopeId).importDump(dump.tables, input.scopeId);
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     await this.recordAdmin(
       actor,
@@ -1092,7 +1095,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
-    await this.scopeStub(scopeId).importDump(dump.tables);
+    await this.scopeStub(scopeId).importDump(dump.tables, scopeId);
     await this.recordAdmin(
       actor,
       'restoreScope',

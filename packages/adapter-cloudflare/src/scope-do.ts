@@ -1021,22 +1021,37 @@ export function defineScopeDO(
      * Load a dump into this (freshly-provisioned) scope — the write half of the fork
      * (host.ts importScope). Drop-then-replay: the dump's schema is authoritative, so
      * the provisioning schema is wiped and rebuilt from the dump verbatim.
+     *
+     * `destScopeId` is the scope being written INTO. A dump carries scope-level tuples
+     * naming the scope it was captured from, so restoring one anywhere else needs them
+     * re-pointed — see `rewriteScopeTuples`.
      */
-    importDump(tables: ScopeDumpTable[]): void {
+    async importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void> {
       // Wipe the provisioned schema (real tables only; `sqlite_*` internals are
       // auto-managed and un-droppable).
       const existing = this.sql
         .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
-      for (const t of tables) {
-        this.sql.exec(t.ddl);
-        if (t.rows.length === 0) continue;
-        const cols = t.columns.map((c) => `"${c}"`).join(', ');
-        const placeholders = t.columns.map(() => '?').join(', ');
-        const insert = `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`;
-        for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
-      }
+      // Every table first, then every row. A dump is ordered by table NAME, which says
+      // nothing about foreign keys: a vertical whose child table sorts before its parent
+      // (`crm_bank_accounts` before `crm_vendors`) would fail the FK check on its first
+      // insert. Creating the whole schema up front fixes the reference targets, and
+      // `defer_foreign_keys` moves the row checks to the end of this transaction — by
+      // which point every parent row has landed, whatever order the tables arrived in.
+      // Deferral (rather than a topological sort) also survives the cases a sort cannot
+      // express: FK cycles, and self-referencing rows within one table.
+      for (const t of tables) this.sql.exec(t.ddl);
+      await this.ctx.storage.transaction(async () => {
+        this.sql.exec('PRAGMA defer_foreign_keys = ON');
+        for (const t of tables) {
+          if (t.rows.length === 0) continue;
+          const cols = t.columns.map((c) => `"${c}"`).join(', ');
+          const placeholders = t.columns.map(() => '?').join(', ');
+          const insert = `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`;
+          for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
+        }
+      });
       // Re-assert the kernel spine (#321). A dump captured from a WORLD that stores some
       // `_substrat_*` tables ELSEWHERE carries only a subset — an `@substrat-run/adapter-
       // sqlite` scope file, for instance, keeps `_substrat_roles`/`_substrat_tenant_tuples`
@@ -1048,6 +1063,9 @@ export function defineScopeDO(
       // by the restore's repair leg (host.projectRolesLocal) — the spine's job is only to
       // exist so the checker can read it.
       for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+      // Re-point the restored grants at THIS scope (after the spine exists, so a dump
+      // that carried no tuples table still finds one here).
+      if (destScopeId) this.rewriteScopeTuples(destScopeId);
       // The frontier arrived with the dump — refresh the in-memory applied set so a
       // later migrate() builds on the imported state, not the provisioning state.
       this.applied.clear();
@@ -1056,6 +1074,35 @@ export function defineScopeDO(
         .toArray() as unknown as { module_id: string; version: string }[]) {
         this.applied.add(`${row.module_id}@${row.version}`);
       }
+    }
+
+    /**
+     * Re-point scope-level tuples at the scope they now live in.
+     *
+     * Scope-level grants are written as `object = scope:<scopeId>` (the owner grant, every
+     * role assignment). A dump carries the id of the scope it was captured FROM, so a fork,
+     * a restore into a different scope, or #286's migration onto a stable script name all
+     * land rows that name a scope this deployment may not even have. Nothing errors — the
+     * rows insert fine — but the proof walk never matches them, so `/me` reports a role
+     * while every `ctx.check` denies, which is the least debuggable shape this can fail in.
+     *
+     * Entity-level grants (`object = customer:<id>`) are untouched: those ids travel with
+     * the dump and stay valid. Restoring ACROSS TENANTS would need the same treatment for
+     * `_substrat_tenant_tuples`, which this does not attempt — a cross-tenant restore is a
+     * governed copy, not a repair.
+     *
+     * `UPDATE OR REPLACE` because (subject, relation, object) is the primary key: if the
+     * dump already held a tuple for the destination scope, the rewritten row collapses
+     * onto it instead of failing the whole restore.
+     */
+    private rewriteScopeTuples(destScopeId: ScopeId): void {
+      this.sql.exec(
+        `UPDATE OR REPLACE _substrat_tuples
+            SET object = ?
+          WHERE object LIKE 'scope:%' AND object <> ?`,
+        `scope:${destScopeId}`,
+        `scope:${destScopeId}`,
+      );
     }
 
     /**
