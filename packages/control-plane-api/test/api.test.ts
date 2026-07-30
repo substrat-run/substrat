@@ -729,6 +729,118 @@ describe('control-plane API', () => {
     expect(snaps).toHaveLength(1);
   });
 
+  // -- per-PR previews (preview-and-snapshots.md §2/§9, D-43) ----------------
+
+  it('forks prod into a preview, rebinds on re-run, and reaps on delete', async () => {
+    // A PRIVATE vertical (owned by t1, unlisted) with two admitted versions.
+    await host.admin.registerVertical(staff, {
+      slug: 'prev-vert', name: 'Prev Vert', source: 'cli', ownerTenant: t1,
+    });
+    const pub = async (version: string): Promise<string> => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: 'prev-vert', version,
+        manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: 'g',
+        deploymentRef: null,
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const v1 = await pub('1.0.0');
+    const v2 = await pub('1.0.1');
+
+    // The prod scope to fork, with a canonical platform hostname to derive the URL from.
+    const prod = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: prod, vertical: 'prev-vert' });
+    await host.admin.activateScope(staff, t1, prod);
+    await host.admin.bindScopeVersion(staff, t1, prod, v1);
+    await host.admin.bindHostname(staff, {
+      hostname: 'helpdesk-acme.global.substrat.run',
+      tenantId: t1, scopeId: prod, surface: 'app', region: null, canonical: true,
+    });
+
+    let exports = 0;
+    const restores: { scopeId: string; tables: number }[] = [];
+    const deletes: string[] = [];
+    const fakeVertical = {
+      exportScope: async (): Promise<ScopeDumpTable[]> => {
+        exports += 1;
+        return [{ name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: [['a']] }];
+      },
+      restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
+        restores.push({ scopeId: sid, tables: tables.length });
+        return { tables: tables.length };
+      },
+      deleteScope: async (input: { scopeId: string }) => {
+        deletes.push(input.scopeId);
+      },
+    } as unknown as VerticalClient;
+    const dapp = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'prev-vert': fakeVertical },
+      platformBaseDomains: ['global.substrat.run'],
+    });
+    const dj = (path: string, method: string, body?: unknown) =>
+      dapp.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    // Create: forks prod, binds v1, mints a non-canonical --pr-7 URL from the prod label.
+    const created = await dj('/verticals/prev-vert/previews', 'POST', { tag: 'pr-7', versionId: v1 });
+    expect(created.status).toBe(201);
+    const c = (await created.json()) as { scopeId: string; hostname: string; url: string; reused: boolean };
+    expect(c.reused).toBe(false);
+    expect(c.hostname).toBe('helpdesk-acme--pr-7.global.substrat.run');
+    expect(c.url).toBe('https://helpdesk-acme--pr-7.global.substrat.run');
+    expect(exports).toBe(1);
+    expect(restores).toEqual([{ scopeId: c.scopeId, tables: 1 }]);
+
+    // The directory row is a preview fork of prod, bound to v1, with an expiry for GC.
+    const row = await (await dj(`/tenants/${t1}/scopes/${c.scopeId}`, 'GET')).json() as {
+      kind: string; forkedFrom: string; verticalVersionId: string; expiresAt: string | null;
+    };
+    expect(row.kind).toBe('preview');
+    expect(row.forkedFrom).toBe(prod);
+    expect(row.verticalVersionId).toBe(v1);
+    expect(row.expiresAt).toBeTruthy();
+
+    // List shows it under its tag.
+    const list = (await (await dj('/verticals/prev-vert/previews', 'GET')).json()) as {
+      tag: string; scopeId: string; hostname: string;
+    }[];
+    expect(list.find((p) => p.tag === 'pr-7')?.scopeId).toBe(c.scopeId);
+
+    // Re-run with the SAME tag (a PR synchronize): rebinds the new version onto the SAME
+    // fork — no second export — and comes back reused.
+    const again = await dj('/verticals/prev-vert/previews', 'POST', { tag: 'pr-7', versionId: v2 });
+    expect(again.status).toBe(200);
+    const a = (await again.json()) as { scopeId: string; reused: boolean };
+    expect(a.reused).toBe(true);
+    expect(a.scopeId).toBe(c.scopeId);
+    expect(exports).toBe(1); // still one — the fork was reused
+    expect(((await (await dj(`/tenants/${t1}/scopes/${c.scopeId}`, 'GET')).json()) as { verticalVersionId: string }).verticalVersionId).toBe(v2);
+
+    // Delete reaps the fork (through the vertical) + its hostname + the row; a second
+    // delete is an idempotent no-op success (the PR-close job never fails on a re-run).
+    const del = await dj('/verticals/prev-vert/previews/pr-7', 'DELETE');
+    expect(del.status).toBe(200);
+    expect((await del.json() as { deleted: string }).deleted).toBe(c.scopeId);
+    expect(deletes).toEqual([c.scopeId]);
+    expect((await dapp.request(`/tenants/${t1}/scopes/${c.scopeId}`, { headers: auth })).status).toBe(404);
+    const hosts = (await (await dj(`/hostnames?scopeId=${c.scopeId}`, 'GET')).json()) as unknown[];
+    expect(hosts).toHaveLength(0);
+    expect((await (await dj('/verticals/prev-vert/previews/pr-7', 'DELETE')).json() as { deleted: string | null }).deleted).toBeNull();
+  });
+
+  it('refuses previews for a LISTED vertical (audience widened → staff-gated)', async () => {
+    await host.admin.registerVertical(staff, {
+      slug: 'listed-vert', name: 'Listed Vert', source: 'cli', ownerTenant: t1,
+    });
+    await host.admin.setVerticalListed(staff, 'listed-vert', true);
+    const res = await json('/verticals/listed-vert/previews', 'POST', { tag: 'pr-1', versionId: ulid() });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toMatch(/private/i);
+  });
+
   // -- the governed pull (preview-and-snapshots.md §6/§8) --------------------
 
   it('exports a scope masked by default; ?full=true is the break-glass', async () => {

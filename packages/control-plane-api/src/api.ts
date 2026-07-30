@@ -259,6 +259,25 @@ const snapshotScopeBody = z.object({
   expiresAt: z.string().datetime({ offset: true }).optional(),
 });
 
+// A per-PR preview request (preview-and-snapshots.md §2/§9 — the "run a new version
+// against a fork of prod" slice). `tag` is a short DNS-safe label (`pr-123`): it names
+// the preview both in its scope slug (`<vertical>--<tag>`) and in its hostname
+// (`<label>--<tag>.<base>`), so lookup + teardown are by tag, not scope id. `versionId`
+// is the just-pushed PR version to bind (a private vertical's push self-admits, so this
+// is a self-serve bind — no admission relaxation). Idempotent on (tenant, vertical, tag):
+// a re-run rebinds the new version onto the SAME fork so successive PR pushes roll their
+// migrations forward on one copy (§4); `refresh` forces a fresh fork from prod instead.
+const createPreviewBody = z.object({
+  tag: z
+    .string()
+    .regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/, 'tag must be a short DNS-safe label, e.g. pr-123'),
+  versionId: z.string().min(1),
+  sourceScopeId: scopeIdSchema.optional(),
+  ttlHours: z.number().int().positive().max(720).optional(),
+  surface: surfaceName.optional(),
+  refresh: z.boolean().optional(),
+});
+
 const listRolesQuery = z.object({
   tenantId: tenantIdSchema.optional(),
   // Free-form: a module id or 'vertical'. Not narrowed to the source union here
@@ -382,6 +401,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // builder's OWN vertical runs. Ownership is re-checked in the handler; the allowlist alone is
     // not authz. This is the only scope-level route a builder may reach.
     { method: 'POST', re: /\/scopes\/[^/]+\/provision$/ },
+    // Per-PR preview instances of the builder's OWN (private) vertical (preview-and-snapshots.md
+    // §2/§9). Create/list/reap forks bound to an unpromoted PR version — ownership + private-only
+    // are re-checked in each handler; the allowlist alone is not authz.
+    { method: 'POST', re: /\/verticals\/[^/]+\/previews$/ },
+    { method: 'GET', re: /\/verticals\/[^/]+\/previews$/ },
+    { method: 'DELETE', re: /\/verticals\/[^/]+\/previews\/[^/]+$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -1988,6 +2013,240 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     await admin.unbindHostname(c.get('actor'), name);
     return c.json({ deleted: name.toLowerCase() });
+  });
+
+  // -- per-PR previews (preview-and-snapshots.md §2/§9) ----------------------
+  // The "run a NEW version against a fork of prod" slice: unlike orchestratedSnapshot
+  // (fork bound to the SOURCE's version — same deployment, bytes never move), a preview
+  // binds the fork to the PR's version, whose bundle is a DIFFERENT dispatch script. So
+  // the dump must cross deployments — export from where the prod data lives today, import
+  // into the PR version's deployment — the one genuinely byte-moving path (§9), gated
+  // below exactly as the governed pull is: `global`-only + the canonical audited export.
+
+  /** The preview scope's deterministic slug — how a `(vertical, tag)` is looked up + reaped. */
+  const previewSlug = (slug: string, tag: string): string => `${slug}--${tag}`;
+
+  /** Mint (or find) the preview's `--<tag>` platform hostname, derived from the source
+   *  scope's canonical URL. Non-canonical, so it never demotes the prod surface. */
+  const mintPreviewHostname = async (
+    actor: PlatformActorId,
+    source: Scope,
+    previewId: ScopeId,
+    tag: string,
+    surface: string,
+  ): Promise<string> => {
+    const own = await admin.listHostnames(actor, { scopeId: source.id });
+    const src =
+      own.find((h) => h.canonical && h.surface === surface) ??
+      own.find((h) => h.canonical) ??
+      own[0];
+    if (!src || !src.hostname.includes('.')) {
+      throw new ControlPlaneError(
+        409,
+        `source scope ${source.id} has no platform hostname to derive a preview URL from`,
+      );
+    }
+    const [label, ...rest] = src.hostname.split('.');
+    const hostname = `${label}--${tag}.${rest.join('.')}`;
+    const existing = (await admin.listHostnames(actor, { scopeId: previewId })).find(
+      (h) => h.hostname === hostname,
+    );
+    if (!existing) {
+      await admin.bindHostname(actor, {
+        hostname,
+        tenantId: source.tenantId,
+        scopeId: previewId,
+        surface,
+        region: null,
+        canonical: false,
+      });
+    }
+    const bound = (await admin.listHostnames(actor, { scopeId: previewId })).find(
+      (h) => h.hostname === hostname,
+    );
+    if (bound) await runIssuance(actor, bound); // platform mint rides the wildcard cert → active
+    return hostname;
+  };
+
+  const orchestratedPreview = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    tenantId: TenantId,
+    slug: string,
+    source: Scope,
+    opts: { tag: string; versionId: string; ttlHours?: number; surface?: string; refresh?: boolean },
+  ): Promise<{ scopeId: ScopeId; hostname: string; url: string; versionId: string; reused: boolean }> => {
+    const actor = c.get('actor');
+    const surface = opts.surface ?? 'app';
+    // Residency (K-7/K-32): forking pins the copy's EXECUTION to the preview deployment.
+    // Anything tighter than `global` cannot be honoured until Regional Services, so refuse
+    // it here rather than record a residency claim with no mechanism (same gate as export).
+    if (source.jurisdiction !== 'global') {
+      throw new ControlPlaneError(
+        422,
+        `scope ${source.id} is pinned to '${source.jurisdiction}' — forking it would move its ` +
+          `data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`,
+      );
+    }
+
+    // The PR version's deployment (its own dispatch script) — where the fork must land so
+    // the preview actually runs the PR's code. Falls back to prod/static resolution only
+    // when a version resolver is not wired (co-located host / tests).
+    const target =
+      (await options.resolveVerticalVersion?.(slug, opts.versionId, actor)) ??
+      options.verticals?.[slug] ??
+      (await options.resolveVertical?.(slug, actor));
+
+    // Idempotent on (tenant, vertical, tag): a PR *synchronize* rebinds the new version
+    // onto the SAME fork — successive pushes roll their migrations forward on one copy
+    // (§4's rehearsal case) — unless `refresh` asks for a clean fork from prod.
+    const existing = (await admin.listScopes(actor, { tenantId, vertical: slug })).find(
+      (s) => s.kind === 'preview' && s.slug === previewSlug(slug, opts.tag),
+    );
+    if (existing && !opts.refresh) {
+      await admin.bindScopeVersion(actor, tenantId, existing.id, opts.versionId);
+      const hostname = await mintPreviewHostname(actor, source, existing.id, opts.tag, surface);
+      return { scopeId: existing.id, hostname, url: `https://${hostname}`, versionId: opts.versionId, reused: true };
+    }
+
+    // A fresh fork. Export from where the prod data lives TODAY. The canonical
+    // `admin.exportScope` first — it writes the K-24 audit entry (and the co-located
+    // bytes); the vertical dump then overlays it, exactly as the governed export route.
+    const sourceClient = await verticalForScope(c, source);
+    if (!target) {
+      throw new ControlPlaneError(501, 'preview needs dispatch resolution for the PR version');
+    }
+    const canonical = await admin.exportScope(actor, tenantId, source.id);
+    const tables = sourceClient ? await sourceClient.exportScope(source.id) : canonical.tables;
+
+    const previewId = scopeIdSchema.parse(ulid());
+    const expiresAt = new Date(Date.now() + (opts.ttlHours ?? 72) * 3_600_000).toISOString();
+    // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
+    // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
+    // reaps, never copied data with no record.
+    await options.host.provisionScope(actor, {
+      tenantId,
+      scopeId: previewId,
+      kind: 'preview',
+      slug: previewSlug(slug, opts.tag),
+      name: `${source.name ?? slug} (${opts.tag})`,
+      vertical: slug,
+      jurisdiction: source.jurisdiction,
+      forkedFrom: source.id,
+      forkedAt: new Date().toISOString(),
+      expiresAt,
+    });
+    // Load the fork into the PR version's deployment (materializes the preview scope DO
+    // there; restore re-projects the vertical's roles from the dump's tuples).
+    await target.restoreScope(tenantId, previewId, tables);
+    await admin.activateScope(actor, tenantId, previewId);
+    // Bind the PR version. A private vertical's push self-admitted, so this is accepted.
+    await admin.bindScopeVersion(actor, tenantId, previewId, opts.versionId);
+    const hostname = await mintPreviewHostname(actor, source, previewId, opts.tag, surface);
+    return { scopeId: previewId, hostname, url: `https://${hostname}`, versionId: opts.versionId, reused: false };
+  };
+
+  // The owning tenant of a builder's OWN, PRIVATE vertical — the gate every preview route
+  // shares. Previews bind UNPROMOTED PR code, which only a private vertical's self-admission
+  // makes a self-serve act; a listed vertical's prod is staff-gated (marketplace-publish.md §2).
+  const previewVertical = async (
+    c: Context<{ Variables: Vars }>,
+  ): Promise<{ tenantId: TenantId; slug: string } | { error: string; status: ContentfulStatusCode }> => {
+    const p = c.get('principal');
+    const slug = effectiveSlug(p, c.req.param('slug')!);
+    const v = await verticalOf(c.get('actor'), slug);
+    if (!v) return { error: `unknown vertical '${slug}'`, status: 404 };
+    if (p.kind === 'builder' && v.ownerTenant !== p.tenantId) return { error: 'forbidden', status: 403 };
+    if (v.listed) {
+      return { error: 'previews are available for private (unlisted) verticals only', status: 403 };
+    }
+    if (v.ownerTenant === null) return { error: `vertical '${slug}' has no owner tenant`, status: 409 };
+    return { tenantId: v.ownerTenant, slug };
+  };
+
+  app.post('/verticals/:slug/previews', async (c) => {
+    const gate = await previewVertical(c);
+    if ('error' in gate) return c.json({ error: gate.error }, gate.status);
+    const { tenantId, slug } = gate;
+    const body = createPreviewBody.parse(await c.req.json());
+    const actor = c.get('actor');
+    // The prod scope to fork: the tenant's own active, non-fork scope for this vertical.
+    const owned = (
+      await admin.listScopes(actor, { tenantId, vertical: slug, status: ['active'] })
+    ).filter((s) => !s.forkedFrom && s.kind !== 'preview');
+    const source = body.sourceScopeId
+      ? owned.find((s) => s.id === body.sourceScopeId)
+      : owned.length === 1
+        ? owned[0]
+        : undefined;
+    if (!source) {
+      if (body.sourceScopeId) {
+        return c.json({ error: `no active prod scope ${body.sourceScopeId} for '${slug}'` }, 404);
+      }
+      if (owned.length === 0) {
+        return c.json({ error: `no prod scope to fork for '${slug}' — provision one first` }, 409);
+      }
+      return c.json(
+        { error: `'${slug}' has several prod scopes — pass sourceScopeId`, scopes: owned.map((s) => s.id) },
+        409,
+      );
+    }
+    try {
+      const out = await orchestratedPreview(c, tenantId, slug, source, body);
+      return c.json(out, out.reused ? 200 : 201);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      throw e;
+    }
+  });
+
+  app.get('/verticals/:slug/previews', async (c) => {
+    const gate = await previewVertical(c);
+    if ('error' in gate) return c.json({ error: gate.error }, gate.status);
+    const { tenantId, slug } = gate;
+    const actor = c.get('actor');
+    const previews = (await admin.listScopes(actor, { tenantId, vertical: slug }))
+      .filter((s) => s.kind === 'preview')
+      .sort((a, b) => ((a.forkedAt ?? '') < (b.forkedAt ?? '') ? 1 : -1));
+    const out = [];
+    for (const s of previews) {
+      const hosts = await admin.listHostnames(actor, { scopeId: s.id });
+      out.push({
+        scopeId: s.id,
+        tag: s.slug?.split('--').at(-1) ?? null,
+        versionId: s.verticalVersionId,
+        forkedFrom: s.forkedFrom,
+        expiresAt: s.expiresAt,
+        hostname: hosts[0]?.hostname ?? null,
+        url: hosts[0]?.hostname ? `https://${hosts[0]!.hostname}` : null,
+      });
+    }
+    return c.json(out);
+  });
+
+  app.delete('/verticals/:slug/previews/:tag', async (c) => {
+    const gate = await previewVertical(c);
+    if ('error' in gate) return c.json({ error: gate.error }, gate.status);
+    const { tenantId, slug } = gate;
+    const tag = c.req.param('tag');
+    const actor = c.get('actor');
+    const preview = (await admin.listScopes(actor, { tenantId, vertical: slug })).find(
+      (s) => s.kind === 'preview' && s.slug === previewSlug(slug, tag),
+    );
+    // Idempotent: an already-reaped (or never-created) preview is a no-op success, so a
+    // PR-close job never fails because the preview was already gone.
+    if (!preview) return c.json({ deleted: null, note: `no preview '${tag}' for '${slug}'` });
+    try {
+      // Storage-before-row, the same ordering as the fork hard-delete: wipe the DO in the
+      // PR version's deployment, then deleteSnapshot (fork-only re-check, hostnames + row,
+      // audit). A crash between the two converges on retry.
+      const vertical = await verticalForScope(c, preview);
+      if (vertical) await vertical.deleteScope({ scopeId: preview.id });
+      await options.host.deleteSnapshot(actor, tenantId, preview.id);
+      return c.json({ deleted: preview.id });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      throw e;
+    }
   });
 
   // -- roles, read only (§4.5 console item 4) --------------------------------
