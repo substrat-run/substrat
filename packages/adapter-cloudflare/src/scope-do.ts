@@ -1027,23 +1027,32 @@ export function defineScopeDO(
      * re-pointed — see `rewriteScopeTuples`.
      */
     async importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void> {
-      // Wipe the provisioned schema (real tables only; `sqlite_*` internals are
-      // auto-managed and un-droppable).
-      const existing = this.sql
-        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
-        .toArray() as unknown as { name: string }[];
-      for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
-      // Every table first, then every row. A dump is ordered by table NAME, which says
-      // nothing about foreign keys: a vertical whose child table sorts before its parent
-      // (`crm_bank_accounts` before `crm_vendors`) would fail the FK check on its first
-      // insert. Creating the whole schema up front fixes the reference targets, and
-      // `defer_foreign_keys` moves the row checks to the end of this transaction — by
-      // which point every parent row has landed, whatever order the tables arrived in.
-      // Deferral (rather than a topological sort) also survives the cases a sort cannot
-      // express: FK cycles, and self-referencing rows within one table.
-      for (const t of tables) this.sql.exec(t.ddl);
+      // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
+      //
+      // Two distinct FK hazards, and both need the deferral — the second is why it cannot
+      // wrap the inserts alone:
+      //
+      //  - Replay order. A dump is ordered by table NAME, which says nothing about foreign
+      //    keys: a vertical whose child sorts before its parent (`crm_bank_accounts` before
+      //    `crm_vendors`) would fail on its first insert.
+      //  - THE DROPS. `DROP TABLE` performs an implicit `DELETE FROM`, so dropping a parent
+      //    while a child table still holds rows raises `FOREIGN KEY constraint failed`
+      //    before any replacement row exists. This bites only when the TARGET already has
+      //    data, which is why it survived the first fix: an empty scope drops cleanly, and
+      //    a populated one — the case that matters, since restore exists to overwrite real
+      //    data — does not.
+      //
+      // Deferral holds every check until commit, by which point the old rows are gone and
+      // the new ones are all in. It also covers what a topological sort cannot express: FK
+      // cycles, and self-referencing rows within a single table.
       await this.ctx.storage.transaction(async () => {
         this.sql.exec('PRAGMA defer_foreign_keys = ON');
+        // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
+        const existing = this.sql
+          .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+          .toArray() as unknown as { name: string }[];
+        for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+        for (const t of tables) this.sql.exec(t.ddl);
         for (const t of tables) {
           if (t.rows.length === 0) continue;
           const cols = t.columns.map((c) => `"${c}"`).join(', ');

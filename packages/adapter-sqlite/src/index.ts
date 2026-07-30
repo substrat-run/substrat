@@ -1292,21 +1292,29 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     const db = rt.db;
     const load = db.transaction((dumped: ScopeDumpTable[]) => {
+      // Deferred foreign keys cover the WHOLE drop-then-replay, drops included.
+      //
+      // Two distinct FK hazards, and the second is why this cannot wrap the inserts alone:
+      //
+      //  - Replay order. A dump is ordered by table NAME, which says nothing about foreign
+      //    keys: a vertical whose child sorts before its parent (`crm_bank_accounts` before
+      //    `crm_vendors`) would fail on its first insert.
+      //  - THE DROPS. `DROP TABLE` performs an implicit `DELETE FROM`, so dropping a parent
+      //    while a child table still holds rows raises `FOREIGN KEY constraint failed`
+      //    before any replacement row exists. This bites only when the TARGET already has
+      //    data — an empty scope drops cleanly, a populated one does not, and overwriting
+      //    real data is the whole point of restore.
+      //
+      // Deferral holds every check until this transaction commits, by which point the old
+      // rows are gone and the new ones are in. It also covers what a topological sort
+      // cannot express: FK cycles, and self-referencing rows within one table.
+      db.pragma('defer_foreign_keys = ON');
       // Drop the current schema — the dump's schema is authoritative. Only real
       // tables (never `sqlite_*` internals, which are auto-managed and un-droppable).
       const existing = db
         .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
         .all() as { name: string }[];
       for (const { name } of existing) db.exec(`DROP TABLE IF EXISTS "${name}"`);
-      // Every table first, then every row. A dump is ordered by table NAME, which says
-      // nothing about foreign keys: a vertical whose child table sorts before its parent
-      // (`crm_bank_accounts` before `crm_vendors`) would fail the FK check on its first
-      // insert. Creating the whole schema up front fixes the reference targets, and
-      // `defer_foreign_keys` moves the row checks to this transaction's commit — by which
-      // point every parent row has landed, whatever order the tables arrived in. Deferral
-      // (rather than a topological sort) also survives what a sort cannot express: FK
-      // cycles, and self-referencing rows within one table.
-      db.pragma('defer_foreign_keys = ON');
       for (const t of dumped) db.exec(t.ddl);
       for (const t of dumped) {
         if (t.rows.length === 0) continue;
