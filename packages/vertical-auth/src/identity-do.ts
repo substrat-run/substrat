@@ -5,6 +5,14 @@ import { drizzle } from 'drizzle-orm/durable-sqlite';
 import * as schema from './auth-schema.js';
 import type { AuthProvider, AuthSubject } from './provider.js';
 import { resolveCookieDomain } from './cookie-domain.js';
+import {
+  SITE_REGISTRY_DDL,
+  recordSite as recordSiteRow,
+  listSites as listSiteRows,
+  resolveSiteScope as resolveSiteScopeRow,
+  type RegistrySql,
+  type SiteRow,
+} from './site-registry.js';
 
 /**
  * The per-tenant IDENTITY Durable Object — one per tenant, running its OWN Better Auth
@@ -76,6 +84,12 @@ const SCHEMA_STATEMENTS: string[] = [
   // Lives here because this DO is the vertical's per-tenant harness store and the scope's
   // own data DO exposes no harness-writable surface.
   `CREATE TABLE IF NOT EXISTS scope_config (scope_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (scope_id, key))`,
+  // The tenant's SITES (K-26 multi-scope) — each site IS a scope. Recorded here at provision so
+  // the vertical can enumerate its own sites CP-lessly: the control-plane directory is the
+  // platform's list, this is the vertical's own, in the per-tenant IdentityDO (survives a
+  // scope-DO wipe). Powers the in-app switcher + the worker's slug → scope resolution. The
+  // table/queries live in `site-registry.ts` so they are unit-testable without a DO.
+  ...SITE_REGISTRY_DDL,
 ];
 
 // The IdentityDO needs no injected env: its signing secret is generated per tenant and
@@ -138,6 +152,36 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
       this.ctx.storage.sql.exec("INSERT INTO config (key, value) VALUES ('session_secret', ?)", secret);
     }
     return { config, sessionSecret: secret };
+  }
+
+  /**
+   * Record a SITE (scope) at provision — the vertical's own memory of its sites (K-26
+   * multi-scope), used to enumerate and switch between them without reaching the control-plane
+   * directory. Idempotent: a re-provision (K-31) updates the slug/name but keeps `created_at`,
+   * so the switcher's ordering is stable.
+   */
+  async recordSite(scopeId: string, slug: string, name: string): Promise<void> {
+    recordSiteRow(this.registrySql, scopeId, slug, name);
+  }
+
+  /** The tenant's sites, oldest first — the in-app site switcher's list. */
+  async listSites(): Promise<SiteRow[]> {
+    return listSiteRows(this.registrySql);
+  }
+
+  /**
+   * Resolve a site SLUG to its scope id within this tenant — how the worker turns the app's
+   * `x-site` selection into the scope to open. Null ⇒ no such site (the caller falls back to the
+   * routed home scope). Tenant-scoped by construction: this DO is per-tenant, so a slug can only
+   * ever resolve to a scope of THIS tenant.
+   */
+  async resolveSiteScope(slug: string): Promise<string | null> {
+    return resolveSiteScopeRow(this.registrySql, slug);
+  }
+
+  /** The DO's SQLite as the registry's minimal `exec` seam (see site-registry.ts). */
+  private get registrySql(): RegistrySql {
+    return this.ctx.storage.sql as unknown as RegistrySql;
   }
 
   /**
