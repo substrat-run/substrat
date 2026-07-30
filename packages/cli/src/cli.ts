@@ -25,6 +25,7 @@ import { printVersions } from './versions.js';
 import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
+import { cliVersion } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope } from './scope.js';
 import {
   listVerticalHostnames,
@@ -63,6 +64,7 @@ Usage:
   substrat login    --token <serviceToken>    store a service credential (CI)
   substrat whoami                             show who you are + your workspaces
   substrat workspaces                         list your workspaces (alias of whoami)
+  substrat version                            print the CLI version (also --version, -v)
   substrat push     [dir] [--promote <channel>] push a vertical (slug/name/version default
                                                from package.json; version auto-bumps);
                                                --promote points the channel at it in the
@@ -120,6 +122,10 @@ acknowledged (--ack-permissions / --ack-migrations) — read the diff it names f
 
 Auth resolves: explicit --token/SUBSTRAT_SERVICE_TOKEN → stored browser session →
 stored service token. URL resolves flag → SUBSTRAT_CP_URL → ~/.substrat/config.json.
+
+The control plane advertises the CLI's minimum-supported and latest versions on every
+authenticated response; an out-of-date CLI prints a one-line upgrade nudge to stderr
+(TTY only, so scripts and CI stay quiet).
 `;
 
 async function cmdLogin(): Promise<void> {
@@ -507,6 +513,11 @@ async function main(): Promise<void> {
       return cmdScope();
     case 'hostnames':
       return cmdHostnames();
+    case 'version':
+    case '--version':
+    case '-v':
+      console.log(`substrat ${cliVersion()}`);
+      return;
     case 'help':
     case '--help':
     case '-h':

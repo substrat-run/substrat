@@ -8,6 +8,8 @@
  * acknowledgement (the two checkpoints), surfaced as a 4xx here — re-run with
  * `--ack-permissions` / `--ack-migrations` after reading the named diff.
  */
+import { warnIfStale } from './version.js';
+
 export interface PromoteOptions {
   controlPlaneUrl: string;
   header: Record<string, string>;
@@ -28,6 +30,7 @@ export async function promote(opts: PromoteOptions): Promise<{ channel: string; 
       ...(opts.acknowledge ? { acknowledge: opts.acknowledge } : {}),
     }),
   });
+  warnIfStale(res.headers);
   const body = await res.text();
   if (!res.ok) throw new Error(`promote failed (${res.status}): ${body.slice(0, 300)}`);
   return JSON.parse(body) as { channel: string; versionId: string };
