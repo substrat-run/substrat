@@ -17,8 +17,10 @@
 	// it polls every `verifying` domain via Cloudflare for SaaS and retries stuck
 	// `pending` custom binds. It runs only when a SaaS zone is configured —
 	//   wrangler secret put CF_SAAS_ZONE_ID       # the substrat.run zone id
-	//   wrangler secret put CF_SAAS_ROUTING_TARGET # CNAME tenants point at, e.g. edge.substrat.run
-	// and PLATFORM_BASE_DOMAINS (a `vars` entry, comma-separated, e.g.
+	//   wrangler secret put CF_SAAS_ROUTING_TARGET # CNAME tenants point at, e.g. cname.substrat.run
+	// DCV defaults to `http` (single CNAME, validated at CF's edge — nothing to serve);
+	// set CF_SAAS_SSL_METHOD=txt for the two-record flow. PLATFORM_BASE_DOMAINS (a `vars`
+	// entry, comma-separated, e.g.
 	// "substrat.run,global.substrat.run") names which base domains ride the wildcard
 	// cert (a bind under them skips issuance). The CF_API_TOKEN also needs SSL /
 	// custom-hostname write on that zone. Unset ⇒ a custom bind stays `pending`.

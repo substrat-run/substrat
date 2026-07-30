@@ -20,15 +20,14 @@ const MOCK_DOMAINS: DomainRow[] = [
     hostname: 'legal.acme.com', appScopeId: '01J2', app: 'Acme Legal', surface: 'app',
     status: 'verifying', statusNote: null, primary: false, createdAt: new Date().toISOString(),
     validationRecords: [
-      { type: 'hostname', name: 'legal.acme.com', value: 'edge.substrat.run', status: 'pending' },
-      { type: 'txt', name: '_cf-custom-hostname.legal.acme.com', value: 'a1b2c3d4-token', status: 'pending' },
+      { type: 'hostname', name: 'legal.acme.com', value: 'cname.substrat.run', status: 'pending' },
     ],
   },
   {
     hostname: 'app.acme.io', appScopeId: '01J3', app: 'Acme Field Ops', surface: 'app',
     status: 'failed', statusNote: 'DNS validation timed out — the CNAME does not resolve yet.',
     primary: false, createdAt: '2026-07-18T09:00:00Z',
-    validationRecords: [{ type: 'hostname', name: 'app.acme.io', value: 'edge.substrat.run', status: 'pending' }],
+    validationRecords: [{ type: 'hostname', name: 'app.acme.io', value: 'cname.substrat.run', status: 'pending' }],
   },
 ];
 
