@@ -833,6 +833,59 @@ export function scopeHostContractSuite(
           offset: 0,
         });
         expect(child.rows).toHaveLength(1);
+
+      });
+
+      it('overwrites a target that already holds FK-related rows — the DROP is an implicit DELETE', async () => {
+        // The second hazard, and the one deferring only the INSERTS does not cover.
+        // `DROP TABLE` performs an implicit `DELETE FROM`, so dropping a parent while a
+        // child table still holds rows raises `FOREIGN KEY constraint failed` before any
+        // replacement row exists. An empty target drops cleanly, which is exactly why this
+        // hid behind the insert-order fix — and overwriting populated data is the whole
+        // point of restore.
+        //
+        // Note the naming: `sqlite_master` lists tables in CREATION order, so the dump must
+        // create the PARENT first for the drop sweep to reach it while the child still has
+        // rows. A child-first dump (the test above) drops child-first and never trips it.
+        const dropScope = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: dropScope,
+          jurisdiction: 'eu',
+          vertical: 'connector-vertical',
+        });
+        await host.admin.activateScope(staff, t1, dropScope);
+        const backup = await host.admin.exportScope(staff, t1, dropScope);
+
+        const doctored = {
+          ...backup,
+          tables: [
+            ...backup.tables,
+            {
+              name: 'aaa_parent',
+              ddl: `CREATE TABLE aaa_parent (id TEXT PRIMARY KEY)`,
+              columns: ['id'],
+              rows: [['p1']] as unknown[][],
+            },
+            {
+              name: 'zzz_child',
+              ddl: `CREATE TABLE zzz_child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES aaa_parent(id))`,
+              columns: ['id', 'parent_id'],
+              rows: [['c1', 'p1']] as unknown[][],
+            },
+          ],
+        };
+
+        // First pass lands the rows (target empty — drops are trivially safe).
+        await expect(host.restoreScope(staff, t1, dropScope, doctored)).resolves.toBeUndefined();
+        // Second pass drops `aaa_parent` while `zzz_child` still references it.
+        await expect(host.restoreScope(staff, t1, dropScope, doctored)).resolves.toBeUndefined();
+        const child = await host.admin.readScopeTable(staff, t1, dropScope, {
+          table: 'zzz_child',
+          limit: 10,
+          offset: 0,
+        });
+        expect(child.rows).toHaveLength(1);
       });
 
       it('re-points scope-level grants at the destination scope, so restored roles still resolve', async () => {
