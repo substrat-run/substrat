@@ -16,6 +16,10 @@ export const MF_PERM = {
   review: permissionKey.parse('content:review'),
   publish: permissionKey.parse('content:publish'),
   admin: permissionKey.parse('content:admin'),
+  // Provision a new SITE (a new scope) for this tenant — a privileged, infrastructure-shaped
+  // action distinct from content admin, so it is its own key even though only `admin` holds it
+  // today (multi-scope-manyfold.md M3 / platform-intents.md).
+  manageSites: permissionKey.parse('content:manage-sites'),
 };
 
 export const manyfoldManifest = moduleManifest.parse({
@@ -28,6 +32,7 @@ export const manyfoldManifest = moduleManifest.parse({
     { key: 'content:review', description: 'Approve or reject entries in review' },
     { key: 'content:publish', description: 'Publish, unpublish, and archive entries' },
     { key: 'content:admin', description: 'Manage members, roles, and content models' },
+    { key: 'content:manage-sites', description: 'Create new sites (provision a new scope for the tenant)' },
   ],
   events: {
     emits: [

@@ -750,6 +750,57 @@
         }
       }
     },
+    "/api/op/manyfold/request-site": {
+      "post": {
+        "operationId": "manyfold-request-site",
+        "summary": "Request a new site — provisions a new scope for the tenant.",
+        "description": "Requires `content:manage-sites`. The vertical cannot provision itself, so this enqueues a platform intent the control plane drains; returns the request id to poll.",
+        "tags": [
+          "Sites"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "slug",
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
     "/api/op/manyfold/deliver": {
       "post": {
         "operationId": "manyfold-deliver",

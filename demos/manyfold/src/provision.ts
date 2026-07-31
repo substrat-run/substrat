@@ -46,7 +46,7 @@ const read = [MF_PERM.read];
 const author = [MF_PERM.read, MF_PERM.author];
 const editor = [...author, MF_PERM.review];
 const publisher = [...editor, MF_PERM.publish];
-const admin = [...publisher, MF_PERM.admin];
+const admin = [...publisher, MF_PERM.admin, MF_PERM.manageSites];
 
 /**
  * The editorial role ladder, identical in every tenant — held PER SITE (K-22: the

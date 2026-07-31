@@ -51,6 +51,29 @@ describe('Manyfold demo scenario', () => {
     }
   });
 
+  it('1a. an admin requests a new site — a provision-sibling intent is enqueued; an author cannot', async () => {
+    const maja = await host.getScope(w.maja, w.t1, w.cafe); // admin@cafe
+
+    // Requesting a site is `content:manage-sites` — an author lacks it.
+    await expect(sofiaCafe.invoke('manyfold/request-site', { slug: 'padel', name: 'Padel' })).rejects.toThrow(
+      /permission denied/,
+    );
+
+    const { requestId } = await maja.invoke<{ requestId: string }>('manyfold/request-site', {
+      slug: 'padel',
+      name: 'Padel Club',
+    });
+    expect(requestId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+
+    // The vertical can't provision itself (sandbox-clean) — it enqueues a durable platform intent
+    // in this scope for the platform to drain (platform-intents.md). Owner = the requesting admin.
+    const pending = await host.listPlatformRequests(w.t1, w.cafe);
+    const mine = pending.find((r) => r.id === requestId)!;
+    expect(mine.kind).toBe('provision-sibling');
+    expect(mine.status).toBe('pending');
+    expect(mine.payload).toEqual({ slug: 'padel', name: 'Padel Club', owner: w.maja });
+  });
+
   it('1b. modelling: an admin creates a content type; it drives create-entry immediately', async () => {
     const maja = await host.getScope(w.maja, w.t1, w.cafe); // admin@cafe
     // The four defaults are seeded lazily on first use.
