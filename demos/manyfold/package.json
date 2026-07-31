@@ -7,7 +7,8 @@
   "substrat": {
     "slug": "manyfold",
     "name": "Manyfold",
-    "permissions": "src/provision.ts"
+    "permissions": "src/provision.ts",
+    "tenant": "substrat-9yjbbn"
   },
   "type": "module",
   "exports": {
@@ -27,24 +28,24 @@
     "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker"
   },
   "dependencies": {
-    "@hono/node-server": "^1.13.0",
+    "@hono/node-server": "^2.0.12",
     "@substrat-run/adapter-cloudflare": "workspace:^",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
-    "better-sqlite3": "^12.0.0",
-    "hono": "^4.6.0",
+    "better-sqlite3": "^13.0.2",
+    "hono": "^4.12.32",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250109.0",
-    "@scalar/api-reference": "^1.63.0",
-    "@types/better-sqlite3": "^7.6.0",
-    "concurrently": "^9.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^7.0.0",
-    "vitest": "^3.0.0",
-    "wrangler": "^4.110.0"
+    "@cloudflare/workers-types": "^5.20260731.1",
+    "@scalar/api-reference": "^1.64.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "concurrently": "^10.0.4",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.116.0"
   }
 }
