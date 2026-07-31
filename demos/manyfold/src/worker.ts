@@ -469,6 +469,12 @@ app.get('/api/docs', async (c) => {
 
 mountApi(app, stub);
 
+// Unmatched /api/* must fail as JSON — never fall through to the SPA. The dev server
+// (server.ts) exposes some routes the worker doesn't (e.g. /api/personas); if those
+// reached the catch-all they'd return index.html with a 200, and the client would parse
+// the HTML as `{}` — silently turning `Persona[]` into an object and crashing `.find`.
+app.all('/api/*', (c) => c.json({ error: `unknown route: ${new URL(c.req.raw.url).pathname}` }, 404));
+
 // The SPA is inlined into the worker (no ASSETS binding — sandbox-clean); this is the
 // catch-all behind /api/* and /internal/*.
 app.all('*', (c) => serveAsset(new URL(c.req.raw.url)));

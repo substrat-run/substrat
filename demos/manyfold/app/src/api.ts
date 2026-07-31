@@ -11,19 +11,14 @@ export class ApiError extends Error {
   }
 }
 
-const PRINCIPAL_KEY = 'manyfold.principal';
 const SITE_KEY = 'manyfold.site';
 
-export const getPrincipal = (): string => localStorage.getItem(PRINCIPAL_KEY) ?? '';
-export const setPrincipal = (id: string): void => localStorage.setItem(PRINCIPAL_KEY, id);
 export const getSite = (): string => localStorage.getItem(SITE_KEY) ?? 'cafe';
 export const setSite = (slug: string): void => localStorage.setItem(SITE_KEY, slug);
 
 function headers(): Record<string, string> {
   const h: Record<string, string> = { 'content-type': 'application/json' };
-  const p = getPrincipal();
-  if (p) h['x-principal'] = p; // dev-header auth only; the deployed worker ignores it (uses the session)
-  h['x-site'] = getSite(); // dev site selector; the worker uses the routed scope
+  h['x-site'] = getSite(); // active site (scope) selector — auth is the session cookie
   return h;
 }
 
@@ -73,7 +68,6 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 export type EntryStatus = 'draft' | 'in_review' | 'approved' | 'published' | 'unpublished' | 'archived';
 
-export interface Persona { id: string; name: string; roles: Record<string, string> }
 export interface Site { slug: string; name: string }
 export interface Caps { read: boolean; author: boolean; review: boolean; publish: boolean; admin: boolean }
 export type Me =
@@ -103,7 +97,6 @@ export interface InvitesResult { roles: string[]; invites: Invite[] }
 export interface CreatedInvite { principal: string; roleKey: string; email: string | null; acceptUrl: string }
 
 export const api = {
-  personas: () => get<Persona[]>('/api/personas'),
   sites: () => get<Site[]>('/api/sites'),
   /** Request a new site (needs `content:manage-sites`). Returns the platform-request id; the new
    *  site appears in `sites()` once the platform provisions it (poll after this). */

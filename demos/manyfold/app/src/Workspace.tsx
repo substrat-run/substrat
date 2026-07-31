@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, ApiError, type CreatedInvite, type InvitesResult, type Persona, type Site } from './api';
+import { api, ApiError, type CreatedInvite, type InvitesResult } from './api';
 import { Button, Card, ColHead, Empty, Mono } from './ui';
 
 // Group C — Members & roles (per site) and the Asset library.
@@ -30,14 +30,14 @@ const RoleLadder = () => (
   </Card>
 );
 
-export function MembersView(props: { personas: Persona[]; sites: Site[]; devMode: boolean; meName: string; canAdmin: boolean }) {
+export function MembersView(props: { meName: string; canAdmin: boolean }) {
   return (
     <div>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 26, fontWeight: 600, margin: 0 }}>Members &amp; roles</h1>
         <div style={{ color: 'var(--muted)', marginTop: 4 }}>Roles are held <strong>per site</strong> — the same login is a different authority in each scope (K-22).</div>
       </div>
-      {props.devMode ? <DevRoleMatrix personas={props.personas} sites={props.sites} /> : <InviteManager meName={props.meName} canAdmin={props.canAdmin} />}
+      <InviteManager meName={props.meName} canAdmin={props.canAdmin} />
     </div>
   );
 }
@@ -122,34 +122,6 @@ function InviteManager({ meName, canAdmin }: { meName: string; canAdmin: boolean
           )}
         </Card>
       </div>
-      <RoleLadder />
-    </div>
-  );
-}
-
-// ── Dev: the persona × site role matrix (local only) ─────────────────────────
-
-function DevRoleMatrix({ personas, sites }: { personas: Persona[]; sites: Site[] }) {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 16 }}>
-      <Card style={{ padding: 0, overflow: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420 }}>
-          <thead>
-            <tr><ColHead>Member</ColHead>{sites.map((s) => <ColHead key={s.slug}>{s.name}</ColHead>)}</tr>
-          </thead>
-          <tbody>
-            {personas.map((p) => (
-              <tr key={p.id}>
-                <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
-                  <div style={{ fontWeight: 600, fontSize: 13.5 }}>{p.name}</div>
-                  <Mono style={{ fontSize: 10.5 }}>{p.id.slice(0, 10)}…</Mono>
-                </td>
-                {sites.map((s) => <td key={s.slug} style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}><RoleChip role={p.roles[s.slug]} /></td>)}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
       <RoleLadder />
     </div>
   );

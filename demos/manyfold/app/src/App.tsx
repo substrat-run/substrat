@@ -2,9 +2,8 @@ import { Fragment, useEffect, useState, type CSSProperties, type ReactNode } fro
 import {
   api,
   ApiError,
+  auth,
   capsFromRole,
-  getPrincipal,
-  setPrincipal,
   getSite,
   setSite,
   type ContentTypeDef,
@@ -12,7 +11,6 @@ import {
   type EntryListItem,
   type EntryStatus,
   type Me,
-  type Persona,
   type Site,
 } from './api';
 import { Avatar, Button, Card, ColHead, CountPill, DistBar, Empty, Mono, Pill, RolePill, StatusBadge, relativeTime } from './ui';
@@ -75,7 +73,6 @@ function useHashRoute(): [View, (v: View) => void] {
 }
 
 export default function App() {
-  const [personas, setPersonas] = useState<Persona[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [types, setTypes] = useState<ContentTypeDef[]>([]);
@@ -86,14 +83,12 @@ export default function App() {
   const [tick, setTick] = useState(0); // bump to refetch after a mutation
   const [booted, setBooted] = useState(false);
 
-  // Bootstrap: personas + sites once (both 404 on the deployed worker → []). Pick a default
-  // persona if none stored (dev only), then load.
+  // Bootstrap: the tenant's sites (the switcher's options). Coerce to an array — a missing
+  // route resolving 200-with-HTML would otherwise slip a non-array through the `.catch`.
   useEffect(() => {
     (async () => {
-      const [ps, ss] = await Promise.all([api.personas().catch(() => []), api.sites().catch(() => [])]);
-      setPersonas(ps);
-      setSites(ss);
-      if (!getPrincipal() && ps.length) setPrincipal(ps.find((p) => p.name.startsWith('Emil'))?.id ?? ps[0].id);
+      const ss = await api.sites().catch(() => []);
+      setSites(Array.isArray(ss) ? ss : []);
       setBooted(true);
       setTick((t) => t + 1);
     })().catch(() => setBooted(true));
@@ -122,14 +117,12 @@ export default function App() {
   // inverting the top bar to --ink. Everything site-scoped keeps the light chrome.
   const productLevel = view.kind === 'models' || view.kind === 'model-edit' || view.kind === 'relationships' || view.kind === 'migrations';
 
-  // Auth gate. Deployed worker: needs-setup → create the admin; anon → sign in. Dev server:
-  // /api/me always resolves a persona, so this only shows the brief loading splash.
+  // Auth gate — the same in dev and prod: needs-setup → create the admin; anon → sign in.
   const splash = <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: 'var(--muted)', background: 'var(--bg)' }}>Loading…</div>;
   if (!booted || !me) return splash;
   if (me.mode !== 'authed') {
     const inviteToken = new URLSearchParams(location.search).get('invite');
     if (inviteToken) return <AcceptInvite token={inviteToken} />;
-    if (personas.length > 0) return splash; // dev: persona still resolving, don't flash sign-in
     return <SignIn firstRun={me.mode === 'needs-setup'} />;
   }
 
@@ -137,11 +130,9 @@ export default function App() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <TopBar
         sites={sites}
-        personas={personas}
         role={me.role}
         meName={me.display}
         inverted={productLevel}
-        showPersona={personas.length > 0}
         showSites={sites.length > 0}
         canManageSites={caps.admin}
         theme={theme}
@@ -153,7 +144,7 @@ export default function App() {
           navigate({ kind: 'home' });
           refresh();
         }}
-        onPersona={(id) => { setPrincipal(id); refresh(); }}
+        onSignOut={async () => { await auth.signOut().catch(() => undefined); location.reload(); }}
         onTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
       />
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
@@ -203,9 +194,9 @@ export default function App() {
           {view.kind === 'relationships' && <RelationshipMap />}
           {view.kind === 'migrations' && <MigrationsView />}
           {view.kind === 'media' && <AssetLibrary />}
-          {view.kind === 'members' && <MembersView personas={personas} sites={sites} devMode={personas.length > 0} meName={me.display} canAdmin={caps.admin} />}
+          {view.kind === 'members' && <MembersView meName={me.display} canAdmin={caps.admin} />}
           {view.kind === 'entry' && (
-            <EntryEditor key={view.id} id={view.id} types={types} personas={personas} caps={caps} onChanged={refresh} onBack={() => navigate({ kind: 'home' })} />
+            <EntryEditor key={view.id} id={view.id} types={types} caps={caps} onChanged={refresh} onBack={() => navigate({ kind: 'home' })} />
           )}
         </main>
       </div>
@@ -314,22 +305,19 @@ function ArchiveSite({ slug, name, onArchived }: { slug: string; name: string; o
 
 function TopBar(props: {
   sites: Site[];
-  personas: Persona[];
   role: string | null;
   meName: string;
   inverted: boolean;
-  showPersona: boolean;
   showSites: boolean;
   canManageSites: boolean;
   theme: 'light' | 'dark';
   onSite: (slug: string) => void;
   onCreated: (slug: string) => void;
   onArchived: () => void;
-  onPersona: (id: string) => void;
+  onSignOut: () => void;
   onTheme: () => void;
 }) {
   const activeSite = getSite();
-  const activePrincipal = getPrincipal();
   const inv = props.inverted;
   // On the inverted bar, foreground flips to --bg (a true inversion that holds in both themes).
   const fg = inv ? 'var(--bg)' : 'var(--ink)';
@@ -377,13 +365,8 @@ function TopBar(props: {
       )}
 
       <div style={{ flex: 1 }} />
-      {props.showPersona && (
-        <>
-          <Mono style={{ fontSize: 11, color: inv ? 'var(--bg)' : undefined, opacity: inv ? 0.6 : 1 }}>dev persona</Mono>
-          <Select value={activePrincipal} onChange={props.onPersona} options={props.personas.map((p) => ({ value: p.id, label: p.name }))} />
-        </>
-      )}
       <Button size="sm" tone={inv ? 'onDark' : 'default'} onClick={props.onTheme}>{props.theme === 'light' ? '☾' : '☀'}</Button>
+      <Button size="sm" tone={inv ? 'onDark' : 'default'} title={`Signed in as ${props.meName} — sign out`} onClick={props.onSignOut}>Sign out</Button>
       <Avatar name={props.meName} size={28} />
     </header>
   );
@@ -414,30 +397,6 @@ function SitePill(props: { value: string; onChange: (v: string) => void; options
         ))}
       </select>
     </div>
-  );
-}
-
-function Select(props: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; accent?: boolean }) {
-  return (
-    <select
-      value={props.value}
-      onChange={(e) => props.onChange(e.target.value)}
-      style={{
-        font: 'inherit',
-        fontSize: 13,
-        fontWeight: props.accent ? 600 : 500,
-        padding: '5px 10px',
-        borderRadius: 'var(--r-pill)',
-        border: '1px solid var(--border2)',
-        background: props.accent ? 'var(--accent-soft)' : 'var(--surface)',
-        color: props.accent ? 'var(--accent)' : 'var(--ink)',
-        cursor: 'pointer',
-      }}
-    >
-      {props.options.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
   );
 }
 
@@ -867,13 +826,12 @@ function ReviewQueue({ caps, types, onOpen, onChanged }: { caps: { review: boole
 function EntryEditor(props: {
   id: string;
   types: ContentTypeDef[];
-  personas: Persona[];
   caps: { author: boolean; review: boolean; publish: boolean };
   onChanged: () => void;
   onBack: () => void;
 }) {
-  // Revision authors are stored as principal ids; in dev we can show the persona's name.
-  const nameOf = (id: string) => props.personas.find((p) => p.id === id)?.name ?? `${id.slice(0, 6)}…`;
+  // Revision authors are stored as principal ids; show a short id (no principal→name directory here).
+  const nameOf = (id: string) => `${id.slice(0, 6)}…`;
   const [detail, setDetail] = useState<EntryDetail | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
