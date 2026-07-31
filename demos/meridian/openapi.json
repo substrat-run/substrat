@@ -489,6 +489,33 @@
         }
       }
     },
+    "/api/op/hr/expire-stale-requests": {
+      "post": {
+        "operationId": "hr-expire-stale-requests",
+        "summary": "Cancel leave requests left unapproved past their start date.",
+        "description": "Requires `absence:approve`. A recurring rule (#383): the platform sweep invokes it daily on every scope under a system actor, so a signed leave that no one approved before it began is cancelled rather than lingering `requested` forever. Idempotent and paged; a manager may also trigger it, in which case the cancellation is attributed to them rather than the schedule.",
+        "tags": [
+          "Leave"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
     "/api/op/hr/list-requests": {
       "post": {
         "operationId": "hr-list-requests",
