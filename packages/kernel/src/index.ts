@@ -22,6 +22,8 @@ export type {
   OperationHandler,
   ProvisionScopeInput,
   RoleFilter,
+  ScheduleRegistration,
+  ScheduleRunReport,
   ScopedSql,
   ScopeFilter,
   ScopeHost,
@@ -60,6 +62,7 @@ export type {
   PlatformSweepOptions,
   PlatformSweepReport,
   PlatformSweeperHandle,
+  ScheduleSweepReport,
   StartPlatformSweeperOptions,
 } from './platform-sweep.js';
 export {

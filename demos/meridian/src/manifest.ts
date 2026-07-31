@@ -50,6 +50,7 @@ export const meridianManifest = moduleManifest.parse({
       { type: 'hr.absence-accrued', schemaVersion: 1 },
       { type: 'hr.leave-requested', schemaVersion: 1 },
       { type: 'hr.leave-decided', schemaVersion: 1 },
+      { type: 'hr.leave-expired', schemaVersion: 1 },
       { type: 'hr.time-logged', schemaVersion: 1 },
       { type: 'hr.expense-submitted', schemaVersion: 1 },
       { type: 'hr.expense-decided', schemaVersion: 1 },
@@ -58,6 +59,12 @@ export const meridianManifest = moduleManifest.parse({
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
+  // #383: a recurring, date-triggered rule. The platform sweep invokes this on
+  // every live Meridian scope daily, under a system actor holding exactly
+  // `absence:approve` — cancelling leaves left unapproved past their start date.
+  schedules: [
+    { operation: 'hr/expire-stale-requests', cadence: { everyMinutes: 1440 }, permissions: ['absence:approve'] },
+  ],
   attachmentTargets: [{ entityType: 'employee', readPermission: 'absence:read' }],
   entityRelations: [
     // Onboarding checklists (protocol engine) hang off employees; THIS vertical

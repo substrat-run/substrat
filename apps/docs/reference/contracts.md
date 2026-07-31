@@ -83,9 +83,15 @@ The results: `decision` / `Decision` (proof-carrying discriminated union) and
 
 `moduleManifest` / `ModuleManifest` — the self-description every module ships:
 permissions, events (emits/consumes), migrations + skew window, attachment targets,
-entity relations, entitlement key, searchables, UI contributions, and `envSpec`
-(`envVarSpec[]` — the declared environment that the Dashboard's Env form renders from).
+entity relations, entitlement key, searchables, UI contributions, `envSpec`
+(`envVarSpec[]` — the declared environment that the Dashboard's Env form renders from),
+and `schedules` (`scheduleSpec[]` — recurring work: `{ operation, cadence: { everyMinutes },
+input?, permissions }` the platform sweep runs on every live scope under a system actor).
 Field-by-field walkthrough in [Modules & the manifest](/concepts/modules).
+
+`checkSubject` — who a permission check is *about*: `{ kind: 'principal' | 'connection'
+| 'system', id }`. `systemGrant` grants a permission to a module's system principal
+(`{ moduleId, permission, node, … }`), the scheduler analogue of `connectionGrant`.
 
 ## Vertical & version registry (`registry.ts`)
 

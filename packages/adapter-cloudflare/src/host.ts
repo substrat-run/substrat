@@ -19,6 +19,7 @@ import {
   connection,
   connectionGrant,
   connectionSecret,
+  systemGrant,
   entitlementGrant,
   entitlementGrantInput,
   subjectRef,
@@ -37,6 +38,9 @@ import {
   type ConnectionGrant,
   type ConnectionId,
   type ConnectionSecret,
+  type ModuleId,
+  type ScheduleSpec,
+  type SystemGrant,
   type CreateConnectionInput,
   type AccessLogEntry,
   type AdminLogEntry,
@@ -110,6 +114,8 @@ import {
   type PermissionChecker,
   type ProvisionScopeInput,
   type RoleFilter,
+  type ScheduleRegistration,
+  type ScheduleRunReport,
   type ScopeFilter,
   type ScopeHost,
   type ScopeStub,
@@ -483,7 +489,15 @@ interface ScopeStubRpc {
     connectionId?: string,
     /** The SKU the operation requires (#304) — enforced DO-side for a scope-local scope. */
     requiredEntitlement?: string,
+    /** Set when the caller is a MODULE's system principal on a timer (#383). */
+    systemModuleId?: string,
   ): Promise<unknown>;
+  /** Whether this scope holds a live `system:<moduleId>` grant (#383) — the schedule switch. */
+  hasSystemGrant(moduleId: string): Promise<boolean>;
+  /** The last time a schedule's operation ran on this scope (#383), or null if never. */
+  scheduleLastRun(operation: string): Promise<string | null>;
+  /** Record a schedule run's timestamp + outcome (#383). */
+  recordScheduleRun(operation: string, at: string, status: 'ok' | 'failed'): Promise<void>;
   writeTuple(
     subject: string,
     relation: string,
@@ -609,6 +623,8 @@ export class CloudflareScopeHost implements ScopeHost {
   // Registration-mechanics bookkeeping (validation only — the DO executes).
   // Code-time, derived from the bundled modules, NOT durable directory state.
   private readonly moduleIds = new Set<string>();
+  /** Module id → its declared recurring schedules (#383), for `registeredSchedules`/`runDueSchedules`. */
+  private readonly moduleSchedules = new Map<string, ScheduleSpec[]>();
   /** Registered (module, version) pairs — the frontier `schemaVersion` counts toward (§5.3, #49). */
   private migrationTotal = 0;
   private readonly operations = new Set<string>();
@@ -1044,6 +1060,9 @@ export class CloudflareScopeHost implements ScopeHost {
       this.predicateNames.set(name, manifest.id);
     }
     this.moduleIds.add(manifest.id);
+    if (manifest.schedules && manifest.schedules.length > 0) {
+      this.moduleSchedules.set(manifest.id, manifest.schedules);
+    }
     this.migrationTotal += migrations.length;
     const ownOperations = new Set(Object.keys(registration.operations ?? {}));
     for (const name of manifest.withdraws ?? []) {
@@ -1091,6 +1110,23 @@ export class CloudflareScopeHost implements ScopeHost {
     // storage, so project the tenant's current roles/tuples into it (no-op when off,
     // or if migration threw above — a failed scope stays closed, never projected).
     await this.projectScope(input.tenantId, input.scopeId);
+    // Project each registered module's SCHEDULE grants (#383): the system principal
+    // holds exactly the permissions its schedules declared, on this scope, so
+    // `ctx.check` resolves for scheduled work (the gate stays the check). Written to
+    // the scope's own tuples, where the checker reads them — the same place the owner
+    // grant and connection grants land. Idempotent, so a re-provision re-asserts them.
+    for (const [moduleId, schedules] of this.moduleSchedules) {
+      const perms = new Set<string>();
+      for (const s of schedules) for (const p of s.permissions) perms.add(p);
+      for (const perm of perms) {
+        await this.scopeStub(input.scopeId).writeTuple(
+          `system:${moduleId}`,
+          `granted:${perm}`,
+          `scope:${input.scopeId}`,
+          null,
+        );
+      }
+    }
     // Audit a real provision only; an idempotent re-provision changed nothing.
     if (created) {
       await this.recordAdmin(
@@ -1298,20 +1334,95 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.buildStub(conn.tenant_id as TenantId, scopeId, undefined, connectionId);
   }
 
-  /** The stub body, shared by the principal and connection doors. */
+  /**
+   * A scope stub whose authority is a MODULE on a timer (#383) — the scheduler's
+   * door, mirror of `getConnectorScope`. The module must be registered on this host
+   * and the scope must pass the ordinary lifecycle gate; authority is then a check
+   * against `system:<moduleId>` grants inside the stub.
+   */
+  async getSystemScope(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScopeStub> {
+    if (!this.moduleIds.has(moduleId)) {
+      throw new Error(`module not registered on this host: ${moduleId}`);
+    }
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return this.buildStub(tenantId, scopeId, undefined, undefined, moduleId);
+  }
+
+  registeredSchedules(): ScheduleRegistration[] {
+    const out: ScheduleRegistration[] = [];
+    for (const [moduleId, schedules] of this.moduleSchedules) {
+      if (schedules.length > 0) out.push({ moduleId: moduleId as ModuleId, schedules });
+    }
+    return out;
+  }
+
+  async runDueSchedules(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScheduleRunReport> {
+    const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [] };
+    const schedules = this.moduleSchedules.get(moduleId);
+    if (!schedules || schedules.length === 0) return report;
+    // Only run on a live scope of this tenant; a scope archived between the sweep's
+    // enumeration and here simply has nothing due.
+    const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+    if (!rec || rec.status !== 'active') return report;
+
+    const stub = this.scopeStub(scopeId);
+    // The grant IS the switch (#383): run only where the scope holds a live
+    // `system:<moduleId>` grant. Skips a foreign-vertical scope and a per-tenant
+    // revoke quietly — no run, no error.
+    if (!(await stub.hasSystemGrant(moduleId))) return report;
+    const now = Date.now();
+    for (const schedule of schedules) {
+      const last = await stub.scheduleLastRun(schedule.operation);
+      const lastRun = last ? Date.parse(last) : null;
+      const dueAt = lastRun === null ? -Infinity : lastRun + schedule.cadence.everyMinutes * 60_000;
+      if (now < dueAt) {
+        report.skipped += 1;
+        continue;
+      }
+      let status: 'ok' | 'failed' = 'ok';
+      try {
+        const scope = await this.getSystemScope(moduleId, tenantId, scopeId);
+        await scope.invoke(schedule.operation, schedule.input);
+        report.fired += 1;
+      } catch (err) {
+        status = 'failed';
+        report.failed += 1;
+        report.errors.push({
+          operation: schedule.operation,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      await stub.recordScheduleRun(schedule.operation, new Date(now).toISOString(), status);
+    }
+    return report;
+  }
+
+  /** The stub body, shared by the principal, connection, and system doors. */
   private buildStub(
     tenantId: TenantId,
     scopeId: ScopeId,
     principal?: PrincipalId,
     connectionId?: ConnectionId,
+    systemModuleId?: string,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const cp = this.cp;
     const operationEntitlement = this.operationEntitlement;
     // The DO needs SOME principal-shaped value for `ctx.principal`; for a
-    // connection it is the connection id, and the honest attribution rides on
-    // the event actor instead.
-    const asPrincipalId = (principal ?? (connectionId as unknown as PrincipalId)) as PrincipalId;
+    // connection it is the connection id, for a schedule the module id, and the
+    // honest attribution rides on the event actor instead.
+    const asPrincipalId = (principal ??
+      (connectionId as unknown as PrincipalId) ??
+      (systemModuleId as unknown as PrincipalId)) as PrincipalId;
 
     return {
       tenantId,
@@ -1338,6 +1449,7 @@ export class CloudflareScopeHost implements ScopeHost {
           scopeId,
           connectionId,
           requiredKey,
+          systemModuleId,
         )) as O;
         await this.drainExecutors(tenantId, scopeId);
         return result;
@@ -1648,6 +1760,27 @@ export class CloudflareScopeHost implements ScopeHost {
             node: grant.node,
           },
         );
+      },
+
+      grantToSystem: async (actor: PlatformActorId, raw: SystemGrant) => {
+        // The scheduler's grant (#383) — mirror of grantToConnection. Narrow: one
+        // module, one permission; tombstones on revoke; shows in the permission diff.
+        const grant = systemGrant.parse(raw);
+        await writeGrant(
+          subjectRef({ kind: 'system', id: grant.moduleId }),
+          grant.permission,
+          grant.node,
+          undefined,
+          grant.expiresAt,
+        );
+        await this.recordAdmin(
+          actor,
+          'grantToSystem',
+          { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId },
+          null,
+          { moduleId: grant.moduleId, permission: grant.permission, node: grant.node },
+        );
+        if (!grant.node.scopeId) await this.fanOut(grant.node.tenantId);
       },
 
       grantToOrg: async (actor, orgId, permission, node, entity) => {

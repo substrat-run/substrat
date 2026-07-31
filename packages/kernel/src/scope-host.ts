@@ -26,7 +26,10 @@ import type {
   IdentityLink,
   IdentityPool,
   Jurisdiction,
+  ModuleId,
   ModuleManifest,
+  ScheduleSpec,
+  SystemGrant,
   CreateOrgInput,
   Node,
   Org,
@@ -248,6 +251,32 @@ export interface ExecutorDrainReport {
   retrying: number;
   /** Failed at `maxAttempts` — terminal, and the row keeps the last error. */
   deadLettered: number;
+}
+
+/**
+ * A module's recurring-work declarations, as `registeredSchedules` reports them
+ * (#383): the module id the sweep runs `runDueSchedules` against, plus the declared
+ * schedules. No vertical: a vertical's runtime serves only its own scopes, and the
+ * module-less control-plane host registers nothing, so the sweep enumerates active
+ * scopes once and runs each registration on each — no cross-vertical reach exists to
+ * filter out.
+ */
+export interface ScheduleRegistration {
+  moduleId: ModuleId;
+  schedules: ScheduleSpec[];
+}
+
+/**
+ * What `runDueSchedules` did for one scope in one pass (#383). A schedule inside its
+ * cadence window is `skipped`; a due one is `fired` (its operation ran) or `failed`
+ * (the operation threw — recorded, never allowed to stop the others).
+ */
+export interface ScheduleRunReport {
+  fired: number;
+  skipped: number;
+  failed: number;
+  /** Per-schedule failures on this scope: the operation name and the error. */
+  errors: { operation: string; error: string }[];
 }
 
 /**
@@ -474,6 +503,18 @@ export interface HostAdmin {
    * either, and only one of them would have shown up in a review.
    */
   grantToConnection(actor: PlatformActorId, grant: ConnectionGrant): Promise<void>;
+  /**
+   * Grant a permission to a MODULE's system principal (#383) — how a scheduled
+   * operation is allowed to act on a scope without impersonating a person.
+   *
+   * The scheduler analogue of `grantToConnection`, and the same shape for the same
+   * reason: one grant mechanism, tuples tombstoned on revoke (K-21), visible to the
+   * permission diff. It is what makes `ctx.check` resolve for a schedule — the gate
+   * stays `ctx.check`, not a bypass. Projected at scope provisioning from the
+   * module's declared `schedules[].permissions`; a per-tenant "scheduling off" is a
+   * revoke of this grant, nothing more.
+   */
+  grantToSystem(actor: PlatformActorId, grant: SystemGrant): Promise<void>;
 
   grantToOrg(
     actor: PlatformActorId,
@@ -1532,6 +1573,49 @@ export interface ScopeHost {
    * data to `ctx.principal` will be recording a connector.
    */
   getConnectorScope(connectionId: ConnectionId, scopeId: ScopeId): Promise<ScopeStub>;
+
+  /**
+   * A scope stub whose authority is a MODULE acting on a timer (#383) — the
+   * scheduler's door, the mirror of `getConnectorScope`.
+   *
+   * This is how a declared schedule invokes an operation on a scope without
+   * signing in as a person. `getScope` demands a `PrincipalId`; a schedule is not
+   * one, and modelling it as a human is exactly the attribution laundering #97
+   * refused — after a night's run the audit log could not tell the scheduler from
+   * an admin who sat down at 03:00.
+   *
+   * **Authority is inherited, not re-declared.** The stub refuses any scope not
+   * running `moduleId`'s vertical, and any scope that is not `active`. What it may
+   * then DO is an ordinary permission check against `system:<moduleId>` grants —
+   * one enforcement path, `ctx.check` stays the single gate, no bypass. Events it
+   * emits are stamped `{ system: moduleId }`. `ctx.principal` carries the module id
+   * so the type holds, but it is **not a person**.
+   */
+  getSystemScope(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeStub>;
+
+  /**
+   * The recurring-work declarations of every module registered on this host (#383)
+   * — each module's id, the vertical it belongs to, and its `schedules`. Sync like
+   * `migrationFrontier`: code-time bookkeeping derived from the registered
+   * manifests, not directory state. The platform sweep reads this to discover what
+   * to run, then enumerates each vertical's live scopes.
+   */
+  registeredSchedules(): ScheduleRegistration[];
+
+  /**
+   * Run every schedule that is DUE for this scope (#383) — the recurring-work
+   * driver, the fleet-maintenance sibling of `drainDue`.
+   *
+   * Opens the scope once, and for each of `moduleId`'s declared schedules whose
+   * cadence has elapsed since its last run (kernel-tracked spine state), invokes
+   * the operation through the system door with its declared `input`, then records
+   * the run. Idempotent and safe when nothing is due: a schedule inside its cadence
+   * window is skipped, not re-run. Takes no actor — this is maintenance, the same
+   * class as `drainDue`/`migrateScope`; the invocation itself is attributed to the
+   * system actor. A single schedule's failure is reported, never thrown, so one bad
+   * operation cannot stop the others on the scope.
+   */
+  runDueSchedules(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<ScheduleRunReport>;
 
   /**
    * Register a connector — an executor that also gets a per-tenant credential

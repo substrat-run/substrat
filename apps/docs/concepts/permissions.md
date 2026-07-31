@@ -61,10 +61,19 @@ also target an **organization**; members reach them via membership.
 A **connection** is a first-class grant subject too — not only principals and orgs. A
 connector (an external provider acting through a connection) can hold a capability grant
 without pretending to be a person: `host.admin.grantToConnection(...)`, and a check's
-subject is polymorphic (`{ kind: 'principal' | 'connection', id }`). A connection is keyed
-`(tenant, vertical, provider)`, so granting it one permission reaches only that tenant's
-scopes running that vertical — the blast radius of a leaked provider token is one permission
-on one vertical's data, readable in a diff.
+subject is polymorphic (`{ kind: 'principal' | 'connection' | 'system', id }`). A
+connection is keyed `(tenant, vertical, provider)`, so granting it one permission reaches
+only that tenant's scopes running that vertical — the blast radius of a leaked provider
+token is one permission on one vertical's data, readable in a diff.
+
+A **module's system principal** is the third such subject — the caller behind
+[scheduled work](/concepts/modules#recurring-work-schedules). A schedule runs an operation
+on a timer, and it is not a person either; `host.admin.grantToSystem(...)` gives
+`{ kind: 'system', id: moduleId }` exactly the permissions the schedule declared, so the
+operation's own `ctx.check` resolves the same way it does for anyone — the gate stays the
+check, never a bypass — and the emitted events read as `{ system: '@your/module' }`. Like a
+connection it holds no memberships; its authority is exactly the grants written against
+`system:<moduleId>`, projected at provisioning and revocable per scope.
 
 Organizations are a real directory record, not a string you make up at the call site:
 

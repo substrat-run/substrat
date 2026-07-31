@@ -35,6 +35,25 @@ export const testModManifest = moduleManifest.parse({
   entitlementKey: 'testmod',
 });
 
+// #383: a module that declares RECURRING work. `sched/tick` is scheduled (its
+// permission `sched:tick` is projected to the system principal at provisioning);
+// `sched:admin` is declared but NOT scheduled, so the system principal never holds
+// it — the lever that proves `ctx.check` is the real gate, not a bypass.
+export const scheduleModManifest = moduleManifest.parse({
+  id: '@test/sched',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [
+    { key: 'sched:tick', description: 'run the scheduled tick' },
+    { key: 'sched:admin', description: 'a permission the schedule does NOT grant' },
+  ],
+  events: { emits: [{ type: 'sched.ticked', schemaVersion: 1 }], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'sched',
+  schedules: [{ operation: 'sched/tick', cadence: { everyMinutes: 60 }, permissions: ['sched:tick'] }],
+});
+
 export const flowModManifest = moduleManifest.parse({
   id: '@test/flow',
   version: '1.0.0',
@@ -382,6 +401,46 @@ export const testMod: ModuleRegistration = {
   },
 };
 
+export const scheduleMod: ModuleRegistration = {
+  manifest: scheduleModManifest,
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE sched_ticks (n INTEGER NOT NULL)' },
+  ],
+  operations: {
+    // The scheduled operation: check the granted permission, then emit + record a
+    // tick. Under a system caller its emitted event's actor must be { system: … }.
+    'sched/tick': (async (ctx) => {
+      assertAllowed(await ctx.check('sched:tick' as PermissionKey));
+      ctx.sql.exec('INSERT INTO sched_ticks (n) VALUES (1)');
+      ctx.emit({
+        type: 'sched.ticked',
+        schemaVersion: 1,
+        entity: { entityType: 'sched-thing', entityId: 'tick' },
+        piiClass: 'none',
+        payload: {},
+      });
+    }) as OperationHandler<never, unknown>,
+    // Checks a permission the schedule never granted the system principal — invoked
+    // directly through the system door, it must be DENIED, proving ctx.check is the gate.
+    'sched/needs-admin': (async (ctx) => {
+      assertAllowed(await ctx.check('sched:admin' as PermissionKey));
+    }) as OperationHandler<never, unknown>,
+    'sched/count': ((ctx) =>
+      ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM sched_ticks')[0]!.n) as OperationHandler<
+      never,
+      unknown
+    >,
+    'sched/read-outbox': ((ctx) =>
+      ctx.sql.query<{ type: string; actor: string }>(
+        'SELECT type, actor FROM _substrat_outbox ORDER BY id',
+      )) as OperationHandler<never, unknown>,
+    'sched/schedule-state': ((ctx) =>
+      ctx.sql.query<{ schedule_op: string; last_status: string }>(
+        'SELECT schedule_op, last_status FROM _substrat_schedule_state ORDER BY schedule_op',
+      )) as OperationHandler<never, unknown>,
+  },
+};
+
 export const flowMod: ModuleRegistration = {
   manifest: flowModManifest,
   migrations: [
@@ -647,6 +706,7 @@ export const contractTestModules: ModuleRegistration[] = [
   billedMod,
   permMod,
   connectorMod,
+  scheduleMod,
 ];
 
 export const brokenModManifest = moduleManifest.parse({

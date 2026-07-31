@@ -37,11 +37,12 @@ type DomainEvent = {
 ```
 
 The `actor` is one of three things, and never a person who wasn't one: a `PrincipalId`, a
-`{ system: ModuleId }` for a consumer running under a system actor, or a
-`{ connection: string }` when a **connector** effected the write — an external provider's
-callback acting through a connection. A connector that read as a human in the audit trail
-would be worse than one that could not act at all, so it gets its own member rather than a
-synthetic principal.
+`{ system: ModuleId }` — a consumer running under a system actor, **or a module's
+[scheduled work](/concepts/modules#recurring-work-schedules) firing on a timer** — or a
+`{ connection: string }` when a **connector** effected the write, an external provider's
+callback acting through a connection. A connector or a nightly job that read as a human in
+the audit trail would be worse than one that could not act at all, so each gets its own
+member rather than a synthetic principal.
 
 `authorization` records, per mutation, **which checks the emitting operation passed** (K-34):
 each entry names a permission that was checked-and-passed, plus — when the allow resolved

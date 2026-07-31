@@ -234,24 +234,32 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw));
 
 await seedPersonaLogins();
 
-// The scheduler's call site (#96): drive the poll on a timer so a signature
-// completed at Scrive is recorded back into the scope without anyone asking. This
-// is the one line a deployment adds; the driver and reconcile live in the kernel
-// and the connector. Non-overlapping by construction.
-if (scrive) {
+// The scheduler's call site. One timer drives the whole platform sweep:
+//   - #96: poll Scrive so a completed signature is recorded back with no caller;
+//   - #383: run Meridian's own recurring schedules (`hr/expire-stale-requests`),
+//     under a system actor, on every live scope.
+// The driver and both units of work live in the kernel/connector/module; this is
+// the one line a deployment adds. Non-overlapping by construction. Runs even
+// without Scrive — the schedule half needs no connection.
+{
   const pollMs = Number(process.env.SCRIVE_POLL_MS ?? 15_000);
   startPlatformSweeper(host, {
     actor: platformActorId.parse(ulid()),
-    fetch: scrive.egress,
-    sweepers: { scrive: sweepScriveReconciliations },
+    fetch: scrive?.egress ?? (globalThis.fetch as unknown as FetchLike),
+    sweepers: scrive ? { scrive: sweepScriveReconciliations } : {},
     intervalMs: pollMs,
     onPass: (o) => {
-      if ('error' in o) console.error('[scrive-sweep]', o.error);
-      else if (o.errors.length) console.error('[scrive-sweep]', o.errors.length, 'error(s)', o.errors);
-      else if (o.connectionsSwept) console.log(`[scrive-sweep] polled ${o.connectionsSwept} connection(s)`);
+      if ('error' in o) console.error('[platform-sweep]', o.error);
+      else if (o.errors.length) console.error('[platform-sweep]', o.errors.length, 'error(s)', o.errors);
+      else {
+        if (o.connectionsSwept) console.log(`[platform-sweep] polled ${o.connectionsSwept} connection(s)`);
+        if (o.schedules?.fired) console.log(`[platform-sweep] ran ${o.schedules.fired} schedule(s)`);
+      }
     },
   });
-  console.log(`  scrive sweeper          every ${pollMs / 1000}s ${scrive.mock ? '(ScriveMock)' : '(testbed)'}`);
+  console.log(
+    `  platform sweeper        every ${pollMs / 1000}s (schedules${scrive ? ` + scrive ${scrive.mock ? '(ScriveMock)' : '(testbed)'}` : ''})`,
+  );
 }
 
 serve({ fetch: app.fetch, port: PORT });

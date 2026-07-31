@@ -88,6 +88,25 @@ control-plane work; every transition is validated (an illegal one fails closed) 
 - **Jurisdiction is immutable.** Fixed at provisioning; a scope's execution domain can never
   relocate. There is no edit affordance because there is no edit.
 
+## Scheduled work {#scheduled-work}
+
+The platform runs one recurring pass — the **platform sweep** — that does every unit of
+scheduled work the system has: draining retryable effects, reconciling connectors,
+reaping expired snapshots, and running each vertical's declared
+[`schedules`](/concepts/modules#recurring-work-schedules). It is *the scheduler's unit of
+work*; it holds no timer of its own. A deployment drives it — a node server calls
+`startPlatformSweeper` at boot, a Cloudflare deployment arms a singleton
+`PlatformSweeperDO` alarm (a dispatch namespace doesn't honour `wrangler` crons, so an
+alarm is the timer such a deployment can own).
+
+Because module operations run in the vertical's own runtime — where its code and its
+scopes' data live — the sweep runs **there**, not in the control plane (whose scope
+storage is empty by design). For each vertical that declares schedules, the pass
+enumerates its live scopes and invokes each due operation under a system actor, recording
+per-scope outcomes and stepping over any failure rather than letting it sink the pass. A
+schedule fires no more often than its cadence, tracked per scope; a fork or snapshot is
+skipped, so a test copy never runs real recurring side effects.
+
 ## Entitlements gate modules, not features
 
 Every [manifest](/concepts/modules) declares an `entitlementKey`. The platform holds a set of

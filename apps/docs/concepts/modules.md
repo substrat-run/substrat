@@ -62,6 +62,7 @@ Field by field:
 | `provides` / `requires` | named capabilities this vertical offers (`oidc-issuer`) or delegates to — wired tenant-side via the connection store | capability wiring, registry |
 | `envSpec` | declared environment variables (label, description, placeholder, `required`, `secret`) a deployment must provide | host/console config forms — carried on the registry (see below) |
 | `guards` | manifest-declared operation pre-conditions: a named predicate the kernel runs inside the operation's transaction, before the handler (a throw blocks it) | kernel |
+| `schedules` | recurring work — operations the platform invokes on every live scope of this vertical, on a cadence, under a system actor (a date-triggered business rule) | the platform sweep ([recurring work](#recurring-work-schedules)) |
 | `withdraws` | operation names whose default binding this module suppresses — the name stops resolving, so a vertical can re-offer the transition behind its own guarded operation | kernel operation resolver |
 | `searchables` | entity types and fields registered for tenant-scoped search | search service |
 | `api` | path to the emitted OpenAPI for the module's HTTP surface, if any | tooling / SDK generation |
@@ -139,6 +140,52 @@ A **standalone** app (its own worker script) receives these as worker secrets/va
 A **hosted** vertical (one script serving many tenants' scopes) can't use per-app worker
 secrets — all its scopes share one script — so it takes per-tenant values through the
 per-scope config it reads at runtime.
+:::
+
+## Recurring work (`schedules`)
+
+Some business rules have no caller but the passage of time: a contract that becomes
+active on its start date, a leave request that can no longer be approved once it has
+already begun. The operation is ordinary — idempotent, permission-checked — it just
+needs something to invoke it on a cadence. A vertical declares that in `schedules`:
+
+```ts
+schedules: [
+  {
+    operation: 'hr/expire-stale-requests',   // a registered module/verb operation
+    cadence: { everyMinutes: 1440 },          // once a day
+    permissions: ['absence:approve'],         // what the operation checks
+    // input: { … }                           // optional static input, re-parsed by the op
+  },
+],
+```
+
+The [platform sweep](/concepts/platform#scheduled-work) enumerates every live scope of
+the vertical and invokes the operation on each due one. Two things make it safe to run
+unattended:
+
+- **It is attributed to the schedule, never a person.** The invocation runs under a
+  **system actor** — the emitted events read as `{ system: '@your/module' }`, not as
+  whichever admin happened to be the last human to touch the data. Modelling a nightly
+  job as a signed-in user is exactly the audit-trail laundering this exists to avoid.
+- **`ctx.check` is still the only gate.** The `permissions` a schedule declares are
+  granted to the module's system principal when a scope is provisioned, so the
+  operation's own `assertAllowed(await ctx.check(…))` resolves the same way it does for
+  any caller — a schedule can do exactly what it declares and no more. Those permissions
+  appear in the vertical's [`PERMISSIONS.md`](/concepts/permissions#from-declaration-to-enforcement)
+  under a *Scheduled work* section, so widening what a schedule may do lands in the
+  reviewed diff. Revoking that grant for one tenant turns the schedule off for them —
+  no special "disabled" flag, the operation just fails its own check closed.
+
+`cadence` is a floor, not a guarantee of exact timing: a schedule fires no more often
+than `everyMinutes`, and the sweep is what actually runs it (typically every couple of
+minutes), so sub-sweep cadences round up. It is optional and additive like every field
+past `entitlementKey` — a vertical that declares none has no recurring work.
+
+::: tip Where it runs
+The sweep must run in the vertical's **own** runtime, where its modules and scope data
+live — a node server calls `startPlatformSweeper` at boot, a Cloudflare deployment arms
+a `PlatformSweeperDO` alarm. See [the platform sweep](/concepts/platform#scheduled-work).
 :::
 
 ## Migrations

@@ -20,6 +20,7 @@ import {
   connection,
   connectionGrant,
   connectionSecret,
+  systemGrant,
   subjectRef,
   createConnectionInput,
   moduleManifest,
@@ -54,6 +55,9 @@ import {
   type ConnectionId,
   type ConnectionSecret,
   type CreateConnectionInput,
+  type ModuleId,
+  type ScheduleSpec,
+  type SystemGrant,
   type AdminLogEntry,
   type CapabilityGrant,
   type CreateTenantInput,
@@ -138,6 +142,8 @@ import {
   type PermissionChecker,
   type ProvisionScopeInput,
   type RoleFilter,
+  type ScheduleRegistration,
+  type ScheduleRunReport,
   type ScopedSql,
   type ScopeFilter,
   type ScopeHost,
@@ -162,6 +168,8 @@ interface RegisteredModule {
   id: string;
   migrations: SqlMigration[];
   consumers: { eventType: string; handler: ConsumerHandler }[];
+  /** The module's declared recurring schedules (#383), empty if it declares none. */
+  schedules: ScheduleSpec[];
 }
 
 /** A manifest guard, bound to the module whose manifest declared it (K-17). */
@@ -1107,7 +1115,12 @@ export class SqliteScopeHost implements ScopeHost {
       });
       this.guards.set(guard.before, forOperation);
     }
-    this.modules.set(manifest.id, { id: manifest.id, migrations, consumers });
+    this.modules.set(manifest.id, {
+      id: manifest.id,
+      migrations,
+      consumers,
+      schedules: manifest.schedules ?? [],
+    });
     for (const rel of manifest.entityRelations ?? []) {
       const parents = this.relations.get(rel.entityType) ?? new Set<string>();
       parents.add(rel.parentType);
@@ -1216,6 +1229,23 @@ export class SqliteScopeHost implements ScopeHost {
     }
     const rt = this.runtime(input.tenantId, input.scopeId);
     await this.applyPendingMigrations(rt);
+    // Project each registered module's SCHEDULE grants (#383): a system principal
+    // holds exactly the permissions its schedules declared, on this scope. This is
+    // what makes `ctx.check` resolve for scheduled work — the gate stays the check,
+    // and revoking the tuple (console) is how scheduling is turned off per scope.
+    // Idempotent (INSERT OR REPLACE), so a re-provision re-asserts the same grants.
+    for (const mod of this.modules.values()) {
+      const perms = new Set<string>();
+      for (const s of mod.schedules) for (const p of s.permissions) perms.add(p);
+      for (const perm of perms) {
+        rt.db
+          .prepare(
+            `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
+             VALUES (?, ?, ?, NULL)`,
+          )
+          .run(`system:${mod.id}`, `granted:${perm}`, `scope:${input.scopeId}`);
+      }
+    }
     // Audit a real provision only; an idempotent re-provision changed nothing.
     if (!existing) {
       this.recordAdmin(
@@ -1582,6 +1612,123 @@ export class SqliteScopeHost implements ScopeHost {
       kind: 'connection',
       id: connectionId,
     });
+  }
+
+  async getSystemScope(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScopeStub> {
+    // The scheduler's door (#383) — mirror of getConnectorScope. The module must be
+    // registered on this host (a schedule can only invoke its own vertical's ops),
+    // and the scope must be active. Authority is then an ordinary check against
+    // `system:<moduleId>` grants inside the stub; nothing here is a person.
+    if (!this.modules.has(moduleId)) {
+      throw new Error(`module not registered on this host: ${moduleId}`);
+    }
+    const scope = this.directory
+      .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { tenant_id: string; status: string } | undefined;
+    if (!scope || scope.tenant_id !== tenantId) {
+      throw new Error(`unknown scope: ${scopeId}`);
+    }
+    if (scope.status !== 'active') {
+      throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
+    }
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId });
+  }
+
+  registeredSchedules(): ScheduleRegistration[] {
+    const out: ScheduleRegistration[] = [];
+    for (const mod of this.modules.values()) {
+      if (mod.schedules.length > 0) {
+        out.push({ moduleId: mod.id as ModuleId, schedules: mod.schedules });
+      }
+    }
+    return out;
+  }
+
+  async runDueSchedules(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScheduleRunReport> {
+    const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [] };
+    const mod = this.modules.get(moduleId);
+    if (!mod || mod.schedules.length === 0) return report;
+
+    // The scope must be a live scope of this host. A non-active or missing scope is
+    // not this driver's problem to raise — it simply has nothing due (the sweep
+    // already enumerated `active` scopes; this guards a race where one archived
+    // between enumeration and here).
+    const scope = this.directory
+      .prepare('SELECT status FROM scopes WHERE scope_id = ? AND tenant_id = ?')
+      .get(scopeId, tenantId) as { status: string } | undefined;
+    if (!scope || scope.status !== 'active') return report;
+
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    // The grant IS the switch (#383): a scope runs a module's schedules only while it
+    // holds a live `system:<moduleId>` grant. This is what makes a foreign-vertical
+    // scope (one this module was never provisioned on) a quiet no-op, and what makes
+    // "disable scheduling for this tenant" a plain grant revoke — no error, no run.
+    const nowIso = new Date().toISOString();
+    const hasGrant = rt.db
+      .prepare(
+        `SELECT 1 FROM _substrat_tuples
+          WHERE subject = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+          LIMIT 1`,
+      )
+      .get(`system:${moduleId}`, nowIso);
+    if (!hasGrant) return report;
+    // The spine state table is created lazily on first sweep of a scope — it is
+    // kernel-owned (`_substrat_*`), never in a module migration.
+    rt.db.exec(
+      `CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
+         schedule_op TEXT PRIMARY KEY,
+         last_run_at TEXT,
+         last_status TEXT
+       )`,
+    );
+
+    const now = Date.now();
+    for (const schedule of mod.schedules) {
+      const row = rt.db
+        .prepare('SELECT last_run_at FROM _substrat_schedule_state WHERE schedule_op = ?')
+        .get(schedule.operation) as { last_run_at: string | null } | undefined;
+      const lastRun = row?.last_run_at ? Date.parse(row.last_run_at) : null;
+      const dueAt = lastRun === null ? -Infinity : lastRun + schedule.cadence.everyMinutes * 60_000;
+      if (now < dueAt) {
+        report.skipped += 1;
+        continue;
+      }
+      // Due — invoke through the system door (a fresh stub per schedule keeps the
+      // K-34 authorization accumulator clean, and the door re-checks the scope).
+      let status: 'ok' | 'failed' = 'ok';
+      try {
+        const stub = await this.getSystemScope(moduleId, tenantId, scopeId);
+        await stub.invoke(schedule.operation, schedule.input);
+        report.fired += 1;
+      } catch (err) {
+        status = 'failed';
+        report.failed += 1;
+        report.errors.push({
+          operation: schedule.operation,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      rt.db
+        .prepare(
+          `INSERT INTO _substrat_schedule_state (schedule_op, last_run_at, last_status)
+             VALUES (?, ?, ?)
+           ON CONFLICT(schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
+                                                  last_status = excluded.last_status`,
+        )
+        .run(schedule.operation, new Date(now).toISOString(), status);
+    }
+    return report;
   }
 
   /** The stub body, shared by the principal and connection doors. */
@@ -2006,7 +2153,11 @@ export class SqliteScopeHost implements ScopeHost {
     // policy, carries no permission key, and is left to the module.
     if (!err.permission || !err.node) return;
     const actor =
-      subject.kind === 'connection' ? { connection: subject.id } : (subject.id as PrincipalId);
+      subject.kind === 'system'
+        ? { system: subject.id }
+        : subject.kind === 'connection'
+          ? { connection: subject.id }
+          : (subject.id as PrincipalId);
     rt.db
       .prepare(
         `INSERT INTO _substrat_denials
@@ -2568,6 +2719,30 @@ export class SqliteScopeHost implements ScopeHost {
             permission: grant.permission,
             node: grant.node,
           },
+        );
+      },
+
+      grantToSystem: async (actor: PlatformActorId, raw: SystemGrant) => {
+        // The scheduler's grant (#383) — mirror of grantToConnection. Narrow by
+        // construction: it names one module and one permission, and (like every
+        // grant) it tombstones on revoke and shows in the permission diff. No
+        // provider/vertical cross-check as a connection has: a module's system
+        // principal is bound to the module, and a scope only ever runs the modules
+        // its own host registered.
+        const grant = systemGrant.parse(raw);
+        writeGrant(
+          subjectRef({ kind: 'system', id: grant.moduleId }),
+          grant.permission,
+          grant.node,
+          undefined,
+          grant.expiresAt,
+        );
+        this.recordAdmin(
+          actor,
+          'grantToSystem',
+          { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId },
+          null,
+          { moduleId: grant.moduleId, permission: grant.permission, node: grant.node },
         );
       },
 
@@ -4484,7 +4659,11 @@ export class SqliteScopeHost implements ScopeHost {
           scopeId: rt.scopeId,
           actor:
             overrideActor ??
-            (subject.kind === 'connection' ? { connection: subject.id } : principal),
+            (subject.kind === 'system'
+              ? { system: subject.id }
+              : subject.kind === 'connection'
+                ? { connection: subject.id }
+                : principal),
           ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
         });
         rt.db
@@ -4524,7 +4703,12 @@ export class SqliteScopeHost implements ScopeHost {
         }
         const id = platformRequestId.parse(ulid());
         const requestedBy =
-          overrideActor ?? (subject.kind === 'connection' ? { connection: subject.id } : principal);
+          overrideActor ??
+          (subject.kind === 'system'
+            ? { system: subject.id }
+            : subject.kind === 'connection'
+              ? { connection: subject.id }
+              : principal);
         rt.db
           .prepare(
             `INSERT INTO _substrat_platform_requests

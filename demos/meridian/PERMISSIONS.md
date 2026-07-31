@@ -78,7 +78,17 @@ no role in §3 but listed here is deliberate, not a gap.
 | --- | --- |
 | `employee` | `absence:read`, `absence:request`, `expense:read`, `expense:submit`, `protocol:fill`, `protocol:read`, `protocol:sign`, `time:read`, `time:report` |
 
-## 5. Not covered by this artifact
+## 5. Scheduled work — the system principal's grants
+
+Each runs on the platform sweep, under `system:<module>`, on the cadence shown.
+The permissions are what that system principal is granted at provisioning — a
+schedule can do exactly this and no more.
+
+| Operation | Cadence | System principal | Permissions |
+| --- | --- | --- | --- |
+| `hr/expire-stale-requests` | every 1440 min | `system:@substrat-run/demo-meridian` | `absence:approve` |
+
+## 6. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

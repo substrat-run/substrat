@@ -72,10 +72,17 @@ export type RoleAssignment = z.infer<typeof roleAssignment>;
 export const checkSubject = z.union([
   z.object({ kind: z.literal('principal'), id: principalId }),
   z.object({ kind: z.literal('connection'), id: z.string().min(1) }),
+  // A MODULE acting on a timer (#383) — the scheduler's subject, the third caller
+  // #97 named. Like a connection it is not a person and holds no memberships; its
+  // authority is exactly the grants written against `system:<moduleId>` (§ the
+  // checker skips membership expansion for any non-principal subject). It stamps
+  // `{ system: <moduleId> }` on events, so scheduled work reads as the schedule, not
+  // as a human who happened to sit down at 03:00.
+  z.object({ kind: z.literal('system'), id: moduleId }),
 ]);
 export type CheckSubject = z.infer<typeof checkSubject>;
 
-/** The tuple-store ref for a subject: `principal:01J…` / `connection:01J…`. */
+/** The tuple-store ref for a subject: `principal:01J…` / `connection:01J…` / `system:@scope/mod`. */
 export const subjectRef = (subject: CheckSubject): string => `${subject.kind}:${subject.id}`;
 
 /**
@@ -104,6 +111,26 @@ export const capabilityGrant = z.object({
   grantedBy: principalId,
 });
 export type CapabilityGrant = z.infer<typeof capabilityGrant>;
+
+/**
+ * A capability granted to a MODULE's system principal rather than a person (#383) —
+ * the scheduler analogue of `connectionGrant`.
+ *
+ * Narrow by construction: it reaches only scopes of the module it names, and only
+ * the one permission. It is projected from the module's declared `schedules`
+ * (`scheduleSpec.permissions`) at scope provisioning, so what a schedule may do is
+ * both readable in the permission diff (code) and revocable per scope (runtime — a
+ * revoke fails the operation's own `ctx.check` closed, which is how scheduling is
+ * disabled for a tenant without a special "off" code path).
+ */
+export const systemGrant = z.object({
+  moduleId,
+  permission: permissionKey,
+  node,
+  expiresAt: instant.optional(),
+  grantedBy: platformActorId,
+});
+export type SystemGrant = z.infer<typeof systemGrant>;
 
 // ============================================================================
 // Evaluation representation — relationship tuples (design doc §4.2, plan D-23).
