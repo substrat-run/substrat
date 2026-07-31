@@ -12,6 +12,7 @@ import {
   eventId,
   platformRequestInput,
   platformRequestId,
+  platformRequest,
   MAX_PENDING_PLATFORM_REQUESTS,
   identityLink,
   identityPool,
@@ -61,6 +62,8 @@ import {
   type EventAuthorization,
   type PlatformRequestInput,
   type PlatformRequestId,
+  type PlatformRequest,
+  type PlatformRequestStatus,
   type EntitlementGrant,
   type EntitlementGrantInput,
   type EntitlementView,
@@ -524,6 +527,36 @@ interface OutboxRow {
   subject_id: string | null;
   authorization: string | null;
   payload: string | null;
+}
+
+/** A raw `_substrat_platform_requests` row as stored — snake_case, JSON columns as strings. */
+interface PlatformRequestRawRow {
+  id: string;
+  kind: string;
+  payload: string;
+  requested_by: string;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+  result: string | null;
+  requested_at: string;
+  settled_at: string | null;
+}
+
+/** Map a stored platform-request row to the `PlatformRequest` contract shape (JSON columns parsed). */
+function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
+  return platformRequest.parse({
+    id: r.id,
+    kind: r.kind,
+    payload: JSON.parse(r.payload),
+    requestedBy: JSON.parse(r.requested_by),
+    status: r.status,
+    attempts: r.attempts,
+    lastError: r.last_error,
+    result: r.result === null ? null : JSON.parse(r.result),
+    requestedAt: r.requested_at,
+    settledAt: r.settled_at,
+  });
 }
 
 export class SqliteScopeHost implements ScopeHost {
@@ -1867,6 +1900,44 @@ export class SqliteScopeHost implements ScopeHost {
       error: r.error,
       lastAttemptAt: r.delivered_at,
     }));
+  }
+
+  async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    const rows = rt.db
+      .prepare(
+        `SELECT id, kind, payload, requested_by, status, attempts, last_error, result, requested_at, settled_at
+           FROM _substrat_platform_requests WHERE status = 'pending' ORDER BY id`,
+      )
+      .all() as PlatformRequestRawRow[];
+    return rows.map(rowToPlatformRequest);
+  }
+
+  async settlePlatformRequest(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    id: PlatformRequestId,
+    outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
+  ): Promise<void> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    await rt.actor.enqueue(() => {
+      rt.db
+        .prepare(
+          `UPDATE _substrat_platform_requests
+             SET status = ?, result = COALESCE(?, result), last_error = ?,
+                 attempts = attempts + 1, settled_at = ?
+           WHERE id = ?`,
+        )
+        .run(
+          outcome.status,
+          outcome.result === undefined ? null : JSON.stringify(outcome.result),
+          outcome.lastError ?? null,
+          outcome.status === 'pending' ? null : new Date().toISOString(),
+          id,
+        );
+    });
   }
 
   private async dispatch(rt: ScopeRuntime): Promise<void> {

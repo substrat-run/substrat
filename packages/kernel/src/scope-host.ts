@@ -17,6 +17,8 @@ import type {
   DomainEventInput,
   PlatformRequestInput,
   PlatformRequestId,
+  PlatformRequest,
+  PlatformRequestStatus,
   EntitlementGrant,
   EntitlementGrantInput,
   EntitlementView,
@@ -1597,6 +1599,27 @@ export interface ScopeHost {
    * dead-letter is a decision rather than a disappearance.
    */
   executorDeadLetters(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDeadLetter[]>;
+
+  /**
+   * The scope's PENDING platform intents (platform-intents.md) — rows a vertical enqueued via
+   * `ctx.requestPlatform` awaiting the platform's drain. Fleet maintenance, no actor (the same
+   * class as `drainDue`). The platform reads these, executes each with `HostAdmin` authority, and
+   * journals the outcome via `settlePlatformRequest` — the read-here/effect-there executor shape.
+   */
+  listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]>;
+
+  /**
+   * Journal a platform-request outcome after the coordinator ran it: `done`, `failed` (terminal),
+   * or `pending` (transient — retried on a later drain). `result` persists across retries (a
+   * value written on an earlier pass survives an omitted one), carrying handler output such as a
+   * minted sibling scope id for two-phase idempotency.
+   */
+  settlePlatformRequest(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    id: PlatformRequestId,
+    outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
+  ): Promise<void>;
 
   /** Bare operation registration (tests, glue). Names are module-namespaced: 'workorder/create'. */
   defineOperation<I, O>(name: string, handler: OperationHandler<I, O>): void;

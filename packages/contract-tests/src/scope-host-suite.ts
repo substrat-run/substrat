@@ -49,7 +49,10 @@ interface PlatformRequestRow {
   requested_by: string;
   status: string;
   attempts: number;
+  last_error: string | null;
+  result: string | null;
   requested_at: string;
+  settled_at: string | null;
 }
 
 /** Adapter capability flags — everything an adapter cannot honor identically. */
@@ -279,6 +282,48 @@ export function scopeHostContractSuite(
       const after = await stub.invoke<PlatformRequestRow[]>('platform/read-requests');
       expect(after.length).toBe(before);
       expect(after.every((r) => r.kind !== 'provision-sibling' || r.payload !== JSON.stringify({ rolled: 'back' }))).toBe(true);
+    });
+
+    it('the platform lists pending intents and settles them done (drain surface, Phase B)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const id = await stub.invoke<string>('platform/request', { kind: 'provision-sibling', payload: { slug: 'padel' } });
+
+      const pending = await host.listPlatformRequests(t1, s1);
+      const mine = pending.find((r) => r.id === id)!;
+      expect(mine).toBeDefined();
+      expect(mine.kind).toBe('provision-sibling');
+      expect(mine.status).toBe('pending');
+      expect(mine.payload).toEqual({ slug: 'padel' }); // JSON parsed back to the contract shape
+
+      await host.settlePlatformRequest(t1, s1, mine.id, { status: 'done', result: { scopeId: 'NEWSITE' } });
+
+      // A settled intent drops out of the pending list…
+      expect((await host.listPlatformRequests(t1, s1)).some((r) => r.id === id)).toBe(false);
+      // …and the row now reads done with its handler result recorded.
+      const rows = await stub.invoke<PlatformRequestRow[]>('platform/read-requests');
+      const settled = rows.find((r) => r.id === id)!;
+      expect(settled.status).toBe('done');
+      expect(JSON.parse(settled.result as unknown as string)).toEqual({ scopeId: 'NEWSITE' });
+    });
+
+    it('a transient failure keeps the intent pending and preserves a two-phase result (retry)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const id = await stub.invoke<string>('platform/request', { kind: 'provision-sibling', payload: {} });
+      const mine = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+
+      // Two-phase: record a minted id but keep the intent pending (crash-safe pre-write).
+      await host.settlePlatformRequest(t1, s1, mine.id, { status: 'pending', result: { scopeId: 'MINTED' } });
+      const still = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+      expect(still.status).toBe('pending'); // still drainable
+      expect(still.result).toEqual({ scopeId: 'MINTED' });
+      expect(still.attempts).toBe(1);
+
+      // A later settle that omits the result keeps the earlier one (COALESCE) — idempotent retry.
+      await host.settlePlatformRequest(t1, s1, mine.id, { status: 'done' });
+      const rows = await stub.invoke<PlatformRequestRow[]>('platform/read-requests');
+      const row = rows.find((r) => r.id === id)!;
+      expect(row.status).toBe('done');
+      expect(JSON.parse(row.result as unknown as string)).toEqual({ scopeId: 'MINTED' });
     });
 
     it('isolates scope storage: a write in one scope is invisible in another', async () => {
