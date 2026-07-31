@@ -1,5 +1,40 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.31.0
+
+### Minor Changes
+
+- 50d9260: Platform intents, Phase B1: the drain surface (read + settle).
+
+  Adds the read/settle half of the platform-intent queue from `docs/design/platform-intents.md`, so
+  the platform can pull a scope's pending intents and journal their outcome. `ScopeHost` gains
+  `listPlatformRequests(tenantId, scopeId)` (pending intents, mapped to the `PlatformRequest`
+  contract shape) and `settlePlatformRequest(tenantId, scopeId, id, { status, result, lastError })`
+  (mark `done` / `failed` / `pending`-for-retry). Both are fleet-maintenance (no actor), the same
+  class as `drainDue`, implemented symmetrically in both adapters (a `pendingPlatformRequests` /
+  `settlePlatformRequest` DO RPC pair on the Cloudflare scope DO; direct table reads/writes on the
+  SQLite adapter).
+
+  `result` is COALESCE'd on settle, so a value written on an earlier pass (e.g. a minted sibling
+  scope id for two-phase idempotency) survives an omitted one on retry. Contract-suite coverage on
+  both adapters: list-pending → settle-done → drops from pending with its result recorded, and a
+  transient `pending` retry preserves the two-phase result.
+
+  No cross-deployment execution yet — the `VerticalClient` `/internal/platform-requests` transport,
+  the kind→handler drain engine, `provision-sibling`, and the sweep wiring are Phase B2 (#358). The
+  key constraint driving that split: the control plane can't read a vertical's scope DO directly
+  (different deployments — the reason the CP sweep runs `drainRetries: false`), so B2 drains over the
+  vertical's `/internal/*` HTTP surface, exactly like Data-tab introspection.
+
+### Patch Changes
+
+- Updated dependencies [fbf0704]
+- Updated dependencies [41d01f6]
+- Updated dependencies [50d9260]
+- Updated dependencies [0e9eba7]
+  - @substrat-run/contracts@0.31.0
+  - @substrat-run/kernel@0.31.0
+
 ## 0.30.0
 
 ### Minor Changes
@@ -1357,7 +1392,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

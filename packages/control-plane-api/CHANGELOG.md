@@ -1,5 +1,83 @@
 # @substrat-run/control-plane-api
 
+## 0.31.0
+
+### Minor Changes
+
+- fbf0704: Multi-scope Manyfold: archive a site.
+
+  Rounds out scope management (create + switch were already there) with **archive**, reusing the
+  platform-intent mechanism — archiving a scope is a platform action the sandbox-clean vertical can't
+  do itself, so it's another intent kind:
+
+  - **contracts:** `archive-scope` kind + `archiveScopePayload` (`{ scopeId }`).
+  - **control-plane-api:** `archiveScopeHandler` — the drained scope proves the tenant; the target
+    must be under that same tenant and run the same vertical (verified against the directory), then
+    `host.admin.archiveScope`. Idempotent (an already-archived/absent target is a no-op success).
+  - **control-plane worker:** registers `archive-scope` alongside `provision-sibling` in the drain.
+  - **vertical-auth:** `IdentityDO.forgetSite` drops a site from the per-tenant registry.
+  - **Manyfold:** a `manyfold/archive-site` op (`content:manage-sites` — no new permission) enqueues
+    the intent; `POST /api/sites/:slug/archive` runs it as the caller, then optimistically drops the
+    site from the registry so the switcher updates immediately.
+  - **Manyfold app:** an admin-only **Archive** control next to the switcher (shown only when the
+    tenant has more than one site); it archives the current site and switches away.
+
+  Tested: the handler archives its target + is idempotent + refuses a cross-vertical target;
+  `forgetSite` drops a site; the `archive-site` op enqueues an `archive-scope` intent and an author is
+  denied. Refs #358.
+
+- 0d79662: Multi-scope Manyfold, D2: the platform can drain Manyfold's site-creation intents end-to-end.
+
+  Wires the platform drain (Phases B2/C) to the vertical over its `/internal` surface, completing the
+  loop from D1's `request-site` producer:
+
+  - **Manyfold worker** exposes `GET /internal/platform-requests` and
+    `POST /internal/platform-requests/settle` (platform-secret gated), backed by the CP-less
+    `host.listPlatformRequests` / `settlePlatformRequest` (B1) — the scope's DO lives in the vertical's
+    own deployment, so the platform pulls its intents from here. Plus `POST /api/sites`, which runs
+    `manyfold/request-site` as the caller (its own `content:manage-sites` gate) and returns `202` + the
+    request id, tagging the response with `x-substrat-platform-request` for the router kick (Phase D3).
+  - **`VerticalClient.listPlatformRequests` / `settlePlatformRequest` now take `tenantId`** (the CP-less
+    vertical host reads by `(tenantId, scopeId)`); `drainScopePlatformRequests` passes it from the
+    drained scope's context. A small signature change to the just-added B2 methods, contained to the
+    drain path.
+
+  So a `request-site` intent is now picked up by the periodic sweep (C) and provisioned via
+  `provision-sibling` (B2), appearing in the M2 site registry within a sweep cycle. The low-latency
+  router kick and the "New site" UI are Phase D3. Refs #358.
+
+- 41d01f6: Platform intents, Phase B2: the drain engine + `provision-sibling` handler.
+
+  The platform-side execution for `docs/design/platform-intents.md`. Because a scope's intent rows
+  live in the vertical's own deployment (K-31), the platform PULLS them over the vertical's
+  `/internal` surface: `VerticalClient` gains `listPlatformRequests` / `settlePlatformRequest`
+  (the B1 read/settle surface, now reachable cross-deployment).
+
+  - `drainScopePlatformRequests(client, ctx, handlers)` lists a scope's pending intents, dispatches
+    each to the handler registered for its `kind`, and settles the outcome — an unknown kind settles
+    `failed` (never a silent drop), a thrown handler settles `pending` (retried next drain).
+  - `provisionSiblingScope(...)` extracts the exact sequence M1's `POST /tenants/:tenantId/scopes`
+    route runs (inherit parent vertical/jurisdiction → provision → materialize → activate) into one
+    reusable home; the route now calls it. `provisionSiblingHandler` wraps it as the
+    `provision-sibling` intent handler, with two-phase idempotency (a scope id minted on an earlier
+    pass is reused, so a retry targets the same sibling).
+  - `contracts` gains the shared `provisionSiblingPayload` (`{ slug, name, owner }`) + the
+    `provision-sibling` kind constant.
+
+  Tested with a fake vertical transport (dispatch → settle: done / unknown-kind-failed /
+  thrown-pending) and against a real SQLite host (the handler provisions + activates a sibling under
+  the parent tenant, seating the owner). The triggers — the periodic sweep phase and the router kick,
+  plus each vertical's `/internal/platform-requests` endpoints — are Phase C. Refs #358.
+
+### Patch Changes
+
+- Updated dependencies [fbf0704]
+- Updated dependencies [41d01f6]
+- Updated dependencies [50d9260]
+- Updated dependencies [0e9eba7]
+  - @substrat-run/contracts@0.31.0
+  - @substrat-run/kernel@0.31.0
+
 ## 0.30.0
 
 ### Minor Changes
