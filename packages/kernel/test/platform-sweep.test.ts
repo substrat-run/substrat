@@ -73,6 +73,48 @@ describe('runPlatformSweep', () => {
     expect(report.errors).toEqual([]);
   });
 
+  it('drains platform intents for active scopes when a drain fn is supplied, summing totals', async () => {
+    const scopes = [{ id: sid(), tenantId: T }, { id: sid(), tenantId: T }];
+    const drained: string[] = [];
+    const report = await runPlatformSweep(fakeHost({ scopes }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      drainPlatformRequestsFn: async (_t, s) => {
+        drained.push(s);
+        return { drained: 2, done: 1, failed: 0, pending: 1 };
+      },
+    });
+    expect(drained.sort()).toEqual(scopes.map((s) => s.id).sort());
+    expect(report.platformRequestTotals).toEqual({ scopes: 2, drained: 4, done: 2, failed: 0, pending: 2 });
+  });
+
+  it('skips the platform-intent phase entirely when no drain fn is supplied', async () => {
+    const report = await runPlatformSweep(fakeHost({ scopes: [{ id: sid(), tenantId: T }] }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+    });
+    expect(report.platformRequestTotals).toEqual({ scopes: 0, drained: 0, done: 0, failed: 0, pending: 0 });
+  });
+
+  it('records a platform-intent drain failure per-scope and steps over it', async () => {
+    const scopes = [{ id: sid(), tenantId: T }, { id: sid(), tenantId: T }];
+    let calls = 0;
+    const report = await runPlatformSweep(fakeHost({ scopes }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      drainPlatformRequestsFn: async () => {
+        calls++;
+        if (calls === 1) throw new Error('vertical down');
+        return { drained: 1, done: 1, failed: 0, pending: 0 };
+      },
+    });
+    expect(report.errors.some((e) => e.kind === 'platform-request')).toBe(true);
+    expect(report.platformRequestTotals.done).toBe(1); // the other scope still drained
+  });
+
   it('skips revoked connections and providers with no sweeper', async () => {
     const live = cid();
     const conns = [
