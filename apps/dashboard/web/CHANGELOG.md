@@ -1,5 +1,60 @@
 # @substrat-run/dashboard-web
 
+## 0.5.0
+
+### Minor Changes
+
+- d94d0be: Multi-scope M4: a scope switcher on the app Data tab.
+
+  The Data tab browsed only the single app scope, so a multi-scope vertical (Manyfold: one site
+  per scope) showed nothing of its other scopes. It now lists the app's scopes and lets you pick
+  which one's database to browse. New `GET /api/apps/:scopeId/scopes` returns the tenant's scopes
+  for the app's vertical (tenant-narrowed via `TenantNarrowedControlPlane.listScopes` in connected
+  mode, `host.admin.listScopes` embedded), and `DataBrowser` renders a scope `<select>` above the
+  table list — shown only when an app spans more than one scope, so single-scope apps are
+  unchanged. The existing table/row/query reads are keyed off the chosen scope; permissions and
+  audit are untouched (they were already per-scope). Listing is a control-plane directory read —
+  no vertical cooperation — while each scope's data still goes through the existing per-scope
+  introspection.
+
+### Patch Changes
+
+- 5812c8e: Trim the Permissions tab honesty banner to one line.
+
+  The banner at the foot of an app's Permissions tab had grown to a four-sentence paragraph
+  crammed into a component built for single-line notes, so it wrapped awkwardly and repeated
+  things the surrounding UI already says (the "Entity grant shapes" card header already notes
+  grants are per-entity and minted at runtime; the update diff already links to the Deployments
+  tab). It now keeps just the two claims worth stating — this is the declared, read-only surface,
+  and role approval happens on the Deployments tab — matching the length of every other banner.
+
+- 3aa9cde: Default custom-hostname DCV to HTTP (single-CNAME issuance).
+
+  Cloudflare-for-SaaS certificate validation now defaults to the `http` method instead of
+  `txt`. A tenant binding a custom domain publishes a **single** record — the routing CNAME —
+  and Cloudflare serves the validation token at its edge once the CNAME is live, so issuance is
+  hands-off (nothing for the platform to serve). The method is overridable per environment via
+  `CF_SAAS_SSL_METHOD` on the control-plane worker; set it to `txt` for the previous two-record
+  flow that can validate before the CNAME resolves. The dashboard's Domains preview mock is
+  refreshed to the single-record shape and the `cname.substrat.run` routing target.
+
+- 31cbd73: Move the running build version from the sidebar footer into Settings.
+
+  The `v0.0.0 · <sha>` build stamp (#346) now lives under an **About** tab in Settings rather
+  than as a muted footer caption. The dashboard already had a Settings page, so it gains the
+  tab alongside Profile / Organization / Danger zone. The console had no Settings page, so it
+  gains one: a new **Settings** nav item (under a "Console" section) opening a tabbed page
+  whose first tab is About — built as a tabbed page so console-level settings have room to
+  grow. Both footers drop back to just the identity/account row. A `sliders` icon was added to
+  the shared `@substrat-run/ui` icon set for the console's Settings nav item (the `cog` was
+  already the Permissions icon).
+
+- Updated dependencies [a698959]
+- Updated dependencies [67be7c7]
+- Updated dependencies [31cbd73]
+  - @substrat-run/contracts@0.30.0
+  - @substrat-run/ui@0.1.2
+
 ## 0.4.4
 
 ### Patch Changes

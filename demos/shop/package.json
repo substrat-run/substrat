@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-shop",
-  "version": "0.0.28",
+  "version": "0.0.29",
   "private": true,
   "substrat": {
     "permissions": "src/seed.ts"
