@@ -1,5 +1,8 @@
 import type {
   EntitlementGrant,
+  PlatformRequest,
+  PlatformRequestId,
+  PlatformRequestStatus,
   PrincipalId,
   QueryScopeInput,
   ReadScopeTableInput,
@@ -208,6 +211,31 @@ export class VerticalClient {
    */
   async queryScope(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
     return this.postInternal<ScopeQueryResult>('/internal/query', { scopeId, sql: input.sql }, 'query');
+  }
+
+  /**
+   * The scope's PENDING platform intents (platform-intents.md) — the platform pulls these because
+   * the intent rows live in the vertical's own scope DO, in the vertical's deployment (K-31), not
+   * the control plane's. The platform executes each with its own authority, then `settlePlatformRequest`
+   * journals the outcome back in the vertical.
+   */
+  async listPlatformRequests(scopeId: ScopeId): Promise<PlatformRequest[]> {
+    return this.getInternal<PlatformRequest[]>(
+      `/internal/platform-requests?scopeId=${encodeURIComponent(scopeId)}`,
+    );
+  }
+
+  /** Journal a platform-request outcome back in the vertical after the platform ran it. */
+  async settlePlatformRequest(
+    scopeId: ScopeId,
+    id: PlatformRequestId,
+    outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
+  ): Promise<void> {
+    await this.postInternal<unknown>(
+      '/internal/platform-requests/settle',
+      { scopeId, id, ...outcome },
+      'settle-platform-request',
+    );
   }
 
   /**
