@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AppPermissionsView, type AppScope, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -1552,12 +1552,16 @@ function EnvVars({ app }: { app: AppRow }) {
  * lands `pending` and walks the DNS-validation lifecycle. The default hostname can't
  * be removed here — deleting the app retires it.
  */
+/** Sentinel option: reveal a free-text field for a surface the vertical didn't declare. */
+const OTHER_SURFACE = '__other__';
+
 function AppDomains({ app }: { app: AppRow }) {
   const [view, setView] = useState<AppHostnamesView | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const [surface, setSurface] = useState('');
+  const [otherSurface, setOtherSurface] = useState(false);
   const [domain, setDomain] = useState('');
   const [adding, setAdding] = useState(false);
   const [toRemove, setToRemove] = useState<AppHostnameRow | null>(null);
@@ -1584,6 +1588,12 @@ function AppDomains({ app }: { app: AppRow }) {
 
   const surfaceLabel = (name: string) => view.surfaces.find((s) => s.name === name)?.label;
   const statusKind = (s: string) => (s === 'active' ? 'success' : s === 'failed' ? 'danger' : 'info');
+  // The picker's menu: the vertical's DECLARED surfaces when it names them (package.json
+  // `substrat.surfaces`), else the surfaces already bound ∪ the conventional `app`, so a
+  // vertical that declares none still gets a usable menu instead of a blank text box.
+  const surfaceChoices: DeclaredSurface[] = view.surfaces.length > 0
+    ? view.surfaces
+    : [...new Set(['app', ...view.bindings.map((b) => b.surface)])].map((name) => ({ name, label: name }));
 
   const add = async () => {
     const chosen = surface.trim();
@@ -1675,19 +1685,31 @@ function AppDomains({ app }: { app: AppRow }) {
           or enter your own domain to start DNS validation.
         </div>
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
-          {view.surfaces.length > 0 ? (
-            <Select
-              label="Surface"
-              value={surface}
-              onChange={(e) => setSurface(e.target.value)}
-              options={[
-                { value: '', label: 'Choose a surface…' },
-                ...view.surfaces.map((s) => ({ value: s.name, label: `${s.label} (${s.name})` })),
-              ]}
-              style={{ width: 260 }}
-            />
-          ) : (
-            <Input label="Surface" placeholder="e.g. eka" mono value={surface} onChange={(e) => setSurface(e.target.value)} style={{ width: 200 }} />
+          {/* Always a picker: the vertical's DECLARED surfaces when it names them, else
+              the surfaces already bound ∪ the conventional `app`, so a vertical that never
+              declared surfaces still gets a menu instead of a blank box. "Other…" keeps the
+              free-text escape hatch — declaration is UX, not contract (worker.ts §hostnames). */}
+          <Select
+            label="Surface"
+            value={otherSurface ? OTHER_SURFACE : surface}
+            onChange={(e) => {
+              if (e.target.value === OTHER_SURFACE) {
+                setOtherSurface(true);
+                setSurface('');
+              } else {
+                setOtherSurface(false);
+                setSurface(e.target.value);
+              }
+            }}
+            options={[
+              { value: '', label: 'Choose a surface…' },
+              ...surfaceChoices.map((s) => ({ value: s.name, label: s.label === s.name ? s.name : `${s.label} (${s.name})` })),
+              { value: OTHER_SURFACE, label: 'Other…' },
+            ]}
+            style={{ width: 260 }}
+          />
+          {otherSurface && (
+            <Input label="Surface name" placeholder="e.g. eka" mono value={surface} onChange={(e) => setSurface(e.target.value)} style={{ width: 200 }} />
           )}
           <Input label="Custom domain (optional)" placeholder="eka.example.com" mono value={domain} onChange={(e) => setDomain(e.target.value)} style={{ width: 260 }} />
           <Button onClick={add} disabled={adding}>{adding ? 'Binding…' : 'Add hostname'}</Button>
