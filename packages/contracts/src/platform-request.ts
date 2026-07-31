@@ -46,3 +46,20 @@ export type PlatformRequest = z.infer<typeof platformRequest>;
  * the drain. Shared by every adapter so the limit can't drift between them.
  */
 export const MAX_PENDING_PLATFORM_REQUESTS = 32;
+
+/**
+ * The `provision-sibling` intent kind (multi-scope-manyfold.md M3) — a vertical asking the platform
+ * to provision a new sibling scope of the one that enqueued it (a new Manyfold "site"). Shared
+ * vocabulary: the vertical builds this payload, the platform's drain handler validates it. `owner`
+ * is the vertical-domain principal to seat as the new scope's owner. The parent scope and the
+ * tenant are NOT in the payload — the platform derives them from the scope the intent lives in.
+ */
+export const provisionSiblingPayload = z.object({
+  slug: z.string().min(1),
+  name: z.string().min(1),
+  owner: z.string().min(1),
+});
+export type ProvisionSiblingPayload = z.infer<typeof provisionSiblingPayload>;
+
+/** The well-known intent kind string for `provisionSiblingPayload`. */
+export const PROVISION_SIBLING_KIND = 'provision-sibling';

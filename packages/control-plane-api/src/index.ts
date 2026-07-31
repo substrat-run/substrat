@@ -23,6 +23,18 @@ export type {
 export { ControlPlaneClient, ControlPlaneError } from './client.js';
 export type { ControlPlaneClientOptions, ClientProvisionScopeInput } from './client.js';
 export { VerticalClient } from './vertical-client.js';
+export {
+  drainScopePlatformRequests,
+  provisionSiblingScope,
+  provisionSiblingHandler,
+  type PlatformRequestHandler,
+  type PlatformRequestContext,
+  type PlatformRequestOutcome,
+  type PlatformDrainReport,
+  type ProvisionSiblingDeps,
+  type ProvisionSiblingInput,
+  type ProvisionSiblingResult,
+} from './platform-drain.js';
 export type {
   VerticalClientOptions,
   ProvisionInstanceInput,

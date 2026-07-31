@@ -31,6 +31,7 @@ import { migrationProgress, ulid } from '@substrat-run/kernel';
 import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
 import type { VerticalClient } from './vertical-client.js';
 import { ControlPlaneError } from './client.js';
+import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { mapError } from './errors.js';
 import { maskDump } from './mask.js';
@@ -637,46 +638,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const input = addSiblingScopeBody.parse(await c.req.json());
     const actor = c.get('actor');
     const p = c.get('principal');
-    const hidden = { error: `unknown scope for tenant: (${tenantId}, ${input.parentScopeId})` } as const;
     // A builder acts only within its own tenant; a foreign tenant is hidden as 404 (K-3),
     // never distinguished from "no such scope".
-    if (p.kind === 'builder' && p.tenantId !== tenantId) return c.json(hidden, 404);
-    // The parent app scope must exist under this tenant and carry a vertical — that existence is
-    // the entitlement proof, and its vertical/jurisdiction are what the sibling inherits.
-    const parent = await admin.getScopeRecord(actor, tenantId, input.parentScopeId);
-    if (!parent || !parent.vertical) return c.json(hidden, 404);
-    // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the instance
-    // materializes leaves an inert provisioning row, never a live scope with no deployment.
-    await host.provisionScope(actor, {
-      tenantId,
-      scopeId: input.scopeId,
-      slug: input.slug,
-      name: input.name,
-      vertical: parent.vertical,
-      jurisdiction: parent.jurisdiction ?? undefined,
-    } as Parameters<ScopeHost['provisionScope']>[1]);
-    // Materialize the instance in the vertical's own deployment (schema + roles + owner seat) —
-    // the same call createApp makes. Resolve the vertical from the freshly-written scope row so
-    // it rides the parent's serving script (#286).
-    const created = await admin.getScopeRecord(actor, tenantId, input.scopeId);
-    const vertical = created ? await verticalForScope(c, created) : undefined;
-    if (!vertical) return c.json({ error: `no deployment is bound for vertical '${parent.vertical}'` }, 501);
-    const entitlements = await admin.listEntitlements(actor, tenantId);
+    if (p.kind === 'builder' && p.tenantId !== tenantId) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${input.parentScopeId})` }, 404);
+    }
+    // The provisioning sequence lives in one place — `provisionSiblingScope` — shared with the
+    // platform-intent drain's `provision-sibling` handler (platform-intents.md B2).
     try {
-      await vertical.provisionInstance({
-        tenantId,
-        scopeId: input.scopeId,
-        owner: principalIdSchema.parse(input.owner),
-        slug: input.slug,
-        name: input.name,
-        entitlements,
-      });
+      const result = await provisionSiblingScope(
+        { host, actor, resolveVerticalForScope: (scope) => verticalForScope({ get: () => actor }, scope) },
+        {
+          tenantId,
+          parentScopeId: input.parentScopeId,
+          scopeId: input.scopeId,
+          slug: input.slug,
+          name: input.name,
+          owner: input.owner,
+        },
+      );
+      if (!result.ok) return c.json({ error: result.error }, result.status as ContentfulStatusCode);
+      return c.json(await admin.getScopeRecord(actor, tenantId, input.scopeId), 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       throw e;
     }
-    await admin.activateScope(actor, tenantId, input.scopeId);
-    return c.json(await admin.getScopeRecord(actor, tenantId, input.scopeId), 201);
   });
 
   app.get('/tenants/:tenantId/scopes/:scopeId', async (c) => {
