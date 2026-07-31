@@ -10,6 +10,9 @@ import {
   entitlementGrant,
   entitlementGrantInput,
   eventId,
+  platformRequestInput,
+  platformRequestId,
+  MAX_PENDING_PLATFORM_REQUESTS,
   identityLink,
   identityPool,
   instant,
@@ -56,6 +59,8 @@ import {
   type DomainEvent,
   type DomainEventInput,
   type EventAuthorization,
+  type PlatformRequestInput,
+  type PlatformRequestId,
   type EntitlementGrant,
   type EntitlementGrantInput,
   type EntitlementView,
@@ -203,6 +208,21 @@ const KERNEL_DDL = `
     -- NULL on rows written before the field existed — honestly unrecorded, not empty.
     authorization TEXT,
     drained_at TEXT
+  );
+  -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
+  -- to drain and execute with HostAdmin authority — the sandbox-clean way a vertical asks for a
+  -- privileged action. Written by the kernel (spine), settled by the platform drain.
+  CREATE TABLE IF NOT EXISTS _substrat_platform_requests (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    result TEXT,
+    requested_at TEXT NOT NULL,
+    settled_at TEXT
   );
   -- K-35: refused permission checks. A denial rolls its operation back, so it is
   -- recorded here OUTSIDE that transaction, on the deny path — the one event where an
@@ -4418,6 +4438,36 @@ export class SqliteScopeHost implements ScopeHost {
             full.authorization ? JSON.stringify(full.authorization) : null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
+      },
+      requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
+        const input = platformRequestInput.parse(request);
+        // Backpressure (platform-intents.md): refuse when the scope already holds too many pending
+        // intents, so a stuck or runaway vertical cannot flood the platform drain.
+        const pending = (
+          rt.db
+            .prepare(`SELECT COUNT(*) AS c FROM _substrat_platform_requests WHERE status = 'pending'`)
+            .get() as { c: number }
+        ).c;
+        if (pending >= MAX_PENDING_PLATFORM_REQUESTS) {
+          throw new Error(`too many pending platform requests (${pending}); retry once some have drained`);
+        }
+        const id = platformRequestId.parse(ulid());
+        const requestedBy =
+          overrideActor ?? (subject.kind === 'connection' ? { connection: subject.id } : principal);
+        rt.db
+          .prepare(
+            `INSERT INTO _substrat_platform_requests
+               (id, kind, payload, requested_by, status, attempts, requested_at)
+             VALUES (?, ?, ?, ?, 'pending', 0, ?)`,
+          )
+          .run(
+            id,
+            input.kind,
+            JSON.stringify(input.payload ?? null),
+            JSON.stringify(requestedBy),
+            instant.parse(new Date().toISOString()),
+          );
+        return id;
       },
       check: async (permission, entity?) => {
         if (overrideActor) {

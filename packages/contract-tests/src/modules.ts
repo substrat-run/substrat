@@ -177,6 +177,16 @@ interface OutboxRow {
   subject_id: string | null;
 }
 
+interface PlatformRequestRow {
+  id: string;
+  kind: string;
+  payload: string;
+  requested_by: string;
+  status: string;
+  attempts: number;
+  requested_at: string;
+}
+
 // Shared across test/stash + test/read-stash. Module scope so the value survives
 // between invokes on the same DO instance (and, on the pure adapter, across the
 // suite process). Only these two operations touch it.
@@ -228,6 +238,18 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
     never,
     unknown
   >,
+  // platform-intents.md: enqueue a platform intent and return its id.
+  'platform/request': ((ctx, input: { kind: string; payload?: unknown }) =>
+    ctx.requestPlatform({ kind: input.kind, payload: input.payload })) as OperationHandler<never, unknown>,
+  // Enqueue then throw — the request write must roll back with the operation (atomic with the txn).
+  'platform/request-then-throw': ((ctx, input: { kind: string }) => {
+    ctx.requestPlatform({ kind: input.kind, payload: { rolled: 'back' } });
+    throw new Error('boom after requestPlatform');
+  }) as OperationHandler<never, unknown>,
+  'platform/read-requests': ((ctx) =>
+    ctx.sql.query<PlatformRequestRow>(
+      'SELECT * FROM _substrat_platform_requests ORDER BY id',
+    )) as OperationHandler<never, unknown>,
   'test/write-marker': ((ctx, input: { v: string }) => {
     ctx.sql.exec('CREATE TABLE IF NOT EXISTS marker (v TEXT NOT NULL)');
     ctx.sql.exec('INSERT INTO marker (v) VALUES (?)', [input.v]);

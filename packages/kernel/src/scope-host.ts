@@ -15,6 +15,8 @@ import type {
   Decision,
   DomainEvent,
   DomainEventInput,
+  PlatformRequestInput,
+  PlatformRequestId,
   EntitlementGrant,
   EntitlementGrantInput,
   EntitlementView,
@@ -95,6 +97,17 @@ export interface OperationContext {
   readonly sql: ScopedSql;
   /** Envelope is stamped kernel-side (id, occurredAt, tenant, scope, actor); input is validated. */
   emit(event: DomainEventInput): void;
+  /**
+   * Enqueue a PLATFORM INTENT (docs/design/platform-intents.md) — how a sandbox-clean vertical asks
+   * the platform to perform a privileged action (e.g. provision a sibling scope) without an upward
+   * call. Writes a durable row into this scope's `_substrat_platform_requests` spine, atomic with
+   * the operation; the platform pulls and executes it later, knowing the tenant inherently (it reads
+   * this scope's DO). Call it AFTER the vertical's own permission check — authorization is the
+   * vertical's, isolation is the platform's. Origin fields (id, requestedAt, requestedBy) are
+   * stamped kernel-side; returns the new request id so the caller can report/track it. Throws if the
+   * scope already holds `MAX_PENDING_PLATFORM_REQUESTS` pending intents (backpressure).
+   */
+  requestPlatform(request: PlatformRequestInput): PlatformRequestId;
   /** Node-level check; pass `entity` for per-entity checks (portal access, §4.2 rule 3). */
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
   /**
