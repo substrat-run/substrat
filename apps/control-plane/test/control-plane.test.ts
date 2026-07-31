@@ -262,3 +262,23 @@ describe('builder auth — live self-serve path', () => {
     expect(res.status).toBe(401);
   });
 });
+
+/**
+ * The router kick's landing endpoint (platform-intents.md §"router kick"). The router
+ * pings `/internal/drain-scope` so a scope's just-enqueued platform intent runs in
+ * seconds. It is platform-secret gated, and this deployment binds no PLATFORM_SECRET —
+ * so, per the kernel's `assertPlatformCall`, an unconfigured secret is a REFUSAL, never a
+ * bypass. The security-relevant property: a deployment that never set the secret must not
+ * drain scopes for an anonymous caller. The drain's own logic is unit-tested in
+ * control-plane-api's platform-drain suite; here we prove the surface fails closed.
+ */
+describe('router kick — /internal/drain-scope', () => {
+  it('refuses when the platform secret is not configured (fails closed)', async () => {
+    const res = await SELF.fetch('https://cp.test/internal/drain-scope', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
+      body: JSON.stringify({ tenantId: ulid(), scopeId: ulid() }),
+    });
+    expect(res.status).toBe(403);
+  });
+});

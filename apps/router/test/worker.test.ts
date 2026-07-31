@@ -458,3 +458,103 @@ describe('router', () => {
     }
   });
 });
+
+/**
+ * The router kick (platform-intents.md §"router kick"). A vertical that just enqueued a
+ * platform intent flags its response with `x-substrat-platform-request`; the router — the
+ * one hop that already knows the resolved (tenant, scope) — pings the control plane to
+ * drain that scope now. It is out of band (ctx.waitUntil) and best-effort: the user's
+ * response is returned untouched, and a missing/failed kick just falls back to the sweep.
+ */
+describe('router kick (platform-intents)', () => {
+  /** A vertical that flags a freshly-enqueued platform intent on its response. */
+  const verticalFlaggingIntent = (): Fetcher =>
+    ({
+      fetch: async () =>
+        new Response('accepted', { status: 202, headers: { 'x-substrat-platform-request': '1' } }),
+    }) as unknown as Fetcher;
+
+  /** Collect `ctx.waitUntil` tasks so the test can await the out-of-band kick. */
+  function collectingCtx() {
+    const tasks: Promise<unknown>[] = [];
+    return {
+      ctx: {
+        waitUntil: (p: Promise<unknown>) => tasks.push(p),
+        passThroughOnException: () => {},
+      } as unknown as ExecutionContext,
+      settle: () => Promise.all(tasks),
+    };
+  }
+
+  /** A control-plane worker binding that records the kick it receives. */
+  function kickSpy() {
+    const calls: Array<{ url: string; secret: string | null; body: unknown }> = [];
+    return {
+      binding: {
+        fetch: async (req: Request) => {
+          calls.push({
+            url: req.url,
+            secret: req.headers.get('x-substrat-platform'),
+            body: await req.json(),
+          });
+          return new Response(JSON.stringify({ drained: 1, done: 1, failed: 0, pending: 0 }));
+        },
+      } as unknown as Fetcher,
+      calls: () => calls,
+    };
+  }
+
+  it('drains the RESOLVED scope when the vertical flags a platform intent', async () => {
+    const kick = kickSpy();
+    const { ctx, settle } = collectingCtx();
+    const env = {
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: verticalFlaggingIntent(),
+      CONTROL_PLANE_KICK: kick.binding,
+      PLATFORM_SECRET: 'sekret',
+    } as unknown as Env;
+
+    // The user's response comes back immediately, unmodified — the kick is out of band.
+    const res = await worker.fetch(get('https://acme.example.com/api/sites'), env, ctx);
+    expect(res.status).toBe(202);
+
+    await settle();
+    expect(kick.calls()).toHaveLength(1);
+    const call = kick.calls()[0]!;
+    expect(new URL(call.url).pathname).toBe('/internal/drain-scope');
+    expect(call.secret).toBe('sekret'); // presents the global platform secret
+    // The RESOLVED node from the directory, never anything the caller could name.
+    expect(call.body).toEqual({ tenantId: T, scopeId: S });
+  });
+
+  it('does NOT kick when the response carries no platform-intent flag', async () => {
+    const kick = kickSpy();
+    const { ctx, settle } = collectingCtx();
+    const env = {
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: spyVertical().binding, // a plain 200, no flag
+      CONTROL_PLANE_KICK: kick.binding,
+      PLATFORM_SECRET: 'sekret',
+    } as unknown as Env;
+
+    await worker.fetch(get('https://acme.example.com/'), env, ctx);
+    await settle();
+    expect(kick.calls()).toHaveLength(0);
+  });
+
+  it('skips the kick without throwing when PLATFORM_SECRET is unconfigured', async () => {
+    const kick = kickSpy();
+    const { ctx, settle } = collectingCtx();
+    const env = {
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: verticalFlaggingIntent(),
+      CONTROL_PLANE_KICK: kick.binding,
+      // PLATFORM_SECRET intentionally unset — the sweep is the backstop.
+    } as unknown as Env;
+
+    const res = await worker.fetch(get('https://acme.example.com/api/sites'), env, ctx);
+    expect(res.status).toBe(202); // the response is unaffected
+    await settle();
+    expect(kick.calls()).toHaveLength(0);
+  });
+});
