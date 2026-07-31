@@ -63,15 +63,28 @@ export function ModelsView({ canAdmin, onOpen, onNew }: { canAdmin: boolean; onO
         {types.map(({ def }) => (
           <Card key={def.key} style={{ cursor: 'pointer' }}>
             <div onClick={() => onOpen(def.key)}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
                 <span style={{ fontSize: 16, fontWeight: 600 }}>{def.title}</span>
-                <Mono>v{def.version}</Mono>
+                <Mono style={{ fontSize: 11.5 }}>v{def.version}</Mono>
               </div>
-              <Mono style={{ display: 'block', marginTop: 6 }}>ct_{def.key}_v{def.version}</Mono>
-              <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--muted)' }}>{Object.keys(def.fields).length} fields</div>
+              <Mono style={{ display: 'block', marginTop: 6 }}>ct_{def.key}_v{def.version} · {Object.keys(def.fields).length} fields</Mono>
+              <div style={{ marginTop: 12, fontSize: 12, color: 'var(--faint)', lineHeight: 1.6 }}>
+                {Object.entries(def.fields).map(([n, f], i) => (
+                  <span key={n}>
+                    {i > 0 && ' · '}
+                    {n}
+                    {(f.type === 'ref' || f.type === 'refMany') && f.target ? <span style={{ color: 'var(--accent)' }}> →{f.target}</span> : null}
+                  </span>
+                ))}
+              </div>
             </div>
           </Card>
         ))}
+      </div>
+      <div style={{ marginTop: 16, padding: '12px 16px', border: '1px dashed var(--border2)', borderRadius: 'var(--r-card)', fontSize: 12.5, color: 'var(--muted)' }}>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--faint)', marginRight: 8 }}>NOTE</span>
+        Editing a model never touches live tables. Changes compile to a reviewed migration; the schema is
+        tenant-wide and each site scope applies it lazily on next open.
       </div>
     </div>
   );
@@ -183,15 +196,33 @@ export function ModelEditorView(props: { typeKey: string | null; canAdmin: boole
           </div>
         </Card>
 
-        <Card>
-          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--faint)', marginBottom: 8 }}>Compiles to · migration preview</div>
-          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>Save stages this migration for review — never a live ALTER.</div>
-          <pre style={{ margin: 0, padding: 12, background: 'var(--code-bg)', color: 'var(--code-ink)', fontFamily: 'var(--mono)', fontSize: 11, borderRadius: 'var(--r-input)', overflow: 'auto', maxHeight: 420 }}>
-            {compileTypeToSql(previewDef).split('\n').map((l, i) => (
-              <div key={i} style={{ background: 'var(--diff-add-bg)', color: 'var(--diff-add-fg)', padding: '0 4px' }}>+ {l}</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <Card>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>What happens on save</div>
+            {[
+              <>DSL compiles your edits to <Mono style={{ fontSize: 11 }}>CREATE TABLE ct_{previewDef.key}_v{previewDef.version}</Mono> + a backfill step.</>,
+              <>The migration waits for review — nothing is live yet.</>,
+              <>Once admitted, each site scope applies it lazily on next open.</>,
+            ].map((step, i) => (
+              <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 8, fontSize: 12.5, color: 'var(--muted)' }}>
+                <span style={{ flex: '0 0 18px', height: 18, borderRadius: 'var(--r-pill)', background: 'var(--accent-soft)', color: 'var(--accent)', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</span>
+                <span style={{ lineHeight: 1.5 }}>{step}</span>
+              </div>
             ))}
-          </pre>
-        </Card>
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)', fontSize: 11.5, color: 'var(--faint)', lineHeight: 1.5 }}>
+              Retyping or removing a field is append-only too — the new version simply doesn't carry the column; old revisions stay readable in the prior table.
+            </div>
+          </Card>
+          <Card>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--faint)', marginBottom: 8 }}>Compiles to · migration preview</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>Save stages this migration for review — never a live ALTER.</div>
+            <pre style={{ margin: 0, padding: 12, background: 'var(--code-bg)', color: 'var(--code-ink)', fontFamily: 'var(--mono)', fontSize: 11, borderRadius: 'var(--r-input)', overflow: 'auto', maxHeight: 420 }}>
+              {compileTypeToSql(previewDef).split('\n').map((l, i) => (
+                <div key={i} style={{ background: 'var(--diff-add-bg)', color: 'var(--diff-add-fg)', padding: '0 4px' }}>+ {l}</div>
+              ))}
+            </pre>
+          </Card>
+        </div>
       </div>
     </div>
   );
