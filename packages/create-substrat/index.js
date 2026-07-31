@@ -25,7 +25,7 @@ const SUBSTRAT = '^0.29.0';
 const ENGINES = '^0.3.27';
 const BOUNDARY_LINT = '^0.0.5';
 
-const DOCS = 'https://substrat.ahlstrand.es';
+const DOCS = 'https://substrat.net';
 
 function fail(message) {
   process.stderr.write(`\n  create-substrat: ${message}\n\n`);
@@ -167,9 +167,13 @@ pnpm typecheck
 
 function main() {
   const target = process.argv[2];
-  if (!target || target === '-h' || target === '--help') {
+  if (target === '-h' || target === '--help') {
     usage();
-    process.exit(target ? 0 : 1);
+    process.exit(0);
+  }
+  if (!target) {
+    usage();
+    fail('a target directory is required — e.g. `npm create substrat my-app` (or `.` for here).');
   }
 
   const dest = resolve(target);

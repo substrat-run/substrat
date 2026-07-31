@@ -36,7 +36,7 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   audience, never a second source of truth. Both origins must be trusted by Better Auth.
 - One vitest scenario per demo vertical: `pnpm --filter @substrat-run/demo-callout test`
 - `pnpm --filter @substrat-run/docs cf:deploy` — build + ship the docs site to
-  [substrat.ahlstrand.es](https://substrat.ahlstrand.es) (Cloudflare Pages). Every deployable
+  [substrat.net](https://substrat.net) (Cloudflare Pages). Every deployable
   workspace uses the `cf:deploy` script name (dashboard, control-plane, router, docs, demos) —
   chosen over `deploy` so `pnpm cf:deploy` never collides with pnpm's built-in `deploy` command.
 
