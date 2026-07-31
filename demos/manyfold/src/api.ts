@@ -3,6 +3,7 @@ import { manyfoldManifest } from './manifest.js';
 import {
   createEntryInput,
   deleteTypeInput,
+  requestSiteInput,
   deliverInput,
   entryIdInput,
   listDeliveryInput,
@@ -114,6 +115,14 @@ export const API: ApiCatalog = {
     summary: 'Delete a content type no entries use.',
     description: 'Requires `content:admin`.',
     input: deleteTypeInput,
+  },
+  'manyfold/request-site': {
+    tag: 'Sites',
+    summary: 'Request a new site — provisions a new scope for the tenant.',
+    description:
+      'Requires `content:manage-sites`. The vertical cannot provision itself, so this enqueues a ' +
+      'platform intent the control plane drains; returns the request id to poll.',
+    input: requestSiteInput,
   },
   'manyfold/deliver': {
     tag: 'Delivery',
