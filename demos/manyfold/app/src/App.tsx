@@ -129,8 +129,10 @@ export default function App() {
         role={me.role}
         showPersona={personas.length > 0}
         showSites={sites.length > 0}
+        canManageSites={caps.admin}
         theme={theme}
         onSite={(slug) => { setSite(slug); navigate({ kind: 'home' }); refresh(); }}
+        onCreated={(slug) => { setSite(slug); navigate({ kind: 'home' }); refresh(); }}
         onPersona={(id) => { setPrincipal(id); refresh(); }}
         onTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
       />
@@ -183,14 +185,92 @@ export default function App() {
   );
 }
 
+function slugify(name: string): string {
+  return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Create a new site (multi-scope-manyfold.md M3). Admin-only. The vertical can't provision a scope
+ * itself, so `createSite` enqueues a platform intent the control plane drains; the new site appears
+ * in `sites()` once provisioned — so we poll until it shows up, then switch to it. The wait is the
+ * platform drain (seconds with the router kick, up to a sweep cycle without it).
+ */
+function NewSite({ onCreated }: { onCreated: (slug: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const create = async () => {
+    const trimmed = name.trim();
+    const slug = slugify(trimmed);
+    if (!slug || busy) return;
+    setBusy(true);
+    setNote('Creating…');
+    try {
+      await api.createSite(slug, trimmed);
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        if ((await api.sites().catch(() => [])).some((s) => s.slug === slug)) {
+          setBusy(false);
+          setOpen(false);
+          setName('');
+          setNote(null);
+          onCreated(slug);
+          return;
+        }
+        if (i === 2) setNote('Provisioning your site — this can take a minute…');
+      }
+      setNote('Still provisioning — it will appear in the switcher shortly.');
+      setBusy(false);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : 'Could not create the site.');
+      setBusy(false);
+    }
+  };
+
+  if (!open)
+    return (
+      <Button size="sm" onClick={() => setOpen(true)}>
+        + New site
+      </Button>
+    );
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <input
+        autoFocus
+        placeholder="Site name"
+        value={name}
+        disabled={busy}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void create();
+        }}
+        style={{ height: 28, padding: '0 8px', fontSize: 13, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+      />
+      <Button size="sm" variant="primary" disabled={busy || !name.trim()} onClick={() => void create()}>
+        Create
+      </Button>
+      {!busy && (
+        <Button size="sm" onClick={() => { setOpen(false); setNote(null); }}>
+          Cancel
+        </Button>
+      )}
+      {note && <span style={{ fontSize: 11, color: 'var(--muted)' }}>{note}</span>}
+    </div>
+  );
+}
+
 function TopBar(props: {
   sites: Site[];
   personas: Persona[];
   role: string | null;
   showPersona: boolean;
   showSites: boolean;
+  canManageSites: boolean;
   theme: 'light' | 'dark';
   onSite: (slug: string) => void;
+  onCreated: (slug: string) => void;
   onPersona: (id: string) => void;
   onTheme: () => void;
 }) {
@@ -218,6 +298,7 @@ function TopBar(props: {
       {props.showSites && (
         <Select value={activeSite} onChange={props.onSite} options={props.sites.map((s) => ({ value: s.slug, label: s.name }))} accent />
       )}
+      {props.canManageSites && <NewSite onCreated={props.onCreated} />}
 
       {props.role && (
         <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)' }}>
