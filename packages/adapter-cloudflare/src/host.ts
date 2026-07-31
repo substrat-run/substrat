@@ -70,6 +70,10 @@ import {
   type ScopeDump,
   type ScopeDumpTable,
   type ScopeId,
+  platformRequest,
+  type PlatformRequest,
+  type PlatformRequestId,
+  type PlatformRequestStatus,
   type ScopeStatus,
   type ScopeTable,
   type ScopeQueryResult,
@@ -413,6 +417,36 @@ interface AdminEntry {
   at: string;
 }
 
+/** A raw `_substrat_platform_requests` row over the DO RPC — snake_case, JSON columns as strings. */
+interface PlatformRequestRawRow {
+  id: string;
+  kind: string;
+  payload: string;
+  requested_by: string;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+  result: string | null;
+  requested_at: string;
+  settled_at: string | null;
+}
+
+/** Map a stored platform-request row to the `PlatformRequest` contract shape (JSON columns parsed). */
+function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
+  return platformRequest.parse({
+    id: r.id,
+    kind: r.kind,
+    payload: JSON.parse(r.payload),
+    requestedBy: JSON.parse(r.requested_by),
+    status: r.status,
+    attempts: r.attempts,
+    lastError: r.last_error,
+    result: r.result === null ? null : JSON.parse(r.result),
+    requestedAt: r.requested_at,
+    settledAt: r.settled_at,
+  });
+}
+
 interface ScopeStubRpc {
   /** The applied-migration count if this call applied any, else null (nothing changed). */
   migrate(): Promise<number | null>;
@@ -431,6 +465,13 @@ interface ScopeStubRpc {
   ): Promise<number>;
   executorAttempts(eventId: string, deliveryId: string): Promise<number>;
   executorDeadLetters(): Promise<ExecutorDeadLetter[]>;
+  pendingPlatformRequests(): Promise<PlatformRequestRawRow[]>;
+  settlePlatformRequest(
+    id: string,
+    status: 'pending' | 'done' | 'failed',
+    result: string | null,
+    lastError: string | null,
+  ): Promise<void>;
   /** The migration that failed on this instance, read on `migrate()`'s reject path. */
   migrationFailure(): Promise<{ version: string; error: string; applied: number } | null>;
   invoke(
@@ -777,6 +818,28 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     return this.scopeStub(scopeId).executorDeadLetters();
+  }
+
+  async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return (await this.scopeStub(scopeId).pendingPlatformRequests()).map(rowToPlatformRequest);
+  }
+
+  async settlePlatformRequest(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    id: PlatformRequestId,
+    outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
+  ): Promise<void> {
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    await this.scopeStub(scopeId).settlePlatformRequest(
+      id,
+      outcome.status,
+      outcome.result === undefined ? null : JSON.stringify(outcome.result),
+      outcome.lastError ?? null,
+    );
   }
 
   migrationFrontier(): MigrationFrontier {

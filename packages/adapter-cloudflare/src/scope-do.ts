@@ -257,6 +257,21 @@ function isSystemTable(name: string): boolean {
   return name.startsWith('_substrat') || name.startsWith('sqlite_');
 }
 
+/** A raw `_substrat_platform_requests` row as stored — snake_case, JSON columns still strings.
+ *  The coordinator maps it to the `PlatformRequest` contract shape. */
+export interface PlatformRequestRawRow {
+  id: string;
+  kind: string;
+  payload: string;
+  requested_by: string;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+  result: string | null;
+  requested_at: string;
+  settled_at: string | null;
+}
+
 /** SQLite cell → a JSON-safe value: bigints stringify, blobs (ArrayBuffer) read as null. */
 function cellToJson(v: unknown): unknown {
   if (v == null) return null;
@@ -893,6 +908,47 @@ export function defineScopeDO(
           .toArray() as unknown as { attempts: number }[]
       )[0];
       return row?.attempts ?? 0;
+    }
+
+    /**
+     * Pending platform intents (platform-intents.md) — rows a vertical enqueued via
+     * `ctx.requestPlatform` awaiting the platform's drain. Read here; executed on the coordinator
+     * with HostAdmin authority (the DO cannot provision); `settlePlatformRequest` journals the
+     * outcome afterwards, exactly the executor-drain shape (read here, effect there).
+     */
+    pendingPlatformRequests(): PlatformRequestRawRow[] {
+      return this.sql
+        .exec(
+          `SELECT id, kind, payload, requested_by, status, attempts, last_error, result, requested_at, settled_at
+             FROM _substrat_platform_requests WHERE status = 'pending' ORDER BY id`,
+        )
+        .toArray() as unknown as PlatformRequestRawRow[];
+    }
+
+    /**
+     * Journal a platform-request outcome after the coordinator ran it. `status`: 'done' (succeeded),
+     * 'failed' (terminal — unknown kind or given up), or 'pending' (transient failure, will retry).
+     * `result` is COALESCE'd so a value written on an earlier pass (e.g. a minted sibling scope id,
+     * for two-phase idempotency) survives a null on retry. `attempts` bumps each settle; `settled_at`
+     * is set only on a terminal outcome.
+     */
+    settlePlatformRequest(
+      id: string,
+      status: 'pending' | 'done' | 'failed',
+      result: string | null,
+      lastError: string | null,
+    ): void {
+      this.sql.exec(
+        `UPDATE _substrat_platform_requests
+           SET status = ?, result = COALESCE(?, result), last_error = ?,
+               attempts = attempts + 1, settled_at = ?
+         WHERE id = ?`,
+        status,
+        result,
+        lastError,
+        status === 'pending' ? null : new Date().toISOString(),
+        id,
+      );
     }
 
     /** Executor deliveries that exhausted their attempts. */
