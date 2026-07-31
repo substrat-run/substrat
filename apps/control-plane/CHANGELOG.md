@@ -1,5 +1,29 @@
 # @substrat-run/control-plane
 
+## 0.5.4
+
+### Patch Changes
+
+- 3aa9cde: Default custom-hostname DCV to HTTP (single-CNAME issuance).
+
+  Cloudflare-for-SaaS certificate validation now defaults to the `http` method instead of
+  `txt`. A tenant binding a custom domain publishes a **single** record — the routing CNAME —
+  and Cloudflare serves the validation token at its edge once the CNAME is live, so issuance is
+  hands-off (nothing for the platform to serve). The method is overridable per environment via
+  `CF_SAAS_SSL_METHOD` on the control-plane worker; set it to `txt` for the previous two-record
+  flow that can validate before the CNAME resolves. The dashboard's Domains preview mock is
+  refreshed to the single-record shape and the `cname.substrat.run` routing target.
+
+- Updated dependencies [49db0a1]
+- Updated dependencies [a698959]
+- Updated dependencies [67be7c7]
+- Updated dependencies [866c46d]
+- Updated dependencies [91a60e2]
+  - @substrat-run/control-plane-api@0.30.0
+  - @substrat-run/contracts@0.30.0
+  - @substrat-run/kernel@0.30.0
+  - @substrat-run/adapter-cloudflare@0.30.0
+
 ## 0.5.3
 
 ### Patch Changes

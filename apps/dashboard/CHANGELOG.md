@@ -1,5 +1,76 @@
 # @substrat-run/dashboard
 
+## 0.10.0
+
+### Minor Changes
+
+- d94d0be: Multi-scope M4: a scope switcher on the app Data tab.
+
+  The Data tab browsed only the single app scope, so a multi-scope vertical (Manyfold: one site
+  per scope) showed nothing of its other scopes. It now lists the app's scopes and lets you pick
+  which one's database to browse. New `GET /api/apps/:scopeId/scopes` returns the tenant's scopes
+  for the app's vertical (tenant-narrowed via `TenantNarrowedControlPlane.listScopes` in connected
+  mode, `host.admin.listScopes` embedded), and `DataBrowser` renders a scope `<select>` above the
+  table list — shown only when an app spans more than one scope, so single-scope apps are
+  unchanged. The existing table/row/query reads are keyed off the chosen scope; permissions and
+  audit are untouched (they were already per-scope). Listing is a control-plane directory read —
+  no vertical cooperation — while each scope's data still goes through the existing per-scope
+  introspection.
+
+- 866c46d: Per-PR preview instances for private verticals (preview-and-snapshots.md §2/§9, D-43).
+
+  Open a PR → a preview instance running the PR's pushed code against a **fork of the
+  tenant's prod data**, on its own `<label>--pr-N.<base>` URL; close the PR → it's reaped
+  (with a per-preview `expiresAt` as the GC backstop). Also drivable by hand from the CLI.
+
+  - **control-plane-api**: `orchestratedPreview` + three builder-reachable routes —
+    `POST/GET/DELETE /verticals/:slug/previews`. Create forks the source prod scope (the
+    §9 cross-version path: export from where prod data lives → import into the PR version's
+    deployment), binds the pushed version to the fork, and mints a non-canonical preview
+    hostname; delete delegates to the existing fork-reap. Gated `global`-jurisdiction only
+    (K-32) with the canonical audited export path. Private verticals only — a private
+    push self-admits (D-36), so no admission relaxation is needed.
+  - **cli**: `substrat preview create|delete|ls`. `create` pushes the working tree, then
+    forks + binds; re-running the same `--tag` rebinds onto the same fork so a PR's
+    successive pushes roll migrations forward on one copy (`--refresh` re-forks). Uses the
+    existing tenant-scoped push token — no new credential.
+  - **dashboard**: the generated `substrat-deploy.yml` gains `pull_request` jobs —
+    create/update the preview on open/synchronize (and comment the URL back), reap it on
+    close — alongside the existing push-to-branch prod deploy.
+
+### Patch Changes
+
+- 49db0a1: Self-serve multi-scope, M1: add a sibling scope to an app the tenant already runs.
+
+  New builder-reachable, tenant-narrowed `POST /tenants/:tenantId/scopes` route on the control
+  plane. It authorizes by `parentScopeId` — the existing app scope must belong to the caller's
+  tenant, which proves the entitlement — and the new scope INHERITS that app's vertical and
+  jurisdiction, so a caller can never name a vertical it does not already run. It then runs the
+  same provision → materialize-instance (K-31) → activate sequence `createApp` runs for an app's
+  first scope. A builder is confined to its own tenant (foreign tenants read as 404, K-3
+  existence-hiding); staff may target any tenant. No site-count quota is enforced yet — an open
+  product question tracked in the design doc. The dashboard's `TenantNarrowedControlPlane` gains
+  an `addSiblingScope` method over the new route.
+
+  Also pins a regression (#355): `provisionScopeLocal` applies a scope's module migrations at
+  provision time — own tables created and journaled before any first `getScope` — so a
+  freshly-provisioned scope is never born content-less.
+
+- Updated dependencies [ad4ccbf]
+- Updated dependencies [a698959]
+- Updated dependencies [67be7c7]
+- Updated dependencies [91a60e2]
+  - @substrat-run/demo-manyfold@0.2.0
+  - @substrat-run/contracts@0.30.0
+  - @substrat-run/kernel@0.30.0
+  - @substrat-run/adapter-cloudflare@0.30.0
+  - @substrat-run/demo-meridian@0.2.15
+  - @substrat-run/demo-callout@0.1.18
+  - @substrat-run/engine-invites@0.0.27
+  - @substrat-run/engine-invoicing@0.3.28
+  - @substrat-run/engine-protocol@0.4.22
+  - @substrat-run/engine-workorder@0.3.28
+
 ## 0.9.3
 
 ### Patch Changes

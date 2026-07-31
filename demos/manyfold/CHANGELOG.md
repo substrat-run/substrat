@@ -1,5 +1,33 @@
 # @substrat-run/demo-manyfold
 
+## 0.2.0
+
+### Minor Changes
+
+- ad4ccbf: Manyfold multi-scope, M2: a per-tenant site registry so the app lists and switches its sites.
+
+  The per-tenant `IdentityDO` gains a site registry (`recordSite` / `listSites` /
+  `resolveSiteScope`, logic factored into `site-registry.ts` so it is unit-testable without a
+  Durable Object). Manyfold's worker records each site at `/internal/provision`, serves the
+  tenant's sites at `GET /api/sites` (previously 404 in production, which left the switcher
+  empty), and resolves the app's `x-site` slug selection to the corresponding scope in `nodeFor`
+  — so the existing in-app site switcher now actually switches sites on a deployed install.
+  `nodeFor` is split from a sync `baseNode` (the routed tenant + home scope, which the auth
+  provider keys on) so the async site resolution never touches the auth path. Tenant isolation is
+  unchanged: the registry is per-tenant and `getScope` re-checks the (tenant, scope) pair.
+
+### Patch Changes
+
+- Updated dependencies [ad4ccbf]
+- Updated dependencies [a698959]
+- Updated dependencies [67be7c7]
+- Updated dependencies [91a60e2]
+  - @substrat-run/vertical-auth@0.4.0
+  - @substrat-run/contracts@0.30.0
+  - @substrat-run/kernel@0.30.0
+  - @substrat-run/adapter-sqlite@0.30.0
+  - @substrat-run/adapter-cloudflare@0.30.0
+
 ## 0.1.15
 
 ### Patch Changes

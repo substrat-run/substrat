@@ -1,5 +1,63 @@
 # @substrat-run/adapter-sqlite
 
+## 0.30.0
+
+### Minor Changes
+
+- 67be7c7: Platform intents, Phase A: the `ctx.requestPlatform` primitive.
+
+  Adds the foundation from `docs/design/platform-intents.md` — the sandbox-clean way a vertical
+  asks the platform for a privileged action (provision a sibling scope, quota, …) without an
+  upward call. A vertical operation calls `ctx.requestPlatform({ kind, payload })` after its own
+  permission check; the kernel durably records a typed intent in this scope's new
+  `_substrat_platform_requests` spine table (atomic with the operation, stamped with the actor), and
+  returns the request id. The platform will pull and execute these with `HostAdmin` authority in a
+  later phase — knowing the tenant inherently because it reads that scope's own DO.
+
+  - `OperationContext` gains `requestPlatform(input): PlatformRequestId` (kernel), implemented
+    symmetrically in both adapters; `contracts` gains `platformRequestId`, `platformRequestInput` /
+    `platformRequest` schemas, and the `MAX_PENDING_PLATFORM_REQUESTS` backpressure bound (the verb
+    refuses once a scope holds that many pending intents).
+  - **Migration checkpoint:** a new `_substrat_platform_requests` spine table is added to each
+    adapter's `KERNEL_DDL` (`CREATE TABLE IF NOT EXISTS`, so it back-fills existing scopes on next
+    open). No versioned module migration; it is kernel spine, flagged `system` automatically.
+  - Contract-suite coverage (both adapters): the intent is enqueued as `pending` with its kind /
+    payload / actor, and rolls back with its operation when the handler throws (K-4).
+
+  No consumer yet — the drain-executor, router kick, and the Manyfold "New site" flow are later
+  phases (#358).
+
+### Patch Changes
+
+- 91a60e2: Defer foreign keys across the restore's DROPs, not just its inserts (#348, follow-up to #339).
+
+  #339 wrapped the INSERT phase of a scope restore in `defer_foreign_keys`, so a dump whose
+  child table sorts before its parent replays cleanly. It left the opening DROP sweep outside
+  the deferral.
+
+  `DROP TABLE` performs an implicit `DELETE FROM`, so dropping a parent while a child table
+  still holds rows raises `FOREIGN KEY constraint failed` before any replacement row exists.
+  That bites only when the TARGET already holds data, which is why it hid behind the first
+  fix: an empty scope drops cleanly, and overwriting populated data is the whole point of
+  restore. In the field it made `substrat scope restore` fail against any scope already
+  holding FK-related rows, with the same bare constraint error #339 was believed to have
+  fixed.
+
+  The whole drop-then-replay now runs in one transaction with `defer_foreign_keys` set before
+  the first DROP, so every check lands at commit — by which point the old rows are gone and
+  the new ones are in. Both adapters; they are in the same fixed version group, so both move
+  together.
+
+  The regression test creates the PARENT first and restores twice, because `sqlite_master`
+  lists tables in creation order and a child-first dump drops child-first, never tripping the
+  hazard. It was verified to fail with the drop-deferral removed and the insert-deferral left
+  in place.
+
+- Updated dependencies [a698959]
+- Updated dependencies [67be7c7]
+  - @substrat-run/contracts@0.30.0
+  - @substrat-run/kernel@0.30.0
+
 ## 0.29.0
 
 ### Patch Changes
@@ -1082,7 +1140,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

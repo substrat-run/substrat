@@ -1,5 +1,79 @@
 # @substrat-run/control-plane-api
 
+## 0.30.0
+
+### Minor Changes
+
+- 49db0a1: Self-serve multi-scope, M1: add a sibling scope to an app the tenant already runs.
+
+  New builder-reachable, tenant-narrowed `POST /tenants/:tenantId/scopes` route on the control
+  plane. It authorizes by `parentScopeId` — the existing app scope must belong to the caller's
+  tenant, which proves the entitlement — and the new scope INHERITS that app's vertical and
+  jurisdiction, so a caller can never name a vertical it does not already run. It then runs the
+  same provision → materialize-instance (K-31) → activate sequence `createApp` runs for an app's
+  first scope. A builder is confined to its own tenant (foreign tenants read as 404, K-3
+  existence-hiding); staff may target any tenant. No site-count quota is enforced yet — an open
+  product question tracked in the design doc. The dashboard's `TenantNarrowedControlPlane` gains
+  an `addSiblingScope` method over the new route.
+
+  Also pins a regression (#355): `provisionScopeLocal` applies a scope's module migrations at
+  provision time — own tables created and journaled before any first `getScope` — so a
+  freshly-provisioned scope is never born content-less.
+
+- a698959: Derive the permission registry from a typed source, and require it in the deploy manifest (D-41).
+
+  D-39 shipped the declared permission surface in the deploy manifest but left three seams as
+  convention and introduced a machine-only generated file in git. The surface was discovered by a
+  by-name `MODULES`/`ROLES`/`ENTITY_GRANTS` re-export from each vertical's `seed.ts` (wrong name,
+  wrong file, or a vertical outside `demos/`/`apps/` vanished from the checkpoint with no error);
+  `push` read a checked-in `permissions.json` and treated its absence as a silent empty surface; and
+  `deployManifest.registry` was optional, so a push could carry no declared surface at all.
+
+  Now the surface is declared once via a typed `definePermissions({ modules, roles, entityGrants })`
+  in `@substrat-run/contracts` — a compile-checked single source. The checkpoint tool discovers it
+  from a declared `package.json` `substrat.permissions` pointer rather than a `seed.ts` re-export
+  (a package with a `seed.ts` but no pointer is now a hard error, not a silent skip), and emits only
+  the human-readable `PERMISSIONS.md`. The machine-readable `permissions.json` is gone from git:
+  `substrat push` derives the registry from the typed entry with the same new
+  `buildPermissionRegistry`, bundling the entry with esbuild (deps left external, so a node-ful entry
+  still resolves its own `node_modules`) and hashing the result into `digests.permission` — proven to
+  reproduce the previously-committed files byte-for-byte, so the digest is unchanged.
+
+  `deployManifest.registry` is now **required**: a push that declares no surface is rejected at the
+  trust boundary and by the CLI before upload (absence is never a silent empty registry; a vertical
+  that genuinely exposes nothing ships an explicit empty registry). A lenient `storedDeployManifest`
+  (registry optional) is used only for re-reading manifests persisted before this change, so old
+  versions stay readable and re-deployable in place. `@substrat-run/cli` gains an `esbuild`
+  dependency.
+
+- 866c46d: Per-PR preview instances for private verticals (preview-and-snapshots.md §2/§9, D-43).
+
+  Open a PR → a preview instance running the PR's pushed code against a **fork of the
+  tenant's prod data**, on its own `<label>--pr-N.<base>` URL; close the PR → it's reaped
+  (with a per-preview `expiresAt` as the GC backstop). Also drivable by hand from the CLI.
+
+  - **control-plane-api**: `orchestratedPreview` + three builder-reachable routes —
+    `POST/GET/DELETE /verticals/:slug/previews`. Create forks the source prod scope (the
+    §9 cross-version path: export from where prod data lives → import into the PR version's
+    deployment), binds the pushed version to the fork, and mints a non-canonical preview
+    hostname; delete delegates to the existing fork-reap. Gated `global`-jurisdiction only
+    (K-32) with the canonical audited export path. Private verticals only — a private
+    push self-admits (D-36), so no admission relaxation is needed.
+  - **cli**: `substrat preview create|delete|ls`. `create` pushes the working tree, then
+    forks + binds; re-running the same `--tag` rebinds onto the same fork so a PR's
+    successive pushes roll migrations forward on one copy (`--refresh` re-forks). Uses the
+    existing tenant-scoped push token — no new credential.
+  - **dashboard**: the generated `substrat-deploy.yml` gains `pull_request` jobs —
+    create/update the preview on open/synchronize (and comment the URL back), reap it on
+    close — alongside the existing push-to-branch prod deploy.
+
+### Patch Changes
+
+- Updated dependencies [a698959]
+- Updated dependencies [67be7c7]
+  - @substrat-run/contracts@0.30.0
+  - @substrat-run/kernel@0.30.0
+
 ## 0.29.0
 
 ### Minor Changes
