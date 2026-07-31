@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { type EntityRef } from '@substrat-run/contracts';
+import { type EntityRef, PROVISION_SIBLING_KIND } from '@substrat-run/contracts';
 import {
   assertAllowed,
   ulid,
@@ -488,6 +488,25 @@ const saveTypeOp: OperationHandler<z.infer<typeof saveTypeInput>, ContentTypeDef
   return loadType(ctx, input.key);
 };
 
+export const requestSiteInput = z.object({ slug: z.string().min(1), name: z.string().min(1) });
+
+/**
+ * Request a new SITE (multi-scope-manyfold.md M3). A tenant admin (`content:manage-sites`) asks the
+ * platform to provision a sibling scope. The vertical cannot provision itself (sandbox-clean), so it
+ * enqueues a `provision-sibling` platform intent (platform-intents.md) that the platform drains and
+ * executes with its own authority — knowing the tenant inherently from this scope's DO. The new
+ * site's owner is the requesting admin. Returns the request id so the caller can poll for the site.
+ */
+const requestSiteOp: OperationHandler<z.infer<typeof requestSiteInput>, { requestId: string }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(MF_PERM.manageSites));
+  const input = requestSiteInput.parse(raw);
+  const requestId = ctx.requestPlatform({
+    kind: PROVISION_SIBLING_KIND,
+    payload: { slug: input.slug, name: input.name, owner: ctx.principal },
+  });
+  return { requestId };
+};
+
 const deleteTypeOp: OperationHandler<z.infer<typeof deleteTypeInput>, { deleted: string }> = async (ctx, input) => {
   assertAllowed(await ctx.check(MF_PERM.admin));
   const { key } = deleteTypeInput.parse(input);
@@ -596,6 +615,7 @@ export const manyfoldModule: ModuleRegistration = {
     'manyfold/list-types': listTypesOp as never,
     'manyfold/save-type': saveTypeOp as never,
     'manyfold/delete-type': deleteTypeOp as never,
+    'manyfold/request-site': requestSiteOp as never,
     'manyfold/deliver': deliverOp as never,
     'manyfold/list-delivery': listDeliveryOp as never,
     'manyfold/whoami': whoamiOp as never,

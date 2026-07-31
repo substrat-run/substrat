@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-manyfold
 
-5 keys · 1 modules · 5 roles
+6 keys · 1 modules · 5 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -13,6 +13,7 @@
 | --- | --- | --- |
 | `content:admin` | Manage members, roles, and content models | `@substrat-run/demo-manyfold` |
 | `content:author` | Create and edit drafts, submit for review, restore revisions | `@substrat-run/demo-manyfold` |
+| `content:manage-sites` | Create new sites (provision a new scope for the tenant) | `@substrat-run/demo-manyfold` |
 | `content:publish` | Publish, unpublish, and archive entries | `@substrat-run/demo-manyfold` |
 | `content:read` | Read entries, revisions, and content models | `@substrat-run/demo-manyfold` |
 | `content:review` | Approve or reject entries in review | `@substrat-run/demo-manyfold` |
@@ -23,7 +24,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Role | Permissions |
 | --- | --- |
-| `admin` | `content:admin`, `content:author`, `content:publish`, `content:read`, `content:review` |
+| `admin` | `content:admin`, `content:author`, `content:manage-sites`, `content:publish`, `content:read`, `content:review` |
 | `author` | `content:author`, `content:read` |
 | `editor` | `content:author`, `content:read`, `content:review` |
 | `publisher` | `content:author`, `content:publish`, `content:read`, `content:review` |
@@ -35,6 +36,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | --- | --- |
 | `content:admin` | `admin` |
 | `content:author` | `admin`, `author`, `editor`, `publisher` |
+| `content:manage-sites` | `admin` |
 | `content:publish` | `admin`, `publisher` |
 | `content:read` | `admin`, `author`, `editor`, `publisher`, `viewer` |
 | `content:review` | `admin`, `editor`, `publisher` |
