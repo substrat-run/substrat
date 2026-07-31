@@ -17,7 +17,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, platformRequestId, platformRequestStatus, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { assertPlatformCall, PlatformCallError, readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { IdentityDO, doAuthProvider, oidcAuthProvider, type AuthProvider } from '@substrat-run/vertical-auth';
@@ -174,6 +174,19 @@ app.get('/api/sites', async (c) => {
   return c.json(sites.map((s) => ({ slug: s.slug, name: s.name })));
 });
 
+const requestSiteBody = z.object({ slug: z.string().min(1), name: z.string().min(1) });
+
+// Create a new site (multi-scope-manyfold.md M3). Runs `manyfold/request-site` as the caller in
+// their current site (its permission check gates on `content:manage-sites`), enqueuing a platform
+// intent the control plane drains. 202 + the request id (the app polls `/api/sites`); the response
+// header nudges a prompt drain (the router kick reads it, Phase D3), else the ~2-min sweep catches it.
+app.post('/api/sites', async (c) => {
+  const scope = await stub(c);
+  const result = await scope.invoke('manyfold/request-site', requestSiteBody.parse(await c.req.json()));
+  c.header('x-substrat-platform-request', '1');
+  return c.json(result as Record<string, unknown>, 202);
+});
+
 const provisionBody = z.object({ tenantId, scopeId, owner: principalId, slug: z.string().min(1), name: z.string().min(1), entitlements: z.array(entitlementGrant).optional() }); // entitlements (#310): projected so ctx.entitlement + the gate work CP-lessly (#304)
 
 // Provision ONE site on the platform's instruction (K-31), CP-less. The shared control plane
@@ -274,6 +287,34 @@ app.post('/internal/query', async (c) => {
     }
     throw e;
   }
+});
+// Platform-intent drain surface (platform-intents.md): the control plane PULLS this scope's pending
+// intents — its DO lives in THIS deployment, not the platform's — executes each with its own
+// authority, and journals the outcome back here. Platform-secret gated; the CP-less host reads the
+// DO directly (validateScopeAccess no-ops without a control plane).
+app.get('/internal/platform-requests', async (c) => {
+  gatePlatform(c);
+  const t = tenantId.parse(c.req.query('tenantId'));
+  const s = scopeId.parse(c.req.query('scopeId'));
+  return c.json(await hostFor(c.env).listPlatformRequests(t, s));
+});
+const settlePlatformRequestBody = z.object({
+  tenantId,
+  scopeId,
+  id: platformRequestId,
+  status: platformRequestStatus,
+  result: z.unknown().optional(),
+  lastError: z.string().nullable().optional(),
+});
+app.post('/internal/platform-requests/settle', async (c) => {
+  gatePlatform(c);
+  const body = settlePlatformRequestBody.parse(await c.req.json());
+  await hostFor(c.env).settlePlatformRequest(body.tenantId, body.scopeId, body.id, {
+    status: body.status,
+    result: body.result,
+    lastError: body.lastError ?? null,
+  });
+  return c.json({ ok: true });
 });
 // Scope-storage lifecycle (preview-and-snapshots.md §9): copy a scope into a sibling
 // DO / wipe a reaped fork — both inside this deployment; no bytes cross the boundary.
