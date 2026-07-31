@@ -17,7 +17,7 @@
  * then `wrangler deploy`; needs Workers Paid for DO SQLite + a D1 for the roster).
  */
 import { Hono } from 'hono';
-import { platformActorId } from '@substrat-run/contracts';
+import { platformActorId, PROVISION_SIBLING_KIND } from '@substrat-run/contracts';
 import type { PlatformActorId } from '@substrat-run/contracts';
 import { runPlatformSweep, type FetchLike } from '@substrat-run/kernel';
 import {
@@ -39,6 +39,8 @@ import {
   serviceTokenAuth,
   sessionPlatformAuth,
   UNSAFE_devPlatformActorAuth,
+  drainScopePlatformRequests,
+  provisionSiblingHandler,
   type DeployVerticalFn,
   type CustomHostnameProvisioner,
   type PlatformActorAuth,
@@ -362,6 +364,28 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const host = hostFor(env);
     const resolveVersion = resolveVerticalVersionFor(env);
+    const resolveRef = resolveVerticalRefFor(env);
+    const resolveSlug = resolveVerticalFor(env);
+    // Resolve the VerticalClient serving a scope — the same ladder the control-plane API's
+    // `verticalForScope` uses (serving script → bound version → prod). Shared by the
+    // platform-intent drain below and its provision-sibling handler.
+    const resolveVerticalForScope = async (scope: {
+      vertical: string | null;
+      verticalVersionId: string | null;
+      servingRef?: string | null;
+    }): Promise<VerticalClient | undefined> => {
+      const slug = scope.vertical;
+      if (!slug) return undefined;
+      if (scope.servingRef && resolveRef) {
+        const serving = await resolveRef(scope.servingRef);
+        if (serving) return serving;
+      }
+      if (scope.verticalVersionId && resolveVersion) {
+        const bound = await resolveVersion(slug, scope.verticalVersionId, SWEEP_ACTOR);
+        if (bound) return bound;
+      }
+      return resolveSlug ? resolveSlug(slug, SWEEP_ACTOR) : undefined;
+    };
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Handed to connector sweepers only — none are registered here, so this is a
@@ -397,6 +421,22 @@ export default {
       // reapTenant — so the orchestrated per-scope wipe applies here without a separate
       // override. Left unset ⇒ the kernel skips the phase.
       reapDeletingAfterDays: parseRetentionDays(env.TENANT_RETENTION_DAYS),
+      // Platform-intent drain (platform-intents.md B2/C): for each active scope, pull its pending
+      // intents from the vertical's /internal surface (its DO lives in the vertical's deployment),
+      // execute each with platform authority, and settle back. provision-sibling reuses the M1
+      // sequence via the shared handler. A scope with no bound deployment drains nothing.
+      drainPlatformRequestsFn: async (tenantId, scopeId) => {
+        const empty = { drained: 0, done: 0, failed: 0, pending: 0 };
+        const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
+        if (!rec?.vertical) return empty;
+        const client = await resolveVerticalForScope(rec);
+        if (!client) return empty;
+        return drainScopePlatformRequests(
+          client,
+          { tenantId, scopeId, vertical: rec.vertical },
+          { [PROVISION_SIBLING_KIND]: provisionSiblingHandler({ host, actor: SWEEP_ACTOR, resolveVerticalForScope }) },
+        );
+      },
     });
     if (
       report.snapshotsReaped > 0 ||

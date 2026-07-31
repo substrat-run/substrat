@@ -46,6 +46,17 @@ export interface PlatformSweepOptions {
    */
   drainRetries?: boolean;
   /**
+   * Also drain each active scope's pending PLATFORM INTENTS (platform-intents.md) — the requests a
+   * vertical enqueued via `ctx.requestPlatform`. Injected like `reapScopeFn`: the kernel cannot
+   * reach a vertical's scope DO (it lives in the vertical's own deployment), so the control plane
+   * supplies a fn that pulls + executes each intent over the vertical's `/internal` surface. UNSET
+   * (the default) skips the phase; returns per-scope counts, summed into `platformRequestTotals`.
+   */
+  drainPlatformRequestsFn?: (
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ) => Promise<{ drained: number; done: number; failed: number; pending: number }>;
+  /**
    * Also reap expired snapshots (preview-and-snapshots.md §3/§9): any FORK
    * (`forkedFrom` set) whose `expiresAt` has passed is hard-deleted via
    * `deleteSnapshot`. Default `true` — an expiry is only ever present because the
@@ -163,6 +174,8 @@ export interface PlatformSweepReport {
   archivedScopesReaped: number;
   /** Tenants past their grace window reaped this pass (§4.8). */
   tenantsReaped: number;
+  /** Platform-intent drain outcomes summed across scopes (platform-intents.md). */
+  platformRequestTotals: PlatformRequestDrainTotals;
   /**
    * The migration-reconciliation phase's report (§5.3, #49), or null when the
    * phase was disabled or the host predates `migrateScope`. Note null vs a
@@ -173,10 +186,24 @@ export interface PlatformSweepReport {
   migrations: MigrationSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
-    kind: 'drain' | 'sweep' | 'gc' | 'reap' | 'reap-tenant' | 'migrate';
+    kind: 'drain' | 'sweep' | 'gc' | 'reap' | 'reap-tenant' | 'migrate' | 'platform-request';
     id: string;
     error: string;
   }[];
+}
+
+/** Platform-intent drain counts, summed across scopes in one pass. */
+export interface PlatformRequestDrainTotals {
+  /** Active scopes that had at least one intent drained. */
+  scopes: number;
+  /** Intents seen across all scopes. */
+  drained: number;
+  /** Executed successfully. */
+  done: number;
+  /** Terminally failed (unknown kind, or a handler that gave up). */
+  failed: number;
+  /** Left pending for a later drain (transient failure). */
+  pending: number;
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -231,6 +258,7 @@ export async function runPlatformSweep(
     snapshotsReaped: 0,
     archivedScopesReaped: 0,
     tenantsReaped: 0,
+    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0 },
     migrations: null,
     errors: [],
   };
@@ -350,6 +378,28 @@ export async function runPlatformSweep(
         report.drainTotals.deadLettered += r.deadLettered;
       } catch (err) {
         report.errors.push({ kind: 'drain', id: s.id, error: message(err) });
+      }
+    });
+  }
+
+  // Platform-intent drain (platform-intents.md): pull + execute each active scope's pending
+  // intents. Injected because the kernel can't reach a vertical's DO (§ the control plane supplies
+  // a fn that goes over the vertical's /internal surface). Skips scopes whose migration failed this
+  // pass — draining a fail-closed scope is only noise, exactly like the executor drain above.
+  if (options.drainPlatformRequestsFn) {
+    const drain = options.drainPlatformRequestsFn;
+    const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
+    await mapBounded(scopes, concurrency, async (s) => {
+      if (failedThisPass.has(s.id)) return;
+      try {
+        const r = await drain(s.tenantId, s.id);
+        if (r.drained > 0) report.platformRequestTotals.scopes += 1;
+        report.platformRequestTotals.drained += r.drained;
+        report.platformRequestTotals.done += r.done;
+        report.platformRequestTotals.failed += r.failed;
+        report.platformRequestTotals.pending += r.pending;
+      } catch (err) {
+        report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
       }
     });
   }
