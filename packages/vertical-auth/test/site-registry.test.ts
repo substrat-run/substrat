@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import {
   SITE_REGISTRY_DDL,
   recordSite,
+  forgetSite,
   listSites,
   resolveSiteScope,
   type RegistrySql,
@@ -53,5 +54,15 @@ describe('site registry', () => {
     expect(listSites(sql)).toEqual([{ scopeId: '01SCOPEX', slug: 'store', name: 'The Store' }]);
     expect(resolveSiteScope(sql, 'store')).toBe('01SCOPEX');
     expect(resolveSiteScope(sql, 'shop')).toBeNull(); // the old slug is gone
+  });
+
+  it('forgetSite drops a site — it no longer lists or resolves (idempotent)', () => {
+    recordSite(sql, '01SCOPEA', 'cafe', 'Cafe');
+    recordSite(sql, '01SCOPEB', 'padel', 'Padel');
+    forgetSite(sql, '01SCOPEA');
+    expect(listSites(sql).map((s) => s.slug)).toEqual(['padel']);
+    expect(resolveSiteScope(sql, 'cafe')).toBeNull();
+    forgetSite(sql, '01SCOPEA'); // idempotent
+    expect(listSites(sql).map((s) => s.slug)).toEqual(['padel']);
   });
 });

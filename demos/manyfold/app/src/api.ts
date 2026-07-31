@@ -108,6 +108,9 @@ export const api = {
   /** Request a new site (needs `content:manage-sites`). Returns the platform-request id; the new
    *  site appears in `sites()` once the platform provisions it (poll after this). */
   createSite: (slug: string, name: string) => postJson<{ requestId: string }>('/api/sites', { slug, name }),
+  /** Archive a site (needs `content:manage-sites`). It leaves the switcher immediately; the platform
+   *  retires the scope. */
+  archiveSite: (slug: string) => postJson<{ requestId: string }>(`/api/sites/${encodeURIComponent(slug)}/archive`, {}),
   // Normalizes both the dev server ({principal,name,site,role}) and the worker
   // ({status:'needs-setup'} | {key,display,site,can} | 401) into one shape.
   me: async (): Promise<Me> => {

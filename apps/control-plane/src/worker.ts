@@ -17,7 +17,7 @@
  * then `wrangler deploy`; needs Workers Paid for DO SQLite + a D1 for the roster).
  */
 import { Hono } from 'hono';
-import { platformActorId, PROVISION_SIBLING_KIND } from '@substrat-run/contracts';
+import { platformActorId, PROVISION_SIBLING_KIND, ARCHIVE_SCOPE_KIND } from '@substrat-run/contracts';
 import type { PlatformActorId } from '@substrat-run/contracts';
 import { runPlatformSweep, type FetchLike } from '@substrat-run/kernel';
 import {
@@ -41,6 +41,7 @@ import {
   UNSAFE_devPlatformActorAuth,
   drainScopePlatformRequests,
   provisionSiblingHandler,
+  archiveScopeHandler,
   type DeployVerticalFn,
   type CustomHostnameProvisioner,
   type PlatformActorAuth,
@@ -431,11 +432,10 @@ export default {
         if (!rec?.vertical) return empty;
         const client = await resolveVerticalForScope(rec);
         if (!client) return empty;
-        return drainScopePlatformRequests(
-          client,
-          { tenantId, scopeId, vertical: rec.vertical },
-          { [PROVISION_SIBLING_KIND]: provisionSiblingHandler({ host, actor: SWEEP_ACTOR, resolveVerticalForScope }) },
-        );
+        return drainScopePlatformRequests(client, { tenantId, scopeId, vertical: rec.vertical }, {
+          [PROVISION_SIBLING_KIND]: provisionSiblingHandler({ host, actor: SWEEP_ACTOR, resolveVerticalForScope }),
+          [ARCHIVE_SCOPE_KIND]: archiveScopeHandler({ host, actor: SWEEP_ACTOR }),
+        });
       },
     });
     if (

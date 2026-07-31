@@ -133,6 +133,12 @@ export default function App() {
         theme={theme}
         onSite={(slug) => { setSite(slug); navigate({ kind: 'home' }); refresh(); }}
         onCreated={(slug) => { setSite(slug); navigate({ kind: 'home' }); refresh(); }}
+        onArchived={async () => {
+          const remaining = await api.sites().catch(() => []);
+          if (remaining[0]) setSite(remaining[0].slug);
+          navigate({ kind: 'home' });
+          refresh();
+        }}
         onPersona={(id) => { setPrincipal(id); refresh(); }}
         onTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
       />
@@ -261,6 +267,29 @@ function NewSite({ onCreated }: { onCreated: (slug: string) => void }) {
   );
 }
 
+/** Archive the current site (admin-only). Retires the scope on the platform and drops it from the
+ *  switcher; the app switches away afterwards. Hidden when it's the tenant's only site. */
+function ArchiveSite({ slug, name, onArchived }: { slug: string; name: string; onArchived: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const archive = async () => {
+    if (busy || !window.confirm(`Archive "${name}"? It leaves the switcher and the site is retired.`)) return;
+    setBusy(true);
+    try {
+      await api.archiveSite(slug);
+      onArchived();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Could not archive the site.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button size="sm" disabled={busy} title="Archive this site" onClick={() => void archive()}>
+      {busy ? 'Archiving…' : 'Archive'}
+    </Button>
+  );
+}
+
 function TopBar(props: {
   sites: Site[];
   personas: Persona[];
@@ -271,6 +300,7 @@ function TopBar(props: {
   theme: 'light' | 'dark';
   onSite: (slug: string) => void;
   onCreated: (slug: string) => void;
+  onArchived: () => void;
   onPersona: (id: string) => void;
   onTheme: () => void;
 }) {
@@ -299,6 +329,9 @@ function TopBar(props: {
         <Select value={activeSite} onChange={props.onSite} options={props.sites.map((s) => ({ value: s.slug, label: s.name }))} accent />
       )}
       {props.canManageSites && <NewSite onCreated={props.onCreated} />}
+      {props.canManageSites && props.sites.length > 1 && (
+        <ArchiveSite slug={activeSite} name={props.sites.find((s) => s.slug === activeSite)?.name ?? activeSite} onArchived={props.onArchived} />
+      )}
 
       {props.role && (
         <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)' }}>

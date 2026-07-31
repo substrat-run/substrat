@@ -51,6 +51,12 @@ export function listSites(sql: RegistrySql): SiteRow[] {
   }));
 }
 
+/** Drop a site from the registry — the vertical's half of archiving a scope (it no longer lists or
+ *  resolves to the archived site). Idempotent. The platform archives the scope directory-side. */
+export function forgetSite(sql: RegistrySql, scopeId: string): void {
+  sql.exec('DELETE FROM site WHERE scope_id = ?', scopeId);
+}
+
 /**
  * Resolve a site SLUG to its scope id — how the worker turns the app's `x-site` selection into
  * the scope to open. Null ⇒ no such site. Tenant-scoped by construction: the registry lives in

@@ -16,6 +16,7 @@ import {
 import {
   drainScopePlatformRequests,
   provisionSiblingHandler,
+  archiveScopeHandler,
   type PlatformRequestHandler,
   VerticalClient,
 } from '../src/index.js';
@@ -139,5 +140,51 @@ describe('provisionSiblingHandler — provisions a sibling of the drained scope'
     expect(captured?.scopeId).toBe(newScopeId);
     expect(captured?.owner).toBe(owner);
     expect(captured?.entitlements?.find((e) => e.entitlementKey === 'demo-vert')).toMatchObject({ quota: 5 });
+  });
+});
+
+describe('archiveScopeHandler — archives a sibling named in the intent', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const current = scopeId.parse(ulid()); // the scope the intent was drained from
+  const target = scopeId.parse(ulid()); // the sibling to archive
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-archive-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
+    for (const s of [current, target]) {
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'demo-vert' });
+      await host.admin.activateScope(staff, t, s);
+    }
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const handler = () => archiveScopeHandler({ host, actor: staff });
+  const ctx = { tenantId: t, scopeId: current, vertical: 'demo-vert' };
+
+  it('archives the target scope, and is idempotent on a re-run', async () => {
+    const outcome = await handler()(ctx, intent('archive-scope', { payload: { scopeId: target } }));
+    expect(outcome.status).toBe('done');
+    expect((await host.admin.getScopeRecord(staff, t, target))?.status).toBe('archived');
+
+    // Idempotent: an already-archived target is a no-op success (a retry never wedges).
+    const again = await handler()(ctx, intent('archive-scope', { payload: { scopeId: target } }));
+    expect(again.status).toBe('done');
+  });
+
+  it('refuses a target running a different vertical (bounded to the drained scope\'s vertical)', async () => {
+    const foreign = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: foreign, vertical: 'other-vert' });
+    await host.admin.activateScope(staff, t, foreign);
+
+    const outcome = await handler()(ctx, intent('archive-scope', { payload: { scopeId: foreign } }));
+    expect(outcome.status).toBe('failed');
+    expect((await host.admin.getScopeRecord(staff, t, foreign))?.status).toBe('active'); // untouched
   });
 });

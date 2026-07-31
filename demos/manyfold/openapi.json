@@ -801,6 +801,52 @@
         }
       }
     },
+    "/api/op/manyfold/archive-site": {
+      "post": {
+        "operationId": "manyfold-archive-site",
+        "summary": "Archive a site — retires one of the tenant's scopes.",
+        "description": "Requires `content:manage-sites`. Enqueues a platform intent the control plane drains; the target must be one of the tenant's own Manyfold scopes. Returns the request id.",
+        "tags": [
+          "Sites"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "scopeId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "scopeId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result."
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
     "/api/op/manyfold/deliver": {
       "post": {
         "operationId": "manyfold-deliver",

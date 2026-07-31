@@ -3,6 +3,7 @@ import {
   principalId as principalIdSchema,
   scopeId as scopeIdSchema,
   provisionSiblingPayload,
+  archiveScopePayload,
   type PlatformActorId,
   type PlatformRequest,
   type ScopeId,
@@ -182,5 +183,33 @@ export function provisionSiblingHandler(deps: ProvisionSiblingDeps): PlatformReq
       if (e instanceof ControlPlaneError) return { status: 'pending', result: { scopeId }, error: e.message };
       throw e;
     }
+  };
+}
+
+export interface ArchiveScopeDeps {
+  host: ScopeHost;
+  actor: PlatformActorId;
+}
+
+/**
+ * The `archive-scope` platform-request handler — archives a sibling scope named in the intent.
+ * The scope being drained proves the tenant; the target must be under that same tenant and run the
+ * same vertical (checked against the directory), so a vertical can only ever archive its own
+ * tenant's scopes. Idempotent: an already-archived/reaped/absent target is a no-op success, so a
+ * retry never wedges.
+ */
+export function archiveScopeHandler(deps: ArchiveScopeDeps): PlatformRequestHandler {
+  return async (ctx, request) => {
+    const payload = archiveScopePayload.parse(request.payload);
+    const admin = deps.host.admin;
+    const target = await admin.getScopeRecord(deps.actor, ctx.tenantId, payload.scopeId);
+    if (!target || target.status === 'archived' || target.status === 'reaped') {
+      return { status: 'done', result: { archived: payload.scopeId } };
+    }
+    if (target.vertical !== ctx.vertical) {
+      return { status: 'failed', error: `scope ${payload.scopeId} runs '${target.vertical ?? 'none'}', not '${ctx.vertical}'` };
+    }
+    await admin.archiveScope(deps.actor, ctx.tenantId, payload.scopeId);
+    return { status: 'done', result: { archived: payload.scopeId } };
   };
 }

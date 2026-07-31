@@ -10,6 +10,7 @@ import {
   recordSite as recordSiteRow,
   listSites as listSiteRows,
   resolveSiteScope as resolveSiteScopeRow,
+  forgetSite as forgetSiteRow,
   type RegistrySql,
   type SiteRow,
 } from './site-registry.js';
@@ -162,6 +163,11 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    */
   async recordSite(scopeId: string, slug: string, name: string): Promise<void> {
     recordSiteRow(this.registrySql, scopeId, slug, name);
+  }
+
+  /** Drop a site from the registry (the vertical's half of archiving it). Idempotent. */
+  async forgetSite(scopeId: string): Promise<void> {
+    forgetSiteRow(this.registrySql, scopeId);
   }
 
   /** The tenant's sites, oldest first — the in-app site switcher's list. */

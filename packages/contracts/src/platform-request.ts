@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { instant, platformRequestId } from './ids.js';
+import { instant, platformRequestId, scopeId } from './ids.js';
 import { actor } from './events.js';
 
 /**
@@ -63,3 +63,15 @@ export type ProvisionSiblingPayload = z.infer<typeof provisionSiblingPayload>;
 
 /** The well-known intent kind string for `provisionSiblingPayload`. */
 export const PROVISION_SIBLING_KIND = 'provision-sibling';
+
+/**
+ * The `archive-scope` intent kind (multi-scope-manyfold.md) — a vertical asking the platform to
+ * archive a sibling scope (retiring a Manyfold "site"). The target must belong to the same tenant
+ * and vertical as the scope that enqueued the intent; the platform verifies that against its
+ * directory before archiving, so a vertical can only ever archive its own tenant's scopes.
+ */
+export const archiveScopePayload = z.object({ scopeId });
+export type ArchiveScopePayload = z.infer<typeof archiveScopePayload>;
+
+/** The well-known intent kind string for `archiveScopePayload`. */
+export const ARCHIVE_SCOPE_KIND = 'archive-scope';

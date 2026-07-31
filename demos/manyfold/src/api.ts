@@ -4,6 +4,7 @@ import {
   createEntryInput,
   deleteTypeInput,
   requestSiteInput,
+  archiveSiteInput,
   deliverInput,
   entryIdInput,
   listDeliveryInput,
@@ -123,6 +124,14 @@ export const API: ApiCatalog = {
       'Requires `content:manage-sites`. The vertical cannot provision itself, so this enqueues a ' +
       'platform intent the control plane drains; returns the request id to poll.',
     input: requestSiteInput,
+  },
+  'manyfold/archive-site': {
+    tag: 'Sites',
+    summary: 'Archive a site — retires one of the tenant\'s scopes.',
+    description:
+      'Requires `content:manage-sites`. Enqueues a platform intent the control plane drains; the ' +
+      'target must be one of the tenant\'s own Manyfold scopes. Returns the request id.',
+    input: archiveSiteInput,
   },
   'manyfold/deliver': {
     tag: 'Delivery',
