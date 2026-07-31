@@ -1,5 +1,54 @@
 # @substrat-run/contracts
 
+## 0.31.0
+
+### Minor Changes
+
+- fbf0704: Multi-scope Manyfold: archive a site.
+
+  Rounds out scope management (create + switch were already there) with **archive**, reusing the
+  platform-intent mechanism — archiving a scope is a platform action the sandbox-clean vertical can't
+  do itself, so it's another intent kind:
+
+  - **contracts:** `archive-scope` kind + `archiveScopePayload` (`{ scopeId }`).
+  - **control-plane-api:** `archiveScopeHandler` — the drained scope proves the tenant; the target
+    must be under that same tenant and run the same vertical (verified against the directory), then
+    `host.admin.archiveScope`. Idempotent (an already-archived/absent target is a no-op success).
+  - **control-plane worker:** registers `archive-scope` alongside `provision-sibling` in the drain.
+  - **vertical-auth:** `IdentityDO.forgetSite` drops a site from the per-tenant registry.
+  - **Manyfold:** a `manyfold/archive-site` op (`content:manage-sites` — no new permission) enqueues
+    the intent; `POST /api/sites/:slug/archive` runs it as the caller, then optimistically drops the
+    site from the registry so the switcher updates immediately.
+  - **Manyfold app:** an admin-only **Archive** control next to the switcher (shown only when the
+    tenant has more than one site); it archives the current site and switches away.
+
+  Tested: the handler archives its target + is idempotent + refuses a cross-vertical target;
+  `forgetSite` drops a site; the `archive-site` op enqueues an `archive-scope` intent and an author is
+  denied. Refs #358.
+
+- 41d01f6: Platform intents, Phase B2: the drain engine + `provision-sibling` handler.
+
+  The platform-side execution for `docs/design/platform-intents.md`. Because a scope's intent rows
+  live in the vertical's own deployment (K-31), the platform PULLS them over the vertical's
+  `/internal` surface: `VerticalClient` gains `listPlatformRequests` / `settlePlatformRequest`
+  (the B1 read/settle surface, now reachable cross-deployment).
+
+  - `drainScopePlatformRequests(client, ctx, handlers)` lists a scope's pending intents, dispatches
+    each to the handler registered for its `kind`, and settles the outcome — an unknown kind settles
+    `failed` (never a silent drop), a thrown handler settles `pending` (retried next drain).
+  - `provisionSiblingScope(...)` extracts the exact sequence M1's `POST /tenants/:tenantId/scopes`
+    route runs (inherit parent vertical/jurisdiction → provision → materialize → activate) into one
+    reusable home; the route now calls it. `provisionSiblingHandler` wraps it as the
+    `provision-sibling` intent handler, with two-phase idempotency (a scope id minted on an earlier
+    pass is reused, so a retry targets the same sibling).
+  - `contracts` gains the shared `provisionSiblingPayload` (`{ slug, name, owner }`) + the
+    `provision-sibling` kind constant.
+
+  Tested with a fake vertical transport (dispatch → settle: done / unknown-kind-failed /
+  thrown-pending) and against a real SQLite host (the handler provisions + activates a sibling under
+  the parent tenant, seating the owner). The triggers — the periodic sweep phase and the router kick,
+  plus each vertical's `/internal/platform-requests` endpoints — are Phase C. Refs #358.
+
 ## 0.30.0
 
 ### Minor Changes
@@ -1051,7 +1100,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

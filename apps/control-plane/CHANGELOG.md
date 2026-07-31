@@ -1,5 +1,85 @@
 # @substrat-run/control-plane
 
+## 0.5.5
+
+### Patch Changes
+
+- fbf0704: Multi-scope Manyfold: archive a site.
+
+  Rounds out scope management (create + switch were already there) with **archive**, reusing the
+  platform-intent mechanism — archiving a scope is a platform action the sandbox-clean vertical can't
+  do itself, so it's another intent kind:
+
+  - **contracts:** `archive-scope` kind + `archiveScopePayload` (`{ scopeId }`).
+  - **control-plane-api:** `archiveScopeHandler` — the drained scope proves the tenant; the target
+    must be under that same tenant and run the same vertical (verified against the directory), then
+    `host.admin.archiveScope`. Idempotent (an already-archived/absent target is a no-op success).
+  - **control-plane worker:** registers `archive-scope` alongside `provision-sibling` in the drain.
+  - **vertical-auth:** `IdentityDO.forgetSite` drops a site from the per-tenant registry.
+  - **Manyfold:** a `manyfold/archive-site` op (`content:manage-sites` — no new permission) enqueues
+    the intent; `POST /api/sites/:slug/archive` runs it as the caller, then optimistically drops the
+    site from the registry so the switcher updates immediately.
+  - **Manyfold app:** an admin-only **Archive** control next to the switcher (shown only when the
+    tenant has more than one site); it archives the current site and switches away.
+
+  Tested: the handler archives its target + is idempotent + refuses a cross-vertical target;
+  `forgetSite` drops a site; the `archive-site` op enqueues an `archive-scope` intent and an author is
+  denied. Refs #358.
+
+- fa8feb9: Router kick: drain a scope's platform-intents in seconds, not at the next sweep.
+
+  The last piece of the platform-intents latency story. A vertical enqueues an intent and
+  flags it on the response with `x-substrat-platform-request`; the router — the one hop that
+  already knows the resolved `(tenant, scope)` — pings the control plane to drain that scope
+  immediately, collapsing the ~2-min periodic-sweep delay to seconds.
+
+  - **control-plane:** the per-scope drain the sweep ran inline is extracted to a module-level
+    `drainOneScope(env, tenant, scope)` (serving-ref → bound-version → prod ladder, the same
+    `provision-sibling` + `archive-scope` handlers). A new platform-secret-gated
+    `POST /internal/drain-scope` runs it on demand. Identity stays inherent: the body only
+    _names_ which scope to drain; the tenant/vertical are re-derived from this directory's own
+    record, so a caller with the global secret can at most accelerate a scope's own pending
+    work. An unconfigured secret **refuses** (fails closed), never bypasses.
+  - **router:** after dispatch, when the response carries `x-substrat-platform-request`, the
+    router `ctx.waitUntil`s a best-effort kick to `/internal/drain-scope` over a new
+    `CONTROL_PLANE_KICK` service binding (prod → `substrat-control-plane`, test → its `-test`
+    peer), presenting the global `PLATFORM_SECRET`. Out of band and best-effort by design: the
+    user's response is returned untouched, and a missing/failed/unconfigured kick simply falls
+    back to the durable sweep — latency, never correctness.
+
+  The sweep remains the reliability backstop; the kick is pure latency. Tested: the router
+  kicks the _resolved_ node (not caller-supplied) with the secret when flagged, does not kick
+  otherwise, and never throws when unconfigured; the control-plane endpoint fails closed when
+  no secret is bound. Refs #358.
+
+- 0e9eba7: Platform intents, Phase C (periodic trigger): drain intents on the platform sweep.
+
+  `runPlatformSweep` gains an injected `drainPlatformRequestsFn` option (mirroring `reapScopeFn`):
+  when supplied, a new phase enumerates active scopes and drains each one's pending platform intents,
+  summing per-scope counts into a new `platformRequestTotals` report field (and recording per-scope
+  failures under a new `'platform-request'` error kind — one failure never sinks the pass). Unset ⇒
+  the phase is skipped. It is injected because the kernel can't reach a vertical's scope DO (it lives
+  in the vertical's own deployment); the control plane supplies the fn.
+
+  The control-plane worker's scheduled sweep now wires it: for each active scope it resolves the
+  serving `VerticalClient` (the same serving-script → bound-version → prod ladder the API uses) and
+  runs Phase B2's `drainScopePlatformRequests` with the `provision-sibling` handler. So a Manyfold
+  site request enqueued via `ctx.requestPlatform` is picked up and provisioned within a sweep cycle.
+
+  This is the PERIODIC trigger (~2-min cadence, the reliability backstop). The low-latency router
+  kick and the vertical's `/internal/platform-requests` endpoints (which expose the drain to the
+  platform) land in Phase D alongside the Manyfold end-to-end. Refs #358.
+
+- Updated dependencies [fbf0704]
+- Updated dependencies [0d79662]
+- Updated dependencies [41d01f6]
+- Updated dependencies [50d9260]
+- Updated dependencies [0e9eba7]
+  - @substrat-run/contracts@0.31.0
+  - @substrat-run/control-plane-api@0.31.0
+  - @substrat-run/kernel@0.31.0
+  - @substrat-run/adapter-cloudflare@0.31.0
+
 ## 0.5.4
 
 ### Patch Changes

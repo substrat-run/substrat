@@ -1,5 +1,82 @@
 # @substrat-run/demo-manyfold
 
+## 0.3.0
+
+### Minor Changes
+
+- fbf0704: Multi-scope Manyfold: archive a site.
+
+  Rounds out scope management (create + switch were already there) with **archive**, reusing the
+  platform-intent mechanism — archiving a scope is a platform action the sandbox-clean vertical can't
+  do itself, so it's another intent kind:
+
+  - **contracts:** `archive-scope` kind + `archiveScopePayload` (`{ scopeId }`).
+  - **control-plane-api:** `archiveScopeHandler` — the drained scope proves the tenant; the target
+    must be under that same tenant and run the same vertical (verified against the directory), then
+    `host.admin.archiveScope`. Idempotent (an already-archived/absent target is a no-op success).
+  - **control-plane worker:** registers `archive-scope` alongside `provision-sibling` in the drain.
+  - **vertical-auth:** `IdentityDO.forgetSite` drops a site from the per-tenant registry.
+  - **Manyfold:** a `manyfold/archive-site` op (`content:manage-sites` — no new permission) enqueues
+    the intent; `POST /api/sites/:slug/archive` runs it as the caller, then optimistically drops the
+    site from the registry so the switcher updates immediately.
+  - **Manyfold app:** an admin-only **Archive** control next to the switcher (shown only when the
+    tenant has more than one site); it archives the current site and switches away.
+
+  Tested: the handler archives its target + is idempotent + refuses a cross-vertical target;
+  `forgetSite` drops a site; the `archive-site` op enqueues an `archive-scope` intent and an author is
+  denied. Refs #358.
+
+- 77760b8: Multi-scope Manyfold, D1: an admin can request a new site (the intent producer).
+
+  Manyfold gains a `content:manage-sites` permission (held by `admin`) and a `manyfold/request-site`
+  operation: a tenant admin asks for a new site, and — since the vertical is sandbox-clean and can't
+  provision a scope itself — the op enqueues a `provision-sibling` platform intent
+  (platform-intents.md) via `ctx.requestPlatform`, seating the requesting admin as the new site's
+  owner, and returns the request id. The platform's drain (Phases B2/C) picks it up and provisions
+  the sibling.
+
+  **Permission checkpoint:** a new key `content:manage-sites` appears in `demos/manyfold/PERMISSIONS.md`,
+  granted only to `admin` — the reviewable diff for this widening.
+
+  Scenario-tested: an admin's request enqueues a durable `provision-sibling` intent (owner = the
+  admin); an author (lacking `content:manage-sites`) is denied.
+
+  Not yet wired: the vertical's `/internal/platform-requests` endpoints (so the platform drain can
+  reach these intents — needs `tenantId` threaded through the merged `VerticalClient`), the
+  `POST /api/sites` route + "New site" UI, and the router kick. Those are the next D slice. Refs #358.
+
+- 0d79662: Multi-scope Manyfold, D2: the platform can drain Manyfold's site-creation intents end-to-end.
+
+  Wires the platform drain (Phases B2/C) to the vertical over its `/internal` surface, completing the
+  loop from D1's `request-site` producer:
+
+  - **Manyfold worker** exposes `GET /internal/platform-requests` and
+    `POST /internal/platform-requests/settle` (platform-secret gated), backed by the CP-less
+    `host.listPlatformRequests` / `settlePlatformRequest` (B1) — the scope's DO lives in the vertical's
+    own deployment, so the platform pulls its intents from here. Plus `POST /api/sites`, which runs
+    `manyfold/request-site` as the caller (its own `content:manage-sites` gate) and returns `202` + the
+    request id, tagging the response with `x-substrat-platform-request` for the router kick (Phase D3).
+  - **`VerticalClient.listPlatformRequests` / `settlePlatformRequest` now take `tenantId`** (the CP-less
+    vertical host reads by `(tenantId, scopeId)`); `drainScopePlatformRequests` passes it from the
+    drained scope's context. A small signature change to the just-added B2 methods, contained to the
+    drain path.
+
+  So a `request-site` intent is now picked up by the periodic sweep (C) and provisioned via
+  `provision-sibling` (B2), appearing in the M2 site registry within a sweep cycle. The low-latency
+  router kick and the "New site" UI are Phase D3. Refs #358.
+
+### Patch Changes
+
+- Updated dependencies [fbf0704]
+- Updated dependencies [41d01f6]
+- Updated dependencies [50d9260]
+- Updated dependencies [0e9eba7]
+  - @substrat-run/contracts@0.31.0
+  - @substrat-run/vertical-auth@0.5.0
+  - @substrat-run/kernel@0.31.0
+  - @substrat-run/adapter-sqlite@0.31.0
+  - @substrat-run/adapter-cloudflare@0.31.0
+
 ## 0.2.0
 
 ### Minor Changes
