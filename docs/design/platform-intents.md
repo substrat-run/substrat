@@ -168,20 +168,30 @@ an implementation detail below.
 - **No relaxation of the sandbox contract.** The vertical stays purely inbound. This is the whole
   point.
 
-## Open questions
+## Resolved decisions (implementation-ready)
 
-- **Router→drain wiring.** How the router reaches the prompt-drain path (a binding to the sweeper
-  DO / control plane). The router is privileged and in-path, so this is a small addition — but it
-  is the one new platform coupling and should be spec'd concretely before build.
-- **Result delivery.** For site creation, completion is observable via the M2 registry (poll
-  `/api/sites`). A general reader for `result`/`status` by request id is the generic form — worth
-  defining once so every intent kind reports the same way.
-- **Intent-kind registry + validation.** Where the platform registers `kind → handler` and the
-  payload schema per kind; how an unknown `kind` fails (drop to `failed` with a clear error).
-- **Backpressure / rate limits.** Per-scope caps so a stuck or abusive vertical can't flood the
-  drain; interaction with the per-plan quota gate.
-- **Ordering.** Per-scope FIFO vs. unordered. Site creation doesn't need ordering; some future
-  intent might.
+- **Router→drain wiring.** The router gets a **service binding to the control-plane worker** (it is
+  privileged platform infrastructure, not a sandbox-clean vertical, so a service binding is
+  legitimate — the same pattern the dashboard already uses). On seeing the
+  `x-substrat-platform-request` response header from a dispatched vertical, it fires
+  `ctx.waitUntil(cp.drainScope(tenant, scope))` against a new **platform-secret-gated
+  `POST /internal/drain-scope`** on the control plane, which runs the drain-executor scoped to that
+  one scope. Best-effort: a failed kick is caught by the ~2-min sweep.
+- **Result delivery.** v1 relies on the **domain-observable effect** — `provision-sibling` completes
+  when the site shows up in the M2 registry, so the app polls `GET /api/sites`. The generic form (a
+  `status`/`result`-by-request-id reader, backed by a kernel read of the request row) is added the
+  first time an intent has *no* observable domain effect; not needed for M3.
+- **Intent-kind registry + validation.** The platform holds a `Record<kind, { schema, handle }>`
+  (registered where `runPlatformSweep`'s connector sweepers are). The drain parses `payload` with the
+  kind's Zod schema and runs `handle` with `HostAdmin`; an **unknown kind or a parse failure marks
+  the request `failed` with a clear `last_error`** — never a silent drop. The kernel stays agnostic
+  (opaque `kind`/`payload`), mirroring the outbox.
+- **Backpressure.** Two bounds for v1: `ctx.requestPlatform` **refuses when the scope already has N
+  pending requests** (the operation fails, surfacing to the user), and the drain processes a
+  **bounded batch per scope per pass**. For `provision-sibling` specifically, the per-plan site
+  quota (the M1 gate) is the real limiter. Sophisticated per-tenant rate limiting is deferred.
+- **Ordering.** **Unordered** per scope (each request is independent + idempotent). Site creation
+  needs no ordering; if a future intent kind does, it carries its own sequencing in `payload`.
 
 ## Why this is the right long-term shape
 
