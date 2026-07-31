@@ -1,7 +1,7 @@
 {
   "name": "create-substrat",
   "version": "0.1.0",
-  "description": "Scaffold a Substrat vertical — `npm create substrat`. Placeholder reserving the entry point; the initializer is not released yet.",
+  "description": "Scaffold a Substrat vertical — `npm create substrat <dir>`.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
