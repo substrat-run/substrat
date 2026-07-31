@@ -105,6 +105,9 @@ export interface CreatedInvite { principal: string; roleKey: string; email: stri
 export const api = {
   personas: () => get<Persona[]>('/api/personas'),
   sites: () => get<Site[]>('/api/sites'),
+  /** Request a new site (needs `content:manage-sites`). Returns the platform-request id; the new
+   *  site appears in `sites()` once the platform provisions it (poll after this). */
+  createSite: (slug: string, name: string) => postJson<{ requestId: string }>('/api/sites', { slug, name }),
   // Normalizes both the dev server ({principal,name,site,role}) and the worker
   // ({status:'needs-setup'} | {key,display,site,can} | 401) into one shape.
   me: async (): Promise<Me> => {
