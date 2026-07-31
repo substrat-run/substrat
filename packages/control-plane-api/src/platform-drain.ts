@@ -58,7 +58,7 @@ export async function drainScopePlatformRequests(
   ctx: PlatformRequestContext,
   handlers: Record<string, PlatformRequestHandler>,
 ): Promise<PlatformDrainReport> {
-  const pending = await client.listPlatformRequests(ctx.scopeId);
+  const pending = await client.listPlatformRequests(ctx.tenantId, ctx.scopeId);
   const report: PlatformDrainReport = { drained: pending.length, done: 0, failed: 0, pending: 0 };
   for (const request of pending) {
     const handler = handlers[request.kind];
@@ -73,7 +73,7 @@ export async function drainScopePlatformRequests(
         outcome = { status: 'pending', error: e instanceof Error ? e.message : String(e) };
       }
     }
-    await client.settlePlatformRequest(ctx.scopeId, request.id, {
+    await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, request.id, {
       status: outcome.status,
       result: outcome.result,
       lastError: outcome.error ?? null,

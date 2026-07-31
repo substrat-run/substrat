@@ -42,7 +42,12 @@ function fakeTransport(pending: PlatformRequest[]) {
   const settled: Array<{ id: string; status: string; result?: unknown; lastError?: string | null }> = [];
   const client = {
     listPlatformRequests: async () => pending,
-    settlePlatformRequest: async (_s: unknown, id: string, outcome: { status: string; result?: unknown; lastError?: string | null }) => {
+    settlePlatformRequest: async (
+      _t: unknown,
+      _s: unknown,
+      id: string,
+      outcome: { status: string; result?: unknown; lastError?: string | null },
+    ) => {
       settled.push({ id, ...outcome });
     },
   } as unknown as Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'>;

@@ -219,21 +219,21 @@ export class VerticalClient {
    * the control plane's. The platform executes each with its own authority, then `settlePlatformRequest`
    * journals the outcome back in the vertical.
    */
-  async listPlatformRequests(scopeId: ScopeId): Promise<PlatformRequest[]> {
-    return this.getInternal<PlatformRequest[]>(
-      `/internal/platform-requests?scopeId=${encodeURIComponent(scopeId)}`,
-    );
+  async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
+    const q = new URLSearchParams({ tenantId, scopeId });
+    return this.getInternal<PlatformRequest[]>(`/internal/platform-requests?${q}`);
   }
 
   /** Journal a platform-request outcome back in the vertical after the platform ran it. */
   async settlePlatformRequest(
+    tenantId: TenantId,
     scopeId: ScopeId,
     id: PlatformRequestId,
     outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
   ): Promise<void> {
     await this.postInternal<unknown>(
       '/internal/platform-requests/settle',
-      { scopeId, id, ...outcome },
+      { tenantId, scopeId, id, ...outcome },
       'settle-platform-request',
     );
   }
