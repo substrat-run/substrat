@@ -27,6 +27,8 @@ export {
   drainScopePlatformRequests,
   provisionSiblingScope,
   provisionSiblingHandler,
+  archiveScopeHandler,
+  type ArchiveScopeDeps,
   type PlatformRequestHandler,
   type PlatformRequestContext,
   type PlatformRequestOutcome,

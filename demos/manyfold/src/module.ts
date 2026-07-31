@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { type EntityRef, PROVISION_SIBLING_KIND } from '@substrat-run/contracts';
+import { type EntityRef, PROVISION_SIBLING_KIND, ARCHIVE_SCOPE_KIND } from '@substrat-run/contracts';
 import {
   assertAllowed,
   ulid,
@@ -507,6 +507,21 @@ const requestSiteOp: OperationHandler<z.infer<typeof requestSiteInput>, { reques
   return { requestId };
 };
 
+export const archiveSiteInput = z.object({ scopeId: z.string().min(1) });
+
+/**
+ * Archive a site (multi-scope-manyfold.md). Admin-only (`content:manage-sites`). Like creation,
+ * archiving a scope is a platform action the sandbox-clean vertical can't do itself, so it enqueues
+ * an `archive-scope` platform intent naming the target; the platform verifies the target is this
+ * tenant's own Manyfold scope and archives it. Returns the request id.
+ */
+const archiveSiteOp: OperationHandler<z.infer<typeof archiveSiteInput>, { requestId: string }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(MF_PERM.manageSites));
+  const input = archiveSiteInput.parse(raw);
+  const requestId = ctx.requestPlatform({ kind: ARCHIVE_SCOPE_KIND, payload: { scopeId: input.scopeId } });
+  return { requestId };
+};
+
 const deleteTypeOp: OperationHandler<z.infer<typeof deleteTypeInput>, { deleted: string }> = async (ctx, input) => {
   assertAllowed(await ctx.check(MF_PERM.admin));
   const { key } = deleteTypeInput.parse(input);
@@ -616,6 +631,7 @@ export const manyfoldModule: ModuleRegistration = {
     'manyfold/save-type': saveTypeOp as never,
     'manyfold/delete-type': deleteTypeOp as never,
     'manyfold/request-site': requestSiteOp as never,
+    'manyfold/archive-site': archiveSiteOp as never,
     'manyfold/deliver': deliverOp as never,
     'manyfold/list-delivery': listDeliveryOp as never,
     'manyfold/whoami': whoamiOp as never,

@@ -74,6 +74,17 @@ describe('Manyfold demo scenario', () => {
     expect(mine.payload).toEqual({ slug: 'padel', name: 'Padel Club', owner: w.maja });
   });
 
+  it('1a2. an admin archives a site — an archive-scope intent naming the target is enqueued; an author cannot', async () => {
+    const maja = await host.getScope(w.maja, w.t1, w.cafe); // admin@cafe
+
+    await expect(sofiaCafe.invoke('manyfold/archive-site', { scopeId: w.law })).rejects.toThrow(/permission denied/);
+
+    const { requestId } = await maja.invoke<{ requestId: string }>('manyfold/archive-site', { scopeId: w.law });
+    const mine = (await host.listPlatformRequests(w.t1, w.cafe)).find((r) => r.id === requestId)!;
+    expect(mine.kind).toBe('archive-scope');
+    expect(mine.payload).toEqual({ scopeId: w.law }); // the platform verifies + archives the target
+  });
+
   it('1b. modelling: an admin creates a content type; it drives create-entry immediately', async () => {
     const maja = await host.getScope(w.maja, w.t1, w.cafe); // admin@cafe
     // The four defaults are seeded lazily on first use.

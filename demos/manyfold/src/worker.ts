@@ -187,6 +187,21 @@ app.post('/api/sites', async (c) => {
   return c.json(result as Record<string, unknown>, 202);
 });
 
+// Archive a site by slug. Runs `manyfold/archive-site` as the caller (its `content:manage-sites`
+// gate), enqueuing an `archive-scope` intent the platform drains; then optimistically drops it from
+// the tenant's registry so the switcher updates immediately (the platform archives it directory-side).
+app.post('/api/sites/:slug/archive', async (c) => {
+  const base = baseNode(c.req.raw, c.env);
+  const id = identityDo(c.env, base);
+  const target = await id.resolveSiteScope(c.req.param('slug'));
+  if (!target) throw new HTTPException(404, { message: 'unknown site' });
+  const scope = await stub(c);
+  const result = await scope.invoke('manyfold/archive-site', { scopeId: target });
+  await id.forgetSite(target);
+  c.header('x-substrat-platform-request', '1');
+  return c.json(result as Record<string, unknown>, 202);
+});
+
 const provisionBody = z.object({ tenantId, scopeId, owner: principalId, slug: z.string().min(1), name: z.string().min(1), entitlements: z.array(entitlementGrant).optional() }); // entitlements (#310): projected so ctx.entitlement + the gate work CP-lessly (#304)
 
 // Provision ONE site on the platform's instruction (K-31), CP-less. The shared control plane
