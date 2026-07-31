@@ -6,6 +6,8 @@
 //
 // Deploy:
 //   wrangler secret put ROUTER_SECRET      # must match each vertical's own
+//   wrangler secret put PLATFORM_SECRET     # the router kick's credential; the same
+//                                           # global secret the control plane + verticals hold
 //   pnpm --filter @substrat-run/router run deploy
 //
 // Then bind hostnames with `HostAdmin.bindHostname` (console, or the control-plane
@@ -29,6 +31,12 @@
 			}
 		]
 	},
+
+	// The control plane's WORKER (not the DO above): the router kick posts to its
+	// `/internal/drain-scope` so a scope's just-enqueued platform intent runs in seconds
+	// rather than at the next sweep (platform-intents.md §"router kick"). Gated by
+	// PLATFORM_SECRET; unset ⇒ the kick no-ops and the sweep is the backstop.
+	"services": [{ "binding": "CONTROL_PLANE_KICK", "service": "substrat-control-plane" }],
 
 	// No `migrations` block, deliberately: this worker does not OWN the DO class,
 	// it borrows it. The control plane's wrangler.jsonc declares it.
@@ -77,6 +85,7 @@
 				]
 			},
 			"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals-test" }], // differs
+			"services": [{ "binding": "CONTROL_PLANE_KICK", "service": "substrat-control-plane-test" }], // differs: test CP worker
 			"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_router_test" }], // differs: test data stays out of prod charts
 			// Test tenant hostnames: <slug>.global.test.substrat.run. This two-level
 			// wildcard needs an ACM advanced cert for `*.global.test.substrat.run` + a

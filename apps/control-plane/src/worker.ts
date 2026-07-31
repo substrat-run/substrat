@@ -17,9 +17,15 @@
  * then `wrangler deploy`; needs Workers Paid for DO SQLite + a D1 for the roster).
  */
 import { Hono } from 'hono';
-import { platformActorId, PROVISION_SIBLING_KIND, ARCHIVE_SCOPE_KIND } from '@substrat-run/contracts';
-import type { PlatformActorId } from '@substrat-run/contracts';
-import { runPlatformSweep, type FetchLike } from '@substrat-run/kernel';
+import {
+  platformActorId,
+  tenantId,
+  scopeId,
+  PROVISION_SIBLING_KIND,
+  ARCHIVE_SCOPE_KIND,
+} from '@substrat-run/contracts';
+import type { PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
+import { runPlatformSweep, assertPlatformCall, PlatformCallError, type FetchLike } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   ControlPlaneDO,
@@ -42,6 +48,7 @@ import {
   drainScopePlatformRequests,
   provisionSiblingHandler,
   archiveScopeHandler,
+  type PlatformDrainReport,
   type DeployVerticalFn,
   type CustomHostnameProvisioner,
   type PlatformActorAuth,
@@ -324,6 +331,65 @@ function hostFor(env: Env): CloudflareScopeHost {
 }
 
 /**
+ * Resolve the `VerticalClient` serving a scope — the serving-ref → bound-version → prod
+ * ladder the control-plane API's `verticalForScope` uses. Shared by the platform-intent
+ * drain (both the periodic sweep and the router-kick endpoint) and its provision-sibling
+ * handler. Returns `undefined` when no deployment is bound (nothing to drain).
+ */
+function resolveVerticalForScopeFor(
+  env: Env,
+): (scope: {
+  vertical: string | null;
+  verticalVersionId: string | null;
+  servingRef?: string | null;
+}) => Promise<VerticalClient | undefined> {
+  const resolveVersion = resolveVerticalVersionFor(env);
+  const resolveRef = resolveVerticalRefFor(env);
+  const resolveSlug = resolveVerticalFor(env);
+  return async (scope) => {
+    const slug = scope.vertical;
+    if (!slug) return undefined;
+    if (scope.servingRef && resolveRef) {
+      const serving = await resolveRef(scope.servingRef);
+      if (serving) return serving;
+    }
+    if (scope.verticalVersionId && resolveVersion) {
+      const bound = await resolveVersion(slug, scope.verticalVersionId, SWEEP_ACTOR);
+      if (bound) return bound;
+    }
+    return resolveSlug ? resolveSlug(slug, SWEEP_ACTOR) : undefined;
+  };
+}
+
+/**
+ * Drain one scope's pending platform-intents now: pull them from the vertical's
+ * `/internal` surface (its DO lives in the vertical's deployment, K-31), execute each
+ * with platform authority via the registered handlers, settle back. The unit shared by
+ * the ~2-min periodic sweep (reliability) and the router kick (latency, platform-intents.md
+ * §"router kick") — a vertical whose response carried `x-substrat-platform-request` gets
+ * drained in seconds instead of at the next sweep. A scope with no bound deployment drains
+ * nothing. The identity is inherent: the tenant/vertical come from THIS directory's record
+ * for the scope, never from the caller, so the intents executed are only ever the scope's own.
+ */
+async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<PlatformDrainReport> {
+  const empty: PlatformDrainReport = { drained: 0, done: 0, failed: 0, pending: 0 };
+  const host = hostFor(env);
+  const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
+  if (!rec?.vertical) return empty;
+  const resolveVerticalForScope = resolveVerticalForScopeFor(env);
+  const client = await resolveVerticalForScope(rec);
+  if (!client) return empty;
+  return drainScopePlatformRequests(
+    client,
+    { tenantId: t, scopeId: s, vertical: rec.vertical },
+    {
+      [PROVISION_SIBLING_KIND]: provisionSiblingHandler({ host, actor: SWEEP_ACTOR, resolveVerticalForScope }),
+      [ARCHIVE_SCOPE_KIND]: archiveScopeHandler({ host, actor: SWEEP_ACTOR }),
+    },
+  );
+}
+
+/**
  * Staff session (OIDC, gated by the roster) when the roster D1 is bound, plus the
  * UNSAFE dev-actor header when explicitly enabled (local/test only). Session first;
  * neither → 401. Secure by default: a real deploy binds AUTH_DB and never sets
@@ -365,28 +431,6 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const host = hostFor(env);
     const resolveVersion = resolveVerticalVersionFor(env);
-    const resolveRef = resolveVerticalRefFor(env);
-    const resolveSlug = resolveVerticalFor(env);
-    // Resolve the VerticalClient serving a scope — the same ladder the control-plane API's
-    // `verticalForScope` uses (serving script → bound version → prod). Shared by the
-    // platform-intent drain below and its provision-sibling handler.
-    const resolveVerticalForScope = async (scope: {
-      vertical: string | null;
-      verticalVersionId: string | null;
-      servingRef?: string | null;
-    }): Promise<VerticalClient | undefined> => {
-      const slug = scope.vertical;
-      if (!slug) return undefined;
-      if (scope.servingRef && resolveRef) {
-        const serving = await resolveRef(scope.servingRef);
-        if (serving) return serving;
-      }
-      if (scope.verticalVersionId && resolveVersion) {
-        const bound = await resolveVersion(slug, scope.verticalVersionId, SWEEP_ACTOR);
-        if (bound) return bound;
-      }
-      return resolveSlug ? resolveSlug(slug, SWEEP_ACTOR) : undefined;
-    };
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Handed to connector sweepers only — none are registered here, so this is a
@@ -424,19 +468,9 @@ export default {
       reapDeletingAfterDays: parseRetentionDays(env.TENANT_RETENTION_DAYS),
       // Platform-intent drain (platform-intents.md B2/C): for each active scope, pull its pending
       // intents from the vertical's /internal surface (its DO lives in the vertical's deployment),
-      // execute each with platform authority, and settle back. provision-sibling reuses the M1
-      // sequence via the shared handler. A scope with no bound deployment drains nothing.
-      drainPlatformRequestsFn: async (tenantId, scopeId) => {
-        const empty = { drained: 0, done: 0, failed: 0, pending: 0 };
-        const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
-        if (!rec?.vertical) return empty;
-        const client = await resolveVerticalForScope(rec);
-        if (!client) return empty;
-        return drainScopePlatformRequests(client, { tenantId, scopeId, vertical: rec.vertical }, {
-          [PROVISION_SIBLING_KIND]: provisionSiblingHandler({ host, actor: SWEEP_ACTOR, resolveVerticalForScope }),
-          [ARCHIVE_SCOPE_KIND]: archiveScopeHandler({ host, actor: SWEEP_ACTOR }),
-        });
-      },
+      // execute each with platform authority, and settle back. The same `drainOneScope` the router
+      // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
+      drainPlatformRequestsFn: (t, s) => drainOneScope(env, t, s),
     });
     if (
       report.snapshotsReaped > 0 ||
@@ -495,6 +529,32 @@ export default {
     // CLI calls this on `login` to store a default tenant, and to prompt when a user
     // belongs to several. Reads the same session (bearer or cookie) as the API.
     app.get('/api/auth/whoami', async (c) => c.json(await resolveWhoami(hostFor(c.env), c.env, c.req.raw)));
+
+    // The router kick (platform-intents.md §"router kick"). When a vertical's response
+    // carried `x-substrat-platform-request`, the router — the one hop that already knows the
+    // resolved (tenant, scope) — calls this to drain that scope's intents NOW, turning the
+    // ~2-min sweep latency into seconds. Platform-secret gated (an unset secret refuses, never
+    // bypasses). The body only NAMES which scope to drain: the tenant/vertical are re-derived
+    // from this directory's own record and the intents run are the scope's own, so a caller with
+    // the global secret can at most accelerate a scope's own pending work — never act across it.
+    app.post('/internal/drain-scope', async (c) => {
+      try {
+        assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+      } catch (e) {
+        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        throw e;
+      }
+      const body = (await c.req.json().catch(() => ({}))) as { tenantId?: unknown; scopeId?: unknown };
+      const ids = tenantId.safeParse(body.tenantId);
+      const sids = scopeId.safeParse(body.scopeId);
+      if (!ids.success || !sids.success) {
+        return c.json({ error: 'tenantId and scopeId (ULIDs) are required' }, 400);
+      }
+      // Runs inline: the router backgrounds this call with `ctx.waitUntil`, so completing the
+      // drain here is what keeps the subrequest alive long enough to actually settle the intents.
+      const report = await drainOneScope(c.env, ids.data, sids.data);
+      return c.json(report);
+    });
 
     // The audited control-plane API under /api (the console's baseUrl).
     app.route(

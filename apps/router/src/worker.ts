@@ -52,6 +52,23 @@ export interface Env {
    */
   ANALYTICS?: AnalyticsEngineDataset;
   /**
+   * The shared control plane's worker, as a service binding — the ONE upward call the
+   * router makes (platform-intents.md §"router kick"). When a vertical's response is
+   * flagged `x-substrat-platform-request`, the router pings `/internal/drain-scope` here
+   * so the scope's just-enqueued platform intent runs in seconds, not at the next sweep.
+   * Distinct from the `CONTROL_PLANE` DO binding above: that reads the directory; this
+   * reaches the control-plane worker's HTTP surface. Absent (dev/self-host) ⇒ no kick,
+   * and the periodic sweep is the backstop.
+   */
+  CONTROL_PLANE_KICK?: Fetcher;
+  /**
+   * The global platform secret, presented to the kick above as `x-substrat-platform`.
+   * The same value every vertical + the control plane hold. Absent ⇒ no kick (the sweep
+   * still drains). Never identifies the caller — the control plane derives the tenant
+   * from the scope it's asked to drain, so this only proves "a platform-infra caller".
+   */
+  PLATFORM_SECRET?: string;
+  /**
    * Legacy static service bindings, keyed `VERTICAL_<SLUG>` (slug upper-cased, dashes
    * as underscores). The milestone-one shape, kept as a fallback while the dispatch
    * namespace takes over — used only when a route has no `deploymentRef`.
@@ -192,6 +209,39 @@ function record(
   );
 }
 
+/**
+ * The router kick (platform-intents.md §"router kick").
+ *
+ * A vertical enqueues a platform intent in its own scope DO and flags it on the response
+ * with `x-substrat-platform-request`. The router is the one hop that already knows the
+ * resolved `(tenant, scope)`, so it pings the control plane to drain that scope NOW —
+ * collapsing the ~2-min sweep latency to seconds.
+ *
+ * Deliberately best-effort and out of band (`ctx.waitUntil`, after the response is
+ * returned): the header is a HINT, not a dependency. The intent is already durably
+ * enqueued, and the periodic sweep drains it regardless — so a failed, slow, or
+ * unconfigured kick costs latency, never correctness, and never delays the response the
+ * user already has. The `x-substrat-platform` secret is the same wire constant the kernel
+ * defines (`PLATFORM_SECRET_HEADER`) — hardcoded here like the other `x-substrat-*` names
+ * the router asserts, since the router does not depend on the kernel.
+ */
+async function kickDrain(env: Env, target: RouteTarget): Promise<void> {
+  const cp = env.CONTROL_PLANE_KICK;
+  const secret = env.PLATFORM_SECRET;
+  if (!cp || !secret) return; // Not wired (dev / self-host) — the sweep is the backstop.
+  try {
+    await cp.fetch(
+      new Request('https://control-plane/internal/drain-scope', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-substrat-platform': secret },
+        body: JSON.stringify({ tenantId: target.tenantId, scopeId: target.scopeId }),
+      }),
+    );
+  } catch {
+    // A kick is pure latency optimization; the sweep still drains this scope.
+  }
+}
+
 async function dispatch(
   env: Env,
   request: Request,
@@ -242,7 +292,10 @@ async function dispatch(
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  // `ctx` is optional only so tests can drive `fetch` without a mock context; the runtime
+  // always provides one. Without it the kick simply doesn't fire — best-effort, and the
+  // sweep is the backstop — so a missing context degrades latency, never correctness.
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const hostname = new URL(request.url).hostname;
 
     const target = await resolverFor(env)(hostname);
@@ -263,6 +316,11 @@ export default {
     try {
       const response = await dispatch(env, request, target, hostname);
       status = response.status;
+      // The vertical just enqueued a platform intent (it flagged the response). Drain that
+      // scope out of band so it runs in seconds — after we've returned, never blocking it.
+      if (ctx && response.headers.get('x-substrat-platform-request')) {
+        ctx.waitUntil(kickDrain(env, target));
+      }
       return response;
     } finally {
       record(env, target, {
