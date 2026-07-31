@@ -42,6 +42,16 @@ interface OutboxRow {
   subject_id: string | null;
 }
 
+interface PlatformRequestRow {
+  id: string;
+  kind: string;
+  payload: string;
+  requested_by: string;
+  status: string;
+  attempts: number;
+  requested_at: string;
+}
+
 /** Adapter capability flags — everything an adapter cannot honor identically. */
 export interface ScopeHostSuiteOptions {
   /**
@@ -243,6 +253,32 @@ export function scopeHostContractSuite(
     it('accepts PII-classed events with a subjectId', async () => {
       const stub = await host.getScope(alice, t1, s1);
       await expect(stub.invoke('test/emit-event', { subject: ulid() })).resolves.toBeUndefined();
+    });
+
+    it('requestPlatform enqueues a durable, kernel-stamped platform intent (platform-intents.md)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const id = await stub.invoke<string>('platform/request', { kind: 'provision-sibling', payload: { slug: 'cafe' } });
+      expect(id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/); // returns the new request id
+
+      const rows = await stub.invoke<PlatformRequestRow[]>('platform/read-requests');
+      const row = rows.find((r) => r.id === id)!;
+      expect(row).toBeDefined();
+      expect(row.kind).toBe('provision-sibling');
+      expect(JSON.parse(row.payload)).toEqual({ slug: 'cafe' });
+      expect(row.status).toBe('pending'); // awaits the platform drain
+      expect(row.attempts).toBe(0);
+      expect(JSON.parse(row.requested_by)).toBe(alice); // stamped from the operation's actor
+      expect(new Date(row.requested_at).getTime()).not.toBeNaN();
+    });
+
+    it('rolls back a platform intent with its operation when the handler throws (K-4)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const before = (await stub.invoke<PlatformRequestRow[]>('platform/read-requests')).length;
+      await expect(stub.invoke('platform/request-then-throw', { kind: 'provision-sibling' })).rejects.toThrow('boom');
+      // The intent write is atomic with the operation — nothing survives the rollback.
+      const after = await stub.invoke<PlatformRequestRow[]>('platform/read-requests');
+      expect(after.length).toBe(before);
+      expect(after.every((r) => r.kind !== 'provision-sibling' || r.payload !== JSON.stringify({ rolled: 'back' }))).toBe(true);
     });
 
     it('isolates scope storage: a write in one scope is invisible in another', async () => {

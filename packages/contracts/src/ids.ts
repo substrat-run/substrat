@@ -31,6 +31,12 @@ export type PlatformActorId = z.infer<typeof platformActorId>;
 export const eventId = z.string().regex(ULID).brand<'EventId'>();
 export type EventId = z.infer<typeof eventId>;
 
+// A platform-intent request (platform-intents.md) — the id of a durable `_substrat_platform_requests`
+// row a vertical enqueues via `ctx.requestPlatform` and the platform later drains. Branded like every
+// other id so a request id can't be confused with an event or scope id.
+export const platformRequestId = z.string().regex(ULID).brand<'PlatformRequestId'>();
+export type PlatformRequestId = z.infer<typeof platformRequestId>;
+
 export const dataSubjectId = z.string().regex(ULID).brand<'DataSubjectId'>();
 export type DataSubjectId = z.infer<typeof dataSubjectId>;
 
