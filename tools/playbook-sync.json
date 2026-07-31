@@ -1,0 +1,11 @@
+{
+  "//": [
+    "Baseline for tools/playbook-sync.mts.",
+    "sourceSha256 is the sha256 of the skill the template playbook was last",
+    "reconciled against. After porting skill changes into the playbook, run",
+    "`pnpm lint:playbook --update` to record that you did."
+  ],
+  "source": ".claude/skills/substrat/SKILL.md",
+  "target": "packages/create-substrat/template/.substrat/playbook.md",
+  "sourceSha256": "4e429d507b1e5176b8a3bd27cf913f27d58597fc1d0ed9e49e51416a43a3ea41"
+}
