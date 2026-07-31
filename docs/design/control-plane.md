@@ -533,10 +533,20 @@ something `getScope` owns.
 
 Two things this forecloses:
 
-- **Workers KV cannot be used with Regional Services**, so it is not available as the
-  cache for the router's per-request directory read. That was the obvious fix for the
-  hot path, and it would have voided the residency claim for every hostname it served.
-  Open question 5 inherits the constraint.
+- **Workers KV has no jurisdictional storage restriction**, so it is not available as
+  the cache for the router's per-request directory read — caching a hostname's route
+  there would place residency-bound directory data in a globally-cached store. The
+  disqualifier is the store's missing residency guarantee, not a binding ban: a
+  regionalized worker *can* bind KV, and Regional Services regionalizes execution and
+  TLS termination without extending to a worker's outgoing subrequests. **(Corrected
+  2026-07-31, K-36:** the original "KV cannot be used with Regional Services" over-read a
+  "not supported" compatibility-matrix cell into a hard prohibition.**)** Open question 5
+  inherited a stronger corollary — that the read therefore cannot be cached *at all* —
+  which **K-36 retires**: D1 (`eu`/`fedramp`, 2025-11-05) and DO (`eu`/`us`) jurisdictions
+  are residency-safe cache stores KV lacked, so a jurisdiction-pinned D1 replica of the
+  hostname map or per-jurisdiction cache DOs is available for the hot path. What open
+  question 5 still owns is *freshness*, not residency: any route cache must invalidate the
+  instant a tenant is suspended (§7).
 - **D1 carries residency through a `jurisdiction`, never a location hint.** A
   jurisdiction is a hard constraint and restricts read replicas to it; a hint is
   explicitly best-effort. This answers kernel-design open question 7.
