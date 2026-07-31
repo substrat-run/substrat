@@ -16,6 +16,7 @@ import {
   billedMod,
   connectorTestFetch,
   permissionContractSuite,
+  scheduleContractSuite,
   scopeHostContractSuite,
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -46,6 +47,17 @@ scopeHostContractSuite(
 // The permission suite runs against the DO's default tuple checker (scope tuples
 // in the ScopeDO, tenant tuples + roles in the ControlPlaneDO).
 permissionContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// The schedule suite (#383) also runs against the default tuple checker — it must
+// resolve the projected system grant, not an allow-all.
+scheduleContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

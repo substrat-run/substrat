@@ -5,6 +5,7 @@ import { UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel
 import {
   connectorTestFetch,
   permissionContractSuite,
+  scheduleContractSuite,
   scopeHostContractSuite,
 } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
@@ -31,6 +32,23 @@ scopeHostContractSuite('adapter-sqlite', async () => {
 // The permission suite runs against the DEFAULT checker (the tuple engine).
 permissionContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-perm-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// The schedule suite needs the DEFAULT checker too — the whole point is that the
+// system grant resolves through the real tuple engine, not an allow-all.
+scheduleContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-sched-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),

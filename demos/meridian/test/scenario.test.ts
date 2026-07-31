@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { platformActorId, principalId, type ScopeId } from '@substrat-run/contracts';
-import { ulid, type ScopeStub } from '@substrat-run/kernel';
+import { runPlatformSweep, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PROTOCOL_PERM, type ProtocolInstanceRow } from '@substrat-run/engine-protocol';
 import {
@@ -471,5 +471,58 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
     // Scope isolation: the Stockholm manager has no reach into Madrid.
     const matsInEs = await host.getScope(w.mats, w.t1, w.sEs);
     await expect(matsInEs.invoke('hr/list-requests')).rejects.toThrow(/permission denied/);
+  });
+
+  it('10. a stale leave is auto-cancelled by the platform sweep, attributed to the system (#383)', async () => {
+    // elin files a leave whose start date is already in the past and never gets it
+    // approved — the exact case a date-triggered rule exists for.
+    const stale = await elin.invoke<LeaveRequestRow>('hr/request-leave', {
+      employeeId: w.elinEmpId,
+      leaveTypeKey: 'vacation',
+      startDate: '2020-01-06',
+      endDate: '2020-01-10',
+      days: '4',
+    });
+    expect(stale.status).toBe('requested');
+
+    // No one touches it. The platform sweep — the same driver server.ts runs on a
+    // timer — invokes `hr/expire-stale-requests` on every live scope, under a
+    // system actor, and the leave is cancelled.
+    const report = await runPlatformSweep(host, {
+      actor: platformActorId.parse(ulid()),
+      fetch: globalThis.fetch as unknown as FetchLike,
+      sweepers: {},
+      drainRetries: false,
+      gcSnapshots: false,
+      reconcileMigrations: false,
+    });
+    expect(report.schedules).not.toBeNull();
+    expect(report.schedules!.fired).toBeGreaterThanOrEqual(1);
+    expect(report.errors).toEqual([]);
+
+    const requests = await hedda.invoke<LeaveRequestRow[]>('hr/list-requests');
+    expect(requests.find((r) => r.id === stale.id)?.status).toBe('cancelled');
+
+    // The audit trail names the SCHEDULE, not a manager who never looked at it —
+    // the attribution the whole seam exists to keep honest.
+    const db = new Database(join(dir, `${w.t1}__${w.sSe}.sqlite`), { readonly: true });
+    const evt = db
+      .prepare(`SELECT actor FROM _substrat_outbox WHERE type = 'hr.leave-expired' ORDER BY id DESC LIMIT 1`)
+      .get() as { actor: string } | undefined;
+    db.close();
+    expect(evt).toBeDefined();
+    expect(JSON.parse(evt!.actor)).toEqual({ system: '@substrat-run/demo-meridian' });
+
+    // Cadence gate: a second immediate pass does not re-run it.
+    const again = await runPlatformSweep(host, {
+      actor: platformActorId.parse(ulid()),
+      fetch: globalThis.fetch as unknown as FetchLike,
+      sweepers: {},
+      drainRetries: false,
+      gcSnapshots: false,
+      reconcileMigrations: false,
+    });
+    expect(again.schedules!.fired).toBe(0);
+    expect(again.schedules!.skipped).toBeGreaterThanOrEqual(1);
   });
 });

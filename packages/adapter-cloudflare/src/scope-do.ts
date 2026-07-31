@@ -40,7 +40,7 @@ import {
   type PermissionChecker,
   type SqlMigration,
 } from '@substrat-run/kernel';
-import type { CheckSubject } from '@substrat-run/contracts';
+import type { CheckSubject, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
@@ -147,6 +147,14 @@ const KERNEL_DDL = `
     operation TEXT,
     at TEXT NOT NULL,
     drained_at TEXT
+  );
+  -- #383: recurring-schedule bookkeeping. One row per schedule operation that has
+  -- run on this scope, so the platform sweep can tell what is due. Spine (kernel-
+  -- written), never a module migration.
+  CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
+    schedule_op TEXT PRIMARY KEY,
+    last_run_at TEXT,
+    last_status TEXT
   );
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
@@ -655,6 +663,14 @@ export function defineScopeDO(
        * coordinator against the shared CP, so this is left undefined / a no-op there.
        */
       requiredEntitlement?: string,
+      /**
+       * Set when the caller is a MODULE acting on a timer (#383) — the scheduler's
+       * subject. Like `connectionId` it is not a person: the DO uses it for the
+       * permission subject (`system:<moduleId>` grants) and the event actor
+       * (`{ system: <moduleId> }`), and `ctx.check` resolves it normally — no
+       * override bypass. Mutually exclusive with `connectionId`.
+       */
+      systemModuleId?: string,
     ): Promise<unknown> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
@@ -692,6 +708,7 @@ export function defineScopeDO(
               scopeId,
               undefined,
               connectionId,
+              systemModuleId,
             );
             await this.runGuards(operation, ctx, input);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, input);
@@ -701,7 +718,11 @@ export function defineScopeDO(
           // write (outside that transaction), so the denial survives the rollback.
           if (err instanceof PermissionDenied) {
             this.recordDenial(
-              connectionId ? { kind: 'connection', id: connectionId } : { kind: 'principal', id: principal },
+              systemModuleId
+                ? { kind: 'system', id: systemModuleId as ModuleId }
+                : connectionId
+                  ? { kind: 'connection', id: connectionId }
+                  : { kind: 'principal', id: principal },
               tenantId,
               operation,
               err,
@@ -713,6 +734,49 @@ export function defineScopeDO(
         await this.dispatch(tenantId, scopeId);
         return result;
       });
+    }
+
+    /**
+     * Whether this scope holds a live `system:<moduleId>` grant (#383) — the switch
+     * that decides if a module's schedules run here at all. Absent on a foreign
+     * vertical's scope, or after a per-tenant revoke, so the sweep skips it quietly.
+     */
+    async hasSystemGrant(moduleId: string): Promise<boolean> {
+      const now = new Date().toISOString();
+      const row = this.sql
+        .exec(
+          `SELECT 1 FROM _substrat_tuples
+            WHERE subject = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+            LIMIT 1`,
+          `system:${moduleId}`,
+          now,
+        )
+        .toArray()[0];
+      return row !== undefined;
+    }
+
+    /** The last time a schedule's operation ran on this scope (#383), or null. */
+    async scheduleLastRun(operation: string): Promise<string | null> {
+      const row = this.sql
+        .exec(
+          `SELECT last_run_at FROM _substrat_schedule_state WHERE schedule_op = ?`,
+          operation,
+        )
+        .toArray()[0] as { last_run_at: string | null } | undefined;
+      return row?.last_run_at ?? null;
+    }
+
+    /** Record a schedule run's timestamp + outcome (#383). Spine, kernel-written. */
+    async recordScheduleRun(operation: string, at: string, status: 'ok' | 'failed'): Promise<void> {
+      this.sql.exec(
+        `INSERT INTO _substrat_schedule_state (schedule_op, last_run_at, last_status)
+           VALUES (?, ?, ?)
+         ON CONFLICT(schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
+                                                last_status = excluded.last_status`,
+        operation,
+        at,
+        status,
+      );
     }
 
     // -- guards (K-17) --------------------------------------------------------
@@ -1274,7 +1338,11 @@ export function defineScopeDO(
       // no permission key and is left to the module.
       if (!err.permission || !err.node) return;
       const actor =
-        subject.kind === 'connection' ? { connection: subject.id } : (subject.id as PrincipalId);
+        subject.kind === 'system'
+          ? { system: subject.id }
+          : subject.kind === 'connection'
+            ? { connection: subject.id }
+            : (subject.id as PrincipalId);
       this.sql.exec(
         `INSERT INTO _substrat_denials
            (id, actor, permission, tenant_id, scope_id, operation, at)
@@ -1314,10 +1382,25 @@ export function defineScopeDO(
       scopeId: ScopeId,
       systemActor?: { system: string },
       connectionId?: string,
+      systemModuleId?: string,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
       const sql = this.sql;
+      // The permission subject and the derived event actor for a NON-override caller
+      // (#383/#97): a scheduled module, a connection, or a person. `systemActor` (the
+      // override, used only by consumer dispatch) stays a separate bypass path below.
+      const subject: CheckSubject = systemModuleId
+        ? { kind: 'system', id: systemModuleId as ModuleId }
+        : connectionId
+          ? { kind: 'connection', id: connectionId }
+          : { kind: 'principal', id: principal };
+      const derivedActor =
+        subject.kind === 'system'
+          ? { system: subject.id }
+          : subject.kind === 'connection'
+            ? { connection: subject.id }
+            : principal;
       // #304: entitlement reads pick the same local-vs-RPC reader the permission checker
       // uses (projected scope → local table; console-managed → CP over RPC), resolved per
       // call so a scope that flips to 'local' is picked up without rebuilding the context.
@@ -1339,7 +1422,7 @@ export function defineScopeDO(
             occurredAt: instant.parse(new Date().toISOString()),
             tenantId,
             scopeId,
-            actor: systemActor ?? (connectionId ? { connection: connectionId } : principal),
+            actor: systemActor ?? derivedActor,
             ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
           });
           sql.exec(
@@ -1377,7 +1460,7 @@ export function defineScopeDO(
             throw new Error(`too many pending platform requests (${pending}); retry once some have drained`);
           }
           const id = platformRequestId.parse(ulid());
-          const requestedBy = systemActor ?? (connectionId ? { connection: connectionId } : principal);
+          const requestedBy = systemActor ?? derivedActor;
           sql.exec(
             `INSERT INTO _substrat_platform_requests
                (id, kind, payload, requested_by, status, attempts, requested_at)
@@ -1406,9 +1489,7 @@ export function defineScopeDO(
             };
           }
           const decision = await checker.check(
-            connectionId
-              ? { kind: 'connection', id: connectionId }
-              : { kind: 'principal', id: principal },
+            subject,
             permission,
             { tenantId, scopeId },
             entity,

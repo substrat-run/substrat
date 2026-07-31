@@ -32,8 +32,16 @@ Operation names are module-namespaced: `'workorder/create'`, `'invoicing/export'
 
 This is a teaching subset. The live `ScopeHost` has since grown a per-tenant relational
 store (`provisionTenantStore` / `openTenantStore`), scope import/restore/snapshot
-(`importScope`, `restoreScope`, `snapshotScope`), and connector methods — surfaces the rest
-of these docs introduce where they belong.
+(`importScope`, `restoreScope`, `snapshotScope`), connector methods, and a scheduler seam
+(`getSystemScope` opens a stub whose authority is a module on a timer, and
+`registeredSchedules` / `runDueSchedules` let the [platform sweep](/concepts/platform#scheduled-work)
+run a vertical's [recurring work](/concepts/modules#recurring-work-schedules)) — surfaces
+the rest of these docs introduce where they belong.
+
+`getSystemScope(moduleId, tenantId, scopeId)` is the mirror of `getConnectorScope`: a door
+for a non-human caller. Where a connection's stub stamps `{ connection }` on its events, a
+system stub stamps `{ system: moduleId }` and checks against `system:<moduleId>` grants — so
+a scheduled operation is attributable to the schedule, and `ctx.check` stays its one gate.
 
 ## What a handler sees
 

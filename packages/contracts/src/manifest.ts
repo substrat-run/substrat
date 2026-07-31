@@ -28,6 +28,27 @@ export const manifestGuard = z.object({
 });
 export type ManifestGuard = z.infer<typeof manifestGuard>;
 
+// A RECURRING-WORK declaration (#383): "invoke this operation on every live scope
+// of mine, on this cadence." The platform sweep enumerates the vertical's live
+// scopes and fires the operation under a SYSTEM actor (`{ system: <moduleId> }`),
+// never a human — the attribution laundering an out-of-band cron-as-a-person would
+// cause is exactly what this exists to end.
+//
+// `permissions` names the keys the operation checks. They are projected as grants
+// to the module's system principal at scope provisioning, so `ctx.check` resolves
+// for the schedule the same way it does for anyone else (it stays the single gate),
+// AND they land in the reviewable permission diff — widening what a schedule may do
+// cannot merge silently. A schedule can do exactly what it declares here, no more.
+export const scheduleSpec = z.object({
+  operation: z.string().min(1), // 'contract/advance-starts' — a registered module/verb op id
+  // How often. Coarse-bounded by the sweep interval (~2 min alarm / ~15 min cron):
+  // a schedule can never fire more often than the sweep runs; `everyMinutes` is the floor.
+  cadence: z.object({ everyMinutes: z.number().int().positive() }),
+  input: z.record(z.string(), z.unknown()).optional(), // static input each run; the op re-parses it
+  permissions: z.array(permissionKey).default([]), // what the op checks → system grant + review surface
+});
+export type ScheduleSpec = z.infer<typeof scheduleSpec>;
+
 // A single declared environment variable — the config a deployment must provide,
 // self-describing so a host/console can render a settings form (placeholder +
 // description) and validate the required keys before deploy. `secret: true` marks a
@@ -128,6 +149,13 @@ export const moduleManifest = z.object({
   // Optional: every pre-milestone-C manifest still parses unchanged (D-28,
   // additive-only surface).
   guards: z.array(manifestGuard).optional(),
+  // RECURRING WORK (#383). A vertical declares operations the platform invokes on
+  // every live scope of it, on a cadence, under a system actor — the seam a domain
+  // rule triggered by the passage of time (a contract that activates on its
+  // start_date) had no way to reach. One phase of `runPlatformSweep`; see scheduleSpec.
+  //
+  // Optional: additive-only surface (D-28) — every pre-#383 manifest still parses.
+  schedules: z.array(scheduleSpec).optional(),
   // OPERATION WITHDRAWAL (K-17, the complement that makes guards enforceable).
   // Operation names whose DEFAULT BINDING this module suppresses in the host it
   // registers into: the name stops resolving — an invoke fails 'unknown

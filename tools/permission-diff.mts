@@ -31,8 +31,13 @@ interface PermissionDecl {
   key: string;
   description: string;
 }
+interface ScheduleLike {
+  operation: string;
+  cadence?: { everyMinutes: number };
+  permissions?: string[];
+}
 interface ModuleLike {
-  manifest: { id: string; permissions: PermissionDecl[] };
+  manifest: { id: string; permissions: PermissionDecl[]; schedules?: ScheduleLike[] };
 }
 interface RoleLike {
   key: string;
@@ -109,6 +114,15 @@ function render(name: string, pkg: string, src: Surface): string {
       if (!declaredBy.has(p)) orphans.push(`grant on ${code(g.entityType)} → ${code(p)}`);
     }
   }
+  // A schedule's declared permissions become a system-principal grant (#383); an
+  // undeclared key there denies the scheduled operation silently, same as a role.
+  for (const m of modules) {
+    for (const s of m.manifest.schedules ?? []) {
+      for (const p of s.permissions ?? []) {
+        if (!declaredBy.has(p)) orphans.push(`schedule ${code(s.operation)} → ${code(p)}`);
+      }
+    }
+  }
   if (orphans.length) {
     cannot(
       `demos/${name} references ${orphans.length} permission key(s) no registered manifest declares:\n` +
@@ -160,9 +174,10 @@ function render(name: string, pkg: string, src: Surface): string {
     ``,
   );
 
+  let section = 4;
   if (grants.length) {
     out.push(
-      `## 4. Entity-narrowed grant shapes`,
+      `## ${section}. Entity-narrowed grant shapes`,
       ``,
       `Reachable WITHOUT a role, narrowed to one entity per principal. A key held by`,
       `no role in §3 but listed here is deliberate, not a gap.`,
@@ -172,10 +187,36 @@ function render(name: string, pkg: string, src: Surface): string {
       ...grants.map((g) => `| ${code(g.entityType)} | ${sorted(g.permissions).map(code).join(', ')} |`),
       ``,
     );
+    section += 1;
+  }
+
+  // §_. Scheduled work (#383): each declared schedule and the permissions its
+  // module's SYSTEM principal holds to run it. Widening a schedule's authority
+  // lands here, in the reviewed diff.
+  const schedules = modules
+    .flatMap((m) => (m.manifest.schedules ?? []).map((s) => ({ module: m.manifest.id, ...s })))
+    .sort((a, b) => a.operation.localeCompare(b.operation));
+  if (schedules.length) {
+    out.push(
+      `## ${section}. Scheduled work — the system principal's grants`,
+      ``,
+      `Each runs on the platform sweep, under \`system:<module>\`, on the cadence shown.`,
+      `The permissions are what that system principal is granted at provisioning — a`,
+      `schedule can do exactly this and no more.`,
+      ``,
+      `| Operation | Cadence | System principal | Permissions |`,
+      `| --- | --- | --- | --- |`,
+      ...schedules.map(
+        (s) =>
+          `| ${code(s.operation)} | ${s.cadence ? `every ${s.cadence.everyMinutes} min` : '—'} | ${code(`system:${s.module}`)} | ${sorted(s.permissions ?? []).map(code).join(', ') || '— none —'} |`,
+      ),
+      ``,
+    );
+    section += 1;
   }
 
   out.push(
-    `## ${grants.length ? 5 : 4}. Not covered by this artifact`,
+    `## ${section}. Not covered by this artifact`,
     ``,
     `- **The grants themselves** — per-principal, per-entity, minted at runtime with`,
     `  random ULIDs. Only their shapes above are representable deterministically.`,

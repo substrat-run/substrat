@@ -83,6 +83,9 @@ export const adminAction = z.enum([
   // #97 — a connection may hold a permission, so granting one is a mutation the
   // log has to be able to name.
   'grantToConnection',
+  // #383 — a module's system principal may hold a permission (for scheduled work),
+  // so granting one is a named, audited mutation like every other grant.
+  'grantToSystem',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

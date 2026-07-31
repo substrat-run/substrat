@@ -120,6 +120,14 @@ export interface PlatformSweepOptions {
    */
   reconcileMigrations?: boolean;
   /**
+   * Also run each vertical's DUE recurring schedules (#383): for every module that
+   * declares `schedules`, enumerate its live scopes and invoke each due operation
+   * under a system actor via `runDueSchedules`. Default `true`; the phase
+   * feature-detects `host.registeredSchedules` and quietly yields `schedules: null`
+   * on a fake or pre-#383 host, and does nothing when no module declares any.
+   */
+  runSchedules?: boolean;
+  /**
    * Backoff between retries of a FAILED scope, keyed off the directory's
    * consecutive-attempt count: `baseDelayMs * 2^(attempts-1)`, capped at
    * `maxDelayMs`, jittered ±20% (the same curve executor retries use). There is
@@ -159,6 +167,23 @@ export interface MigrationSweepReport extends MigrationProgress {
   noops: number;
 }
 
+/**
+ * What the recurring-schedule phase did in one pass (#383), summed across every
+ * module's live scopes. `null` on `PlatformSweepReport` means the phase was
+ * disabled or the host predates it — distinct from a report of all zeros, which is
+ * "ran, nothing was due."
+ */
+export interface ScheduleSweepReport {
+  /** Scopes `runDueSchedules` ran on (had ≥1 declared schedule). */
+  scopes: number;
+  /** Due schedules whose operation ran successfully. */
+  fired: number;
+  /** Schedules skipped this pass — still inside their cadence window. */
+  skipped: number;
+  /** Due schedules whose operation failed — recorded, stepped over. */
+  failed: number;
+}
+
 export interface PlatformSweepReport {
   /** Active scopes `drainDue` ran on. */
   scopesDrained: number;
@@ -184,9 +209,16 @@ export interface PlatformSweepReport {
    * to end.
    */
   migrations: MigrationSweepReport | null;
+  /**
+   * The recurring-schedule phase's report (#383), or null when the phase was
+   * disabled or the host predates `registeredSchedules`. Null vs a report of zeros
+   * are different facts — null is "nobody ran schedules", zeros is "ran, nothing
+   * due" — the same distinction `migrations` draws.
+   */
+  schedules: ScheduleSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
-    kind: 'drain' | 'sweep' | 'gc' | 'reap' | 'reap-tenant' | 'migrate' | 'platform-request';
+    kind: 'drain' | 'sweep' | 'gc' | 'reap' | 'reap-tenant' | 'migrate' | 'platform-request' | 'schedule';
     id: string;
     error: string;
   }[];
@@ -260,6 +292,7 @@ export async function runPlatformSweep(
     tenantsReaped: 0,
     platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0 },
     migrations: null,
+    schedules: null,
     errors: [],
   };
 
@@ -402,6 +435,46 @@ export async function runPlatformSweep(
         report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
       }
     });
+  }
+
+  // -- recurring schedules (#383) ---------------------------------------------
+  // For each module that declares `schedules`, enumerate its live scopes and run
+  // whatever is due on each, under a system actor. Feature-detected so a fake or
+  // pre-#383 host degrades to `schedules: null`, never a crash — the same move the
+  // migration phase makes. A scope whose migration failed this pass is skipped: it
+  // fails closed, so its operations would only re-throw the migration error as noise.
+  if (options.runSchedules !== false && typeof host.registeredSchedules === 'function') {
+    const registrations = host.registeredSchedules().filter((r) => r.schedules.length > 0);
+    if (registrations.length > 0) {
+      const schedules: ScheduleSweepReport = { scopes: 0, fired: 0, skipped: 0, failed: 0 };
+      // Primaries only — a fork/snapshot (forkedFrom set) is a preview or test copy;
+      // firing its schedules would run real recurring side effects off a throwaway.
+      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+        (s) => s.forkedFrom === null,
+      );
+      await mapBounded(scopes, concurrency, async (s) => {
+        if (failedThisPass.has(s.id)) return;
+        let touched = false;
+        for (const reg of registrations) {
+          try {
+            const r = await host.runDueSchedules(reg.moduleId, s.tenantId, s.id);
+            if (r.fired > 0 || r.failed > 0) touched = true;
+            schedules.fired += r.fired;
+            schedules.skipped += r.skipped;
+            schedules.failed += r.failed;
+            for (const e of r.errors) {
+              report.errors.push({ kind: 'schedule', id: `${s.id}:${e.operation}`, error: e.error });
+            }
+          } catch (err) {
+            // A throw here is transport/gating trouble (DO unreachable, K-3
+            // mismatch), not a schedule verdict — recorded and stepped over.
+            report.errors.push({ kind: 'schedule', id: `${s.id}:${reg.moduleId}`, error: message(err) });
+          }
+        }
+        if (touched) schedules.scopes += 1;
+      });
+      report.schedules = schedules;
+    }
   }
 
   if (options.gcSnapshots !== false) {

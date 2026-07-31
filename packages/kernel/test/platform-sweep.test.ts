@@ -448,6 +448,102 @@ describe('runPlatformSweep — migration reconciliation (§5.3, #49)', () => {
   });
 });
 
+describe('runPlatformSweep — recurring schedules (#383)', () => {
+  const SCHED_MOD = '@test/sched';
+  type SchedScope = { id: ReturnType<typeof sid>; forkedFrom: string | null };
+  function schedHost(opts: {
+    scopes: SchedScope[];
+    run: ScopeHost['runDueSchedules'];
+    schedules?: { moduleId: string; schedules: { operation: string }[] }[];
+  }): ScopeHost {
+    return {
+      admin: {
+        listScopes: async () =>
+          opts.scopes.map((s) => ({ ...s, tenantId: T, status: 'active' })),
+        listConnections: async () => [],
+      },
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+      registeredSchedules: () =>
+        opts.schedules ?? [{ moduleId: SCHED_MOD, schedules: [{ operation: 'sched/tick' }] }],
+      runDueSchedules: opts.run,
+    } as unknown as ScopeHost;
+  }
+  const opts = (o?: Partial<Parameters<typeof runPlatformSweep>[1]>) => ({
+    actor: ACTOR,
+    fetch: FETCH,
+    sweepers: {},
+    drainRetries: false as const,
+    gcSnapshots: false as const,
+    reconcileMigrations: false as const,
+    ...o,
+  });
+
+  it('runs due schedules per live scope and aggregates the report', async () => {
+    const host = schedHost({
+      scopes: [{ id: sid(), forkedFrom: null }, { id: sid(), forkedFrom: null }],
+      run: async () => ({ fired: 1, skipped: 0, failed: 0, errors: [] }),
+    });
+    const report = await runPlatformSweep(host, opts());
+    expect(report.schedules).toEqual({ scopes: 2, fired: 2, skipped: 0, failed: 0 });
+    expect(report.errors).toEqual([]);
+  });
+
+  it('never fires a schedule on a fork/snapshot (forkedFrom set)', async () => {
+    const calls: string[] = [];
+    const host = schedHost({
+      scopes: [{ id: sid(), forkedFrom: null }, { id: sid(), forkedFrom: 'origin' }],
+      run: async (_m, _t, s) => {
+        calls.push(s);
+        return { fired: 1, skipped: 0, failed: 0, errors: [] };
+      },
+    });
+    const report = await runPlatformSweep(host, opts());
+    expect(calls).toHaveLength(1); // the primary only
+    expect(report.schedules).toEqual({ scopes: 1, fired: 1, skipped: 0, failed: 0 });
+  });
+
+  it('records a per-schedule failure and steps over it, never sinking the pass', async () => {
+    const host = schedHost({
+      scopes: [{ id: sid(), forkedFrom: null }],
+      run: async () => ({
+        fired: 0,
+        skipped: 0,
+        failed: 1,
+        errors: [{ operation: 'sched/tick', error: 'boom' }],
+      }),
+    });
+    const report = await runPlatformSweep(host, opts());
+    expect(report.schedules).toEqual({ scopes: 1, fired: 0, skipped: 0, failed: 1 });
+    expect(report.errors).toEqual([
+      { kind: 'schedule', id: expect.stringContaining(':sched/tick'), error: 'boom' },
+    ]);
+  });
+
+  it('a throw from runDueSchedules is caught, recorded, and does not abort', async () => {
+    const host = schedHost({
+      scopes: [{ id: sid(), forkedFrom: null }],
+      run: async () => {
+        throw new Error('DO unreachable');
+      },
+    });
+    const report = await runPlatformSweep(host, opts());
+    expect(report.errors).toEqual([
+      { kind: 'schedule', id: expect.stringContaining(`:${SCHED_MOD}`), error: 'DO unreachable' },
+    ]);
+  });
+
+  it('runSchedules: false and a pre-#383 host both yield schedules: null', async () => {
+    const host = schedHost({
+      scopes: [{ id: sid(), forkedFrom: null }],
+      run: async () => ({ fired: 1, skipped: 0, failed: 0, errors: [] }),
+    });
+    expect((await runPlatformSweep(host, opts({ runSchedules: false }))).schedules).toBeNull();
+    // The original fake host has no registeredSchedules — the phase steps aside.
+    const legacy = await runPlatformSweep(fakeHost({}), { actor: ACTOR, fetch: FETCH, sweepers: {} });
+    expect(legacy.schedules).toBeNull();
+  });
+});
+
 describe('startPlatformSweeper', () => {
   /** A hand-driven clock: startPlatformSweeper reschedules via these, so a test owns the cadence. */
   function fakeClock() {

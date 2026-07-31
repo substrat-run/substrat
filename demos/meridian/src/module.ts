@@ -469,6 +469,42 @@ const decideLeaveOp: OperationHandler<
   };
 };
 
+// A DATE-TRIGGERED rule with no caller but the passage of time (#383): a leave
+// still `requested` once its start date has passed can no longer be approved, so
+// the platform sweep cancels it — attributed to the schedule (`{ system }`), never
+// to a manager who never touched it. Idempotent (only `requested` rows past their
+// start) and paged (a bounded batch per pass), so a backlog drains over passes
+// rather than blowing one invoke.
+const expireStaleRequestsOp: OperationHandler<undefined, { expired: number }> = async (ctx) => {
+  assertAllowed(await ctx.check(HR_PERM.absenceApprove));
+  const today = new Date().toISOString().slice(0, 10); // start_date is a YYYY-MM-DD date
+  const stale = ctx.sql.query<LeaveRequestRow>(
+    `SELECT * FROM hr_leave_requests
+       WHERE status = 'requested' AND start_date < ?
+       ORDER BY start_date LIMIT 100`,
+    [today],
+  );
+  const now = new Date().toISOString();
+  for (const req of stale) {
+    ctx.sql.exec(
+      `UPDATE hr_leave_requests
+          SET status = 'cancelled', decided_at = ?,
+              note = COALESCE(note, 'auto-expired: start date passed before approval')
+        WHERE id = ?`,
+      [now, req.id],
+    );
+    ctx.emit({
+      type: 'hr.leave-expired',
+      schemaVersion: 1,
+      entity: employeeRef(req.employee_id),
+      piiClass: 'pseudonymous',
+      subjectId: dataSubjectId.parse(req.employee_id),
+      payload: { requestId: req.id, employeeId: req.employee_id, startDate: req.start_date },
+    });
+  }
+  return { expired: stale.length };
+};
+
 function getRequest(ctx: OperationContext, id: string): LeaveRequestRow {
   return ctx.sql.query<LeaveRequestRow>('SELECT * FROM hr_leave_requests WHERE id = ?', [id])[0]!;
 }
@@ -991,6 +1027,7 @@ export const meridianModule: ModuleRegistration = {
     'hr/balance': balanceOp as never,
     'hr/request-leave': requestLeaveOp as never,
     'hr/decide-leave': decideLeaveOp as never,
+    'hr/expire-stale-requests': expireStaleRequestsOp as never,
     'hr/list-requests': listRequestsOp as never,
     'hr/my-requests': myRequestsOp as never,
     'hr/create-project': createProjectOp as never,
