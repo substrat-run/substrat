@@ -1194,14 +1194,47 @@ app.get('/api/apps/:scopeId/scopes', async (c) => {
 });
 
 /**
+ * Resolve the scope a Data-tab request addresses, authorized against the caller's own apps.
+ * The scope switcher (multi-scope-manyfold M4) browses ANY scope of an app's vertical —
+ * Manyfold's per-site scopes among them — so the addressed scope is either an app's own
+ * default scope (the common case, matched directly against `list-apps`) OR a secondary scope
+ * of a vertical the tenant owns an app of. Only a direct-match miss pays for the per-vertical
+ * `listScopes` walk. A scope in neither is a 404, and tenant isolation holds because both
+ * `list-apps` and `listScopes` are tenant-pinned below the seam (K-3).
+ */
+async function resolveBrowsableScope(
+  host: ScopeHost,
+  env: Env,
+  node: DashboardNode,
+  apps: DashboardAppRow[],
+  requested: string,
+): Promise<{ appRow: DashboardAppRow; scope: ReturnType<typeof scopeId.parse> }> {
+  const direct = apps.find((a) => a.app_scope_id === requested);
+  if (direct) return { appRow: direct, scope: scopeId.parse(direct.app_scope_id) };
+  const cp = controlPlaneFor(env, node.tenantId);
+  const seen = new Set<string>();
+  for (const app of apps) {
+    if (seen.has(app.vertical_slug)) continue;
+    seen.add(app.vertical_slug);
+    const scopes = cp
+      ? await cp.listScopes(app.vertical_slug)
+      : await host.admin.listScopes(STAFF, { tenantId: node.tenantId, vertical: app.vertical_slug });
+    const hit = (scopes ?? []).find((s) => s.id === requested && (s.status === 'active' || s.status === 'provisioning'));
+    if (hit) return { appRow: app, scope: scopeId.parse(hit.id) };
+  }
+  throw new HTTPException(404, { message: 'app not found' });
+}
+
+/**
  * One app's Data tab — a read-only window into the app's OWN database (kernel-design
  * §5.4's admin-query RPC). Two reads: the table list, and a bounded page of one table.
  *
- * Authorized in the caller's OWN dashboard scope: the app is resolved from the
- * tenant-scoped `list-apps`, so another tenant's scope id is a 404 here — and the
- * platform layer cross-checks (tenantId, scopeId) again below (K-3). Connected mode
- * reads through the tenant-narrowed control plane; embedded mode reads the host
- * directly with the platform STAFF actor. Read-only by construction — no user SQL.
+ * Authorized in the caller's OWN dashboard scope: the addressed scope is resolved from the
+ * tenant-scoped `list-apps` (its default scope) or the tenant's own vertical scopes (a
+ * secondary site scope) via `resolveBrowsableScope`, so another tenant's scope id is a 404
+ * here — and the platform layer cross-checks (tenantId, scopeId) again below (K-3). Connected
+ * mode reads through the tenant-narrowed control plane; embedded mode reads the host directly
+ * with the platform STAFF actor. Read-only by construction — no user SQL.
  */
 app.get('/api/apps/:scopeId/tables', async (c) => {
   const host = hostFor(c.env);
@@ -1209,9 +1242,7 @@ app.get('/api/apps/:scopeId/tables', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const scope = scopeId.parse(appRow.app_scope_id);
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId);
   const tables = cp
     ? await cp.listScopeTables(scope)
@@ -1229,9 +1260,7 @@ app.get('/api/apps/:scopeId/tables/:table', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const scope = scopeId.parse(appRow.app_scope_id);
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const input = readScopeTableInput.parse({
     table: c.req.param('table'),
     limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
@@ -1255,9 +1284,7 @@ app.post('/api/apps/:scopeId/query', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const scope = scopeId.parse(appRow.app_scope_id);
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const input = queryScopeInput.parse(await c.req.json());
   const cp = controlPlaneFor(c.env, node.tenantId);
   try {
