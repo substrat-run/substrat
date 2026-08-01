@@ -5,6 +5,8 @@
  * endpoints (`/verticals/:slug/versions`, `/channels`); today those are staff-gated, so
  * this works for staff now and for builders once builder-scoped authz lands.
  */
+import { listVerticalHostnames } from './hostnames.js';
+
 interface Version {
   id: string;
   version: string;
@@ -27,7 +29,15 @@ async function getJson<T>(url: string, header: Record<string, string>): Promise<
   return res.json() as Promise<T>;
 }
 
-export async function printVersions(controlPlaneUrl: string, header: Record<string, string>, slug: string): Promise<void> {
+export async function printVersions(
+  controlPlaneUrl: string,
+  header: Record<string, string>,
+  slug: string,
+  // Optional so `versions` can cross-check installs against versions (#399): a slug with
+  // bound hostnames but zero versions is the tell that pushes landed under a DIFFERENT
+  // slug. Absent (no --tenant) ⇒ the cross-check is skipped and the hint stays generic.
+  tenantId?: string,
+): Promise<void> {
   const base = controlPlaneUrl.replace(/\/$/, '');
   const versions = await getJson<Version[]>(`${base}/verticals/${encodeURIComponent(slug)}/versions`, header);
   // Channels are best-effort — a vertical with none registered still lists its versions.
@@ -36,7 +46,30 @@ export async function printVersions(controlPlaneUrl: string, header: Record<stri
   );
 
   if (versions.length === 0) {
-    console.log(`no versions for '${slug}' (or they aren't visible to you).`);
+    // Distinguish "no versions" from the #399 lineage fork: if installs (hostnames) are
+    // bound to this slug yet nothing was pushed under it, the versions live under another
+    // slug. `substrat push` derives its slug from package.json `name` unless `substrat.slug`
+    // pins it, so a rename or a scope mismatch silently forks the lineage.
+    let installs = 0;
+    if (tenantId) {
+      const rows = await listVerticalHostnames(controlPlaneUrl, header, tenantId, slug).catch(() => []);
+      installs = rows.length;
+    }
+    if (installs > 0) {
+      console.log(
+        `no versions are registered under '${slug}', but ${installs} hostname(s) are bound to it.\n` +
+          `⚠ This is a lineage fork: the installs live under '${slug}', but pushes landed under a DIFFERENT slug.\n` +
+          `  \`substrat push\` derives its slug from package.json \`name\` unless \`substrat.slug\` pins it — check both,\n` +
+          `  and run \`substrat versions <the-other-slug>\` to find where the versions went.`,
+      );
+    } else if (tenantId) {
+      console.log(`no versions for '${slug}', and no installs are bound to it in this workspace — is the slug correct?`);
+    } else {
+      console.log(
+        `no versions for '${slug}' (or they aren't visible to you). ` +
+          `If installs serve under this slug, pass --tenant to cross-check for a lineage fork (#399).`,
+      );
+    }
     return;
   }
 
