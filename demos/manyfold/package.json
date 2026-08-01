@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-manyfold",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "CMS demo vertical (Manyfold) — multi-scope headless CMS, see spec/concept.md",
@@ -8,7 +8,12 @@
     "slug": "manyfold",
     "name": "Manyfold",
     "permissions": "src/provision.ts",
-    "surfaces": [{ "name": "app", "label": "App" }],
+    "surfaces": [
+      {
+        "name": "app",
+        "label": "App"
+      }
+    ],
     "tenant": "substrat-9yjbbn"
   },
   "type": "module",

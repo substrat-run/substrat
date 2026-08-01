@@ -1,5 +1,51 @@
 # @substrat-run/contracts
 
+## 0.32.0
+
+### Minor Changes
+
+- 99af6b6: Add `resolveScopedEnvSpec` — read a hosted instance's delivered per-scope config overlaid on its envSpec defaults
+
+  A hosted vertical's per-install settings (saved in the dashboard Env tab, delivered via
+  `/internal/configure`) land in the scope's own storage, not in worker bindings. Env-spec
+  `default:` values ride as worker bindings shared by every install of one serving script, so
+  `resolveEnvSpec(env)` can only ever return the deployment-wide default — a vertical that reads
+  it silently ignores a saved per-install override.
+
+  `resolveScopedEnvSpec(spec, raw, delivered)` is the pure merge that fixes that: precedence
+  **delivered > env > default**, declared keys only (the manifest stays the allow-list), an empty
+  delivered value is not an override, and `missingRequired` is recomputed over the overlaid values.
+  It stays dependency-free; each vertical supplies `delivered` from its own per-scope store.
+  `resolveEnvSpec` is documented as deployment/defaults-only, and auth-server's `effectiveCfg` now
+  uses the shared helper instead of a hand-rolled overlay.
+
+- 070f4dc: A vertical can schedule its own recurring work (#383)
+
+  A vertical can now declare `schedules` in its module manifest — operations the platform
+  invokes on every live scope of it, on a cadence, driven by the existing platform sweep. It
+  is the seam a domain rule triggered by the passage of time (a contract that activates on its
+  start date, a leave that can no longer be approved once it has already begun) had no way to
+  reach: the operation was written, idempotent, and paged, but nothing woke it up on a date.
+
+  The work is attributed honestly. Rather than the out-of-band workaround of signing in as a
+  human and running under their permission — the attribution laundering #97 refused — a
+  schedule runs under a **system principal**, the third caller #97 named, built the same way it
+  built the connector seam:
+
+  - a new `{ kind: 'system', id: ModuleId }` check-subject, mirror of the connection subject;
+  - `ScopeHost.getSystemScope(moduleId, tenantId, scopeId)` — a door whose stub stamps
+    `{ system: moduleId }` on events and resolves `system:<moduleId>` grants;
+  - `HostAdmin.grantToSystem(...)` — the scheduler analogue of `grantToConnection`, projected
+    from a schedule's declared `permissions` at provisioning, so `ctx.check` stays the single
+    gate and the grant appears in the reviewed permission diff. Revoking it disables the
+    schedule for one tenant, no special flag.
+
+  `runPlatformSweep` gains a schedules phase (`registeredSchedules` / `runDueSchedules`) that
+  enumerates each vertical's live scopes and fires due operations under bounded concurrency,
+  skipping forks and any scope that does not hold the grant, recording per-scope outcomes in
+  `PlatformSweepReport.schedules`. All additive: a manifest that declares no schedules, and a
+  host predating the seam, behave exactly as before.
+
 ## 0.31.0
 
 ### Minor Changes
@@ -1100,7 +1146,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

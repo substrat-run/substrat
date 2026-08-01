@@ -1,5 +1,61 @@
 # @substrat-run/dashboard
 
+## 0.10.2
+
+### Patch Changes
+
+- 3cfa709: Env tab: a saved setting reports its delivery honestly instead of a silent no-op
+
+  Saving a deployment setting already delivered it live to the running app
+  (`configureInstance` → the vertical's `/internal/configure`), but the Env-tab PUT
+  swallowed every delivery failure in an empty `catch {}` and returned `delivered: false`
+  with no explanation — while the UI claimed the value "applies on the app's next deploy."
+  A save to a vertical with no `/internal/configure` route (its 501), or with no bound
+  version, was indistinguishable from success — the "no error anywhere, on either side" of
+  issue #374.
+
+  Now the PUT mirrors the sibling auth save: on a delivery failure it returns a readable
+  `note` (the 501 case names what to fix — add `/internal/configure` support, bind a
+  version), and the Env tab surfaces `delivered`/`note` so a save that could not reach the
+  app says so rather than pretending it applied. The banner is corrected too: delivery is
+  live per-scope config read at runtime, not a next-deploy binding — env-spec `default:`
+  values ride as worker bindings shared across every install, so a per-install override can
+  only reach the app through the per-scope channel.
+
+- 5d29ff0: Domains tab: the surface field is always a picker, and Manyfold declares its surface
+
+  Binding a hostname needs a surface, but the picker only rendered as a dropdown when the
+  vertical DECLARED its surfaces (package.json `substrat.surfaces` → the registry). A vertical
+  that declared none — Manyfold among them — fell back to a bare free-text box with no hint of
+  what to type.
+
+  Two changes, one per layer:
+
+  - **Manyfold declares its surface** (`substrat.surfaces: [{ name: 'app', label: 'App' }]`) —
+    the canonical source of truth. Manyfold serves one routed surface, `app`; the delivery view
+    is a preview inside it, not a separately-routed surface. Reaches the dashboard picker on the
+    next push to the tenant.
+  - **The dashboard picker is always a dropdown.** Options are the declared surfaces when the
+    vertical names them, else the surfaces already bound ∪ the conventional `app`, so an
+    undeclared vertical still gets a usable menu instead of a blank box. An "Other…" option
+    reveals the free-text field, keeping an undeclared surface valid — declaration is UX, not
+    contract (routing.ts).
+
+- Updated dependencies [6801089]
+- Updated dependencies [99af6b6]
+- Updated dependencies [5d29ff0]
+- Updated dependencies [070f4dc]
+  - @substrat-run/demo-manyfold@0.4.0
+  - @substrat-run/contracts@0.32.0
+  - @substrat-run/kernel@0.32.0
+  - @substrat-run/adapter-cloudflare@0.32.0
+  - @substrat-run/demo-callout@0.1.20
+  - @substrat-run/demo-meridian@0.2.17
+  - @substrat-run/engine-invites@0.0.29
+  - @substrat-run/engine-invoicing@0.3.30
+  - @substrat-run/engine-protocol@0.4.24
+  - @substrat-run/engine-workorder@0.3.30
+
 ## 0.10.1
 
 ### Patch Changes
