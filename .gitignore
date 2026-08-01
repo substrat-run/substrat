@@ -23,3 +23,6 @@ demos/callout/wrangler.jsonc
 demos/rally/.data/
 .env
 **/.env
+
+# Filled platform secret files (templates in secrets/*.example stay committed)
+secrets/*.env
