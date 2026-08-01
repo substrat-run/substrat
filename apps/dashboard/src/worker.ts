@@ -1528,14 +1528,20 @@ app.put('/api/apps/:scopeId/env', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = await c.req.json<{ entries?: Array<{ key: string; value: string; secret?: boolean }> }>();
   const entries = (body.entries ?? []).filter((e) => e && typeof e.key === 'string');
-  if (entries.length === 0) return c.json({ saved: 0 });
+  if (entries.length === 0) return c.json({ saved: 0, delivered: false });
   const saved = await dash.invoke('dashboard/set-app-env', { appScopeId: appRow.app_scope_id, entries });
   // DELIVER to the running app scope (vertical-auth-detach.md §2.2), not just author:
-  // the control plane routes the entries to the deployment holding the scope's DO.
-  // Best-effort — a vertical without live-config support answers 501, and older
-  // installs predate the verb entirely; the values stay authored here either way, so
-  // the UI can say "saved" vs "saved + applied" rather than erroring.
+  // the control plane routes the entries to the deployment holding the scope's DO. This
+  // is a LIVE delivery, not a next-deploy binding — env-spec `default:` values ride as
+  // worker bindings (per script, shared across every install), so a per-install override
+  // can only reach the app through this per-scope channel, never through `resolveEnvSpec`.
+  //
+  // Report the outcome HONESTLY, exactly as the auth PUT does (#374): a save whose
+  // delivery 501s — the deployment has no `/internal/configure`, or no version is bound —
+  // is otherwise indistinguishable from success, which is the "no error anywhere" the
+  // issue describes. The value stays authored here either way.
   let delivered = false;
+  let note: string | undefined;
   const cp = controlPlaneFor(c.env, node.tenantId);
   if (cp) {
     try {
@@ -1544,11 +1550,19 @@ app.put('/api/apps/:scopeId/env', async (c) => {
         entries.map((e) => ({ key: e.key, value: e.value })),
       );
       delivered = true;
-    } catch {
-      // 501/404 from the app's deployment — authored but not delivered.
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      note =
+        e instanceof ControlPlaneError && e.status === 501
+          ? `Saved, but not applied — the app's deployment did not accept live config (${cause}). ` +
+            `A hosted vertical must read its per-scope config at runtime (add /internal/configure ` +
+            `support and bind a version); save again to retry once it does.`
+          : `Saved, but not applied: ${cause}`;
     }
+  } else {
+    note = 'Saved. This deployment has no delivery seam (embedded mode) — the app reads authored config.';
   }
-  return c.json({ ...(saved as Record<string, unknown>), delivered });
+  return c.json({ ...(saved as Record<string, unknown>), delivered, ...(note ? { note } : {}) });
 });
 
 app.delete('/api/apps/:scopeId/env/:key', async (c) => {

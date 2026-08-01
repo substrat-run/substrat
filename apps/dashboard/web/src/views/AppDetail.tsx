@@ -1452,7 +1452,11 @@ function EnvVars({ app }: { app: AppRow }) {
     setNote(null);
     try {
       const r = await api.setAppEnv(app.app_scope_id, entries);
-      setNote(`Saved ${r.saved} value${r.saved === 1 ? '' : 's'}. Applies to the app on its next deploy.`);
+      setNote(
+        r.delivered
+          ? `Saved and applied to the running app (${r.saved} value${r.saved === 1 ? '' : 's'}).`
+          : (r.note ?? `Saved ${r.saved} value${r.saved === 1 ? '' : 's'}.`),
+      );
       setNonce((n) => n + 1);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
@@ -1500,9 +1504,9 @@ function EnvVars({ app }: { app: AppRow }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <HonestyBanner>
-        Configuration is stored on your account and applied to the app on its next deploy. Secret values are
-        write-only — masked, never shown again; leave a secret blank to keep it. (Delivery to the running app
-        reads its per-scope config at runtime; that step lands next.)
+        Configuration is stored on your account and delivered to the running app immediately — a hosted vertical
+        reads its per-scope config at runtime. Secret values are write-only — masked, never shown again; leave a
+        secret blank to keep it. If a save can't reach the app, it says so rather than pretending it applied.
       </HonestyBanner>
 
       {view.spec.length === 0 && custom.length === 0 ? (

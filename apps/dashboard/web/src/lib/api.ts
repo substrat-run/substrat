@@ -351,6 +351,14 @@ export interface AppEnvView {
   values: AppEnvValue[];
 }
 
+/** `PUT /api/apps/:scope/env` — always authored; `delivered` says whether the running app
+ *  got the values live, and `note` explains a save that could not be applied (#374). */
+export interface AppEnvUpdateResult {
+  saved: number;
+  delivered: boolean;
+  note?: string;
+}
+
 /** One hostname bound to the app's scope (the Domains tab). */
 export interface AppHostnameRow {
   hostname: string;
@@ -613,7 +621,7 @@ export const api = {
   appEnv: (scopeId: string) => call<AppEnvView>(`/apps/${encodeURIComponent(scopeId)}/env`),
   /** Upsert env values; an empty value leaves a key unchanged (untouched secret). */
   setAppEnv: (scopeId: string, entries: Array<{ key: string; value: string; secret: boolean }>) =>
-    call<{ saved: number }>(`/apps/${encodeURIComponent(scopeId)}/env`, {
+    call<AppEnvUpdateResult>(`/apps/${encodeURIComponent(scopeId)}/env`, {
       method: 'PUT',
       body: JSON.stringify({ entries }),
     }),
