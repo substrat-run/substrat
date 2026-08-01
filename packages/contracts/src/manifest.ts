@@ -89,6 +89,11 @@ export interface ResolvedEnv {
  * `required` keys. Never throws — the caller decides whether a missing required key is fatal
  * (a hosted vertical may have a per-scope fallback), and the config form is where a bad deploy
  * is blocked. Non-string raw values (e.g. a binding) are ignored — the spec covers string config.
+ *
+ * This reads DEPLOYMENT-WIDE config only: env-spec defaults ride as worker bindings shared by
+ * every install of one serving script, so this can never see a per-install override saved in the
+ * dashboard Env tab. A hosted vertical that has per-instance settings must use
+ * `resolveScopedEnvSpec`, passing the config delivered to that scope.
  */
 export function resolveEnvSpec(spec: EnvVarSpec[], raw: Record<string, unknown>): ResolvedEnv {
   const values: Record<string, string | undefined> = {};
@@ -98,6 +103,40 @@ export function resolveEnvSpec(spec: EnvVarSpec[], raw: Record<string, unknown>)
     const v = typeof rawVal === 'string' && rawVal !== '' ? rawVal : s.default;
     values[s.key] = v;
     if (s.required && (v === undefined || v === '')) missingRequired.push(s.key);
+  }
+  return { values, missingRequired };
+}
+
+/**
+ * Resolve a declared `envSpec` for ONE hosted instance: the deployment environment
+ * overlaid with the per-scope config DELIVERED to that instance (the dashboard Env tab →
+ * `/internal/configure`). Precedence is **delivered > env > default** — a per-install
+ * override wins over the deployment-wide binding (which for a hosted vertical typically
+ * just carries the manifest `default:`), which wins over the declared default.
+ *
+ * This is the read half a hosted vertical needs and `resolveEnvSpec(env)` alone cannot
+ * give: env-spec defaults ride as worker bindings, shared by every install of one serving
+ * script, so a per-install setting can only arrive through the per-scope delivery channel
+ * and MUST be overlaid here — reading `env` alone always yields the shared default (the
+ * silent-defaults bug). `delivered` is the vertical's OWN per-scope config map: it owns
+ * the store (a DO row set, a table) and reads it back keyed by scope; the platform never
+ * sees it. This function is the pure merge over that map, so it stays dependency-free and
+ * each vertical supplies `delivered` however it stores config. Only DECLARED keys are read
+ * (the manifest stays the allow-list — a stray delivered key never reaches the app), an
+ * empty/absent delivered value is not an override (keeps env/default, matching
+ * `resolveEnvSpec`), and `missingRequired` reflects the overlaid values.
+ */
+export function resolveScopedEnvSpec(
+  spec: EnvVarSpec[],
+  raw: Record<string, unknown>,
+  delivered: Record<string, string | undefined>,
+): ResolvedEnv {
+  const values = { ...resolveEnvSpec(spec, raw).values };
+  const missingRequired: string[] = [];
+  for (const s of spec) {
+    const d = delivered[s.key];
+    if (typeof d === 'string' && d !== '') values[s.key] = d;
+    if (s.required && (values[s.key] === undefined || values[s.key] === '')) missingRequired.push(s.key);
   }
   return { values, missingRequired };
 }

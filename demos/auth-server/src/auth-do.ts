@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
-import { resolveEnvSpec, type ScopeTable, type ScopeTablePage } from '@substrat-run/contracts';
+import { resolveScopedEnvSpec, type ScopeTable, type ScopeTablePage } from '@substrat-run/contracts';
 import { introspectTables, introspectTable } from './introspect.js';
 import { schema } from './auth-schema.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.js';
@@ -40,15 +40,8 @@ export interface AuthServerDoEnv {
 export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   /** This issuer's Better Auth signing secret — generated in this DO, never a worker binding. */
   private authSecret!: string;
-  /** The declared config (manifest env-spec) resolved against this DO's env — the BASE
-   *  layer of `effectiveCfg()`, which overlays per-instance `cfg:` rows delivered via
-   *  `setInstanceConfig` (hosted mode). The env-spec stays the single source of which
-   *  keys exist (PUBLIC_ORIGIN, ADMIN_EMAIL/PASSWORD, EMAIL_FROM). */
-  private readonly cfg: Record<string, string | undefined>;
-
   constructor(ctx: DurableObjectState, env: AuthServerDoEnv) {
     super(ctx, env);
-    this.cfg = resolveEnvSpec(AUTH_SERVER_ENV, env as Record<string, unknown>).values;
     ctx.blockConcurrencyWhile(async () => {
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);
       const row = [...ctx.storage.sql.exec("SELECT value FROM config WHERE key = 'auth_secret'")][0] as
@@ -150,17 +143,19 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   /**
    * The instance's live config: worker env (resolved through the declared env-spec)
    * overlaid with per-instance `cfg:` rows — instance config wins, and only DECLARED
-   * keys are read, so a stray delivered key can never reach Better Auth.
+   * keys are read, so a stray delivered key can never reach Better Auth. The merge is
+   * the shared `resolveScopedEnvSpec` (contracts); this method only supplies the
+   * delivered map from THIS DO's own `cfg:` storage.
    */
   private effectiveCfg(): Record<string, string | undefined> {
-    const out = { ...this.cfg };
+    const delivered: Record<string, string> = {};
     for (const spec of AUTH_SERVER_ENV) {
       const row = [...this.ctx.storage.sql.exec('SELECT value FROM config WHERE key = ?', `cfg:${spec.key}`)][0] as
         | { value: string }
         | undefined;
-      if (row) out[spec.key] = row.value;
+      if (row) delivered[spec.key] = row.value;
     }
-    return out;
+    return resolveScopedEnvSpec(AUTH_SERVER_ENV, this.env as Record<string, unknown>, delivered).values;
   }
 
   /**
