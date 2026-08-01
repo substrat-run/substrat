@@ -108,6 +108,10 @@ the demo scenarios fail fast.
 
 ## Building a new vertical
 
-Use the **new-vertical** skill (`.claude/skills/new-vertical/SKILL.md`). Reference
-implementation: `demos/callout` (spec in `demos/callout/spec/`, module in `src/module.ts`,
-world in `src/seed.ts`, scenario test in `test/scenario.test.ts`).
+Two phases, in order. **Design** with the **substrat** skill
+(`.claude/skills/substrat/SKILL.md`): interview the user, map the domain onto the engines,
+and land a reviewable `DESIGN.md` / `spec/concept.md` the user approves *before any code*.
+Then **build** with the **new-vertical** skill (`.claude/skills/new-vertical/SKILL.md`),
+which turns that approved design into a working vertical. Reference implementation:
+`demos/callout` (spec in `demos/callout/spec/`, module in `src/module.ts`, world in
+`src/seed.ts`, scenario test in `test/scenario.test.ts`).

@@ -1,21 +1,33 @@
 # Playbook — build a vertical on Substrat
 
 The always-on rules live in [`AGENTS.md`](../AGENTS.md); read them first. This playbook is
-the **flow**: interview the user, tell them honestly how much of their app already exists,
-then build and run the part that doesn't. Read the whole thing before starting — the
-checkpoint in Step 6 is a hard stop.
+the **flow**: interview the user, tell them honestly how much of their app already exists, and
+**land a design document they can review and approve before a line of code is written** — then
+reshape the reference into it. Read the whole thing before starting — both the design gate
+(Step 4) and the checkpoints (Step 7) are hard stops.
+
+**The target is a reviewed design, not running code.** Steps 1–2 learn the domain and map it
+onto what already exists; Step 3 writes a checked-in `DESIGN.md` in the user's own vocabulary;
+Step 4 is a **hard stop** where the user reads and approves it. Only then does Step 5 reshape
+the reference into their domain. The design gate (Step 4) is *upstream* of the two code
+checkpoints (Step 7) — a user with zero Substrat knowledge gets to say "yes, that's the app I
+want" before implementation, not after.
 
 This project ships with a small **working reference vertical** — a bike-repair shop on
-`engine-workorder` + `engine-invoicing`, green out of the box (`npm test`). It is your
-worked example and your starting point: you **reshape** it into the user's domain rather
-than building from an empty directory. Work in the project root.
+`engine-workorder` + `engine-invoicing`, green out of the box (`npm test`). It is your worked
+example and your build starting point: once the design is approved you **reshape** it into the
+user's domain rather than building from an empty directory. Work in the project root.
 
 ---
 
 ## Step 1 — Interview
 
-Ask, don't assume. **Three to five questions, conversational, one message.** You are
-learning the *shape* of the domain, not writing a spec.
+Ask, don't assume. **Three to five questions, conversational, one message.** You are learning
+the *shape* of the domain — the answers become the design document (Step 3), so listen for
+vocabulary, the cast, and who must be denied what, not just features. **Adapt depth to the
+user**: someone who already knows their domain cold needs fewer, sharper questions; someone
+thinking out loud needs you to draw the shape out. One flow, not branching tracks — read the
+room and dial the teaching up or down.
 
 1. **What are you building, and who uses it?** (the firm, the cast)
 2. **What's the thing that moves through the system?** A job, a repair, an inspection, an
@@ -34,8 +46,10 @@ detail, skip to Step 2 and confirm your reading of it instead of re-asking.
 ## Step 2 — The coverage map
 
 **This is the most valuable thing you do, and the easiest to get wrong by being
-flattering.** Tell the user what already exists and what they are actually signing up to
-build. Be specific and honest.
+flattering.** Work out what already exists and what the user is actually signing up to build.
+Be specific and honest. This analysis is the analytical core of the design document (Step 3) —
+sections 3 ("what already exists vs. what's yours") and 4 ("who is denied what") are this map,
+written down.
 
 **First, list the engines that actually exist. Do not trust any hard-coded list:**
 
@@ -128,25 +142,86 @@ stop. Do not scaffold.
 
 ---
 
-## Step 3 — Decisions
+## Step 3 — Write the design document
 
-Short. Recommend a default and move.
+**This is the deliverable.** Everything before now was learning; this is where it lands
+somewhere the user can hold. Write a **checked-in `DESIGN.md`** in the project root, in the
+user's own vocabulary — no Substrat internals, no decision refs, no cross-references to
+platform docs. Someone who has never heard of Substrat must be able to read it and recognise
+their own business.
 
-- **Auth.** Local dev uses an `x-principal` header — a dev seam, not a login. Offer to wire
-  a real login now if they want it; otherwise default to the dev header and say it **must**
-  be replaced before anything real. Real auth gates *exposing* the app, not *building* it.
-- **The cast.** Confirm the personas and their roles (e.g. `office-admin`, `technician`,
-  `portal-customer`). Roles are the user's vocabulary — name them for the persona.
-- **Two tenants, always.** Seed a second tenant that exists to be attacked. This is how the
-  isolation gets proven rather than claimed.
+**Top line, verbatim** — the house marker for a pre-code design:
+
+```
+Status: draft v0.1 · Last updated: <date> · For review before any code
+```
+
+**The template** — the coverage map (Step 2) is sections 3–4, already done; the rest is the
+interview written down. Two sections deliberately *preview* the code checkpoints of Step 7 in
+plain language, so nothing there is a surprise:
+
+1. **What we're building & who uses it** — the firm and the cast, one paragraph.
+2. **The thing that moves through the system** — the core noun and its lifecycle
+   (the states it passes through, and which transitions must not be skippable).
+3. **What already exists vs. what's yours** — the coverage map as tiers: the kernel
+   (free), the engines you compose, the connectors, and the Tier-3 vocabulary/pricing/
+   screens that are yours. If it's a **bad fit, this is where the honest no lands** — say
+   so and stop; do not write the rest.
+4. **Who is denied what** — the load-bearing section, and a plain-language *preview of the
+   permission diff*: each role and what it can and cannot see. Make two answers impossible
+   to miss — **who can see the money, and who can see other customers' data.**
+5. **Money & sign-off** — invoice / quote / receipt / none; anything gated on a signature
+   or a check before a step can happen.
+6. **The cast, roles, and tenancy** — the named roles per persona (roles are the user's
+   vocabulary — name them for the persona: `workshop-admin`, not `role_1`). **Two tenants,
+   always** — the second exists to be attacked, which is how isolation gets proven rather
+   than claimed.
+7. **The data we'll store** — the vertical's own tables and fields in plain terms. This
+   *previews the migration diff*; migrations are **append-only forever after first ship**,
+   so this is the cheap moment to get the shape right.
+8. **The scenario the test will replay** — the happy path plus the denials that prove
+   isolation (wrong role denied, customer A sees theirs and customer B sees nothing, a
+   cross-tenant attacker gets nothing).
+9. **Open decisions** — each with a **recommended default**, so the user chooses rather
+   than specifies:
+   - **Auth.** Local dev uses an `x-principal` header — a dev seam, not a login. Default to
+     it and note it must be replaced before anything real; offer to wire a real login (the
+     bike-shop reference shows the Better Auth pattern) now if they want it. Real auth gates
+     *exposing* the app, not *building* it.
+   - **Deploy or stay local.** Local-first is a legitimate endpoint; default to it.
+10. **Out of scope / deferred** — what you are deliberately not building, so the review is
+    about a bounded thing.
+
+End with a short **"Review questions for the human"** block (2–3 questions) — the things the
+user must actively confirm, not rubber-stamp.
 
 ---
 
-## Step 4 — Reshape the reference
+## Step 4 — The design gate. STOP HERE.
 
-The scaffold already contains a working vertical in `src/` + `test/` — the bike-repair shop.
-**Read it first** (it's your Callout: the real, green implementation of every pattern this
-step describes), then reshape it into the user's domain from the interview:
+**Present the design document and wait for approval. Do not reshape the reference, do not
+write code.**
+
+This is a *human* gate, and it is the whole point: it happens **before** any code, upstream of
+the two implementation checkpoints in Step 7. Walk the user through section 4 ("who is denied
+what") in **their own vocabulary** until they can answer, without your help: *who can see the
+money, and who can see other customers' data?*
+
+**A gate assumes a competent reviewer.** If the user cannot evaluate the permission preview,
+say so rather than letting them wave it through — a design nobody understands is theater, and
+reproduces exactly the failure Substrat exists to prevent. Iterate the document until they
+can, and only then take explicit approval.
+
+Approval of the design is what unlocks Step 5. Until you have it, you are still in design.
+
+---
+
+## Step 5 — Reshape the reference
+
+The design is approved. The scaffold already contains a working vertical in `src/` + `test/` —
+the bike-repair shop. **Read it first** (it's your Callout: the real, green implementation of
+every pattern this step describes), then reshape it into the user's domain from the approved
+`DESIGN.md`:
 
 - **Rename the vocabulary** — `shop_customers`/`shop_bikes` → the user's nouns, the `shop/*`
   operation names, the roles, the price-list shape. If the user's core noun maps onto a work
@@ -159,7 +234,7 @@ step describes), then reshape it into the user's domain from the interview:
 - **Drop what the domain doesn't need, add its own tables** for anything the engines don't
   own. If the user's core noun *isn't* work-order-shaped, you may replace more of `src/` —
   but the seed/server/test scaffolding and the layout still hold.
-- **Re-run the gates as you go** (Step 5) — the reference is green, so any red is something
+- **Re-run the gates as you go** (Step 6) — the reference is green, so any red is something
   you just changed.
 
 The dependencies are already wired in `package.json` (the `@substrat-run/*` packages, `hono`,
@@ -233,7 +308,7 @@ closed-door assertion with a control proving a neighbouring door is still open.
 
 ---
 
-## Step 5 — Run it
+## Step 6 — Run it
 
 Build confidence in this order, and **show the user the output of each**:
 
@@ -255,9 +330,10 @@ and typed wrappers over the routes. Ask first — it roughly doubles the work.
 
 ---
 
-## Step 6 — The two checkpoints. STOP HERE.
+## Step 7 — The two checkpoints. STOP HERE.
 
-**You may never self-approve these. Present them and wait.**
+**You may never self-approve these. Present them and wait.** The design gate (Step 4) already
+took the user's approval of *what* to build; these confirm that the code matches it.
 
 1. **Migration diff** — every new `SqlMigration`, verbatim. Append-only forever once
    shipped, so this is the last cheap moment to change your mind.
@@ -275,7 +351,7 @@ and who can see other tenants' data?* A permission diff nobody understands is th
 
 ---
 
-## Step 7 — Deploy (optional)
+## Step 8 — Deploy (optional)
 
 Only if the user asks. Local-first is a legitimate stopping point.
 
@@ -301,7 +377,7 @@ cross-tenant hole with a UI.
 
 ---
 
-## Step 8 — Leave the project competent
+## Step 9 — Leave the project competent
 
 The next session — in any tool — starts cold. The scaffold already ships `AGENTS.md`,
 `CLAUDE.md`, and the Cursor/opencode command stubs, so the rules and this flow survive. Your

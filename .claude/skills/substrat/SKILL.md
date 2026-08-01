@@ -1,25 +1,37 @@
 ---
 name: substrat
-description: Build a multi-tenant business app on Substrat — interview the user, map their domain onto the engines, scaffold a working vertical, run it locally, and optionally deploy it. Use when the user mentions Substrat or substrat-run, or asks to build a multi-tenant business app / vertical / internal tool where tenancy, permissions, audit, or work-order-shaped workflows matter (field service, workshops, repairs, inspections, checklists, invoicing).
+description: Build a multi-tenant business app on Substrat — interview the user, map their domain onto the engines, and land a reviewable Substrat design document the user approves before any code, then build it. Use when the user mentions Substrat or substrat-run, or asks to build a multi-tenant business app / vertical / internal tool where tenancy, permissions, audit, or work-order-shaped workflows matter (field service, workshops, repairs, inspections, checklists, invoicing).
 ---
 
 # Build a vertical on Substrat
 
 Substrat is a multi-tenant kernel (tenancy, permissions, events, migrations) plus headless
 **engines** that own invariants, and **verticals** that own everything a user touches.
-Your job: interview the user, tell them honestly how much of their app already exists,
-then build and run the part that doesn't.
+Your job: interview the user, tell them honestly how much of their app already exists, and
+**land a design document they can review and approve before a line of code is written** —
+then hand off to the build.
+
+**The target is a reviewed design, not running code.** Steps 1–2 learn the domain and map
+it onto what already exists; step 3 writes a checked-in design document in the user's own
+vocabulary; step 4 is a **hard stop** where the user reads and approves it. Only then does
+step 5 hand off to the **new-vertical** skill to build. The design gate (step 4) is
+*upstream* of the two code checkpoints (step 7) — a user with zero Substrat knowledge gets
+to say "yes, that's the app I want" before implementation, not after.
 
 **Work in the user's current directory.** This skill assumes an empty or near-empty
 project. Read the whole skill before starting — the rules in the last section are not
-optional, and the checkpoint in step 6 is a hard stop.
+optional, and both the design gate (step 4) and the checkpoints (step 7) are hard stops.
 
 ---
 
 ## Step 1 — Interview
 
 Ask, don't assume. **Three to five questions, conversational, one message.** You are
-trying to learn the *shape* of the domain, not write a spec.
+learning the *shape* of the domain — the answers become the design document (step 3), so
+listen for vocabulary, the cast, and who must be denied what, not just features. **Adapt
+depth to the user**: someone who already knows their domain cold needs fewer, sharper
+questions; someone thinking out loud needs you to draw the shape out. One flow, not
+branching tracks — read the room and dial the teaching up or down.
 
 1. **What are you building, and who uses it?** (the firm, the cast)
 2. **What's the thing that moves through the system?** A job, a repair, an inspection, an
@@ -38,8 +50,10 @@ in detail, skip straight to step 2 and confirm your reading of it instead of re-
 ## Step 2 — The coverage map
 
 **This is the most valuable thing you do, and the easiest to get wrong by being
-flattering.** Tell the user what already exists and what they are actually signing up to
-build. Be specific and be honest.
+flattering.** Work out what already exists and what the user is actually signing up to
+build. Be specific and be honest. This analysis is the analytical core of the design
+document (step 3) — sections 3 ("what already exists vs. what's yours") and 4 ("who is
+denied what") are this map, written down.
 
 **First, list the engines that actually exist. Do not trust the list below:**
 
@@ -152,121 +166,108 @@ If it's a bad fit, say so, say why, name a better tool, and stop. Do not scaffol
 
 ---
 
-## Step 3 — Decisions
+## Step 3 — Write the design document
 
-Short. Recommend a default and move.
+**This is the deliverable.** Everything before now was learning; this is where it lands
+somewhere the user can hold. Write a **checked-in file** in the user's own vocabulary — no
+Substrat internals, no `D-`/`K-` decision refs, no `§` cross-references (those live in
+platform docs, not a user's design doc). Someone who has never heard of Substrat must be
+able to read it and recognise their own business.
 
-- **Auth.** Local dev uses an `x-principal` header — a dev seam, not a login. Offer to
-  wire Better Auth (the `demos/callout` pattern) if they want a real login now; otherwise
-  default to the dev header and say it must be replaced before anything real. Real auth
-  gates *exposing* the app, not *building* it.
-- **The cast.** Confirm the personas and their roles — e.g. `office-admin`,
-  `technician`, `portal-customer`. Roles are the user's vocabulary. Name them for the
-  persona.
-- **Two tenants, always.** Seed a second tenant that exists to be attacked. This is not
-  padding: it's how the isolation gets proven rather than claimed.
+**Where:** `DESIGN.md` in the project root for a real user's empty directory; inside the
+Substrat monorepo it is `demos/<name>/spec/concept.md` (the existing convention).
+
+**Top line, verbatim** — this is the house marker for a pre-code design (matching
+`docs/design/engine-protocol.md`):
+
+```
+Status: draft v0.1 · Last updated: <date> · For review before any code
+```
+
+**The template** — the coverage map (step 2) is sections 3–4, already done; the rest is the
+interview written down. Two sections deliberately *preview* the code checkpoints of step 7
+in plain language, so nothing there is a surprise:
+
+1. **What we're building & who uses it** — the firm and the cast, one paragraph.
+2. **The thing that moves through the system** — the core noun and its lifecycle
+   (the states it passes through, and which transitions must not be skippable).
+3. **What already exists vs. what's yours** — the coverage map as tiers: the kernel
+   (free), the engines you compose, the connectors, and the Tier-3 vocabulary/pricing/
+   screens that are yours. If it's a **bad fit, this is where the honest no lands** — say
+   so and stop; do not write the rest.
+4. **Who is denied what** — the load-bearing section, and a plain-language *preview of the
+   permission diff*: each role and what it can and cannot see. Make two answers impossible
+   to miss — **who can see the money, and who can see other customers' data.**
+5. **Money & sign-off** — invoice / quote / receipt / none; anything gated on a signature
+   or a check before a step can happen.
+6. **The cast, roles, and tenancy** — the named roles per persona (roles are the user's
+   vocabulary — name them for the persona: `workshop-admin`, not `role_1`). **Two tenants,
+   always** — the second exists to be attacked, which is how isolation gets proven rather
+   than claimed.
+7. **The data we'll store** — the vertical's own tables and fields in plain terms. This
+   *previews the migration diff*; migrations are **append-only forever after first ship**,
+   so this is the cheap moment to get the shape right.
+8. **The scenario the test will replay** — the happy path plus the denials that prove
+   isolation (wrong role denied, customer A sees theirs and customer B sees nothing, a
+   cross-tenant attacker gets nothing).
+9. **Open decisions** — each with a **recommended default**, so the user chooses rather
+   than specifies:
+   - **Auth.** Local dev uses an `x-principal` header — a dev seam, not a login. Default to
+     it and note it must be replaced before anything real; offer to wire Better Auth (the
+     `demos/callout` pattern) now if they want a real login. Real auth gates *exposing* the
+     app, not *building* it.
+   - **Deploy or stay local.** Local-first is a legitimate endpoint; default to it.
+10. **Out of scope / deferred** — what you are deliberately not building, so the review is
+    about a bounded thing.
+
+End with a short **"Review questions for the human"** block (2–3 questions, mirroring
+`engine-protocol.md`) — the things the user must actively confirm, not rubber-stamp.
 
 ---
 
-## Step 4 — Scaffold
+## Step 4 — The design gate. STOP HERE.
 
-Write a working project. **Do not generate route boilerplate you don't need**, and do not
-invent structure — this layout is the one the tests and the linter expect.
+**Present the design document and wait for approval. Do not scaffold, do not write code.**
 
-```
-package.json          deps below; scripts: dev, server, test, typecheck, lint:boundaries
-tsconfig.json         strict; module NodeNext
-vitest.config.ts      include: test/**/*.test.ts
-CLAUDE.md             the rules, for every future session (see step 8)
-src/manifest.ts       moduleManifest.parse({ … }) + PERM consts  ← module code
-src/migrations.ts     the SqlMigration[]  ← module code
-src/module.ts         imports manifest + migrations; holds operations + registration  ← module code
-src/seed.ts           host, tenants, roles, grants, seed world  ← harness
-src/server.ts         thin Hono wrapper, one route per operation  ← harness
-test/scenario.test.ts the scenario, including the denials
-```
+This is a *human* gate, and it is the whole point of the reshape: it happens **before** any
+code, upstream of the two implementation checkpoints in step 7. Walk the user through
+section 4 ("who is denied what") in **their own vocabulary** until they can answer, without
+your help: *who can see the money, and who can see other customers' data?*
 
-Dependencies: `@substrat-run/kernel`, `@substrat-run/contracts`,
-`@substrat-run/adapter-sqlite`, `hono`, `@hono/node-server`, `better-sqlite3`, plus
-whichever engines tier 1/2 selected. Dev: `tsx`, `vitest`, `typescript`, `concurrently`.
-`better-sqlite3` is native — add `"pnpm": { "onlyBuiltDependencies": ["better-sqlite3"] }`.
+**A gate assumes a competent reviewer.** If the user cannot evaluate the permission preview,
+say so rather than letting them wave it through — a design nobody understands is theater,
+and reproduces exactly the failure Substrat exists to prevent. Iterate the document until
+they can, and only then take explicit approval.
 
-**Do NOT add `zod` as a dependency, and never `import { z } from 'zod'`.** Zod schemas
-**do not compose across copies or majors**, and composing a contracts schema into your own
-— `z.object({ facility: entityRef, unitPrice: money })`, exactly what rule 10 asks for —
-then fails at *runtime* with `expected a Zod schema`, an error pointing nowhere near the
-cause. Substrat tracks Zod's current major, so this is dormant today and re-arms on the
-next one. Import the instance the schemas were built with and it can never happen:
-
-```ts
-import { z, entityRef, money, moduleManifest } from '@substrat-run/contracts';
-```
-
-**After install, the engines are self-describing — read them.** Do not guess at their
-surface: `node_modules/@substrat-run/engine-workorder/dist/index.d.ts` is the reference
-for in-scope functions, `PERM` keys, and types. Read it before composing.
-
-### `src/manifest.ts`, `src/migrations.ts`, `src/module.ts`
-
-The manifest, the migrations, and the operations live in **three separate files** (Callout
-is the reference: `manifest.ts` holds the `PERM` consts + `moduleManifest.parse`,
-`migrations.ts` exports the `SqlMigration[]`, and `module.ts` imports both and holds only
-the operations + the `ModuleRegistration`). Keep the split — the linter and the tests
-expect it.
-
-- `moduleManifest.parse({ … })` — id, version, `kernelContract: '^0.0.1'`, `permissions`
-  (key + human description; these feed the permission diff), `events` emits/consumes,
-  `attachmentTargets`, `entityRelations`, `entitlementKey`.
-- **`entityRelations` must declare every edge you traverse** — both your own
-  (`bike → customer`) and the ones the engine makes on your behalf
-  (`workorder → bike`). The adapter *rejects* a `ctx.link` for an undeclared edge, so a
-  missing one fails loudly at runtime. This is also what makes the portal proof-walk reach
-  the customer.
-- Migrations: `SqlMigration[]`, tables prefixed `<vertical>_`, TEXT ids, ISO-8601 TEXT
-  timestamps, money/decimals as TEXT. **Append-only forever after first ship.**
-- Operations: first line is always `assertAllowed(await ctx.check(PERM))`. Parse inputs
-  with Zod. `ctx.link(child, parent)` when creating related entities.
-- **The pricing moment is the pattern to copy**: read the engine's reported lines with
-  `getReportedLines(ctx, orderId)` → apply the vertical's price list → call the engine's
-  `completeWorkOrder`. One transaction, invariants intact. This is the three-layer rule in
-  its load-bearing form.
-- Portal listing: iterate and `ctx.check(perm, entityRef)` **per entity** — a proof walk,
-  not UI filtering.
-
-### `src/seed.ts`
-
-`new SqliteScopeHost({ dir })`, then `registerModule` per engine + the vertical. The
-control plane comes first and is audited — a scope needs a tenant, and an unentitled
-module's operations do not resolve:
-
-```ts
-host.admin.createTenant(actor, { id: tenant, slug: 'acme', name: 'Acme' });
-host.admin.grantEntitlement(actor, tenant, '<entitlementKey>');   // per module
-await host.provisionScope(actor, { tenantId: tenant, scopeId: scope, jurisdiction: 'eu' });
-```
-
-Define roles **per tenant** from the engines' `PERM` + your keys, assign them, create seed
-entities via `stub.invoke` (**never raw SQL**), and give portal principals
-entity-narrowed grants. Make it idempotent.
-
-### `test/scenario.test.ts`
-
-Replay the domain scenario headlessly against a temp dir. **The denial assertions are not
-optional — they are the whole point:**
-
-```ts
-await expect(host.getScope(mallory, t2, s1)).rejects.toThrow(/unknown scope/);   // wrong pair, fails closed
-const mallory = await host.getScope(mallory, t1, s1);                            // right pair, no tuples
-await expect(mallory.invoke('workorder/list')).rejects.toThrow(/permission denied/);
-```
-
-Cover: happy path → wrong-role denied → portal isolation (customer A sees theirs, customer
-B sees nothing) → cross-tenant attacker denied → pricing exact to the öre → the state
-machine refusing to skip.
+Approval of the design is what unlocks step 5. Until you have it, you are still in design.
 
 ---
 
-## Step 5 — Run it
+## Step 5 — Build it
+
+The design is approved — now build it with the **new-vertical** skill
+(`.claude/skills/new-vertical/SKILL.md`), which turns this design document into a working
+vertical (the three module files, the seed world, the server, the API surface, the app
+skin, the scenario test) against the Callout reference. Point it at the approved
+`DESIGN.md` / `spec/concept.md` — it should translate the design, not re-derive the domain.
+
+Two front-door cautions worth carrying in, because they are silent traps and easy to lose:
+
+- **Import `z` from `@substrat-run/contracts`, never from `zod`; do not add `zod` as a
+  dependency.** Zod schemas do not compose across copies or majors — composing a contracts
+  schema into your own then fails at *runtime* with `expected a Zod schema`, pointing
+  nowhere near the cause. Import the instance the schemas were built with and it can't
+  happen: `import { z, entityRef, money, moduleManifest } from '@substrat-run/contracts';`.
+- **The engines are self-describing — read them, don't guess.**
+  `node_modules/@substrat-run/engine-workorder/dist/index.d.ts` is the reference for
+  in-scope functions, `PERM` keys, and types. Read it before composing.
+
+---
+
+## Step 6 — Run it
+
+(Steps 6–9 happen inside the build, after the new-vertical skill has scaffolded — they are
+here so the whole arc reads in one place.)
 
 Build confidence in this order, and **show the user the output of each**:
 
@@ -288,7 +289,11 @@ the work and plenty of people want the API and their own frontend.
 
 ---
 
-## Step 6 — The two checkpoints. STOP HERE.
+## Step 7 — The two checkpoints. STOP HERE.
+
+These are the **code** checkpoints — the design gate (step 4) reviewed the *plan*; these
+review the *implementation* against it. The permission diff here should hold no surprises
+if section 4 of the design was approved; it is the same story, now in real permission keys.
 
 **You may never self-approve these. Present them and wait.**
 
@@ -312,7 +317,7 @@ see other customers' data?*
 
 ---
 
-## Step 7 — Deploy (optional)
+## Step 8 — Deploy (optional)
 
 Only if the user asks. Local-first is a legitimate stopping point.
 
@@ -342,7 +347,7 @@ and shipping it is a cross-tenant hole with a UI.
 
 ---
 
-## Step 8 — Leave the project competent
+## Step 9 — Leave the project competent
 
 Write a `CLAUDE.md` in the project root carrying the rules below plus the app's own
 vocabulary, cast, and roles. This session has the skill loaded; **the next one won't** —
@@ -378,7 +383,7 @@ consumers). `seed.ts` / `server.ts` are harness and exempt.
 9. **Web-standard APIs always** — `globalThis.crypto`, `TextEncoder`, `URL`. Never
    hand-roll a hash to dodge an import ban.
 10. **Parse, don't trust.** Zod at every boundary — with `z` imported from
-    `@substrat-run/contracts`, never from `zod` (see step 4).
+    `@substrat-run/contracts`, never from `zod` (see step 5).
 
 Rules 1–4 are enforced mechanically. Run it, and believe it:
 
