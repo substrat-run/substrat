@@ -8,6 +8,7 @@
     "slug": "manyfold",
     "name": "Manyfold",
     "permissions": "src/provision.ts",
+    "surfaces": [{ "name": "app", "label": "App" }],
     "tenant": "substrat-9yjbbn"
   },
   "type": "module",
