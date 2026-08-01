@@ -13,6 +13,8 @@
  *   node scripts/secrets.mjs status --env prod     # cross-check the file vs what's LIVE in Cloudflare
  *   node scripts/secrets.mjs push --env prod       # upload to the deployed workers (wrangler secret bulk)
  *   node scripts/secrets.mjs push --env test       # same, for the CI test workers (<name>-test)
+ *   node scripts/secrets.mjs verticals --env prod  # re-put PLATFORM_SECRET/ROUTER_SECRET on every
+ *                                                  # dispatch-namespace vertical script (rotation step 2)
  *   node scripts/secrets.mjs dev                    # write each worker's .dev.vars for `wrangler dev`
  *
  * --file <path>   override the env file (defaults: secrets/platform.<env>.env, and
@@ -279,6 +281,54 @@ function cmdGenerate() {
   console.log(filled ? `✓ filled ${filled} blank generatable secret(s) in ${path}` : `nothing to fill in ${path}`);
 }
 
+/**
+ * Re-put the two platform verification secrets on EVERY vertical script in the env's
+ * dispatch namespace. Vertical scripts receive PLATFORM_SECRET/ROUTER_SECRET as baked-in
+ * bindings at deploy time (wfp.ts injectSecrets) — so a `push` that rotates them updates
+ * the three platform workers but leaves every already-deployed vertical verifying against
+ * the OLD values: the router's node assertion is rejected (users locked out) and the
+ * control plane's /internal/* calls 403 (Data tab, config delivery, provisioning). This
+ * is rotation step 2; without it the fleet is down until each vertical redeploys.
+ * (2026-08-01: the first prod rotation shipped without this and took every hosted app
+ * offline until the secrets were re-put by hand.)
+ */
+async function cmdVerticals() {
+  if (env !== 'prod' && env !== 'test') fail(`--env must be prod or test for verticals (got '${env}')`);
+  const values = parseEnvFile(filePath);
+  const namespace = env === 'prod' ? 'substrat-verticals' : 'substrat-verticals-test';
+  for (const key of ['CF_API_TOKEN', 'CF_ACCOUNT_ID', 'PLATFORM_SECRET', 'ROUTER_SECRET']) {
+    if (!values[key]) fail(`${key} is blank in ${filePath}`);
+  }
+  const api = `https://api.cloudflare.com/client/v4/accounts/${values.CF_ACCOUNT_ID}/workers/dispatch/namespaces/${namespace}`;
+  const headers = { Authorization: `Bearer ${values.CF_API_TOKEN}`, 'Content-Type': 'application/json' };
+  const listed = await (await fetch(`${api}/scripts?per_page=100`, { headers })).json();
+  if (!listed.success) fail(`could not list ${namespace} scripts: ${JSON.stringify(listed.errors)}`);
+  const scripts = listed.result.map((r) => r.id);
+  console.log(`● ${namespace}: ${scripts.length} script(s) × PLATFORM_SECRET, ROUTER_SECRET${dryRun ? '  [dry-run]' : ''}`);
+  if (dryRun) {
+    for (const s of scripts) console.log(`    ${s}`);
+    return;
+  }
+  let failures = 0;
+  for (const script of scripts) {
+    for (const name of ['PLATFORM_SECRET', 'ROUTER_SECRET']) {
+      const res = await (
+        await fetch(`${api}/scripts/${script}/secrets`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ name, text: values[name], type: 'secret_text' }),
+        })
+      ).json();
+      if (!res.success) {
+        failures++;
+        console.error(`    ✗ ${script} ${name}: ${JSON.stringify(res.errors)}`);
+      }
+    }
+  }
+  if (failures) fail(`${failures} secret put(s) failed`);
+  console.log('✓ done. Vertical scripts verify router/platform calls with the current secrets immediately.');
+}
+
 function randHex(bytes) {
   return [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -295,6 +345,9 @@ switch (cmd) {
     break;
   case 'push':
     cmdPush();
+    break;
+  case 'verticals':
+    await cmdVerticals();
     break;
   case 'dev':
     cmdDev();

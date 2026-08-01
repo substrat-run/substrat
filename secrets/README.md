@@ -53,6 +53,7 @@ throwaway — never reuse a prod secret locally.
 |---|---|
 | `secrets.mjs check` | Print the worker→secret map and what the file covers. No values. |
 | `secrets.mjs push --env prod\|test` | Upload the file's secrets to each deployed worker. |
+| `secrets.mjs verticals --env prod\|test` | Re-put `PLATFORM_SECRET`/`ROUTER_SECRET` on every dispatch-namespace vertical script. |
 | `secrets.mjs dev` | Write `apps/*/.dev.vars` from the dev file. |
 | `secrets.mjs generate` | Fill blank *generatable* random secrets in the file. |
 | flags | `--file <path>` · `--only control-plane\|dashboard\|router` · `--dry-run` |
@@ -95,6 +96,12 @@ them in the file only to override, and they'll be pushed as secrets that shadow 
   every sealed credential (recovery = reconnect each provider). Set once, back up, and
   leave out of any rotation. See `tools/set-platform-secrets.sh` for the detail.
 - **`SESSION_SECRET`** (either) signs cookies — rotating signs everyone out.
-- Rotating **`PLATFORM_SECRET` / `ROUTER_SECRET`** requires redeploying the control plane
-  and re-pushing verticals (their injected copies change). `tools/set-platform-secrets.sh`
-  is the fresh-random rotate path for just those three shared tokens.
+- Rotating **`PLATFORM_SECRET` / `ROUTER_SECRET`** is a TWO-step move: `push` updates the
+  platform workers, then `secrets.mjs verticals --env prod` re-puts the pair on every
+  deployed vertical script in the dispatch namespace. Vertical scripts receive these as
+  bindings baked in at deploy (`wfp.ts` `injectSecrets`), so until step 2 runs every
+  hosted app rejects the router's node assertion (users locked out) and the control
+  plane's `/internal/*` calls 403 (Data tab, config delivery, provisioning). The
+  2026-08-01 rotation shipped without step 2 and took the whole hosted fleet down.
+  `tools/set-platform-secrets.sh` is the fresh-random rotate path for the three shared
+  tokens — run the `verticals` step after it too.
