@@ -5,8 +5,9 @@ Substrat kernel and its engines. This file is the always-on constitution — the
 that hold no matter what you touch. It is read by every AI tool (Claude Code, Cursor,
 opencode); do not duplicate it into tool-specific config.
 
-The full build flow — interview, coverage map, scaffold, run, checkpoints — is a
-**playbook**, not always-on context. Invoke it when you start or extend a vertical:
+The full build flow — interview, coverage map, a reviewed design document you approve
+before any code, then reshape, run, and the checkpoints — is a **playbook**, not always-on
+context. Invoke it when you start or extend a vertical:
 
 - **Claude Code**: `/substrat`
 - **Cursor / opencode**: the `new-vertical` command, or read [`.substrat/playbook.md`](.substrat/playbook.md)
