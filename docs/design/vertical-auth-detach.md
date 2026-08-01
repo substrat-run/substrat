@@ -90,6 +90,17 @@ Auth config is a reserved, structured entry within that mechanism:
 }
 ```
 
+**The read side (`resolveScopedEnvSpec`).** Delivery only lands the value in the scope's own
+storage; the vertical still has to READ it there and overlay it on its manifest env-spec at
+request time. `resolveScopedEnvSpec(spec, env, delivered)` (contracts) is that merge —
+precedence **delivered > env > default**, declared keys only — where `delivered` is the
+per-scope config the vertical read back from its own store (auth-server's `cfg:` rows,
+vertical-auth's `scope_config` table). Reading `resolveEnvSpec(env)` alone is the trap: the
+env-spec defaults ride as worker bindings shared by every install of one serving script, so a
+per-install override saved in the Env tab is invisible to it and the instance silently serves
+the default (the #374 incident). A hosted vertical reads per-scope; only a standalone deploy
+reads env.
+
 ### 2.3 Verticals become pure OIDC relying parties
 
 - **Login flow:** generalize `@substrat-run/oidc-rp` (Authorization Code + PKCE, cookie
