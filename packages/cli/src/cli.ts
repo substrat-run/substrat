@@ -298,7 +298,10 @@ async function cmdVersions(): Promise<void> {
     process.exit(1);
   }
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
-  await printVersions(controlPlaneUrl, header, slug);
+  // Best-effort: a tenant lets `versions` cross-check installs for a lineage fork (#399).
+  // Absent or unresolvable, the listing still works — only the fork hint degrades.
+  const tenantId = await resolveTenantId(controlPlaneUrl, header, flag('tenant')).catch(() => undefined);
+  await printVersions(controlPlaneUrl, header, slug, tenantId);
 }
 
 async function cmdPromote(): Promise<void> {
@@ -487,6 +490,20 @@ async function cmdHostnames(): Promise<void> {
   const rows = await listVerticalHostnames(controlPlaneUrl, header, tenantId, slug);
   console.log(formatHostnames(rows));
   if (rows.some((r) => r.canonical)) console.log('\n* = canonical for its (scope, surface)');
+  // The reverse of the `versions` cross-check (#399): installs bound here but zero versions
+  // pushed under this slug is a lineage fork. Best-effort — never breaks the listing.
+  if (rows.length > 0) {
+    const base = controlPlaneUrl.replace(/\/$/, '');
+    const versions = await fetch(`${base}/verticals/${encodeURIComponent(slug)}/versions`, { headers: header })
+      .then((r) => (r.ok ? (r.json() as Promise<unknown[]>) : []))
+      .catch(() => []);
+    if (Array.isArray(versions) && versions.length === 0) {
+      console.log(
+        `\n⚠ '${slug}' has hostnames but no pushed versions — a lineage fork: pushes landed under a different\n` +
+          `  slug (\`substrat push\` derives it from package.json \`name\` unless \`substrat.slug\` pins it).`,
+      );
+    }
+  }
 }
 
 /**

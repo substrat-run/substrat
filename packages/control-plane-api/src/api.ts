@@ -709,6 +709,51 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
+   * Why a scope's vertical did not resolve to a running deployment — an ACTIONABLE 501
+   * body, computed only on the miss path, in place of the bare "no deployment is bound"
+   * that masked the #399 lineage fork. A `substrat push` publishes versions under the
+   * slug it derives from the project (package.json `name`, unless `substrat.slug` pins
+   * it), while installs/hostnames — and so `scope.vertical` — carry the slug the app was
+   * installed under. When those diverge, `resolveVerticalVersion` filters the bound
+   * version by the scope's slug (control-plane worker) and never finds it, so delivery
+   * 501s with no hint that the versions merely live under a different slug. This names the
+   * exact split so it is a seconds-long diagnosis, not a multi-hour hunt. A couple of
+   * directory reads only when a call has already failed to resolve.
+   */
+  const diagnoseUnboundScope = async (
+    actor: PlatformActorId,
+    scope: { vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
+  ): Promise<string> => {
+    const slug = scope.vertical;
+    if (!slug) return 'scope has no vertical bound — nothing to deliver to';
+    const versions = await admin.listVersions(actor, slug).catch(() => []);
+    const boundId = scope.verticalVersionId;
+    if (boundId && !versions.some((v) => v.id === boundId)) {
+      return (
+        `scope is bound to version '${boundId}', which is not among vertical '${slug}'’s ${versions.length} ` +
+        `pushed version(s) — its versions were most likely pushed under a DIFFERENT slug (a lineage fork). ` +
+        `Check the vertical's package.json \`name\` vs \`substrat.slug\`, and compare ` +
+        `\`substrat versions ${slug}\` against \`substrat hostnames ${slug}\`.`
+      );
+    }
+    if (versions.length === 0) {
+      return (
+        `vertical '${slug}' has no pushed versions, yet a scope is installed under it — the installs and the ` +
+        `pushes are on different slugs (a lineage fork). Push under '${slug}' by setting \`substrat.slug\`, ` +
+        `or rebind the install to the slug the versions live under.`
+      );
+    }
+    const serving = await admin.verticalServing(actor, slug).catch(() => null);
+    if (!serving) {
+      return `vertical '${slug}' has ${versions.length} version(s) but none is promoted to a serving channel — promote one to prod.`;
+    }
+    return (
+      `no deployment is bound for vertical '${slug}': the scope is not on the serving script and its bound ` +
+      `version did not resolve. Promote a version to prod, then adopt the scope onto the serving script.`
+    );
+  };
+
+  /**
    * Move ONE legacy scope's data off its per-version dispatch script onto its vertical's
    * stable serving script (#286/#321), then flip routing. The one primitive behind both
    * the explicit `adopt-serving` endpoint and the automatic adoption a prod promote runs.
@@ -857,7 +902,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (!v || v.ownerTenant !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
     }
     const vertical = await verticalForScope(c, scope);
-    if (!vertical) return c.json({ error: `no deployment is bound for scope ${scopeId}` }, 501);
+    if (!vertical) return c.json({ error: await diagnoseUnboundScope(c.get('actor'), scope) }, 501);
     const entitlements = await admin.listEntitlements(actor, tenantId);
     try {
       const result = await vertical.reconcileInstance({ tenantId, scopeId, entitlements });
@@ -921,7 +966,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     const vertical = await verticalForScope(c, scope);
     if (!vertical) {
-      return c.json({ error: `no deployment is bound for vertical '${scope.vertical ?? '(none)'}'` }, 501);
+      return c.json({ error: await diagnoseUnboundScope(c.get('actor'), scope) }, 501);
     }
     try {
       await vertical.configureInstance({ tenantId, scopeId, entries: input.entries });

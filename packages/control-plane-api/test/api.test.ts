@@ -545,6 +545,24 @@ describe('control-plane API', () => {
     expect(res.status).toBe(501);
   });
 
+  it('diagnoses a lineage fork on the config-delivery 501 (#399)', async () => {
+    // The egeryds shape: a scope installed under one slug while every version was pushed
+    // under another (the push slug comes from package.json `name`), so no version resolves
+    // and delivery 501s. The body must NAME the fork and the slug, not just say
+    // "no deployment is bound" — that generic message cost a multi-hour hunt.
+    const sF = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sF, vertical: 'egeryds-substrat' });
+    await host.admin.activateScope(staff, t1, sF);
+    const res = await json(`/tenants/${t1}/scopes/${sF}/configure`, 'POST', {
+      entries: [{ key: 'SUPABASE_URL', value: 'https://x.supabase.co' }],
+    });
+    expect(res.status).toBe(501);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/lineage fork/i);
+    expect(error).toContain('egeryds-substrat');
+    expect(error).toMatch(/substrat\.slug/);
+  });
+
   it('refuses a table-less restore with an actionable 422, not a bare internal error (#321)', async () => {
     const sB = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t1, scopeId: sB, vertical: 'demo-vert' });
