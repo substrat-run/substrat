@@ -21,7 +21,10 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm -r build && pnpm publish -r --access public --no-git-checks && changeset tag",
-    "secrets:platform": "tools/set-platform-secrets.sh"
+    "secrets:platform": "tools/set-platform-secrets.sh",
+    "secrets:check": "node scripts/secrets.mjs check",
+    "secrets:push": "node scripts/secrets.mjs push",
+    "secrets:dev": "node scripts/secrets.mjs dev"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
