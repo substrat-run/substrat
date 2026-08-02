@@ -31,11 +31,13 @@ _substrat_identities (
 )
 ```
 
-exposed on the host admin as two methods:
+exposed on the host admin as a small write/read surface:
 
 ```ts
 linkIdentity(actor, { provider, externalId, principal, tenantId, scopeId? }): void // audited; idempotent per (tenantId, provider, externalId)
-resolveIdentity(tenantId, provider, externalId): { principal, scopeId } | undefined
+unlinkIdentity(actor, tenantId, principal): void   // audited; severs a principal's login — keyed by principal, a hard delete (the admin log is the audit)
+listIdentityLinks(actor, tenantId): IdentityLink[] // access-logged; one tenant's links — the projection/provisioning gather
+resolveIdentity(tenantId, provider, externalId): { principal, scopeId } | undefined // the auth adapter's read; machine path, not logged
 ```
 
 Because the mapping is **keyed by provider**, several auth adapters — and several OIDC
@@ -87,7 +89,35 @@ knows that pool's tenant — but because asking is a category error: where the s
 `externalId` names different people per tenant, a tenant list has no meaning. Enumerate,
 then resolve within the one you picked.
 
-## Auth adapters at the edge
+## Resolving without a control plane: the identity projection
+
+`resolveIdentity` lives on the admin surface — which a **CP-less** vertical (its own
+Workers-for-Platforms script, no control-plane binding) does not have. Before the
+projection landed, such a vertical's only option was a login map compiled into its
+bundle: offboarding required a deploy, promoting an older version silently resurrected a
+removed login, and whoever could push code could rewrite who resolves to which principal
+with no audit trail.
+
+Identity links are therefore **projected into scopes**, exactly as roles, tenant tuples,
+and entitlements already are: the control plane stays the audited source of truth, every
+`linkIdentity`/`unlinkIdentity` fans the tenant's current links out into its scopes'
+`_substrat_identity_links` tables, and CP-less verticals receive them **with
+provisioning/reconcile** — the platform gathers them itself (`listIdentityLinks`), never
+trusting the caller's body. At request time the auth adapter resolves from the scope's
+own storage:
+
+```ts
+// The CP-less equivalent of resolveIdentity — same machine-path exemption, reads only
+// what the platform projected into this scope.
+await host.resolveIdentityLocal(tenantId, scopeId, provider, externalId);
+// → { principal, scopeId } | undefined
+```
+
+The projection is a full-replace snapshot with no tombstones — an unlinked identity is
+simply *absent* from the next snapshot, and absence resolves to nothing. That direction
+is deliberate: a stale or missing projection can only ever refuse a legitimate login
+(fixable by a reconcile), never admit a revoked one. Offboarding becomes an `unlinkIdentity`
+call with durable effect — no deploy, and no version rollback can undo it.
 
 An auth adapter is anything that turns a request into a principal:
 

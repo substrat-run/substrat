@@ -69,16 +69,21 @@ deploy with `wrangler deploy` (DO SQLite needs a Workers Paid plan).
 Two options change the topology:
 
 - **`scopeLocalPermissions: true`** turns on projection-on-write — the host projects a tenant's
-  roles and tenant-level tuples into its scopes on every tenant-level write, and those scopes
-  evaluate permissions from their own storage. This takes the control-plane DO off the request
-  hot path (see [Permissions](/concepts/permissions#where-tuples-live-a-scope-reads-only-its-own-state)).
+  roles, tenant-level tuples, entitlements, and identity links into its scopes on every
+  tenant-level write, and those scopes evaluate permissions (and resolve logins) from their own
+  storage. This takes the control-plane DO off the request hot path (see
+  [Permissions](/concepts/permissions#where-tuples-live-a-scope-reads-only-its-own-state)).
   Default off. Enabling it for scopes provisioned earlier wants a one-time
   `reconcileTenantProjection` back-fill.
 - **omitting `controlPlane`** makes a **CP-less** vertical: it binds no control-plane DO, holds
   its role definitions locally, receives only scope-level assignments, provisions via
-  `provisionScopeLocal`, and trusts the router-asserted node for tenancy/lifecycle. This is what
-  lets a vertical deploy as its own isolated Workers-for-Platforms script with no platform
-  binding — the shape [Callout](/verticals/callout) ships in.
+  `provisionScopeLocal` (which also projects the entitlements and identity links the platform
+  delivers with the call), and trusts the router-asserted node for tenancy/lifecycle. Its auth
+  adapter resolves logins with `resolveIdentityLocal` against the scope's projected links —
+  the CP-less stand-in for `admin.resolveIdentity` (see
+  [Identity](/concepts/identity#resolving-without-a-control-plane-the-identity-projection)).
+  This is what lets a vertical deploy as its own isolated Workers-for-Platforms script with no
+  platform binding — the shape [Callout](/verticals/callout) ships in.
 
 ## How the semantics map
 
@@ -89,7 +94,7 @@ Two options change the topology:
 | transactional operation + rollback (K-4) | `ctx.storage.transaction(async …)` — commits on success, rolls back on a throw across `await`s |
 | structured-clone boundary | the coordinator→DO RPC boundary itself |
 | fail-closed addressing + lifecycle gates | validated in the `ControlPlaneDO` before the stub is minted |
-| permission checks | tuple checker, evaluated entirely from the scope's own storage — scope tuples written locally, tenant tuples + roles **projected** in by the control plane at write time (`scopeLocalPermissions`); no per-request control-plane read |
+| permission checks | tuple checker, evaluated entirely from the scope's own storage — scope tuples written locally, tenant tuples + roles (+ entitlements and identity links) **projected** in by the control plane at write time (`scopeLocalPermissions`); no per-request control-plane read |
 
 ## Status
 
