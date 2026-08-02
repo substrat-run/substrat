@@ -62,7 +62,8 @@
         "secret": false,
         "group": "Auth"
       }
-    ]
+    ],
+    "tenant": "substrat-9yjbbn"
   },
   "type": "module",
   "exports": {
