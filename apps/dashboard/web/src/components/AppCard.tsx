@@ -1,5 +1,7 @@
 import { useState } from 'react';
+import type { InstallStep } from '../lib/api';
 import { Ic } from '../lib/icons';
+import { InstallSteps } from './InstallSteps';
 import { Pill, RowActions } from './ui';
 
 export interface AppCardData {
@@ -15,7 +17,20 @@ export interface AppCardData {
 }
 
 /** The app tile — accent dot, name, kind·version, status pill, hostname, footer. */
-export function AppCard({ app, onOpen, onRetry, onResume }: { app: AppCardData; onOpen?: () => void; onRetry?: () => void; onResume?: () => void }) {
+export function AppCard({
+  app,
+  onOpen,
+  onRetry,
+  onResume,
+  loadSteps,
+}: {
+  app: AppCardData;
+  onOpen?: () => void;
+  onRetry?: () => void;
+  onResume?: () => void;
+  /** Loader for the install's durable step record (#424) — rendered live while provisioning, and as the diagnosis when failed. */
+  loadSteps?: () => Promise<InstallStep[]>;
+}) {
   const [hover, setHover] = useState(false);
   const provisioning = app.status === 'provisioning';
   const failed = app.status === 'failed';
@@ -71,6 +86,7 @@ export function AppCard({ app, onOpen, onRetry, onResume }: { app: AppCardData; 
           </a>
         ) : null}
       </div>
+      {(provisioning || failed) && loadSteps && <InstallSteps status={app.status} load={loadSteps} />}
       {provisioning && app.stalled && (
         <div
           style={{

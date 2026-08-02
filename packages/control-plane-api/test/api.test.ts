@@ -1999,10 +1999,9 @@ describe('control-plane API — builder authz', () => {
 
   it('confines a builder to the vertical-management surface (default-deny)', async () => {
     // None of these are on the builder allowlist — a builder gets 403, not the data.
-    // (`/hostnames` moved ONTO the allowlist, tenant-narrowed — its confinement is
-    // covered by the hostname-map describe below.)
+    // (`/hostnames` and the directory reads under `/scopes` moved ONTO the allowlist,
+    // tenant-narrowed — their confinement is covered by their own describes below.)
     expect((await acmeReq('/tenants')).status).toBe(403);
-    expect((await acmeReq('/scopes')).status).toBe(403);
     expect((await acmeReq('/admin-log')).status).toBe(403);
     expect((await acmeReq('/roles')).status).toBe(403);
     // Provisioning an instance is a scope action, not vertical management → 403.
@@ -2011,6 +2010,27 @@ describe('control-plane API — builder authz', () => {
         tenantId: acme, scopeId: scopeId.parse(ulid()), owner: ulid(), slug: 'x', name: 'X',
       })).status,
     ).toBe(403);
+  });
+
+  it('narrows the directory reads to the builder’s own tenant (#424 CLI parity)', async () => {
+    // The tenants exist in the directory (idempotent across the suite's shared host).
+    await host.admin.createTenant(staff, { id: acme, slug: acmeSlug, name: 'Acme' }).catch(() => {});
+    await host.admin.createTenant(staff, { id: other, slug: otherSlug, name: 'Other' }).catch(() => {});
+    const sAcme = scopeId.parse(ulid());
+    const sOther = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: acme, scopeId: sAcme, jurisdiction: 'global', vertical: `${acmeSlug}/helpdesk` });
+    await host.provisionScope(staff, { tenantId: other, scopeId: sOther, jurisdiction: 'global', vertical: `${otherSlug}/helpdesk` });
+
+    // GET /scopes: the tenant filter is FORCED to the caller's own — asking for the
+    // other tenant's rows still returns only yours (never a 403-vs-data choice).
+    const rows = (await (await acmeReq(`/scopes?tenantId=${other}`)).json()) as Array<{ id: string }>;
+    expect(rows.map((s) => s.id)).toEqual([sAcme]);
+
+    // Per-scope reads: own tenant answers; a foreign tenant is hidden as 404 (K-3).
+    expect((await acmeReq(`/tenants/${acme}/scopes/${sAcme}`)).status).toBe(200);
+    expect((await acmeReq(`/tenants/${other}/scopes/${sOther}`)).status).toBe(404);
+    expect((await acmeReq(`/tenants/${acme}/scopes/${sAcme}/health`)).status).toBe(200);
+    expect((await acmeReq(`/tenants/${other}/scopes/${sOther}/health`)).status).toBe(404);
   });
 
   it('claims a bare slug under the tenant prefix, stamping the owner', async () => {

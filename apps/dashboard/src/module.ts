@@ -315,6 +315,30 @@ export const dashboardMigrations = [
       ALTER TABLE dashboard_apps ADD COLUMN provision_result TEXT;
     `,
   },
+  {
+    version: '0012-install-steps',
+    sql: `
+      -- The install as a durable, inspectable operation (#424): one row per STEP of an
+      -- app's install sequence (directory → provision → activate → hostname → identity),
+      -- in the shape the platform-request spine already uses (status/attempts/last_error/
+      -- settled_at) rather than a second progress vocabulary. A step that runs again on
+      -- Resume UPDATES its row (attempts += 1) instead of appending, so the table always
+      -- reads as "where the install is now"; history stays on dashboard_app_events.
+      -- A failed step keeps the downstream error VERBATIM in last_error — the diagnosis
+      -- the next bug report needs, pre-collected.
+      CREATE TABLE dashboard_install_steps (
+        app_scope_id TEXT NOT NULL,
+        step         TEXT NOT NULL,
+        seq          INTEGER NOT NULL,
+        status       TEXT NOT NULL CHECK (status IN ('running','done','failed')),
+        attempts     INTEGER NOT NULL DEFAULT 1,
+        last_error   TEXT,
+        started_at   TEXT NOT NULL,
+        settled_at   TEXT,
+        PRIMARY KEY (app_scope_id, step)
+      );
+    `,
+  },
 ];
 
 export interface DashboardAppRow {
@@ -361,6 +385,20 @@ export interface DashboardAppEventRow {
   detail: string | null;
   actor: string;
   created_at: string;
+}
+
+/** One step of an app's install sequence (#424) — where the install is NOW, durably. */
+export interface DashboardInstallStepRow {
+  app_scope_id: string;
+  step: string;
+  /** Render order (the sequence position) — stable even if steps settle out of order. */
+  seq: number;
+  status: 'running' | 'done' | 'failed';
+  attempts: number;
+  /** The downstream error VERBATIM (a failed step), or null. */
+  last_error: string | null;
+  started_at: string;
+  settled_at: string | null;
 }
 
 /** Append a lifecycle event for an app — the real Activity trail (created/active/failed/deleted). */
@@ -550,6 +588,74 @@ const resumeAppOp: OperationHandler<z.infer<typeof resumeAppInput>, DashboardApp
   }
   recordAppEvent(ctx, input.appScopeId, 'resumed', row.vertical_slug);
   return row;
+};
+
+const recordInstallStepInput = z.object({
+  appScopeId: z.string().min(1),
+  /** The step's stable key — 'directory', 'provision', 'activate', 'hostname', 'identity'. */
+  step: z.string().min(1),
+  /** Position in the install sequence (render order). */
+  seq: z.number().int().min(0),
+  status: z.enum(['running', 'done', 'failed']),
+  /** The downstream error VERBATIM — required reading for a failed step. */
+  error: z.string().optional(),
+});
+
+/**
+ * Record one step of the install sequence (#424) — the durable progress record the
+ * Apps view renders live and a failed install is diagnosed from. UPSERT keyed by
+ * (app, step): a step re-entered by Resume transitions back to 'running' and bumps
+ * `attempts` on its own row, so the table is always the CURRENT install state (the
+ * append-only history is dashboard_app_events). Same authority as provisioning the
+ * app — this is only ever written by the install flow itself.
+ */
+const recordInstallStepOp: OperationHandler<z.infer<typeof recordInstallStepInput>, { ok: true }> = async (
+  ctx,
+  raw,
+) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = recordInstallStepInput.parse(raw);
+  const now = new Date().toISOString();
+  if (input.status === 'running') {
+    // A fresh attempt at this step: back to 'running', attempts += 1, the previous
+    // outcome cleared (its error already lives on the Activity trail if it mattered).
+    ctx.sql.exec(
+      `INSERT INTO dashboard_install_steps (app_scope_id, step, seq, status, attempts, last_error, started_at, settled_at)
+       VALUES (?, ?, ?, 'running', 1, NULL, ?, NULL)
+       ON CONFLICT (app_scope_id, step) DO UPDATE SET
+         status = 'running', attempts = attempts + 1, last_error = NULL, started_at = ?, settled_at = NULL`,
+      [input.appScopeId, input.step, input.seq, now, now],
+    );
+  } else {
+    // Settle the running row. The INSERT arm is a safety net for a settle without a
+    // recorded start (never the normal path) — better an honest row than a lost error.
+    ctx.sql.exec(
+      `INSERT INTO dashboard_install_steps (app_scope_id, step, seq, status, attempts, last_error, started_at, settled_at)
+       VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+       ON CONFLICT (app_scope_id, step) DO UPDATE SET
+         status = ?, last_error = ?, settled_at = ?`,
+      [
+        input.appScopeId, input.step, input.seq, input.status, input.error ?? null, now, now,
+        input.status, input.error ?? null, now,
+      ],
+    );
+  }
+  return { ok: true };
+};
+
+const installStepsInput = z.object({ appScopeId: z.string().min(1) });
+
+/** The install's step list, in sequence order — a plain read, gated by `dashboard:read`. */
+const installStepsOp: OperationHandler<z.infer<typeof installStepsInput>, DashboardInstallStepRow[]> = async (
+  ctx,
+  raw,
+) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  const input = installStepsInput.parse(raw);
+  return ctx.sql.query<DashboardInstallStepRow>(
+    'SELECT * FROM dashboard_install_steps WHERE app_scope_id = ? ORDER BY seq',
+    [input.appScopeId],
+  );
 };
 
 const markAppFailedInput = z.object({
@@ -1070,6 +1176,8 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/bind-app-hostname': bindAppHostnameOp as OperationHandler<never, unknown>,
     'dashboard/unbind-app-hostname': unbindAppHostnameOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-failed': markAppFailedOp as OperationHandler<never, unknown>,
+    'dashboard/record-install-step': recordInstallStepOp as OperationHandler<never, unknown>,
+    'dashboard/install-steps': installStepsOp as OperationHandler<never, unknown>,
     'dashboard/resume-app': resumeAppOp as OperationHandler<never, unknown>,
     'dashboard/app-events': appEventsOp as OperationHandler<never, unknown>,
     'dashboard/list-apps': listAppsOp as OperationHandler<never, unknown>,
