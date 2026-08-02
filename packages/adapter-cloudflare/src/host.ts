@@ -120,9 +120,12 @@ import {
   type ScopeFilter,
   type ScopeHost,
   type ScopeStub,
+  type SqlValue,
   type TenantRelationalStore,
   type TenantStoreProvisionInput,
+  type TenantStoreRecord,
 } from '@substrat-run/kernel';
+import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
 import type {
   AccessLogRow,
   AuditLogQuery,
@@ -209,6 +212,29 @@ interface ControlPlaneStub {
   reapTenant(tenantId: string): Promise<string>;
   getTenant(tenantId: string): Promise<Tenant | undefined>;
   listTenants(): Promise<Tenant[]>;
+  getTenantStore(
+    tenantId: string,
+    vertical: string,
+    binding: string,
+  ): Promise<{ kind: string; ref: string } | undefined>;
+  putTenantStore(row: {
+    tenantId: string;
+    vertical: string;
+    binding: string;
+    kind: string;
+    ref: string;
+    createdAt: string;
+  }): Promise<{ kind: string; ref: string }>;
+  listTenantStores(filter: { tenantId?: string; vertical?: string }): Promise<
+    {
+      tenant_id: string;
+      vertical: string;
+      binding: string;
+      kind: string;
+      ref: string;
+      created_at: string;
+    }[]
+  >;
   provisionScope(
     tenantId: string,
     scopeId: string,
@@ -589,6 +615,15 @@ export interface CloudflareScopeHostOptions {
    * it for existing scopes wants a one-time `reconcileTenantProjection` back-fill.
    */
   scopeLocalPermissions?: boolean;
+  /**
+   * The live D1 client for per-tenant relational stores (#301) —
+   * `createD1TenantStores` with the platform's Cloudflare credential. Lives on the
+   * COORDINATOR like `secretBox`: the ControlPlaneDO keeps the ledger and has never
+   * held the credential. Omitted (dev, CP-less verticals, a deployment with no D1
+   * credential), `provisionTenantStore`/`openTenantStore` refuse loudly rather than
+   * letting a declared `tenantStoreNeed` appear provisioned while no store exists.
+   */
+  tenantStores?: D1TenantStores;
 }
 
 /**
@@ -645,6 +680,8 @@ export class CloudflareScopeHost implements ScopeHost {
   /** Executor id → {eventType, handler} (K-22 §4.2). Coordinator-side, not in the DO. */
   private readonly secretBox: SecretBox;
   private readonly fetchImpl: FetchLike;
+  /** The live D1 client for per-tenant stores (#301); undefined ⇒ refuse loudly. */
+  private readonly tenantStores?: D1TenantStores;
   private readonly executors = new Map<string, RegisteredEffector>();
   /**
    * The event currently being effected, stamped onto admin rows the executor writes.
@@ -669,6 +706,7 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   constructor(options: CloudflareScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
+    this.tenantStores = options.tenantStores;
     this.fetchImpl = options.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
@@ -1152,25 +1190,96 @@ export class CloudflareScopeHost implements ScopeHost {
     }
   }
 
-  // Per-tenant relational stores (#301). The vocabulary, directory ledger and pure-adapter
-  // implementation land first; the LIVE Cloudflare D1 create/bind/HTTP-query is the second
-  // step (it needs real CF API calls that cannot be exercised on the local/SQLite path).
-  // Until then these fail loudly rather than silently no-op — a hosted vertical that declares
-  // a `tenantStoreNeed` must not appear provisioned while its store does not exist.
+  // Per-tenant relational stores (#301, PR-2 — the live D1 path). The coordinator holds
+  // the platform's D1 credential (the same split secretBox uses: the DO records, it never
+  // holds a key), the ControlPlaneDO serializes the ledger write, and the D1 REST client
+  // does the actual mint. Unconfigured (dev without a CF credential, a CP-less vertical),
+  // these fail loudly rather than silently no-op — a hosted vertical that declares a
+  // `tenantStoreNeed` must not appear provisioned while its store does not exist.
   async provisionTenantStore(
-    _actor: PlatformActorId,
+    actor: PlatformActorId,
     input: TenantStoreProvisionInput,
   ): Promise<TenantStoreHandle> {
-    throw new Error(
-      `provisionTenantStore is not yet wired on Cloudflare (#301, PR-2: live D1 minting) — ` +
-        `tenant=${input.tenantId} vertical=${input.vertical} binding=${input.binding}`,
+    const d1 = this.requireTenantStores(
+      `provisionTenantStore(tenant=${input.tenantId} vertical=${input.vertical} binding=${input.binding})`,
     );
+    // Fail closed on an unknown/non-active tenant, exactly as provisionScope does (§4.1's
+    // "tenant is an FK string" hole). Checked here for the honest error; re-checked
+    // inside the DO's ledger write, which is the serialization point that actually holds.
+    const tenant = await this.cp.getTenant(input.tenantId);
+    if (!tenant) {
+      throw new Error(`cannot provision tenant store under unknown tenant: ${input.tenantId}`);
+    }
+    if (tenant.status !== 'active') {
+      throw new Error(
+        `cannot provision tenant store under non-active tenant (status: ${tenant.status}): ${input.tenantId}`,
+      );
+    }
+    // Idempotent on (tenant, vertical, binding): a retried provision re-resolves the SAME
+    // store rather than minting a second database (the K-31 ready-gate retries the whole
+    // callback). An existing row short-circuits before any Cloudflare call and is NOT
+    // re-audited — nothing changed.
+    const existing = await this.cp.getTenantStore(input.tenantId, input.vertical, input.binding);
+    if (existing) return { binding: input.binding, kind: 'relational', ref: existing.ref };
+    // Mint the database, then record it. The name is deterministic so a provision that
+    // crashed BETWEEN these two steps converges on the same database on retry (create
+    // resolves a name collision to the existing id); the ledger row — not the name — is
+    // the source of truth, carrying the D1 database_id Cloudflare assigned as the ref.
+    const name = await tenantStoreDatabaseName(input.tenantId, input.vertical, input.binding);
+    const ref = await d1.create(name);
+    const stored = await this.cp.putTenantStore({
+      tenantId: input.tenantId,
+      vertical: input.vertical,
+      binding: input.binding,
+      kind: 'relational',
+      ref,
+      createdAt: new Date().toISOString(),
+    });
+    if (stored.ref !== ref) {
+      // A concurrent provision won the ledger write. One database is canonical — the
+      // ledger's — so drop ours rather than orphan it (best-effort: a leaked delete
+      // failure leaves an unreferenced empty database, never a wrong handle).
+      await d1.remove(ref).catch(() => undefined);
+      return { binding: input.binding, kind: 'relational', ref: stored.ref };
+    }
+    await this.recordAdmin(
+      actor,
+      'provisionTenantStore',
+      { tenantId: input.tenantId, vertical: input.vertical },
+      null,
+      { binding: input.binding, kind: 'relational', ref },
+    );
+    return { binding: input.binding, kind: 'relational', ref };
   }
 
   openTenantStore(handle: TenantStoreHandle): TenantRelationalStore {
-    throw new Error(
-      `openTenantStore is not yet wired on Cloudflare (#301, PR-2: live D1 binding) — binding=${handle.binding}`,
-    );
+    // The COORDINATOR-side open: out-of-band SQL over the D1 HTTP API — driving a store's
+    // migrations externally, ops reads, tests. The request-time open happens in the
+    // vertical's worker instead, against the real `d1` binding the platform attached to
+    // the serving script (`env[tenantStoreBindingName(handle.binding, tenantId)]`, wrapped
+    // by `d1TenantRelationalStore`) — which is also why `native` is null here: this store
+    // has no in-process driver to hand out.
+    const d1 = this.requireTenantStores(`openTenantStore(binding=${handle.binding})`);
+    return {
+      query: async <T>(sql: string, params: readonly SqlValue[] = []): Promise<T[]> =>
+        (await d1.query(handle.ref, sql, params)).results as T[],
+      exec: async (sql: string, params: readonly SqlValue[] = []) => ({
+        changes: (await d1.query(handle.ref, sql, params)).changes,
+      }),
+      native: null,
+    };
+  }
+
+  /** The injected D1 client, or a loud refusal naming what to configure. */
+  private requireTenantStores(what: string): D1TenantStores {
+    if (!this.tenantStores) {
+      throw new Error(
+        `per-tenant stores are not configured on this host (#301): pass ` +
+          `CloudflareScopeHostOptions.tenantStores (createD1TenantStores with the platform's ` +
+          `Cloudflare credential) — refused ${what}`,
+      );
+    }
+    return this.tenantStores;
   }
 
   async importScope(
@@ -2436,6 +2545,30 @@ export class CloudflareScopeHost implements ScopeHost {
         const row = await this.cp.getScopeRecord(tenantId, scopeId);
         await this.recordAccess(actor, 'getScopeRecord', { tenantId, scopeId }, null, row ? 1 : 0);
         return row ? mapScope(row) : undefined;
+      },
+      listTenantStores: async (
+        actor,
+        filter?: { tenantId?: TenantId; vertical?: string },
+      ): Promise<TenantStoreRecord[]> => {
+        const rows = await this.cp.listTenantStores({
+          tenantId: filter?.tenantId,
+          vertical: filter?.vertical,
+        });
+        await this.recordAccess(
+          actor,
+          'listTenantStores',
+          { tenantId: filter?.tenantId ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows.map((r) => ({
+          tenantId: r.tenant_id as TenantId,
+          vertical: r.vertical,
+          binding: r.binding,
+          kind: 'relational',
+          ref: r.ref,
+          createdAt: r.created_at,
+        }));
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair

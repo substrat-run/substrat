@@ -53,8 +53,9 @@ export {
   upstreamStatusOf,
 } from './deploy.js';
 export type { DeployVerticalFn, VerticalBundle, DeclaredBinding, DeployManifest } from './deploy.js';
-export { createWfpUploader, createWfpModulesFetcher } from './wfp.js';
-export type { WfpUploaderOptions } from './wfp.js';
+export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
+export type { WfpUploaderOptions, PatchScriptBindingsFn, D1BindingSpec } from './wfp.js';
+export { collectTenantStoreHandles, tenantStoreBindings } from './tenant-stores.js';
 export {
   createCustomHostnameProvisioner,
   mapCfStatus,

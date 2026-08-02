@@ -11,6 +11,8 @@ import {
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from './client.js';
 import type { VerticalClient } from './vertical-client.js';
+import { collectTenantStoreHandles } from './tenant-stores.js';
+import type { PatchScriptBindingsFn } from './wfp.js';
 
 /**
  * The platform-intent drain engine (Phase B2 of docs/design/platform-intents.md). A vertical
@@ -93,6 +95,13 @@ export interface ProvisionSiblingDeps {
     verticalVersionId: string | null;
     servingRef?: string | null;
   }) => Promise<VerticalClient | undefined>;
+  /**
+   * Attach per-tenant store D1 bindings on the dispatch script (#301) — threaded through
+   * to `collectTenantStoreHandles` so a sibling provision heals a missing attach exactly
+   * as a first install would. A sibling shares its tenant's stores (they are per TENANT,
+   * not per scope), so this usually resolves existing handles and no-ops the patch.
+   */
+  patchScriptBindings?: PatchScriptBindingsFn;
 }
 
 export interface ProvisionSiblingInput {
@@ -140,6 +149,16 @@ export async function provisionSiblingScope(
     return { ok: false, status: 501, error: `no deployment is bound for vertical '${parent.vertical}'` };
   }
   const entitlements = await admin.listEntitlements(actor, input.tenantId);
+  // #301: a sibling's provision callback carries the tenant's store handles like a first
+  // install's does — the stores are per (tenant, vertical), so this re-resolves what the
+  // first install minted rather than minting anything new.
+  const tenantStores = await collectTenantStoreHandles({
+    host,
+    actor,
+    slug: parent.vertical,
+    tenantId: input.tenantId,
+    patchBindings: deps.patchScriptBindings,
+  });
   await vertical.provisionInstance({
     tenantId: input.tenantId,
     scopeId: input.scopeId,
@@ -147,6 +166,7 @@ export async function provisionSiblingScope(
     slug: input.slug,
     name: input.name,
     entitlements,
+    ...(tenantStores.length ? { tenantStores } : {}),
   });
   await admin.activateScope(actor, input.tenantId, input.scopeId);
   return { ok: true, scopeId: input.scopeId };

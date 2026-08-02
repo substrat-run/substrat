@@ -32,6 +32,7 @@ export type {
   SqlValue,
   TenantRelationalStore,
   TenantStoreProvisionInput,
+  TenantStoreRecord,
 } from './scope-host.js';
 export { backoffAt, resolveRetryPolicy } from './scope-host.js';
 export { unconfiguredSecretBox, webCryptoSecretBox } from './secret-box.js';

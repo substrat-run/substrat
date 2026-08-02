@@ -152,6 +152,7 @@ import {
   type SqlValue,
   type TenantRelationalStore,
   type TenantStoreProvisionInput,
+  type TenantStoreRecord,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -1294,8 +1295,12 @@ export class SqliteScopeHost implements ScopeHost {
     // never collide with a scope DB (`${tenantId}__${scopeId}.sqlite`). It is deterministic
     // from the key, but the row — not the convention — is the source of truth (on Cloudflare
     // the ref is a D1 database_id CF assigns, which is not derivable). ULID keeps two
-    // verticals' identically-bound stores distinct even if a slug is ever reused.
-    const ref = `tstore__${input.tenantId}__${input.vertical}__${input.binding}__${ulid()}.sqlite`;
+    // verticals' identically-bound stores distinct even if a slug is ever reused. The
+    // vertical is flattened to filename-safe characters: a builder-owned slug is
+    // `<tenant>/<name>` (builder-plane.md), and a `/` in a bare filename is exactly what
+    // the open guard below refuses.
+    const safeVertical = input.vertical.replace(/[^A-Za-z0-9_-]+/g, '-');
+    const ref = `tstore__${input.tenantId}__${safeVertical}__${input.binding}__${ulid()}.sqlite`;
     // Physically mint the database now, so a successful mint means the file exists (matching
     // "the platform mints the store"); the vertical then runs its OWN migrations against it.
     this.tenantStoreDb(ref);
@@ -1322,10 +1327,14 @@ export class SqliteScopeHost implements ScopeHost {
       throw new Error(`invalid tenant-store ref (must be a bare filename): ${handle.ref}`);
     }
     const db = this.tenantStoreDb(handle.ref);
+    // Async wrappers over the sync driver: the CONTRACT is async (D1 is async on both
+    // its worker-binding and HTTP paths), the pure adapter just resolves immediately.
     return {
-      query: <T = Record<string, SqlValue>>(sql: string, params: readonly SqlValue[] = []): T[] =>
-        db.prepare(sql).all(...params) as T[],
-      exec: (sql: string, params: readonly SqlValue[] = []) => {
+      query: async <T = Record<string, SqlValue>>(
+        sql: string,
+        params: readonly SqlValue[] = [],
+      ): Promise<T[]> => db.prepare(sql).all(...params) as T[],
+      exec: async (sql: string, params: readonly SqlValue[] = []) => {
         const info = db.prepare(sql).run(...params);
         return { changes: info.changes };
       },
@@ -3650,6 +3659,50 @@ export class SqliteScopeHost implements ScopeHost {
           scopes.length,
         );
         return scopes;
+      },
+      listTenantStores: async (
+        actor,
+        filter?: { tenantId?: TenantId; vertical?: string },
+      ): Promise<TenantStoreRecord[]> => {
+        const where: string[] = [];
+        const params: string[] = [];
+        if (filter?.tenantId) {
+          where.push('tenant_id = ?');
+          params.push(filter.tenantId);
+        }
+        if (filter?.vertical) {
+          where.push('vertical = ?');
+          params.push(filter.vertical);
+        }
+        const rows = this.directory
+          .prepare(
+            'SELECT * FROM tenant_stores' +
+              (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+              ' ORDER BY tenant_id, vertical, binding',
+          )
+          .all(...params) as {
+          tenant_id: string;
+          vertical: string;
+          binding: string;
+          kind: string;
+          ref: string;
+          created_at: string;
+        }[];
+        this.recordAccess(
+          actor,
+          'listTenantStores',
+          { tenantId: filter?.tenantId ?? null },
+          filter,
+          rows.length,
+        );
+        return rows.map((r) => ({
+          tenantId: r.tenant_id as TenantId,
+          vertical: r.vertical,
+          binding: r.binding,
+          kind: 'relational',
+          ref: r.ref,
+          createdAt: r.created_at,
+        }));
       },
       getScopeRecord: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> => {
         const r = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as

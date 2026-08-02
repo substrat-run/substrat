@@ -29,11 +29,13 @@ import { runPlatformSweep, assertPlatformCall, PlatformCallError, type FetchLike
 import {
   CloudflareScopeHost,
   ControlPlaneDO,
+  createD1TenantStores,
   defineScopeDO,
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,
   createWfpUploader,
+  createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
   createCustomHostnameProvisioner,
@@ -327,7 +329,27 @@ function verticalsFor(env: Env): Record<string, VerticalClient> {
 
 /** The coordinator is stateless — rebuilt per request; durable state is in the DOs. */
 function hostFor(env: Env): CloudflareScopeHost {
-  return new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  return new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    // Per-tenant relational stores (#301): the live D1 mint/query client, on the same
+    // platform credential the WfP uploader holds (the token additionally needs D1 write).
+    // Absent creds ⇒ provisionTenantStore refuses loudly instead of half-provisioning.
+    tenantStores:
+      env.CF_API_TOKEN && env.CF_ACCOUNT_ID
+        ? createD1TenantStores({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN })
+        : undefined,
+  });
+}
+
+/** Attach per-tenant store D1 bindings to a dispatch script without a redeploy (#301). */
+function patchScriptBindingsFor(env: Env) {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
+  return createWfpBindingsPatcher({
+    accountId: env.CF_ACCOUNT_ID,
+    namespace: env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
+    apiToken: env.CF_API_TOKEN,
+  });
 }
 
 /**
@@ -383,7 +405,12 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
     client,
     { tenantId: t, scopeId: s, vertical: rec.vertical },
     {
-      [PROVISION_SIBLING_KIND]: provisionSiblingHandler({ host, actor: SWEEP_ACTOR, resolveVerticalForScope }),
+      [PROVISION_SIBLING_KIND]: provisionSiblingHandler({
+        host,
+        actor: SWEEP_ACTOR,
+        resolveVerticalForScope,
+        patchScriptBindings: patchScriptBindingsFor(env),
+      }),
       [ARCHIVE_SCOPE_KIND]: archiveScopeHandler({ host, actor: SWEEP_ACTOR }),
     },
   );
@@ -577,6 +604,7 @@ export default {
         resolveVerticalRef: resolveVerticalRefFor(env),
         deployVertical: deployVerticalFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
+        patchScriptBindings: patchScriptBindingsFor(env),
         observability: observabilityFor(env),
         // #305 §4.7 — a custom-domain bind drives Cloudflare-for-SaaS issuance; a
         // platform mint under one of these base domains rides the wildcard.
