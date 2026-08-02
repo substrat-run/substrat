@@ -16,6 +16,7 @@ import {
   type RuntimeNeeds,
 } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
+import { parseJsonBody } from './http.js';
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
@@ -332,7 +333,7 @@ export async function push(
     }
     throw new Error(`push failed (${res.status}): ${detail}`);
   }
-  return JSON.parse(body) as { id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] };
+  return parseJsonBody<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }>(body, url);
 }
 
 /** Push defaults read from a vertical's package.json, so `substrat push` needs no flags. */

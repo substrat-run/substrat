@@ -4,6 +4,8 @@
  * endpoint is STAFF-only, so a builder is refused (the review gate); a staff/platform caller
  * flips it. Once `listed`, `availableCatalog` offers the vertical to every tenant.
  */
+import { parseJsonBody } from './http.js';
+
 export interface ListingOptions {
   controlPlaneUrl: string;
   header: Record<string, string>;
@@ -21,7 +23,7 @@ export async function setListing(opts: ListingOptions): Promise<{ slug: string; 
   });
   const body = await res.text();
   if (!res.ok) throw new Error(`${opts.listed ? 'publish' : 'unpublish'} failed (${res.status}): ${body.slice(0, 300)}`);
-  return JSON.parse(body) as { slug: string; listed: boolean };
+  return parseJsonBody<{ slug: string; listed: boolean }>(body, url);
 }
 
 /**
