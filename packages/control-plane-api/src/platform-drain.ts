@@ -2,8 +2,11 @@ import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import {
   principalId as principalIdSchema,
   scopeId as scopeIdSchema,
+  tenantId as tenantIdSchema,
   provisionSiblingPayload,
   archiveScopePayload,
+  provisionTenantPayload,
+  setEntitlementsPayload,
   type PlatformActorId,
   type PlatformRequest,
   type ScopeId,
@@ -231,5 +234,221 @@ export function archiveScopeHandler(deps: ArchiveScopeDeps): PlatformRequestHand
     }
     await admin.archiveScope(deps.actor, ctx.tenantId, payload.scopeId);
     return { status: 'done', result: { archived: payload.scopeId } };
+  };
+}
+
+/**
+ * Deps for the MANAGED-TENANT handlers (#412) — `provision-tenant` / `set-entitlements`,
+ * the capability that makes a vertical a manager (a console whose job is to add tenants).
+ * Unlike `provision-sibling`, the target tenant is NOT proven by the drained scope (it may
+ * not exist yet), so admissibility is bounded on the manager instead:
+ *
+ *  1. `provisioners` — the staff-granted provisioner capability. Deployment config today
+ *     (the only manager is first-party); a directory-backed grant when third-party managers
+ *     arrive. A vertical not listed settles `failed`.
+ *  2. SKU bound — every entitlement key a payload names must be in the manager's
+ *     registry-declared `entitlements` (its manifest's, carried on push), read at drain time.
+ *
+ * Still phased (#412 invariants 2/4, before any third-party manager): `tenants.provisionedBy`
+ * ownership — until it exists, a listed manager can `set-entitlements` on any tenant — and
+ * a declared-target-verticals bound (`manifest.provisions`).
+ */
+export interface ManagedTenantDeps {
+  host: ScopeHost;
+  actor: PlatformActorId;
+  /** Manager verticals (registry slugs) holding the provisioner capability. */
+  provisioners: readonly string[];
+  /** Resolve the `VerticalClient` serving a scope — same ladder as `ProvisionSiblingDeps`. */
+  resolveVerticalForScope: (scope: {
+    vertical: string | null;
+    verticalVersionId: string | null;
+    servingRef?: string | null;
+  }) => Promise<VerticalClient | undefined>;
+  /** Attach per-tenant store D1 bindings (#301); a NEW tenant's first install mints here. */
+  patchScriptBindings?: PatchScriptBindingsFn;
+}
+
+/**
+ * Enforce the manager bound: provisioner capability + declared-SKU universe. Returns the
+ * declared SKU list on admission (the reconcile in `set-entitlements` needs it — it bounds
+ * the revoke side too), or the `failed` outcome to settle.
+ */
+async function admitManager(
+  deps: ManagedTenantDeps,
+  ctx: PlatformRequestContext,
+  requestedKeys: string[],
+): Promise<{ declared: string[] } | { refusal: PlatformRequestOutcome }> {
+  if (!deps.provisioners.includes(ctx.vertical)) {
+    return {
+      refusal: {
+        status: 'failed',
+        error: `vertical '${ctx.vertical}' does not hold the tenant-provisioner capability`,
+      },
+    };
+  }
+  const registered = (await deps.host.admin.listVerticals(deps.actor)).find(
+    (v) => v.slug === ctx.vertical,
+  );
+  const declared = registered?.entitlements ?? [];
+  for (const key of requestedKeys) {
+    if (!declared.includes(key)) {
+      return {
+        refusal: {
+          status: 'failed',
+          error: `entitlement '${key}' is not among the SKUs '${ctx.vertical}' declares`,
+        },
+      };
+    }
+  }
+  return { declared };
+}
+
+/**
+ * The `provision-tenant` platform-request handler (#412): create a NEW customer tenant, its
+ * first scope running the PAYLOAD's vertical (never inherited — the manager and the managed
+ * product are different verticals), grant its entitlements, then the same materialization a
+ * first install runs: resolve the serving deployment, mint/collect the tenant's stores
+ * (#301), `provisionInstance` (which projects the entitlements, #310), deliver `config`,
+ * activate. Every id is proposed in the payload (idempotent join keys), so an at-least-once
+ * drain converges without minting anything on retry: `createTenant`/`provisionScope`/
+ * `provisionInstance` are all idempotent no-ops the second time. A `ControlPlaneError` from
+ * the vertical is transient (`pending`); a structural refusal (capability, SKU bound, slug
+ * taken by a different tenant, unbound deployment) is terminal (`failed`).
+ */
+export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequestHandler {
+  return async (ctx, request) => {
+    const payload = provisionTenantPayload.parse(request.payload);
+    const admitted = await admitManager(deps, ctx, payload.entitlements.map((e) => e.key));
+    if ('refusal' in admitted) return admitted.refusal;
+    const { host, actor } = deps;
+    const admin = host.admin;
+    const tenantId = tenantIdSchema.parse(payload.tenant.id);
+    const scopeId = scopeIdSchema.parse(payload.instance.scopeId);
+    try {
+      await admin.createTenant(actor, {
+        id: tenantId,
+        slug: payload.tenant.slug,
+        name: payload.tenant.name,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      // Both adapters fail closed on a slug owned by a DIFFERENT tenant id with this
+      // phrasing — a retry can never converge, so settle terminal instead of pending.
+      if (message.includes('slugs are unique')) return { status: 'failed', error: message };
+      throw e;
+    }
+    // Granted BEFORE provisionInstance so the #310 projection carries them on day one.
+    for (const grant of payload.entitlements) {
+      await admin.grantEntitlement(actor, tenantId, grant.key, { plan: grant.plan });
+    }
+    await host.provisionScope(actor, {
+      tenantId,
+      scopeId,
+      slug: payload.instance.slug,
+      name: payload.instance.name,
+      vertical: payload.instance.vertical,
+    } as Parameters<ScopeHost['provisionScope']>[1]);
+    const created = await admin.getScopeRecord(actor, tenantId, scopeId);
+    const vertical = created ? await deps.resolveVerticalForScope(created) : undefined;
+    if (!vertical) {
+      return {
+        status: 'failed',
+        result: { tenantId, scopeId },
+        error: `no deployment is bound for vertical '${payload.instance.vertical}'`,
+      };
+    }
+    const entitlements = await admin.listEntitlements(actor, tenantId);
+    // #301: a NEW tenant's first install is exactly the minting path — the stores are
+    // per (tenant, target vertical), keyed by the PAYLOAD's vertical, not the manager's.
+    const tenantStores = await collectTenantStoreHandles({
+      host,
+      actor,
+      slug: payload.instance.vertical,
+      tenantId,
+      patchBindings: deps.patchScriptBindings,
+    });
+    try {
+      await vertical.provisionInstance({
+        tenantId,
+        scopeId,
+        owner: principalIdSchema.parse(payload.instance.owner),
+        slug: payload.instance.slug,
+        name: payload.instance.name,
+        entitlements,
+        ...(tenantStores.length ? { tenantStores } : {}),
+      });
+      if (payload.config && Object.keys(payload.config).length) {
+        try {
+          await vertical.configureInstance({
+            tenantId,
+            scopeId,
+            entries: Object.entries(payload.config).map(([key, value]) => ({ key, value })),
+          });
+        } catch (e) {
+          // 501 = the vertical has no live-config support — authored but not delivered,
+          // the same tolerance the settings route extends. Anything else is transient.
+          if (!(e instanceof ControlPlaneError && e.status === 501)) throw e;
+        }
+      }
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return { status: 'pending', result: { tenantId, scopeId }, error: e.message };
+      }
+      throw e;
+    }
+    await admin.activateScope(actor, tenantId, scopeId);
+    return { status: 'done', result: { tenantId, scopeId } };
+  };
+}
+
+/**
+ * The `set-entitlements` platform-request handler (#412): reconcile a managed tenant's
+ * grants to the payload's TARGET set, bounded both ways by the manager's declared SKU
+ * universe — grant what the target names, revoke any declared key absent from it — then
+ * re-project into the tenant's auth scope via the vertical's idempotent reconcile
+ * (entitlements re-gathered authoritative + identity links, exactly as the repair route,
+ * #310/#406; the vertical-side projection is a full replace, so a downgrade revokes
+ * cleanly). Keys OUTSIDE the declared universe are never touched, so a platform-granted
+ * entitlement (e.g. the tenant's own product SKU) survives any manager reconcile.
+ */
+export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequestHandler {
+  return async (ctx, request) => {
+    const payload = setEntitlementsPayload.parse(request.payload);
+    const admitted = await admitManager(deps, ctx, payload.entitlements.map((e) => e.key));
+    if ('refusal' in admitted) return admitted.refusal;
+    const { actor } = deps;
+    const admin = deps.host.admin;
+    const tenantId = tenantIdSchema.parse(payload.tenantId);
+    const scopeId = scopeIdSchema.parse(payload.authScopeId);
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) {
+      return { status: 'failed', error: `unknown scope for tenant: (${tenantId}, ${scopeId})` };
+    }
+    const target = new Map(payload.entitlements.map((e) => [e.key, e.plan]));
+    for (const key of admitted.declared) {
+      if (target.has(key)) {
+        await admin.grantEntitlement(actor, tenantId, key, { plan: target.get(key) });
+      } else {
+        await admin.revokeEntitlement(actor, tenantId, key);
+      }
+    }
+    const vertical = await deps.resolveVerticalForScope(scope);
+    if (!vertical) {
+      return {
+        status: 'failed',
+        error: `no deployment is bound for vertical '${scope.vertical ?? 'none'}'`,
+      };
+    }
+    const entitlements = await admin.listEntitlements(actor, tenantId);
+    const identityLinks = (await admin.listIdentityLinks(actor, tenantId)).map(
+      ({ tenantId: _tenantId, ...link }) => link,
+    );
+    try {
+      await vertical.reconcileInstance({ tenantId, scopeId, entitlements, identityLinks });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return { status: 'pending', error: e.message };
+      throw e;
+    }
+    return { status: 'done', result: { tenantId, plan: payload.plan } };
   };
 }

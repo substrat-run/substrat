@@ -23,6 +23,8 @@ import {
   scopeId,
   PROVISION_SIBLING_KIND,
   ARCHIVE_SCOPE_KIND,
+  PROVISION_TENANT_KIND,
+  SET_ENTITLEMENTS_KIND,
 } from '@substrat-run/contracts';
 import type { PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
 import { runPlatformSweep, assertPlatformCall, PlatformCallError, type FetchLike } from '@substrat-run/kernel';
@@ -50,6 +52,9 @@ import {
   drainScopePlatformRequests,
   provisionSiblingHandler,
   archiveScopeHandler,
+  provisionTenantHandler,
+  setEntitlementsHandler,
+  type ManagedTenantDeps,
   type PlatformDrainReport,
   type DeployVerticalFn,
   type CustomHostnameProvisioner,
@@ -85,6 +90,14 @@ interface Env extends OidcEnv {
   PUSH_TOKEN_SECRET?: string;
   /** Local dev / test only: trust the `x-platform-actor` header. NEVER on a real deploy. */
   ALLOW_DEV_ACTOR?: string;
+  /**
+   * Comma-separated registry slugs of MANAGER verticals holding the tenant-provisioner
+   * capability (#412) — whose `provision-tenant` / `set-entitlements` intents the drain
+   * executes. Staff-set deployment config while every manager is first-party; a
+   * directory-backed grant before any third-party manager. Unset = nobody: those intents
+   * settle `failed`, never silently dropped.
+   */
+  TENANT_PROVISIONERS?: string;
   /**
    * Days a scope may sit `archived` before the sweep reaps its DO storage (§4.4).
    * Cloudflare never GCs a Durable Object, so an archived app's bytes persist forever
@@ -401,6 +414,20 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
   const client = await resolveVerticalForScope(rec);
   if (!client) return empty;
+  // The managed-tenant capability (#412): who may create tenants is deployment config
+  // while every manager is first-party. An empty list still REGISTERS the handlers —
+  // the capability refusal settles `failed` with a reason, where an absent handler
+  // would report the generic "no handler for kind".
+  const managedTenantDeps: ManagedTenantDeps = {
+    host,
+    actor: SWEEP_ACTOR,
+    provisioners: (env.TENANT_PROVISIONERS ?? '')
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean),
+    resolveVerticalForScope,
+    patchScriptBindings: patchScriptBindingsFor(env),
+  };
   return drainScopePlatformRequests(
     client,
     { tenantId: t, scopeId: s, vertical: rec.vertical },
@@ -412,6 +439,8 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
         patchScriptBindings: patchScriptBindingsFor(env),
       }),
       [ARCHIVE_SCOPE_KIND]: archiveScopeHandler({ host, actor: SWEEP_ACTOR }),
+      [PROVISION_TENANT_KIND]: provisionTenantHandler(managedTenantDeps),
+      [SET_ENTITLEMENTS_KIND]: setEntitlementsHandler(managedTenantDeps),
     },
   );
 }
