@@ -11,6 +11,28 @@
       "oidc-issuer"
     ],
     "permissions": "src/provision.ts",
+    "entitlements": [
+      "meridian",
+      "protocol"
+    ],
+    "ownerGrants": [
+      "employee:manage",
+      "absence:configure",
+      "absence:approve",
+      "absence:read",
+      "time:read",
+      "project:manage",
+      "expense:approve",
+      "expense:read",
+      "payroll:export",
+      "protocol:create",
+      "protocol:fill",
+      "protocol:bind",
+      "protocol:request-signature",
+      "protocol:sign",
+      "protocol:read",
+      "protocol:void"
+    ],
     "envSpec": [
       {
         "key": "AUTH_PROVIDER",
