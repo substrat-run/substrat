@@ -297,6 +297,12 @@ const rebindScopeVerticalBody = z.object({
   // version carry the SAME migration digest — or the operator acknowledges having
   // read both migration surfaces. Same discipline as a promote's `--ack-migrations`.
   ackMigrations: z.boolean().optional(),
+  // Rebind the DIRECTORY only — no export/restore. For a scope whose source script
+  // predates the `/internal/export` surface (#236) and so cannot be dumped at all.
+  // The data is not deleted: it stays on the source script, which remains the
+  // backout copy exactly as in a carried rebind. The scope must be re-provisioned
+  // on the target afterwards (`/verticals/:slug/instances` is idempotent, K-31).
+  abandonData: z.boolean().optional(),
 });
 
 // A snapshot request (preview-and-snapshots.md §3/§9). `expiresAt` opts into the GC
@@ -927,8 +933,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     tenantId: TenantId,
     scopeId: ScopeId,
     target: string,
-    opts: { ackMigrations?: boolean },
-  ): Promise<{ servingRef: string; versionId: string; alreadyBound?: boolean; tables?: number }> => {
+    opts: { ackMigrations?: boolean; abandonData?: boolean },
+  ): Promise<{
+    servingRef: string;
+    versionId: string;
+    alreadyBound?: boolean;
+    tables?: number;
+    dataAbandoned?: boolean;
+  }> => {
     const actor = c.get('actor');
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) {
@@ -949,6 +961,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     if (scope.vertical === target && scope.servingRef === serving.ref) {
       return { servingRef: serving.ref, versionId: serving.versionId, alreadyBound: true };
+    }
+    if (opts.abandonData) {
+      // Directory-only crossing: no bytes move, so the frontier gate has nothing to
+      // protect — the target provisions its own schema from scratch. The source
+      // script's copy is untouched and remains the backout, same as a carried rebind.
+      // The scope serves nothing until `/verticals/:slug/instances` re-provisions it.
+      await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
+      await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+      return { servingRef: serving.ref, versionId: serving.versionId, dataAbandoned: true };
     }
     // The frontier gate. Digest equality proves the target's migration set is exactly
     // what this DO has already applied plus whatever a same-lineage update would have
@@ -1489,9 +1510,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/tenants/:tenantId/scopes/:scopeId/rebind-vertical', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
-    const { vertical, ackMigrations } = rebindScopeVerticalBody.parse(await c.req.json());
+    const { vertical, ackMigrations, abandonData } = rebindScopeVerticalBody.parse(
+      await c.req.json(),
+    );
     try {
-      const r = await rebindScopeOntoVertical(c, tenantId, scopeId, vertical, { ackMigrations });
+      const r = await rebindScopeOntoVertical(c, tenantId, scopeId, vertical, {
+        ackMigrations,
+        abandonData,
+      });
       return c.json({ rebound: scopeId, vertical, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {

@@ -428,6 +428,26 @@ export class VerticalClient {
     );
   }
 
+  /**
+   * A 200 whose body is not JSON is a script that does not SERVE this route: an old
+   * worker build falls through to its SPA fallback and answers the app shell (200,
+   * `<!doctype …`) for any `/internal/*` path it predates. Surface that as the
+   * diagnosis instead of an unhandled SyntaxError → 500 (#389: a pre-#236 script has
+   * no `/internal/export`, so a carried rebind cannot dump it).
+   */
+  private async parseInternal<T>(verb: string, path: string, res: Response): Promise<T> {
+    const text = await res.text();
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} (${path}) with non-JSON — its deployed script predates this ` +
+          `surface. Redeploy the vertical (or, for a rebind, use abandonData).`,
+      );
+    }
+  }
+
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
   private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
@@ -442,7 +462,7 @@ export class VerticalClient {
       }),
     );
     if (!res.ok) throw await this.refusal(verb, res);
-    return (await res.json()) as T;
+    return this.parseInternal<T>(verb, path, res);
   }
 
   /** A platform-authenticated GET to the vertical's `/internal/*` surface. */
@@ -454,6 +474,6 @@ export class VerticalClient {
       }),
     );
     if (!res.ok) throw await this.refusal('introspection', res);
-    return (await res.json()) as T;
+    return this.parseInternal<T>('introspection', path, res);
   }
 }

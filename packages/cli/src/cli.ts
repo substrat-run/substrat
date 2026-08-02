@@ -100,7 +100,10 @@ Usage:
                                               move a scope onto a DIFFERENT vertical
                                               lineage's serving script, data carried
                                               (staff; --ack-migrations to cross a
-                                              differing migration surface)
+                                              differing migration surface;
+                                              --abandon-data for a source script that
+                                              predates /internal/export — directory-only
+                                              flip, then re-provision the scope)
   substrat hostnames <slug>                   list an install's hostname bindings
   substrat hostnames bind <slug> --surface <s> [--domain <d>] [--scope <id>]
                                               give a surface a URL: no --domain mints a
@@ -404,7 +407,7 @@ async function cmdScope(): Promise<void> {
     '       substrat scope provision <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope adopt-serving <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope adopt-serving --vertical <slug>\n' +
-    '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--tenant <id-or-slug>]';
+    '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--abandon-data] [--tenant <id-or-slug>]';
   const known =
     sub === 'pull' || sub === 'restore' || sub === 'status' || sub === 'provision' ||
     sub === 'adopt-serving' || sub === 'rebind';
@@ -447,6 +450,7 @@ async function cmdScope(): Promise<void> {
     await rebindScopeVertical({
       controlPlaneUrl, header, tenantId, scopeId: scope,
       vertical: to, ackMigrations: argv.includes('--ack-migrations'),
+      abandonData: argv.includes('--abandon-data'),
     });
     return;
   }
