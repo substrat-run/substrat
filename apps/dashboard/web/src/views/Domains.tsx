@@ -237,7 +237,7 @@ function DomainRowView({
 }
 
 /** The records a tenant must publish for a custom domain to validate — copy-ready rows. */
-function DnsRecords({ records }: { records: DnsRecord[] }) {
+export function DnsRecords({ records }: { records: DnsRecord[] }) {
   return (
     <div style={{ background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '12px 14px', display: 'grid', gridTemplateColumns: '64px 1fr 1.4fr 24px', alignItems: 'center', gap: '8px 10px', fontSize: 12.5 }}>
       <span style={{ color: 'var(--text-tertiary)' }}>Type</span>
@@ -296,6 +296,13 @@ function AddDomainDialog({
     setSaving(true);
     try {
       const row = await api.addDomain({ hostname: hostname.trim().toLowerCase(), appScopeId: chosen });
+      if (row.status === 'failed') {
+        // The bind recorded the row but issuance failed right away (e.g. Cloudflare
+        // rejected the create) — show the reason here, not just a "failed" pill later.
+        setError(row.statusNote ?? 'The domain was recorded but certificate issuance could not start.');
+        await onAdded();
+        return;
+      }
       setRecords(row.validationRecords ?? []);
       await onAdded();
     } catch (e) {

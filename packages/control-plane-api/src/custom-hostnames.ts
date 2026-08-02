@@ -202,7 +202,15 @@ export function createCustomHostnameProvisioner(
     }
     if (!res.ok || !env?.success || !env.result) {
       const msg = env?.errors?.map((e) => e.message).filter(Boolean).join('; ') || clip(text);
-      throw new Error(`Cloudflare ${what} failed (${res.status}): ${msg || 'unknown error'}`);
+      // An auth failure here is a PLATFORM misconfiguration, not the tenant's DNS: the
+      // token works for other CF APIs but lacks the custom-hostname permission. Say so —
+      // "Authentication error" alone reads as the tenant's problem and sends them to
+      // their DNS provider instead of the operator to the token settings.
+      const hint =
+        res.status === 401 || res.status === 403
+          ? " — the platform's Cloudflare API token is missing 'SSL and Certificates: Edit' on the SaaS zone (secrets/platform.<env>.env CF_API_TOKEN); not a DNS problem on the domain"
+          : '';
+      throw new Error(`Cloudflare ${what} failed (${res.status}): ${msg || 'unknown error'}${hint}`);
     }
     return env.result;
   };
@@ -264,7 +272,7 @@ export interface ReconcileHostnamesResult {
   activated: number;
   /** Rows that moved to `failed` this pass. */
   failed: number;
-  /** Custom rows still `pending` for which a fresh CF create was (re)attempted. */
+  /** Custom rows (`pending`, or `failed` with no CF id) for which a CF create was (re)attempted. */
   created: number;
   /** Per-hostname errors — one bad row never sinks the pass. */
   errors: { hostname: string; error: string }[];
@@ -275,9 +283,10 @@ export interface ReconcileHostnamesResult {
  *
  *   - `verifying` with a CF id — poll Cloudflare and persist the new status/records; a
  *     `verifying → active` here is the automated flip that replaces the old manual one.
- *   - `pending` with NO CF id but a custom hostname — a create that never landed (the
- *     bind route failed transiently, or ran before a provisioner was configured). Retry
- *     the create so a stuck `pending` self-heals instead of waiting on a human.
+ *   - `pending` OR `failed` with NO CF id but a custom hostname — a create that never
+ *     landed (the bind route failed transiently, ran before a provisioner was configured,
+ *     or hit a misconfigured credential and was recorded `failed`). Retry the create so
+ *     the row self-heals once the cause is fixed, instead of waiting on a human click.
  *
  * `isCustom` decides which `pending` rows are ours to issue for — a platform hostname
  * (rides the wildcard, no CF object) is never touched here. Per-row failures are caught
@@ -310,8 +319,15 @@ export async function reconcilePendingHostnames(deps: {
     }
   }
 
+  // `failed` rows WITHOUT a CF id are creates that never landed (e.g. a token without
+  // the custom-hostname permission) — retriable exactly like a stuck `pending`, so a
+  // fixed credential heals them on the next sweep. `failed` WITH an id stays terminal
+  // here: that is a real validation verdict, re-checked only by an explicit verify.
+  const failed = (await deps.admin.listHostnames(deps.actor, { status: 'failed' })).filter(
+    (h) => !h.customHostnameId,
+  );
   const pending = await deps.admin.listHostnames(deps.actor, { status: 'pending' });
-  for (const h of pending) {
+  for (const h of [...pending, ...failed]) {
     if (h.customHostnameId || !deps.isCustom(h.hostname)) continue; // already created, or a platform mint
     try {
       const r = await deps.provisioner.create(h.hostname);

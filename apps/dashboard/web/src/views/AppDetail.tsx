@@ -8,6 +8,7 @@ import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
 import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, Pill, RowActions } from '../components/ui';
 import { IntegrationCard } from './Integrations';
+import { DnsRecords } from './Domains';
 
 /**
  * App detail (screens 1i, 1j, 1k, 1l). The header and the Overview tab render REAL
@@ -1569,6 +1570,8 @@ function AppDomains({ app }: { app: AppRow }) {
   const [domain, setDomain] = useState('');
   const [adding, setAdding] = useState(false);
   const [toRemove, setToRemove] = useState<AppHostnameRow | null>(null);
+  const [checking, setChecking] = useState<string | null>(null);
+  const [openRecords, setOpenRecords] = useState<string | null>(null);
 
   useEffect(() => {
     if (DEV_MOCK) {
@@ -1615,7 +1618,9 @@ function AppDomains({ app }: { app: AppRow }) {
       setNote(
         bound.status === 'active'
           ? `${bound.hostname} is live.`
-          : `${bound.hostname} recorded — it goes live once DNS validation and the certificate complete.`,
+          : bound.status === 'failed'
+            ? `${bound.hostname} was recorded, but issuance failed — ${bound.statusNote ?? 'unknown error'}`
+            : `${bound.hostname} recorded — publish the DNS records below, then it goes live once validation and the certificate complete.`,
       );
       setSurface('');
       setDomain('');
@@ -1640,6 +1645,21 @@ function AppDomains({ app }: { app: AppRow }) {
     }
   };
 
+  // Re-poll a custom domain's issuance — a `failed` create is retried, a `verifying`
+  // row re-checks DNS + cert state (same seam as the account-level Domains page).
+  const checkAgain = async (hostname: string) => {
+    if (DEV_MOCK) return;
+    setChecking(hostname);
+    try {
+      await api.verifyDomain(hostname);
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(null);
+    }
+  };
+
   const COLS = '2.4fr 1fr 1.4fr 1fr 40px';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1652,29 +1672,63 @@ function AppDomains({ app }: { app: AppRow }) {
         )}
         {view.bindings.map((h) => {
           const isDefault = view.defaultHostname !== null && h.hostname === view.defaultHostname;
+          const hasRecords = h.validationRecords.length > 0 && h.status !== 'active';
+          const busy = checking === h.hostname;
           return (
-            <div key={h.hostname} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 44, padding: '0 16px', fontSize: 13, borderBottom: '1px solid var(--border-subtle)' }}>
-              {h.status === 'active' ? (
-                <a href={`https://${h.hostname}`} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                  {h.hostname}<Ic name="external" size={11} />
-                </a>
-              ) : (
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-secondary)' }}>{h.hostname}</span>
+            <div key={h.hostname} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 44, padding: '0 16px', fontSize: 13 }}>
+                {h.status === 'active' ? (
+                  <a href={`https://${h.hostname}`} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    {h.hostname}<Ic name="external" size={11} />
+                  </a>
+                ) : (
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-secondary)' }}>{h.hostname}</span>
+                )}
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <MonoTag color="var(--text-secondary)">{h.surface}</MonoTag>
+                  {surfaceLabel(h.surface) && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{surfaceLabel(h.surface)}</span>}
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Pill kind={statusKind(h.status)}>{h.status.charAt(0).toUpperCase() + h.status.slice(1)}</Pill>
+                  {h.canonical && <MonoTag color="var(--text-tertiary)">canonical</MonoTag>}
+                  {isDefault && <MonoTag color="var(--text-tertiary)">default</MonoTag>}
+                  {h.status !== 'active' && (
+                    <span
+                      onClick={busy ? undefined : () => void checkAgain(h.hostname)}
+                      style={{ fontSize: 12, color: 'var(--text-brand)', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.5 : 1 }}
+                    >
+                      {busy ? 'Checking…' : 'Check again'}
+                    </span>
+                  )}
+                </span>
+                <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.createdAt ? shortDate(h.createdAt) : '—'}</span>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 4 }}>
+                  {hasRecords && (
+                    <button
+                      type="button"
+                      aria-label={`Show DNS records for ${h.hostname}`}
+                      onClick={() => setOpenRecords((o) => (o === h.hostname ? null : h.hostname))}
+                      style={{ ...iconBtn, transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
+                    >
+                      <Ic name="chevronDown" size={16} />
+                    </button>
+                  )}
+                  {isDefault ? null : (
+                    <button type="button" aria-label={`Remove ${h.hostname}`} onClick={() => setToRemove(h)} style={iconBtn}>
+                      <Ic name="trash" size={14} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              {h.status === 'failed' && h.statusNote && (
+                <div style={{ margin: '0 16px 12px', background: 'var(--status-danger-bg)', borderRadius: 6, padding: '10px 14px', fontSize: 12.5, color: 'var(--status-danger-fg)', lineHeight: 1.6 }}>
+                  {h.statusNote}
+                </div>
               )}
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <MonoTag color="var(--text-secondary)">{h.surface}</MonoTag>
-                {surfaceLabel(h.surface) && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{surfaceLabel(h.surface)}</span>}
-              </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Pill kind={statusKind(h.status)}>{h.status.charAt(0).toUpperCase() + h.status.slice(1)}</Pill>
-                {h.canonical && <MonoTag color="var(--text-tertiary)">canonical</MonoTag>}
-                {isDefault && <MonoTag color="var(--text-tertiary)">default</MonoTag>}
-              </span>
-              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.createdAt ? shortDate(h.createdAt) : '—'}</span>
-              {isDefault ? <span /> : (
-                <button type="button" aria-label={`Remove ${h.hostname}`} onClick={() => setToRemove(h)} style={iconBtn}>
-                  <Ic name="trash" size={14} />
-                </button>
+              {openRecords === h.hostname && hasRecords && (
+                <div style={{ margin: '0 16px 14px' }}>
+                  <DnsRecords records={h.validationRecords} />
+                </div>
               )}
             </div>
           );

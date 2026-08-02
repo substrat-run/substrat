@@ -100,6 +100,15 @@ describe('createCustomHostnameProvisioner', () => {
     await expect(provisioner(fetchFn as never).create('x.acme.com')).rejects.toThrow(/zone not enabled/);
   });
 
+  it('names the platform token, not the tenant DNS, on a create auth failure', async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ success: false, errors: [{ message: 'Authentication error' }] }), { status: 403 }),
+    );
+    await expect(provisioner(fetchFn as never).create('crm.acme.com')).rejects.toThrow(
+      /SSL and Certificates/,
+    );
+  });
+
   it('remove tolerates a 404 as already-gone', async () => {
     const fetchFn = vi.fn(async () => new Response('', { status: 404 }));
     await expect(provisioner(fetchFn as never).remove('ch_gone')).resolves.toBeUndefined();
@@ -172,6 +181,34 @@ describe('reconcilePendingHostnames', () => {
     });
     expect(out.created).toBe(1);
     expect(created).toEqual(['legal.acme.com']); // the platform mint was skipped
+  });
+
+  it('retries create for a failed row with no CF id (create never landed), not a failed row with one', async () => {
+    const created: string[] = [];
+    const admin: HostnameReconcileAdmin = {
+      listHostnames: async (_a, filter) =>
+        filter?.status === 'failed'
+          ? [
+              // A create that never landed (e.g. token without the permission) — retriable.
+              binding({ hostname: 'crm.acme.com', status: 'failed', customHostnameId: null }),
+              // A real validation verdict from CF — terminal for the sweep.
+              binding({ hostname: 'dead.acme.com', status: 'failed', customHostnameId: 'ch_dead' }),
+            ]
+          : [],
+      setHostnameIssuance: async () => {},
+    };
+    const provisioner = {
+      create: async (h: string) => {
+        created.push(h);
+        return { customHostnameId: 'ch_new', status: 'verifying' as const, note: null, records: [] };
+      },
+      check: vi.fn(),
+      remove: vi.fn(),
+    } as unknown as CustomHostnameProvisioner;
+
+    const out = await reconcilePendingHostnames({ admin, actor: ACTOR, provisioner, isCustom: () => true });
+    expect(out.created).toBe(1);
+    expect(created).toEqual(['crm.acme.com']);
   });
 
   it('contains a per-row failure without sinking the pass', async () => {
