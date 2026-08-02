@@ -26,7 +26,7 @@ import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
 import { cliVersion, warnIfDistStale } from './version.js';
-import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, scopeStatus } from './scope.js';
+import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, rebindScopeVertical, scopeStatus } from './scope.js';
 import { printInstalls } from './installs.js';
 import { createPreview, deletePreview, listPreviews, formatPreviews, parseTtlHours } from './preview.js';
 import {
@@ -96,6 +96,11 @@ Usage:
                                               stable serving script so promotes stop
                                               stranding its data (idempotent). Use
                                               --vertical <slug> to backfill every scope.
+  substrat scope rebind <scopeId> --to <vertical>
+                                              move a scope onto a DIFFERENT vertical
+                                              lineage's serving script, data carried
+                                              (staff; --ack-migrations to cross a
+                                              differing migration surface)
   substrat hostnames <slug>                   list an install's hostname bindings
   substrat hostnames bind <slug> --surface <s> [--domain <d>] [--scope <id>]
                                               give a surface a URL: no --domain mints a
@@ -398,8 +403,11 @@ async function cmdScope(): Promise<void> {
     '       substrat scope status <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope provision <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope adopt-serving <scopeId> [--tenant <id-or-slug>]\n' +
-    '       substrat scope adopt-serving --vertical <slug>';
-  const known = sub === 'pull' || sub === 'restore' || sub === 'status' || sub === 'provision' || sub === 'adopt-serving';
+    '       substrat scope adopt-serving --vertical <slug>\n' +
+    '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--tenant <id-or-slug>]';
+  const known =
+    sub === 'pull' || sub === 'restore' || sub === 'status' || sub === 'provision' ||
+    sub === 'adopt-serving' || sub === 'rebind';
   // adopt-serving --vertical takes no positional scopeId; every other form requires one.
   const wantsScope = !(sub === 'adopt-serving' && flag('vertical'));
   if (!known || (wantsScope && (!scope || scope.startsWith('--')))) {
@@ -428,6 +436,18 @@ async function cmdScope(): Promise<void> {
   }
   if (sub === 'adopt-serving') {
     await adoptScopeServing({ controlPlaneUrl, header, tenantId, scopeId: scope });
+    return;
+  }
+  if (sub === 'rebind') {
+    const to = flag('to');
+    if (!to) {
+      console.error(usage);
+      process.exit(1);
+    }
+    await rebindScopeVertical({
+      controlPlaneUrl, header, tenantId, scopeId: scope,
+      vertical: to, ackMigrations: argv.includes('--ack-migrations'),
+    });
     return;
   }
   if (sub === 'provision') {

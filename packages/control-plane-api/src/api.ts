@@ -288,6 +288,17 @@ const bindScopeVersionBody = z.object({
   snapshot: z.boolean().optional(),
 });
 
+const rebindScopeVerticalBody = z.object({
+  // The FULL registry id of the target lineage (e.g. `substrat-9yjbbn/manyfold`) —
+  // staff address lineages by their exact id, never through a workspace prefix.
+  vertical: z.string().min(1),
+  // Cross-lineage migration histories are independent (#389): the digest gate below
+  // refuses the rebind unless the scope's bound version and the target's serving
+  // version carry the SAME migration digest — or the operator acknowledges having
+  // read both migration surfaces. Same discipline as a promote's `--ack-migrations`.
+  ackMigrations: z.boolean().optional(),
+});
+
 // A snapshot request (preview-and-snapshots.md §3/§9). `expiresAt` opts into the GC
 // sweep; absent = pinned until deliberately deleted. `kind` defaults to 'archive'.
 const snapshotScopeBody = z.object({
@@ -896,6 +907,84 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
+  /**
+   * Move ONE scope onto a DIFFERENT vertical lineage's serving script (#389) — the
+   * update-rebind behind retiring a platform-owned lineage in favour of a tenant-owned
+   * one (`manyfold` → `substrat-9yjbbn/manyfold`). The same data-first shape as
+   * `adoptScopeOntoServing`, with the destination resolved from the TARGET slug and
+   * the version pointer crossing lineages (the adapter's `bindScopeVersion` rewrites
+   * `scopes.vertical` from the version row, so the directory follows in the same act).
+   *
+   * The one hazard adopt-serving never had: the two lineages' migration histories are
+   * independent, and the scope's DO carries the SOURCE lineage's applied-migration
+   * journal. The digest gate refuses the crossing unless the scope's bound version and
+   * the target's serving version carry the same migration digest — or the operator
+   * acknowledges having read both surfaces (`ackMigrations`). The source script's copy
+   * is never deleted — flipping `servingRef` + version back is the backout.
+   */
+  const rebindScopeOntoVertical = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    target: string,
+    opts: { ackMigrations?: boolean },
+  ): Promise<{ servingRef: string; versionId: string; alreadyBound?: boolean; tables?: number }> => {
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) {
+      throw new ControlPlaneError(404, `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
+    if (scope.forkedFrom) {
+      throw new ControlPlaneError(409, 'a fork cannot be rebound — reap it and re-preview against the target lineage');
+    }
+    if (!scope.vertical) {
+      throw new ControlPlaneError(409, 'scope has no vertical — nothing to rebind');
+    }
+    const serving = await admin.verticalServing(actor, target);
+    if (!serving) {
+      throw new ControlPlaneError(
+        409,
+        `vertical '${target}' has no serving script yet — promote a version to prod first`,
+      );
+    }
+    if (scope.vertical === target && scope.servingRef === serving.ref) {
+      return { servingRef: serving.ref, versionId: serving.versionId, alreadyBound: true };
+    }
+    // The frontier gate. Digest equality proves the target's migration set is exactly
+    // what this DO has already applied plus whatever a same-lineage update would have
+    // brought — the crossing is then no riskier than an ordinary version bind. Anything
+    // else (differing digests, or a scope with no bound version to compare) needs the
+    // operator's explicit acknowledgement.
+    const targetV = (await admin.listVersions(actor, target)).find((v) => v.id === serving.versionId);
+    const currentV = scope.verticalVersionId
+      ? (await admin.listVersions(actor, scope.vertical)).find((v) => v.id === scope.verticalVersionId)
+      : undefined;
+    const digestsMatch = Boolean(
+      currentV && targetV && currentV.migrationDigest === targetV.migrationDigest,
+    );
+    if (!digestsMatch && !opts.ackMigrations) {
+      throw new ControlPlaneError(
+        409,
+        `migration surfaces differ across lineages ('${scope.vertical}' ${currentV?.migrationDigest ?? '(unbound)'} → ` +
+          `'${target}' ${targetV?.migrationDigest ?? '(unknown)'}) — read both migration diffs, then re-run with ackMigrations`,
+      );
+    }
+    const source = await verticalForScope(c, scope);
+    const dest = await options.resolveVerticalRef?.(serving.ref);
+    if (!source || !dest) {
+      throw new ControlPlaneError(501, 'rebind-vertical needs dispatch resolution for both ends');
+    }
+    const dump = await source.exportScope(scopeId);
+    const restored = await dest.restoreScope(tenantId, scopeId, dump);
+    // Data landed on the target script — only now flip routing and cross the pointer.
+    // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
+    // extra snapshot here (adopt-serving's precedent): the source script's copy is the
+    // pre-migration state, and it is never deleted — that copy is the backout.
+    await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
+    await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
+    return { servingRef: serving.ref, versionId: serving.versionId, tables: restored.tables };
+  };
+
   app.get('/tenants/:tenantId/scopes/:scopeId/tables', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -1390,6 +1479,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw e;
     }
     return c.json({ vertical: slug, adopted, alreadyAdopted });
+  });
+
+  // Rebind ONE scope onto a different vertical lineage (#389) — the update-rebind that
+  // retires a platform-owned lineage in favour of a tenant-owned one. Deliberately NOT
+  // in BUILDER_ROUTES: a lineage crossing re-homes a customer's data under a different
+  // registry owner, which is a staff decision like admission — the allowlist's
+  // default-deny 403s a builder without a line here.
+  app.post('/tenants/:tenantId/scopes/:scopeId/rebind-vertical', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const { vertical, ackMigrations } = rebindScopeVerticalBody.parse(await c.req.json());
+    try {
+      const r = await rebindScopeOntoVertical(c, tenantId, scopeId, vertical, { ackMigrations });
+      return c.json({ rebound: scopeId, vertical, ...r });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
   });
 
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a

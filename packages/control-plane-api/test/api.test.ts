@@ -2010,6 +2010,12 @@ describe('control-plane API — builder authz', () => {
         tenantId: acme, scopeId: scopeId.parse(ulid()), owner: ulid(), slug: 'x', name: 'X',
       })).status,
     ).toBe(403);
+    // A lineage crossing re-homes data under a different registry owner — staff-only (#389).
+    expect(
+      (await acmeReq(`/tenants/${acme}/scopes/${scopeId.parse(ulid())}/rebind-vertical`, 'POST', {
+        vertical: 'acme-co/helpdesk',
+      })).status,
+    ).toBe(403);
   });
 
   it('narrows the directory reads to the builder’s own tenant (#424 CLI parity)', async () => {
@@ -2634,6 +2640,86 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     // ...but the serving truth is surfaced alongside it: the scopes still run v1. This is
     // what stops `versions` reporting v2 as deployed when it is not.
     expect(prod.servingVersionId).toBe(v1.id);
+  });
+
+  // #389 — the cross-lineage rebind: retire one lineage's install onto another, data carried.
+  // Rides this describe's stateful dispatch fake: bytes belong to the script they were
+  // written under, so a rebind that flips routing without moving them reads empty.
+  const rebind = (t: string, sc: string, body: Record<string, unknown>) =>
+    app.request(`/tenants/${t}/scopes/${encodeURIComponent(sc)}/rebind-vertical`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  // A second lineage under its own pin, promoted so a serving script exists.
+  const targetLineage = async (pin: string, m: Record<string, unknown>) => {
+    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: pin, name: pin });
+    const v = await (await push(pin, manifest(m))).json();
+    expect((await promote(v.verticalSlug, v.id)).status).toBe(200);
+    return { slug: v.verticalSlug as string, versionId: v.id as string };
+  };
+
+  it('rebinds a scope onto a different lineage — data moved, directory crossed, source intact (#389)', async () => {
+    const { t, slug, sc } = await legacyScope('rebind-src');
+    const v2 = (await (await push('rebind-src', manifest({ version: '0.2.0' }))).json()).id as string;
+    expect((await promote(slug, v2)).status).toBe(200); // adopt onto the source serving script
+    const target = await targetLineage('rebind-dst', { version: '0.1.0' }); // same migration digest g1
+
+    const res = await rebind(t, sc, { vertical: target.slug });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.servingRef).toBe(stableDeploymentRefFor(target.slug));
+
+    // The directory crossed in one act: slug, version pointer, and routing ref.
+    const rec = await host.admin.getScopeRecord(staff, t, sc);
+    expect(rec?.vertical).toBe(target.slug);
+    expect(rec?.verticalVersionId).toBe(target.versionId);
+    expect(rec?.servingRef).toBe(stableDeploymentRefFor(target.slug));
+    // The bytes followed — and the source script's copy is intact (it is the backout).
+    expect(scripts.get(stableDeploymentRefFor(target.slug))?.get(sc)).toEqual([customers]);
+    expect(scripts.get(stableDeploymentRefFor(slug))?.get(sc)).toEqual([customers]);
+
+    // Idempotent: a re-run reports already-bound and moves nothing.
+    const again = await (await rebind(t, sc, { vertical: target.slug })).json();
+    expect(again.alreadyBound).toBe(true);
+  });
+
+  it('refuses a lineage crossing whose migration surfaces differ, unless acknowledged (#389)', async () => {
+    const { t, slug, sc } = await legacyScope('gate-src');
+    const v2 = (await (await push('gate-src', manifest({ version: '0.2.0' }))).json()).id as string;
+    expect((await promote(slug, v2)).status).toBe(200);
+    // The target lineage's migration history diverges (g2 ≠ g1).
+    const target = await targetLineage('gate-dst', {
+      version: '0.1.0',
+      digests: { manifest: 'm1', permission: 'p1', migration: 'g2' },
+    });
+
+    const refused = await rebind(t, sc, { vertical: target.slug });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/migration surfaces differ/);
+    // Nothing moved, nothing crossed.
+    const rec = await host.admin.getScopeRecord(staff, t, sc);
+    expect(rec?.vertical).toBe(slug);
+    expect(scripts.get(stableDeploymentRefFor(target.slug))?.has(sc)).toBeFalsy();
+
+    // The operator read both diffs: the acknowledged crossing proceeds.
+    const acked = await rebind(t, sc, { vertical: target.slug, ackMigrations: true });
+    expect(acked.status).toBe(200);
+    expect((await host.admin.getScopeRecord(staff, t, sc))?.vertical).toBe(target.slug);
+    expect(scripts.get(stableDeploymentRefFor(target.slug))?.get(sc)).toEqual([customers]);
+  });
+
+  it('refuses a rebind to a lineage with no serving script, and an unknown scope (#389)', async () => {
+    const { t, sc } = await legacyScope('norefuse-src');
+    // Pushed but never promoted: no serving script to receive the data.
+    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'norefuse-dst', name: 'norefuse-dst' });
+    const bare = await (await push('norefuse-dst', manifest({ version: '0.1.0' }))).json();
+    const res = await rebind(t, sc, { vertical: bare.verticalSlug });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/no serving script/);
+
+    expect((await rebind(t, scopeId.parse(ulid()), { vertical: bare.verticalSlug })).status).toBe(404);
   });
 });
 
