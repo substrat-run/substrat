@@ -29,6 +29,50 @@ async function getJson<T>(url: string, header: Record<string, string>): Promise<
   return res.json() as Promise<T>;
 }
 
+/**
+ * Resolve the registry identity `versions <slug>` should read (#399): the exact slug
+ * when it has versions, else — with exactly the tail-tolerance `hostnames` already
+ * applies (`verticalSlug.endsWith('/' + slug)`) — a workspace-prefixed registration of
+ * the same product name. A staff push pinned to a tenant registers the vertical as
+ * `<tenantSlug>/<name>` while everyone keeps SAYING the bare name, so before this the
+ * two commands disagreed: `hostnames egeryds-substrat` listed the installs while
+ * `versions egeryds-substrat` printed the (wrong, alarming) lineage-fork hint. Returns
+ * which slug was read and a note when it differs from what was asked.
+ */
+async function resolveVersionsSlug(
+  base: string,
+  header: Record<string, string>,
+  slug: string,
+): Promise<{ slug: string; versions: Version[]; note?: string; ambiguous?: string[] }> {
+  const exact = await getJson<Version[]>(`${base}/verticals/${encodeURIComponent(slug)}/versions`, header);
+  if (exact.length > 0) return { slug, versions: exact };
+  // The registry list is visibility-scoped server-side (staff: all; builder: own), so a
+  // tail match never reveals a foreign tenant's registration the caller couldn't read.
+  const registry = await getJson<Array<{ slug: string }>>(`${base}/verticals`, header).catch(
+    () => [] as Array<{ slug: string }>,
+  );
+  const candidates = registry.filter((v) => v.slug !== slug && v.slug.endsWith(`/${slug}`));
+  const withVersions: Array<{ slug: string; versions: Version[] }> = [];
+  for (const c of candidates) {
+    const versions = await getJson<Version[]>(`${base}/verticals/${encodeURIComponent(c.slug)}/versions`, header).catch(
+      () => [] as Version[],
+    );
+    if (versions.length > 0) withVersions.push({ slug: c.slug, versions });
+  }
+  if (withVersions.length === 1) {
+    const hit = withVersions[0]!;
+    return {
+      slug: hit.slug,
+      versions: hit.versions,
+      note: `showing '${hit.slug}' — the workspace-prefixed registration of '${slug}' (pushes and hostnames use this identity)`,
+    };
+  }
+  if (withVersions.length > 1) {
+    return { slug, versions: [], ambiguous: withVersions.map((v) => v.slug) };
+  }
+  return { slug, versions: [] };
+}
+
 export async function printVersions(
   controlPlaneUrl: string,
   header: Record<string, string>,
@@ -39,11 +83,21 @@ export async function printVersions(
   tenantId?: string,
 ): Promise<void> {
   const base = controlPlaneUrl.replace(/\/$/, '');
-  const versions = await getJson<Version[]>(`${base}/verticals/${encodeURIComponent(slug)}/versions`, header);
+  const resolved = await resolveVersionsSlug(base, header, slug);
+  if (resolved.note) console.log(resolved.note);
+  if (resolved.ambiguous) {
+    console.log(
+      `no versions are registered under '${slug}', but several workspace-prefixed registrations of it have versions:\n` +
+        resolved.ambiguous.map((s) => `  substrat versions ${s}`).join('\n'),
+    );
+    return;
+  }
+  const { versions } = resolved;
   // Channels are best-effort — a vertical with none registered still lists its versions.
-  const channels = await getJson<Channel[]>(`${base}/verticals/${encodeURIComponent(slug)}/channels`, header).catch(
-    () => [] as Channel[],
-  );
+  const channels = await getJson<Channel[]>(
+    `${base}/verticals/${encodeURIComponent(resolved.slug)}/channels`,
+    header,
+  ).catch(() => [] as Channel[]);
 
   if (versions.length === 0) {
     // Distinguish "no versions" from the #399 lineage fork: if installs (hostnames) are
@@ -51,14 +105,21 @@ export async function printVersions(
     // slug. `substrat push` derives its slug from package.json `name` unless `substrat.slug`
     // pins it, so a rename or a scope mismatch silently forks the lineage.
     let installs = 0;
+    let installSlugs: string[] = [];
     if (tenantId) {
-      const rows = await listVerticalHostnames(controlPlaneUrl, header, tenantId, slug).catch(() => []);
+      const rows = await listVerticalHostnames(controlPlaneUrl, header, tenantId, slug).catch(
+        () => [] as Array<{ verticalSlug?: string | null }>,
+      );
       installs = rows.length;
+      // The hostname rows carry the slug the installs are REALLY registered under —
+      // when it differs from what was asked, the fix is a rename away, so name it.
+      installSlugs = [...new Set(rows.map((r) => r.verticalSlug).filter((s): s is string => !!s && s !== slug))];
     }
     if (installs > 0) {
       console.log(
-        `no versions are registered under '${slug}', but ${installs} hostname(s) are bound to it.\n` +
-          `⚠ This is a lineage fork: the installs live under '${slug}', but pushes landed under a DIFFERENT slug.\n` +
+        `no versions are registered under '${slug}', but ${installs} hostname(s) are bound to it` +
+          (installSlugs.length ? ` (install identity: ${installSlugs.map((s) => `'${s}'`).join(', ')})` : '') +
+          `.\n⚠ This is a lineage fork: the installs and the pushes are on different slugs.\n` +
           `  \`substrat push\` derives its slug from package.json \`name\` unless \`substrat.slug\` pins it — check both,\n` +
           `  and run \`substrat versions <the-other-slug>\` to find where the versions went.`,
       );
