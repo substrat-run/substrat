@@ -937,6 +937,34 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     expect((await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
   });
 
+  it('heals the row’s lineage after a staff rebind-vertical (#389): the directory’s slug wins', async () => {
+    const acme = await bootstrap('acme-rebind');
+    const appScopeId = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme, appScopeId, verticalSlug: 'protocol', name: 'Rebound',
+      appEntitlements: ['protocol'], appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
+    });
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    type Ev = { kind: string; detail: string | null };
+
+    // The write half of the read-path reconcile: the directory says the scope now runs
+    // the tenant-owned lineage while the row still names the builtin it was installed as.
+    const healed = (await dash.invoke('dashboard/reconcile-app-vertical', {
+      appScopeId, verticalSlug: 'acme/protocol',
+    })) as DashboardAppRow;
+    expect(healed.vertical_slug).toBe('acme/protocol');
+    const apps = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
+    expect(apps.find((a) => a.app_scope_id === appScopeId)?.vertical_slug).toBe('acme/protocol');
+
+    // The move is on the Activity trail, naming both lineages...
+    const events = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId });
+    expect(events.some((e) => e.kind === 'updated' && e.detail === 'rebound protocol → acme/protocol')).toBe(true);
+
+    // ...and a row already naming the directory's slug is left alone (no second event).
+    await dash.invoke('dashboard/reconcile-app-vertical', { appScopeId, verticalSlug: 'acme/protocol' });
+    expect((await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
+  });
+
   it('a principal without dashboard:provision-app is refused — before anything is provisioned', async () => {
     const acme = await bootstrap('acme2');
     const stranger = principalId.parse(ulid()); // holds no role in acme

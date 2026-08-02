@@ -493,6 +493,41 @@ const updateAppOp: OperationHandler<z.infer<typeof updateAppInput>, { ok: true }
   return { ok: true };
 };
 
+const reconcileAppVerticalInput = z.object({
+  appScopeId: z.string().min(1),
+  /** The DIRECTORY's lineage slug — what the row is healed TO. */
+  verticalSlug: z.string().min(1),
+});
+
+/**
+ * Heal the row's vertical lineage to match the directory (#389): a staff
+ * `rebind-vertical` moves a scope onto a different lineage (e.g. builtin
+ * 'manyfold' → tenant-owned 'acme/manyfold') and the directory's scope record is
+ * the source of truth — but this row still names the old slug, which misroutes the
+ * per-app Update path (prod channels resolve by `vertical_slug`) and the Apps
+ * view's version display. Called by the read-path reconcile the same way
+ * `mark-app-active` is (#424); same authority as provisioning the app. Idempotent:
+ * a row already naming the directory's slug is returned untouched, no event.
+ */
+const reconcileAppVerticalOp: OperationHandler<
+  z.infer<typeof reconcileAppVerticalInput>,
+  DashboardAppRow
+> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = reconcileAppVerticalInput.parse(raw);
+  const row = ctx.sql.query<DashboardAppRow>('SELECT * FROM dashboard_apps WHERE app_scope_id = ?', [
+    input.appScopeId,
+  ])[0];
+  if (!row) throw new Error(`no app for scope ${input.appScopeId}`);
+  if (row.vertical_slug === input.verticalSlug) return row;
+  ctx.sql.exec('UPDATE dashboard_apps SET vertical_slug = ? WHERE app_scope_id = ?', [
+    input.verticalSlug,
+    input.appScopeId,
+  ]);
+  recordAppEvent(ctx, input.appScopeId, 'updated', `rebound ${row.vertical_slug} → ${input.verticalSlug}`);
+  return { ...row, vertical_slug: input.verticalSlug };
+};
+
 const snapshotAppInput = z.object({
   appScopeId: z.string().min(1),
   /** Readable for the activity trail — e.g. "test copy, expires in 7 days". */
@@ -1169,6 +1204,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/provision-app': provisionAppOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-active': markAppActiveOp as OperationHandler<never, unknown>,
     'dashboard/update-app': updateAppOp as OperationHandler<never, unknown>,
+    'dashboard/reconcile-app-vertical': reconcileAppVerticalOp as OperationHandler<never, unknown>,
     'dashboard/snapshot-app': snapshotAppOp as OperationHandler<never, unknown>,
     'dashboard/delete-app-snapshot': deleteAppSnapshotOp as OperationHandler<never, unknown>,
     'dashboard/export-app-data': exportAppDataOp as OperationHandler<never, unknown>,

@@ -993,6 +993,9 @@ app.get('/api/apps', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   if (cp) {
     for (const a of apps) {
+      const sid = scopeId.parse(a.app_scope_id);
+      // One directory read serves both heals below; null = "unknown, change nothing".
+      const dir = await cp.scopeStatus(sid);
       // Reconcile a stale 'provisioning' row against the DIRECTORY — the source of
       // truth (#424 case 4): a healed retry can complete the whole platform sequence
       // without ever updating the dashboard's own record, which then spins forever.
@@ -1000,22 +1003,37 @@ app.get('/api/apps', async (c) => {
       // seconds); directory 'active' ⇒ project it onto our row, hostname included.
       // Best-effort: a viewer session lacks the mark-active permission — the invoke
       // just fails and the row heals on an owner's next visit instead.
-      if (a.status === 'provisioning' && Date.parse(a.created_at) < Date.now() - RECONCILE_AFTER_MS) {
-        const sid = scopeId.parse(a.app_scope_id);
-        const dir = await cp.scopeStatus(sid);
-        if (dir?.status === 'active') {
-          const live = (await cp.listHostnames(sid).catch(() => [])).find((h) => h.status === 'active');
-          const healed = (await dash
-            .invoke('dashboard/mark-app-active', {
-              appScopeId: a.app_scope_id,
-              ...(live ? { hostname: live.hostname } : {}),
-            })
-            .catch(() => null)) as DashboardAppRow | null;
-          if (healed) {
-            a.status = healed.status;
-            a.hostname = healed.hostname;
-          }
+      if (
+        dir?.status === 'active' &&
+        a.status === 'provisioning' &&
+        Date.parse(a.created_at) < Date.now() - RECONCILE_AFTER_MS
+      ) {
+        const live = (await cp.listHostnames(sid).catch(() => [])).find((h) => h.status === 'active');
+        const healed = (await dash
+          .invoke('dashboard/mark-app-active', {
+            appScopeId: a.app_scope_id,
+            ...(live ? { hostname: live.hostname } : {}),
+          })
+          .catch(() => null)) as DashboardAppRow | null;
+        if (healed) {
+          a.status = healed.status;
+          a.hostname = healed.hostname;
         }
+      }
+      // Reconcile the row's LINEAGE against the directory (#389): a staff
+      // rebind-vertical moves the scope onto a different lineage (builtin
+      // 'manyfold' → tenant-owned 'acme/manyfold') and only the directory knows —
+      // the stale slug here misroutes the Update path (prod channels resolve by
+      // `vertical_slug`) and the version display. Best-effort like mark-app-active
+      // above: a viewer session lacks the permission and heals on an owner's visit.
+      if (dir?.vertical && a.vertical_slug && dir.vertical !== a.vertical_slug) {
+        const healed = (await dash
+          .invoke('dashboard/reconcile-app-vertical', {
+            appScopeId: a.app_scope_id,
+            verticalSlug: dir.vertical,
+          })
+          .catch(() => null)) as DashboardAppRow | null;
+        if (healed) a.vertical_slug = healed.vertical_slug;
       }
       if (a.hostname || a.status !== 'active') continue;
       const live = (await cp.listHostnames(scopeId.parse(a.app_scope_id)).catch(() => []))

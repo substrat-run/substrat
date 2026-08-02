@@ -625,15 +625,21 @@ export class TenantNarrowedControlPlane {
    * The DIRECTORY's status for a scope — the platform's authoritative record, read
    * for reconciling the dashboard's own install row against it (#424 case 4: a
    * retried install can leave the dashboard row at 'provisioning' forever while the
-   * directory has been 'active' all along). `null` when the scope can't be read —
-   * callers treat that as "unknown, change nothing".
+   * directory has been 'active' all along). Carries the scope's `vertical` too — a
+   * staff rebind-vertical moves a scope onto a different lineage and only the
+   * directory knows (#389); the read-path reconcile heals the row's slug from it.
+   * `null` when the scope can't be read — callers treat that as "unknown, change nothing".
    */
-  async scopeStatus(scopeId: ScopeId): Promise<{ status: string; servingRef: string | null } | null> {
+  async scopeStatus(
+    scopeId: ScopeId,
+  ): Promise<{ status: string; servingRef: string | null; vertical: string | null } | null> {
     try {
-      const record = await this.call<{ status: string; servingRef: string | null } | undefined>(
-        `/tenants/${this.tenantId}/scopes/${scopeId}`,
-      );
-      return record ? { status: record.status, servingRef: record.servingRef ?? null } : null;
+      const record = await this.call<
+        { status: string; servingRef: string | null; vertical: string | null } | undefined
+      >(`/tenants/${this.tenantId}/scopes/${scopeId}`);
+      return record
+        ? { status: record.status, servingRef: record.servingRef ?? null, vertical: record.vertical ?? null }
+        : null;
     } catch {
       return null;
     }
