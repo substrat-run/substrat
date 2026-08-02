@@ -19,12 +19,17 @@
 	//   wrangler secret put CF_SAAS_ZONE_ID       # the substrat.run zone id
 	//   wrangler secret put CF_SAAS_ROUTING_TARGET # CNAME tenants point at, e.g. cname.substrat.run
 	// DCV defaults to `http` (single CNAME, validated at CF's edge — nothing to serve);
-	// set CF_SAAS_SSL_METHOD=txt for the two-record flow. PLATFORM_BASE_DOMAINS (a `vars`
-	// entry, comma-separated, e.g.
-	// "substrat.run,global.substrat.run") names which base domains ride the wildcard
-	// cert (a bind under them skips issuance). The CF_API_TOKEN also needs SSL /
-	// custom-hostname write on that zone. Unset ⇒ a custom bind stays `pending`.
+	// set CF_SAAS_SSL_METHOD=txt for the two-record flow. The CF_API_TOKEN also needs
+	// SSL / custom-hostname write on that zone. Unset ⇒ a custom bind stays `pending`.
 	"triggers": { "crons": ["*/15 * * * *"] },
+	// Which base domains ride the platform wildcard cert: a hostname at or under one is
+	// a PLATFORM MINT — born `active`, no Cloudflare-for-SaaS object, no DNS to publish
+	// (#423). Everything else is a custom domain that walks §4.7 issuance. This MUST be
+	// a checked-in `vars` entry, not a secret: when it silently went unset, the platform
+	// classified its own `*.global.substrat.run` mints as custom domains and told users
+	// to publish DNS on the platform's own zone. Comma-separated; suffix-matched, so
+	// `substrat.run` covers every `<label>.<jurisdiction>.substrat.run` mint.
+	"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run" },
 	// Staff sign-in is OIDC against AuthHero (jose + Web Crypto) — no Node built-ins.
 	// OIDC config is entirely secrets, nothing checked in (locally: .dev.vars):
 	//   wrangler secret put OIDC_ISSUER          # e.g. https://auth.substrat.run
@@ -100,6 +105,7 @@
 	"env": {
 		"test": {
 			"routes": [{ "pattern": "console-test.substrat.net", "custom_domain": true }], // differs
+			"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run" },
 			"durable_objects": {
 				"bindings": [
 					{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },

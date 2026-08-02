@@ -211,6 +211,56 @@ describe('reconcilePendingHostnames', () => {
     expect(created).toEqual(['crm.acme.com']);
   });
 
+  it('heals a platform mint stranded in custom issuance — active, relics cleared, CF object released (#423)', async () => {
+    // The #423 shape: a deployment with PLATFORM_BASE_DOMAINS unset classified its own
+    // mint as a custom domain — CF object created, publish-these-records emitted, row
+    // stuck `verifying` while the router refused it.
+    const writes: { hostname: string; fields: Parameters<HostnameReconcileAdmin['setHostnameIssuance']>[2] }[] = [];
+    const removed: string[] = [];
+    const admin: HostnameReconcileAdmin = {
+      listHostnames: async (_a, filter) =>
+        filter?.status === 'verifying'
+          ? [
+              binding({
+                hostname: 'authhero.global.substrat.run',
+                customHostnameId: 'ch_relic',
+                validationRecords: [
+                  { type: 'hostname', name: 'authhero.global.substrat.run', value: 'cname.substrat.run', status: 'active' },
+                ],
+              }),
+            ]
+          : [],
+      setHostnameIssuance: async (_a, hostname, fields) => {
+        writes.push({ hostname, fields });
+      },
+    };
+    const provisioner = {
+      check: vi.fn(),
+      create: vi.fn(),
+      remove: async (id: string) => {
+        removed.push(id);
+      },
+    } as unknown as CustomHostnameProvisioner;
+
+    const out = await reconcilePendingHostnames({
+      admin,
+      actor: ACTOR,
+      provisioner,
+      isCustom: (h) => !h.endsWith('.substrat.run'),
+    });
+    expect(out).toMatchObject({ healed: 1, polled: 0 });
+    // Flipped active with every issuance relic cleared — no surface can ever again
+    // tell the user to publish DNS on the platform's own zone for this row.
+    expect(writes).toEqual([
+      {
+        hostname: 'authhero.global.substrat.run',
+        fields: { status: 'active', note: null, customHostnameId: null, validationRecords: [] },
+      },
+    ]);
+    expect(removed).toEqual(['ch_relic']); // the leaked CF object is released
+    expect(provisioner.check).not.toHaveBeenCalled(); // never polled as if custom
+  });
+
   it('contains a per-row failure without sinking the pass', async () => {
     const admin: HostnameReconcileAdmin = {
       listHostnames: async (_a, filter) => (filter?.status === 'verifying' ? [binding({})] : []),

@@ -274,6 +274,8 @@ export interface ReconcileHostnamesResult {
   failed: number;
   /** Custom rows (`pending`, or `failed` with no CF id) for which a CF create was (re)attempted. */
   created: number;
+  /** Platform mints found off-`active` (issuance relics, #423) and flipped back. */
+  healed: number;
   /** Per-hostname errors — one bad row never sinks the pass. */
   errors: { hostname: string; error: string }[];
 }
@@ -288,8 +290,9 @@ export interface ReconcileHostnamesResult {
  *     or hit a misconfigured credential and was recorded `failed`). Retry the create so
  *     the row self-heals once the cause is fixed, instead of waiting on a human click.
  *
- * `isCustom` decides which `pending` rows are ours to issue for — a platform hostname
- * (rides the wildcard, no CF object) is never touched here. Per-row failures are caught
+ * `isCustom` splits the rows: custom domains walk the issuance machinery above, while a
+ * platform hostname (rides the wildcard, no CF object) found in ANY in-flight state is
+ * healed straight to `active` (#423 — see the heal pass). Per-row failures are caught
  * and reported, never thrown, so the sweep that calls this stays alive (scheduler.md).
  */
 export async function reconcilePendingHostnames(deps: {
@@ -299,10 +302,36 @@ export async function reconcilePendingHostnames(deps: {
   /** True for a hostname the platform issues certs for (a custom domain), false for a platform mint. */
   isCustom: (hostname: string) => boolean;
 }): Promise<ReconcileHostnamesResult> {
-  const out: ReconcileHostnamesResult = { polled: 0, activated: 0, failed: 0, created: 0, errors: [] };
+  const out: ReconcileHostnamesResult = { polled: 0, activated: 0, failed: 0, created: 0, healed: 0, errors: [] };
 
   const verifying = await deps.admin.listHostnames(deps.actor, { status: 'verifying' });
+  const pending = await deps.admin.listHostnames(deps.actor, { status: 'pending' });
+  const failedRows = await deps.admin.listHostnames(deps.actor, { status: 'failed' });
+
+  // A platform mint never walks issuance — it rides the wildcard cert and should be
+  // `active` from bind. Any platform row found here is a relic of a deployment whose
+  // PLATFORM_BASE_DOMAINS was unset (#423): it was classified custom, given a CF object
+  // and publish-these-DNS records for the platform's own zone, and stranded `verifying`
+  // while the router refused it. Heal in place: release the CF object (best-effort —
+  // a leak is a nuisance, not a routing hazard), clear the relics, flip `active`.
+  for (const h of [...verifying, ...pending, ...failedRows]) {
+    if (deps.isCustom(h.hostname)) continue;
+    try {
+      if (h.customHostnameId) await deps.provisioner.remove(h.customHostnameId).catch(() => {});
+      await deps.admin.setHostnameIssuance(deps.actor, h.hostname, {
+        status: 'active',
+        note: null,
+        customHostnameId: null,
+        validationRecords: [],
+      });
+      out.healed++;
+    } catch (err) {
+      out.errors.push({ hostname: h.hostname, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   for (const h of verifying) {
+    if (!deps.isCustom(h.hostname)) continue; // a platform mint — healed above, nothing to poll
     if (!h.customHostnameId) continue; // nothing to poll — a create must land first
     try {
       out.polled++;
@@ -323,10 +352,7 @@ export async function reconcilePendingHostnames(deps: {
   // the custom-hostname permission) — retriable exactly like a stuck `pending`, so a
   // fixed credential heals them on the next sweep. `failed` WITH an id stays terminal
   // here: that is a real validation verdict, re-checked only by an explicit verify.
-  const failed = (await deps.admin.listHostnames(deps.actor, { status: 'failed' })).filter(
-    (h) => !h.customHostnameId,
-  );
-  const pending = await deps.admin.listHostnames(deps.actor, { status: 'pending' });
+  const failed = failedRows.filter((h) => !h.customHostnameId);
   for (const h of [...pending, ...failed]) {
     if (h.customHostnameId || !deps.isCustom(h.hostname)) continue; // already created, or a platform mint
     try {

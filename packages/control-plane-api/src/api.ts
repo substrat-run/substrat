@@ -2187,7 +2187,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   ): Promise<void> => {
     if (!custom(row.hostname)) {
       // Platform mint: rides *.<base> — no per-hostname CF object, immediately servable.
-      if (row.status !== 'active') await admin.setHostnameStatus(actor, row.hostname, 'active');
+      // A mint carrying issuance relics (a CF id, publish-these-records rows) was born
+      // under a deployment whose PLATFORM_BASE_DOMAINS was unset and walked custom
+      // issuance by mistake (#423) — heal it: clear the relics so no surface ever again
+      // tells the user to publish DNS on the platform's own zone, and release the CF
+      // object (best-effort, like the unbind route — a leak is a nuisance, not a hazard).
+      if (row.customHostnameId || row.validationRecords.length > 0) {
+        if (row.customHostnameId && options.provisionHostname) {
+          await options.provisionHostname.remove(row.customHostnameId).catch(() => {});
+        }
+        await admin.setHostnameIssuance(actor, row.hostname, {
+          status: 'active',
+          note: null,
+          customHostnameId: null,
+          validationRecords: [],
+        });
+      } else if (row.status !== 'active') {
+        await admin.setHostnameStatus(actor, row.hostname, 'active');
+      }
       return;
     }
     if (!options.provisionHostname) return; // no CF-for-SaaS zone here; stays pending
