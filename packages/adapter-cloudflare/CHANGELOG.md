@@ -1,5 +1,26 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.33.0
+
+### Minor Changes
+
+- 6d3429e: Identity links ride the scope-local projection (#406): the control plane stays the
+  audited source of truth (`linkIdentity`/`unlinkIdentity`), and every identity write now
+  fans out into the tenant's projected scopes (`_substrat_identity_links`), with CP-less
+  delivery on the provision/reconcile channel entitlements already use. New surfaces:
+  `HostAdmin.listIdentityLinks` (the audited per-tenant gather), the
+  `projectedIdentityLink` contract shape, `identityLinks` on provision/reconcile payloads,
+  and `CloudflareScopeHost.resolveIdentityLocal` — the CP-less auth adapter's
+  `(provider, externalId) → principal` read against the scope's own storage, replacing
+  login maps compiled into the bundle (offboarding by deploy; revocation undone by version
+  rollback).
+
+### Patch Changes
+
+- Updated dependencies [6d3429e]
+  - @substrat-run/contracts@0.33.0
+  - @substrat-run/kernel@0.33.0
+
 ## 0.32.0
 
 ### Minor Changes
@@ -1430,7 +1451,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
