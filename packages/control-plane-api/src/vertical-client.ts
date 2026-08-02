@@ -147,14 +147,16 @@ export class VerticalClient {
    */
   async provisionInstance(input: ProvisionInstanceInput): Promise<ProvisionedInstance> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.options.fetch(`${base}/internal/provision`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
-      },
-      body: JSON.stringify(input),
-    });
+    const res = await this.reach('provisioning', () =>
+      this.options.fetch(`${base}/internal/provision`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
+        },
+        body: JSON.stringify(input),
+      }),
+    );
 
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -337,17 +339,36 @@ export class VerticalClient {
     );
   }
 
+  /**
+   * A dispatch/transport REJECTION (the fetch itself threw — a cold-starting script, a
+   * DO reset, a missing dispatch entry) is not a vertical's answer, but before #391 it
+   * propagated raw and the API boundary collapsed it to the generic 500 "internal
+   * error". Wrap it as a 502 carrying the runtime's own message, so the operator reads
+   * "unreachable during configure: <why>" — and callers can treat 502 as the transient
+   * it usually is (the dashboard's provision step 3 retries exactly this).
+   */
+  private async reach(verb: string, request: () => Promise<Response>): Promise<Response> {
+    try {
+      return await request();
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      throw new ControlPlaneError(502, `vertical unreachable during ${verb}: ${detail}`);
+    }
+  }
+
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
   private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.options.fetch(`${base}${path}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
-      },
-      body: JSON.stringify(body),
-    });
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
+        },
+        body: JSON.stringify(body),
+      }),
+    );
     if (!res.ok) {
       const parsed = (await res.json().catch(() => null)) as { error?: string } | null;
       throw new ControlPlaneError(
@@ -361,9 +382,11 @@ export class VerticalClient {
   /** A platform-authenticated GET to the vertical's `/internal/*` surface. */
   private async getInternal<T>(path: string): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.options.fetch(`${base}${path}`, {
-      headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
-    });
+    const res = await this.reach('introspection', () =>
+      this.options.fetch(`${base}${path}`, {
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { error?: string } | null;
       throw new ControlPlaneError(

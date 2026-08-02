@@ -239,6 +239,8 @@ export async function createApp(
     appAuth?: AppAuthChoice;
     /** Injected client-registration (tests); defaults to real dynamic registration. */
     registerOidcClient?: RegisterOidcClientFn;
+    /** Backoff schedule for the step-3 configure retry (#391); tests pass short/empty. */
+    configureRetryDelaysMs?: readonly number[];
   },
 ): Promise<DashboardAppRow> {
   // 1. Authorize + record, as the caller, in their own dashboard scope. This is the
@@ -284,9 +286,7 @@ export async function createApp(
         redirectUri: `https://${hostname}/api/auth/callback`,
         ...(input.registerOidcClient ? { registerClient: input.registerOidcClient } : {}),
       });
-      await input.controlPlane.configureInstance(input.appScopeId, [
-        { key: 'substrat:auth', value: JSON.stringify(config) },
-      ]);
+      await deliverAuthConfig(input.controlPlane, input.appScopeId, config, input.configureRetryDelaysMs);
     } catch (e) {
       const reason = identityFailureReason(e, input.verticalSlug);
       await scope.invoke('dashboard/mark-app-failed', { appScopeId: input.appScopeId, reason }).catch(() => {});
@@ -321,7 +321,48 @@ function identityFailureReason(e: unknown, verticalSlug: string): string {
       `or add /internal/configure support to the vertical and retry.`
     );
   }
+  // #391: the just-provisioned deployment did not ANSWER (502 from the control plane's
+  // vertical seam, or 0 = the control plane itself unreachable) — after the bounded
+  // retry below already rode out the normal cold-start window. Name the transient and
+  // the recovery instead of relaying a bare status line.
+  if (e instanceof ControlPlaneError && (e.status === 502 || e.status === 0)) {
+    return (
+      `identity setup failed: the '${verticalSlug}' app's deployment did not answer (${cause}). ` +
+      `A just-created app can take a moment to start — this was retried and still failed, ` +
+      `so delete the failed app and install it again in a minute.`
+    );
+  }
   return `identity setup failed: ${cause}`;
+}
+
+/**
+ * Deliver the issuer choice to the just-provisioned instance, riding out its cold start
+ * (#391). The instance was born milliseconds before this call, so the first
+ * `/internal/configure` can land while its script is still waking — which surfaces as a
+ * 502 "vertical unreachable" from the control plane's vertical seam (or a 0, the control
+ * plane itself not answering). Those are retried on a short backoff; an honest refusal
+ * (501 = no live-config support, any 4xx) fails immediately — retrying a refusal only
+ * delays the real message.
+ */
+const CONFIGURE_RETRY_DELAYS_MS: readonly number[] = [750, 2500];
+
+async function deliverAuthConfig(
+  cp: TenantNarrowedControlPlane,
+  appScopeId: ScopeId,
+  config: Record<string, string>,
+  delays: readonly number[] = CONFIGURE_RETRY_DELAYS_MS,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await cp.configureInstance(appScopeId, [{ key: 'substrat:auth', value: JSON.stringify(config) }]);
+      return;
+    } catch (e) {
+      const transient = e instanceof ControlPlaneError && (e.status === 0 || (e.status >= 500 && e.status !== 501));
+      const delay = delays[attempt];
+      if (!transient || delay === undefined) throw e;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
 }
 
 type CreateAppInput = Parameters<typeof createApp>[1];
