@@ -524,6 +524,16 @@ export function App() {
   const org = currentTeam?.name ?? orgFrom(me.email);
   const activeNav: NavKey = route.section === 'new' ? 'apps' : route.section;
 
+  // The team's issuer instances offered in Identity pickers (#427): any ACTIVE app of a
+  // vertical that DECLARES `provides: ['oidc-issuer']` (capability-driven, from the
+  // catalog), plus the legacy `auth-server` slug for rows pushed before the declaration.
+  const oidcProviderSlugs = useMemo(() => {
+    const slugs = new Set(['auth-server']);
+    for (const entry of catalog) if (entry.provides?.includes('oidc-issuer')) slugs.add(entry.slug);
+    return slugs;
+  }, [catalog]);
+  const authServers = apps.filter((a) => oidcProviderSlugs.has(a.vertical_slug) && a.status === 'active' && a.hostname);
+
   const crumbs: Crumb[] = [{ label: org, onClick: () => go('#/overview') }];
   if (route.section === 'apps' || route.section === 'new') crumbs.push({ label: 'Apps', onClick: () => go('#/apps') });
   if (route.section === 'new') crumbs.push({ label: 'New app' });
@@ -554,7 +564,7 @@ export function App() {
         <CreateApp
           catalog={catalog}
           teamName={currentTeam?.name}
-          authServers={apps.filter((a) => a.vertical_slug === 'auth-server' && a.status === 'active' && a.hostname)}
+          authServers={authServers}
           onCancel={() => go('#/apps')}
           onCreate={createApp}
         />
@@ -564,7 +574,7 @@ export function App() {
           tab={route.tab ?? 'overview'}
           onTab={(t) => go(`#/apps/${openApp.app_scope_id}/${t}`)}
           onDeleted={() => void deleteApp(openApp)}
-          authServers={apps.filter((a) => a.vertical_slug === 'auth-server' && a.status === 'active' && a.hostname)}
+          authServers={authServers}
         />
       ) : route.section === 'apps' && route.app ? (
         // While the first listApps() is in flight the deep-linked app is merely

@@ -20,7 +20,9 @@ import {
   resumeApp,
   updateApp,
   CATALOG,
+  ensureCatalog,
   availableCatalog,
+  oidcIssuerProviderSlugs,
   type DashboardAppRow,
   type DashboardNode,
 } from '../src/index.js';
@@ -337,6 +339,38 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
     const values = (await dash.invoke('dashboard/list-app-env', { appScopeId: appScope })) as Array<{ key: string; value: string | null }>;
     expect(values.find((v) => v.key === 'ADMIN_EMAIL')?.value).toBe('ops@acme.com');
+  });
+
+  it('#427: capability declarations ride the registry and drive issuer-provider resolution', async () => {
+    // The builtin seed carries `requires` to the registry (meridian declares it can
+    // delegate to an oidc-issuer), so install-time binding reads the ROW, not a
+    // hardcoded slug list — a pushed vertical resolves identically.
+    await ensureCatalog(host, staff);
+    const verticals = await host.admin.listVerticals(staff);
+    expect(verticals.find((v) => v.slug === 'meridian')?.requires).toEqual(['oidc-issuer']);
+    // ...and availableCatalog forwards both capability lists to the install UI.
+    const listing = availableCatalog(verticals, { tenantId: null });
+    expect(listing.find((v) => v.slug === 'meridian')?.requires).toEqual(['oidc-issuer']);
+
+    // Provider resolution is capability-driven: a vertical DECLARING provides:['oidc-issuer']
+    // counts (whatever its slug), the legacy literal 'auth-server' is grandfathered
+    // (registry rows pushed before `provides` existed), and a non-provider never appears.
+    await host.admin.registerVertical(staff, {
+      slug: 'acme/idp',
+      name: 'Acme IdP',
+      source: 'cli',
+      provides: ['oidc-issuer'],
+      listed: true,
+    });
+    const slugs = oidcIssuerProviderSlugs(await host.admin.listVerticals(staff), [
+      { slug: 'remote/issuer', provides: ['oidc-issuer'] },
+      { slug: 'remote/plain' },
+    ]);
+    expect(slugs.has('acme/idp')).toBe(true);
+    expect(slugs.has('auth-server')).toBe(true);
+    expect(slugs.has('remote/issuer')).toBe(true);
+    expect(slugs.has('remote/plain')).toBe(false);
+    expect(slugs.has('meridian')).toBe(false); // requiring is not providing
   });
 
   it('#391: a cold-start 502 on the identity delivery is retried; persistent failure names the transient; a 501 never retries', async () => {

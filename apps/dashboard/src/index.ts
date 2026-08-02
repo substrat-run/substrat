@@ -24,4 +24,4 @@ export {
   VERTICAL,
   type DashboardNode,
 } from './provision.js';
-export { CATALOG, ensureCatalog, availableCatalog, type CatalogEntry, type CatalogListing } from './catalog.js';
+export { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs, type CatalogEntry, type CatalogListing } from './catalog.js';

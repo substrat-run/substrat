@@ -63,6 +63,12 @@ export interface CatalogEntry {
   /** The vertical's declared env-spec (#426) — the New-app form renders these fields so
    *  first-run config (an issuer's bootstrap admin, API keys) flows in WITH provisioning. */
   envSpec?: EnvVarSpec[];
+  /** Capabilities this vertical provides (#427) — an `oidc-issuer` provider's instances
+   *  appear in other installs' Identity picker, and it gets no Identity section itself. */
+  provides?: string[];
+  /** Capabilities this vertical can consume at install (#427) — `oidc-issuer` marks the
+   *  Identity section as the vertical's declared delegation seam. */
+  requires?: string[];
 }
 
 /** A team roster entry — an active member or an outstanding invite. Mirrors the worker's row. */
