@@ -164,9 +164,17 @@ export const MOCK_SNAPSHOTS: SnapshotRow[] = [
 /** Domains-tab sample for the first mock app: default + a second surface + a pending custom domain. */
 export const MOCK_APP_HOSTNAMES: AppHostnamesView = {
   bindings: [
-    { hostname: 'acme-hr.substrat.run', surface: 'app', status: 'active', canonical: true, createdAt: ago(30 * 86400e3) },
-    { hostname: 'acme-hr-eka.substrat.run', surface: 'eka', status: 'active', canonical: true, createdAt: ago(2 * 86400e3) },
-    { hostname: 'hr.acme.com', surface: 'app', status: 'pending', canonical: false, createdAt: ago(3600e3) },
+    { hostname: 'acme-hr.substrat.run', surface: 'app', status: 'active', statusNote: null, canonical: true, createdAt: ago(30 * 86400e3), validationRecords: [] },
+    { hostname: 'acme-hr-eka.substrat.run', surface: 'eka', status: 'active', statusNote: null, canonical: true, createdAt: ago(2 * 86400e3), validationRecords: [] },
+    {
+      hostname: 'hr.acme.com', surface: 'app', status: 'verifying', statusNote: null, canonical: false, createdAt: ago(3600e3),
+      validationRecords: [{ type: 'hostname', name: 'hr.acme.com', value: 'edge.substrat.run', status: 'pending' }],
+    },
+    {
+      hostname: 'legal.acme.com', surface: 'app', status: 'failed',
+      statusNote: 'DNS validation timed out — the CNAME does not resolve yet.', canonical: false, createdAt: ago(7200e3),
+      validationRecords: [{ type: 'hostname', name: 'legal.acme.com', value: 'edge.substrat.run', status: 'pending' }],
+    },
   ],
   surfaces: [
     { name: 'app', label: 'Acme HR' },

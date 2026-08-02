@@ -15,7 +15,7 @@ import {
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
 import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js';
-import { ControlPlaneError, TenantNarrowedControlPlane, type SnapshotRecord } from './authority.js';
+import { ControlPlaneError, TenantNarrowedControlPlane, type DnsRecordRow, type SnapshotRecord } from './authority.js';
 import { authConfigFor, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
@@ -1039,8 +1039,12 @@ export interface AppHostnameRow {
   hostname: string;
   surface: string;
   status: string;
+  /** Why the row is `failed` (or mid-flight detail) — the tab must render this, not just the pill. */
+  statusNote: string | null;
   canonical: boolean;
   createdAt: string | null;
+  /** DNS records the tenant must publish for a custom domain; empty for a platform mint. */
+  validationRecords: DnsRecordRow[];
 }
 
 /** The bindings on one app's scope — default hostname, surface hostnames, custom domains. */
@@ -1054,8 +1058,10 @@ export async function listAppHostnames(
       hostname: h.hostname,
       surface: h.surface,
       status: h.status,
+      statusNote: h.statusNote ?? null,
       canonical: h.canonical,
       createdAt: h.createdAt ?? null,
+      validationRecords: h.validationRecords ?? [],
     }));
   } else {
     const staff = platformActorId.parse(ulid());
@@ -1063,8 +1069,10 @@ export async function listAppHostnames(
       hostname: h.hostname,
       surface: h.surface,
       status: h.status,
+      statusNote: h.statusNote ?? null,
       canonical: h.canonical,
       createdAt: h.createdAt,
+      validationRecords: h.validationRecords ?? [],
     }));
   }
   return rows.sort((a, b) => (a.createdAt ?? '') < (b.createdAt ?? '') ? -1 : 1);
@@ -1131,22 +1139,42 @@ export async function addAppHostname(
   const canonical = !existing.some((h) => h.surface === surface);
 
   const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
-  const bind = async (hostname: string, active: boolean): Promise<void> => {
+  const bind = async (hostname: string, active: boolean): Promise<AppHostnameRow> => {
     if (input.controlPlane) {
-      await input.controlPlane.bindHostname({ hostname, scopeId: input.appScopeId, surface, canonical });
+      // The CP bind runs issuance inline and returns the post-issuance row — a custom
+      // domain comes back `verifying` with DNS records, or `failed` with the reason.
+      // Return that instead of a wishful synthesized `pending`.
+      const row = await input.controlPlane.bindHostname({ hostname, scopeId: input.appScopeId, surface, canonical });
       if (active) await input.controlPlane.setHostnameStatus(hostname, 'active');
-    } else {
-      const staff = platformActorId.parse(ulid());
-      await host.admin.bindHostname(staff, {
+      return {
         hostname,
-        tenantId: input.node.tenantId,
-        scopeId: input.appScopeId,
         surface,
-        region: null,
+        status: active ? 'active' : row.status,
+        statusNote: row.statusNote ?? null,
         canonical,
-      });
-      if (active) await host.admin.setHostnameStatus(staff, hostname, 'active');
+        createdAt: row.createdAt ?? null,
+        validationRecords: row.validationRecords ?? [],
+      };
     }
+    const staff = platformActorId.parse(ulid());
+    await host.admin.bindHostname(staff, {
+      hostname,
+      tenantId: input.node.tenantId,
+      scopeId: input.appScopeId,
+      surface,
+      region: null,
+      canonical,
+    });
+    if (active) await host.admin.setHostnameStatus(staff, hostname, 'active');
+    return {
+      hostname,
+      surface,
+      status: active ? 'active' : 'pending',
+      statusNote: null,
+      canonical,
+      createdAt: null,
+      validationRecords: [],
+    };
   };
 
   if (input.customDomain) {
@@ -1164,8 +1192,7 @@ export async function addAppHostname(
       appScopeId: input.appScopeId,
       detail: `${hostname} (surface '${surface}')`,
     });
-    await bind(hostname, false);
-    return { hostname, surface, status: 'pending', canonical, createdAt: null };
+    return await bind(hostname, false);
   }
 
   // Platform mint. The app's default label carries the tenant suffix already
@@ -1187,8 +1214,7 @@ export async function addAppHostname(
   let lastError: unknown;
   for (const hostname of candidates) {
     try {
-      await bind(hostname, true);
-      return { hostname, surface, status: 'active', canonical, createdAt: null };
+      return await bind(hostname, true);
     } catch (e) {
       lastError = e; // Global-uniqueness collision or transient — try the tailed label.
     }

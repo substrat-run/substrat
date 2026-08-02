@@ -364,8 +364,12 @@ export interface AppHostnameRow {
   hostname: string;
   surface: string;
   status: string;
+  /** Why a row is `failed` (or mid-flight detail) — rendered under the status pill. */
+  statusNote: string | null;
   canonical: boolean;
   createdAt: string | null;
+  /** DNS records to publish for a custom domain; empty for a platform mint. */
+  validationRecords: DnsRecord[];
 }
 
 /** A surface the app's vertical declares it serves — the Domains tab's picker. */
