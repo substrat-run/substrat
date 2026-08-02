@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-rally",
-  "version": "0.0.34",
+  "version": "0.0.35",
   "private": true,
   "substrat": {
     "permissions": "src/seed.ts"
