@@ -111,6 +111,47 @@ export interface ProvisionedInstance {
   tenantId: TenantId;
   scopeId: ScopeId;
   owner: PrincipalId;
+  /**
+   * NON-SECRET first-run facts the vertical reported alongside the ack (#426): a minted
+   * client id, migrations applied, endpoint paths — anything the installer needs to SEE
+   * once the instance exists. Collected from the provision response's extra top-level
+   * primitive fields (and an explicit `result` object, which wins on a shared key), so a
+   * vertical opts in by simply returning more than the ack. Persisted by installers and
+   * shown to the operator — which is why secrets don't belong here: credentials flow IN
+   * via `config` (the installer chose them), never back OUT in a response that outlives
+   * one HTTP exchange. Keys that look like secrets are dropped as a backstop.
+   */
+  result?: Record<string, string>;
+}
+
+/** The ack fields every provision response carries — everything else is `result` material. */
+const PROVISION_ACK_FIELDS = new Set(['tenantId', 'scopeId', 'owner', 'result']);
+
+/** The backstop: a vertical that still returns credential-shaped keys has them dropped, not persisted. */
+const SECRETLIKE_KEY = /password|secret|token|private/i;
+
+/**
+ * The non-secret result map from a vertical's provision response: explicit `result`
+ * entries plus extra top-level primitives, secret-looking keys excluded, values
+ * stringified. Undefined when the vertical returned only the bare ack.
+ */
+function provisionResultFrom(body: Record<string, unknown>): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  const collect = (entries: Record<string, unknown>, skipAck: boolean): void => {
+    for (const [key, value] of Object.entries(entries)) {
+      if (skipAck && PROVISION_ACK_FIELDS.has(key)) continue;
+      if (SECRETLIKE_KEY.test(key)) continue;
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        out[key] = String(value);
+      }
+    }
+  };
+  collect(body, true);
+  const explicit = body['result'];
+  if (explicit && typeof explicit === 'object' && !Array.isArray(explicit)) {
+    collect(explicit as Record<string, unknown>, false);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export interface ReconcileInstanceInput {
@@ -161,7 +202,14 @@ export class VerticalClient {
     // Surfaced rather than swallowed: a 403 here means the secrets do not match,
     // which is a deployment error someone must see, not a transient failure to retry.
     if (!res.ok) throw await this.refusal('provisioning', res);
-    return (await res.json()) as ProvisionedInstance;
+    // The SUCCESS body matters too (#426): a vertical may report first-run facts with
+    // its ack. Carry them as `result` so callers can persist them — before this, the
+    // body's only reader was `await res.json()` and everything beyond the ack died
+    // with the response.
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const ack = { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner };
+    const result = provisionResultFrom(body);
+    return { ...ack, ...(result ? { result } : {}) };
   }
 
   /**

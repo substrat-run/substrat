@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, z, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, z, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
@@ -435,6 +435,12 @@ const createAppBody = z.object({
   name: z.string().min(1),
   /** The Identity section's choice (vertical-auth-detach.md §2.4). Absent ⇒ builtin. */
   auth: appAuthChoiceBody.optional(),
+  /**
+   * The install form's config values (#426), keyed by env-spec key. The handler narrows
+   * them to the vertical's DECLARED spec (the manifest is the allow-list, exactly as
+   * `resolveScopedEnvSpec` reads) — an undeclared key is dropped, not delivered.
+   */
+  config: z.record(z.string(), z.string()).optional(),
 });
 
 /**
@@ -500,7 +506,7 @@ async function installSpecFor(
   host: ReturnType<typeof hostFor>,
   slug: string,
   cp?: TenantNarrowedControlPlane | null,
-): Promise<{ entitlements: string[]; ownerGrants: PermissionKey[] }> {
+): Promise<{ entitlements: string[]; ownerGrants: PermissionKey[]; envSpec: EnvVarSpec[] }> {
   await ensureCatalog(host, STAFF);
   const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === slug);
   const cat = CATALOG[slug];
@@ -508,6 +514,7 @@ async function installSpecFor(
     return {
       entitlements: registered?.entitlements ?? cat?.entitlements ?? [],
       ownerGrants: (registered?.ownerGrants ?? cat?.ownerGrants ?? []) as PermissionKey[],
+      envSpec: registered?.envSpec ?? cat?.envSpec ?? [],
     };
   }
   // Connected mode: a pushed vertical registers on the SHARED plane, not this deployment's
@@ -518,6 +525,7 @@ async function installSpecFor(
   return {
     entitlements: remote.entitlements ?? [],
     ownerGrants: (remote.ownerGrants ?? []) as PermissionKey[],
+    envSpec: (remote.envSpec as EnvVarSpec[] | undefined) ?? [],
   };
 }
 
@@ -534,7 +542,14 @@ app.get('/api/catalog', async (c) => {
   if (cp) {
     for (const v of await cp.listCatalog()) {
       if (!rows.some((r) => r.slug === v.slug)) {
-        rows.push({ slug: v.slug, name: v.name, owned: v.owned, listed: v.listed, source: v.source });
+        rows.push({
+          slug: v.slug,
+          name: v.name,
+          owned: v.owned,
+          listed: v.listed,
+          source: v.source,
+          ...(v.envSpec?.length ? { envSpec: v.envSpec as EnvVarSpec[] } : {}),
+        });
       }
     }
   }
@@ -1769,7 +1784,13 @@ app.post('/api/apps', async (c) => {
   if (registeredVertical?.installsBlocked) {
     throw new HTTPException(403, { message: `new installs of '${body.verticalSlug}' are blocked` });
   }
-  const { entitlements, ownerGrants } = await installSpecFor(host, body.verticalSlug, cp);
+  const { entitlements, ownerGrants, envSpec } = await installSpecFor(host, body.verticalSlug, cp);
+  // The install form's config, narrowed to the DECLARED spec (#426): the spec is the
+  // allow-list, and it also carries the secret flag the authoring store needs — the
+  // client never gets to say what is or isn't a secret.
+  const appConfig = envSpec
+    .filter((s) => (body.config?.[s.key] ?? '') !== '')
+    .map((s) => ({ key: s.key, value: body.config![s.key]!, secret: s.secret }));
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   // The team's human handle, suffixed into the default hostname
   // (`callout-sesamy.global.substrat.run`). From the TEAM record, not the user.
@@ -1798,6 +1819,7 @@ app.post('/api/apps', async (c) => {
     // row, which the CLI's workspace picker displays.
     tenantName: team?.name ?? 'Workspace',
     ...(appAuth ? { appAuth } : {}),
+    ...(appConfig.length > 0 ? { appConfig } : {}),
   });
   return c.json(appRow, 201);
 });

@@ -302,6 +302,19 @@ export const dashboardMigrations = [
       CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
     `,
   },
+  {
+    version: '0011-app-provision-result',
+    sql: `
+      -- The vertical's provision RESULT (#426): the non-secret first-run facts it
+      -- reported when its instance was created (a minted client id, migrations applied,
+      -- endpoints), as a JSON object. Before this column the 201 body was discarded and
+      -- those facts existed for exactly one HTTP response. NULL for verticals that
+      -- return only the bare ack. Never secrets: credentials flow IN via install-time
+      -- config (the installer chose them), and the platform seam drops secret-shaped
+      -- keys as a backstop.
+      ALTER TABLE dashboard_apps ADD COLUMN provision_result TEXT;
+    `,
+  },
 ];
 
 export interface DashboardAppRow {
@@ -311,6 +324,8 @@ export interface DashboardAppRow {
   name: string;
   status: 'provisioning' | 'active' | 'failed';
   hostname: string | null;
+  /** The vertical's non-secret provision result as JSON (#426); null for a bare ack. */
+  provision_result: string | null;
   created_by: string;
   created_at: string;
   deleted_at: string | null;
@@ -397,6 +412,8 @@ const provisionAppOp: OperationHandler<z.infer<typeof provisionAppInput>, Dashbo
 const markAppActiveInput = z.object({
   appScopeId: z.string().min(1),
   hostname: z.string().min(1).optional(),
+  /** The vertical's non-secret provision result (#426) — persisted with the flip to active. */
+  provisionResult: z.record(z.string(), z.string()).optional(),
 });
 
 /** Flip an app to `active` once the platform provisioned its scope. Same authority as creating it. */
@@ -407,8 +424,9 @@ const markAppActiveOp: OperationHandler<z.infer<typeof markAppActiveInput>, Dash
   assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
   const input = markAppActiveInput.parse(raw);
   ctx.sql.exec(
-    `UPDATE dashboard_apps SET status = 'active', hostname = COALESCE(?, hostname) WHERE app_scope_id = ?`,
-    [input.hostname ?? null, input.appScopeId],
+    `UPDATE dashboard_apps SET status = 'active', hostname = COALESCE(?, hostname),
+       provision_result = COALESCE(?, provision_result) WHERE app_scope_id = ?`,
+    [input.hostname ?? null, input.provisionResult ? JSON.stringify(input.provisionResult) : null, input.appScopeId],
   );
   recordAppEvent(ctx, input.appScopeId, 'active', input.hostname ?? null);
   const row = ctx.sql.query<DashboardAppRow>('SELECT * FROM dashboard_apps WHERE app_scope_id = ?', [

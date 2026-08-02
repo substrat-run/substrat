@@ -223,12 +223,15 @@ export async function createApp(
     /** Display name for the tenant when it is first registered on the shared plane. */
     tenantName?: string;
     /**
-     * Per-instance config delivered WITH provisioning (vertical-auth-detach.md §2.2),
-     * so the app arrives configured atomically — e.g. an Auth Server's bootstrap
-     * ADMIN_*. Connected mode only; the embedded path has no delivery seam (modules
-     * there read authored config later).
+     * The install form's config entries (#426) — the vertical's declared env-spec
+     * fields, filled in by the installer. Two destinations, one input: AUTHORED into
+     * `dashboard_app_env` (so the Env tab shows install-time values, secrets masked)
+     * and DELIVERED with provisioning (vertical-auth-detach.md §2.2) so the app
+     * arrives configured atomically — e.g. an Auth Server's bootstrap ADMIN_*, an
+     * issuer with an admin from its first request. Delivery is connected-mode only;
+     * the embedded path has no delivery seam (modules there read authored config).
      */
-    appConfig?: Record<string, string>;
+    appConfig?: Array<{ key: string; value: string; secret: boolean }>;
     /**
      * The install form's Identity choice (§2.4): which issuer this app authenticates
      * against. Applied AFTER the hostname binds — the OIDC callback URL needs the app's
@@ -253,14 +256,22 @@ export async function createApp(
     name: input.name,
   });
 
+  // 1.5. AUTHOR the install form's config before any platform effect (#426), so what
+  //      the user typed survives even a failed install (visible on the Env tab, ready
+  //      for a retry) — the whole point of the form is that these values never exist
+  //      only in one in-flight request.
+  if (input.appConfig?.length) {
+    await scope.invoke('dashboard/set-app-env', { appScopeId: input.appScopeId, entries: input.appConfig });
+  }
+
   // 2. Effect the app scope IN THE CALLER'S OWN TENANT (node.tenantId, ambient —
   //    never a request argument). Connected: on the shared plane, tenant-narrowed.
   //    Embedded: in this deployment's own host. On failure (the vertical refused, a
   //    hostname wouldn't bind, …) mark the row `failed` so it doesn't sit silently at
   //    `provisioning`, then re-throw the original error (the caller surfaces it).
-  let hostname: string | null;
+  let provisioned: ProvisionOutcome;
   try {
-    hostname = input.controlPlane
+    provisioned = input.controlPlane
       ? await provisionOnSharedPlane(input.controlPlane, input)
       : await provisionEmbedded(host, input);
   } catch (e) {
@@ -278,12 +289,12 @@ export async function createApp(
   if (input.appAuth && input.controlPlane) {
     let config: Record<string, string>;
     try {
-      if (!hostname) {
+      if (!provisioned.hostname) {
         throw new Error('no hostname could be bound, so the OIDC callback URL cannot be formed');
       }
       config = await authConfigFor(input.appAuth, {
         appName: input.name,
-        redirectUri: `https://${hostname}/api/auth/callback`,
+        redirectUri: `https://${provisioned.hostname}/api/auth/callback`,
         ...(input.registerOidcClient ? { registerClient: input.registerOidcClient } : {}),
       });
       await deliverAuthConfig(input.controlPlane, input.appScopeId, config, input.configureRetryDelaysMs);
@@ -298,11 +309,21 @@ export async function createApp(
     await scope.invoke('dashboard/set-app-auth', { appScopeId: input.appScopeId, config });
   }
 
-  // 4. Flip the account's record to active, recording the hostname if one bound.
+  // 4. Flip the account's record to active, recording the hostname if one bound and the
+  //    vertical's non-secret provision result (#426) — the facts a first run needs (a
+  //    minted client id, migrations applied) that previously died with the 201 body.
   return scope.invoke('dashboard/mark-app-active', {
     appScopeId: input.appScopeId,
-    ...(hostname ? { hostname } : {}),
+    ...(provisioned.hostname ? { hostname: provisioned.hostname } : {}),
+    ...(provisioned.provisionResult ? { provisionResult: provisioned.provisionResult } : {}),
   });
+}
+
+/** What the platform effect reports back: the bound hostname + the vertical's provision result. */
+interface ProvisionOutcome {
+  hostname: string | null;
+  /** Non-secret first-run facts from the vertical's provision response (#426); connected mode only. */
+  provisionResult?: Record<string, string>;
 }
 
 /**
@@ -479,9 +500,9 @@ export async function resumeApp(
   const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
   await scope.invoke('dashboard/resume-app', { appScopeId: input.appScopeId });
 
-  let hostname: string | null;
+  let provisioned: ProvisionOutcome;
   try {
-    hostname = input.controlPlane
+    provisioned = input.controlPlane
       ? await provisionOnSharedPlane(input.controlPlane, input)
       : await provisionEmbedded(host, input);
   } catch (e) {
@@ -494,7 +515,8 @@ export async function resumeApp(
 
   return scope.invoke('dashboard/mark-app-active', {
     appScopeId: input.appScopeId,
-    ...(hostname ? { hostname } : {}),
+    ...(provisioned.hostname ? { hostname: provisioned.hostname } : {}),
+    ...(provisioned.provisionResult ? { provisionResult: provisioned.provisionResult } : {}),
   });
 }
 
@@ -828,7 +850,7 @@ const RESTORE_SAFETY_TTL_DAYS = 7;
  * default hostname the router resolves. No `bindScopeVersion`: with WfP off the
  * router dispatches on a static `VERTICAL_<slug>` binding, which needs no version.
  */
-async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: CreateAppInput): Promise<string | null> {
+async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: CreateAppInput): Promise<ProvisionOutcome> {
   const nameSlug = slugify(input.name);
   const scopeTail = input.appScopeId.toLowerCase().slice(-6);
   // The SCOPE slug must be UNIQUE within the tenant. Suffixing the scope id keeps two apps
@@ -843,13 +865,21 @@ async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: Cre
   // keeps the shared directory's entitlement view complete regardless.
   for (const key of input.appEntitlements ?? [input.verticalSlug]) await cp.grantEntitlement(key);
   await cp.provisionScope({ scopeId: input.appScopeId, slug, name: input.name, vertical: input.verticalSlug, jurisdiction: 'global' });
-  await cp.provisionInstance(input.verticalSlug, {
+  // The install form's config rides WITH provisioning (#426): the instance is born
+  // configured — an issuer with its admin, an app with its keys — instead of live-but-
+  // unconfigured until a later Env-tab save. Empty values are omitted (an untouched
+  // optional field is not a delivery).
+  const config = Object.fromEntries(
+    (input.appConfig ?? []).filter((e) => e.value !== '').map((e) => [e.key, e.value]),
+  );
+  const instance = await cp.provisionInstance(input.verticalSlug, {
     scopeId: input.appScopeId,
     owner: input.node.principal,
     slug,
     name: input.name,
-    ...(input.appConfig ? { config: input.appConfig } : {}),
+    ...(Object.keys(config).length > 0 ? { config } : {}),
   });
+  const provisionResult = instance?.result;
   await cp.activateScope(input.appScopeId);
 
   // Pin the scope to the vertical's prod version so the router dispatches on it once
@@ -899,13 +929,14 @@ async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: Cre
         await cp.setHostnameStatus(h, 'active');
       },
     });
-    return hostname;
+    return { hostname, ...(provisionResult ? { provisionResult } : {}) };
   }
-  return null;
+  return { hostname: null, ...(provisionResult ? { provisionResult } : {}) };
 }
 
-/** EMBEDDED mode (M0 / tests): provision into this deployment's own host + directory. */
-async function provisionEmbedded(host: ScopeHost, input: CreateAppInput): Promise<string | null> {
+/** EMBEDDED mode (M0 / tests): provision into this deployment's own host + directory.
+ *  No vertical HTTP round-trip here, so there is never a provision result to report. */
+async function provisionEmbedded(host: ScopeHost, input: CreateAppInput): Promise<ProvisionOutcome> {
   const staff = platformActorId.parse(ulid());
   const tenantId = input.node.tenantId;
   for (const key of input.appEntitlements ?? [input.verticalSlug]) {
@@ -924,7 +955,7 @@ async function provisionEmbedded(host: ScopeHost, input: CreateAppInput): Promis
   // Declared surfaces ride the local registry (register-vertical → install-spec); absent
   // for an unregistered vertical (older tests) ⇒ [] ⇒ the historic single `app` binding.
   const surfaces = await declaredSurfacesFor({ host }, input.verticalSlug);
-  return bindDefaultHostname(host, {
+  const hostname = await bindDefaultHostname(host, {
     staff,
     tenantId,
     scopeId: input.appScopeId,
@@ -934,6 +965,7 @@ async function provisionEmbedded(host: ScopeHost, input: CreateAppInput): Promis
     baseDomain: input.baseDomain ?? 'substrat.run',
     surfaces,
   });
+  return { hostname };
 }
 
 /**

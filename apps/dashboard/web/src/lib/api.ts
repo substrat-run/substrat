@@ -60,6 +60,9 @@ export interface CatalogEntry {
   source: string;
   /** False until a pushed vertical has a prod-promoted version — shown but not installable. */
   installable: boolean;
+  /** The vertical's declared env-spec (#426) — the New-app form renders these fields so
+   *  first-run config (an issuer's bootstrap admin, API keys) flows in WITH provisioning. */
+  envSpec?: EnvVarSpec[];
 }
 
 /** A team roster entry — an active member or an outstanding invite. Mirrors the worker's row. */
@@ -95,6 +98,8 @@ export interface AppRow {
   name: string;
   status: 'provisioning' | 'active' | 'failed';
   hostname: string | null;
+  /** The vertical's non-secret provision result as JSON (#426); null for a bare ack. */
+  provision_result?: string | null;
   created_by: string;
   created_at: string;
 }
@@ -540,7 +545,7 @@ export const api = {
       body: JSON.stringify({ token }),
     }),
   listApps: () => call<AppRow[]>('/apps'),
-  createApp: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice }) =>
+  createApp: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) =>
     call<AppRow>('/apps', { method: 'POST', body: JSON.stringify(input) }),
   // -- custom domains (§4.7) -------------------------------------------------
   listDomains: () => call<DomainRow[]>('/domains'),

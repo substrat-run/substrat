@@ -239,6 +239,18 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // One visitable URL per surface (K-26), derived once by the parent and shared with the
   // header's Visit control — see deriveSurfaceUrls.
   const multiSurface = surfaceUrls.length > 1;
+  // The vertical's provision result (#426): the non-secret first-run facts it reported
+  // when the instance was created (a minted client id, migrations applied). Absent for
+  // verticals that return only the bare ack.
+  const provisionResult: Record<string, string> | null = (() => {
+    if (!app.provision_result) return null;
+    try {
+      const parsed = JSON.parse(app.provision_result) as Record<string, string>;
+      return Object.keys(parsed).length > 0 ? parsed : null;
+    } catch {
+      return null;
+    }
+  })();
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -288,6 +300,22 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>A hostname is assigned once provisioning completes.</div>
           )}
         </div>
+        {provisionResult && (
+          <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Eyebrow>Provision result</Eyebrow>
+            <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', fontSize: 13 }}>
+              {Object.entries(provisionResult).map(([key, value], i, all) => (
+                <KV key={key} label={key} last={i === all.length - 1}>
+                  <span style={mono} title={value}>{value}</span>
+                  <CopyButton text={value} label={`Copy ${key}`} />
+                </KV>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Reported by the app when its instance was created — identifiers only, never credentials.
+            </div>
+          </div>
+        )}
       </div>
       <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column' }}>
         <Eyebrow style={{ paddingBottom: 12 }}>Activity</Eyebrow>

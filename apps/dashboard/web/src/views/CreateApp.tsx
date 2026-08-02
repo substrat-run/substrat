@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
-import { type AppAuthChoice, type AppRow, type CatalogEntry } from '../lib/api';
+import { type AppAuthChoice, type AppRow, type CatalogEntry, type EnvVarSpec } from '../lib/api';
 import { ENV_OPTS, verticalMeta } from '../lib/demo';
 import { Ic } from '../lib/icons';
 import { slugify } from '../lib/format';
@@ -15,6 +15,9 @@ interface Source {
   defaultName: string;
   /** The catalog slug the app is created under. */
   verticalSlug: string;
+  /** The vertical's declared config fields (#426) — rendered on the Configure step so
+   *  first-run values ride WITH provisioning instead of a later Env-tab save. */
+  envSpec: EnvVarSpec[];
 }
 
 /** Short marketing lines for the first-party verticals the live catalog can offer. */
@@ -46,7 +49,7 @@ export function CreateApp({
   /** The team's ACTIVE Auth Server apps — offered as one-click issuers in the Identity section. */
   authServers: AppRow[];
   onCancel: () => void;
-  onCreate: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice }) => Promise<void>;
+  onCreate: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) => Promise<void>;
 }) {
   const [source, setSource] = useState<Source | null>(null);
 
@@ -114,6 +117,7 @@ function VerticalRow({ entry, onPick }: { entry: CatalogEntry; onPick: (s: Sourc
             accent: meta.accent,
             defaultName: entry.name,
             verticalSlug: entry.slug,
+            envSpec: entry.envSpec ?? [],
           })
         }
       >
@@ -173,10 +177,23 @@ function ChooseVertical({
   );
 }
 
-function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, disabled }: { source: Source; teamName?: string; authServers: AppRow[]; onBack: () => void; onCancel: () => void; onCreate: (i: { verticalSlug: string; name: string; auth?: AppAuthChoice }) => Promise<void>; disabled: boolean }) {
+function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, disabled }: { source: Source; teamName?: string; authServers: AppRow[]; onBack: () => void; onCancel: () => void; onCreate: (i: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) => Promise<void>; disabled: boolean }) {
   const [name, setName] = useState(source.defaultName);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // The vertical's declared config (#426), collected HERE so first-run values ride with
+  // provisioning — the instance is born configured (an issuer with its admin) instead of
+  // live-but-unconfigured until someone finds the Env tab. Non-secrets prefill their
+  // declared default; secrets always start blank.
+  const [config, setConfig] = useState<Record<string, string>>(() =>
+    Object.fromEntries(source.envSpec.map((s) => [s.key, s.secret ? '' : s.default ?? ''])),
+  );
+  const requiredMissing = source.envSpec.filter((s) => s.required && !(config[s.key] ?? '').trim());
+  const configGroups = new Map<string, EnvVarSpec[]>();
+  for (const s of source.envSpec) {
+    const g = s.group ?? 'Configuration';
+    (configGroups.get(g) ?? configGroups.set(g, []).get(g)!).push(s);
+  }
   const host = slugify(name);
   // The default hostname is `<app>-<team>.global.substrat.run` (provision.ts's
   // tenant-suffix scheme); teamless sessions fall back to the unsuffixed form.
@@ -215,8 +232,16 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
   const submit = async () => {
     setBusy(true);
     setError(undefined);
+    // Only touched fields ride: an empty optional stays undelivered, so the vertical's
+    // own defaults apply instead of an explicit empty string overriding them.
+    const filled = Object.fromEntries(Object.entries(config).filter(([, v]) => v.trim() !== ''));
     try {
-      await onCreate({ verticalSlug: source.verticalSlug, name: name.trim() || source.defaultName, auth: authChoice() });
+      await onCreate({
+        verticalSlug: source.verticalSlug,
+        name: name.trim() || source.defaultName,
+        auth: authChoice(),
+        ...(Object.keys(filled).length > 0 ? { config: filled } : {}),
+      });
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
@@ -253,6 +278,27 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
 
         <Select label="Environment" options={ENV_OPTS} value="Production" style={{ width: 220 }} />
 
+        {[...configGroups.entries()].map(([group, specs]) => (
+          <div key={group} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-secondary)', paddingTop: 4 }}>{group}</div>
+            {specs.map((s) => (
+              <Input
+                key={s.key}
+                label={`${s.label ?? s.key}${s.required ? '' : ' (optional)'}`}
+                type={s.secret ? 'password' : 'text'}
+                value={config[s.key] ?? ''}
+                onChange={(e) => setConfig((m) => ({ ...m, [s.key]: e.target.value }))}
+                placeholder={s.placeholder ?? ''}
+                hint={s.description}
+                style={{ maxWidth: 420 }}
+              />
+            ))}
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+              Delivered with provisioning, so the app starts configured. Editable later under Settings → Environment.
+            </div>
+          </div>
+        ))}
+
         {identityApplies && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <Select
@@ -282,7 +328,12 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
         {error && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
-          <Button onClick={submit} disabled={busy || disabled || externalIncomplete}>{busy ? 'Creating…' : 'Create app'}</Button>
+          <Button onClick={submit} disabled={busy || disabled || externalIncomplete || requiredMissing.length > 0}>{busy ? 'Creating…' : 'Create app'}</Button>
+          {requiredMissing.length > 0 && !busy && (
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Fill {requiredMissing.map((s) => s.label ?? s.key).join(', ')} to continue.
+            </span>
+          )}
           <Button variant="ghost" onClick={onBack}>Back</Button>
           <div style={{ flex: 1 }} />
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Appears in your grid immediately — provisions in the background.</div>
