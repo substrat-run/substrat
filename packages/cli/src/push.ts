@@ -179,6 +179,14 @@ export interface PushOptions {
   /** The surfaces the vertical serves (K-26), from package.json `substrat.surfaces` —
    *  labels only; buys the dashboard a hostname-binding picker + a push-time warning. */
   surfaces?: readonly unknown[];
+  /**
+   * Acknowledge a lineage fork (#388): a first push of a NEW registry id whose name
+   * matches an existing lineage under a different owner is refused by the control plane
+   * (it is almost always a mis-identified project, and installs of the existing lineage
+   * would never see the push). This flag — the CLI's --allow-fork — makes running a
+   * separate same-named lineage a deliberate choice.
+   */
+  allowFork?: boolean;
   controlPlaneUrl: string;
   /** The auth header to send — a bearer session or an x-service-token (see config.resolveAuth). */
   authHeader: Record<string, string>;
@@ -298,6 +306,7 @@ export async function push(
   // The workspace pin rides WITH the push (not in the manifest — it is addressing, not
   // code, so it stays out of every digest). The control plane honors or refuses it.
   if (opts.tenant) form.set('tenant', opts.tenant);
+  if (opts.allowFork) form.set('allowFork', '1');
   for (const m of modules) {
     form.set(m.name, new Blob([m.content], { type: 'application/javascript+module' }), m.name);
   }
@@ -312,7 +321,16 @@ export async function push(
   warnIfStale(res.headers);
   const body = await res.text();
   if (!res.ok) {
-    throw new Error(`push failed (${res.status}): ${body}`);
+    // Surface the control plane's own `error` line when the body is its JSON shape —
+    // e.g. the #388 fork refusal reads as guidance, not as a wall of escaped JSON.
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body) as { error?: string };
+      if (typeof parsed.error === 'string') detail = parsed.error;
+    } catch {
+      // not JSON — keep the raw body
+    }
+    throw new Error(`push failed (${res.status}): ${detail}`);
   }
   return JSON.parse(body) as { id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] };
 }
@@ -321,6 +339,12 @@ export async function push(
 export interface VerticalMeta {
   /** Registry slug: an explicit `substrat.slug`, else the package name with scope + a leading `demo-` stripped. */
   slug: string;
+  /**
+   * Whether the slug came from an explicit `substrat.slug` pin rather than being derived
+   * from the package name. A derived slug silently FOLLOWS a package rename — the #399
+   * lineage fork — so push prints a pin-it hint while this is false.
+   */
+  slugExplicit: boolean;
   /** Display name: an explicit `substrat.name`, else the slug title-cased. */
   name: string;
   /**
@@ -369,6 +393,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   const s = pkg.substrat;
   return {
     slug,
+    slugExplicit: s?.slug !== undefined,
     name: s?.name ?? title,
     tenant: s?.tenant,
     versionSeed: pkg.version,

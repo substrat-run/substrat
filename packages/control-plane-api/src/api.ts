@@ -1796,6 +1796,58 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ownerTenant = (await ownerOf(c.get('actor'), slug)) ?? null;
     }
 
+    // #388: refuse the SILENT lineage fork. A first push of a registry id that does not
+    // exist yet, whose product name (the slug's tail) matches an existing lineage this
+    // push could CONFUSE ITSELF WITH, is almost always a mis-identified project — a
+    // tenant pin or a package-name-derived slug about to fork `manyfold` into
+    // `acme/manyfold` — not an intent to run two same-named products. The fork confuses
+    // precisely because it half-works: pushes land and serve, while installs of the
+    // EXISTING lineage never see them. Checked before the upload (like the ownership
+    // check) so a refused push leaves no orphaned namespace script; `allowFork` (the
+    // CLI's --allow-fork) makes a real second lineage a deliberate choice.
+    //
+    // Same-name-under-ANOTHER-tenant is deliberately NOT a fork: every tenant may own a
+    // private `helpdesk` — that is the namespace working (§2). So a sibling qualifies
+    // only when the confusion is real: platform-owned, marketplace-listed, or owned by
+    // the very workspace this push acts for. An unpinned STAFF push acts for the
+    // platform and sees the whole registry, so every same-named lineage qualifies. This
+    // scoping is also what keeps existence-hiding intact — a builder is never told about
+    // a foreign private slug.
+    if (form.get('allowFork') !== '1') {
+      const registry = await admin.listVerticals(c.get('actor'));
+      const tail = slug.split('/').pop();
+      const siblings = registry.some((v) => v.slug === slug)
+        ? []
+        : registry.filter(
+            (v) =>
+              v.slug.split('/').pop() === tail &&
+              (v.ownerTenant === null ||
+                v.listed ||
+                v.ownerTenant === ownerTenant ||
+                (p.kind !== 'builder' && !pin)),
+          );
+      if (siblings.length > 0) {
+        const owner = (v: (typeof siblings)[number]): string =>
+          v.ownerTenant === null
+            ? 'platform-owned'
+            : v.ownerTenant === ownerTenant
+              ? 'owned by this same workspace'
+              : `owned by tenant ${v.ownerTenant}`;
+        const named = siblings.map((v) => `'${v.slug}' (${owner(v)}${v.listed ? ', listed' : ''})`).join(', ');
+        return c.json(
+          {
+            error:
+              `this push would CREATE a new vertical '${slug}' — a separate lineage beside ${named}. ` +
+              `Installs of the existing lineage never update from pushes to '${slug}'. If you meant to ` +
+              `update it, fix the project's identity first: package.json \`substrat.slug\` and ` +
+              `\`substrat.tenant\` (or --tenant) decide where a push lands. To deliberately run a ` +
+              `separate same-named lineage, re-run with --allow-fork.`,
+          },
+          409,
+        );
+      }
+    }
+
     const modules: { name: string; content: Uint8Array; contentType: string }[] = [];
     for (const [name, value] of form.entries()) {
       if (name === 'manifest') continue;
