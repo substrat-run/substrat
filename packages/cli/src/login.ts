@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { webcrypto } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { readJson } from './http.js';
 
 /**
  * The loopback browser-login flow (`substrat login`). PKCE against the control plane's
@@ -103,7 +104,8 @@ export async function browserLogin(controlPlaneUrl: string, opts: { fresh?: bool
   openBrowser(authUrl);
 
   const codeValue = await code;
-  const res = await fetch(`${cp}/auth/cli/token`, {
+  const tokenUrl = `${cp}/auth/cli/token`;
+  const res = await fetch(tokenUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ code: codeValue, verifier }),
@@ -111,7 +113,7 @@ export async function browserLogin(controlPlaneUrl: string, opts: { fresh?: bool
   if (!res.ok) {
     throw new Error(`token exchange failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
   }
-  const { token } = (await res.json()) as { token?: string };
+  const { token } = await readJson<{ token?: string }>(res, tokenUrl);
   if (!token) throw new Error('token exchange returned no token');
   return token;
 }

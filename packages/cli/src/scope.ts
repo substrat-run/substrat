@@ -15,6 +15,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
+import { readJson } from './http.js';
 import { orderTablesByForeignKeys } from './dump-order.js';
 
 interface DumpTable {
@@ -103,7 +104,7 @@ export async function pullScope(opts: {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `pull refused: ${res.status} ${res.statusText}`);
   }
-  const dump = (await res.json()) as PulledDump;
+  const dump = await readJson<PulledDump>(res, url);
 
   mkdirSync(opts.outDir, { recursive: true });
   const base = join(opts.outDir, `${dump.tenantId}__${dump.scopeId}`);
@@ -225,7 +226,7 @@ export async function adoptScopeServing(opts: {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `adopt-serving refused: ${res.status} ${res.statusText}`);
   }
-  const body = (await res.json()) as { servingRef?: string; alreadyAdopted?: boolean; tables?: number };
+  const body = await readJson<{ servingRef?: string; alreadyAdopted?: boolean; tables?: number }>(res, res.url);
   if (body.alreadyAdopted) {
     console.log(`✓ scope ${opts.scopeId} already serves from ${body.servingRef} — nothing to do.`);
   } else {
@@ -256,7 +257,7 @@ export async function provisionScope(opts: {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `provision refused: ${res.status} ${res.statusText}`);
   }
-  const body = (await res.json()) as { owner?: string };
+  const body = await readJson<{ owner?: string }>(res, res.url);
   console.log(`✓ reconciled scope ${opts.scopeId} — owner ${body.owner ?? '(unknown)'} re-granted; logins restored.`);
 }
 

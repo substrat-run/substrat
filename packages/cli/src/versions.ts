@@ -6,6 +6,7 @@
  * this works for staff now and for builders once builder-scoped authz lands.
  */
 import { listVerticalHostnames } from './hostnames.js';
+import { readJson } from './http.js';
 
 interface Version {
   id: string;
@@ -26,7 +27,7 @@ async function getJson<T>(url: string, header: Record<string, string>): Promise<
   if (!res.ok) {
     throw new Error(`${res.status} ${(await res.text().catch(() => res.statusText)).slice(0, 200)}`);
   }
-  return res.json() as Promise<T>;
+  return readJson<T>(res, url);
 }
 
 /**

@@ -9,6 +9,7 @@
  * `--ack-permissions` / `--ack-migrations` after reading the named diff.
  */
 import { warnIfStale } from './version.js';
+import { parseJsonBody } from './http.js';
 
 export interface PromoteOptions {
   controlPlaneUrl: string;
@@ -33,5 +34,5 @@ export async function promote(opts: PromoteOptions): Promise<{ channel: string; 
   warnIfStale(res.headers);
   const body = await res.text();
   if (!res.ok) throw new Error(`promote failed (${res.status}): ${body.slice(0, 300)}`);
-  return JSON.parse(body) as { channel: string; versionId: string };
+  return parseJsonBody<{ channel: string; versionId: string }>(body, url);
 }

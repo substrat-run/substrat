@@ -11,6 +11,7 @@
  * tenant-scoped push token CI already carries.
  */
 import { warnIfStale } from './version.js';
+import { parseJsonBody } from './http.js';
 
 export interface PreviewCreated {
   scopeId: string;
@@ -43,7 +44,7 @@ async function request<T>(url: string, header: Record<string, string>, init?: Re
     }
     throw new Error(`${res.status}: ${message}`);
   }
-  return JSON.parse(body) as T;
+  return parseJsonBody<T>(body, url);
 }
 
 /**

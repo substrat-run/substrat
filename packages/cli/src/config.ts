@@ -102,6 +102,26 @@ export function resolveAuth(flags: {
 
   const explicitService = flags.token ?? process.env.SUBSTRAT_SERVICE_TOKEN;
   if (explicitService) {
+    // #387: a stray SUBSTRAT_SERVICE_TOKEN silently shadowed a fresh `substrat login` —
+    // the highest-precedence credential won with no trace, and the session's absence
+    // surfaced later as an inexplicable 401. An env var (unlike a typed --token flag)
+    // is ambient state the caller may not know is set, so SAY when it overrides a
+    // stored session, and when its value is an obvious copy-paste placeholder (`…`,
+    // quotes, whitespace — never a real token). Warnings only: precedence is unchanged,
+    // so CI that relies on the env var keeps working untouched.
+    if (!flags.token) {
+      if (cfg.bearerToken) {
+        console.error(
+          '⚠ using SUBSTRAT_SERVICE_TOKEN from the environment — your `substrat login` session is ignored\n' +
+            '  (unset SUBSTRAT_SERVICE_TOKEN to use the session, or pass --token to make the override explicit).',
+        );
+      }
+      if (/[\s…<>"'`]/.test(explicitService)) {
+        console.error(
+          '⚠ SUBSTRAT_SERVICE_TOKEN looks like a placeholder, not a real token — expect a 401 until it is fixed or unset.',
+        );
+      }
+    }
     return {
       controlPlaneUrl,
       header: withTenant({ 'x-service-token': explicitService }),

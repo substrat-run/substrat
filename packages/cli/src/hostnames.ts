@@ -34,6 +34,8 @@ export interface HostnameRow {
   validationRecords: DnsRecordRow[];
 }
 
+import { parseJsonBody } from './http.js';
+
 async function request<T>(url: string, header: Record<string, string>, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
   const body = await res.text();
@@ -46,7 +48,7 @@ async function request<T>(url: string, header: Record<string, string>, init?: Re
     }
     throw new Error(`${res.status}: ${message}`);
   }
-  return JSON.parse(body) as T;
+  return parseJsonBody<T>(body, url);
 }
 
 /** The tenant's bindings for one vertical — matched bare or `<tenant>/<slug>`-prefixed. */
