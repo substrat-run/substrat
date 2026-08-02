@@ -2044,6 +2044,9 @@ export class CloudflareScopeHost implements ScopeHost {
         if (parsed.ownerGrants) installSpec.ownerGrants = parsed.ownerGrants;
         if (parsed.provides) installSpec.provides = parsed.provides;
         if (parsed.requires) installSpec.requires = parsed.requires;
+        // Declared provisioner intent (#455) — the request half of the tenant-provisioner
+        // capability; the grant is its own column, never part of this refreshable bag.
+        if (parsed.provisions) installSpec.provisions = parsed.provisions;
         const installSpecJson = Object.keys(installSpec).length ? JSON.stringify(installSpec) : null;
         const existing = await this.cp.readVertical(parsed.slug);
         if (existing) {

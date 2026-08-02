@@ -140,10 +140,14 @@ export function Verticals({ api, onToast }: VerticalsProps) {
     {
       // The tenant-provisioner GRANT (#412/#444): platform authority a push can never
       // confer, so holding it must be visible from the list, like the publish queue.
+      // A manifest-declared `provisions` without the grant is a pending REQUEST (#455)
+      // — the same review shape as a publish request.
       header: 'Capability',
       render: (v) =>
         v.tenantProvisioner ? (
           <Badge status="warning">tenant provisioner</Badge>
+        ) : v.provisions?.length ? (
+          <Badge status="info">provisioner requested</Badge>
         ) : (
           <span style={{ color: 'var(--text-placeholder)', fontSize: 12.5 }}>—</span>
         ),
@@ -268,7 +272,9 @@ export function Verticals({ api, onToast }: VerticalsProps) {
               </Button>
               {/* The tenant-provisioner capability (#412/#444) — grant = this vertical's
                   scopes may create customer tenants via platform intents, so revoke is
-                  the safe direction and grant deliberately reads as the loud one. */}
+                  the safe direction and grant deliberately reads as the loud one. With a
+                  manifest-declared `provisions` request pending (#455) it reads as the
+                  approval it is. */}
               <Button
                 variant="secondary"
                 onClick={() =>
@@ -279,7 +285,11 @@ export function Verticals({ api, onToast }: VerticalsProps) {
                   )
                 }
               >
-                {selected.tenantProvisioner ? 'Revoke provisioner' : 'Grant provisioner'}
+                {selected.tenantProvisioner
+                  ? 'Revoke provisioner'
+                  : selected.provisions?.length
+                    ? 'Approve provisioner'
+                    : 'Grant provisioner'}
               </Button>
               <Button variant="danger" onClick={() => setDeleteInput('')}>
                 Delete…
@@ -290,6 +300,21 @@ export function Verticals({ api, onToast }: VerticalsProps) {
             </span>
           }
         >
+          {/* Declared provisioner intent (#455): what the manifest asks to provision,
+              shown against the grant state so the approve action is an informed read. */}
+          {selected.provisions?.length ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, fontSize: 12.5 }}>
+              <Badge status={selected.tenantProvisioner ? 'warning' : 'info'}>
+                {selected.tenantProvisioner ? 'provisions' : 'requests to provision'}
+              </Badge>
+              {selected.provisions.map((target) => (
+                <Tag key={target} mono>
+                  {target}
+                </Tag>
+              ))}
+            </div>
+          ) : null}
+
           {/* Channels: the named pointers promotion moves. */}
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
             {CHANNELS.map((ch) => {

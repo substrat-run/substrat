@@ -1654,6 +1654,35 @@ export function scopeHostContractSuite(
       await expect(host.admin.setVerticalTenantProvisioner(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
     });
 
+    it('carries the declared provisioner intent (#455) — a refreshable request, orthogonal to the grant', async () => {
+      const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
+      // The declaration rides the install spec: a request the console reviews, never a grant.
+      await host.admin.registerVertical(staff, {
+        slug: 'declaring-manager',
+        name: 'Declaring Manager',
+        source: 'cli',
+        ownerTenant: t2,
+        provisions: ['managed-product'],
+      });
+      const declared = await at('declaring-manager');
+      expect(declared?.provisions).toEqual(['managed-product']);
+      expect(declared?.tenantProvisioner).toBe(false); // declaring is asking, not having
+
+      // Unlike the grant, the declaration EVOLVES with the manifest: a re-push refreshes
+      // it (it confers nothing), while the staff grant is untouched either way.
+      await host.admin.setVerticalTenantProvisioner(staff, 'declaring-manager', true);
+      await host.admin.registerVertical(staff, {
+        slug: 'declaring-manager',
+        name: 'Declaring Manager',
+        source: 'cli',
+        ownerTenant: t2,
+        provisions: ['managed-product', 'other-product'],
+      });
+      const repushed = await at('declaring-manager');
+      expect(repushed?.provisions).toEqual(['managed-product', 'other-product']);
+      expect(repushed?.tenantProvisioner).toBe(true); // the grant survives the refresh
+    });
+
     it('deletes a vertical — refused while a scope is bound, total once nothing is', async () => {
       // 'callout' still backs s1 (bound above): the refusal that stops a delete from
       // stranding a live scope's version pin and routing.
