@@ -1,5 +1,27 @@
 # @substrat-run/cli
 
+## 0.12.4
+
+### Patch Changes
+
+- e26929d: Two deploy-session papercuts named instead of swallowed (#387). A control-plane URL
+  pointing at the console SPA instead of its `/api` base used to kill every command with
+  `Unexpected token '<' … is not valid JSON`; each control-plane response now parses
+  through one helper that, on an HTML body, names the URL it hit and the likely fix
+  (`--cp` / `SUBSTRAT_CP_URL` / `substrat login`). And a stray `SUBSTRAT_SERVICE_TOKEN`
+  no longer shadows a fresh login silently: the CLI warns when the env var overrides a
+  stored session (and when its value is an obvious copy-paste placeholder), while auth
+  precedence stays exactly as it was — CI relying on the env var is untouched.
+- e9c247f: A stale workspace build now says so instead of failing confusingly (#386). In the
+  monorepo the `substrat` bin is a symlink into `packages/cli/dist`, and after a pull that
+  touched `src/` without a rebuild, the stale dist failed in misleading ways (a Zod
+  refusal of `registry: undefined` after the field became required). Every command now
+  checks src-vs-dist mtimes at startup and warns with the rebuild command when the build
+  is older than its sources — a no-op for an npm-installed CLI, whose tarball ships no
+  `src/`. And a deploy-manifest schema refusal at push now names the likely cause (stale
+  build or outdated CLI) instead of printing a bare Zod issue list.
+  - @substrat-run/contracts@0.36.1
+
 ## 0.12.3
 
 ### Patch Changes
