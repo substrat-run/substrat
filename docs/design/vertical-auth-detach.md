@@ -99,7 +99,9 @@ vertical-auth's `scope_config` table). Reading `resolveEnvSpec(env)` alone is th
 env-spec defaults ride as worker bindings shared by every install of one serving script, so a
 per-install override saved in the Env tab is invisible to it and the instance silently serves
 the default (the #374 incident). A hosted vertical reads per-scope; only a standalone deploy
-reads env.
+reads env. For a vertical on `@substrat-run/vertical-auth`, the `delivered` map comes from
+`IdentityDO.getScopeConfig(scopeId)` (or from `authWiring()`'s `config`, already in hand on
+the auth path — Meridian resolves its ordinary keys from that same hop, no extra round-trip).
 
 ### 2.3 Verticals become pure OIDC relying parties
 
