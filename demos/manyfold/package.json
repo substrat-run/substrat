@@ -8,6 +8,16 @@
     "slug": "manyfold",
     "name": "Manyfold",
     "permissions": "src/provision.ts",
+    "entitlements": [
+      "manyfold"
+    ],
+    "ownerGrants": [
+      "content:read",
+      "content:author",
+      "content:review",
+      "content:publish",
+      "content:admin"
+    ],
     "surfaces": [
       {
         "name": "app",
