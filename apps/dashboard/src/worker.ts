@@ -31,7 +31,7 @@ import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
+import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, versionRegistryFromHost, assertOwned } from './deployments.js';
 import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
@@ -1857,6 +1857,43 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
     tenantName: team?.name ?? 'Workspace',
   });
   return c.json(appRowNew, 201);
+});
+
+/**
+ * Resume an app STUCK at `provisioning` (#424 case 4) — the worker died between the
+ * platform effect and `mark-app-active`, or the browser closed mid-create, and the row
+ * has rendered as an eternal spinner ever since. Re-runs the idempotent install tail in
+ * place, against the SAME scope (unlike Retry's fresh-scope re-create), so it converges
+ * to `active` — or surfaces the real blocker and marks the row `failed`, which unlocks
+ * Retry. Only a `provisioning` app is resumable; it must be the caller's own.
+ */
+app.post('/api/apps/:scopeId/resume', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  if (appRow.status !== 'provisioning') {
+    throw new HTTPException(409, { message: 'only an app stuck provisioning can be resumed' });
+  }
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const { entitlements, ownerGrants } = await installSpecFor(host, appRow.vertical_slug, cp);
+  const team = await host.admin.getTenant(STAFF, node.tenantId);
+  const resumed = await resumeApp(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    verticalSlug: appRow.vertical_slug,
+    name: appRow.name,
+    appEntitlements: entitlements,
+    appOwnerGrants: ownerGrants,
+    // Same hostname scheme as create, so the resume mints the URL the install would have.
+    teamHandle: team?.name ? slugify(team.name) : undefined,
+    controlPlane: cp ?? undefined,
+    tenantName: team?.name ?? 'Workspace',
+  });
+  return c.json(resumed);
 });
 
 /**

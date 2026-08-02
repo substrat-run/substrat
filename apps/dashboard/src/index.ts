@@ -9,6 +9,7 @@ export {
   createApp,
   deprovisionApp,
   retryApp,
+  resumeApp,
   updateApp,
   type UpdateAppResult,
   listAppHostnames,

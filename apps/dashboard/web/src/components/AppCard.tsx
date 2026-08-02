@@ -10,10 +10,12 @@ export interface AppCardData {
   host: string | null;
   updated: string;
   accent: string;
+  /** A `provisioning` row older than any real install takes — stuck, resumable (#424). */
+  stalled?: boolean;
 }
 
 /** The app tile — accent dot, name, kind·version, status pill, hostname, footer. */
-export function AppCard({ app, onOpen, onRetry }: { app: AppCardData; onOpen?: () => void; onRetry?: () => void }) {
+export function AppCard({ app, onOpen, onRetry, onResume }: { app: AppCardData; onOpen?: () => void; onRetry?: () => void; onResume?: () => void }) {
   const [hover, setHover] = useState(false);
   const provisioning = app.status === 'provisioning';
   const failed = app.status === 'failed';
@@ -69,6 +71,33 @@ export function AppCard({ app, onOpen, onRetry }: { app: AppCardData; onOpen?: (
           </a>
         ) : null}
       </div>
+      {provisioning && app.stalled && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            background: 'var(--status-info-bg)',
+            color: 'var(--status-info-fg)',
+            borderRadius: 6,
+            padding: '6px 10px',
+            fontSize: 12.5,
+            marginTop: 4,
+          }}
+        >
+          <span style={{ flex: 1 }}>Setup didn’t finish.</span>
+          <span
+            role="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onResume?.();
+            }}
+            style={{ fontWeight: 500, cursor: 'pointer', textDecoration: 'underline' }}
+          >
+            Resume
+          </span>
+        </div>
+      )}
       {failed && (
         <div
           style={{
