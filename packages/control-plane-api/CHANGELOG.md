@@ -1,5 +1,19 @@
 # @substrat-run/control-plane-api
 
+## 0.37.1
+
+### Patch Changes
+
+- 7781cc2: Cross-lineage rebind learns `abandonData` (#389): a directory-only flip for a scope whose
+  source script predates the `/internal/export` surface (#236) and so cannot be dumped at
+  all. No bytes are carried — the source script's copy stays intact as the backout, and the
+  scope is re-provisioned on the target via the idempotent `/verticals/:slug/instances`.
+  CLI: `substrat scope rebind --abandon-data`. Also: a vertical answering an `/internal/*`
+  call with non-JSON (an old script's SPA fallback) now surfaces as an actionable 502
+  instead of an unhandled parse error → opaque 500.
+  - @substrat-run/contracts@0.37.1
+  - @substrat-run/kernel@0.37.1
+
 ## 0.37.0
 
 ### Minor Changes
