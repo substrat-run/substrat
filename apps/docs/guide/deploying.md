@@ -70,17 +70,23 @@ exchanges the code for a session token and stores it in `~/.substrat/config.json
 never transits a URL — only the code does — and the loopback server accepts exactly one callback,
 then closes.
 
-For CI, where there is no browser, store a service credential instead:
-
-```bash
-substrat login --token <SERVICE_TOKEN>    # the control plane's service-actor credential
-```
+For CI, where there is no browser, the credential is a **tenant-scoped push token**
+(`spt1.…`) in the `SUBSTRAT_SERVICE_TOKEN` environment variable — the dashboard's one-click CI
+setup mints and installs it for you ([below](#deploy-from-ci-—-the-push-token)).
 
 Either way, auth resolves in this order at push time: explicit `--token` /
-`SUBSTRAT_SERVICE_TOKEN` → a stored browser session → a stored service token. The control-plane
-URL resolves `--cp` → `SUBSTRAT_CP_URL` → the stored config (default
-`https://console.substrat.net/api`). You are always authenticated **as yourself** — a push is
-attributable to the human or service that ran it, never a hand-picked actor.
+`SUBSTRAT_SERVICE_TOKEN` → a stored browser session → a stored service token. Two consequences
+worth knowing:
+
+- An **exported `SUBSTRAT_SERVICE_TOKEN` wins over a fresh `substrat login`** — the session is
+  ignored. The CLI warns when this happens; unset the variable to use the session, or pass
+  `--token` to make the override explicit.
+- The control-plane URL resolves `--cp` → `SUBSTRAT_CP_URL` → the stored config, and it must be
+  the **API base** — `https://console.substrat.net/api`, not the console page. Getting HTML
+  where JSON was expected is the symptom, and the CLI's error message names it.
+
+You are always authenticated **as yourself** — a push is attributable to the human or service
+that ran it, never a hand-picked actor.
 
 ## Your workspace
 
@@ -198,6 +204,13 @@ which is per *instance* and chosen when someone creates one.)
 Ownership is claimed on first push and fixed there: a later push to `helpdesk` from a different
 workspace is *its own* `other-co/helpdesk`, and no one else can push versions of yours.
 
+The flip side: **the credential picks the lineage.** A workspace-prefixed `acme-co/helpdesk` and
+a bare, platform-registered `helpdesk` are different verticals, even if they build from the same
+repository — pushes to one never update the other. Builder credentials (your login session, a
+push token) always land in your workspace's namespace; only platform staff address bare slugs.
+If a vertical seems to exist twice, or a push "succeeds" but the version never shows up where
+you're looking, check which lineage each side is resolving before anything else.
+
 ## Serving in place — updates carry data forward
 
 A vertical serves **in place** from one stable serving script, and version updates carry the
@@ -297,6 +310,38 @@ vertical's previews wait on the marketplace admission path. And the source scope
 `global`-jurisdiction: forking pins the copy's *execution*, so an `eu`/`us` scope is refused
 until Regional Services, the same residency gate as `scope pull`. The fork carries real data
 and its `--<tag>` URL is non-canonical and not public — treat it as production data.
+
+## Deploy from CI — the push token
+
+Your laptop authenticates with a browser login; a pipeline cannot. The CI credential is a
+**tenant-scoped push token** — a long-lived machine credential, recognizable by its `spt1.`
+prefix, that authenticates as a *builder for exactly one workspace*. It can do what you can do
+as a builder — push, promote your private verticals (prod included), manage previews — and
+nothing more: it never reaches another workspace's namespace, never admits a version, and never
+promotes a **listed** vertical to prod (those stay staff decisions). It rides the same
+`SUBSTRAT_SERVICE_TOKEN` variable the CLI already reads, so the workflow needs nothing special.
+
+Two tokens deliberately do *not* fill this role: your login session is per-human and short-lived,
+and the platform's internal service token is staff-equivalent — it must never land in a
+customer repository (and would push to the wrong lineage anyway, per the previous section).
+
+You rarely handle the push token yourself. The [dashboard](/platform/dashboard)'s Deployments
+view has a **one-click CI setup**: connect the GitHub App, pick a repository and branch, and it
+
+1. mints the push token,
+2. writes it as the repo's `SUBSTRAT_SERVICE_TOKEN` Actions secret (before the workflow, so the
+   first run already finds its credential), and
+3. commits `.github/workflows/substrat-deploy.yml` — which triggers that first run immediately.
+
+The committed workflow is the whole loop from this page: a push to the chosen branch installs
+dependencies (your lockfile picks the package manager) and runs
+`substrat push --promote prod` — for a private vertical, merge-to-main *is* the deploy; opening
+or updating a PR creates its [preview](#preview-a-pull-request-—-substrat-preview) and comments the URL; closing
+the PR reaps it. A manual copy-paste path shows the same file if you'd rather commit it yourself.
+
+One thing to know while the first run is in flight: **a vertical registers on its first
+successful push**. Until then there is no version row in the dashboard to hang an error off —
+if nothing appears, the place to look is the repository's Actions tab, not the Deployments view.
 
 ## Watch it in the dashboard
 
