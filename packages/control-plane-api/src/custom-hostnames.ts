@@ -208,7 +208,7 @@ export function createCustomHostnameProvisioner(
       // their DNS provider instead of the operator to the token settings.
       const hint =
         res.status === 401 || res.status === 403
-          ? " — the platform's Cloudflare API token is missing 'Custom Hostnames: Edit' on the SaaS zone (its own permission group, NOT covered by 'SSL and Certificates: Edit'; secrets/platform.<env>.env CF_API_TOKEN); not a DNS problem on the domain"
+          ? " — the platform's Cloudflare API token lacks 'SSL and Certificates: Edit' on the SaaS zone (secrets/platform.<env>.env CF_API_TOKEN; a just-edited token can take a few minutes to propagate); not a DNS problem on the domain"
           : '';
       throw new Error(`Cloudflare ${what} failed (${res.status}): ${msg || 'unknown error'}${hint}`);
     }

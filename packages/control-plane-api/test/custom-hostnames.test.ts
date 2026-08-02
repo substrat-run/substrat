@@ -105,7 +105,7 @@ describe('createCustomHostnameProvisioner', () => {
       new Response(JSON.stringify({ success: false, errors: [{ message: 'Authentication error' }] }), { status: 403 }),
     );
     await expect(provisioner(fetchFn as never).create('crm.acme.com')).rejects.toThrow(
-      /Custom Hostnames: Edit/,
+      /SSL and Certificates: Edit/,
     );
   });
 

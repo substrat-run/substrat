@@ -4,8 +4,7 @@
 
 Custom-hostname failures now say what actually broke, and heal themselves. A 401/403
 from Cloudflare's custom-hostname API is a platform misconfiguration (the API token
-missing 'Custom Hostnames: Edit' on the SaaS zone — its own permission group, not
-covered by 'SSL and Certificates: Edit'), not the tenant's DNS — the
+missing 'SSL and Certificates: Edit' on the SaaS zone), not the tenant's DNS — the
 provisioner's error now names the token so the note stored on the binding sends the
 operator to the right place instead of the tenant to their DNS provider. The reconcile
 sweep additionally retries `failed` rows that have no Cloudflare hostname id — a create
