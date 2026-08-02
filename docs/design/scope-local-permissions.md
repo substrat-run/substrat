@@ -52,6 +52,7 @@ binding.
 | **Role definitions** (`getRole`) | ControlPlaneDO | hot-path CP read |
 | **Role assignments** at tenant level, **tenant grants**, **org membership** | ControlPlaneDO | hot-path CP read |
 | **Entitlements** | ScopeDO (projected), else ControlPlaneDO | **projected** (#304) |
+| **Identity links** (`resolveIdentity`'s input) | ScopeDO (projected), else ControlPlaneDO | **projected** (#406) |
 
 So the checker's `ControlPlaneReader` is the **sole** per-request CP dependency. Everything
 it returns can instead be **projected into the ScopeDO** and read locally.
@@ -75,6 +76,19 @@ them itself (`admin.listEntitlements`, never trusting the caller) and hands them
 which projects them in `provisionScopeLocal`. A grant/revoke *after* provision rides a re-provision
 (idempotent, K-31 — the same channel role-definition changes use); expiry still enforces locally in
 the meantime because the projected row carries it.
+
+**Identity links ride the same projection (#406).** The control plane stays the audited
+source of truth (`linkIdentity`/`unlinkIdentity`); a link/unlink is a tenant-level write, so
+it fans out into the tenant's projected scopes (`_substrat_identity_links`) like every other
+tenant-level change, and the CP-less delivery is the same provision/reconcile channel
+entitlements use (`admin.listIdentityLinks`, gathered by the platform, never the caller).
+The vertical's auth adapter resolves `(provider, externalId) → principal` from the scope's
+own storage via `resolveIdentityLocal` — replacing the login map compiled into the bundle,
+which made offboarding a deploy and let a version rollback resurrect a removed login. The
+projection is a full replace with no tombstones (the admin log is the audit; `unlinkIdentity`
+hard-deletes), so a removed link is absent from the next snapshot — absence is a deny, the
+fail-closed direction, and the reconcile sweep repairs any dropped fan-out. K-22's
+tenant-scoped key is preserved: links are gathered and projected per tenant, never globally.
 
 ## 4. The model — projection on write
 

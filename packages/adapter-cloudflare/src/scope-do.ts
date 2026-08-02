@@ -243,6 +243,22 @@ const KERNEL_DDL = `
     plan TEXT,
     PRIMARY KEY (tenant_id, entitlement_key)
   );
+  -- The tenant's identity links PROJECTED into this scope (#406), so a CP-less
+  -- vertical's auth adapter resolves (provider, externalId) → principal from local
+  -- storage at request time instead of a static map compiled into the bundle — the
+  -- same projection-on-write model as entitlements above. Keyed like the directory's
+  -- _substrat_identities (K-22: tenant-scoped, never global). No audit columns
+  -- (created_at and the link/unlink trail stay control-plane-side) and no tombstone:
+  -- applyProjection full-replaces, so an unlinked identity is simply absent from the
+  -- next snapshot — absence resolves to nothing, which is the fail-closed direction.
+  CREATE TABLE IF NOT EXISTS _substrat_identity_links (
+    tenant_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    scope_id TEXT,
+    PRIMARY KEY (tenant_id, provider, external_id)
+  );
 `;
 
 /**
@@ -1678,6 +1694,12 @@ export function defineScopeDO(
        *  the owner grant. Passing them here (rather than a follow-up `writeTuple`) is what makes
        *  provision atomic — the grant and the enforcement flip land together or not at all. */
       scopeTuples?: { subject: string; relation: string; object: string; expires_at: string | null }[],
+      /** The tenant's identity links (#406) — projected alongside the rest so a CP-less
+       *  vertical's auth adapter resolves logins locally. Same preserve-on-undefined
+       *  convention as `entitlements`: omitting it (a role-only re-projection like the
+       *  restore repair) leaves projected links untouched; passing a list — even `[]` —
+       *  full-replaces them, which is how an unlink reaches the scope. */
+      identities?: { provider: string; external_id: string; principal_id: string; scope_id: string | null }[],
     ): Promise<void> {
       await this.queue.enqueue(() => {
         this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
@@ -1728,6 +1750,24 @@ export function defineScopeDO(
             `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('entitlements_enforced', '1')`,
           );
         }
+        // #406: identity links ride the same snapshot. Full replace, so an unlink is
+        // durable against every later projection — unlike the compiled-in map this
+        // replaces, where a version rollback silently resurrected a removed login.
+        if (identities !== undefined) {
+          this.sql.exec(`DELETE FROM _substrat_identity_links WHERE tenant_id = ?`, tenantId);
+          for (const i of identities) {
+            this.sql.exec(
+              `INSERT OR REPLACE INTO _substrat_identity_links
+                 (tenant_id, provider, external_id, principal_id, scope_id)
+               VALUES (?, ?, ?, ?, ?)`,
+              tenantId,
+              i.provider,
+              i.external_id,
+              i.principal_id,
+              i.scope_id,
+            );
+          }
+        }
         // #332: scope-level grants (the owner's role tuple at provision) are written in the
         // SAME enqueued unit as the projection and the enforcement flip below. Additive upsert
         // — NOT a full replace — so existing scope tuples are preserved. This is what keeps a
@@ -1755,6 +1795,31 @@ export function defineScopeDO(
           `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('permission_source', 'local')`,
         );
       });
+    }
+
+    /**
+     * Resolve an external identity from this scope's projected links (#406) — the
+     * CP-less auth adapter's read path, the local equivalent of the control plane's
+     * `resolveIdentity`. A miss is `undefined`, which the caller must treat as an
+     * unknown login (deny): an un-projected or stale-empty scope can only ever
+     * refuse a legitimate login, never admit a revoked one.
+     */
+    async resolveProjectedIdentity(
+      tenantId: string,
+      provider: string,
+      externalId: string,
+    ): Promise<{ principal: string; scopeId: string | null } | undefined> {
+      const row = this.sql
+        .exec(
+          `SELECT principal_id, scope_id FROM _substrat_identity_links
+           WHERE tenant_id = ? AND provider = ? AND external_id = ?`,
+          tenantId,
+          provider,
+          externalId,
+        )
+        .toArray()[0] as unknown as { principal_id: string; scope_id: string | null } | undefined;
+      if (!row) return undefined;
+      return { principal: row.principal_id, scopeId: row.scope_id };
     }
 
     /** True if any live (non-revoked, unexpired) principal→role grant exists for this tenant,

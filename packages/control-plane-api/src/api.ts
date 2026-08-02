@@ -587,6 +587,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.body(null, 204);
   });
 
+  // The read half of the mirror seam (#406): what the directory currently links for a
+  // tenant — the console's offboarding view, and the way to verify an unlink landed.
+  app.get('/tenants/:tenantId/identities', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    return c.json(await admin.listIdentityLinks(c.get('actor'), tenantId));
+  });
+
   // -- the scope directory (§3.2/§4.2) ---------------------------------------
 
   app.get('/scopes', async (c) => {
@@ -904,8 +911,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const vertical = await verticalForScope(c, scope);
     if (!vertical) return c.json({ error: await diagnoseUnboundScope(c.get('actor'), scope) }, 501);
     const entitlements = await admin.listEntitlements(actor, tenantId);
+    // #406: re-gathered and re-delivered like entitlements, so a reconcile also repairs a
+    // dropped identity-link delivery — and is the channel a link/unlink after provision rides.
+    const identityLinks = (await admin.listIdentityLinks(actor, tenantId)).map(
+      ({ tenantId: _tenantId, ...link }) => link,
+    );
     try {
-      const result = await vertical.reconcileInstance({ tenantId, scopeId, entitlements });
+      const result = await vertical.reconcileInstance({ tenantId, scopeId, entitlements, identityLinks });
       return c.json(result);
     } catch (e) {
       if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
@@ -1399,10 +1411,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // a re-provision (this endpoint is idempotent, K-31), meanwhile expiry still enforces
     // locally because the projected row carries it.
     const entitlements = await admin.listEntitlements(c.get('actor'), input.tenantId);
+    // #406: identity links ride the same authoritative gather — the vertical projects them
+    // so its auth adapter resolves logins from local storage, and offboarding becomes an
+    // unlink + re-deliver instead of a source edit + deploy.
+    const identityLinks = (await admin.listIdentityLinks(c.get('actor'), input.tenantId)).map(
+      ({ tenantId: _tenantId, ...link }) => link,
+    );
     try {
       const instance = await vertical.provisionInstance({
         ...(input as Parameters<VerticalClient['provisionInstance']>[0]),
         entitlements,
+        identityLinks,
       });
       return c.json(instance, 201);
     } catch (e) {

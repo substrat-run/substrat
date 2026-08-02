@@ -495,6 +495,131 @@ describe('scope-local entitlements — a CP-less hosted vertical (#304)', () => 
 });
 
 /**
+ * #406: identity links ride the tenant projection, so a scope resolves
+ * `(provider, externalId) → principal` from its OWN storage — the runtime identity
+ * directory a CP-less vertical never had (its alternative was a login map compiled
+ * into the bundle: offboarding by deploy, revocation undone by version rollback).
+ * Two delivery paths, both asserted here: the CP-full fan-out on link/unlink, and
+ * the CP-less delivery WITH provisioning (#310's channel).
+ */
+describe('identity-link projection — logins resolve scope-locally (#406)', () => {
+  const staff = platformActorId.parse(ulid());
+  const PROVIDER = 'oidc:authhero-test';
+
+  describe('CP-full: link/unlink fan out into the tenant’s scopes', () => {
+    let host: CloudflareScopeHost;
+    const t = tenantId.parse(ulid());
+    const s1 = scopeId.parse(ulid());
+    const s2 = scopeId.parse(ulid());
+    const erin = principalId.parse(ulid());
+
+    beforeAll(async () => {
+      host = new CloudflareScopeHost({
+        scope: env.SCOPE,
+        controlPlane: env.CONTROL_PLANE,
+        secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+        scopeLocalPermissions: true,
+      });
+      await host.admin.createTenant(staff, { id: t, slug: `id-${t.toLowerCase()}`, name: 'Id Co' });
+      await host.admin.registerIdentityPool(staff, { provider: PROVIDER, topology: 'central', tenantId: null });
+      for (const s of [s1, s2]) {
+        await host.provisionScope(staff, { tenantId: t, scopeId: s });
+        await host.admin.activateScope(staff, t, s);
+      }
+    });
+
+    afterAll(async () => host.close());
+
+    it('a link lands in every scope of the tenant; an unknown login stays undefined', async () => {
+      await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-erin', principal: erin, tenantId: t });
+      expect((await host.resolveIdentityLocal(t, s1, PROVIDER, 'sub-erin'))?.principal).toBe(erin);
+      expect((await host.resolveIdentityLocal(t, s2, PROVIDER, 'sub-erin'))?.principal).toBe(erin);
+      expect(await host.resolveIdentityLocal(t, s1, PROVIDER, 'sub-nobody')).toBeUndefined();
+    });
+
+    it('an unlink fans out — the severed login stops resolving everywhere, durably', async () => {
+      await host.admin.unlinkIdentity(staff, t, erin);
+      expect(await host.resolveIdentityLocal(t, s1, PROVIDER, 'sub-erin')).toBeUndefined();
+      expect(await host.resolveIdentityLocal(t, s2, PROVIDER, 'sub-erin')).toBeUndefined();
+      // …and listIdentityLinks (the delivery gather) agrees with the projection.
+      expect(await host.admin.listIdentityLinks(staff, t)).toHaveLength(0);
+    });
+
+    it('reconcileTenantProjection repairs a scope whose identity projection drifted', async () => {
+      await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-erin', principal: erin, tenantId: t });
+      // Simulate a dropped fan-out: wipe s2's identity projection directly.
+      const stub = env.SCOPE.get(env.SCOPE.idFromName(s2)) as unknown as {
+        applyProjection(
+          tenantId: string,
+          roles: unknown[],
+          tuples: unknown[],
+          entitlements?: unknown[],
+          scopeTuples?: unknown[],
+          identities?: unknown[],
+        ): Promise<void>;
+      };
+      await stub.applyProjection(t, [], [], undefined, undefined, []);
+      expect(await host.resolveIdentityLocal(t, s2, PROVIDER, 'sub-erin')).toBeUndefined(); // stale → deny
+      await host.reconcileTenantProjection(t);
+      expect((await host.resolveIdentityLocal(t, s2, PROVIDER, 'sub-erin'))?.principal).toBe(erin); // repaired
+    });
+  });
+
+  describe('CP-less: links delivered WITH provisioning, preserved across re-provision', () => {
+    let host: CloudflareScopeHost;
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const owner = principalId.parse(ulid());
+    const frank = principalId.parse(ulid());
+    const READ = permissionKey.parse('perm:read');
+
+    const provision = (identityLinks?: { provider: string; externalId: string; principal: typeof owner; scopeId?: typeof s }[]) =>
+      host.provisionScopeLocal({
+        tenantId: t,
+        scopeId: s,
+        owner,
+        roles: [{ key: 'office-admin', permissions: [READ], source: 'vertical' }],
+        ownerRoleKey: 'office-admin',
+        identityLinks,
+      });
+
+    beforeAll(async () => {
+      // No `controlPlane` — the null-object stand-in; the ONLY identity source is the projection.
+      host = new CloudflareScopeHost({
+        scope: env.SCOPE,
+        secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      });
+    });
+
+    afterAll(async () => host.close());
+
+    it('resolves a delivered link from the scope alone — tenant-level and scope-homed', async () => {
+      await provision([
+        { provider: PROVIDER, externalId: 'sub-owner', principal: owner },
+        { provider: PROVIDER, externalId: 'sub-frank', principal: frank, scopeId: s },
+      ]);
+      const ownerHit = await host.resolveIdentityLocal(t, s, PROVIDER, 'sub-owner');
+      expect(ownerHit?.principal).toBe(owner);
+      expect(ownerHit?.scopeId).toBeNull(); // tenant-level home
+      const frankHit = await host.resolveIdentityLocal(t, s, PROVIDER, 'sub-frank');
+      expect(frankHit?.principal).toBe(frank);
+      expect(frankHit?.scopeId).toBe(s); // scope-homed
+    });
+
+    it('a re-provision WITHOUT identityLinks preserves them (preserve-on-undefined)', async () => {
+      await provision(); // e.g. an older platform re-running the idempotent provision
+      expect((await host.resolveIdentityLocal(t, s, PROVIDER, 'sub-owner'))?.principal).toBe(owner);
+    });
+
+    it('a re-delivery with the link REMOVED stops it resolving — offboarding without a deploy', async () => {
+      await provision([{ provider: PROVIDER, externalId: 'sub-owner', principal: owner }]);
+      expect(await host.resolveIdentityLocal(t, s, PROVIDER, 'sub-frank')).toBeUndefined();
+      expect((await host.resolveIdentityLocal(t, s, PROVIDER, 'sub-owner'))?.principal).toBe(owner);
+    });
+  });
+});
+
+/**
  * #332: a CP-less scope can be left "role definitions projected, permission_source = 'local',
  * zero tuples" — a scope enforcing nothing but denials, unfixable from inside (the owner is
  * signed in and linked to a principal that holds no role). Two guarantees close the hole:

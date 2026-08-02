@@ -1237,6 +1237,18 @@ export interface HostAdmin {
     provider: string,
     externalId: string,
   ): Promise<TenantId[]>;
+
+  /**
+   * Every identity link in one tenant — the projection read (#406). This is what the
+   * platform gathers (authoritatively, never from a caller's body) to deliver a
+   * tenant's links WITH provisioning/reconcile, the same trust line entitlements ride
+   * (#310), so a CP-less vertical resolves `(provider, externalId) → principal` from
+   * its own storage at request time. A staff read of the directory, so it is
+   * access-logged (K-24) — unlike `resolveIdentity`, which is the per-request machine
+   * path and records nothing.
+   */
+  listIdentityLinks(actor: PlatformActorId, tenantId: TenantId): Promise<IdentityLink[]>;
+
   /**
    * Resolve an external identity within a tenant — the auth adapter's read path.
    *

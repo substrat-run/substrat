@@ -2018,6 +2018,31 @@ export class ControlPlaneDO extends DurableObject {
     return { principal: row.principal_id, scopeId: row.scope_id };
   }
 
+  /**
+   * ALL of a tenant's identity links — the read behind identity-link projection
+   * (#406), symmetric with `dumpTenantTuples` above. No tombstones to carry:
+   * `unlinkIdentity` hard-deletes (the admin log is the audit), so the projection
+   * is a full replace and a removed link is simply absent from the next snapshot.
+   * Not on the request hot path — this runs on the admin write path, projecting
+   * into a tenant's scopes, and at provision/reconcile gathering.
+   */
+  dumpTenantIdentities(
+    tenantId: string,
+  ): { provider: string; external_id: string; principal_id: string; scope_id: string | null }[] {
+    return this.sql
+      .exec(
+        `SELECT provider, external_id, principal_id, scope_id FROM _substrat_identities
+         WHERE tenant_id = ?`,
+        tenantId,
+      )
+      .toArray() as unknown as {
+      provider: string;
+      external_id: string;
+      principal_id: string;
+      scope_id: string | null;
+    }[];
+  }
+
   // -- admin audit log (control-plane.md §4.4) --------------------------------
 
   /** Append one audit row. before/after are arbitrary JSON, stringified here. */

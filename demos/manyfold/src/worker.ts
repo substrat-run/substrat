@@ -17,7 +17,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, platformRequestId, platformRequestStatus, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, projectedIdentityLink, platformRequestId, platformRequestStatus, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { assertPlatformCall, PlatformCallError, readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { IdentityDO, doAuthProvider, oidcAuthProvider, type AuthProvider } from '@substrat-run/vertical-auth';
@@ -202,7 +202,7 @@ app.post('/api/sites/:slug/archive', async (c) => {
   return c.json(result as Record<string, unknown>, 202);
 });
 
-const provisionBody = z.object({ tenantId, scopeId, owner: principalId, slug: z.string().min(1), name: z.string().min(1), entitlements: z.array(entitlementGrant).optional() }); // entitlements (#310): projected so ctx.entitlement + the gate work CP-lessly (#304)
+const provisionBody = z.object({ tenantId, scopeId, owner: principalId, slug: z.string().min(1), name: z.string().min(1), entitlements: z.array(entitlementGrant).optional(), identityLinks: z.array(projectedIdentityLink).optional() }); // entitlements (#310) + identity links (#406): projected so ctx.entitlement + the gate + local login resolution work CP-lessly (#304)
 
 // Provision ONE site on the platform's instruction (K-31), CP-less. The shared control plane
 // already owns the directory row + entitlement; the vertical sets up only the site's OWN
@@ -223,6 +223,7 @@ app.post('/internal/provision', async (c) => {
     roles: ROLES,
     ownerRoleKey: 'admin',
     entitlements: body.entitlements,
+    identityLinks: body.identityLinks,
   });
   const id = identityDo(c.env, { tenantId: body.tenantId, scopeId: body.scopeId });
   await id.setPendingOwner(body.scopeId, body.owner);
@@ -232,7 +233,7 @@ app.post('/internal/provision', async (c) => {
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
 });
 
-const reconcileBody = z.object({ tenantId, scopeId, entitlements: z.array(entitlementGrant).optional() });
+const reconcileBody = z.object({ tenantId, scopeId, entitlements: z.array(entitlementGrant).optional(), identityLinks: z.array(projectedIdentityLink).optional() });
 
 // Repair a site stuck at the #332 lockout — roles projected but no principal holding one, so the
 // scope enforces against an empty tuple table and every login denies. The builder can't reach the
@@ -262,6 +263,7 @@ app.post('/internal/reconcile', async (c) => {
     roles: ROLES,
     ownerRoleKey: 'admin',
     entitlements: body.entitlements,
+    identityLinks: body.identityLinks,
   });
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner });
 });

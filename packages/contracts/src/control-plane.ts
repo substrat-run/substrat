@@ -179,6 +179,17 @@ export const identityLink = z.object({
 export type IdentityLink = z.infer<typeof identityLink>;
 
 /**
+ * One tenant's identity link as it travels INTO a deployment (#406) — the shape the
+ * platform delivers with provisioning/reconcile and the vertical projects into its
+ * scope, alongside entitlements (#310). No `tenantId`: the payload is already scoped
+ * to one tenant, and carrying it per-row would invite a mismatch with the address the
+ * platform provisioned. The control plane stays the audited source of truth; a
+ * projected link is a read-time copy, replaced wholesale on the next projection.
+ */
+export const projectedIdentityLink = identityLink.omit({ tenantId: true });
+export type ProjectedIdentityLink = z.infer<typeof projectedIdentityLink>;
+
+/**
  * How an identity pool relates to tenants (K-23) — the fact that decides whether the
  * same `externalId` seen in two tenants is one human or two.
  *
