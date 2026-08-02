@@ -1,3 +1,4 @@
+import { TENANT_HEADER } from '@substrat-run/control-plane-api';
 import type { BuilderAuth, BuilderIdentity } from '@substrat-run/control-plane-api';
 import { platformActorId, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
@@ -27,9 +28,8 @@ const PROVIDER = 'authhero';
 // not the builder's audited actor (that is `builderActorFor`, below).
 const BUILDER_RESOLVER = platformActorId.parse('01JZ000000000000000000BDR1');
 
-// The header the CLI sends to pick a tenant when a user belongs to several (`--tenant`).
-// A tenant id (ULID) or the tenant's slug; the sole membership is used when it is absent.
-const TENANT_HEADER = 'x-substrat-tenant';
+// The tenant-selection header (`--tenant`) is the shared TENANT_HEADER: a tenant id
+// (ULID) or the tenant's slug; the sole membership is used when it is absent.
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 

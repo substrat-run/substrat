@@ -28,6 +28,7 @@ import {
 import type { PlatformActorId, Scope, ScopeId, TenantId } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { migrationProgress, ulid } from '@substrat-run/kernel';
+import { TENANT_HEADER } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
 import type { VerticalClient } from './vertical-client.js';
 import { ControlPlaneError } from './client.js';
@@ -707,10 +708,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // scope DB directly (a co-located host, or the contract tests — data is right here).
   const verticalForScope = async (
     c: { get: (k: 'actor') => PlatformActorId },
-    scope: { vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
+    scope: { tenantId?: TenantId; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
   ): Promise<VerticalClient | undefined> => {
-    const slug = scope.vertical;
-    if (!slug) return undefined;
+    if (!scope.vertical) return undefined;
     const actor = c.get('actor');
     // A scope on the stable serving script (#286) is reached THERE — that script holds
     // its DOs regardless of what the bound version or the prod channel say.
@@ -718,11 +718,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const serving = await options.resolveVerticalRef(scope.servingRef);
       if (serving) return serving;
     }
-    if (scope.verticalVersionId && options.resolveVerticalVersion) {
-      const bound = await options.resolveVerticalVersion(slug, scope.verticalVersionId, actor);
-      if (bound) return bound;
+    const bySlug = async (slug: string): Promise<VerticalClient | undefined> => {
+      if (scope.verticalVersionId && options.resolveVerticalVersion) {
+        const bound = await options.resolveVerticalVersion(slug, scope.verticalVersionId, actor);
+        if (bound) return bound;
+      }
+      return options.verticals?.[slug] ?? (await options.resolveVertical?.(slug, actor));
+    };
+    const direct = await bySlug(scope.vertical);
+    if (direct) return direct;
+    // Miss path only (#417) — a resolved scope never pays for these registry reads: a
+    // scope bound to a BARE slug that is not registered, while the owning tenant's
+    // prefixed registration of the same name exists, is addressing the prefixed lineage
+    // under its bare spelling. Retry once under the registry id; anything else still
+    // misses and surfaces through `diagnoseUnboundScope` as before.
+    if (scope.tenantId && !scope.vertical.includes('/') && (await ownerOf(actor, scope.vertical)) === undefined) {
+      const tenant = await admin.getTenant(actor, scope.tenantId).catch(() => null);
+      const prefixed = tenant ? `${tenant.slug}/${scope.vertical}` : null;
+      if (prefixed && (await ownerOf(actor, prefixed)) !== undefined) return bySlug(prefixed);
     }
-    return options.verticals?.[slug] ?? (await options.resolveVertical?.(slug, actor));
+    return undefined;
   };
 
   /**
@@ -1318,7 +1333,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // re-run resumes from there (each adopt is data-first and retry-safe).
   app.post('/verticals/:slug/adopt-serving', async (c) => {
     const p = c.get('principal');
-    const slug = effectiveSlug(p, c.req.param('slug'));
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
     const actor = c.get('actor');
     if (p.kind === 'builder') {
       const v = await verticalOf(actor, slug);
@@ -1496,6 +1511,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const effectiveSlug = (p: Principal, raw: string): string =>
     p.kind === 'builder' ? (raw.startsWith(`${p.tenantSlug}/`) ? raw : `${p.tenantSlug}/${raw}`) : raw;
 
+  // The ONE (bare slug, tenant context) → registry id resolution for the routes that
+  // ADDRESS an existing vertical (#417). A builder's context is its auth (`effectiveSlug`,
+  // unchanged). STAFF acting for a workspace — the CLI over a service token, the
+  // dashboard's tenant-narrowed seam — name it via the same `x-substrat-tenant` header a
+  // builder session uses, and the prefix is formed exactly as a pinned push forms it: a
+  // bare slug the pinned workspace owns stays itself (staff hand-registrations predate
+  // prefixed claims), otherwise `<workspace.slug>/<slug>` — but only when that row
+  // EXISTS. Addressing never redirects to a lineage that is not there: a platform-owned
+  // bare slug under an irrelevant pin, and an unknown pin, resolve to the raw slug —
+  // exactly the pre-#417 behavior. Registration and deploy keep their own CLAIM
+  // semantics; this helper only addresses lineages, it never decides where one lands.
+  const resolveVerticalId = async (c: Context<{ Variables: Vars }>, raw: string): Promise<string> => {
+    const p = c.get('principal');
+    if (p.kind === 'builder') return effectiveSlug(p, raw);
+    const pin = c.req.header(TENANT_HEADER)?.trim();
+    if (!pin) return raw;
+    const actor = c.get('actor');
+    const workspace = (await admin.listTenants(actor)).find((t) => t.slug === pin || t.id === pin);
+    if (!workspace || raw.startsWith(`${workspace.slug}/`)) return raw;
+    if ((await ownerOf(actor, raw)) === workspace.id) return raw;
+    const prefixed = `${workspace.slug}/${raw}`;
+    return (await ownerOf(actor, prefixed)) !== undefined ? prefixed : raw;
+  };
+
   app.get('/verticals', async (c) => {
     const all = await admin.listVerticals(c.get('actor'));
     const p = c.get('principal');
@@ -1525,7 +1564,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.get('/verticals/:slug/versions', async (c) => {
     const p = c.get('principal');
-    const slug = effectiveSlug(p, c.req.param('slug'));
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
     // A builder reading a vertical it does not own gets 404 — indistinguishable from
     // absent, the same fail-closed reflex K-3 uses for a cross-tenant scope.
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
@@ -1543,7 +1582,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'verticalSlug does not match the path' }, 400);
     }
     const p = c.get('principal');
-    const slug = effectiveSlug(p, input.verticalSlug);
+    const slug = await resolveVerticalId(c, input.verticalSlug);
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
       return c.json({ error: 'forbidden' }, 403);
     }
@@ -1561,7 +1600,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // permission-diff checkpoint stays the human gate — this route only reads.
   app.get('/verticals/:slug/versions/:id/registry', async (c) => {
     const p = c.get('principal');
-    const slug = effectiveSlug(p, c.req.param('slug'));
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
       return c.json({ error: 'not found' }, 404);
     }
@@ -1589,7 +1628,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // may ask; the staff `listing` flip below is the review gate. Owner-checked (like promote).
   app.post('/verticals/:slug/publish-request', async (c) => {
     const p = c.get('principal');
-    const slug = effectiveSlug(p, c.req.param('slug'));
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
       return c.json({ error: 'not found' }, 404);
     }
@@ -1628,7 +1667,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.get('/verticals/:slug/channels', async (c) => {
     const p = c.get('principal');
-    const slug = effectiveSlug(p, c.req.param('slug'));
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
       return c.json({ error: 'not found' }, 404);
     }
@@ -1640,7 +1679,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // history, and a foreign slug 404s indistinguishably from an absent one.
   app.get('/verticals/:slug/channels/:channel/history', async (c) => {
     const p = c.get('principal');
-    const slug = effectiveSlug(p, c.req.param('slug'));
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
     const channel = channelName.parse(c.req.param('channel'));
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
       return c.json({ error: 'not found' }, 404);
@@ -1726,7 +1765,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.post('/verticals/:slug/channels/:channel/promote', async (c) => {
     const p = c.get('principal');
-    const slug = effectiveSlug(p, c.req.param('slug'));
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
     const channel = channelName.parse(c.req.param('channel'));
     if (p.kind === 'builder') {
       // A builder promotes only verticals it owns — and prod only while the vertical
@@ -2363,7 +2402,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     c: Context<{ Variables: Vars }>,
   ): Promise<{ tenantId: TenantId; slug: string } | { error: string; status: ContentfulStatusCode }> => {
     const p = c.get('principal');
-    const slug = effectiveSlug(p, c.req.param('slug')!);
+    const slug = await resolveVerticalId(c, c.req.param('slug')!);
     const v = await verticalOf(c.get('actor'), slug);
     if (!v) return { error: `unknown vertical '${slug}'`, status: 404 };
     if (p.kind === 'builder' && v.ownerTenant !== p.tenantId) return { error: 'forbidden', status: 403 };
