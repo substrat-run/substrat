@@ -238,6 +238,14 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     rejectVersion: (slug: string, id: string, note: string) =>
       post<VerticalVersion>(`/verticals/${encodeURIComponent(slug)}/versions/${id}/reject`, { note }),
     listChannels: (slug: string) => call<VerticalChannel[]>(`/verticals/${encodeURIComponent(slug)}/channels`),
+    // Publish/unpublish to the PUBLIC marketplace (marketplace-publish.md §5) — the staff
+    // admission of a builder's publish request. The API refuses `listed: true` while prod
+    // points at an auto-admitted version; that refusal is surfaced verbatim, not pre-checked.
+    setVerticalListed: (slug: string, listed: boolean) =>
+      post<{ slug: string; listed: boolean }>(
+        `/verticals/${encodeURIComponent(slug)}/listing`,
+        { listed },
+      ),
     // The install kill-switch: block/unblock NEW installs (existing scopes keep serving).
     setInstallsBlocked: (slug: string, blocked: boolean) =>
       post<{ slug: string; installsBlocked: boolean }>(
