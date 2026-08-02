@@ -513,6 +513,15 @@ export function App() {
 
   const openApp = useMemo(() => (route.app ? apps.find((a) => a.app_scope_id === route.app) : undefined), [apps, route.app]);
 
+  // The team's issuer instances offered in Identity pickers (#427): any ACTIVE app of a
+  // vertical that DECLARES `provides: ['oidc-issuer']` (capability-driven, from the
+  // catalog), plus the legacy `auth-server` slug for rows pushed before the declaration.
+  const oidcProviderSlugs = useMemo(() => {
+    const slugs = new Set(['auth-server']);
+    for (const entry of catalog) if (entry.provides?.includes('oidc-issuer')) slugs.add(entry.slug);
+    return slugs;
+  }, [catalog]);
+
   // Session mode: checking → interstitial; signed out → redirect to the IdP (only a
   // failed round-trip renders the retry card); signed in but teamless → onboarding
   // (name your first team).
@@ -540,14 +549,6 @@ export function App() {
   const org = currentTeam?.name ?? orgFrom(me.email);
   const activeNav: NavKey = route.section === 'new' ? 'apps' : route.section;
 
-  // The team's issuer instances offered in Identity pickers (#427): any ACTIVE app of a
-  // vertical that DECLARES `provides: ['oidc-issuer']` (capability-driven, from the
-  // catalog), plus the legacy `auth-server` slug for rows pushed before the declaration.
-  const oidcProviderSlugs = useMemo(() => {
-    const slugs = new Set(['auth-server']);
-    for (const entry of catalog) if (entry.provides?.includes('oidc-issuer')) slugs.add(entry.slug);
-    return slugs;
-  }, [catalog]);
   const authServers = apps.filter((a) => oidcProviderSlugs.has(a.vertical_slug) && a.status === 'active' && a.hostname);
 
   const crumbs: Crumb[] = [{ label: org, onClick: () => go('#/overview') }];
