@@ -1,4 +1,4 @@
-import { moduleManifest, permissionKey } from '@substrat-run/contracts';
+import { moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
 
 // ============================================================================
 // The Meridian vertical's declarative surface: the permission keys and the
@@ -9,6 +9,51 @@ import { moduleManifest, permissionKey } from '@substrat-run/contracts';
 // HR_PERM and the manifest's `permissions` list are the same keys expressed
 // twice; keep them side by side so "add a permission" is a single-file edit.
 // ============================================================================
+
+/**
+ * Meridian's ORDINARY declared environment — the deployment-default half of its auth
+ * config (the structured per-scope `substrat:auth` choice always wins over these; see
+ * worker.ts `authProviderFor`). Read exclusively through `resolveScopedEnvSpec`
+ * (delivered > env > default, #398), so a hosted install's Env-tab override actually
+ * takes effect — never via bare `env.X` reads, which can only ever see the shared
+ * deployment default. Harness secrets (ROUTER_SECRET, PLATFORM_SECRET, ALLOW_DEV_HEADER)
+ * are deliberately NOT declared: they are deployment trust anchors, and keeping them out
+ * of the spec keeps them out of the per-scope overlay (declared keys are the allow-list).
+ *
+ * MIRRORED in `package.json` `substrat.envSpec` (what `substrat push` carries — it reads
+ * JSON, not TS); `test/envspec.test.ts` fails the build if the two drift.
+ */
+export const MERIDIAN_ENV: EnvVarSpec[] = [
+  {
+    key: 'AUTH_PROVIDER',
+    label: 'Auth provider',
+    description:
+      "Which auth the app runs when no per-scope `substrat:auth` choice was delivered: 'better-auth-do' (accounts in the tenant's own identity DO) or 'oidc' (verify bearer tokens against OIDC_ISSUER).",
+    placeholder: 'better-auth-do',
+    default: 'better-auth-do',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+  {
+    key: 'OIDC_ISSUER',
+    label: 'OIDC issuer',
+    description: "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
+    placeholder: 'https://auth.example.com',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+  {
+    key: 'OIDC_AUDIENCE',
+    label: 'OIDC audience',
+    description: 'Expected `aud` claim of verified bearer tokens (optional; issuer-dependent).',
+    placeholder: 'https://api.example.com',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+];
 
 export const HR_PERM = {
   employeeManage: permissionKey.parse('employee:manage'),
@@ -73,4 +118,5 @@ export const meridianManifest = moduleManifest.parse({
     { entityType: 'protocol', parentType: 'employee' },
   ],
   entitlementKey: 'meridian',
+  envSpec: MERIDIAN_ENV,
 });

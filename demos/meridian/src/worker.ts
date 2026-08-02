@@ -16,7 +16,7 @@
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, projectedIdentityLink, z } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, projectedIdentityLink, resolveScopedEnvSpec, z } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import {
   assertPlatformCall,
@@ -27,6 +27,7 @@ import {
 } from '@substrat-run/kernel';
 import type { PrincipalId } from '@substrat-run/contracts';
 import { MODULES, ROLES } from './provision.js';
+import { MERIDIAN_ENV } from './manifest.js';
 import { API, API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
 import { serveAsset } from './assets.js';
@@ -64,6 +65,9 @@ interface Env {
    * in the per-tenant AUTH DO. `oidc`: verify a bearer token against an OIDC issuer
    * (`OIDC_ISSUER` [+ `OIDC_AUDIENCE`]) — covers Supabase, Auth0, AuthHero, Keycloak, …
    * The app never changes; only this config + the provider behind the contract does.
+   * Declared in MERIDIAN_ENV (src/manifest.ts) and read ONLY through
+   * `resolveScopedEnvSpec` in `authWiringFor` — a delivered per-scope value overrides
+   * these deployment-wide bindings (#398). Typed here so `wrangler dev --var` works.
    */
   AUTH_PROVIDER?: string;
   OIDC_ISSUER?: string;
@@ -144,7 +148,14 @@ const authChoice = z.object({
 });
 export const AUTH_CONFIG_KEY = 'substrat:auth';
 
-/** The scope's auth wiring, in one DO hop: delivered config + the tenant's session secret. */
+/**
+ * The scope's auth wiring, in one DO hop: delivered config + the tenant's session secret.
+ * `settings` is the ORDINARY declared environment (MERIDIAN_ENV) resolved through
+ * `resolveScopedEnvSpec` over the same delivered map — per-scope Env-tab value > worker
+ * binding > manifest default (#398). Every read of a declared key goes through it; a bare
+ * `env.X` read would only ever see the deployment-wide default (the silent-defaults bug,
+ * #374). No extra DO round-trip: the delivered map is already in hand.
+ */
 async function authWiringFor(env: Env, node: CompanyNode) {
   const wiring = await identityDo(env, node).authWiring(node.scopeId);
   const raw = wiring.config[AUTH_CONFIG_KEY];
@@ -157,7 +168,8 @@ async function authWiringFor(env: Env, node: CompanyNode) {
       choice = null;
     }
   }
-  return { choice, sessionSecret: wiring.sessionSecret };
+  const settings = resolveScopedEnvSpec(MERIDIAN_ENV, env as unknown as Record<string, unknown>, wiring.config).values;
+  return { choice, sessionSecret: wiring.sessionSecret, settings };
 }
 
 /**
@@ -173,7 +185,7 @@ async function authWiringFor(env: Env, node: CompanyNode) {
  */
 async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
   const node = nodeFor(req, env);
-  const { choice, sessionSecret } = await authWiringFor(env, node);
+  const { choice, sessionSecret, settings } = await authWiringFor(env, node);
   if (choice?.mode === 'oidc') {
     if (!choice.issuer || !choice.clientId) {
       throw new HTTPException(503, { message: "this instance's OIDC configuration is incomplete — set issuer and clientId" });
@@ -187,9 +199,9 @@ async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
       ...(choice.cookieDomain ? { cookieDomain: choice.cookieDomain } : {}),
     });
   }
-  if ((env.AUTH_PROVIDER ?? 'better-auth-do') === 'oidc') {
-    if (!env.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
-    return oidcAuthProvider({ issuer: env.OIDC_ISSUER, ...(env.OIDC_AUDIENCE ? { audience: env.OIDC_AUDIENCE } : {}) });
+  if (settings.AUTH_PROVIDER === 'oidc') {
+    if (!settings.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
+    return oidcAuthProvider({ issuer: settings.OIDC_ISSUER, ...(settings.OIDC_AUDIENCE ? { audience: settings.OIDC_AUDIENCE } : {}) });
   }
   return doAuthProvider(
     identityDo(env, node),
@@ -268,8 +280,8 @@ app.post('/api/auth/sign-up/email', async (c) => {
  */
 app.get('/api/auth-mode', async (c) => {
   const node = nodeFor(c.req.raw, c.env);
-  const { choice } = await authWiringFor(c.env, node);
-  const oidc = choice?.mode === 'oidc' || (!choice && (c.env.AUTH_PROVIDER ?? 'better-auth-do') === 'oidc');
+  const { choice, settings } = await authWiringFor(c.env, node);
+  const oidc = choice?.mode === 'oidc' || (!choice && settings.AUTH_PROVIDER === 'oidc');
   return c.json({ mode: oidc ? 'oidc' : 'builtin' });
 });
 

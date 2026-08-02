@@ -135,6 +135,22 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /**
+   * The config DELIVERED to one scope (dashboard Env tab → `/internal/configure` →
+   * `setScopeConfig`), as a plain map — the `delivered` argument of the contracts helper
+   * `resolveScopedEnvSpec(spec, env, delivered)`. This is the blessed read for a
+   * vertical's ORDINARY env-spec keys (issue #398): overlay these values on worker env,
+   * per-scope wins. `authWiring` below is the auth-specific composite (config + session
+   * secret in one hop); use that when you also need the secret, this when you don't.
+   */
+  async getScopeConfig(scopeId: string): Promise<Record<string, string>> {
+    const config: Record<string, string> = {};
+    for (const row of this.ctx.storage.sql.exec('SELECT key, value FROM scope_config WHERE scope_id = ?', scopeId)) {
+      config[row.key as string] = row.value as string;
+    }
+    return config;
+  }
+
+  /**
    * Everything the worker needs to build the scope's `AuthProvider`, in ONE round-trip:
    * the scope's delivered config (notably `substrat:auth`) plus this tenant's
    * session-signing secret (minted here on first use, never a worker binding — the same
@@ -142,10 +158,7 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * per-request cost at a single DO hop.
    */
   async authWiring(scopeId: string): Promise<{ config: Record<string, string>; sessionSecret: string }> {
-    const config: Record<string, string> = {};
-    for (const row of this.ctx.storage.sql.exec('SELECT key, value FROM scope_config WHERE scope_id = ?', scopeId)) {
-      config[row.key as string] = row.value as string;
-    }
+    const config = await this.getScopeConfig(scopeId);
     let secret = ([...this.ctx.storage.sql.exec("SELECT value FROM config WHERE key = 'session_secret'")][0] as { value: string } | undefined)?.value;
     if (!secret) {
       const bytes = crypto.getRandomValues(new Uint8Array(32));
@@ -342,6 +355,7 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
 export type IdentityStub = {
   fetch(request: Request): Promise<Response>;
   setScopeConfig(scopeId: string, entries: Array<{ key: string; value: string }>): Promise<void>;
+  getScopeConfig(scopeId: string): Promise<Record<string, string>>;
   authWiring(scopeId: string): Promise<{ config: Record<string, string>; sessionSecret: string }>;
   setPendingOwner(scopeId: string, principal: string): Promise<void>;
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
