@@ -17,6 +17,8 @@ import {
   drainScopePlatformRequests,
   provisionSiblingHandler,
   archiveScopeHandler,
+  provisionTenantHandler,
+  setEntitlementsHandler,
   type PlatformRequestHandler,
   VerticalClient,
 } from '../src/index.js';
@@ -186,5 +188,225 @@ describe('archiveScopeHandler — archives a sibling named in the intent', () =>
     const outcome = await handler()(ctx, intent('archive-scope', { payload: { scopeId: foreign } }));
     expect(outcome.status).toBe('failed');
     expect((await host.admin.getScopeRecord(staff, t, foreign))?.status).toBe('active'); // untouched
+  });
+});
+
+describe('provisionTenantHandler — a manager vertical creates a NEW customer tenant (#412)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const managerTenant = tenantId.parse(ulid());
+  const managerScope = scopeId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const ctx = { tenantId: managerTenant, scopeId: managerScope, vertical: 'manager-console' };
+
+  let provisioned: { scopeId?: string; owner?: string; entitlements?: EntitlementGrant[] } | undefined;
+  let configured: { entries?: Array<{ key: string; value: string }> } | undefined;
+  const fakeVertical = {
+    provisionInstance: async (input: {
+      tenantId: string;
+      scopeId: string;
+      owner: string;
+      entitlements?: EntitlementGrant[];
+    }) => {
+      provisioned = input;
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner };
+    },
+    configureInstance: async (input: { entries: Array<{ key: string; value: string }> }) => {
+      configured = input;
+    },
+  } as unknown as VerticalClient;
+
+  const deps = () => ({
+    host,
+    actor: staff,
+    provisioners: ['manager-console'],
+    resolveVerticalForScope: async () => fakeVertical,
+  });
+
+  /** A well-formed provision-tenant payload; ids proposed by the caller (idempotent join keys). */
+  const payloadFor = (t: string, s: string) => ({
+    tenant: { id: t, slug: `customer-${t.slice(-8).toLowerCase()}`, name: 'Customer One' },
+    instance: { vertical: 'managed-product', scopeId: s, slug: 'main', name: 'Main', owner },
+    entitlements: [{ key: 'flows', plan: 'pro' }],
+    config: { ISSUER_DOMAIN: 'auth.customer-1.example' },
+  });
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-provtenant-'));
+    host = new SqliteScopeHost({ dir });
+    // The manager's registration carries its declared SKU universe (invariant 3's bound).
+    await host.admin.registerVertical(staff, {
+      slug: 'manager-console',
+      name: 'Manager Console',
+      source: 'builtin',
+      entitlements: ['flows', 'vault'],
+    });
+    await host.admin.createTenant(staff, { id: managerTenant, slug: 'manager', name: 'Manager' });
+    await host.provisionScope(staff, { tenantId: managerTenant, scopeId: managerScope, vertical: 'manager-console' });
+    await host.admin.activateScope(staff, managerTenant, managerScope);
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('creates the tenant + first scope of the PAYLOAD vertical, grants + projects, delivers config, activates', async () => {
+    const newTenant = ulid();
+    const newScope = ulid();
+    const outcome = await provisionTenantHandler(deps())(
+      ctx,
+      intent('provision-tenant', { payload: payloadFor(newTenant, newScope) }),
+    );
+
+    expect(outcome).toMatchObject({ status: 'done', result: { tenantId: newTenant, scopeId: newScope } });
+    const record = await host.admin.getScopeRecord(staff, tenantId.parse(newTenant), scopeId.parse(newScope));
+    expect(record?.status).toBe('active');
+    expect(record?.vertical).toBe('managed-product'); // the payload's vertical, never the manager's
+    // The instance was materialized with the granted plan projected (#310) and config delivered.
+    expect(provisioned?.scopeId).toBe(newScope);
+    expect(provisioned?.owner).toBe(owner);
+    expect(provisioned?.entitlements?.find((e) => e.entitlementKey === 'flows')).toMatchObject({ plan: 'pro' });
+    expect(configured?.entries).toEqual([{ key: 'ISSUER_DOMAIN', value: 'auth.customer-1.example' }]);
+  });
+
+  it('converges on a re-drain: same proposed ids, every step an idempotent no-op', async () => {
+    const newTenant = ulid();
+    const newScope = ulid();
+    const run = () =>
+      provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload: payloadFor(newTenant, newScope) }));
+    expect((await run()).status).toBe('done');
+    const again = await run();
+    expect(again).toMatchObject({ status: 'done', result: { tenantId: newTenant, scopeId: newScope } });
+  });
+
+  it('refuses a vertical without the provisioner capability — terminal, with a reason', async () => {
+    const outcome = await provisionTenantHandler(deps())(
+      { ...ctx, vertical: 'some-other-vertical' },
+      intent('provision-tenant', { payload: payloadFor(ulid(), ulid()) }),
+    );
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/tenant-provisioner capability/);
+  });
+
+  it('refuses an entitlement key outside the manager\'s declared SKUs', async () => {
+    const payload = { ...payloadFor(ulid(), ulid()), entitlements: [{ key: 'not-declared', plan: null }] };
+    const outcome = await provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload }));
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/'not-declared' is not among the SKUs/);
+  });
+
+  it('a tenant slug owned by a DIFFERENT id settles failed (a retry can never converge)', async () => {
+    const first = payloadFor(ulid(), ulid());
+    expect((await provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload: first }))).status).toBe(
+      'done',
+    );
+    // Same slug, different proposed tenant id — the fail-closed slug check, surfaced terminal.
+    const clash = payloadFor(ulid(), ulid());
+    clash.tenant.slug = first.tenant.slug;
+    const outcome = await provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload: clash }));
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/slugs are unique/);
+  });
+
+  it('an unbound target vertical settles failed, naming it', async () => {
+    const unbound = { ...deps(), resolveVerticalForScope: async () => undefined };
+    const payload = { ...payloadFor(ulid(), ulid()), tenant: { id: ulid(), slug: 'customer-2', name: 'Two' } };
+    const outcome = await provisionTenantHandler(unbound)(ctx, intent('provision-tenant', { payload }));
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/no deployment is bound for vertical 'managed-product'/);
+  });
+});
+
+describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s target set (#412)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const managerTenant = tenantId.parse(ulid());
+  const managerScope = scopeId.parse(ulid());
+  const customer = tenantId.parse(ulid());
+  const authScope = scopeId.parse(ulid());
+  const ctx = { tenantId: managerTenant, scopeId: managerScope, vertical: 'manager-console' };
+
+  let reconciled: { scopeId?: string; entitlements?: EntitlementGrant[] } | undefined;
+  const fakeVertical = {
+    reconcileInstance: async (input: { scopeId: string; entitlements?: EntitlementGrant[] }) => {
+      reconciled = input;
+      return { tenantId: customer, scopeId: input.scopeId, repaired: false };
+    },
+  } as unknown as VerticalClient;
+
+  const deps = () => ({
+    host,
+    actor: staff,
+    provisioners: ['manager-console'],
+    resolveVerticalForScope: async () => fakeVertical,
+  });
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-setent-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.registerVertical(staff, {
+      slug: 'manager-console',
+      name: 'Manager Console',
+      source: 'builtin',
+      entitlements: ['flows', 'vault'],
+    });
+    await host.admin.createTenant(staff, { id: customer, slug: 'customer', name: 'Customer' });
+    await host.provisionScope(staff, { tenantId: customer, scopeId: authScope, vertical: 'managed-product' });
+    await host.admin.activateScope(staff, customer, authScope);
+    // The state a downgrade reconciles away from: 'flows' held, plus a PLATFORM-granted
+    // key outside the manager's declared universe that must survive untouched.
+    await host.admin.grantEntitlement(staff, customer, 'flows', { plan: 'pro' });
+    await host.admin.grantEntitlement(staff, customer, 'managed-product', { plan: 'base' });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('grants the target, revokes declared-but-absent, leaves undeclared keys alone, re-projects', async () => {
+    const outcome = await setEntitlementsHandler(deps())(
+      ctx,
+      intent('set-entitlements', {
+        payload: {
+          tenantId: customer,
+          authScopeId: authScope,
+          plan: 'enterprise',
+          entitlements: [{ key: 'vault', plan: 'enterprise' }],
+        },
+      }),
+    );
+
+    expect(outcome).toMatchObject({ status: 'done', result: { tenantId: customer, plan: 'enterprise' } });
+    const held = await host.admin.listEntitlements(staff, customer);
+    const keys = held.map((e) => e.entitlementKey).sort();
+    expect(keys).toEqual(['managed-product', 'vault']); // 'flows' revoked, platform grant untouched
+    expect(held.find((e) => e.entitlementKey === 'vault')).toMatchObject({ plan: 'enterprise' });
+    // Re-projected into the auth scope with the authoritative post-reconcile set.
+    expect(reconciled?.scopeId).toBe(authScope);
+    expect(reconciled?.entitlements?.map((e) => e.entitlementKey).sort()).toEqual(['managed-product', 'vault']);
+  });
+
+  it('refuses a target key outside the declared universe before touching anything', async () => {
+    const outcome = await setEntitlementsHandler(deps())(
+      ctx,
+      intent('set-entitlements', {
+        payload: { tenantId: customer, authScopeId: authScope, plan: 'x', entitlements: [{ key: 'rogue', plan: null }] },
+      }),
+    );
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/'rogue' is not among the SKUs/);
+  });
+
+  it('an unknown auth scope settles failed', async () => {
+    const outcome = await setEntitlementsHandler(deps())(
+      ctx,
+      intent('set-entitlements', {
+        payload: { tenantId: customer, authScopeId: ulid(), plan: 'x', entitlements: [] },
+      }),
+    );
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/unknown scope for tenant/);
   });
 });

@@ -75,3 +75,67 @@ export type ArchiveScopePayload = z.infer<typeof archiveScopePayload>;
 
 /** The well-known intent kind string for `archiveScopePayload`. */
 export const ARCHIVE_SCOPE_KIND = 'archive-scope';
+
+/**
+ * One entitlement a manager vertical asks the platform to grant (#412) — the SKU key plus
+ * its tier grouping. `plan: null` = an ungrouped on/off flag. Deliberately NOT the full
+ * `entitlementGrantInput` (no quota/expiry): a manager names WHAT a customer bought; how
+ * a key meters is platform/console policy.
+ */
+export const entitlementSelection = z.object({
+  key: z.string().min(1),
+  plan: z.string().min(1).nullable(),
+});
+export type EntitlementSelection = z.infer<typeof entitlementSelection>;
+
+/**
+ * The `provision-tenant` intent kind (#412) — a MANAGER vertical (a console whose job is to
+ * add tenants, e.g. the AuthHero console) asking the platform to create a NEW customer
+ * tenant, its first scope running a (possibly different) vertical, and its entitlements.
+ * Unlike `provision-sibling`, the target tenant does not exist yet, so the drained scope
+ * proves nothing about it — admissibility is bounded on the MANAGER instead (a
+ * platform-granted provisioner capability + its declared SKU universe; platform-drain.ts).
+ * All ids are proposed by the vertical as idempotent join keys: a retry after a partial
+ * failure converges on the same tenant/scope instead of minting duplicates.
+ */
+export const provisionTenantPayload = z.object({
+  tenant: z.object({
+    id: z.string().min(1),
+    slug: z.string().min(1),
+    name: z.string().min(1),
+  }),
+  /** The tenant's FIRST scope. `vertical` comes from the payload, never inherited. */
+  instance: z.object({
+    vertical: z.string().min(1),
+    scopeId: z.string().min(1),
+    slug: z.string().min(1),
+    name: z.string().min(1),
+    owner: z.string().min(1),
+  }),
+  /** SKUs to grant the new tenant + project into the scope (#310). */
+  entitlements: z.array(entitlementSelection),
+  /** Per-instance settings, delivered via the vertical's `/internal/configure` when present. */
+  config: z.record(z.string(), z.string()).optional(),
+});
+export type ProvisionTenantPayload = z.infer<typeof provisionTenantPayload>;
+
+/** The well-known intent kind string for `provisionTenantPayload`. */
+export const PROVISION_TENANT_KIND = 'provision-tenant';
+
+/**
+ * The `set-entitlements` intent kind (#412) — reconcile a managed tenant's grants to a
+ * plan's TARGET set. The payload names the target; the platform grants what is present and
+ * revokes any key in the manager's declared SKU universe that is absent — so the declared
+ * set bounds BOTH sides and a downgrade revokes cleanly. `authScopeId` is the scope the
+ * new set is re-projected into (the vertical's #310 projection is a full replace).
+ */
+export const setEntitlementsPayload = z.object({
+  tenantId: z.string().min(1),
+  authScopeId: z.string().min(1),
+  plan: z.string().min(1),
+  entitlements: z.array(entitlementSelection),
+});
+export type SetEntitlementsPayload = z.infer<typeof setEntitlementsPayload>;
+
+/** The well-known intent kind string for `setEntitlementsPayload`. */
+export const SET_ENTITLEMENTS_KIND = 'set-entitlements';
