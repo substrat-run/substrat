@@ -555,9 +555,9 @@ function Deployments({ app }: { app: AppRow }) {
       })()}
       <HonestyBanner>
         {selfServe ? (
-          <>Read live from the registry. “Running” is the version this app’s scope is pinned to — what the router serves. This vertical is yours: promote a version to <b>prod</b> on the <a href="#/verticals" style={{ color: 'inherit' }}>Verticals page</a>, then updating here rebinds this app to it.</>
+          <>Read live from the registry. “Running” is the version the router serves for this app. To ship a newer one, promote it to <b>prod</b> on the <a href="#/verticals" style={{ color: 'inherit' }}>Verticals page</a>, then update here.</>
         ) : (
-          <>Read live from the registry. “Running” is the version this app’s scope is pinned to — what the router serves. Versions are managed by the Substrat team; promotion to prod is a staff action, and updating rebinds this app to the current prod version.</>
+          <>Read live from the registry. “Running” is the version the router serves for this app. The Substrat team promotes versions to prod; updating here moves this app to the current prod version.</>
         )}
       </HonestyBanner>
       {dep.versions.length === 0 ? (
