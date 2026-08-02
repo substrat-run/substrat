@@ -17,6 +17,8 @@ import type { Api } from '../lib/api';
  * from a build), so this surface does not hand-enter one; what it OWNS is the staff
  * side: admit or reject a pending version, and promote a channel — which refuses a
  * changed permission or migration digest unless it is acknowledged here, in the open.
+ * It is also where a builder's publish request lands (marketplace-publish.md §5): the
+ * queue is a badge on the list, and List/Unlist is the staff review that resolves it.
  */
 
 export interface VerticalsProps {
@@ -113,6 +115,19 @@ export function Verticals({ api, onToast }: VerticalsProps) {
     { header: 'Slug', render: (v) => <Tag mono>{v.slug}</Tag> },
     { header: 'Name', render: (v) => v.name },
     { header: 'Source', render: (v) => <Tag mono>{v.source}</Tag> },
+    {
+      // The publish queue lives here: a pending request is a builder waiting on staff,
+      // so it must be visible from the list, not only after opening the row.
+      header: 'Marketplace',
+      render: (v) =>
+        v.listed ? (
+          <Badge status="success">listed</Badge>
+        ) : v.publishRequestedAt ? (
+          <Badge status="warning">publish requested {v.publishRequestedAt.slice(0, 10)}</Badge>
+        ) : (
+          <span style={{ color: 'var(--text-placeholder)', fontSize: 12.5 }}>private</span>
+        ),
+    },
     {
       header: 'Installs',
       render: (v) =>
@@ -211,6 +226,23 @@ export function Verticals({ api, onToast }: VerticalsProps) {
           description={`Versions and channels — ${selected.slug}`}
           actions={
             <span style={{ display: 'inline-flex', gap: 8 }}>
+              {/* List = the staff publish admission (marketplace-publish.md §5), so it gets
+                  the primary variant — it widens the audience to every tenant; Unlist is
+                  danger because it pulls a live listing. The API refuses listing while prod
+                  points at an auto-admitted version — that refusal surfaces verbatim via
+                  `run`, deliberately not pre-checked here. */}
+              <Button
+                variant={selected.listed ? 'danger' : 'primary'}
+                onClick={() =>
+                  run(
+                    () => api.setVerticalListed(selected.slug, !selected.listed),
+                    selected.listed ? 'Vertical unlisted' : 'Vertical listed',
+                    selected.slug,
+                  )
+                }
+              >
+                {selected.listed ? 'Unlist' : 'List'}
+              </Button>
               <Button
                 variant="secondary"
                 onClick={() =>
