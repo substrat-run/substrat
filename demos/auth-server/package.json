@@ -7,6 +7,9 @@
   "substrat": {
     "slug": "auth-server",
     "name": "Auth Server",
+    "provides": [
+      "oidc-issuer"
+    ],
     "envSpec": [
       {
         "key": "PUBLIC_ORIGIN",

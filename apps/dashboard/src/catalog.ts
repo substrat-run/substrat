@@ -35,6 +35,10 @@ export interface CatalogEntry {
    * leaves this empty. Mirrors a vertical's own `moduleManifest.envSpec` / app manifest.
    */
   envSpec?: EnvVarSpec[];
+  /** Capabilities this vertical provides (e.g. `oidc-issuer`) — manifest `provides` (#427). */
+  provides?: string[];
+  /** Capabilities this vertical can consume at install (e.g. `oidc-issuer`) — manifest `requires` (#427). */
+  requires?: string[];
 }
 
 export const CATALOG: Record<string, CatalogEntry> = {
@@ -67,6 +71,9 @@ export const CATALOG: Record<string, CatalogEntry> = {
     // Deployed to the shared control plane's dispatch namespace and promoted to prod, so the
     // hosted catalog now offers it. (Was `connected: false` while it wasn't yet deployable.)
     connected: true,
+    // Mirrors the vertical's own manifest `requires` (#427): the install form offers the
+    // tenant's `oidc-issuer` providers to bind; builtin auth stays the default.
+    requires: ['oidc-issuer'],
     entitlements: ['meridian', 'protocol'],
     ownerGrants: [
       HR_PERM.employeeManage, HR_PERM.absenceConfigure, HR_PERM.absenceApprove, HR_PERM.absenceRead,
@@ -110,6 +117,10 @@ export async function ensureCatalog(host: ScopeHost, staff: PlatformActorId): Pr
       ownerGrants: e.ownerGrants,
       listed: e.connected !== false,
       ...(e.envSpec ? { envSpec: e.envSpec } : {}),
+      // Capabilities ride to the registry too (#427), so install-time binding reads
+      // them off the row — a builtin and a pushed vertical resolve identically.
+      ...(e.provides ? { provides: e.provides } : {}),
+      ...(e.requires ? { requires: e.requires } : {}),
     });
   }
 }
@@ -133,6 +144,14 @@ export interface CatalogListing {
    * but unconfigured. Same spec the Env tab renders after install.
    */
   envSpec?: EnvVarSpec[];
+  /**
+   * Declared capabilities (#427, marketplace-publish.md §4). `provides` marks a vertical
+   * whose instances can be BOUND by others (an `oidc-issuer` shows up in the Identity
+   * picker; the vertical itself gets no Identity section — an issuer doesn't delegate to
+   * another issuer). `requires` marks a vertical that can consume one at install.
+   */
+  provides?: string[];
+  requires?: string[];
 }
 
 /**
@@ -159,5 +178,23 @@ export function availableCatalog(
       listed: v.listed,
       source: v.source,
       ...(v.envSpec?.length ? { envSpec: v.envSpec } : {}),
+      ...(v.provides?.length ? { provides: v.provides } : {}),
+      ...(v.requires?.length ? { requires: v.requires } : {}),
     }));
+}
+
+/**
+ * The slugs whose instances can serve as `oidc-issuer` providers (#427): every registered
+ * vertical that DECLARES the capability, plus the literal `auth-server` — the pre-declaration
+ * provider (registry rows pushed before `provides` existed carry no capability, and its
+ * app rows must keep resolving as issuers).
+ */
+export function oidcIssuerProviderSlugs(
+  verticals: ReadonlyArray<Pick<Vertical, 'slug' | 'provides'>>,
+  remote?: ReadonlyArray<{ slug: string; provides?: string[] }>,
+): Set<string> {
+  const slugs = new Set(['auth-server']);
+  for (const v of verticals) if (v.provides?.includes('oidc-issuer')) slugs.add(v.slug);
+  for (const v of remote ?? []) if (v.provides?.includes('oidc-issuer')) slugs.add(v.slug);
+  return slugs;
 }

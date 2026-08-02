@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { envVarSpec } from '@substrat-run/contracts';
-import { AUTH_SERVER_ENV } from '../src/manifest.js';
+import { AUTH_SERVER_ENV, AUTH_SERVER_PROVIDES } from '../src/manifest.js';
 
 /**
  * `substrat push` carries the env-spec from `package.json` `substrat.envSpec` (it reads JSON,
@@ -16,5 +16,12 @@ describe('envSpec is declared once', () => {
     };
     const declared = envVarSpec.array().parse(pkg.substrat?.envSpec ?? []);
     expect(declared).toEqual(AUTH_SERVER_ENV);
+  });
+
+  it('package.json substrat.provides matches AUTH_SERVER_PROVIDES (#427)', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+      substrat?: { provides?: string[] };
+    };
+    expect(pkg.substrat?.provides ?? []).toEqual(AUTH_SERVER_PROVIDES);
   });
 });

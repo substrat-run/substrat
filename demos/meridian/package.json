@@ -7,6 +7,9 @@
   "substrat": {
     "slug": "meridian",
     "name": "Meridian",
+    "requires": [
+      "oidc-issuer"
+    ],
     "permissions": "src/provision.ts",
     "envSpec": [
       {

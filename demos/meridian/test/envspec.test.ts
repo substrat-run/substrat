@@ -17,4 +17,12 @@ describe('envSpec is declared once', () => {
     const declared = envVarSpec.array().parse(pkg.substrat?.envSpec ?? []);
     expect(declared).toEqual(MERIDIAN_ENV);
   });
+
+  it('package.json substrat.requires matches the manifest requires (#427)', async () => {
+    const { meridianManifest } = await import('../src/manifest.js');
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+      substrat?: { requires?: string[] };
+    };
+    expect(pkg.substrat?.requires ?? []).toEqual(meridianManifest.requires ?? []);
+  });
 });

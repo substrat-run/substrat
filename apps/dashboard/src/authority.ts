@@ -276,11 +276,11 @@ export class TenantNarrowedControlPlane {
    * same posture as `listVerticals` above, plus the public (`listed`) tier.
    */
   async listCatalog(): Promise<
-    Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }> }>
+    Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[] }>
   > {
     const all =
       (await this.call<
-        Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }> }>
+        Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[] }>
       >('/verticals')) ?? [];
     return all
       .filter((v) => v.listed || v.ownerTenant === this.tenantId)
@@ -297,6 +297,10 @@ export class TenantNarrowedControlPlane {
         envSpec: v.envSpec,
         // Declared surfaces ride the same way — the Domains tab's picker.
         surfaces: v.surfaces,
+        // Declared capabilities ride too (#427) — install-time `oidc-issuer` binding
+        // resolves providers/requirers off the registry row, pushed or builtin alike.
+        provides: v.provides,
+        requires: v.requires,
       }));
   }
 

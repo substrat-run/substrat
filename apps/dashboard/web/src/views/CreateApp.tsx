@@ -18,6 +18,11 @@ interface Source {
   /** The vertical's declared config fields (#426) — rendered on the Configure step so
    *  first-run values ride WITH provisioning instead of a later Env-tab save. */
   envSpec: EnvVarSpec[];
+  /** Declared capabilities (#427): an `oidc-issuer` PROVIDER gets no Identity section
+   *  (an issuer doesn't delegate to another issuer); a REQUIRER's Identity section is
+   *  its declared delegation seam. */
+  provides: string[];
+  requires: string[];
 }
 
 /** Short marketing lines for the first-party verticals the live catalog can offer. */
@@ -118,6 +123,8 @@ function VerticalRow({ entry, onPick }: { entry: CatalogEntry; onPick: (s: Sourc
             defaultName: entry.name,
             verticalSlug: entry.slug,
             envSpec: entry.envSpec ?? [],
+            provides: entry.provides ?? [],
+            requires: entry.requires ?? [],
           })
         }
       >
@@ -200,11 +207,15 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
   const suffix = `${teamName ? `-${slugify(teamName)}` : ''}.global.substrat.run`;
 
   // The Identity choice (vertical-auth-detach.md §2.4). 'builtin' = the vertical's own
-  // auth (the safe default — every vertical supports it); an Auth Server app = one-click
-  // SSO (the client is registered there automatically); 'external' = any OIDC issuer,
-  // configured by hand. Hidden when installing an Auth Server itself — an issuer doesn't
-  // authenticate against another issuer.
-  const identityApplies = source.verticalSlug !== 'auth-server';
+  // auth (the safe default — every vertical supports it); an issuer app = one-click SSO
+  // (the client is registered there automatically); 'external' = any OIDC issuer,
+  // configured by hand. Hidden when installing an `oidc-issuer` PROVIDER itself (#427,
+  // capability-declared — the legacy `auth-server` slug is grandfathered) — an issuer
+  // doesn't authenticate against another issuer.
+  const identityApplies = !source.provides.includes('oidc-issuer') && source.verticalSlug !== 'auth-server';
+  // A declared requirer (#427): the Identity section is the vertical's own delegation
+  // seam, so say so — the offer is capability-driven, not a generic form section.
+  const declaresOidc = source.requires.includes('oidc-issuer');
   const [identity, setIdentity] = useState('builtin');
   const [issuer, setIssuer] = useState('');
   const [clientId, setClientId] = useState('');
@@ -308,6 +319,11 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
               onChange={(e) => setIdentity(e.target.value)}
               style={{ maxWidth: 420 }}
             />
+            {declaresOidc && identity === 'builtin' && (
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                This app can delegate sign-in to an OIDC issuer — pick one of your issuer apps for team-wide SSO, or keep built-in accounts.
+              </div>
+            )}
             {identity !== 'builtin' && identity !== 'external' && (
               <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
                 Users sign in through this Auth Server — the app is registered there automatically when it's created.

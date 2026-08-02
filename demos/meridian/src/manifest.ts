@@ -119,4 +119,11 @@ export const meridianManifest = moduleManifest.parse({
   ],
   entitlementKey: 'meridian',
   envSpec: MERIDIAN_ENV,
+  // This app can DELEGATE sign-in to an OIDC issuer (manifest `requires`, #427): at
+  // install the dashboard offers the tenant's `oidc-issuer` providers to bind — issuer
+  // from the provider's hostname, client minted by dynamic registration, delivered as
+  // `substrat:auth`. Requiring is an OFFER, not a demand: builtin auth stays the
+  // default, and the OIDC_* envSpec above remains the hand-configured fallback for an
+  // externally-hosted issuer. Mirrored in `package.json` `substrat.requires`.
+  requires: ['oidc-issuer'],
 });

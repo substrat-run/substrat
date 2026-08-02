@@ -51,9 +51,20 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
   },
 ];
 
-/** The standalone app manifest — slug + name + declared environment. */
+/**
+ * The capabilities this vertical PROVIDES (manifest `provides`, marketplace-publish.md §4):
+ * it serves OIDC discovery/JWKS/token and registers relying parties programmatically
+ * (RFC 7591), so an installing app that `requires: ['oidc-issuer']` can be bound to an
+ * instance of it — issuer resolved from the instance's hostname, client minted by dynamic
+ * registration — instead of hand-copied OIDC_* env (#427). MIRRORED in `package.json`
+ * `substrat.provides` (what `substrat push` carries); the drift test guards the pair.
+ */
+export const AUTH_SERVER_PROVIDES = ['oidc-issuer'];
+
+/** The standalone app manifest — slug + name + declared environment + capabilities. */
 export const authServerManifest = {
   slug: 'auth-server',
   name: 'Auth Server',
   envSpec: AUTH_SERVER_ENV,
+  provides: AUTH_SERVER_PROVIDES,
 };

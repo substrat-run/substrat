@@ -28,7 +28,7 @@ import { calloutModule } from '@substrat-run/demo-callout/module';
 // the demo's node/better-auth seed. M0 bundles it here, same seam as Callout.
 import { meridianModule } from '@substrat-run/demo-meridian/module';
 import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
-import { CATALOG, ensureCatalog, availableCatalog } from './catalog.js';
+import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
 import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
@@ -446,22 +446,43 @@ const createAppBody = z.object({
 /**
  * Resolve an API Identity choice to a concrete issuer. An `auth-server` choice names
  * one of the CALLER'S own apps and is resolved to its issuer origin from THEIR app
- * list — it must be an active Auth Server with a bound hostname; anything else is a
- * 400 now rather than a dangling issuer later.
+ * list — it must be an ACTIVE instance of a vertical that PROVIDES `oidc-issuer`
+ * (manifest `provides`, #427 — no longer the hardcoded `auth-server` slug), with a
+ * bound hostname; anything else is a 400 now rather than a dangling issuer later.
  */
-function resolveAuthChoice(choice: z.infer<typeof appAuthChoiceBody>, apps: DashboardAppRow[]): AppAuthChoice {
+function resolveAuthChoice(
+  choice: z.infer<typeof appAuthChoiceBody>,
+  apps: DashboardAppRow[],
+  providerSlugs: ReadonlySet<string>,
+): AppAuthChoice {
   if (choice.source === 'external') {
     const { source, ...rest } = choice;
     return { source, ...rest };
   }
   const issuerApp = apps.find((a) => a.app_scope_id === choice.scopeId);
-  if (!issuerApp || issuerApp.vertical_slug !== 'auth-server') {
-    throw new HTTPException(400, { message: 'the chosen auth server is not one of your Auth Server apps' });
+  if (!issuerApp || !providerSlugs.has(issuerApp.vertical_slug)) {
+    throw new HTTPException(400, { message: 'the chosen auth server is not one of your apps that provides oidc-issuer' });
   }
   if (issuerApp.status !== 'active' || !issuerApp.hostname) {
     throw new HTTPException(400, { message: `auth server '${issuerApp.name}' is not active yet — wait for it to provision` });
   }
   return { source: 'auth-server', issuer: `https://${issuerApp.hostname}` };
+}
+
+/**
+ * The slugs whose instances count as `oidc-issuer` providers for this caller (#427):
+ * capability-declared verticals from the local registry + the shared plane's catalog
+ * (same lookup ladder every other install read uses), plus the legacy `auth-server`
+ * slug for rows pushed before `provides` existed.
+ */
+async function oidcProviderSlugsFor(
+  host: ReturnType<typeof hostFor>,
+  cp?: TenantNarrowedControlPlane | null,
+): Promise<Set<string>> {
+  await ensureCatalog(host, STAFF);
+  const local = await host.admin.listVerticals(STAFF);
+  const remote = cp ? await cp.listCatalog().catch(() => []) : [];
+  return oidcIssuerProviderSlugs(local, remote);
 }
 
 // A builder self-serves every channel of a PRIVATE vertical — prod included, which is
@@ -549,6 +570,8 @@ app.get('/api/catalog', async (c) => {
           listed: v.listed,
           source: v.source,
           ...(v.envSpec?.length ? { envSpec: v.envSpec as EnvVarSpec[] } : {}),
+          ...(v.provides?.length ? { provides: v.provides } : {}),
+          ...(v.requires?.length ? { requires: v.requires } : {}),
         });
       }
     }
@@ -1726,8 +1749,8 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const choice = resolveAuthChoice(appAuthChoiceBody.parse(await c.req.json()), apps);
   const cp = controlPlaneFor(c.env, node.tenantId);
+  const choice = resolveAuthChoice(appAuthChoiceBody.parse(await c.req.json()), apps, await oidcProviderSlugsFor(host, cp));
   // Prefer the stored column, but fall back to the live router bindings: an app can be
   // fully reachable while its dashboard column is null (a bind whose activation step threw
   // during provisioning), and refusing the save on that stale bookkeeping is the #294 bug.
@@ -1804,7 +1827,8 @@ app.post('/api/apps', async (c) => {
       body.auth.source === 'auth-server'
         ? ((await (await host.getScope(node.principal, node.tenantId, node.scopeId)).invoke('dashboard/list-apps', {})) as DashboardAppRow[])
         : [];
-    appAuth = resolveAuthChoice(body.auth, apps);
+    const providers = body.auth.source === 'auth-server' ? await oidcProviderSlugsFor(host, cp) : new Set<string>();
+    appAuth = resolveAuthChoice(body.auth, apps, providers);
   }
   const appRow = await createApp(host, {
     node,
