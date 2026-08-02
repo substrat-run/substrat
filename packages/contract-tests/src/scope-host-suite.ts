@@ -1634,6 +1634,26 @@ export function scopeHostContractSuite(
       await expect(host.admin.setVerticalInstallsBlocked(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
     });
 
+    it('grants the tenant-provisioner capability (setVerticalTenantProvisioner) — a staff grant a re-push cannot touch', async () => {
+      const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
+      await host.admin.registerVertical(staff, { slug: 'managertest', name: 'ManagerTest', source: 'cli', ownerTenant: t2 });
+      expect((await at('managertest'))?.tenantProvisioner).toBe(false); // never granted by push
+
+      await host.admin.setVerticalTenantProvisioner(staff, 'managertest', true);
+      expect((await at('managertest'))?.tenantProvisioner).toBe(true);
+      await host.admin.setVerticalTenantProvisioner(staff, 'managertest', true); // idempotent
+
+      // The invariant that makes this a GRANT: a re-push refresh must not reset (or set) it —
+      // pushing new code is never how a vertical acquires or keeps platform authority.
+      await host.admin.registerVertical(staff, { slug: 'managertest', name: 'ManagerTest', source: 'cli', ownerTenant: t2 });
+      expect((await at('managertest'))?.tenantProvisioner).toBe(true);
+
+      await host.admin.setVerticalTenantProvisioner(staff, 'managertest', false);
+      expect((await at('managertest'))?.tenantProvisioner).toBe(false);
+
+      await expect(host.admin.setVerticalTenantProvisioner(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
+    });
+
     it('deletes a vertical — refused while a scope is bound, total once nothing is', async () => {
       // 'callout' still backs s1 (bound above): the refusal that stops a delete from
       // stranding a live scope's version pin and routing.

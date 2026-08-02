@@ -449,6 +449,8 @@ interface VerticalRow {
   publish_requested_at: string | null;
   /** New installs blocked (0/1) — the staff kill-switch; gates provisioning, not serving. */
   installs_blocked: number;
+  /** Tenant-provisioner capability (0/1, #412) — staff grant; never touched by a re-push. */
+  tenant_provisioner: number;
   /** The stable serving script (#286): name, current version, DO-class/tag delta base. */
   serving_ref: string | null;
   serving_version_id: string | null;
@@ -734,6 +736,10 @@ export class SqliteScopeHost implements ScopeHost {
         -- and provisioning refuses, for everyone including the owner. Existing scopes
         -- keep running — this gates provisioning, not serving.
         installs_blocked INTEGER NOT NULL DEFAULT 0,
+        -- Tenant-provisioner capability (#412). 1 = this vertical's scopes may enqueue
+        -- provision-tenant / set-entitlements intents the platform executes. A staff
+        -- grant (set_vertical_tenant_provisioner), never set on insert or re-push.
+        tenant_provisioner INTEGER NOT NULL DEFAULT 0,
         -- The ONE stable serving script (#286): the name every new scope's data DO
         -- lives in, the version it currently runs, and the DO-class/migration-tag
         -- base the next in-place upload diffs against.
@@ -2355,6 +2361,7 @@ export class SqliteScopeHost implements ScopeHost {
         listed: !!r.listed,
         ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         installsBlocked: !!r.installs_blocked,
+        tenantProvisioner: !!r.tenant_provisioner,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
@@ -3119,6 +3126,14 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('UPDATE verticals SET installs_blocked = ? WHERE slug = ?')
           .run(blocked ? 1 : 0, slug);
         this.recordAdmin(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: existing.installsBlocked }, { installsBlocked: blocked });
+      },
+      setVerticalTenantProvisioner: async (actor, slug: string, granted: boolean) => {
+        const existing = readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        this.directory
+          .prepare('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?')
+          .run(granted ? 1 : 0, slug);
+        this.recordAdmin(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: existing.tenantProvisioner }, { tenantProvisioner: granted });
       },
       deleteVertical: async (actor, slug: string) => {
         const existing = readVertical(slug);
@@ -4619,6 +4634,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'verticals', 'listed', 'listed INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn(this.directory, 'verticals', 'publish_requested_at', 'publish_requested_at TEXT');
     this.ensureColumn(this.directory, 'verticals', 'installs_blocked', 'installs_blocked INTEGER NOT NULL DEFAULT 0');
+    // #412: the tenant-provisioner capability — a staff grant on the registry row.
+    this.ensureColumn(this.directory, 'verticals', 'tenant_provisioner', 'tenant_provisioner INTEGER NOT NULL DEFAULT 0');
     // #286: the stable serving script + what the next in-place upload diffs against.
     this.ensureColumn(this.directory, 'verticals', 'serving_ref', 'serving_ref TEXT');
     this.ensureColumn(this.directory, 'verticals', 'serving_version_id', 'serving_version_id TEXT');

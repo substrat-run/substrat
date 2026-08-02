@@ -1844,6 +1844,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ slug, installsBlocked: blocked });
   });
 
+  // Grant/revoke the TENANT-PROVISIONER capability (#412) — whether this vertical's scopes
+  // may enqueue provision-tenant / set-entitlements intents the platform executes. Staff-only
+  // (not in BUILDER_ROUTES): granting platform authority is precisely the seam a vertical's
+  // owner must not control. The drain's admitManager reads the flag at execution time.
+  app.post('/verticals/:slug/tenant-provisioner', async (c) => {
+    const slug = c.req.param('slug');
+    const { granted } = z.object({ granted: z.boolean() }).parse(await c.req.json());
+    await admin.setVerticalTenantProvisioner(c.get('actor'), slug, granted);
+    return c.json({ slug, tenantProvisioner: granted });
+  });
+
   // Delete a vertical + its versions and channels (staff-only, same confinement).
   // Refused below the seam while any scope is still bound — surfaces as a 4xx via
   // mapError, naming the count. Dispatch scripts become orphans for cleanup (#248).

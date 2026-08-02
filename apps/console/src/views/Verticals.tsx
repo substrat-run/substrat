@@ -137,6 +137,17 @@ export function Verticals({ api, onToast }: VerticalsProps) {
           <span style={{ color: 'var(--text-placeholder)', fontSize: 12.5 }}>open</span>
         ),
     },
+    {
+      // The tenant-provisioner GRANT (#412/#444): platform authority a push can never
+      // confer, so holding it must be visible from the list, like the publish queue.
+      header: 'Capability',
+      render: (v) =>
+        v.tenantProvisioner ? (
+          <Badge status="warning">tenant provisioner</Badge>
+        ) : (
+          <span style={{ color: 'var(--text-placeholder)', fontSize: 12.5 }}>—</span>
+        ),
+    },
     { header: 'Created', render: (v) => v.createdAt.slice(0, 10), mono: true, muted: true, width: 110 },
   ];
 
@@ -254,6 +265,21 @@ export function Verticals({ api, onToast }: VerticalsProps) {
                 }
               >
                 {selected.installsBlocked ? 'Allow installs' : 'Block installs'}
+              </Button>
+              {/* The tenant-provisioner capability (#412/#444) — grant = this vertical's
+                  scopes may create customer tenants via platform intents, so revoke is
+                  the safe direction and grant deliberately reads as the loud one. */}
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  run(
+                    () => api.setTenantProvisioner(selected.slug, !selected.tenantProvisioner),
+                    selected.tenantProvisioner ? 'Provisioner capability revoked' : 'Provisioner capability granted',
+                    selected.slug,
+                  )
+                }
+              >
+                {selected.tenantProvisioner ? 'Revoke provisioner' : 'Grant provisioner'}
               </Button>
               <Button variant="danger" onClick={() => setDeleteInput('')}>
                 Delete…

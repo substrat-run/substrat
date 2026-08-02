@@ -252,6 +252,13 @@ export function createApi(actor: string | null, baseUrl = '/api') {
         `/verticals/${encodeURIComponent(slug)}/install-block`,
         { blocked },
       ),
+    // Grant/revoke the tenant-provisioner capability (#412): whether this vertical's scopes
+    // may enqueue provision-tenant / set-entitlements intents the platform executes.
+    setTenantProvisioner: (slug: string, granted: boolean) =>
+      post<{ slug: string; tenantProvisioner: boolean }>(
+        `/verticals/${encodeURIComponent(slug)}/tenant-provisioner`,
+        { granted },
+      ),
     // Delete a vertical + its versions/channels. Refused (4xx) while any scope is bound.
     deleteVertical: (slug: string) =>
       call<{ slug: string; deleted: boolean }>(`/verticals/${encodeURIComponent(slug)}`, {

@@ -243,9 +243,9 @@ export function archiveScopeHandler(deps: ArchiveScopeDeps): PlatformRequestHand
  * Unlike `provision-sibling`, the target tenant is NOT proven by the drained scope (it may
  * not exist yet), so admissibility is bounded on the manager instead:
  *
- *  1. `provisioners` — the staff-granted provisioner capability. Deployment config today
- *     (the only manager is first-party); a directory-backed grant when third-party managers
- *     arrive. A vertical not listed settles `failed`.
+ *  1. the `tenantProvisioner` registry flag — the staff-granted provisioner capability
+ *     (#444), flipped by `setVerticalTenantProvisioner` and read here at drain time.
+ *     An ungranted vertical settles `failed`.
  *  2. SKU bound — every entitlement key a payload names must be in the manager's
  *     registry-declared `entitlements` (its manifest's, carried on push), read at drain time.
  *
@@ -256,8 +256,6 @@ export function archiveScopeHandler(deps: ArchiveScopeDeps): PlatformRequestHand
 export interface ManagedTenantDeps {
   host: ScopeHost;
   actor: PlatformActorId;
-  /** Manager verticals (registry slugs) holding the provisioner capability. */
-  provisioners: readonly string[];
   /** Resolve the `VerticalClient` serving a scope — same ladder as `ProvisionSiblingDeps`. */
   resolveVerticalForScope: (scope: {
     vertical: string | null;
@@ -278,18 +276,18 @@ async function admitManager(
   ctx: PlatformRequestContext,
   requestedKeys: string[],
 ): Promise<{ declared: string[] } | { refusal: PlatformRequestOutcome }> {
-  if (!deps.provisioners.includes(ctx.vertical)) {
-    return {
-      refusal: {
-        status: 'failed',
-        error: `vertical '${ctx.vertical}' does not hold the tenant-provisioner capability`,
-      },
-    };
-  }
   const registered = (await deps.host.admin.listVerticals(deps.actor)).find(
     (v) => v.slug === ctx.vertical,
   );
-  const declared = registered?.entitlements ?? [];
+  if (!registered?.tenantProvisioner) {
+    return {
+      refusal: {
+        status: 'failed',
+        error: `vertical '${ctx.vertical}' does not hold the tenant-provisioner capability — staff grants it in the console (registry flag, setVerticalTenantProvisioner)`,
+      },
+    };
+  }
+  const declared = registered.entitlements ?? [];
   for (const key of requestedKeys) {
     if (!declared.includes(key)) {
       return {
