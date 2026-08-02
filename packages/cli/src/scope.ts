@@ -326,6 +326,7 @@ export async function rebindScopeVertical(opts: {
   scopeId: string;
   vertical: string;
   ackMigrations: boolean;
+  abandonData?: boolean;
 }): Promise<void> {
   const res = await fetch(
     `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
@@ -333,16 +334,30 @@ export async function rebindScopeVertical(opts: {
     {
       method: 'POST',
       headers: { ...opts.header, 'content-type': 'application/json' },
-      body: JSON.stringify({ vertical: opts.vertical, ackMigrations: opts.ackMigrations || undefined }),
+      body: JSON.stringify({
+        vertical: opts.vertical,
+        ackMigrations: opts.ackMigrations || undefined,
+        abandonData: opts.abandonData || undefined,
+      }),
     },
   );
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `rebind refused: ${res.status} ${res.statusText}`);
   }
-  const body = await readJson<{ servingRef?: string; versionId?: string; alreadyBound?: boolean; tables?: number }>(res, res.url);
+  const body = await readJson<{
+    servingRef?: string;
+    versionId?: string;
+    alreadyBound?: boolean;
+    tables?: number;
+    dataAbandoned?: boolean;
+  }>(res, res.url);
   if (body.alreadyBound) {
     console.log(`✓ scope ${opts.scopeId} already bound to ${opts.vertical} (${body.servingRef}) — nothing to do.`);
+  } else if (body.dataAbandoned) {
+    console.log(`✓ rebound scope ${opts.scopeId} onto ${opts.vertical} (${body.servingRef}) — directory only, no data carried.`);
+    console.log('  the source script’s copy is left intact — it is the backout.');
+    console.log('  the scope serves nothing until re-provisioned: POST /verticals/<slug>/instances (idempotent).');
   } else {
     console.log(`✓ rebound scope ${opts.scopeId} onto ${opts.vertical} (${body.servingRef}, ${body.tables ?? 0} tables moved).`);
     console.log('  the source script’s copy is left intact — it is the backout.');

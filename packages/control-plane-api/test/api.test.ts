@@ -2710,6 +2710,36 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect(scripts.get(stableDeploymentRefFor(target.slug))?.get(sc)).toEqual([customers]);
   });
 
+  it('rebinds directory-only on abandonData — no bytes carried, gate bypassed, source intact (#389)', async () => {
+    // The prod shape this exists for: a scope whose source script predates
+    // `/internal/export` (#236) and so cannot be dumped at all. The scope stays
+    // LEGACY (servingRef null) — the carried path would have to reach its
+    // per-version script; abandonData never touches it.
+    const { t, slug, sc, v1 } = await legacyScope('abandon-src');
+    // The target's migration history diverges (g2 ≠ g1): with no data carried the
+    // frontier gate has nothing to protect, so no acknowledgement is demanded.
+    const target = await targetLineage('abandon-dst', {
+      version: '0.1.0',
+      digests: { manifest: 'm1', permission: 'p1', migration: 'g2' },
+    });
+
+    const res = await rebind(t, sc, { vertical: target.slug, abandonData: true });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.dataAbandoned).toBe(true);
+    expect(body.servingRef).toBe(stableDeploymentRefFor(target.slug));
+
+    // The directory crossed in one act — slug, version pointer, routing ref.
+    const rec = await host.admin.getScopeRecord(staff, t, sc);
+    expect(rec?.vertical).toBe(target.slug);
+    expect(rec?.verticalVersionId).toBe(target.versionId);
+    expect(rec?.servingRef).toBe(stableDeploymentRefFor(target.slug));
+    // NO bytes moved: the target script was never written the scope (it will be
+    // re-provisioned), and the source script's copy is intact — it is the backout.
+    expect(scripts.get(stableDeploymentRefFor(target.slug))?.has(sc)).toBeFalsy();
+    expect(scripts.get(deploymentRefFor(slug, v1))?.get(sc)).toEqual([customers]);
+  });
+
   it('refuses a rebind to a lineage with no serving script, and an unknown scope (#389)', async () => {
     const { t, sc } = await legacyScope('norefuse-src');
     // Pushed but never promoted: no serving script to receive the data.
