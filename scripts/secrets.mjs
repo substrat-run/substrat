@@ -60,9 +60,10 @@ const MANIFEST = {
       CF_ACCOUNT_ID: 'CF_ACCOUNT_ID',
       CF_SAAS_ZONE_ID: 'CF_SAAS_ZONE_ID',
       // Behavioural config — override wrangler.jsonc `vars` only if set in the file.
+      // (PLATFORM_BASE_DOMAINS is deliberately NOT here: it is a checked-in `vars`
+      // entry (#423), and a secret cannot share a name with a var.)
       CF_SAAS_ROUTING_TARGET: 'CF_SAAS_ROUTING_TARGET',
       CF_SAAS_SSL_METHOD: 'CF_SAAS_SSL_METHOD',
-      PLATFORM_BASE_DOMAINS: 'PLATFORM_BASE_DOMAINS',
     },
   },
   dashboard: {

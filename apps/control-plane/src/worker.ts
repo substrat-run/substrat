@@ -556,7 +556,7 @@ export default {
         provisioner,
         isCustom: (h) => isCustomHostname(h, bases),
       });
-      if (hostnameReport.activated || hostnameReport.failed || hostnameReport.created || hostnameReport.errors.length) {
+      if (hostnameReport.activated || hostnameReport.failed || hostnameReport.created || hostnameReport.healed || hostnameReport.errors.length) {
         console.log('hostname-reconcile', hostnameReport);
       }
     }

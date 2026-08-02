@@ -2713,6 +2713,36 @@ describe('control-plane API — custom-hostname issuance (#305)', () => {
     expect(await host.admin.resolveHostname('legal.acme.com')).toMatchObject({ scopeId: s1 });
   });
 
+  it('/verify heals a platform mint stranded in custom issuance (#423) — active, relics gone, CF object released', async () => {
+    // Recreate the #423 shape below the API: a mint bound while PLATFORM_BASE_DOMAINS
+    // was unset walked custom issuance — CF id + publish-these-records, stuck `verifying`.
+    await host.admin.bindHostname(staff, {
+      hostname: 'stranded.global.substrat.run',
+      tenantId: t1,
+      scopeId: s1,
+      surface: 'app',
+      region: null,
+      canonical: false,
+    });
+    await host.admin.setHostnameIssuance(staff, 'stranded.global.substrat.run', {
+      status: 'verifying',
+      note: null,
+      customHostnameId: 'ch_relic',
+      validationRecords: [
+        { type: 'hostname', name: 'stranded.global.substrat.run', value: 'cname.substrat.run', status: 'active' },
+      ],
+    });
+    expect(await host.admin.resolveHostname('stranded.global.substrat.run')).toBeUndefined();
+
+    const res = await json('/hostnames/stranded.global.substrat.run/verify', 'POST');
+    const body = await res.json();
+    // Active with no relics: nothing left for any surface to render as publish-this-DNS
+    // guidance on the platform's own zone.
+    expect(body).toMatchObject({ status: 'active', customHostnameId: null, validationRecords: [] });
+    expect(removed).toContain('ch_relic'); // the mistaken CF object is released
+    expect(await host.admin.resolveHostname('stranded.global.substrat.run')).toMatchObject({ scopeId: s1 });
+  });
+
   it('refuses a bare public suffix at the door (D-35 registrable-suffix guard)', async () => {
     const res = await json('/hostnames', 'POST', {
       hostname: 'co.uk',
