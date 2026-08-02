@@ -220,7 +220,6 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
   const deps = () => ({
     host,
     actor: staff,
-    provisioners: ['manager-console'],
     resolveVerticalForScope: async () => fakeVertical,
   });
 
@@ -242,6 +241,8 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
       source: 'builtin',
       entitlements: ['flows', 'vault'],
     });
+    // The capability is a staff GRANT on the registry row (#444), not deployment config.
+    await host.admin.setVerticalTenantProvisioner(staff, 'manager-console', true);
     await host.admin.createTenant(staff, { id: managerTenant, slug: 'manager', name: 'Manager' });
     await host.provisionScope(staff, { tenantId: managerTenant, scopeId: managerScope, vertical: 'manager-console' });
     await host.admin.activateScope(staff, managerTenant, managerScope);
@@ -281,12 +282,22 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
   });
 
   it('refuses a vertical without the provisioner capability — terminal, with a reason', async () => {
+    // Unregistered entirely…
     const outcome = await provisionTenantHandler(deps())(
       { ...ctx, vertical: 'some-other-vertical' },
       intent('provision-tenant', { payload: payloadFor(ulid(), ulid()) }),
     );
     expect(outcome.status).toBe('failed');
     expect(outcome.error).toMatch(/tenant-provisioner capability/);
+
+    // …and registered but UNGRANTED: registration (a push) is not the grant.
+    await host.admin.registerVertical(staff, { slug: 'pushed-console', name: 'Pushed', source: 'cli' });
+    const ungranted = await provisionTenantHandler(deps())(
+      { ...ctx, vertical: 'pushed-console' },
+      intent('provision-tenant', { payload: payloadFor(ulid(), ulid()) }),
+    );
+    expect(ungranted.status).toBe('failed');
+    expect(ungranted.error).toMatch(/tenant-provisioner capability/);
   });
 
   it('refuses an entitlement key outside the manager\'s declared SKUs', async () => {
@@ -339,7 +350,6 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
   const deps = () => ({
     host,
     actor: staff,
-    provisioners: ['manager-console'],
     resolveVerticalForScope: async () => fakeVertical,
   });
 
@@ -352,6 +362,7 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
       source: 'builtin',
       entitlements: ['flows', 'vault'],
     });
+    await host.admin.setVerticalTenantProvisioner(staff, 'manager-console', true);
     await host.admin.createTenant(staff, { id: customer, slug: 'customer', name: 'Customer' });
     await host.provisionScope(staff, { tenantId: customer, scopeId: authScope, vertical: 'managed-product' });
     await host.admin.activateScope(staff, customer, authScope);

@@ -643,6 +643,17 @@ export interface HostAdmin {
   setVerticalInstallsBlocked(actor: PlatformActorId, slug: string, blocked: boolean): Promise<void>;
 
   /**
+   * Grant (or revoke) the TENANT-PROVISIONER capability (#412) — whether this
+   * vertical's scopes may enqueue `provision-tenant` / `set-entitlements` intents
+   * that the platform executes with its own authority. A directory-backed grant
+   * rather than deployment config, so granting a manager is an audited staff
+   * action, not an env edit + redeploy. Read at drain time by the platform-intent
+   * handlers; flipping it never touches running scopes. Staff-only, idempotent,
+   * audited.
+   */
+  setVerticalTenantProvisioner(actor: PlatformActorId, slug: string, granted: boolean): Promise<void>;
+
+  /**
    * Delete a vertical from the registry — its row, its versions, its channels.
    *
    * **Refuses while any scope is still bound to it** (`scopes.vertical`), because a

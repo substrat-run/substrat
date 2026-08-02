@@ -33,6 +33,7 @@ export const adminAction = z.enum([
   'setVerticalListed', // marketplace-publish.md §5 — publish/unpublish to the public marketplace
   'requestPublish', // marketplace-publish.md §5 — a builder requests listing (awaiting staff review)
   'setVerticalInstallsBlocked', // the staff kill-switch — block/unblock NEW installs of a vertical
+  'setVerticalTenantProvisioner', // #412 — grant/revoke the tenant-provisioner capability (manager verticals)
   'deleteVertical', // remove a vertical + its versions/channels; refused while any scope is bound
   'bindScopeVersion',
   'promoteVersion',

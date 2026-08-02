@@ -304,6 +304,7 @@ interface ControlPlaneStub {
   updateVerticalListed(slug: string, listed: number): Promise<void>;
   updateVerticalPublishRequest(slug: string, requestedAt: string): Promise<void>;
   updateVerticalInstallsBlocked(slug: string, blocked: number): Promise<void>;
+  updateVerticalTenantProvisioner(slug: string, granted: number): Promise<void>;
   countScopesForVertical(slug: string): Promise<number>;
   deleteVertical(slug: string): Promise<void>;
   listVerticals(): Promise<VerticalRow[]>;
@@ -1618,6 +1619,7 @@ export class CloudflareScopeHost implements ScopeHost {
         listed: !!r.listed,
         ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         installsBlocked: !!r.installs_blocked,
+        tenantProvisioner: !!r.tenant_provisioner,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
@@ -2142,6 +2144,12 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
         await this.cp.updateVerticalInstallsBlocked(slug, blocked ? 1 : 0);
         await this.recordAdmin(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: !!existing.installs_blocked }, { installsBlocked: blocked });
+      },
+      setVerticalTenantProvisioner: async (actor, slug: string, granted: boolean) => {
+        const existing = await this.cp.readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        await this.cp.updateVerticalTenantProvisioner(slug, granted ? 1 : 0);
+        await this.recordAdmin(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: !!existing.tenant_provisioner }, { tenantProvisioner: granted });
       },
       deleteVertical: async (actor, slug: string) => {
         const existing = await this.cp.readVertical(slug);

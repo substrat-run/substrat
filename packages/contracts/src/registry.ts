@@ -84,6 +84,16 @@ export const vertical = z.object({
    */
   installsBlocked: z.boolean().default(false),
   /**
+   * Holds the TENANT-PROVISIONER capability (#412, platform-intents.md) — this vertical's
+   * scopes may enqueue `provision-tenant` / `set-entitlements` intents that the platform
+   * executes (a manager console whose job is to add customer tenants). A directory-backed
+   * staff grant, not deployment config: flipped by `setVerticalTenantProvisioner`, audited,
+   * and read by the drain's `admitManager` at execution time. Like `installsBlocked`,
+   * never set at registration and NEVER touched by a re-push refresh — pushing new code
+   * must not be able to grant (or silently keep) platform authority.
+   */
+  tenantProvisioner: z.boolean().default(false),
+  /**
    * The vertical's ONE stable serving script (#286). A Durable Object namespace
    * belongs to its script, so this unchanged name is what makes a promote carry every
    * scope's data forward: promote re-uploads the new version's bundle onto it in
