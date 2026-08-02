@@ -314,6 +314,42 @@ export async function scopeStatus(opts: {
 }
 
 /**
+ * `substrat scope rebind <scopeId> --to <slug>` — move ONE scope onto a DIFFERENT vertical
+ * lineage's serving script (#389): the update-rebind behind retiring a platform-owned lineage
+ * in favour of a tenant-owned one. Staff-only server-side. Refused when the two lineages'
+ * migration digests differ, unless `--ack-migrations` says both diffs were read.
+ */
+export async function rebindScopeVertical(opts: {
+  controlPlaneUrl: string;
+  header: Record<string, string>;
+  tenantId: string;
+  scopeId: string;
+  vertical: string;
+  ackMigrations: boolean;
+}): Promise<void> {
+  const res = await fetch(
+    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
+      `/scopes/${encodeURIComponent(opts.scopeId)}/rebind-vertical`,
+    {
+      method: 'POST',
+      headers: { ...opts.header, 'content-type': 'application/json' },
+      body: JSON.stringify({ vertical: opts.vertical, ackMigrations: opts.ackMigrations || undefined }),
+    },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `rebind refused: ${res.status} ${res.statusText}`);
+  }
+  const body = await readJson<{ servingRef?: string; versionId?: string; alreadyBound?: boolean; tables?: number }>(res, res.url);
+  if (body.alreadyBound) {
+    console.log(`✓ scope ${opts.scopeId} already bound to ${opts.vertical} (${body.servingRef}) — nothing to do.`);
+  } else {
+    console.log(`✓ rebound scope ${opts.scopeId} onto ${opts.vertical} (${body.servingRef}, ${body.tables ?? 0} tables moved).`);
+    console.log('  the source script’s copy is left intact — it is the backout.');
+  }
+}
+
+/**
  * `substrat scope adopt-serving --vertical <slug>` — backfill EVERY still-legacy scope of a
  * vertical in one call. The whole-install migration a promote-per-scope would be tedious for.
  */
