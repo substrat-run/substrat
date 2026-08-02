@@ -1,5 +1,45 @@
 # @substrat-run/control-plane-api
 
+## 0.35.0
+
+### Minor Changes
+
+- 17eec41: Platform intent handlers for the manager-vertical capability (#412): `provision-tenant`
+  and `set-entitlements`. A manager vertical (a console whose job is to add tenants — the
+  AuthHero console is the first consumer) enqueues via `ctx.requestPlatform`; the drain now
+  executes both kinds with `HostAdmin` authority. `provision-tenant` creates a NEW customer
+  tenant, grants its entitlements, and materializes its first scope running the PAYLOAD's
+  vertical exactly as a first install would (serving-deployment resolution, per-tenant store
+  mint (#301), `provisionInstance` with the #310 projection, config delivery, activate) —
+  all ids are payload-proposed join keys, so an at-least-once drain converges.
+  `set-entitlements` reconciles a managed tenant to a plan's target set — grant what's
+  named, revoke declared-but-absent — and re-projects into the tenant's auth scope via the
+  vertical's idempotent reconcile.
+
+  Because a new tenant has no proving parent scope, admissibility is bounded on the
+  MANAGER: a tenant-provisioner capability (the control plane's `TENANT_PROVISIONERS`
+  deployment config while every manager is first-party) and the manager's registry-declared
+  SKU universe, which bounds both grant and revoke. Contracts gain the wire schemas
+  (`provisionTenantPayload`, `setEntitlementsPayload`, `entitlementSelection`, kind
+  constants) matching the console's `intents.ts` verbatim.
+
+### Patch Changes
+
+- c200778: Custom-hostname failures now say what actually broke, and heal themselves. A 401/403
+  from Cloudflare's custom-hostname API is a platform misconfiguration (the API token
+  missing 'SSL and Certificates: Edit' on the SaaS zone), not the tenant's DNS — the
+  provisioner's error now names the token so the note stored on the binding sends the
+  operator to the right place instead of the tenant to their DNS provider. The reconcile
+  sweep additionally retries `failed` rows that have no Cloudflare hostname id — a create
+  that never landed (bad credential, transient error) now self-heals on the next pass
+  once the cause is fixed, while `failed` rows _with_ an id (a real validation verdict)
+  stay terminal for the sweep. Dashboard side (unpublished): the per-app Domains tab now
+  renders the failure note, the DNS records to publish, and a per-row "Check again",
+  and the add flows surface an immediately-failed issuance instead of a bare pill.
+- Updated dependencies [17eec41]
+  - @substrat-run/contracts@0.35.0
+  - @substrat-run/kernel@0.35.0
+
 ## 0.34.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # @substrat-run/connector-scrive
 
+## 0.1.25
+
+### Patch Changes
+
+- Updated dependencies [17eec41]
+  - @substrat-run/contracts@0.35.0
+  - @substrat-run/kernel@0.35.0
+
 ## 0.1.24
 
 ### Patch Changes
