@@ -565,6 +565,52 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     expect(await appScope.invoke('hr/list-leave-types', {})).toHaveLength(1);
   });
 
+  it('records the install as durable steps (#424): each stage done, in sequence order', async () => {
+    const acme = await bootstrap('acme-steps');
+    const appScopeId = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme,
+      appScopeId,
+      verticalSlug: 'protocol',
+      name: 'Stepped',
+      appEntitlements: ['protocol'],
+      appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
+    });
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    const steps = (await dash.invoke('dashboard/install-steps', { appScopeId })) as Array<{
+      step: string; status: string; attempts: number; last_error: string | null;
+    }>;
+    // Embedded mode has no vertical round-trip ('provision') and no issuer choice
+    // ('identity') — those steps never ran, so they honestly have no row.
+    expect(steps.map((s) => s.step)).toEqual(['directory', 'activate', 'hostname']);
+    expect(steps.every((s) => s.status === 'done' && s.attempts === 1 && s.last_error === null)).toBe(true);
+  });
+
+  it('re-running a step bumps attempts on ITS OWN row and keeps a failure verbatim until it settles', async () => {
+    const acme = await bootstrap('acme-step-attempts');
+    const appScopeId = scopeId.parse(ulid());
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    await dash.invoke('dashboard/provision-app', { appScopeId, verticalSlug: 'protocol', name: 'S' });
+
+    const record = (status: string, error?: string) =>
+      dash.invoke('dashboard/record-install-step', { appScopeId, step: 'provision', seq: 1, status, ...(error ? { error } : {}) });
+    await record('running');
+    await record('failed', 'vertical refused provisioning: 503 no tenant store attached');
+    let [row] = (await dash.invoke('dashboard/install-steps', { appScopeId })) as Array<{
+      status: string; attempts: number; last_error: string | null;
+    }>;
+    // The downstream error survives VERBATIM — the diagnosis the toast used to swallow.
+    expect(row).toMatchObject({ status: 'failed', attempts: 1, last_error: 'vertical refused provisioning: 503 no tenant store attached' });
+
+    // Resume re-enters the same step: back to running (attempts 2, error cleared), then done.
+    await record('running');
+    [row] = (await dash.invoke('dashboard/install-steps', { appScopeId })) as typeof row[];
+    expect(row).toMatchObject({ status: 'running', attempts: 2, last_error: null });
+    await record('done');
+    [row] = (await dash.invoke('dashboard/install-steps', { appScopeId })) as typeof row[];
+    expect(row).toMatchObject({ status: 'done', attempts: 2, last_error: null });
+  });
+
   it('resuming an app stuck at provisioning converges it to active, in place (#424 case 4)', async () => {
     const acme = await bootstrap('acme-resume');
     const appScopeId = scopeId.parse(ulid());
@@ -602,6 +648,11 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     const events = (await dash.invoke('dashboard/app-events', { appScopeId })) as Array<{ kind: string }>;
     expect(events.map((e) => e.kind)).toEqual(expect.arrayContaining(['created', 'resumed', 'active']));
 
+    // The durable step record (#424) converged with it — every step the resume ran is done.
+    const steps = (await dash.invoke('dashboard/install-steps', { appScopeId })) as Array<{ step: string; status: string }>;
+    expect(steps.map((s) => s.step)).toEqual(['directory', 'activate', 'hostname']);
+    expect(steps.every((s) => s.status === 'done')).toBe(true);
+
     // Only a stuck row resumes: the now-active app refuses a second resume.
     await expect(
       resumeApp(host, { node: acme, appScopeId, verticalSlug: 'protocol', name: 'Stuck' }),
@@ -626,6 +677,13 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     expect(row?.status).toBe('failed');
     const events = (await dash.invoke('dashboard/app-events', { appScopeId })) as Array<{ kind: string; detail: string | null }>;
     expect(events.some((e) => e.kind === 'failed' && e.detail === 'plane down')).toBe(true);
+
+    // The step record names WHERE it died, with the downstream error verbatim (#424).
+    const steps = (await dash.invoke('dashboard/install-steps', { appScopeId })) as Array<{
+      step: string; status: string; last_error: string | null;
+    }>;
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ step: 'directory', status: 'failed', last_error: 'plane down' });
   });
 
   it('deleting an app deprovisions its scope and drops it from the list (record retained)', async () => {

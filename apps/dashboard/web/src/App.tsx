@@ -112,6 +112,12 @@ export function App() {
     setApps(await api.listApps());
   }, []);
 
+  /** The install's durable step record (#424), for the cards' live progress list. */
+  const loadInstallSteps = useCallback(
+    (scopeId: string) => (DEV_MOCK ? Promise.resolve([]) : api.installSteps(scopeId)),
+    [],
+  );
+
   const reloadDeployments = useCallback(async () => {
     if (DEV_MOCK) return;
     setDeployments(await api.listDeployments());
@@ -219,6 +225,16 @@ export function App() {
     const t = setTimeout(() => setToast(undefined), 4500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // While any install is running, refresh the list on a short poll (#424): the row's
+  // status flip (and the server-side reconcile of a stranded 'provisioning' row against
+  // the directory) lands without a manual reload. There is no poll otherwise — the list
+  // is event-driven (create/retry/resume all reload explicitly).
+  useEffect(() => {
+    if (DEV_MOCK || !apps.some((a) => a.status === 'provisioning')) return;
+    const t = setInterval(() => void reloadApps().catch(() => {}), 5000);
+    return () => clearInterval(t);
+  }, [apps, reloadApps]);
 
   const createApp = useCallback(
     async (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) => {
@@ -585,7 +601,7 @@ export function App() {
           <NotFound label="That app could not be found." onBack={() => go('#/apps')} />
         )
       ) : route.section === 'overview' || route.section === 'apps' ? (
-        <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} />
+        <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} />
       ) : route.section === 'verticals' ? (
         <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (

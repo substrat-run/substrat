@@ -110,6 +110,21 @@ export interface AppRow {
   created_at: string;
 }
 
+/**
+ * One step of an app's install sequence (#424) — the durable progress record.
+ * `attempts` > 1 means Resume (or a retry) re-ran the step; a 'failed' step carries
+ * the downstream error VERBATIM in `last_error`.
+ */
+export interface InstallStep {
+  step: 'directory' | 'provision' | 'activate' | 'hostname' | 'identity' | string;
+  seq: number;
+  status: 'running' | 'done' | 'failed';
+  attempts: number;
+  last_error: string | null;
+  started_at: string;
+  settled_at: string | null;
+}
+
 /** One entry in an app's audit trail (Activity panel) — a lifecycle transition. */
 export interface AppEvent {
   id: string;
@@ -566,6 +581,8 @@ export const api = {
   /** Resume an app stuck at 'provisioning' — re-runs the idempotent install tail in place (#424). */
   resumeApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/resume`, { method: 'POST' }),
   appEvents: (scopeId: string) => call<AppEvent[]>(`/apps/${encodeURIComponent(scopeId)}/events`),
+  /** The install's durable step record (#424) — rendered live while an install runs. */
+  installSteps: (scopeId: string) => call<InstallStep[]>(`/apps/${encodeURIComponent(scopeId)}/steps`),
   /** The app's vertical version registry + channels + the version THIS scope actually runs (`boundVersionId`). */
   appDeployments: (scopeId: string) => call<Deployment>(`/apps/${encodeURIComponent(scopeId)}/deployments`),
   /** The declared permission surface (D-39, #336) of the version this app runs, plus the

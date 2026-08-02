@@ -993,6 +993,30 @@ app.get('/api/apps', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   if (cp) {
     for (const a of apps) {
+      // Reconcile a stale 'provisioning' row against the DIRECTORY — the source of
+      // truth (#424 case 4): a healed retry can complete the whole platform sequence
+      // without ever updating the dashboard's own record, which then spins forever.
+      // Old enough to not be a LIVE install (whose row flips via mark-app-active in
+      // seconds); directory 'active' ⇒ project it onto our row, hostname included.
+      // Best-effort: a viewer session lacks the mark-active permission — the invoke
+      // just fails and the row heals on an owner's next visit instead.
+      if (a.status === 'provisioning' && Date.parse(a.created_at) < Date.now() - RECONCILE_AFTER_MS) {
+        const sid = scopeId.parse(a.app_scope_id);
+        const dir = await cp.scopeStatus(sid);
+        if (dir?.status === 'active') {
+          const live = (await cp.listHostnames(sid).catch(() => [])).find((h) => h.status === 'active');
+          const healed = (await dash
+            .invoke('dashboard/mark-app-active', {
+              appScopeId: a.app_scope_id,
+              ...(live ? { hostname: live.hostname } : {}),
+            })
+            .catch(() => null)) as DashboardAppRow | null;
+          if (healed) {
+            a.status = healed.status;
+            a.hostname = healed.hostname;
+          }
+        }
+      }
       if (a.hostname || a.status !== 'active') continue;
       const live = (await cp.listHostnames(scopeId.parse(a.app_scope_id)).catch(() => []))
         .find((h) => h.status === 'active');
@@ -1000,6 +1024,28 @@ app.get('/api/apps', async (c) => {
     }
   }
   return c.json(apps);
+});
+
+/**
+ * A 'provisioning' row older than this is reconciled against the directory on read.
+ * Long enough that a LIVE install (seconds end-to-end) is never touched mid-flight;
+ * short enough that a stranded row heals on the next page load rather than spinning.
+ */
+const RECONCILE_AFTER_MS = 2 * 60 * 1000;
+
+/**
+ * The install's durable step record (#424): the sequence
+ * directory → provision → activate → hostname → identity, each with
+ * status/attempts/last_error — rendered live by the Apps view while an install runs,
+ * and the diagnosis (the failed step + the downstream error VERBATIM) once one fails.
+ * Read from the caller's OWN dashboard scope, so tenant-scoped like the events trail.
+ */
+app.get('/api/apps/:scopeId/steps', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  return c.json(await dash.invoke('dashboard/install-steps', { appScopeId: c.req.param('scopeId') }));
 });
 
 /**

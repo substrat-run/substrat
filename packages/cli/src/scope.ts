@@ -262,6 +262,58 @@ export async function provisionScope(opts: {
 }
 
 /**
+ * `substrat scope status <scopeId>` — the DIRECTORY's truth about one scope (#424): its
+ * status, the version it is bound to, the script serving it, and the role-projection
+ * health check. This is the 10-second read that diagnosing a stuck install previously
+ * required hand-rolled curl against the CP with the CLI's stored bearer.
+ */
+export async function scopeStatus(opts: {
+  controlPlaneUrl: string;
+  header: Record<string, string>;
+  tenantId: string;
+  scopeId: string;
+}): Promise<void> {
+  const base = `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}/scopes/${encodeURIComponent(opts.scopeId)}`;
+  const res = await fetch(base, { headers: opts.header });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `scope status refused: ${res.status} ${res.statusText}`);
+  }
+  const record = await readJson<{
+    slug: string;
+    name: string;
+    status: string;
+    vertical: string | null;
+    verticalVersionId: string | null;
+    servingRef?: string | null;
+    schemaVersion: string;
+    createdAt: string;
+  }>(res, base);
+  // Health is best-effort: it reaches into the vertical's own deployment, which can be
+  // unreachable while the scope record itself still answers — show what we have.
+  const health = await fetch(`${base}/health`, { headers: opts.header })
+    .then((r) => (r.ok ? readJson<{ roleCount: number | null; roleProjectionEmpty: boolean }>(r, `${base}/health`) : null))
+    .catch(() => null);
+  console.log(`scope     ${opts.scopeId}`);
+  console.log(`name      ${record.name} (${record.slug})`);
+  console.log(`vertical  ${record.vertical ?? '—'}`);
+  console.log(`status    ${record.status}`);
+  console.log(`version   ${record.verticalVersionId ?? '— (static binding)'}`);
+  console.log(`serving   ${record.servingRef ?? '— (per-version dispatch)'}`);
+  console.log(`schema    ${record.schemaVersion} migration(s) applied`);
+  console.log(`created   ${record.createdAt}`);
+  if (health) {
+    console.log(`roles     ${health.roleCount ?? 'off-DO'}${health.roleProjectionEmpty ? '  ⚠ EMPTY on an active scope — run `substrat scope provision`' : ''}`);
+  }
+  if (record.status === 'provisioning') {
+    console.log(
+      `\n⚠ 'provisioning' means the install never activated. If the app is actually serving,\n` +
+        `  resume the install from the dashboard's Apps view (it converges in place, #424).`,
+    );
+  }
+}
+
+/**
  * `substrat scope adopt-serving --vertical <slug>` — backfill EVERY still-legacy scope of a
  * vertical in one call. The whole-install migration a promote-per-scope would be tedious for.
  */

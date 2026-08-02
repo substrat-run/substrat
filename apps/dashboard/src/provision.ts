@@ -269,11 +269,12 @@ export async function createApp(
   //    Embedded: in this deployment's own host. On failure (the vertical refused, a
   //    hostname wouldn't bind, …) mark the row `failed` so it doesn't sit silently at
   //    `provisioning`, then re-throw the original error (the caller surfaces it).
+  const step = installStepRecorder(scope, input.appScopeId);
   let provisioned: ProvisionOutcome;
   try {
     provisioned = input.controlPlane
-      ? await provisionOnSharedPlane(input.controlPlane, input)
-      : await provisionEmbedded(host, input);
+      ? await provisionOnSharedPlane(input.controlPlane, input, step)
+      : await provisionEmbedded(host, input, step);
   } catch (e) {
     // Record WHY on the app's audit trail (e.g. "no deployment is bound for vertical 'meridian'"),
     // not just the toast — so the failure is visible on the app's Activity panel afterward.
@@ -287,26 +288,35 @@ export async function createApp(
   //    here is a real failure, not a degraded install: the user asked for THIS issuer,
   //    and an app that silently fell back to builtin would strand its users later.
   if (input.appAuth && input.controlPlane) {
-    let config: Record<string, string>;
+    let config: Record<string, string> | undefined;
     try {
-      if (!provisioned.hostname) {
-        throw new Error('no hostname could be bound, so the OIDC callback URL cannot be formed');
-      }
-      config = await authConfigFor(input.appAuth, {
-        appName: input.name,
-        redirectUri: `https://${provisioned.hostname}/api/auth/callback`,
-        ...(input.registerOidcClient ? { registerClient: input.registerOidcClient } : {}),
+      // The friendly reason is thrown INSIDE the step so the recorded failure and the
+      // surfaced error are the same text (identityFailureReason names the fix, not
+      // just the status line).
+      await step('identity', async () => {
+        try {
+          if (!provisioned.hostname) {
+            throw new Error('no hostname could be bound, so the OIDC callback URL cannot be formed');
+          }
+          config = await authConfigFor(input.appAuth!, {
+            appName: input.name,
+            redirectUri: `https://${provisioned.hostname}/api/auth/callback`,
+            ...(input.registerOidcClient ? { registerClient: input.registerOidcClient } : {}),
+          });
+          await deliverAuthConfig(input.controlPlane!, input.appScopeId, config, input.configureRetryDelaysMs);
+        } catch (e) {
+          throw new Error(identityFailureReason(e, input.verticalSlug), { cause: e });
+        }
       });
-      await deliverAuthConfig(input.controlPlane, input.appScopeId, config, input.configureRetryDelaysMs);
     } catch (e) {
-      const reason = identityFailureReason(e, input.verticalSlug);
+      const reason = e instanceof Error ? e.message : String(e);
       await scope.invoke('dashboard/mark-app-failed', { appScopeId: input.appScopeId, reason }).catch(() => {});
-      throw new Error(reason, { cause: e });
+      throw e;
     }
     // Author the delivered choice in the dashboard's own store (`dashboard/get-app-auth`)
     // so the Settings tab can show and update it later — delivery alone would leave the
     // issuer invisible everywhere but inside the app's deployment.
-    await scope.invoke('dashboard/set-app-auth', { appScopeId: input.appScopeId, config });
+    await scope.invoke('dashboard/set-app-auth', { appScopeId: input.appScopeId, config: config! });
   }
 
   // 4. Flip the account's record to active, recording the hostname if one bound and the
@@ -317,6 +327,58 @@ export async function createApp(
     ...(provisioned.hostname ? { hostname: provisioned.hostname } : {}),
     ...(provisioned.provisionResult ? { provisionResult: provisioned.provisionResult } : {}),
   });
+}
+
+/**
+ * The install sequence (#424), in order. Step rows are keyed by these names and
+ * rendered in this order (`seq` = index). 'provision' and 'identity' only exist in
+ * connected mode (they are vertical round-trips); a step that never ran has no row.
+ */
+export const INSTALL_STEPS = ['directory', 'provision', 'activate', 'hostname', 'identity'] as const;
+export type InstallStepName = (typeof INSTALL_STEPS)[number];
+
+/** Run `fn` as one recorded install step: running → done, or failed with the error verbatim. */
+type RunInstallStep = <T>(step: InstallStepName, fn: () => Promise<T>) => Promise<T>;
+
+/** The default when no recorder is threaded (older callers, tests): run the stage unrecorded. */
+const unrecorded: RunInstallStep = (_step, fn) => fn();
+
+/**
+ * The durable step recorder (#424): wraps each stage of the install in a
+ * `dashboard/record-install-step` running → done/failed transition, so the Apps view
+ * renders the sequence live and a failed install names its step + the downstream error
+ * VERBATIM (the diagnosis that used to die with the toast). Resume re-enters the same
+ * rows — attempts bump, statuses converge — which is exactly the platform-request shape
+ * (status/attempts/last_error) applied to the install. Each write is best-effort: a
+ * progress write must never fail an install that would otherwise succeed. The 'failed'
+ * write happens BEFORE the error propagates, so the record exists by the time the
+ * caller marks the row failed.
+ */
+function installStepRecorder(
+  scope: { invoke(op: string, input: unknown): Promise<unknown> },
+  appScopeId: ScopeId,
+): RunInstallStep {
+  const record = (step: InstallStepName, status: 'running' | 'done' | 'failed', error?: string): Promise<unknown> =>
+    scope
+      .invoke('dashboard/record-install-step', {
+        appScopeId,
+        step,
+        seq: INSTALL_STEPS.indexOf(step),
+        status,
+        ...(error ? { error } : {}),
+      })
+      .catch(() => {});
+  return async (step, fn) => {
+    await record(step, 'running');
+    try {
+      const result = await fn();
+      await record(step, 'done');
+      return result;
+    } catch (e) {
+      await record(step, 'failed', e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  };
 }
 
 /** What the platform effect reports back: the bound hostname + the vertical's provision result. */
@@ -500,11 +562,14 @@ export async function resumeApp(
   const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
   await scope.invoke('dashboard/resume-app', { appScopeId: input.appScopeId });
 
+  // Resume re-enters the SAME step rows: each re-run step goes back to 'running' with
+  // attempts += 1, so a healed install reads `…provision ✓ (2 attempts) → activate ✓`.
+  const step = installStepRecorder(scope, input.appScopeId);
   let provisioned: ProvisionOutcome;
   try {
     provisioned = input.controlPlane
-      ? await provisionOnSharedPlane(input.controlPlane, input)
-      : await provisionEmbedded(host, input);
+      ? await provisionOnSharedPlane(input.controlPlane, input, step)
+      : await provisionEmbedded(host, input, step);
   } catch (e) {
     // A resume that still can't come up is a REAL failure: mark it so (unlocking Retry)
     // and record why on the Activity trail, exactly like a failed create.
@@ -850,7 +915,11 @@ const RESTORE_SAFETY_TTL_DAYS = 7;
  * default hostname the router resolves. No `bindScopeVersion`: with WfP off the
  * router dispatches on a static `VERTICAL_<slug>` binding, which needs no version.
  */
-async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: CreateAppInput): Promise<ProvisionOutcome> {
+async function provisionOnSharedPlane(
+  cp: TenantNarrowedControlPlane,
+  input: CreateAppInput,
+  step: RunInstallStep = unrecorded,
+): Promise<ProvisionOutcome> {
   const nameSlug = slugify(input.name);
   const scopeTail = input.appScopeId.toLowerCase().slice(-6);
   // The SCOPE slug must be UNIQUE within the tenant. Suffixing the scope id keeps two apps
@@ -860,11 +929,15 @@ async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: Cre
   // name, so the URL stays `meridian.global.substrat.run` whenever it's free.
   const slug = `${nameSlug}-${scopeTail}`;
   const tenantSlug = `t-${cp.tenantId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(-10)}`;
-  await cp.ensureTenant(tenantSlug, input.tenantName ?? 'Workspace');
-  // Belt-and-braces: the vertical grants these too, but an idempotent grant here
-  // keeps the shared directory's entitlement view complete regardless.
-  for (const key of input.appEntitlements ?? [input.verticalSlug]) await cp.grantEntitlement(key);
-  await cp.provisionScope({ scopeId: input.appScopeId, slug, name: input.name, vertical: input.verticalSlug, jurisdiction: 'global' });
+
+  await step('directory', async () => {
+    await cp.ensureTenant(tenantSlug, input.tenantName ?? 'Workspace');
+    // Belt-and-braces: the vertical grants these too, but an idempotent grant here
+    // keeps the shared directory's entitlement view complete regardless.
+    for (const key of input.appEntitlements ?? [input.verticalSlug]) await cp.grantEntitlement(key);
+    await cp.provisionScope({ scopeId: input.appScopeId, slug, name: input.name, vertical: input.verticalSlug, jurisdiction: 'global' });
+  });
+
   // The install form's config rides WITH provisioning (#426): the instance is born
   // configured — an issuer with its admin, an app with its keys — instead of live-but-
   // unconfigured until a later Env-tab save. Empty values are omitted (an untouched
@@ -872,23 +945,30 @@ async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: Cre
   const config = Object.fromEntries(
     (input.appConfig ?? []).filter((e) => e.value !== '').map((e) => [e.key, e.value]),
   );
-  const instance = await cp.provisionInstance(input.verticalSlug, {
-    scopeId: input.appScopeId,
-    owner: input.node.principal,
-    slug,
-    name: input.name,
-    ...(Object.keys(config).length > 0 ? { config } : {}),
-  });
+  // The vertical round-trip: tenant stores minted + bound and /internal/provision called
+  // (control-plane side). A failure here carries the vertical's refusal VERBATIM (#428) —
+  // recorded on this step, so the diagnosis survives the toast.
+  const instance = await step('provision', () =>
+    cp.provisionInstance(input.verticalSlug, {
+      scopeId: input.appScopeId,
+      owner: input.node.principal,
+      slug,
+      name: input.name,
+      ...(Object.keys(config).length > 0 ? { config } : {}),
+    }),
+  );
   const provisionResult = instance?.result;
-  await cp.activateScope(input.appScopeId);
 
-  // Pin the scope to the vertical's prod version so the router dispatches on it once
-  // Workers-for-Platforms is enabled (D-35). No promoted version today ⇒ this is a
-  // no-op and the router serves via the static `VERTICAL_<slug>` binding. It is the
-  // ONLY thing that differs between the static bring-up and dynamic dispatch, so the
-  // dashboard needs NO change when WfP flips on — only the deploy mechanism does.
-  const prod = (await cp.listChannels(input.verticalSlug)).find((ch) => ch.channel === 'prod');
-  if (prod) await cp.bindScopeVersion(input.appScopeId, prod.versionId);
+  await step('activate', async () => {
+    await cp.activateScope(input.appScopeId);
+    // Pin the scope to the vertical's prod version so the router dispatches on it once
+    // Workers-for-Platforms is enabled (D-35). No promoted version today ⇒ this is a
+    // no-op and the router serves via the static `VERTICAL_<slug>` binding. It is the
+    // ONLY thing that differs between the static bring-up and dynamic dispatch, so the
+    // dashboard needs NO change when WfP flips on — only the deploy mechanism does.
+    const prod = (await cp.listChannels(input.verticalSlug)).find((ch) => ch.channel === 'prod');
+    if (prod) await cp.bindScopeVersion(input.appScopeId, prod.versionId);
+  });
 
   const domain = input.baseDomain ?? 'substrat.run';
   // Tenant-suffixed by preference (`callout-sesamy`), the scope-tailed slug as the
@@ -903,68 +983,90 @@ async function provisionOnSharedPlane(cp: TenantNarrowedControlPlane, input: Cre
   // single `app` binding, so nothing changes for the common case.
   const surfaces = await declaredSurfacesFor({ controlPlane: cp }, input.verticalSlug);
   const primary = primarySurface(surfaces);
-  for (const label of labels) {
-    const hostname = `${label}.global.${domain}`;
-    try {
-      await cp.bindHostname({ hostname, scopeId: input.appScopeId, surface: primary, canonical: true });
-    } catch {
-      // Global-uniqueness collision or transient on the primary — try the next candidate.
-      continue;
+  // An exhausted ladder records a FAILED hostname step (honest — the app has no URL)
+  // but does not fail the install: the row still goes active URL-less, exactly as
+  // before, and the hostname self-heal / Domains tab can repair it later.
+  const bound = await step('hostname', async () => {
+    for (const label of labels) {
+      const hostname = `${label}.global.${domain}`;
+      try {
+        await cp.bindHostname({ hostname, scopeId: input.appScopeId, surface: primary, canonical: true });
+      } catch {
+        // Global-uniqueness collision or transient on the primary — try the next candidate.
+        continue;
+      }
+      // The primary hostname is bound at the router now — the app is reachable, and this is
+      // the value the dashboard must record. Everything below is best-effort: a failure in
+      // activation or a secondary surface must NOT discard the hostname we just bound (that
+      // stranded the dashboard's record — a null column — while the app ran fine).
+      await cp.setHostnameStatus(hostname, 'active').catch(() => {});
+      // Bind the remaining surfaces off the SAME base that won the collision ladder, so they
+      // share the app's chosen label (`egeryds` → `egeryds-eka`).
+      await bindDeclaredSurfaces({
+        base: label,
+        suffix: `global.${domain}`,
+        surfaces,
+        primary,
+        alreadyBound: new Set(),
+        bind: async (h, surface) => {
+          await cp.bindHostname({ hostname: h, scopeId: input.appScopeId, surface, canonical: true });
+          await cp.setHostnameStatus(h, 'active');
+        },
+      });
+      return hostname;
     }
-    // The primary hostname is bound at the router now — the app is reachable, and this is
-    // the value the dashboard must record. Everything below is best-effort: a failure in
-    // activation or a secondary surface must NOT discard the hostname we just bound (that
-    // stranded the dashboard's record — a null column — while the app ran fine).
-    await cp.setHostnameStatus(hostname, 'active').catch(() => {});
-    // Bind the remaining surfaces off the SAME base that won the collision ladder, so they
-    // share the app's chosen label (`egeryds` → `egeryds-eka`).
-    await bindDeclaredSurfaces({
-      base: label,
-      suffix: `global.${domain}`,
-      surfaces,
-      primary,
-      alreadyBound: new Set(),
-      bind: async (h, surface) => {
-        await cp.bindHostname({ hostname: h, scopeId: input.appScopeId, surface, canonical: true });
-        await cp.setHostnameStatus(h, 'active');
-      },
-    });
-    return { hostname, ...(provisionResult ? { provisionResult } : {}) };
-  }
-  return { hostname: null, ...(provisionResult ? { provisionResult } : {}) };
+    throw new Error(`no hostname could be bound under global.${domain} (every name candidate was taken)`);
+  }).catch(() => null);
+  return { hostname: bound, ...(provisionResult ? { provisionResult } : {}) };
 }
 
 /** EMBEDDED mode (M0 / tests): provision into this deployment's own host + directory.
  *  No vertical HTTP round-trip here, so there is never a provision result to report. */
-async function provisionEmbedded(host: ScopeHost, input: CreateAppInput): Promise<ProvisionOutcome> {
+async function provisionEmbedded(
+  host: ScopeHost,
+  input: CreateAppInput,
+  step: RunInstallStep = unrecorded,
+): Promise<ProvisionOutcome> {
   const staff = platformActorId.parse(ulid());
   const tenantId = input.node.tenantId;
-  for (const key of input.appEntitlements ?? [input.verticalSlug]) {
-    await host.admin.grantEntitlement(staff, tenantId, key);
-  }
-  await host.provisionScope(staff, { tenantId, scopeId: input.appScopeId, jurisdiction: 'global', vertical: input.verticalSlug });
-  await host.admin.activateScope(staff, tenantId, input.appScopeId);
-  for (const permission of input.appOwnerGrants ?? []) {
-    await host.admin.grant(staff, {
-      principalId: input.node.principal,
-      permission,
-      node: { tenantId, scopeId: input.appScopeId },
-      grantedBy: input.node.principal,
-    });
-  }
+  await step('directory', async () => {
+    for (const key of input.appEntitlements ?? [input.verticalSlug]) {
+      await host.admin.grantEntitlement(staff, tenantId, key);
+    }
+    await host.provisionScope(staff, { tenantId, scopeId: input.appScopeId, jurisdiction: 'global', vertical: input.verticalSlug });
+  });
+  // No 'provision' step embedded: the modules run in-process, so there is no vertical
+  // round-trip (and never a provision result). The step simply has no row.
+  await step('activate', async () => {
+    await host.admin.activateScope(staff, tenantId, input.appScopeId);
+    for (const permission of input.appOwnerGrants ?? []) {
+      await host.admin.grant(staff, {
+        principalId: input.node.principal,
+        permission,
+        node: { tenantId, scopeId: input.appScopeId },
+        grantedBy: input.node.principal,
+      });
+    }
+  });
   // Declared surfaces ride the local registry (register-vertical → install-spec); absent
   // for an unregistered vertical (older tests) ⇒ [] ⇒ the historic single `app` binding.
   const surfaces = await declaredSurfacesFor({ host }, input.verticalSlug);
-  const hostname = await bindDefaultHostname(host, {
-    staff,
-    tenantId,
-    scopeId: input.appScopeId,
-    name: input.name,
-    teamHandle: input.teamHandle,
-    jurisdiction: 'global',
-    baseDomain: input.baseDomain ?? 'substrat.run',
-    surfaces,
-  });
+  // Same semantics as the shared-plane ladder: an unbindable hostname is a FAILED step
+  // (honest), never a failed install.
+  const hostname = await step('hostname', async () => {
+    const bound = await bindDefaultHostname(host, {
+      staff,
+      tenantId,
+      scopeId: input.appScopeId,
+      name: input.name,
+      teamHandle: input.teamHandle,
+      jurisdiction: 'global',
+      baseDomain: input.baseDomain ?? 'substrat.run',
+      surfaces,
+    });
+    if (!bound) throw new Error('no hostname could be bound (every name candidate was taken)');
+    return bound;
+  }).catch(() => null);
   return { hostname };
 }
 

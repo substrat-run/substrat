@@ -26,7 +26,8 @@ import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
 import { cliVersion, warnIfDistStale } from './version.js';
-import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope } from './scope.js';
+import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, scopeStatus } from './scope.js';
+import { printInstalls } from './installs.js';
 import { createPreview, deletePreview, listPreviews, formatPreviews, parseTtlHours } from './preview.js';
 import {
   listVerticalHostnames,
@@ -79,6 +80,10 @@ Usage:
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
+  substrat installs <slug>                    list this workspace's installs of a vertical
+                                              (directory status + served hostname; #424)
+  substrat scope status <scopeId>             one scope's directory truth: status, bound
+                                              version, serving script, role health
   substrat scope pull <scopeId> [--full] [--out <dir>]
                                               pull a scope's data to a local SQLite file
                                               (masked by default; --full is break-glass,
@@ -319,6 +324,26 @@ async function cmdVersions(): Promise<void> {
   await printVersions(controlPlaneUrl, header, slug, tenantId);
 }
 
+/**
+ * `substrat installs <slug>` — the workspace's installs of one vertical, from the
+ * directory (#424 CLI parity). Tenant-narrowed server-side for a builder session;
+ * staff pass --tenant to act for one workspace.
+ */
+async function cmdInstalls(): Promise<void> {
+  const slug = argv[1];
+  if (!slug || slug.startsWith('--')) {
+    console.error('usage: substrat installs <slug> [--tenant <id-or-slug>]');
+    process.exit(1);
+  }
+  const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  const tenantId = await resolveTenantId(
+    controlPlaneUrl,
+    header,
+    flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant,
+  );
+  await printInstalls(controlPlaneUrl, header, tenantId, slug);
+}
+
 async function cmdPromote(): Promise<void> {
   const slug = argv[1];
   const channel = flag('channel');
@@ -370,10 +395,11 @@ async function cmdScope(): Promise<void> {
   const usage =
     'usage: substrat scope pull <scopeId> [--full] [--out <dir>] [--tenant <id-or-slug>]\n' +
     '       substrat scope restore <scopeId> --file <backup.sqlite|.dump.json> [--tenant <id-or-slug>]\n' +
+    '       substrat scope status <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope provision <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope adopt-serving <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope adopt-serving --vertical <slug>';
-  const known = sub === 'pull' || sub === 'restore' || sub === 'provision' || sub === 'adopt-serving';
+  const known = sub === 'pull' || sub === 'restore' || sub === 'status' || sub === 'provision' || sub === 'adopt-serving';
   // adopt-serving --vertical takes no positional scopeId; every other form requires one.
   const wantsScope = !(sub === 'adopt-serving' && flag('vertical'));
   if (!known || (wantsScope && (!scope || scope.startsWith('--')))) {
@@ -396,6 +422,10 @@ async function cmdScope(): Promise<void> {
     header,
     flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant,
   );
+  if (sub === 'status') {
+    await scopeStatus({ controlPlaneUrl, header, tenantId, scopeId: scope });
+    return;
+  }
   if (sub === 'adopt-serving') {
     await adoptScopeServing({ controlPlaneUrl, header, tenantId, scopeId: scope });
     return;
@@ -643,6 +673,8 @@ async function main(): Promise<void> {
       return cmdLogin();
     case 'versions':
       return cmdVersions();
+    case 'installs':
+      return cmdInstalls();
     case 'push':
       return cmdPush();
     case 'promote':

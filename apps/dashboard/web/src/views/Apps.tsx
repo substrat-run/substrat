@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
-import type { AppRow } from '../lib/api';
+import type { AppRow, InstallStep } from '../lib/api';
 import { verticalMeta } from '../lib/demo';
 import { relativeTime } from '../lib/format';
 import { Ic } from '../lib/icons';
@@ -42,6 +42,7 @@ export function Apps({
   onOpen,
   onRetry,
   onResume,
+  loadSteps,
 }: {
   apps: AppRow[];
   loading?: boolean;
@@ -49,6 +50,8 @@ export function Apps({
   onOpen: (scopeId: string) => void;
   onRetry: (scopeId: string) => void;
   onResume?: (scopeId: string) => void;
+  /** Loader for one app's install step record (#424) — threaded to the cards. */
+  loadSteps?: (scopeId: string) => Promise<InstallStep[]>;
 }) {
   const [mode, setMode] = useState<Mode>('grid');
   const [q, setQ] = useState('');
@@ -89,7 +92,14 @@ export function Apps({
       {mode === 'grid' ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
           {filtered.map((c) => (
-            <AppCard key={c.scopeId} app={c} onOpen={() => onOpen(c.scopeId)} onRetry={() => onRetry(c.scopeId)} onResume={() => onResume?.(c.scopeId)} />
+            <AppCard
+              key={c.scopeId}
+              app={c}
+              onOpen={() => onOpen(c.scopeId)}
+              onRetry={() => onRetry(c.scopeId)}
+              onResume={() => onResume?.(c.scopeId)}
+              loadSteps={loadSteps ? () => loadSteps(c.scopeId) : undefined}
+            />
           ))}
         </div>
       ) : (

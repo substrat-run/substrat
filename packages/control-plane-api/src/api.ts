@@ -435,8 +435,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'DELETE', re: /\/hostnames\/[^/]+$/ },
     // Recover a scope stuck at "roles projected, zero tuples" (#332) — re-provision a scope the
     // builder's OWN vertical runs. Ownership is re-checked in the handler; the allowlist alone is
-    // not authz. This is the only scope-level route a builder may reach.
+    // not authz.
     { method: 'POST', re: /\/scopes\/[^/]+\/provision$/ },
+    // Directory READS for the builder's own installs (#424 CLI parity: `substrat installs`,
+    // `substrat scope status`). Each handler narrows to the principal's tenant — the list
+    // forces the filter, the per-scope reads hide a foreign tenant as 404 (K-3).
+    { method: 'GET', re: /\/scopes$/ },
+    { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+$/ },
+    { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/health$/ },
     // Add a SIBLING scope (a new "site") to an app the builder's own tenant already runs
     // (multi-scope self-serve, M1). Tenant-narrowed + parent-authorized in the handler; the
     // allowlist alone is not authz.
@@ -618,8 +624,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // -- the scope directory (§3.2/§4.2) ---------------------------------------
 
   app.get('/scopes', async (c) => {
+    const p = c.get('principal');
     const filter = listScopesQuery.parse({
-      tenantId: c.req.query('tenantId'),
+      // A builder reads only its OWN tenant's directory rows — the filter is forced,
+      // not trusted from the query (#424 CLI parity for `substrat installs`).
+      tenantId: p.kind === 'builder' ? p.tenantId : c.req.query('tenantId'),
       status: c.req.queries('status'),
       vertical: c.req.query('vertical'),
     });
@@ -696,6 +705,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/scopes/:scopeId', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    // A builder reads only its own tenant; a foreign tenant is hidden as 404 (K-3).
+    const p = c.get('principal');
+    if (p.kind === 'builder' && p.tenantId !== tenantId) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
     const record = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     // Absent, or present under another tenant — indistinguishable on purpose (K-3).
     if (!record) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
@@ -907,6 +921,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/scopes/:scopeId/health', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    // A builder reads only its own tenant; a foreign tenant is hidden as 404 (K-3).
+    const principal = c.get('principal');
+    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     const vertical = await verticalForScope(c, scope);

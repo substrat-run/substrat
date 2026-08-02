@@ -622,6 +622,24 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * The DIRECTORY's status for a scope — the platform's authoritative record, read
+   * for reconciling the dashboard's own install row against it (#424 case 4: a
+   * retried install can leave the dashboard row at 'provisioning' forever while the
+   * directory has been 'active' all along). `null` when the scope can't be read —
+   * callers treat that as "unknown, change nothing".
+   */
+  async scopeStatus(scopeId: ScopeId): Promise<{ status: string; servingRef: string | null } | null> {
+    try {
+      const record = await this.call<{ status: string; servingRef: string | null } | undefined>(
+        `/tenants/${this.tenantId}/scopes/${scopeId}`,
+      );
+      return record ? { status: record.status, servingRef: record.servingRef ?? null } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * The tenant's scopes for one vertical — the Data tab's scope switcher (M4 of
    * multi-scope-manyfold.md). Tenant-pinned: the CP filters by (tenant, vertical) so this only
    * ever returns THIS tenant's scopes. A multi-scope vertical (e.g. Manyfold: one site per
