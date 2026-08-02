@@ -105,14 +105,12 @@ export function HonestyBanner({ children }: { children: ReactNode }) {
   return (
     <div
       style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
         background: 'var(--surface-inset)',
         border: '1px solid var(--border-subtle)',
         borderRadius: 6,
         padding: '8px 12px',
         fontSize: 12.5,
+        lineHeight: 1.5,
         color: 'var(--text-secondary)',
       }}
     >
