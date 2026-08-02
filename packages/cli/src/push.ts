@@ -268,7 +268,21 @@ export async function push(
   // (contracts' deployManifest, re-parsed server-side in control-plane-api). Drift
   // between what the CLI builds and what the server accepts fails here, before the
   // upload, instead of as a 4xx from the deploy endpoint.
-  const manifest = deployManifest.parse({
+  const parseManifest = (input: unknown) => {
+    try {
+      return deployManifest.parse(input);
+    } catch (e) {
+      // #386: the CLI assembled this manifest itself, so a schema refusal here is a
+      // CLI/contract mismatch — in a workspace checkout, almost always a stale dist
+      // running against newer contracts. Name that, instead of a bare Zod issue list.
+      throw new Error(
+        `the manifest this CLI assembled fails the current deploy contract — if you run the CLI from a ` +
+          `workspace checkout, its build is likely stale (pnpm --filter @substrat-run/cli build); ` +
+          `otherwise upgrade it (npm i -g @substrat-run/cli).\n${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+  const manifest = parseManifest({
     version: opts.version,
     name: opts.name ?? opts.slug,
     entry,

@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 /**
  * The CLI's own version, read from the package.json that ships in the npm tarball (npm
@@ -58,6 +60,53 @@ export function staleAdvisory(current: string, server: { min?: string | null; la
     };
   }
   return null;
+}
+
+/**
+ * Detect a stale WORKSPACE build (#386). In the monorepo the `substrat` bin is a
+ * symlink to `packages/cli/dist/cli.js`, so after a `git pull` that touched `src/`
+ * without a rebuild, the stale dist fails in maximally confusing ways — e.g. a Zod
+ * refusal of `registry: undefined` after #363 made the field required, with nothing
+ * saying the CLI itself was the problem. The published tarball ships no `src/`
+ * (package.json `files`), so for an npm-installed CLI this is always null.
+ *
+ * Pure decision over two directories so it is testable with temp dirs: newest `.ts`
+ * mtime under src (recursing is unnecessary — the CLI's src is flat) vs newest `.js`
+ * mtime under dist. Returns the warning to print, or null.
+ */
+export function distStaleAdvisory(srcDir: string, distDir: string): string | null {
+  const newest = (dir: string, ext: string): number => {
+    let t = 0;
+    for (const f of readdirSync(dir)) {
+      if (f.endsWith(ext)) t = Math.max(t, statSync(join(dir, f)).mtimeMs);
+    }
+    return t;
+  };
+  const src = newest(srcDir, '.ts');
+  const dist = newest(distDir, '.js');
+  if (src === 0 || dist === 0 || src <= dist) return null;
+  return (
+    `this substrat CLI runs from a workspace build that is OLDER than its sources — ` +
+    `its failures may be stale-build artifacts, not real errors. Rebuild first:\n` +
+    `    pnpm --filter @substrat-run/cli build`
+  );
+}
+
+/**
+ * Warn (stderr, never stdout) when the running dist is older than the checkout's src.
+ * A no-op outside the monorepo (no `src/` in the tarball), when running straight from
+ * source (vitest/tsx), and on any error — a freshness nudge must never fail a command.
+ */
+export function warnIfDistStale(): void {
+  try {
+    const here = fileURLToPath(new URL('.', import.meta.url));
+    if (!/[/\\]dist[/\\]?$/.test(here)) return; // running from src — nothing built to be stale
+    const root = fileURLToPath(new URL('..', import.meta.url));
+    const advisory = distStaleAdvisory(join(root, 'src'), join(root, 'dist'));
+    if (advisory) console.error(`⚠ ${advisory}`);
+  } catch {
+    /* installed CLI (no src/), or fs hiccup — silence either way */
+  }
 }
 
 /** Response headers carrying the version advisory (see {@link staleAdvisory}). */

@@ -25,7 +25,7 @@ import { printVersions } from './versions.js';
 import { promote } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
-import { cliVersion } from './version.js';
+import { cliVersion, warnIfDistStale } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope } from './scope.js';
 import { createPreview, deletePreview, listPreviews, formatPreviews, parseTtlHours } from './preview.js';
 import {
@@ -634,6 +634,9 @@ async function cmdWhoami(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // #386: in the monorepo the bin is a symlink into dist/ — say up front when that
+  // build is older than src, so a stale-build failure is never chased as a real one.
+  warnIfDistStale();
   const command = argv[0];
   switch (command) {
     case 'login':
