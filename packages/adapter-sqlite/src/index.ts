@@ -4026,6 +4026,29 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'listIdentityTenants', {}, { provider }, tenants.length);
         return tenants;
       },
+      listIdentityLinks: async (actor, tid: TenantId) => {
+        // The projection read (#406): what the platform gathers to deliver a tenant's
+        // links with provisioning/reconcile — the same trust line entitlements ride
+        // (#310). The pure adapter has no projection layer (single process — the
+        // directory IS local), so this is a plain directory read, access-logged.
+        const links = (
+          this.directory
+            .prepare(
+              'SELECT provider, external_id, principal_id, scope_id FROM _substrat_identities WHERE tenant_id = ?',
+            )
+            .all(tid) as { provider: string; external_id: string; principal_id: string; scope_id: string | null }[]
+        ).map((r) =>
+          identityLink.parse({
+            provider: r.provider,
+            externalId: r.external_id,
+            principal: r.principal_id,
+            tenantId: tid,
+            scopeId: r.scope_id ?? undefined,
+          }),
+        );
+        this.recordAccess(actor, 'listIdentityLinks', { tenantId: tid }, null, links.length);
+        return links;
+      },
       // -- the integrations hub (#101) ---------------------------------------
 
       createConnection: async (actor: PlatformActorId, raw: CreateConnectionInput) => {

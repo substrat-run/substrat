@@ -16,7 +16,7 @@
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, z } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, projectedIdentityLink, z } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import {
   assertPlatformCall,
@@ -227,6 +227,9 @@ const provisionInstanceBody = z.object({
   // per-operation gate work here without a control-plane binding (#304). Optional so an
   // older platform (or one that hasn't granted any) provisions unchanged.
   entitlements: z.array(entitlementGrant).optional(),
+  // #406: the tenant's identity links, projected so an external-IdP auth adapter could
+  // resolve (provider, externalId) → principal scope-locally. Optional.
+  identityLinks: z.array(projectedIdentityLink).optional(),
 });
 
 const app = new Hono<{ Bindings: Env }>();
@@ -299,6 +302,7 @@ app.post('/internal/provision', async (c) => {
     roles: ROLES,
     ownerRoleKey: 'hr-admin',
     entitlements: body.entitlements,
+    identityLinks: body.identityLinks,
   });
   // Record the owner seat: whoever first signs in and reaches this scope claims it (becomes
   // hr-admin), whichever provider verifies them. This is how a provisioned instance becomes
@@ -312,6 +316,7 @@ const reconcileInstanceBody = z.object({
   tenantId,
   scopeId,
   entitlements: z.array(entitlementGrant).optional(),
+  identityLinks: z.array(projectedIdentityLink).optional(),
 });
 
 /**
@@ -351,6 +356,7 @@ app.post('/internal/reconcile', async (c) => {
     roles: ROLES,
     ownerRoleKey: 'hr-admin',
     entitlements: body.entitlements,
+    identityLinks: body.identityLinks,
   });
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner });
 });

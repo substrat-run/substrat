@@ -4,6 +4,7 @@ import type {
   PlatformRequestId,
   PlatformRequestStatus,
   PrincipalId,
+  ProjectedIdentityLink,
   QueryScopeInput,
   ReadScopeTableInput,
   ScopeDumpTable,
@@ -76,6 +77,16 @@ export interface ProvisionInstanceInput {
    */
   entitlements?: EntitlementGrant[];
   /**
+   * The tenant's identity links, delivered WITH provisioning (#406) on the same trust line
+   * as entitlements: the platform gathers them itself (`admin.listIdentityLinks`, never the
+   * caller's body) and the CP-less vertical PROJECTS them, so its auth adapter resolves
+   * `(provider, externalId) → principal` from local storage instead of a map compiled into
+   * the bundle — which made offboarding a deploy and let a version rollback resurrect a
+   * removed login. A vertical that predates the field ignores it (its body parse strips
+   * unknown keys).
+   */
+  identityLinks?: ProjectedIdentityLink[];
+  /**
    * Per-tenant relational stores the platform MINTED for this tenant (#301), handed over
    * WITH provisioning so the vertical opens each (`host.openTenantStore(handle)`) and runs
    * its OWN store migrations against it before the callback returns — the same fail-closed,
@@ -111,6 +122,10 @@ export interface ReconcileInstanceInput {
    *  as at provision (#310). Deliberately NO owner: the platform never persisted one — the
    *  vertical re-sources it from its own durable owner-of-record. */
   entitlements?: EntitlementGrant[];
+  /** The tenant's identity links, gathered by the platform and re-projected on reconcile,
+   *  exactly as at provision (#406) — the repair channel for a dropped delivery, and the
+   *  re-delivery a link/unlink AFTER provision rides. */
+  identityLinks?: ProjectedIdentityLink[];
 }
 
 export interface ReconciledInstance {

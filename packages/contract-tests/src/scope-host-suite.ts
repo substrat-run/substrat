@@ -2565,6 +2565,43 @@ export function scopeHostContractSuite(
       await expect(host.admin.reapTenant(staff, tenantId.parse(ulid()))).rejects.toThrow(/unknown tenant/);
     });
 
+    // -- identity links: the projection read (#406) ---------------------------
+
+    it('listIdentityLinks returns one tenant’s links and tracks link/unlink', async () => {
+      const t = tenantId.parse(ulid());
+      const other = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      const p1 = principalId.parse(ulid());
+      const p2 = principalId.parse(ulid());
+      const provider = `oidc:links-${t.toLowerCase()}`;
+      await host.admin.createTenant(staff, { id: t, slug: `links-${t.toLowerCase()}`, name: 'Links Co' });
+      await host.admin.createTenant(staff, { id: other, slug: `links2-${other.toLowerCase()}`, name: 'Other Co' });
+      await host.admin.registerIdentityPool(staff, { provider, topology: 'central', tenantId: null });
+      expect(await host.admin.listIdentityLinks(staff, t)).toHaveLength(0);
+
+      await host.admin.linkIdentity(staff, { provider, externalId: 'u1', principal: p1, tenantId: t });
+      await host.admin.linkIdentity(staff, { provider, externalId: 'u2', principal: p2, tenantId: t, scopeId: s });
+      // The SAME login in another tenant is that tenant's row (K-22) — it must never
+      // appear in this tenant's gather, or a projection would bleed identity across tenants.
+      await host.admin.linkIdentity(staff, { provider, externalId: 'u1', principal: p1, tenantId: other });
+
+      const links = await host.admin.listIdentityLinks(staff, t);
+      expect(links).toHaveLength(2);
+      const byExternalId = new Map(links.map((l) => [l.externalId, l]));
+      expect(byExternalId.get('u1')).toMatchObject({ provider, principal: p1, tenantId: t });
+      expect(byExternalId.get('u1')?.scopeId).toBeUndefined(); // tenant-level home
+      expect(byExternalId.get('u2')).toMatchObject({ provider, principal: p2, tenantId: t, scopeId: s });
+
+      // Unlink severs by principal; the next gather no longer carries the login —
+      // which is what makes a projected offboarding durable.
+      await host.admin.unlinkIdentity(staff, t, p1);
+      const after = await host.admin.listIdentityLinks(staff, t);
+      expect(after).toHaveLength(1);
+      expect(after[0]!.externalId).toBe('u2');
+      // The other tenant's identical login is untouched.
+      expect(await host.admin.listIdentityLinks(staff, other)).toHaveLength(1);
+    });
+
     it('rejects a lifecycle transition on a scope not under the named tenant', async () => {
       await expect(host.admin.suspendScope(staff, t1, s3)).rejects.toThrow(
         /unknown scope for tenant/,

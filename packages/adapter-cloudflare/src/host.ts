@@ -52,6 +52,7 @@ import {
   type EntityRef,
   type IdentityLink,
   type IdentityPool,
+  type ProjectedIdentityLink,
   type Node,
   type Org,
   type OrgId,
@@ -245,6 +246,10 @@ interface ControlPlaneStub {
     object: string,
     expiresAt: string | null,
   ): Promise<void>;
+  /** All of a tenant's identity links — for identity-link projection (#406). */
+  dumpTenantIdentities(
+    tenantId: string,
+  ): Promise<{ provider: string; external_id: string; principal_id: string; scope_id: string | null }[]>;
   /** All of a tenant's tenant-level tuples (incl tombstones) — for scope-local projection. */
   dumpTenantTuples(
     tenantId: string,
@@ -516,7 +521,15 @@ interface ScopeStubRpc {
     entitlements?: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[],
     /** Scope-level tuples (e.g. the owner grant) written in the same unit as the flip (#332). */
     scopeTuples?: { subject: string; relation: string; object: string; expires_at: string | null }[],
+    /** The tenant's identity links (#406) — same preserve-on-undefined convention as entitlements. */
+    identities?: { provider: string; external_id: string; principal_id: string; scope_id: string | null }[],
   ): Promise<void>;
+  /** Resolve an external identity from this scope's projected links (#406) — the CP-less auth read. */
+  resolveProjectedIdentity(
+    tenantId: string,
+    provider: string,
+    externalId: string,
+  ): Promise<{ principal: string; scopeId: string | null } | undefined>;
   /** Read-only introspection of this scope's DB (§5.4 admin-query RPC). */
   introspectTables(): Promise<ScopeTable[]>;
   introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage>;
@@ -2606,6 +2619,20 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'listIdentityTenants', {}, { provider }, tenants.length);
         return tenants;
       },
+      listIdentityLinks: async (actor, tenantId): Promise<IdentityLink[]> => {
+        const rows = await this.cp.dumpTenantIdentities(tenantId);
+        const links = rows.map((r) =>
+          identityLink.parse({
+            provider: r.provider,
+            externalId: r.external_id,
+            principal: r.principal_id,
+            tenantId,
+            scopeId: r.scope_id ?? undefined,
+          }),
+        );
+        await this.recordAccess(actor, 'listIdentityLinks', { tenantId }, null, links.length);
+        return links;
+      },
       // -- the integrations hub (#101) ---------------------------------------
 
       createConnection: async (actor, raw: CreateConnectionInput) => {
@@ -2775,6 +2802,10 @@ export class CloudflareScopeHost implements ScopeHost {
           null,
           { provider: parsed.provider, externalId: parsed.externalId, principal: parsed.principal },
         );
+        // #406: an identity link is a tenant-level write, so it fans out into the tenant's
+        // projected scopes exactly as entitlements do (#304) — a no-op unless scope-local
+        // projection is on; the reconcile sweep repairs any drop.
+        await this.fanOut(parsed.tenantId);
       },
       unlinkIdentity: async (actor, tenantId: TenantId, principal: PrincipalId) => {
         // DELETE by principal (audit is the log), so the caller who removed a member
@@ -2782,6 +2813,10 @@ export class CloudflareScopeHost implements ScopeHost {
         const changed = await this.cp.unlinkIdentity(tenantId, principal);
         if (!changed) return;
         await this.recordAdmin(actor, 'unlinkIdentity', { tenantId, scopeId: null }, { principal }, null);
+        // The unlink must reach the projected scopes so the severed login stops resolving
+        // there — this is what makes revocation durable at request time (#406); a dropped
+        // fan-out is repaired by the reconcile sweep.
+        await this.fanOut(tenantId);
       },
       resolveIdentity: async (
         tenantId,
@@ -2921,20 +2956,23 @@ export class CloudflareScopeHost implements ScopeHost {
   // its scopes, which then evaluate permissions from their own storage. Cost moves
   // from the request hot path (every check) to the admin write path (rare).
 
-  /** The tenant's current roles + tenant-level tuples + entitlements, in the shape the ScopeDO
-   *  stores. Entitlements (#304) ride the same projection so a hosted scope reads plan/quota/
-   *  expiry locally; expiry is applied at READ (in the scope), so the full list is carried. */
+  /** The tenant's current roles + tenant-level tuples + entitlements + identity links, in the
+   *  shape the ScopeDO stores. Entitlements (#304) ride the same projection so a hosted scope
+   *  reads plan/quota/expiry locally; expiry is applied at READ (in the scope), so the full list
+   *  is carried. Identity links (#406) ride it too, so a scope resolves logins locally. */
   private async tenantProjection(
     tenantId: TenantId,
   ): Promise<{
     roles: { role_key: string; permissions: string; source: string }[];
     tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[];
     entitlements: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[];
+    identities: { provider: string; external_id: string; principal_id: string; scope_id: string | null }[];
   }> {
-    const [roleRows, tuples, entitlementRows] = await Promise.all([
+    const [roleRows, tuples, entitlementRows, identities] = await Promise.all([
       this.cp.listRoles({ tenantId }),
       this.cp.dumpTenantTuples(tenantId),
       this.cp.listEntitlements(tenantId),
+      this.cp.dumpTenantIdentities(tenantId),
     ]);
     return {
       roles: roleRows.map((r) => ({ role_key: r.role_key, permissions: r.permissions, source: r.source })),
@@ -2945,14 +2983,15 @@ export class CloudflareScopeHost implements ScopeHost {
         quota: e.quota,
         plan: e.plan,
       })),
+      identities,
     };
   }
 
   /** Project the tenant's current state into ONE scope + flip it to local. */
   private async projectScope(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     if (!this.scopeLocalPermissions) return;
-    const { roles, tuples, entitlements } = await this.tenantProjection(tenantId);
-    await this.scopeStub(scopeId).applyProjection(tenantId, roles, tuples, entitlements);
+    const { roles, tuples, entitlements, identities } = await this.tenantProjection(tenantId);
+    await this.scopeStub(scopeId).applyProjection(tenantId, roles, tuples, entitlements, undefined, identities);
   }
 
   /**
@@ -2962,10 +3001,12 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private async fanOut(tenantId: TenantId): Promise<void> {
     if (!this.scopeLocalPermissions) return;
-    const { roles, tuples, entitlements } = await this.tenantProjection(tenantId);
+    const { roles, tuples, entitlements, identities } = await this.tenantProjection(tenantId);
     const scopes = await this.cp.listScopes({ tenantId });
     await Promise.all(
-      scopes.map((s) => this.scopeStub(s.scope_id as ScopeId).applyProjection(tenantId, roles, tuples, entitlements)),
+      scopes.map((s) =>
+        this.scopeStub(s.scope_id as ScopeId).applyProjection(tenantId, roles, tuples, entitlements, undefined, identities),
+      ),
     );
   }
 
@@ -3001,6 +3042,11 @@ export class CloudflareScopeHost implements ScopeHost {
      *  the scope's per-operation gate + `ctx.entitlement` read them locally. Absent ⇒ none
      *  projected (the gate then fails closed for any gated operation until a projection lands). */
     entitlements?: EntitlementGrant[];
+    /** The tenant's identity links, passed by the platform at provision (#406) — projected so
+     *  the vertical's auth adapter resolves `(provider, externalId) → principal` from the
+     *  scope's own storage (`resolveIdentityLocal`). Absent ⇒ untouched, so a provision path
+     *  predating #406 never wipes links a fan-out or reconcile already delivered. */
+    identityLinks?: ProjectedIdentityLink[];
   }): Promise<void> {
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
@@ -3034,7 +3080,38 @@ export class CloudflareScopeHost implements ScopeHost {
           expires_at: null,
         },
       ],
+      // #406: identity links, delivered by the platform with provisioning exactly as
+      // entitlements are (#310). Preserve-on-undefined, so an absent field never wipes
+      // links a prior fan-out or reconcile projected.
+      input.identityLinks
+        ? input.identityLinks.map((l) => ({
+            provider: l.provider,
+            external_id: l.externalId,
+            principal_id: l.principal,
+            scope_id: l.scopeId ?? null,
+          }))
+        : undefined,
     );
+  }
+
+  /**
+   * Resolve an external identity from a scope's PROJECTED links (#406) — the CP-less
+   * auth adapter's read path, the local equivalent of `HostAdmin.resolveIdentity` (same
+   * exemption: a machine read on the request path, not audited). Reads only what the
+   * platform projected into the scope (provision / reconcile / fan-out), so a miss means
+   * "unknown login — deny": an un-projected scope can only refuse a legitimate login,
+   * never admit a revoked one. A CP-full deployment keeps using `admin.resolveIdentity`;
+   * this exists precisely for deployments where that surface is unavailable.
+   */
+  async resolveIdentityLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    provider: string,
+    externalId: string,
+  ): Promise<ResolvedIdentity | undefined> {
+    const row = await this.scopeStub(scopeId).resolveProjectedIdentity(tenantId, provider, externalId);
+    if (!row) return undefined;
+    return resolvedIdentity.parse({ principal: row.principal, scopeId: row.scopeId });
   }
 
   /**

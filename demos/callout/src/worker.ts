@@ -22,6 +22,7 @@ import {
   queryScopeInput,
   readScopeTableInput,
   entitlementGrant,
+  projectedIdentityLink,
   z,
 } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
@@ -185,6 +186,9 @@ const provisionInstanceBody = z.object({
   // #310: the tenant's entitlements, projected so ctx.entitlement + the per-operation gate
   // work in this CP-less vertical without a control-plane binding (#304). Optional.
   entitlements: z.array(entitlementGrant).optional(),
+  // #406: the tenant's identity links, projected so the auth adapter can resolve
+  // (provider, externalId) → principal from the scope's own storage. Optional.
+  identityLinks: z.array(projectedIdentityLink).optional(),
 });
 
 const app = new Hono<{ Bindings: Env }>();
@@ -230,6 +234,7 @@ app.post('/internal/provision', async (c) => {
     roles: ROLES,
     ownerRoleKey: 'office-admin',
     entitlements: body.entitlements,
+    identityLinks: body.identityLinks,
   });
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
 });
