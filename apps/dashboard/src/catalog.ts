@@ -4,8 +4,6 @@ import { PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import { PERM as WO } from '@substrat-run/engine-workorder';
 import { INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { SC_PERM } from '@substrat-run/demo-callout/manifest';
-import { HR_PERM } from '@substrat-run/demo-meridian/manifest';
-import { MF_PERM } from '@substrat-run/demo-manyfold/manifest';
 
 /**
  * The catalog — the verticals a customer can instantiate, and the provisioning
@@ -61,43 +59,12 @@ export const CATALOG: Record<string, CatalogEntry> = {
       PROTO.create, PROTO.fill, PROTO.sign, PROTO.read, PROTO.void,
     ] as PermissionKey[],
   },
-  // Meridian runs the HR domain on the kernel plus protocol (onboarding). Its SKU is
-  // two flags (`meridian` + `protocol`); the installing owner receives the `hr-admin`
-  // permission set (demos/meridian provision.ts `hrAdminPerms`) as a flat grant, so a
-  // freshly-installed instance's owner can define leave types, create employees and
-  // projects, approve leave/expenses, and drive onboarding contracts from day one.
-  meridian: {
-    name: 'Meridian',
-    // Deployed to the shared control plane's dispatch namespace and promoted to prod, so the
-    // hosted catalog now offers it. (Was `connected: false` while it wasn't yet deployable.)
-    connected: true,
-    // Mirrors the vertical's own manifest `requires` (#427): the install form offers the
-    // tenant's `oidc-issuer` providers to bind; builtin auth stays the default.
-    requires: ['oidc-issuer'],
-    entitlements: ['meridian', 'protocol'],
-    ownerGrants: [
-      HR_PERM.employeeManage, HR_PERM.absenceConfigure, HR_PERM.absenceApprove, HR_PERM.absenceRead,
-      HR_PERM.timeRead, HR_PERM.projectManage, HR_PERM.expenseApprove, HR_PERM.expenseRead, HR_PERM.payrollExport,
-      // PROTO.recordSignature is deliberately excluded — it speaks for the signing
-      // provider (a connection holds it), never a human role (provision.ts).
-      PROTO.create, PROTO.fill, PROTO.bind, PROTO.requestSignature, PROTO.sign, PROTO.read, PROTO.void,
-    ] as PermissionKey[],
-  },
-  // Manyfold is a multi-scope headless CMS: one install, many SITES (each a scope). Its SKU
-  // is one flag (`manyfold`); the installing owner receives the full content permission set as
-  // a flat grant, so a fresh instance's owner can model, author, review, and publish from day
-  // one. (The per-SITE role model — Meridian's `assignScopeRole` replicated per site — is the
-  // productization the flat grant stands in for; cms-content.md §8.4.) Bundled in the worker
-  // but not yet deployed to the shared control plane, so it is hidden in connected mode until
-  // it ships (flip to `connected: true` once deployed + promoted).
-  manyfold: {
-    name: 'Manyfold',
-    // Deployed to the shared control plane's dispatch namespace and promoted to prod, so the
-    // hosted catalog now offers it. (Was `connected: false` while it wasn't yet deployable.)
-    connected: true,
-    entitlements: ['manyfold'],
-    ownerGrants: [MF_PERM.read, MF_PERM.author, MF_PERM.review, MF_PERM.publish, MF_PERM.admin] as PermissionKey[],
-  },
+  // Meridian and Manyfold are RETIRED here (#389): their first-party builtin lineages are
+  // superseded by the tenant-owned `substrat-9yjbbn/meridian` / `substrat-9yjbbn/manyfold`
+  // lineages, pushed through the builder plane and staff-listed like any marketplace
+  // vertical — so the marketplace shows exactly one of each. The builtin registry rows
+  // persist for their remaining (archived) scopes but are `installsBlocked`, and the
+  // modules stay bundled in the worker so embedded worlds keep serving existing scopes.
 };
 
 /** Seed the registry from the catalog (idempotent) — what `GET /api/catalog` lists. The

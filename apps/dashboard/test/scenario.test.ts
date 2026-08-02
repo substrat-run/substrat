@@ -342,15 +342,22 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
   });
 
   it('#427: capability declarations ride the registry and drive issuer-provider resolution', async () => {
-    // The builtin seed carries `requires` to the registry (meridian declares it can
-    // delegate to an oidc-issuer), so install-time binding reads the ROW, not a
-    // hardcoded slug list — a pushed vertical resolves identically.
+    // `requires` rides the registry ROW (declared by a pushed vertical's manifest — the
+    // builtin meridian that used to carry it is retired, #389), so install-time binding
+    // reads the row, not a hardcoded slug list.
     await ensureCatalog(host, staff);
+    await host.admin.registerVertical(staff, {
+      slug: 'acme/hr',
+      name: 'Acme HR',
+      source: 'cli',
+      listed: true,
+      requires: ['oidc-issuer'],
+    });
     const verticals = await host.admin.listVerticals(staff);
-    expect(verticals.find((v) => v.slug === 'meridian')?.requires).toEqual(['oidc-issuer']);
+    expect(verticals.find((v) => v.slug === 'acme/hr')?.requires).toEqual(['oidc-issuer']);
     // ...and availableCatalog forwards both capability lists to the install UI.
     const listing = availableCatalog(verticals, { tenantId: null });
-    expect(listing.find((v) => v.slug === 'meridian')?.requires).toEqual(['oidc-issuer']);
+    expect(listing.find((v) => v.slug === 'acme/hr')?.requires).toEqual(['oidc-issuer']);
 
     // Provider resolution is capability-driven: a vertical DECLARING provides:['oidc-issuer']
     // counts (whatever its slug), the legacy literal 'auth-server' is grandfathered
@@ -1191,6 +1198,5 @@ describe('catalog availability — registry-driven (marketplace-publish.md §3)'
     expect(listedFor(false)).toBe(false);
     expect(listedFor(true)).toBe(true);
     expect(listedFor(undefined)).toBe(true);
-    expect(CATALOG.meridian!.connected).toBe(true);
   });
 });
