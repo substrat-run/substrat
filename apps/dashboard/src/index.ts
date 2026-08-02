@@ -19,6 +19,7 @@ export {
   type AppHostnameRow,
   reconcileRoles,
   ensureRosterSeeded,
+  installEntitlements,
   MODULES,
   ROLES,
   VERTICAL,

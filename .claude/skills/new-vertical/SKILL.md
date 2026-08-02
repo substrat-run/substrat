@@ -206,8 +206,11 @@ and prints each persona's status code is more reliable than a chain of `curl | j
   `save-type`/`list-types`, bodies persisted as JSON so adding a field is free.
 - **Sandbox-clean is the default worker shape** (policy: every vertical is sandbox-clean,
   only the dashboard is privileged). Copy Meridian's `worker.ts`/`wrangler.jsonc`: own
-  `ScopeDO` + `IdentityDO`, `/internal/provision` platform-gated, SPA inlined via
-  `gen-assets` (no ASSETS binding). **Multi-scope is native**: one `SCOPE` DO namespace,
+  `ScopeDO` + `IdentityDO`, the FULL platform-gated `/internal/*` contract — `provision`,
+  `reconcile` (the control plane's in-place repair: it re-delivers entitlements +
+  identity links through this route, so a vertical without it cannot be healed),
+  `configure`, `tables`, `query`, and the snapshot/export/restore/bookmarks/rewind/
+  delete-scope family — SPA inlined via `gen-assets` (no ASSETS binding). **Multi-scope is native**: one `SCOPE` DO namespace,
   `idFromName(tenant, site)` = one DO per site; the router asserts the tenant, the app
   selects the site (`x-scope`), permissions evaluate from that site's own storage.
 - **Kill stale dev servers before driving over HTTP.** A `tsx src/server.ts` left running

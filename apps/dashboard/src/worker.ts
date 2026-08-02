@@ -31,7 +31,7 @@ import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, type DashboardNode } from './provision.js';
+import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, versionRegistryFromHost, assertOwned } from './deployments.js';
 import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
@@ -533,7 +533,10 @@ async function installSpecFor(
   const cat = CATALOG[slug];
   if (registered || cat) {
     return {
-      entitlements: registered?.entitlements ?? cat?.entitlements ?? [],
+      // A vertical that declares no `entitlements` still gates on its own
+      // `entitlementKey` (slug, by convention) — derive it, or the install grants
+      // NOTHING and every gated operation fails closed on first use (#443).
+      entitlements: installEntitlements(slug, registered?.entitlements, cat?.entitlements),
       ownerGrants: (registered?.ownerGrants ?? cat?.ownerGrants ?? []) as PermissionKey[],
       envSpec: registered?.envSpec ?? cat?.envSpec ?? [],
     };
@@ -544,7 +547,7 @@ async function installSpecFor(
   const remote = cp ? (await cp.listCatalog()).find((v) => v.slug === slug) : undefined;
   if (!remote) throw new HTTPException(400, { message: `unknown vertical '${slug}'` });
   return {
-    entitlements: remote.entitlements ?? [],
+    entitlements: installEntitlements(slug, remote.entitlements),
     ownerGrants: (remote.ownerGrants ?? []) as PermissionKey[],
     envSpec: (remote.envSpec as EnvVarSpec[] | undefined) ?? [],
   };
