@@ -17,8 +17,10 @@ import { Avatar, Button, Card, ColHead, CountPill, DistBar, Empty, Mono, Pill, R
 import { SignIn, AcceptInvite } from './Auth';
 import { EntryForm } from './EntryForm';
 import { DeliveryPreview } from './Delivery';
+import { renderMarkdown } from './Markdown';
 import { ModelsView, ModelEditorView, RelationshipMap, MigrationsView } from './ModelBuilder';
-import { MembersView, AssetLibrary } from './Workspace';
+import { MembersView } from './Workspace';
+import { AssetLibrary } from './AssetsView';
 
 const TYPE_ORDER = ['post', 'page', 'snippet', 'author'];
 
@@ -191,10 +193,10 @@ export default function App() {
               onCancel={() => navigate({ kind: 'models' })}
             />
           )}
-          {view.kind === 'relationships' && <RelationshipMap />}
+          {view.kind === 'relationships' && <RelationshipMap onOpen={(key) => navigate({ kind: 'model-edit', key })} />}
           {view.kind === 'migrations' && <MigrationsView />}
-          {view.kind === 'media' && <AssetLibrary />}
-          {view.kind === 'members' && <MembersView meName={me.display} canAdmin={caps.admin} />}
+          {view.kind === 'media' && <AssetLibrary types={types} />}
+          {view.kind === 'members' && <MembersView meName={me.display} meRole={me.role} canAdmin={caps.admin} />}
           {view.kind === 'entry' && (
             <EntryEditor key={view.id} id={view.id} types={types} caps={caps} onChanged={refresh} onBack={() => navigate({ kind: 'home' })} />
           )}
@@ -896,6 +898,8 @@ function EntryEditor(props: {
       {mode === 'edit' && def && (
         <EntryForm
           def={def}
+          types={props.types}
+          entryId={props.id}
           initial={detail.body}
           submitLabel="Save draft"
           error={err}
@@ -904,7 +908,9 @@ function EntryEditor(props: {
         />
       )}
 
-      {mode === 'preview' && detail.entry.slug && <DeliveryPreview typeKey={detail.entry.type_key} slug={detail.entry.slug} />}
+      {mode === 'preview' && detail.entry.slug && (
+        <DeliveryPreview typeKey={detail.entry.type_key} slug={detail.entry.slug} rev={detail.entry.published_rev} def={def} />
+      )}
 
       {mode === 'view' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 16, marginTop: 4 }}>
@@ -916,7 +922,11 @@ function EntryEditor(props: {
                   <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 2 }}>
                     {name} <Mono style={{ fontSize: 11 }}>{f.type}{f.target ? `(${f.target})` : ''}{f.required ? ' · required' : ''}</Mono>
                   </div>
-                  <div style={{ fontSize: 13.5 }}>{renderValue(detail.body[name])}</div>
+                  <div style={{ fontSize: 13.5 }}>
+                    {f.type === 'richText' && typeof detail.body[name] === 'string' && (detail.body[name] as string).trim()
+                      ? renderMarkdown(detail.body[name] as string)
+                      : renderValue(detail.body[name])}
+                  </div>
                 </div>
               ))}
           </Card>
@@ -989,6 +999,7 @@ function CreateEntry({ typeKey, types, onDone, onCancel }: { typeKey: string; ty
       <PageTitle sub={<Mono>ct_{typeKey}_v{def.version}</Mono>}>New {def.title}</PageTitle>
       <EntryForm
         def={def}
+        types={types}
         submitLabel={`Create ${def.title}`}
         error={err}
         onCancel={onCancel}

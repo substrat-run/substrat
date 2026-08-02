@@ -239,6 +239,77 @@ export function RolePill({ children }: { children: ReactNode }) {
   );
 }
 
+/** The 11px uppercase micro-label used for card sections and column groups. */
+export function MicroLabel({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  return (
+    <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--faint)', marginBottom: 8, ...style }}>
+      {children}
+    </div>
+  );
+}
+
+/** A field-type chip — accent-soft, mono ("refMany(Snippet)"). */
+export function TypeChip({ children }: { children: ReactNode }) {
+  return (
+    <span style={{ fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 'var(--r-pill)', background: 'var(--accent-soft)', color: 'var(--accent)', whiteSpace: 'nowrap' }}>
+      {children}
+    </span>
+  );
+}
+
+/** Centered modal over a dimmed backdrop. Shadows only on modals/drawers (design rule). */
+export function Modal({ children, onClose, width = 520 }: { children: ReactNode; onClose: () => void; width?: number }) {
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ width, maxWidth: 'calc(100vw - 48px)', maxHeight: '85vh', display: 'flex', flexDirection: 'column', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r-card)', boxShadow: '0 20px 50px rgba(0,0,0,0.3)', overflow: 'hidden' }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Right-hand side drawer (320px) over the dimmed page — the 4b picker shell. */
+export function Drawer({ children, onClose, width = 320 }: { children: ReactNode; onClose: () => void; width?: number }) {
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.2)', display: 'flex', justifyContent: 'flex-end', zIndex: 50 }}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ width, maxWidth: '90vw', height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--surface)', borderLeft: '1px solid var(--border)', boxShadow: '-12px 0 40px rgba(0,0,0,0.25)', overflow: 'hidden' }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** The ⋮⋮ drag handle for reorderable rows/chips. */
+export function DragHandle() {
+  return <span aria-hidden style={{ color: 'var(--faint)', cursor: 'grab', fontSize: 12, letterSpacing: '-0.1em', userSelect: 'none' }}>⋮⋮</span>;
+}
+
+/** The striped placeholder used wherever an asset preview would render. */
+export function AssetStripe({ label, style }: { label?: string; style?: CSSProperties }) {
+  return (
+    <div
+      style={{
+        background: 'repeating-linear-gradient(45deg, var(--wash), var(--wash) 8px, var(--surface) 8px, var(--surface) 16px)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--r-input)',
+        display: 'flex',
+        alignItems: 'flex-end',
+        padding: 8,
+        overflow: 'hidden',
+        ...style,
+      }}
+    >
+      {label && <Mono style={{ fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</Mono>}
+    </div>
+  );
+}
+
 /** A small count pill for nav rows (amber when it wants attention, e.g. review queue). */
 export function CountPill({ n, tone = 'faint' }: { n: number; tone?: 'faint' | 'review' }) {
   const attn = tone === 'review' && n > 0;

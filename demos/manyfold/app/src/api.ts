@@ -117,6 +117,16 @@ export const api = {
     if (b.principal) { const can = capsFromRole(b.role ?? null); return { mode: 'authed', principal: b.principal, display: b.name ?? 'You', site: b.site ?? null, can, role: b.role ?? roleLabel(can) }; }
     return { mode: 'anon' };
   },
+  /** `me` resolved against a specific site — powers the "roles are per site" rail (K-22):
+   *  the same login is a different authority in each scope. */
+  meForSite: async (slug: string): Promise<{ role: string | null }> => {
+    const res = await fetch('/api/me', { headers: { 'content-type': 'application/json', 'x-site': slug }, credentials: 'same-origin' });
+    if (!res.ok) return { role: null };
+    const b = (await res.json().catch(() => ({}))) as { can?: Caps; role?: string };
+    if (b.role) return { role: b.role };
+    if (b.can) return { role: roleLabel(b.can) };
+    return { role: null };
+  },
   listTypes: () => op<{ def: ContentTypeDef; sql: string }[]>('list-types'),
   saveType: (def: { key: string; title: string; titleField: string; slugField?: string; fields: Record<string, FieldDef> }) => op<ContentTypeDef>('save-type', def),
   deleteType: (key: string) => op<{ deleted: string }>('delete-type', { key }),
