@@ -258,6 +258,70 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     expect(events.find((e) => e.kind === 'failed')?.detail).toContain('client registration');
   });
 
+  it('#391: a cold-start 502 on the identity delivery is retried; persistent failure names the transient; a 501 never retries', async () => {
+    const acme = await bootstrap('acme-cold-start');
+    const appAuth = { source: 'external', issuer: 'https://auth.example.com', clientId: 'cid', clientSecret: 'cs' } as const;
+    const base = {
+      tenantId: acme.tenantId,
+      ensureTenant: async () => {},
+      grantEntitlement: async () => {},
+      provisionScope: async () => {},
+      provisionInstance: async () => {},
+      activateScope: async () => {},
+      listChannels: async () => [],
+      bindHostname: async () => {},
+      setHostnameStatus: async () => {},
+    };
+    const cpWith = (configureInstance: () => Promise<void>) =>
+      ({ ...base, configureInstance }) as unknown as Parameters<typeof createApp>[1]['controlPlane'];
+    const coldStart = () =>
+      Promise.reject(new ControlPlaneError(502, 'vertical unreachable during configure: Worker threw exception'));
+
+    // The just-provisioned instance answers on the THIRD attempt — inside the cold-start
+    // window the bounded retry exists for. The install converges instead of failing.
+    let attempts = 0;
+    const wakingScope = scopeId.parse(ulid());
+    const app = await createApp(host, {
+      node: acme, appScopeId: wakingScope, verticalSlug: 'meridian', name: 'Waking',
+      appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+      controlPlane: cpWith(() => (++attempts < 3 ? coldStart() : Promise.resolve())),
+      appAuth, configureRetryDelaysMs: [0, 0],
+    });
+    expect(app.status).toBe('active');
+    expect(attempts).toBe(3);
+
+    // Never-answers: the app fails, and the reason names the transient + the recovery —
+    // not the generic 'internal error' this issue was filed about.
+    const deadScope = scopeId.parse(ulid());
+    await expect(
+      createApp(host, {
+        node: acme, appScopeId: deadScope, verticalSlug: 'meridian', name: 'Dead',
+        appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+        controlPlane: cpWith(coldStart), appAuth, configureRetryDelaysMs: [0],
+      }),
+    ).rejects.toThrow(/deployment did not answer .*Worker threw exception.*install it again/s);
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    const rows = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
+    expect(rows.find((a) => a.app_scope_id === deadScope)?.status).toBe('failed');
+
+    // An honest 501 refusal (no live-config support) is NOT retried — retrying a
+    // refusal only delays the real message.
+    let refusals = 0;
+    const refusedScope = scopeId.parse(ulid());
+    await expect(
+      createApp(host, {
+        node: acme, appScopeId: refusedScope, verticalSlug: 'meridian', name: 'Refused',
+        appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+        controlPlane: cpWith(() => {
+          refusals++;
+          return Promise.reject(new ControlPlaneError(501, 'no live-config support'));
+        }),
+        appAuth, configureRetryDelaysMs: [0, 0],
+      }),
+    ).rejects.toThrow(/cannot receive auth settings/);
+    expect(refusals).toBe(1);
+  });
+
   it('authors the Identity choice at install so Settings can read and update it — secret redacted, blank keeps it', async () => {
     const acme = await bootstrap('acme-auth-visible');
     const cp = {
