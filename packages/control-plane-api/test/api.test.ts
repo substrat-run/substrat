@@ -1335,6 +1335,91 @@ describe('control-plane API', () => {
     });
     expect(res.status).toBe(401);
   });
+
+  // -- #424 case 2: transient vertical failures retry instead of one-shot failing ----
+
+  const flakyVertical = (failures: number, failStatus = 503) => {
+    let calls = 0;
+    const vertical = new VerticalClient({
+      platformSecret: 'shhh',
+      fetch: (async () => {
+        calls++;
+        if (calls <= failures) {
+          return new Response('script settings still propagating', { status: failStatus });
+        }
+        return new Response(
+          JSON.stringify({ tenantId: t1, scopeId: s1, owner: '01JZ00000000000000000000OW' }),
+          { status: 201, headers: { 'content-type': 'application/json' } },
+        );
+      }) as unknown as typeof fetch,
+    });
+    return { vertical, calls: () => calls };
+  };
+
+  const installBody = () =>
+    JSON.stringify({
+      tenantId: t1,
+      scopeId: scopeId.parse(ulid()),
+      owner: '01JZ00000000000000000000OW',
+      slug: 'acme',
+      name: 'Acme AB',
+    });
+
+  it('rides out a transient 5xx from the vertical: the retry converges to 201', async () => {
+    // The binding-attach → script-settings propagation race: the vertical 503s once,
+    // then succeeds. Idempotent at the far end (K-31), so the endpoint retries rather
+    // than surfacing a one-shot failure the operator must manually re-run.
+    const { vertical, calls } = flakyVertical(1);
+    const api = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { fsm: vertical },
+      provisionRetryDelaysMs: [1, 1],
+    });
+    const res = await api.request('/verticals/fsm/instances', {
+      method: 'POST',
+      headers: auth,
+      body: installBody(),
+    });
+    expect(res.status).toBe(201);
+    expect(calls()).toBe(2);
+  });
+
+  it('an honest refusal (4xx) is never retried — the real message surfaces immediately', async () => {
+    const { vertical, calls } = flakyVertical(99, 403);
+    const api = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { fsm: vertical },
+      provisionRetryDelaysMs: [1, 1],
+    });
+    const res = await api.request('/verticals/fsm/instances', {
+      method: 'POST',
+      headers: auth,
+      body: installBody(),
+    });
+    expect(res.status).toBe(403);
+    expect(calls()).toBe(1);
+  });
+
+  it('exhausted retries surface the LAST error, verbatim body included', async () => {
+    const { vertical, calls } = flakyVertical(99, 503);
+    const api = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { fsm: vertical },
+      provisionRetryDelaysMs: [1],
+    });
+    const res = await api.request('/verticals/fsm/instances', {
+      method: 'POST',
+      headers: auth,
+      body: installBody(),
+    });
+    expect(res.status).toBe(503);
+    expect(calls()).toBe(2);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('script settings still propagating');
+  });
 });
 
 /**

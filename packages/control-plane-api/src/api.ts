@@ -122,6 +122,16 @@ export interface ControlPlaneApiOptions {
    */
   patchScriptBindings?: PatchScriptBindingsFn;
   /**
+   * Backoff for retrying a TRANSIENT vertical failure during install (#424 case 2).
+   * The install chain patches script bindings and then immediately calls the vertical,
+   * which can race Cloudflare script-settings propagation — the vertical answers 503
+   * "no tenant store attached" moments before it would have succeeded. Every step is
+   * idempotent by design, so the endpoint rides that window out instead of surfacing a
+   * one-shot failure. Honest refusals (any 4xx, and 501) are never retried. Tests pass
+   * short/empty.
+   */
+  provisionRetryDelaysMs?: readonly number[];
+  /**
    * Resolves the platform actor from the request. No default: an unauthenticated
    * control plane is not a sensible fallback, and a package that shipped one
    * would eventually be deployed with it (control-plane.md §6).
@@ -1412,6 +1422,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // that does not exist. `scopeStatus` has a `provisioning` state for expressing the
   // in-between properly, and it is still unused — see the PR.
 
+  // Rides out the binding-attach → script-settings propagation window (see the
+  // `provisionRetryDelaysMs` option); the same shape as the dashboard's #391
+  // configure retry. ~3s worst case, well inside a Worker request budget.
+  const PROVISION_RETRY_DELAYS_MS: readonly number[] = [750, 2500];
+
   app.post('/verticals/:slug/instances', async (c) => {
     const slug = c.req.param('slug');
     // The install kill-switch: a blocked vertical takes no NEW instances, for anyone
@@ -1455,12 +1470,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       patchBindings: options.patchScriptBindings,
     });
     try {
-      const instance = await vertical.provisionInstance({
-        ...(input as Parameters<VerticalClient['provisionInstance']>[0]),
-        entitlements,
-        identityLinks,
-        ...(tenantStores.length ? { tenantStores } : {}),
-      });
+      // #424 case 2: the binding attach above races Cloudflare script-settings
+      // propagation, so the vertical's FIRST answer can be a transient 5xx that a
+      // retry moments later heals. `provisionInstance` is idempotent at the far end
+      // (K-31), so ride the window out on a short backoff. Honest refusals (4xx, and
+      // 501 = not implemented) surface immediately — retrying a refusal only delays
+      // the real message.
+      const delays = options.provisionRetryDelaysMs ?? PROVISION_RETRY_DELAYS_MS;
+      let instance: Awaited<ReturnType<VerticalClient['provisionInstance']>>;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          instance = await vertical.provisionInstance({
+            ...(input as Parameters<VerticalClient['provisionInstance']>[0]),
+            entitlements,
+            identityLinks,
+            ...(tenantStores.length ? { tenantStores } : {}),
+          });
+          break;
+        } catch (e) {
+          const transient =
+            e instanceof ControlPlaneError && (e.status === 0 || (e.status >= 500 && e.status !== 501));
+          const delay = delays[attempt];
+          if (!transient || delay === undefined) throw e;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
       return c.json(instance, 201);
     } catch (e) {
       // Propagate the vertical's own status rather than collapsing it to a 500. A

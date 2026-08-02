@@ -57,3 +57,54 @@ describe('VerticalClient — transport rejections become diagnosable 502s (#391)
     expect((err as ControlPlaneError).message).toBe('no live-config support');
   });
 });
+
+/**
+ * #424 case 1: the vertical's error body IS the diagnosis, whatever its shape. The
+ * authhero-auth-core install failure answered a plain-text 503 whose body said exactly
+ * what was wrong — and the old `res.json().catch(() => null)` dropped it, surfacing only
+ * "vertical refused provisioning: 503 Service Unavailable". Any non-empty body must
+ * survive to the operator.
+ */
+describe('VerticalClient — refusal bodies surface verbatim (#424)', () => {
+  const answering = (status: number, body: string, statusText = '') =>
+    new VerticalClient({
+      fetch: (async () => new Response(body, { status, statusText })) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+  const provisionErr = async (client: VerticalClient) =>
+    client
+      .provisionInstance({ tenantId: t, scopeId: s, owner: 'o' as never, slug: 'x', name: 'X' })
+      .then(() => undefined)
+      .catch((e: unknown) => e as ControlPlaneError);
+
+  it('a plain-text body is the message, prefixed with the verb + status', async () => {
+    const err = await provisionErr(
+      answering(503, 'no tenant store attached for t-x (binding AUTH_DB_TX) — provision first'),
+    );
+    expect(err!.status).toBe(503);
+    expect(err!.message).toBe(
+      'vertical refused provisioning (503): no tenant store attached for t-x (binding AUTH_DB_TX) — provision first',
+    );
+  });
+
+  it('a JSON {error} body still passes through bare (the existing contract)', async () => {
+    const err = await provisionErr(answering(403, JSON.stringify({ error: 'not a platform call' })));
+    expect(err!.message).toBe('not a platform call');
+  });
+
+  it('JSON of any OTHER shape surfaces as its raw text rather than being dropped', async () => {
+    const err = await provisionErr(answering(500, JSON.stringify({ message: 'boom', code: 7 })));
+    expect(err!.message).toBe('vertical refused provisioning (500): {"message":"boom","code":7}');
+  });
+
+  it('only a genuinely empty body falls back to the status line', async () => {
+    const err = await provisionErr(answering(503, '', 'Service Unavailable'));
+    expect(err!.message).toBe('vertical refused provisioning: 503 Service Unavailable');
+  });
+
+  it('an oversized body is truncated, not dropped', async () => {
+    const err = await provisionErr(answering(500, 'x'.repeat(2000)));
+    expect(err!.message.length).toBeLessThan(600);
+    expect(err!.message).toContain('x'.repeat(100));
+  });
+});

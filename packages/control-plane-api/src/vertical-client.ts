@@ -158,15 +158,9 @@ export class VerticalClient {
       }),
     );
 
-    if (!res.ok) {
-      const body = (await res.json().catch(() => null)) as { error?: string } | null;
-      // Surfaced rather than swallowed: a 403 here means the secrets do not match,
-      // which is a deployment error someone must see, not a transient failure to retry.
-      throw new ControlPlaneError(
-        res.status,
-        body?.error ?? `vertical refused provisioning: ${res.status} ${res.statusText}`,
-      );
-    }
+    // Surfaced rather than swallowed: a 403 here means the secrets do not match,
+    // which is a deployment error someone must see, not a transient failure to retry.
+    if (!res.ok) throw await this.refusal('provisioning', res);
     return (await res.json()) as ProvisionedInstance;
   }
 
@@ -356,6 +350,36 @@ export class VerticalClient {
     }
   }
 
+  /**
+   * The vertical's refusal, VERBATIM. A non-2xx body is the diagnosis — the vertical
+   * says exactly what is wrong ("no tenant store attached for <t> — provision first") —
+   * so it must survive to the operator whatever its shape: our own verticals answer
+   * `{error}`, but a foreign one (or a runtime error page) answers plain text, which the
+   * old `res.json().catch(() => null)` silently dropped, leaving only "503 Service
+   * Unavailable" (#424 case 1). Read the body once as text: a JSON `{error}` passes
+   * through bare (the vertical authored a complete message — the existing contract);
+   * any other non-empty body rides prefixed with the verb; only an EMPTY body falls
+   * back to the status line.
+   */
+  private async refusal(verb: string, res: Response): Promise<ControlPlaneError> {
+    const text = await res.text().catch(() => '');
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown };
+      if (typeof parsed?.error === 'string' && parsed.error !== '') {
+        return new ControlPlaneError(res.status, parsed.error);
+      }
+    } catch {
+      // not JSON — fall through to the raw text
+    }
+    const detail = text.trim().slice(0, 500);
+    return new ControlPlaneError(
+      res.status,
+      detail !== ''
+        ? `vertical refused ${verb} (${res.status}): ${detail}`
+        : `vertical refused ${verb}: ${res.status} ${res.statusText}`,
+    );
+  }
+
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
   private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
@@ -369,13 +393,7 @@ export class VerticalClient {
         body: JSON.stringify(body),
       }),
     );
-    if (!res.ok) {
-      const parsed = (await res.json().catch(() => null)) as { error?: string } | null;
-      throw new ControlPlaneError(
-        res.status,
-        parsed?.error ?? `vertical refused ${verb}: ${res.status} ${res.statusText}`,
-      );
-    }
+    if (!res.ok) throw await this.refusal(verb, res);
     return (await res.json()) as T;
   }
 
@@ -387,13 +405,7 @@ export class VerticalClient {
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
-    if (!res.ok) {
-      const body = (await res.json().catch(() => null)) as { error?: string } | null;
-      throw new ControlPlaneError(
-        res.status,
-        body?.error ?? `vertical refused introspection: ${res.status} ${res.statusText}`,
-      );
-    }
+    if (!res.ok) throw await this.refusal('introspection', res);
     return (await res.json()) as T;
   }
 }
