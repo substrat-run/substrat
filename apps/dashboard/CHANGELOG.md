@@ -1,5 +1,51 @@
 # @substrat-run/dashboard
 
+## 0.11.0
+
+### Minor Changes
+
+- 8869413: The install is now a durable, inspectable operation (#424, the remaining half). The
+  dashboard records each stage of an install — directory → provision → activate →
+  hostname → identity — as a per-step row in the platform-request shape
+  (status/attempts/last_error), written live as the install runs. The Apps view renders
+  the step list on a provisioning card (polling while it runs) and, on a failed one, shows
+  the step that died with the downstream error VERBATIM; Resume re-enters the same rows,
+  bumping attempts, so a healed install reads `provision ✓ (2 attempts) → activate ✓`. A
+  `provisioning` row whose directory scope is already `active` is reconciled on read
+  (case 4's eternal spinner heals on the next page load). CLI parity: `substrat installs
+<slug>` lists a workspace's installs with directory status + served hostname, and
+  `substrat scope status <scopeId>` prints one scope's directory truth (status, bound
+  version, serving script, role health) — backed by tenant-narrowed builder access to the
+  directory read routes (`GET /scopes` forces the caller's tenant; per-scope reads hide a
+  foreign tenant as 404).
+
+### Patch Changes
+
+- bb7c651: The dashboard's app row heals its vertical lineage on read (#389). A staff
+  `rebind-vertical` moves a scope onto a different lineage (builtin `manyfold` →
+  tenant-owned `substrat-9yjbbn/manyfold`) and the directory's scope record is the
+  source of truth — but the row's `vertical_slug` still named the old lineage, which
+  misrouted the per-app Update path (prod channels resolve by slug) and the Apps
+  view's version display. The `GET /api/apps` reconcile (the same read that heals a
+  stranded `provisioning` row, #424 case 4) now also compares the directory's
+  `vertical` against the row's slug and, when they differ, updates the row via a new
+  `dashboard/reconcile-app-vertical` operation — same authority as provisioning,
+  idempotent, with the move recorded on the Activity trail (`rebound old → new`).
+  Best-effort like the mark-active heal: a viewer session lacks the permission and
+  the row heals on an owner's next visit. No migration — the column already exists.
+- Updated dependencies [1057d15]
+- Updated dependencies [a957516]
+  - @substrat-run/demo-manyfold@0.5.0
+  - @substrat-run/demo-meridian@0.3.0
+  - @substrat-run/demo-callout@0.1.25
+  - @substrat-run/contracts@0.37.0
+  - @substrat-run/kernel@0.37.0
+  - @substrat-run/adapter-cloudflare@0.37.0
+  - @substrat-run/engine-invites@0.0.34
+  - @substrat-run/engine-invoicing@0.3.35
+  - @substrat-run/engine-protocol@0.4.29
+  - @substrat-run/engine-workorder@0.3.35
+
 ## 0.10.6
 
 ### Patch Changes
