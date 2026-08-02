@@ -62,7 +62,15 @@
 	// is one route per jurisdiction (a route wildcard matches one level), backed by the
 	// ACM advanced cert + a proxied `*.<jurisdiction>` DNS record (K-30/D-35). Only
 	// `global` is live today — `eu`/`us` attach when those jurisdictions open (K-32).
-	"routes": [{ "pattern": "*.global.substrat.run/*", "zone_name": "substrat.run" }],
+	// The zone-wide `*/*` is the Cloudflare-for-SaaS leg (§4.7): CUSTOM hostnames
+	// (crm.sesamy.com) can never match a `*.substrat.run` pattern — per CF's
+	// worker-as-origin guidance only a catch-all on the SaaS zone runs the Worker for
+	// them (fallback origin `cname.substrat.run` stays a proxied placeholder record).
+	// More-specific patterns (incl. the test router's below) still win over it.
+	"routes": [
+		{ "pattern": "*.global.substrat.run/*", "zone_name": "substrat.run" },
+		{ "pattern": "*/*", "zone_name": "substrat.run" }
+	],
 	// workers_dev stays on during bring-up (a stable URL to reach the router before any
 	// tenant hostname resolves); the router holds no data, so its exposure is a 404 surface.
 	"workers_dev": true,
