@@ -167,11 +167,16 @@ export class TenantNarrowedControlPlane {
     return this.post(`/tenants/${this.tenantId}/scopes`, input);
   }
 
-  /** Have the control plane call the vertical (K-31) to create the scope's data. */
+  /**
+   * Have the control plane call the vertical (K-31) to create the scope's data. The 201
+   * body is RETURNED, not dropped (#426): `result` carries the vertical's non-secret
+   * first-run facts (client id, migrations applied, …), which the install persists on
+   * the app row — before this, the body's one chance to be seen ended right here.
+   */
   provisionInstance(
     verticalSlug: string,
     input: { scopeId: ScopeId; owner: PrincipalId; slug: string; name: string; config?: Record<string, string> },
-  ): Promise<void> {
+  ): Promise<{ result?: Record<string, string> } | undefined> {
     return this.post(`/verticals/${encodeURIComponent(verticalSlug)}/instances`, { tenantId: this.tenantId, ...input });
   }
 

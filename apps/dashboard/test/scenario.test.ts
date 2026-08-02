@@ -259,6 +259,86 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     expect(events.find((e) => e.kind === 'failed')?.detail).toContain('client registration');
   });
 
+  it('#426: install-form config is authored AND delivered with provisioning; the provision result is persisted', async () => {
+    const acme = await bootstrap('acme-install-config');
+    const appScope = scopeId.parse(ulid());
+    const provisionCalls: Array<{ slug: string; config?: Record<string, string> }> = [];
+    const cp = {
+      tenantId: acme.tenantId,
+      ensureTenant: async () => {},
+      grantEntitlement: async () => {},
+      provisionScope: async () => {},
+      // The vertical honors `config` and answers non-secret first-run facts with its ack.
+      provisionInstance: async (slug: string, input: { config?: Record<string, string> }) => {
+        provisionCalls.push({ slug, ...(input.config ? { config: input.config } : {}) });
+        return { result: { clientId: 'minted-client', migrationsApplied: '3' } };
+      },
+      activateScope: async () => {},
+      listChannels: async () => [],
+      bindHostname: async () => {},
+      setHostnameStatus: async () => {},
+      configureInstance: async () => {},
+    } as unknown as Parameters<typeof createApp>[1]['controlPlane'];
+
+    const app = await createApp(host, {
+      node: acme, appScopeId: appScope, verticalSlug: 'meridian', name: 'Issuer',
+      appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+      controlPlane: cp,
+      appConfig: [
+        { key: 'ADMIN_EMAIL', value: 'ops@acme.com', secret: false },
+        { key: 'ADMIN_PASSWORD', value: 'chosen-by-installer', secret: true },
+        { key: 'OPTIONAL_UNTOUCHED', value: '', secret: false },
+      ],
+    });
+
+    // DELIVERED with provisioning — the instance is born configured (an issuer with an
+    // admin), not live-but-unconfigured until an Env-tab save. Empty values don't ride.
+    expect(provisionCalls).toHaveLength(1);
+    expect(provisionCalls[0]!.config).toEqual({
+      ADMIN_EMAIL: 'ops@acme.com',
+      ADMIN_PASSWORD: 'chosen-by-installer',
+    });
+
+    // PERSISTED: the vertical's non-secret provision result lands on the app row instead
+    // of dying with the 201 body (#426 half 2).
+    expect(app.status).toBe('active');
+    expect(JSON.parse(app.provision_result ?? '{}')).toEqual({
+      clientId: 'minted-client',
+      migrationsApplied: '3',
+    });
+
+    // AUTHORED: the same values are on the Env tab afterward, the secret masked-but-set —
+    // what the user typed outlives the install request.
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    type EnvVal = { key: string; isSecret: boolean; hasValue: boolean; value: string | null };
+    const values = (await dash.invoke('dashboard/list-app-env', { appScopeId: appScope })) as EnvVal[];
+    expect(values.find((v) => v.key === 'ADMIN_EMAIL')?.value).toBe('ops@acme.com');
+    const pw = values.find((v) => v.key === 'ADMIN_PASSWORD')!;
+    expect(pw.value).toBeNull();
+    expect(pw.hasValue).toBe(true);
+    expect(values.some((v) => v.key === 'OPTIONAL_UNTOUCHED')).toBe(false);
+  });
+
+  it('#426: the authored config survives a FAILED install — what the user typed is not lost with the request', async () => {
+    const acme = await bootstrap('acme-config-failed');
+    const appScope = scopeId.parse(ulid());
+    const failingCp = {
+      tenantId: acme.tenantId,
+      ensureTenant: () => Promise.reject(new Error('boom')),
+    } as unknown as Parameters<typeof createApp>[1]['controlPlane'];
+    await expect(
+      createApp(host, {
+        node: acme, appScopeId: appScope, verticalSlug: 'meridian', name: 'Broken',
+        appEntitlements: ['meridian'], appOwnerGrants: [HR_PERM.absenceRead] as PermissionKey[],
+        controlPlane: failingCp,
+        appConfig: [{ key: 'ADMIN_EMAIL', value: 'ops@acme.com', secret: false }],
+      }),
+    ).rejects.toThrow('boom');
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    const values = (await dash.invoke('dashboard/list-app-env', { appScopeId: appScope })) as Array<{ key: string; value: string | null }>;
+    expect(values.find((v) => v.key === 'ADMIN_EMAIL')?.value).toBe('ops@acme.com');
+  });
+
   it('#391: a cold-start 502 on the identity delivery is retried; persistent failure names the transient; a 501 never retries', async () => {
     const acme = await bootstrap('acme-cold-start');
     const appAuth = { source: 'external', issuer: 'https://auth.example.com', clientId: 'cid', clientSecret: 'cs' } as const;

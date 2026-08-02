@@ -108,3 +108,64 @@ describe('VerticalClient — refusal bodies surface verbatim (#424)', () => {
     expect(err!.message).toContain('x'.repeat(100));
   });
 });
+
+/**
+ * #426 half 2: the SUCCESS body matters too. A vertical may report non-secret first-run
+ * facts (a minted client id, migrations applied) alongside its ack — before this, the
+ * body's only reader was the JSON parse and everything beyond the ack died with the
+ * response. Extra fields become `result`; secret-shaped keys are dropped as a backstop
+ * (credentials flow IN via `config`, never back out).
+ */
+describe('VerticalClient — the provision SUCCESS body becomes `result` (#426)', () => {
+  const provisionWith = (body: unknown) =>
+    new VerticalClient({
+      fetch: (async () => new Response(JSON.stringify(body), { status: 201 })) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    }).provisionInstance({ tenantId: t, scopeId: s, owner: 'o' as never, slug: 'x', name: 'X' });
+
+  it('a bare ack yields no result at all', async () => {
+    const out = await provisionWith({ tenantId: t, scopeId: s, owner: 'o' });
+    expect(out).toEqual({ tenantId: t, scopeId: s, owner: 'o' });
+    expect('result' in out).toBe(false);
+  });
+
+  it('extra top-level primitives and an explicit `result` object both ride, stringified', async () => {
+    const out = await provisionWith({
+      tenantId: t, scopeId: s, owner: 'o',
+      clientId: 'client-abc',
+      migrationsApplied: 7,
+      result: { adminPath: '/admin', ready: true },
+    });
+    expect(out.result).toEqual({
+      clientId: 'client-abc',
+      migrationsApplied: '7',
+      adminPath: '/admin',
+      ready: 'true',
+    });
+  });
+
+  it('secret-shaped keys are dropped, wherever they appear', async () => {
+    const out = await provisionWith({
+      tenantId: t, scopeId: s, owner: 'o',
+      adminPassword: 'oops',
+      clientSecret: 'oops',
+      result: { apiToken: 'oops', privateKey: 'oops', clientId: 'kept' },
+    });
+    expect(out.result).toEqual({ clientId: 'kept' });
+  });
+
+  it('objects, arrays and nulls never ride — the result is flat strings only', async () => {
+    const out = await provisionWith({
+      tenantId: t, scopeId: s, owner: 'o',
+      nested: { a: 1 }, list: [1, 2], nothing: null, clientId: 'kept',
+    });
+    expect(out.result).toEqual({ clientId: 'kept' });
+  });
+
+  it('the ack echoes the INPUT identifiers, not whatever the body claims', async () => {
+    const out = await provisionWith({ tenantId: 'forged', scopeId: 'forged', owner: 'forged' });
+    expect(out.tenantId).toBe(t);
+    expect(out.scopeId).toBe(s);
+    expect(out.owner).toBe('o');
+  });
+});

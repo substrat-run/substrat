@@ -221,7 +221,7 @@ export function App() {
   }, [toast]);
 
   const createApp = useCallback(
-    async (input: { verticalSlug: string; name: string; auth?: AppAuthChoice }) => {
+    async (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) => {
       let name = input.name;
       try {
         if (DEV_MOCK) {

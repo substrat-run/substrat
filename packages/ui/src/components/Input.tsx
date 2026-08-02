@@ -16,6 +16,8 @@ export interface InputProps {
   value?: string;
   onChange?: (e: ChangeEvent<HTMLInputElement>) => void;
   style?: CSSProperties;
+  /** The underlying input type — `password` masks secret values as they are typed. */
+  type?: 'text' | 'password';
 }
 
 const heights: Record<NonNullable<InputProps['size']>, string> = {
@@ -35,6 +37,7 @@ export function Input({
   value,
   onChange,
   style,
+  type = 'text',
 }: InputProps) {
   const [focus, setFocus] = useState(false);
   const h = heights[size];
@@ -94,6 +97,7 @@ export function Input({
           </span>
         )}
         <input
+          type={type}
           placeholder={placeholder}
           value={value}
           onChange={onChange}

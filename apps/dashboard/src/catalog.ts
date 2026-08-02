@@ -126,6 +126,13 @@ export interface CatalogListing {
   owned: boolean;
   listed: boolean;
   source: string;
+  /**
+   * The vertical's declared env-spec, carried to the install form (#426): the New-app
+   * page renders these fields so first-run values — an issuer's bootstrap ADMIN_*, an
+   * app's API keys — flow IN with provisioning instead of the instance arriving live
+   * but unconfigured. Same spec the Env tab renders after install.
+   */
+  envSpec?: EnvVarSpec[];
 }
 
 /**
@@ -145,5 +152,12 @@ export function availableCatalog(
     // the offer side of the kill-switch; the control plane's instances route is the gate.
     .filter((v) => !v.installsBlocked)
     .filter((v) => v.listed || owned(v))
-    .map((v) => ({ slug: v.slug, name: v.name, owned: owned(v), listed: v.listed, source: v.source }));
+    .map((v) => ({
+      slug: v.slug,
+      name: v.name,
+      owned: owned(v),
+      listed: v.listed,
+      source: v.source,
+      ...(v.envSpec?.length ? { envSpec: v.envSpec } : {}),
+    }));
 }
