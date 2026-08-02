@@ -20,6 +20,12 @@ export { doScopedSql } from './sql.js';
 export { createDoTupleChecker } from './checker.js';
 export { definePlatformSweeperDO, PLATFORM_SWEEPER_NAME } from './platform-sweeper-do.js';
 export type { PlatformSweeperDoConfig, PlatformSweepOutcome } from './platform-sweeper-do.js';
+export {
+  createD1TenantStores,
+  d1TenantRelationalStore,
+  tenantStoreDatabaseName,
+} from './d1.js';
+export type { D1TenantStores, D1TenantStoresOptions } from './d1.js';
 export { createRouteResolver } from './route-resolver.js';
 export type { RouteResolver } from './route-resolver.js';
 export type { ControlPlaneReader, DoCheckerDeps } from './checker.js';

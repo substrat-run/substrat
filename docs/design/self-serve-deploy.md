@@ -141,8 +141,26 @@ platform provisions, not a *binding* the bundle carries. This is distinct from a
 vertical opens what it was handed and runs its own migrations, inside the K-31 fail-closed
 ready-gate). The store handle's `ref` is opaque — a D1 `database_id` on Cloudflare, a per-tenant
 `.sqlite` file on the pure adapter (dev/CI/self-host), so one vertical runs unchanged on both.
-The vocabulary, directory ledger and pure-adapter implementation land first; live Cloudflare D1
-minting is the tracked follow-up.
+
+**The live Cloudflare path (#301 PR-2).** At provision, the control plane mints a real D1 per
+declared need (`createD1TenantStores`, on the platform's CF credential — the token also needs
+account-level D1 write) and records it in the directory's `tenant_stores` ledger, keyed
+(tenant, vertical, binding); the ledger — not the deterministic database *name* — is the source
+of truth, and is what makes a retried provision re-resolve the same database instead of minting
+an orphan. **Request-time reach is a real `d1` binding, not HTTP**: the store is attached to the
+vertical's serving script under the name `tenantStoreBindingName(binding, tenantId)`
+(= `<BINDING>__<TENANTID>`, from `@substrat-run/contracts`) via the WfP script-settings PATCH —
+no redeploy — and **every in-place serving upload re-derives the full set from the ledger** and
+sends it with the bundle's own bindings, so a re-deploy is structurally unable to drop a
+tenant's store binding (the same class of bug as the re-put-secrets ritual, closed by
+construction). In the worker the vertical opens `env[tenantStoreBindingName(handle.binding,
+tenantId)]` (wrap it with `d1TenantRelationalStore` for the substrate store shape; `native` is
+the raw `D1Database` for e.g. Better Auth). The control plane's own `openTenantStore` is the
+out-of-band reach — the D1 HTTP query API — for driving a store's migrations externally, ops
+reads and tests. A vertical declaring `tenantStores` should be served **in place** (#286, the
+default on promote): per-version scripts get a best-effort attach at provision, but only the
+serving script's bindings are re-derived on every upload. Store deletion at tenant reap is a
+tracked follow-up — the ledger row is the teardown list.
 
 If an uploaded bundle's declared bindings exceed this contract, the deploy endpoint refuses it
 before it ever reaches the namespace. That refusal — not code inspection — is the primary

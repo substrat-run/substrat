@@ -917,6 +917,16 @@ export interface HostAdmin {
   /** The scope inventory. Ordered by scope_id (ULID = chronological). */
   listScopes(actor: PlatformActorId, filter?: ScopeFilter): Promise<Scope[]>;
   /**
+   * The tenant-store ledger (#301): every platform-minted per-tenant store, optionally
+   * narrowed by tenant and/or vertical. The deploy path reads `{ vertical }` to derive
+   * the D1 bindings that must ride every serving-script upload (a re-deploy must never
+   * drop a tenant's store binding); the console reads it as inventory.
+   */
+  listTenantStores(
+    actor: PlatformActorId,
+    filter?: { tenantId?: TenantId; vertical?: string },
+  ): Promise<TenantStoreRecord[]>;
+  /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and
    * returns undefined on a mismatch rather than another tenant's scope (K-3) —
    * the same fail-closed rule `ScopeHost.getScope` applies when minting a stub.
@@ -1337,20 +1347,40 @@ export interface TenantStoreProvisionInput {
 
 /**
  * A live per-tenant relational store the vertical reached through the host (#301) — the
- * thing `openTenantStore` hands back. Deliberately the SAME `query`/`exec` shape as
- * `ScopedSql`, so a vertical's own-store code reads identically to its scope-DB code, plus
- * a `native` escape hatch for a library (e.g. Better Auth) that wants the raw driver.
+ * thing `openTenantStore` hands back. Deliberately the same `query`/`exec` VOCABULARY as
+ * `ScopedSql`, so a vertical's own-store code reads like its scope-DB code — but **async**,
+ * because the store is only reachable asynchronously on Cloudflare (a `D1Database` binding
+ * in the worker, the D1 HTTP API from the control plane), and a contract only the SQLite
+ * adapter could satisfy would be no contract at all. Plus a `native` escape hatch for a
+ * library (e.g. Better Auth) that wants the raw driver.
  *
  * `native` is `unknown` at the contract on purpose: a `better-sqlite3` `Database` on the
- * pure adapter, a `D1Database` on Cloudflare. The vertical narrows it in its own
+ * pure adapter, a `D1Database` on Cloudflare (in the worker — the control plane's HTTP-query
+ * store has no in-process driver and carries `null`). The vertical narrows it in its own
  * runtime-specific harness — exactly the node/worker split a hosted vertical already has —
  * which is what lets one vertical run unchanged against D1 in prod and a `.sqlite` file locally.
  */
 export interface TenantRelationalStore {
-  query<T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[];
-  exec(sql: string, params?: readonly SqlValue[]): { changes: number };
+  query<T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): Promise<T[]>;
+  exec(sql: string, params?: readonly SqlValue[]): Promise<{ changes: number }>;
   /** The underlying driver, for a library that needs it. Adapter-typed; `unknown` here. */
   readonly native: unknown;
+}
+
+/**
+ * One row of the tenant-store ledger (#301): the platform-minted per-tenant store
+ * satisfying a vertical's declared `tenantStoreNeed`, keyed (tenant, vertical, binding).
+ * The ledger is what makes provisioning idempotent, tells the deploy path which D1
+ * bindings must ride every serving-script upload (a re-deploy must never drop a tenant's
+ * store), and tells a future reap what to tear down.
+ */
+export interface TenantStoreRecord {
+  tenantId: TenantId;
+  vertical: string;
+  binding: string;
+  kind: 'relational';
+  ref: string;
+  createdAt: string;
 }
 
 /**

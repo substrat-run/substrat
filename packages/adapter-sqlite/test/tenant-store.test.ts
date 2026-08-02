@@ -44,14 +44,14 @@ describe('per-tenant relational store (pure adapter)', () => {
 
     // The vertical opens each and runs its OWN migrations against it.
     for (const h of [ha, hb]) {
-      host.openTenantStore(h).exec('CREATE TABLE users (email TEXT PRIMARY KEY)');
+      await host.openTenantStore(h).exec('CREATE TABLE users (email TEXT PRIMARY KEY)');
     }
-    host.openTenantStore(ha).exec('INSERT INTO users (email) VALUES (?)', ['a@alpha.example']);
-    host.openTenantStore(hb).exec('INSERT INTO users (email) VALUES (?)', ['b@bravo.example']);
+    await host.openTenantStore(ha).exec('INSERT INTO users (email) VALUES (?)', ['a@alpha.example']);
+    await host.openTenantStore(hb).exec('INSERT INTO users (email) VALUES (?)', ['b@bravo.example']);
 
     // Isolation: each store sees only its own tenant's row.
-    expect(host.openTenantStore(ha).query('SELECT email FROM users')).toEqual([{ email: 'a@alpha.example' }]);
-    expect(host.openTenantStore(hb).query('SELECT email FROM users')).toEqual([{ email: 'b@bravo.example' }]);
+    await expect(host.openTenantStore(ha).query('SELECT email FROM users')).resolves.toEqual([{ email: 'a@alpha.example' }]);
+    await expect(host.openTenantStore(hb).query('SELECT email FROM users')).resolves.toEqual([{ email: 'b@bravo.example' }]);
   });
 
   it('physically separates each store into its own .sqlite file, apart from scope DBs', async () => {
@@ -70,15 +70,15 @@ describe('per-tenant relational store (pure adapter)', () => {
   it('is idempotent: re-provisioning re-resolves the same store, never a second file', async () => {
     const { host, staff, a, dir } = await world();
     const first = await host.provisionTenantStore(staff, { tenantId: a, vertical: 'auth', binding: 'AUTH_DB' });
-    host.openTenantStore(first).exec('CREATE TABLE t (x INTEGER)');
-    host.openTenantStore(first).exec('INSERT INTO t (x) VALUES (1)');
+    await host.openTenantStore(first).exec('CREATE TABLE t (x INTEGER)');
+    await host.openTenantStore(first).exec('INSERT INTO t (x) VALUES (1)');
 
     const again = await host.provisionTenantStore(staff, { tenantId: a, vertical: 'auth', binding: 'AUTH_DB' });
     expect(again.ref).toBe(first.ref);
     // The retried provision must not orphan a second database, and the data survives.
     // Count only the DB files, not WAL/-shm sidecars.
     expect(readdirSync(dir).filter((f) => f.startsWith('tstore__') && f.endsWith('.sqlite'))).toHaveLength(1);
-    expect(host.openTenantStore(again).query('SELECT x FROM t')).toEqual([{ x: 1 }]);
+    await expect(host.openTenantStore(again).query('SELECT x FROM t')).resolves.toEqual([{ x: 1 }]);
   });
 
   it('keeps a tenant’s two declared bindings in separate stores', async () => {
@@ -97,6 +97,22 @@ describe('per-tenant relational store (pure adapter)', () => {
         binding: 'AUTH_DB',
       }),
     ).rejects.toThrow(/unknown tenant/);
+  });
+
+  it('exposes the ledger via admin.listTenantStores, narrowed by tenant and vertical', async () => {
+    const { host, staff, a, b } = await world();
+    const ha = await host.provisionTenantStore(staff, { tenantId: a, vertical: 'auth', binding: 'AUTH_DB' });
+    await host.provisionTenantStore(staff, { tenantId: b, vertical: 'auth', binding: 'AUTH_DB' });
+    await host.provisionTenantStore(staff, { tenantId: a, vertical: 'other', binding: 'AUTH_DB' });
+
+    const all = await host.admin.listTenantStores(staff);
+    expect(all).toHaveLength(3);
+    const authOnly = await host.admin.listTenantStores(staff, { vertical: 'auth' });
+    expect(authOnly).toHaveLength(2);
+    const tenantA = await host.admin.listTenantStores(staff, { tenantId: a, vertical: 'auth' });
+    expect(tenantA).toEqual([
+      { tenantId: a, vertical: 'auth', binding: 'AUTH_DB', kind: 'relational', ref: ha.ref, createdAt: expect.any(String) },
+    ]);
   });
 
   it('refuses a ref that could escape the data directory (parse, don’t trust)', async () => {

@@ -110,6 +110,80 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
 }
 
 /**
+ * One D1 binding to guarantee on a dispatch script — the shape `PatchScriptBindingsFn`
+ * ensures and the serving upload injects (per-tenant stores, #301).
+ */
+export interface D1BindingSpec {
+  name: string;
+  /** The D1 database id (the tenant-store ledger's `ref`). */
+  id: string;
+}
+
+/**
+ * Ensure a set of D1 bindings exists on a dispatch-namespace script WITHOUT redeploying
+ * it (#301): attach a freshly-minted tenant store to the vertical's serving script the
+ * moment it is provisioned, between full uploads. Resolves without touching Cloudflare
+ * when every wanted binding is already present.
+ */
+export type PatchScriptBindingsFn = (scriptName: string, ensure: D1BindingSpec[]) => Promise<void>;
+
+/**
+ * A `PatchScriptBindingsFn` over the namespace's script-settings endpoint: read the
+ * current bindings, add the missing D1 bindings, PATCH the set back. Additive on
+ * purpose — it never removes a binding (reap-time cleanup is the ledger's job, a
+ * separate step), and secrets are never round-tripped: the GET cannot return their
+ * values, so they ride `keep_bindings` exactly as an in-place upload's do (#286).
+ */
+export function createWfpBindingsPatcher(
+  opts: Pick<WfpUploaderOptions, 'accountId' | 'namespace' | 'apiToken'>,
+): PatchScriptBindingsFn {
+  return async (scriptName, ensure) => {
+    if (ensure.length === 0) return;
+    const url =
+      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
+      `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(scriptName)}/settings`;
+    const auth = { authorization: `Bearer ${opts.apiToken}` };
+
+    const read = await fetch(url, { headers: auth });
+    if (!read.ok) {
+      const body = await read.text().catch(() => '');
+      throw new Error(`WfP settings read failed (${read.status}) for '${scriptName}': ${clip(body)}`);
+    }
+    const settings = (await read.json().catch(() => ({}))) as {
+      result?: { bindings?: { type: string; name: string; [k: string]: unknown }[] };
+      bindings?: { type: string; name: string; [k: string]: unknown }[];
+    };
+    const current = settings.result?.bindings ?? settings.bindings ?? [];
+    const have = new Set(current.filter((b) => b.type === 'd1').map((b) => b.name));
+    const missing = ensure.filter((b) => !have.has(b.name));
+    if (missing.length === 0) return; // already attached — nothing to send
+
+    // Secrets cannot be read back, so they must not be resent (a valueless entry would
+    // wipe them) — they are inherited via keep_bindings; everything else is resent as-is.
+    const carried = current.filter((b) => b.type !== 'secret_text' && b.type !== 'secret_key');
+    const form = new FormData();
+    form.set(
+      'settings',
+      new Blob(
+        [
+          JSON.stringify({
+            bindings: [...carried, ...missing.map((b) => ({ type: 'd1', name: b.name, id: b.id }))],
+            keep_bindings: ['secret_text', 'secret_key'],
+          }),
+        ],
+        { type: 'application/json' },
+      ),
+      'settings.json',
+    );
+    const res = await fetch(url, { method: 'PATCH', headers: auth, body: form });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`WfP settings patch failed (${res.status}) for '${scriptName}': ${clip(body)}`);
+    }
+  };
+}
+
+/**
  * A `FetchVerticalModulesFn` over the namespace's script-content endpoint. The archive
  * script (one per pushed version) is the platform's bundle store — promote and backout
  * read the built modules back from it rather than requiring anyone to retain bytes.

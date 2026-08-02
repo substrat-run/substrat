@@ -73,6 +73,21 @@ export const tenantStoreHandle = z.object({
 export type TenantStoreHandle = z.infer<typeof tenantStoreHandle>;
 
 /**
+ * The env name a tenant's store is bound under on the Cloudflare serving script (#301,
+ * PR-2): `<BINDING>__<TENANTID>`. One convention, shared by its two ends — the control
+ * plane derives it when attaching the D1 binding to the serving script, and the vertical
+ * worker derives it to look the binding up (`env[tenantStoreBindingName(handle.binding,
+ * tenantId)]` narrows to a `D1Database`). It lives in contracts precisely so neither side
+ * hardcodes the other's half. A tenant id is a ULID (uppercase alphanumeric) and the
+ * declared binding is SCREAMING_SNAKE, so the result is always a valid binding name; the
+ * double underscore keeps it out of the single-underscore namespace a builder would use.
+ * On the pure adapter there is no binding to name — the handle's `ref` is the whole reach.
+ */
+export function tenantStoreBindingName(binding: string, tenantId: string): string {
+  return `${binding}__${tenantId}`;
+}
+
+/**
  * What a vertical needs from the runtime, in substrate vocabulary (package.json
  * `substrat.runtimeNeeds`). A vertical authored with this section never writes deploy
  * config for a specific substrate — the CLI derives that at push time (D-38: builders

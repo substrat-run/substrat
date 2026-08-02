@@ -318,6 +318,22 @@ const DIRECTORY_DDL = `
   -- The reconcile sweep polls every hostname mid-issuance (pending/verifying) — an
   -- index keeps that pass from scanning the whole map as the fleet grows.
   CREATE INDEX IF NOT EXISTS hostnames_status ON hostnames (status);
+  -- Per-tenant relational stores (#301), one row per (tenant, vertical, binding) -- the
+  -- platform-minted per-tenant store a vertical declared as a tenantStoreNeed. ref is
+  -- the opaque store handle (a D1 database_id here, a .sqlite path token on the pure
+  -- adapter). The row is the idempotency + reap ledger, and what the deploy path reads
+  -- to re-derive the serving script's tenant-store D1 bindings on every upload -- a
+  -- retried provision re-resolves the SAME ref rather than minting a second database,
+  -- and the platform knows what to tear down when a tenant is reaped.
+  CREATE TABLE IF NOT EXISTS tenant_stores (
+    tenant_id  TEXT NOT NULL,
+    vertical   TEXT NOT NULL,
+    binding    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    ref        TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, vertical, binding)
+  );
   CREATE TABLE IF NOT EXISTS verticals (
     slug         TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -821,6 +837,101 @@ export class ControlPlaneDO extends DurableObject {
     return (
       this.sql.exec('SELECT * FROM tenants ORDER BY tenant_id').toArray() as unknown as TenantRow[]
     ).map((r) => this.mapTenant(r));
+  }
+
+  // -- per-tenant relational stores (#301) ------------------------------------
+  // The ledger only: minting the actual database (a live D1 create) is the
+  // coordinator's job — it holds the platform's Cloudflare credential, this DO
+  // never has (the same split secretBox uses for keys).
+
+  getTenantStore(
+    tenantId: string,
+    vertical: string,
+    binding: string,
+  ): { kind: string; ref: string } | undefined {
+    return this.sql
+      .exec(
+        'SELECT kind, ref FROM tenant_stores WHERE tenant_id = ? AND vertical = ? AND binding = ?',
+        tenantId,
+        vertical,
+        binding,
+      )
+      .toArray()[0] as { kind: string; ref: string } | undefined;
+  }
+
+  /**
+   * Record a minted store — FIRST WRITER WINS. The DO is the serialization point two
+   * concurrent provisions race through: `INSERT OR IGNORE` then read back, so both
+   * callers converge on one canonical row and the loser can tear its orphan mint down.
+   * Fails closed on an unknown/non-active tenant, exactly as provisionScope does.
+   */
+  putTenantStore(row: {
+    tenantId: string;
+    vertical: string;
+    binding: string;
+    kind: string;
+    ref: string;
+    createdAt: string;
+  }): { kind: string; ref: string } {
+    const tenantRow = this.sql
+      .exec('SELECT status FROM tenants WHERE tenant_id = ?', row.tenantId)
+      .toArray()[0] as { status: string } | undefined;
+    if (!tenantRow) {
+      throw new Error(`cannot provision tenant store under unknown tenant: ${row.tenantId}`);
+    }
+    if (tenantRow.status !== 'active') {
+      throw new Error(
+        `cannot provision tenant store under non-active tenant (status: ${tenantRow.status}): ${row.tenantId}`,
+      );
+    }
+    this.sql.exec(
+      `INSERT OR IGNORE INTO tenant_stores (tenant_id, vertical, binding, kind, ref, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      row.tenantId,
+      row.vertical,
+      row.binding,
+      row.kind,
+      row.ref,
+      row.createdAt,
+    );
+    const stored = this.getTenantStore(row.tenantId, row.vertical, row.binding);
+    if (!stored) throw new Error(`tenant store write did not land for tenant ${row.tenantId}`);
+    return stored;
+  }
+
+  listTenantStores(filter: { tenantId?: string; vertical?: string }): {
+    tenant_id: string;
+    vertical: string;
+    binding: string;
+    kind: string;
+    ref: string;
+    created_at: string;
+  }[] {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (filter.tenantId) {
+      where.push('tenant_id = ?');
+      params.push(filter.tenantId);
+    }
+    if (filter.vertical) {
+      where.push('vertical = ?');
+      params.push(filter.vertical);
+    }
+    return this.sql
+      .exec(
+        'SELECT * FROM tenant_stores' +
+          (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+          ' ORDER BY tenant_id, vertical, binding',
+        ...params,
+      )
+      .toArray() as unknown as {
+      tenant_id: string;
+      vertical: string;
+      binding: string;
+      kind: string;
+      ref: string;
+      created_at: string;
+    }[];
   }
 
   // -- scope lifecycle (control-plane.md §4.1/§4.2) ---------------------------

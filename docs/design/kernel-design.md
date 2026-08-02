@@ -443,7 +443,12 @@ injects the database id** (closing the ownership gap a bundle-chosen id left ope
 adapter mimics it faithfully as a **separate `.sqlite` file per tenant** — the same file-per-unit
 grain the scope DBs already use — so the whole path is exercised in dev/CI without Cloudflare.
 `storageShape` on the `Scope` row is the marker that a scope participates; the store lifecycle is
-the `provisionTenantStore`/`openTenantStore` seam on `ScopeHost`.
+the `provisionTenantStore`/`openTenantStore` seam on `ScopeHost`. On Cloudflare the path is live
+(#301 PR-2): the platform mints a real D1 per (tenant, vertical, binding), records it in the
+directory's `tenant_stores` ledger, and attaches it to the vertical's serving script as a `d1`
+binding named `<BINDING>__<TENANTID>` — re-derived from the ledger on every in-place serving
+upload, so a re-deploy cannot drop it. The worker opens the binding directly (request-time);
+the control plane's `openTenantStore` uses the D1 HTTP API (out-of-band migrations, ops reads).
 
 ### 5.3 Migrations and version skew
 

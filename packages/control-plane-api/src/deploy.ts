@@ -134,8 +134,8 @@ const NAMED_REFUSALS: Record<string, string> = {
  * #301), so it is a `runtimeNeeds` need rather than a `declaredBinding` and never rides this
  * allowlist at all — there is no bundle-chosen id left to trust. A vertical migrating from a
  * single shared D1 to platform-provisioned per-tenant stores is how the ownership question
- * stops applying. (The kernel seam — `provisionTenantStore`/`openTenantStore` — and the pure
- * adapter land first; live Cloudflare D1 minting is the follow-up.)
+ * stops applying. (The kernel seam is `provisionTenantStore`/`openTenantStore`; on Cloudflare
+ * the platform mints a live D1 per tenant and attaches it to the serving script — #301 PR-2.)
  */
 export function assertSandboxContract(m: DeployManifest): void {
   const own = new Set(m.doClasses);

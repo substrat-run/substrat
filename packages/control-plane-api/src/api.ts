@@ -45,6 +45,8 @@ import {
   upstreamStatusOf,
 } from './deploy.js';
 import type { DeployVerticalFn, FetchVerticalModulesFn } from './deploy.js';
+import type { PatchScriptBindingsFn } from './wfp.js';
+import { collectTenantStoreHandles, tenantStoreBindings } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import type { ObservabilityReader } from './observability.js';
 import {
@@ -110,6 +112,14 @@ export interface ControlPlaneApiOptions {
    * place (the pre-#286 behavior: scopes stay on per-version dispatch).
    */
   fetchVerticalModules?: FetchVerticalModulesFn;
+  /**
+   * Ensures per-tenant store D1 bindings exist on a dispatch script without a redeploy
+   * (#301) — the attach step that makes a freshly-minted tenant store reachable in the
+   * vertical's worker at request time (`createWfpBindingsPatcher`). Host-injected like
+   * `deployVertical`. Absent ⇒ stores still mint and handles still ride the provision
+   * callback (the pure adapter needs no binding), but no script is patched.
+   */
+  patchScriptBindings?: PatchScriptBindingsFn;
   /**
    * Resolves the platform actor from the request. No default: an unauthenticated
    * control plane is not a sensible fallback, and a package that shipped one
@@ -1417,11 +1427,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const identityLinks = (await admin.listIdentityLinks(c.get('actor'), input.tenantId)).map(
       ({ tenantId: _tenantId, ...link }) => link,
     );
+    // #301 PR-2: per-tenant relational stores the vertical DECLARED, minted here (before
+    // the callback — the vertical migrates the store inside the K-31 ready-gate, so it
+    // must exist and be bound first). Idempotent like the endpoint: a retried provision
+    // re-resolves the same handles and the binding attach no-ops once present. `[]` for
+    // every vertical that declares none — the payload is unchanged for them.
+    const tenantStores = await collectTenantStoreHandles({
+      host: options.host,
+      actor: c.get('actor'),
+      slug,
+      tenantId: input.tenantId,
+      patchBindings: options.patchScriptBindings,
+    });
     try {
       const instance = await vertical.provisionInstance({
         ...(input as Parameters<VerticalClient['provisionInstance']>[0]),
         entitlements,
         identityLinks,
+        ...(tenantStores.length ? { tenantStores } : {}),
       });
       return c.json(instance, 201);
     } catch (e) {
@@ -1658,6 +1681,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const serving = await admin.verticalServing(actor, slug);
     const ref = serving?.ref ?? stableDeploymentRefFor(slug);
     const modules = await options.fetchVerticalModules(version.deploymentRef);
+    // #301 PR-2: every serving upload re-derives the per-tenant store D1 bindings from
+    // the ledger and sends them WITH the bundle's own bindings — an upload's `bindings`
+    // replaces the script's set, so deriving from the ledger (not from what the script
+    // happened to carry) is what makes a re-deploy structurally unable to drop a
+    // tenant's store. Platform-granted after the §4 sandbox check, like injectSecrets:
+    // the builder never declared these and never named the ids.
+    const storeBindings = tenantStoreBindings(
+      await admin.listTenantStores(actor, { vertical: slug }),
+    ).map((b) => ({ type: 'd1', name: b.name, id: b.id }));
     await options.deployVertical(
       ref,
       {
@@ -1666,7 +1698,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses: manifest.doClasses,
-        bindings: manifest.bindings,
+        bindings: [...manifest.bindings, ...storeBindings],
       },
       serving
         ? { priorDoClasses: serving.doClasses, priorMigrationTag: serving.migrationTag }
