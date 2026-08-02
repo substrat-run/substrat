@@ -444,6 +444,60 @@ export async function retryApp(
   });
 }
 
+/**
+ * Resume an app STUCK at `provisioning` (#424 case 4): the worker died — or the browser
+ * closed — somewhere between the platform effect and `mark-app-active`, leaving a row
+ * that renders as an eternal spinner while the install may be anywhere from half-made to
+ * fully serving. Unlike `retryApp` (a FAILED row: tear down, fresh scope), this re-runs
+ * the install tail IN PLACE against the SAME scope — every step is idempotent by design
+ * (ensureTenant/provisionScope upsert, provisionInstance converges at the far end (K-31),
+ * activateScope re-asserts, bindHostname re-binds its own scope) — so however far the
+ * first attempt got, this converges to `active` or surfaces the real blocker and marks
+ * the row `failed` (which unlocks Retry). The identity step is deliberately NOT re-run:
+ * if the original install delivered an issuer choice it persists in the vertical, and if
+ * it never got there the app runs the builtin default the user can change in Settings —
+ * resuming cannot re-derive a choice that was never recorded.
+ */
+export async function resumeApp(
+  host: ScopeHost,
+  input: {
+    node: DashboardNode;
+    /** The stuck app's scope — resumed in place, never re-minted. */
+    appScopeId: ScopeId;
+    verticalSlug: string;
+    name: string;
+    appEntitlements?: string[];
+    appOwnerGrants?: PermissionKey[];
+    baseDomain?: string;
+    teamHandle?: string;
+    controlPlane?: TenantNarrowedControlPlane;
+    tenantName?: string;
+  },
+): Promise<DashboardAppRow> {
+  // Authorize + record + guard (only a `provisioning` row resumes), in the caller's own
+  // dashboard scope — the same check-then-effect split as createApp step 1.
+  const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
+  await scope.invoke('dashboard/resume-app', { appScopeId: input.appScopeId });
+
+  let hostname: string | null;
+  try {
+    hostname = input.controlPlane
+      ? await provisionOnSharedPlane(input.controlPlane, input)
+      : await provisionEmbedded(host, input);
+  } catch (e) {
+    // A resume that still can't come up is a REAL failure: mark it so (unlocking Retry)
+    // and record why on the Activity trail, exactly like a failed create.
+    const reason = e instanceof Error ? e.message : String(e);
+    await scope.invoke('dashboard/mark-app-failed', { appScopeId: input.appScopeId, reason }).catch(() => {});
+    throw e;
+  }
+
+  return scope.invoke('dashboard/mark-app-active', {
+    appScopeId: input.appScopeId,
+    ...(hostname ? { hostname } : {}),
+  });
+}
+
 /** The outcome of an update: whether it moved, and the version labels either side. */
 export interface UpdateAppResult {
   /** False when the app was already on the prod version (no rebind, no event). */

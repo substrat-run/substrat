@@ -552,6 +552,8 @@ export const api = {
     call<void>(`/domains/${encodeURIComponent(hostname)}`, { method: 'DELETE' }),
   deleteApp: (id: string) => call<void>(`/apps/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   retryApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/retry`, { method: 'POST' }),
+  /** Resume an app stuck at 'provisioning' — re-runs the idempotent install tail in place (#424). */
+  resumeApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/resume`, { method: 'POST' }),
   appEvents: (scopeId: string) => call<AppEvent[]>(`/apps/${encodeURIComponent(scopeId)}/events`),
   /** The app's vertical version registry + channels + the version THIS scope actually runs (`boundVersionId`). */
   appDeployments: (scopeId: string) => call<Deployment>(`/apps/${encodeURIComponent(scopeId)}/deployments`),

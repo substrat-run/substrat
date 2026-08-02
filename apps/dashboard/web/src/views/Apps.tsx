@@ -8,6 +8,9 @@ import { AppCard, type AppCardData } from '../components/AppCard';
 import { Page } from '../components/layout';
 import { Pill, PageTitle, RowActions, card } from '../components/ui';
 
+/** A normal install completes in seconds; past this, a `provisioning` row is STUCK (#424). */
+const STALL_AFTER_MS = 2 * 60 * 1000;
+
 /** AppRow → the shape AppCard/list rows render. Version is unknown from the row today. */
 export function toCard(a: AppRow): AppCardData & { scopeId: string } {
   const m = verticalMeta(a.vertical_slug);
@@ -20,6 +23,7 @@ export function toCard(a: AppRow): AppCardData & { scopeId: string } {
     host: a.hostname,
     updated: relativeTime(a.created_at),
     accent: m.accent,
+    stalled: a.status === 'provisioning' && Date.now() - Date.parse(a.created_at) > STALL_AFTER_MS,
   };
 }
 
@@ -37,12 +41,14 @@ export function Apps({
   onCreate,
   onOpen,
   onRetry,
+  onResume,
 }: {
   apps: AppRow[];
   loading?: boolean;
   onCreate: () => void;
   onOpen: (scopeId: string) => void;
   onRetry: (scopeId: string) => void;
+  onResume?: (scopeId: string) => void;
 }) {
   const [mode, setMode] = useState<Mode>('grid');
   const [q, setQ] = useState('');
@@ -83,7 +89,7 @@ export function Apps({
       {mode === 'grid' ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
           {filtered.map((c) => (
-            <AppCard key={c.scopeId} app={c} onOpen={() => onOpen(c.scopeId)} onRetry={() => onRetry(c.scopeId)} />
+            <AppCard key={c.scopeId} app={c} onOpen={() => onOpen(c.scopeId)} onRetry={() => onRetry(c.scopeId)} onResume={() => onResume?.(c.scopeId)} />
           ))}
         </div>
       ) : (

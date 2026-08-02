@@ -17,6 +17,7 @@ import {
   createApp,
   deprovisionApp,
   retryApp,
+  resumeApp,
   updateApp,
   CATALOG,
   availableCatalog,
@@ -448,6 +449,69 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     const appScope = await host.getScope(acme.principal, acme.tenantId, scopeId.parse(retried.app_scope_id));
     await appScope.invoke('hr/define-leave-type', { key: 'vacation', label: 'Vacation', kind: 'vacation', annualDays: '25' });
     expect(await appScope.invoke('hr/list-leave-types', {})).toHaveLength(1);
+  });
+
+  it('resuming an app stuck at provisioning converges it to active, in place (#424 case 4)', async () => {
+    const acme = await bootstrap('acme-resume');
+    const appScopeId = scopeId.parse(ulid());
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+
+    // The stuck state: the row landed (createApp step 1) and the platform effect got
+    // PARTWAY — the directory scope exists but was never activated, and mark-app-active
+    // never ran (the worker died mid-sequence). The dashboard renders an eternal spinner.
+    await dash.invoke('dashboard/provision-app', { appScopeId, verticalSlug: 'protocol', name: 'Stuck' });
+    await host.provisionScope(staff, { tenantId: acme.tenantId, scopeId: appScopeId, jurisdiction: 'global', vertical: 'protocol' });
+    expect((await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {})).find((a) => a.app_scope_id === appScopeId)?.status).toBe('provisioning');
+
+    // Resume re-runs the idempotent tail against the SAME scope → active, with a hostname.
+    const resumed = await resumeApp(host, {
+      node: acme,
+      appScopeId,
+      verticalSlug: 'protocol',
+      name: 'Stuck',
+      appEntitlements: ['protocol'],
+      appOwnerGrants: [PROTOCOL_PERM.create, PROTOCOL_PERM.read] as PermissionKey[],
+    });
+    expect(resumed.status).toBe('active');
+    expect(resumed.app_scope_id).toBe(appScopeId); // in place — never a fresh scope
+    expect(resumed.hostname).toBe('stuck.global.substrat.run');
+
+    // The scope is LIVE for the owner (activation + grants really happened)...
+    const appScope = await host.getScope(acme.principal, acme.tenantId, appScopeId);
+    await appScope.invoke('protocol/define-template', {
+      key: 'w',
+      title: 'W',
+      content: { kind: 'document', documentType: 'w', hashRecipe: 'sha256' },
+    });
+
+    // ...and the Activity trail shows the resume between created and active.
+    const events = (await dash.invoke('dashboard/app-events', { appScopeId })) as Array<{ kind: string }>;
+    expect(events.map((e) => e.kind)).toEqual(expect.arrayContaining(['created', 'resumed', 'active']));
+
+    // Only a stuck row resumes: the now-active app refuses a second resume.
+    await expect(
+      resumeApp(host, { node: acme, appScopeId, verticalSlug: 'protocol', name: 'Stuck' }),
+    ).rejects.toThrow(/only an app stuck at 'provisioning'/);
+  });
+
+  it('a resume that still cannot come up marks the row failed with the real error (unlocking Retry)', async () => {
+    const acme = await bootstrap('acme-resume-fail');
+    const appScopeId = scopeId.parse(ulid());
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    await dash.invoke('dashboard/provision-app', { appScopeId, verticalSlug: 'protocol', name: 'StillStuck' });
+
+    const failingCp = {
+      tenantId: acme.tenantId,
+      ensureTenant: () => Promise.reject(new Error('plane down')),
+    } as unknown as Parameters<typeof createApp>[1]['controlPlane'];
+    await expect(
+      resumeApp(host, { node: acme, appScopeId, verticalSlug: 'protocol', name: 'StillStuck', controlPlane: failingCp }),
+    ).rejects.toThrow('plane down');
+
+    const row = (await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {})).find((a) => a.app_scope_id === appScopeId);
+    expect(row?.status).toBe('failed');
+    const events = (await dash.invoke('dashboard/app-events', { appScopeId })) as Array<{ kind: string; detail: string | null }>;
+    expect(events.some((e) => e.kind === 'failed' && e.detail === 'plane down')).toBe(true);
   });
 
   it('deleting an app deprovisions its scope and drops it from the list (record retained)', async () => {

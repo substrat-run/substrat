@@ -300,6 +300,31 @@ export function App() {
     [reloadApps],
   );
 
+  const resumingRef = useRef(false);
+  const resumeApp = useCallback(
+    async (scopeId: string) => {
+      if (resumingRef.current) return;
+      resumingRef.current = true;
+      try {
+        if (DEV_MOCK) {
+          setApps((a) => a.map((x) => (x.app_scope_id === scopeId ? { ...x, status: 'active' } : x)));
+        } else {
+          await api.resumeApp(scopeId);
+          await reloadApps();
+        }
+        setToast({ status: 'success', title: 'Resumed', detail: 'Setup finished — the app is active.' });
+      } catch (e) {
+        // A resume that still can't come up marks the row failed with the REAL error,
+        // which unlocks Retry on the card.
+        await reloadApps().catch(() => {});
+        setToast({ status: 'danger', title: 'Resume failed', detail: e instanceof Error ? e.message : String(e) });
+      } finally {
+        resumingRef.current = false;
+      }
+    },
+    [reloadApps],
+  );
+
   const promoteDeployment = useCallback(
     async (slug: string, versionId: string, channel: 'dev' | 'staging' | 'prod') => {
       if (promoting) return;
@@ -550,7 +575,7 @@ export function App() {
           <NotFound label="That app could not be found." onBack={() => go('#/apps')} />
         )
       ) : route.section === 'overview' || route.section === 'apps' ? (
-        <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} />
+        <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} />
       ) : route.section === 'verticals' ? (
         <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (

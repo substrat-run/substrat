@@ -280,6 +280,28 @@ export const dashboardMigrations = [
       CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
     `,
   },
+  {
+    version: '0010-app-resumed-event',
+    sql: `
+      -- Widen the event kinds with 'resumed' — an install stuck at 'provisioning'
+      -- (worker died mid-sequence, browser closed) re-ran its idempotent tail in
+      -- place (#424 case 4). Same rebuild-and-copy shape as 0005/0007/0008/0009 —
+      -- SQLite can't ALTER a CHECK, and shipped migrations stay untouched.
+      CREATE TABLE dashboard_app_events_new (
+        id           TEXT PRIMARY KEY,
+        app_scope_id TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('created','active','failed','deleted','updated','snapshotted','snapshot-deleted','data-exported','data-restored','hostname-bound','hostname-unbound','resumed')),
+        detail       TEXT,
+        actor        TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      INSERT INTO dashboard_app_events_new (id, app_scope_id, kind, detail, actor, created_at)
+        SELECT id, app_scope_id, kind, detail, actor, created_at FROM dashboard_app_events;
+      DROP TABLE dashboard_app_events;
+      ALTER TABLE dashboard_app_events_new RENAME TO dashboard_app_events;
+      CREATE INDEX dashboard_app_events_by_app ON dashboard_app_events (app_scope_id, created_at);
+    `,
+  },
 ];
 
 export interface DashboardAppRow {
@@ -320,7 +342,7 @@ export interface AppEnvValue {
 export interface DashboardAppEventRow {
   id: string;
   app_scope_id: string;
-  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored' | 'hostname-bound' | 'hostname-unbound';
+  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored' | 'hostname-bound' | 'hostname-unbound' | 'resumed';
   detail: string | null;
   actor: string;
   created_at: string;
@@ -484,6 +506,32 @@ const unbindAppHostnameOp: OperationHandler<z.infer<typeof snapshotAppInput>, { 
   const input = snapshotAppInput.parse(raw);
   recordAppEvent(ctx, input.appScopeId, 'hostname-unbound', input.detail ?? null);
   return { ok: true };
+};
+
+const resumeAppInput = z.object({ appScopeId: z.string().min(1) });
+
+/**
+ * Authorize + record a RESUME of an install stuck at `provisioning` (#424 case 4): the
+ * worker died (or the browser closed) between the platform effect and `mark-app-active`,
+ * leaving a row that renders as an eternal spinner with no affordance — `failed` has
+ * Retry, `provisioning` had nothing. Same authority as creating the app; the platform
+ * effect (re-running the idempotent install tail in place, same scope) follows in the
+ * app layer. Guarded to `provisioning` rows only: an active app has nothing to resume,
+ * and a failed one goes through Retry (fresh scope) instead.
+ */
+const resumeAppOp: OperationHandler<z.infer<typeof resumeAppInput>, DashboardAppRow> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  const input = resumeAppInput.parse(raw);
+  const row = ctx.sql.query<DashboardAppRow & { deleted_at: string | null }>(
+    'SELECT * FROM dashboard_apps WHERE app_scope_id = ?',
+    [input.appScopeId],
+  )[0];
+  if (!row || row.deleted_at) throw new Error(`no app for scope ${input.appScopeId}`);
+  if (row.status !== 'provisioning') {
+    throw new Error(`only an app stuck at 'provisioning' can be resumed (this one is '${row.status}')`);
+  }
+  recordAppEvent(ctx, input.appScopeId, 'resumed', row.vertical_slug);
+  return row;
 };
 
 const markAppFailedInput = z.object({
@@ -1004,6 +1052,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/bind-app-hostname': bindAppHostnameOp as OperationHandler<never, unknown>,
     'dashboard/unbind-app-hostname': unbindAppHostnameOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-failed': markAppFailedOp as OperationHandler<never, unknown>,
+    'dashboard/resume-app': resumeAppOp as OperationHandler<never, unknown>,
     'dashboard/app-events': appEventsOp as OperationHandler<never, unknown>,
     'dashboard/list-apps': listAppsOp as OperationHandler<never, unknown>,
     'dashboard/delete-app': deleteAppOp as OperationHandler<never, unknown>,
