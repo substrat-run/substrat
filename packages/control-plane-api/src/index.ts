@@ -3,6 +3,7 @@ export type { ControlPlaneApiOptions } from './api.js';
 export {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
+  TENANT_HEADER,
   UNSAFE_devPlatformActorAuth,
   sessionPlatformAuth,
   staffAllowlist,

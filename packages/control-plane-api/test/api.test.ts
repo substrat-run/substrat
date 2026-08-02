@@ -2745,3 +2745,109 @@ describe('control-plane API — add a sibling scope (M1)', () => {
     expect(res.status).toBe(404);
   });
 });
+
+/**
+ * Staff tenant-pin slug resolution (#417). Registry rows for pushed verticals are keyed
+ * `<tenantSlug>/<slug>`; a BUILDER gets the prefix from auth, but a staff/service caller
+ * (the CLI over a service token, the dashboard's tenant-narrowed seam) used to query the
+ * bare slug and miss. The `x-substrat-tenant` header now names the workspace such a
+ * caller acts for, and every route that ADDRESSES a vertical resolves through one helper
+ * that forms the prefix exactly as a pinned push does — existence-guarded, so a pin never
+ * redirects a read to a lineage that is not there.
+ */
+describe('control-plane API — staff tenant-pin resolution (#417)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+
+  const staff = platformActorId.parse(ulid());
+  const mqk = tenantId.parse(ulid());
+  const mqkSlug = 'authhero-mqk5x7';
+  const full = `${mqkSlug}/authhero-console`;
+
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  const pinned = (pin: string) => ({ ...asStaff, 'x-substrat-tenant': pin });
+  const req = (headers: Record<string, string>) => (path: string, method = 'GET', body?: unknown) =>
+    app.request(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const staffReq = req(asStaff);
+
+  const version = (id: string, slug: string) => ({
+    id,
+    verticalSlug: slug,
+    version: id.slice(-6),
+    manifestDigest: 'm1',
+    permissionDigest: 'p1',
+    migrationDigest: 'g1',
+    deploymentRef: null,
+  });
+
+  const v1 = ulid();
+  const legacyV = ulid();
+  const calloutV = ulid();
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-pin-'));
+    host = new SqliteScopeHost({ dir });
+    app = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+
+    // The workspace, its prefixed vertical (as a pinned push lands it), and one version.
+    expect((await staffReq('/tenants', 'POST', { id: mqk, slug: mqkSlug, name: 'AuthHero' })).status).toBe(201);
+    await staffReq('/verticals', 'POST', { slug: full, name: 'Console', source: 'cli', ownerTenant: mqk });
+    const enc = encodeURIComponent(full);
+    expect((await staffReq(`/verticals/${enc}/versions`, 'POST', version(v1, full))).status).toBe(201);
+    expect((await staffReq(`/verticals/${enc}/versions/${v1}/admit`, 'POST')).status).toBe(200);
+
+    // A bare slug the same workspace owns (a staff hand-registration predating prefixes).
+    expect((await staffReq('/verticals', 'POST', { slug: 'legacy', name: 'Legacy', source: 'cli', ownerTenant: mqk })).status).toBe(201);
+    expect((await staffReq('/verticals/legacy/versions', 'POST', version(legacyV, 'legacy'))).status).toBe(201);
+
+    // A platform-owned bare vertical — a pin must never redirect reads away from it.
+    expect((await staffReq('/verticals', 'POST', { slug: 'callout', name: 'Callout', source: 'builtin' })).status).toBe(201);
+    expect((await staffReq('/verticals/callout/versions', 'POST', version(calloutV, 'callout'))).status).toBe(201);
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('resolves a bare slug to the pinned workspace’s prefixed registry id — the #417 repro', async () => {
+    // Unpinned staff read of the bare slug: nothing (the pre-#417 symptom, unchanged).
+    expect(await (await staffReq('/verticals/authhero-console/versions')).json()).toEqual([]);
+    // Pinned by workspace SLUG: the bare slug reaches `<tenantSlug>/<slug>`.
+    const bySlug = await (await req(pinned(mqkSlug))('/verticals/authhero-console/versions')).json();
+    expect(bySlug.map((v: { id: string }) => v.id)).toEqual([v1]);
+    // Pinned by workspace ID (the CLI accepts either).
+    const byId = await (await req(pinned(mqk))('/verticals/authhero-console/versions')).json();
+    expect(byId.map((v: { id: string }) => v.id)).toEqual([v1]);
+    // Idempotent: the full id under a pin is not double-prefixed.
+    const fullRead = await (await req(pinned(mqkSlug))(`/verticals/${encodeURIComponent(full)}/versions`)).json();
+    expect(fullRead.map((v: { id: string }) => v.id)).toEqual([v1]);
+  });
+
+  it('promotes and reads channels by bare slug under a pin — the whole manage surface resolves', async () => {
+    const p = req(pinned(mqkSlug));
+    expect((await p('/verticals/authhero-console/channels/dev/promote', 'POST', { versionId: v1 })).status).toBe(200);
+    const channels = await (await p('/verticals/authhero-console/channels')).json();
+    expect(channels).toMatchObject([{ channel: 'dev', versionId: v1 }]);
+    // The pointer landed on the PREFIXED lineage — the unpinned full id reads the same rows.
+    const direct = await (await staffReq(`/verticals/${encodeURIComponent(full)}/channels`)).json();
+    expect(direct).toMatchObject([{ channel: 'dev', versionId: v1 }]);
+    const history = await (await p('/verticals/authhero-console/channels/dev/history')).json();
+    expect(history.length).toBe(1);
+  });
+
+  it('keeps a bare slug the pinned workspace owns addressable as itself (back-compat)', async () => {
+    const rows = await (await req(pinned(mqkSlug))('/verticals/legacy/versions')).json();
+    expect(rows.map((v: { id: string }) => v.id)).toEqual([legacyV]);
+  });
+
+  it('never redirects to a lineage that is not there — platform bare slugs and unknown pins are unchanged', async () => {
+    // `callout` is platform-owned and `authhero-mqk5x7/callout` does not exist: the pin is
+    // irrelevant here (e.g. a stored default workspace) and must not break the read.
+    const callout = await (await req(pinned(mqkSlug))('/verticals/callout/versions')).json();
+    expect(callout.map((v: { id: string }) => v.id)).toEqual([calloutV]);
+    // An unknown pin resolves to the raw slug — today's behavior, not a 404.
+    const unknown = await (await req(pinned('no-such-workspace'))('/verticals/callout/versions')).json();
+    expect(unknown.map((v: { id: string }) => v.id)).toEqual([calloutV]);
+  });
+});

@@ -23,6 +23,16 @@ export const DEV_ACTOR_HEADER = 'x-platform-actor';
 export const SERVICE_TOKEN_HEADER = 'x-service-token';
 
 /**
+ * Header naming the tenant a caller ACTS FOR. For a builder session it selects the
+ * workspace (`--tenant`) the builder reader narrows to. For a staff/service caller it is
+ * the slug-resolution pin (#417): vertical routes form `<tenantSlug>/<slug>` from it the
+ * way a pinned push does, so `versions <bare> --tenant <t>` over a service token reaches
+ * the same registry row a builder session would. It never widens access — staff reach
+ * everything already, and for builders the tenant must be one of their memberships.
+ */
+export const TENANT_HEADER = 'x-substrat-tenant';
+
+/**
  * A service credential (open decision 2): a shared bearer token that resolves to
  * a fixed service actor. This is how a *vertical* authenticates to the control
  * plane to register its tenant/scope — distinct from staff, who sign in. An

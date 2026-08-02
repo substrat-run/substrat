@@ -116,6 +116,11 @@ export class TenantNarrowedControlPlane {
           'content-type': 'application/json',
           'x-platform-actor': this.actor,
           'x-service-token': this.serviceToken,
+          // The workspace this seam acts for (#417): the service token keeps its staff
+          // reach, but vertical routes use this to resolve a bare slug to the tenant's
+          // `<tenantSlug>/<name>` registry id — the id already-prefixed catalog slugs
+          // pass through unchanged.
+          'x-substrat-tenant': this.tenantId,
           ...(init.headers as Record<string, string> | undefined),
         },
       });
