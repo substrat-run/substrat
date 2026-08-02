@@ -9,7 +9,7 @@ import {
   RUNTIME_BASELINE,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, deriveRegistry, permissionDigest } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, deriveRegistry, permissionDigest, readVerticalMeta } from '../src/push.js';
 
 const scratch = (pkg?: unknown): string => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-test-'));
@@ -193,5 +193,32 @@ describe('permissionDigest — the promotion "permissions changed" signal (D-39)
     expect(await permissionDigest(reg([]))).toBe(
       await permissionDigest({ permissions: [], roles: [], entityGrants: [] } as PermissionRegistry),
     );
+  });
+});
+
+/**
+ * Push identity (#388/#399): where a push lands is decided by `substrat.slug` (pinned)
+ * or the package name (derived). The distinction is load-bearing — a DERIVED slug
+ * silently follows a package rename, forking the lineage — so `readVerticalMeta`
+ * reports which one it was and the CLI nags until the project pins it.
+ */
+describe('readVerticalMeta — slug identity', () => {
+  it('derives the slug from the package name, flagged as NOT explicit', () => {
+    const meta = readVerticalMeta(scratch({ name: '@substrat-run/demo-meridian', version: '1.2.3' }));
+    expect(meta.slug).toBe('meridian');
+    expect(meta.slugExplicit).toBe(false);
+    expect(meta.versionSeed).toBe('1.2.3');
+  });
+
+  it('prefers an explicit substrat.slug pin, flagged as explicit', () => {
+    const meta = readVerticalMeta(scratch({ name: 'egeryds-crm', substrat: { slug: 'egeryds-substrat' } }));
+    expect(meta.slug).toBe('egeryds-substrat');
+    expect(meta.slugExplicit).toBe(true);
+  });
+
+  it('reports no slug (and not-explicit) when there is no package.json', () => {
+    const meta = readVerticalMeta(scratch());
+    expect(meta.slug).toBe('');
+    expect(meta.slugExplicit).toBe(false);
   });
 });

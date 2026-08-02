@@ -70,7 +70,10 @@ Usage:
                                                from package.json; version auto-bumps);
                                                --promote points the channel at it in the
                                                same run (merge-to-main deploys with
-                                               --promote prod)
+                                               --promote prod). A push that would CREATE
+                                               a new lineage next to a same-named one
+                                               (another owner) is refused — pass
+                                               --allow-fork to do it deliberately
   substrat promote  <slug> --channel dev|staging|prod --version <versionId>
                     [--ack-permissions] [--ack-migrations]
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
@@ -239,6 +242,15 @@ async function cmdPush(): Promise<void> {
     console.error('no --slug given and none in package.json — add `"substrat": { "slug": "…" }` or pass --slug');
     process.exit(1);
   }
+  // #399 prevention: a derived slug silently FOLLOWS a package rename, forking the
+  // lineage (versions land under the new name while installs stay on the old). One
+  // line per push until the project pins it.
+  if (!flag('slug') && !meta.slugExplicit) {
+    console.log(
+      `note: slug '${slug}' is derived from the package name — pin it with ` +
+        `\`"substrat": { "slug": "${slug}" }\` so a package rename cannot fork the lineage.`,
+    );
+  }
 
   // Which workspace the push acts for is the PROJECT's call: --tenant → SUBSTRAT_TENANT →
   // package.json `substrat.tenant`. Never the machine-wide login default — the first push
@@ -262,6 +274,9 @@ async function cmdPush(): Promise<void> {
   console.log(`pushing ${tenant ? `${tenant}/` : ''}${slug}@${version}${name && name !== slug ? ` (${name})` : ''} …`);
   const v = await push({
     dir, slug, version, name, tenant,
+    // The control plane refuses a push that would silently fork a same-named lineage
+    // (#388); --allow-fork acknowledges a deliberate second lineage.
+    allowFork: argv.includes('--allow-fork'),
     envSpec: meta.envSpec,
     ownerGrants: meta.ownerGrants,
     entitlements: meta.entitlements,

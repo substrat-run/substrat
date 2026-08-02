@@ -1706,12 +1706,26 @@ describe('control-plane API — deploy', () => {
       expect((await pinned('crm', 'nope')).status).toBe(404);
     });
 
-    it("does not collide with a platform-owned bare name — the pin's claim is prefixed", async () => {
-      // 'fsm' was claimed platform-owned by the unpinned test above; the pinned push
-      // of the same bare name lands under the tenant prefix — no 403, no clobber.
-      const res = await pinned('fsm', 'sesamy');
-      expect(res.status).toBe(201);
-      expect(await res.json()).toMatchObject({ verticalSlug: 'sesamy/fsm' });
+    it('refuses to silently fork a platform-owned bare name; --allow-fork claims it prefixed (#388)', async () => {
+      // 'fsm' was claimed platform-owned by the unpinned test above; the pinned push of
+      // the same bare name would land under the tenant prefix — a SECOND same-named
+      // lineage whose pushes the existing installs never see (the "two manyfolds" bug).
+      // Refused with the fix named, before any upload...
+      const before = deployed.length;
+      const refused = await pinned('fsm', 'sesamy');
+      expect(refused.status).toBe(409);
+      const err = (await refused.json()).error;
+      expect(err).toContain(`'sesamy/fsm'`);
+      expect(err).toContain('--allow-fork');
+      expect(deployed.length).toBe(before); // nothing reached the namespace
+      // ...and landing only as a deliberate choice. No clobber either way: the bare
+      // row stays platform-owned, the acked claim is prefixed.
+      const fd = form(manifest());
+      fd.set('tenant', 'sesamy');
+      fd.set('allowFork', '1');
+      const acked = await push('fsm', fd);
+      expect(acked.status).toBe(201);
+      expect(await acked.json()).toMatchObject({ verticalSlug: 'sesamy/fsm' });
       const bare = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'fsm');
       expect(bare?.ownerTenant).toBeNull();
     });
@@ -2031,6 +2045,9 @@ describe('control-plane API — builder authz', () => {
     const acmePush = await app.request('/verticals/reports/deploy', { method: 'POST', headers: { [BUILDER_HEADER]: acme }, body: fd() });
     expect(acmePush.status).toBe(201);
     expect(await acmePush.json()).toMatchObject({ verticalSlug: `${acmeSlug}/reports` });
+    // `other`'s claim of the same bare name is NOT refused as a fork (#388): acme's
+    // `reports` is private and foreign, so the fork guard must not see it — refusing
+    // here would leak its existence. Existence-hiding bounds the guard.
     const otherPush = await app.request('/verticals/reports/deploy', { method: 'POST', headers: { [BUILDER_HEADER]: other }, body: fd() });
     expect(otherPush.status).toBe(201);
     expect(await otherPush.json()).toMatchObject({ verticalSlug: `${otherSlug}/reports` });
@@ -2095,6 +2112,35 @@ describe('control-plane API — builder authz', () => {
     // own 404s indistinguishably from an absent one.
     expect(await (await otherReq('/verticals/reports/channels/prod/history')).json()).toEqual([]);
     expect((await otherReq('/verticals/nonexistent/channels/prod/history')).status).toBe(404);
+  });
+
+  it('refuses a builder push that would fork a VISIBLE same-named lineage; --allow-fork lands it (#388)', async () => {
+    const fd = (allowFork = false) => {
+      const f = new FormData();
+      f.set('manifest', JSON.stringify({
+        version: '0.1.0', entry: 'worker.js', compatibilityDate: '2025-01-01',
+        doClasses: ['ScopeDO'],
+        bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
+        digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+        registry: { permissions: [], roles: [], entityGrants: [] },
+      }));
+      f.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
+      if (allowFork) f.set('allowFork', '1');
+      return f;
+    };
+    // Bare `callout` is platform-owned (staff registered it above) — a name acme CAN
+    // see. Acme's bare push would claim `acme-co/callout`, a second lineage whose
+    // pushes the existing installs never see → refused with the fix named.
+    const refused = await app.request('/verticals/callout/deploy', { method: 'POST', headers: { [BUILDER_HEADER]: acme }, body: fd() });
+    expect(refused.status).toBe(409);
+    const err = (await refused.json()).error;
+    expect(err).toContain(`'${acmeSlug}/callout'`);
+    expect(err).toContain('platform-owned');
+    expect(err).toContain('--allow-fork');
+    // Acknowledged, the same push claims the prefixed id as a deliberate second lineage.
+    const acked = await app.request('/verticals/callout/deploy', { method: 'POST', headers: { [BUILDER_HEADER]: acme }, body: fd(true) });
+    expect(acked.status).toBe(201);
+    expect(await acked.json()).toMatchObject({ verticalSlug: `${acmeSlug}/callout` });
   });
 
   /**
