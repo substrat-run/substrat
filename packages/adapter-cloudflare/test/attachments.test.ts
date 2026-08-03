@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import type { R2BlobStores } from '../src/r2.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -75,6 +75,7 @@ describe('attachment surface (cloudflare host)', () => {
       controlPlane: env.CONTROL_PLANE,
       blobStores: fake.r2,
       attachmentBuckets: () => bucket.bucket,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     });
     const t = tenantId.parse(ulid());
     const s = scopeId.parse(ulid());
@@ -177,6 +178,62 @@ describe('attachment surface (cloudflare host)', () => {
     expect([...bucket.objs.keys()]).toEqual([]);
     await expect(att.list({ entityType: 'item', entityId: 'i1' })).resolves.toEqual([]);
     await expect(att.open(rec.id)).resolves.toBeNull();
+  });
+
+  // -- a connection as the uploader (#476): getConnectorAttachments -----------
+
+  const withConnection = async (opts: { grantWrite: boolean }) => {
+    const w = await world();
+    const connId = ulid();
+    await w.host.admin.createConnection(staff, {
+      id: connId as never,
+      tenantId: w.t,
+      vertical: 'docs',
+      provider: 'signer',
+      label: 'signer',
+      secret: { accessToken: 'x' },
+    });
+    if (opts.grantWrite) {
+      await w.host.admin.grantToConnection(staff, {
+        connectionId: connId,
+        permission: PERM_USE, // the target's write key; the connection gets nothing else
+        node: { tenantId: w.t, scopeId: w.s },
+        grantedBy: staff,
+      });
+    }
+    return { ...w, connId };
+  };
+
+  it('lets a granted connection upload as itself, bytes in R2, attributed to the connection', async () => {
+    const { host, t, s, editor, bucket, connId } = await withConnection({ grantWrite: true });
+    const att = await host.getConnectorAttachments(connId as never, s);
+    const rec = await att.upload({
+      entity: { entityType: 'item', entityId: 'i1' },
+      filename: 'sealed.pdf',
+      contentType: 'application/pdf',
+      visibility: 'customer',
+      body: bytes('the sealed bytes'),
+    });
+    expect(rec.createdBy).toBe(connId);
+    expect([...bucket.objs.keys()]).toEqual([`scope/${s}/att/${rec.id}`]);
+    // A principal with read sees the landed row + bytes.
+    const opened = await (await host.attachments(editor, t, s)).open(rec.id);
+    expect(new TextDecoder().decode(opened!.body)).toBe('the sealed bytes');
+  });
+
+  it('refuses a connection that was never granted the write key (fail closed)', async () => {
+    const { host, s, bucket, connId } = await withConnection({ grantWrite: false });
+    const att = await host.getConnectorAttachments(connId as never, s);
+    await expect(
+      att.upload({
+        entity: { entityType: 'item', entityId: 'i1' },
+        filename: 'x.pdf',
+        contentType: 'application/pdf',
+        visibility: 'internal',
+        body: bytes('x'),
+      }),
+    ).rejects.toThrow();
+    expect([...bucket.objs.keys()]).toEqual([]); // compensating delete ran
   });
 
   it('refuses loudly when no R2 client / bucket resolver is configured', async () => {

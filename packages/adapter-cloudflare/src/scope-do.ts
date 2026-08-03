@@ -299,6 +299,12 @@ function toRpcError(err: unknown): Error {
   return new Error(String(err));
 }
 
+/** The check subject for an attachment gate (#476): the connection when the connector door
+ *  set one, else the principal — mirrors the invoke path's subject selection. */
+function attachSubject(principal: PrincipalId, connectionId?: string): CheckSubject {
+  return connectionId ? { kind: 'connection', id: connectionId } : { kind: 'principal', id: principal };
+}
+
 /** The platform spine (`_substrat_*`) and SQLite internals — the UI groups these apart. */
 function isSystemTable(name: string): boolean {
   return name.startsWith('_substrat') || name.startsWith('sqlite_');
@@ -855,6 +861,9 @@ export function defineScopeDO(
       principal: PrincipalId,
       tenantId: TenantId,
       scopeId: ScopeId,
+      // #476: when set, the gate is checked as this CONNECTION (not `principal`, which is
+      // then only the ctx.principal placeholder the connector door passes).
+      connectionId?: string,
     ): Promise<AttachmentRecord> {
       await this.ensureMigrations();
       const parsed = attachmentRecord.parse(record);
@@ -862,7 +871,7 @@ export function defineScopeDO(
       return this.queue.enqueue(async () => {
         try {
           await this.ctx.storage.transaction(async () => {
-            const ctx = this.operationContext(principal, tenantId, scopeId);
+            const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
             assertAllowed(await ctx.check(gate.write, parsed.entity));
             this.sql.exec(
               `INSERT INTO _substrat_attachments
@@ -890,7 +899,7 @@ export function defineScopeDO(
           });
         } catch (err) {
           if (err instanceof PermissionDenied) {
-            this.recordDenial({ kind: 'principal', id: principal }, tenantId, 'attachments.upload', err);
+            this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.upload', err);
           }
           throw toRpcError(err);
         }
@@ -905,15 +914,16 @@ export function defineScopeDO(
       principal: PrincipalId,
       tenantId: TenantId,
       scopeId: ScopeId,
+      connectionId?: string,
     ): Promise<AttachmentRecord[]> {
       await this.ensureMigrations();
       const gate = this.attachmentGate(entity.entityType);
       try {
-        const ctx = this.operationContext(principal, tenantId, scopeId);
+        const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
         assertAllowed(await ctx.check(gate.read, entity));
       } catch (err) {
         if (err instanceof PermissionDenied) {
-          this.recordDenial({ kind: 'principal', id: principal }, tenantId, 'attachments.list', err);
+          this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.list', err);
         }
         throw toRpcError(err);
       }
@@ -938,17 +948,18 @@ export function defineScopeDO(
       principal: PrincipalId,
       tenantId: TenantId,
       scopeId: ScopeId,
+      connectionId?: string,
     ): Promise<AttachmentRecord | null> {
       await this.ensureMigrations();
       const record = this.attachmentRow(attachmentId);
       if (!record) return null;
       const gate = this.attachmentGate(record.entity.entityType);
       try {
-        const ctx = this.operationContext(principal, tenantId, scopeId);
+        const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
         assertAllowed(await ctx.check(mode === 'read' ? gate.read : gate.write, record.entity));
       } catch (err) {
         if (err instanceof PermissionDenied) {
-          this.recordDenial({ kind: 'principal', id: principal }, tenantId, 'attachments.open', err);
+          this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.open', err);
         }
         throw toRpcError(err);
       }
@@ -961,6 +972,7 @@ export function defineScopeDO(
       principal: PrincipalId,
       tenantId: TenantId,
       scopeId: ScopeId,
+      connectionId?: string,
     ): Promise<AttachmentRecord | null> {
       await this.ensureMigrations();
       return this.queue.enqueue(async () => {
@@ -969,7 +981,7 @@ export function defineScopeDO(
         const gate = this.attachmentGate(record.entity.entityType);
         try {
           await this.ctx.storage.transaction(async () => {
-            const ctx = this.operationContext(principal, tenantId, scopeId);
+            const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
             assertAllowed(await ctx.check(gate.write, record.entity));
             this.sql.exec('DELETE FROM _substrat_attachments WHERE id = ?', attachmentId);
             ctx.emit({
@@ -982,7 +994,7 @@ export function defineScopeDO(
           });
         } catch (err) {
           if (err instanceof PermissionDenied) {
-            this.recordDenial({ kind: 'principal', id: principal }, tenantId, 'attachments.remove', err);
+            this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.remove', err);
           }
           throw toRpcError(err);
         }

@@ -45,6 +45,9 @@ describe('scrive connector — return path (record signatures back)', () => {
   let t = tenantId.parse(ulid());
   let s = scopeId.parse(ulid());
   let stub: ScopeStub;
+  // The signed-in principal (role 'hr', holds protocol:read) — hoisted so a test can
+  // read attachments the connection landed but cannot itself list.
+  let principal = principalId.parse(ulid());
 
   // Signatories known up front, so the driver has a ref to attribute each
   // recorded signature to: a principal for the employer, an opaque DataSubjectId
@@ -84,7 +87,7 @@ describe('scrive connector — return path (record signatures back)', () => {
     });
     registerScriveConnector(host, { baseUrl: BASE, retry: { baseDelayMs: 0 } });
 
-    const principal = principalId.parse(ulid());
+    principal = principalId.parse(ulid());
     await host.admin.createTenant(staff, { id: t, slug: 'nordljus', name: 'Nordljus' });
     for (const key of ['protocol', 'hr']) await host.admin.grantEntitlement(staff, t, key);
     await host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu', vertical: 'meridian' });
@@ -172,6 +175,15 @@ describe('scrive connector — return path (record signatures back)', () => {
       grantedBy: staff,
     });
 
+  /** The #476 grant: the connection may attach the sealed PDF to the protocol instance. */
+  const grantAttach = () =>
+    host.admin.grantToConnection(staff, {
+      connectionId: connId,
+      permission: PERM.attach,
+      node: { tenantId: t, scopeId: s },
+      grantedBy: staff,
+    });
+
   const reconcile = (instanceId: string) =>
     reconcileScriveDispatch(host, connId, instanceId, { fetch: scrive.fetch, baseUrl: BASE });
 
@@ -208,6 +220,38 @@ describe('scrive connector — return path (record signatures back)', () => {
     // Provider timestamp, not when we heard.
     const employer = d.signatures.find((sig) => sig.signed_by === employerRef);
     expect(employer!.signed_at).toBe('2026-07-21T09:00:00.000Z');
+  });
+
+  it('lands the sealed signed PDF as an attachment once the document closes (#476)', async () => {
+    await grantRecordSignature();
+    await grantAttach();
+    await host.provisionBlobStore(staff, { tenantId: t, vertical: 'meridian', binding: 'ATTACHMENTS' });
+    const { instanceId, docId } = await issue();
+
+    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T10:30:00.000Z');
+
+    const result = await reconcile(instanceId);
+    expect(result.complete).toBe(true);
+    // The sealed PDF was fetched and stored.
+    expect(result.sealedDocument).toBeDefined();
+    const landed = result.sealedDocument as { attachmentId: string };
+    expect(landed.attachmentId).toBeTruthy();
+
+    // It really landed on the protocol instance — read it back as the signed-in
+    // principal (who holds protocol:read; the connection itself cannot list).
+    const att = await host.attachments(principal, t, s);
+    const opened = await att.open(landed.attachmentId);
+    expect(opened).not.toBeNull();
+    expect(opened!.contentType).toBe('application/pdf');
+    // The mock's sealed bytes name the document — proof it pulled files/main.
+    expect(new TextDecoder().decode(opened!.body)).toContain(docId);
+
+    // Idempotent: a re-poll does not download or store a second copy.
+    const again = await reconcile(instanceId);
+    expect(again.sealedDocument).toEqual({ skipped: 'already landed' });
+    const list = await att.list({ entityType: 'protocol', entityId: instanceId });
+    expect(list).toHaveLength(1);
   });
 
   it('records incrementally and is idempotent across polls', async () => {

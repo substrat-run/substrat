@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-meridian
 
-21 keys · 2 modules · 3 roles
+22 keys · 2 modules · 3 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -21,6 +21,7 @@
 | `expense:submit` | Submit an expense (employees, narrowed to their own record) | `@substrat-run/demo-meridian` |
 | `payroll:export` | Generate the variable-pay export and mark expenses exported (payroll operator) | `@substrat-run/demo-meridian` |
 | `project:manage` | Manage the projects time books against (HR admin) | `@substrat-run/demo-meridian` |
+| `protocol:attach` | Attach a document to a protocol instance — the sealed signed PDF a signing connector lands on completion, or a human-uploaded document (the attachmentTargets write gate) | `@substrat-run/engine-protocol` |
 | `protocol:bind` | Bind vertical-owned document content (ref + hash) to an open document protocol | `@substrat-run/engine-protocol` |
 | `protocol:countersign` | Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup) | `@substrat-run/engine-protocol` |
 | `protocol:create` | Define protocol templates and start protocol instances on entities | `@substrat-run/engine-protocol` |
@@ -57,6 +58,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `expense:submit` | — no role — |
 | `payroll:export` | `hr-admin`, `payroll` |
 | `project:manage` | `hr-admin` |
+| `protocol:attach` | — no role — |
 | `protocol:bind` | `hr-admin` |
 | `protocol:countersign` | — no role — |
 | `protocol:create` | `hr-admin` |
