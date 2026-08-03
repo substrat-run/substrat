@@ -35,6 +35,16 @@ export function secretMatches(presented: string | null, expected: string): boole
 export const PLATFORM_SECRET_HEADER = 'x-substrat-platform';
 
 /**
+ * The RESPONSE header a vertical sets when the operation it just ran enqueued
+ * platform requests (`ctx.requestPlatform`). The router — the one hop that sees
+ * every response — reads it and kicks an immediate drain of that scope (#381),
+ * so provisioning settles in seconds instead of at the sweep. Carries no payload
+ * and no privilege: a forged or spurious flag costs the platform one wasted
+ * pull, nothing more. Fed by `ScopeStubOptions.onPlatformRequests` (#458).
+ */
+export const PLATFORM_REQUEST_HEADER = 'x-substrat-platform-request';
+
+/**
  * Throw unless this request proves it came from the platform.
  *
  * **An unset secret is a failure, not a bypass.** That is the opposite of how the

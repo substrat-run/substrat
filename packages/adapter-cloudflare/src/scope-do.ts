@@ -687,7 +687,7 @@ export function defineScopeDO(
        * override bypass. Mutually exclusive with `connectionId`.
        */
       systemModuleId?: string,
-    ): Promise<unknown> {
+    ): Promise<{ result: unknown; platformRequests: number }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
       if (!handler) throw new Error(`unknown operation: ${operation}`);
@@ -713,6 +713,11 @@ export function defineScopeDO(
       }
       return this.queue.enqueue(async () => {
         let result: unknown;
+        // #458: how many platform intents THIS invoke enqueued. Counted inside the
+        // transaction, reported only after commit — a rolled-back intent is no signal.
+        // The envelope return (below) is the DO↔coordinator wire for it; both sides
+        // live in this package and deploy as one script, so the shape never skews.
+        const signals = { platformRequests: 0 };
         // The async transaction is the K-4 boundary: guards + handler + emits
         // commit together, or a throw (from either) rolls domain writes AND
         // emitted events back as one — verified across `await` in workerd.
@@ -725,6 +730,7 @@ export function defineScopeDO(
               undefined,
               connectionId,
               systemModuleId,
+              signals,
             );
             await this.runGuards(operation, ctx, input);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, input);
@@ -748,7 +754,7 @@ export function defineScopeDO(
         }
         // Post-commit: drain the outbox to consumers, each delivery its own txn.
         await this.dispatch(tenantId, scopeId);
-        return result;
+        return { result, platformRequests: signals.platformRequests };
       });
     }
 
@@ -1399,6 +1405,8 @@ export function defineScopeDO(
       systemActor?: { system: string },
       connectionId?: string,
       systemModuleId?: string,
+      /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
+      signals?: { platformRequests: number },
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -1487,6 +1495,7 @@ export function defineScopeDO(
             JSON.stringify(requestedBy),
             instant.parse(new Date().toISOString()),
           );
+          if (signals) signals.platformRequests += 1;
           return id;
         },
         check: async (permission: PermissionKey, entity?: EntityRef) => {

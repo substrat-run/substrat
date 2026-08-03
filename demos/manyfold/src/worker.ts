@@ -19,7 +19,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, projectedIdentityLink, platformRequestId, platformRequestStatus, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { assertPlatformCall, PlatformCallError, readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
+import { assertPlatformCall, PlatformCallError, PLATFORM_REQUEST_HEADER, readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { IdentityDO, doAuthProvider, oidcAuthProvider, type AuthProvider } from '@substrat-run/vertical-auth';
 import { MODULES, ROLES } from './provision.js';
 import { serveAsset } from './assets.js';
@@ -178,12 +178,11 @@ const requestSiteBody = z.object({ slug: z.string().min(1), name: z.string().min
 
 // Create a new site (multi-scope-manyfold.md M3). Runs `manyfold/request-site` as the caller in
 // their current site (its permission check gates on `content:manage-sites`), enqueuing a platform
-// intent the control plane drains. 202 + the request id (the app polls `/api/sites`); the response
-// header nudges a prompt drain (the router kick reads it, Phase D3), else the ~2-min sweep catches it.
+// intent the control plane drains. 202 + the request id (the app polls `/api/sites`); the stub's
+// #458 hook flags the response for a prompt drain (the router kick, Phase D3), else the sweep catches it.
 app.post('/api/sites', async (c) => {
   const scope = await stub(c);
   const result = await scope.invoke('manyfold/request-site', requestSiteBody.parse(await c.req.json()));
-  c.header('x-substrat-platform-request', '1');
   return c.json(result as Record<string, unknown>, 202);
 });
 
@@ -198,7 +197,6 @@ app.post('/api/sites/:slug/archive', async (c) => {
   const scope = await stub(c);
   const result = await scope.invoke('manyfold/archive-site', { scopeId: target });
   await id.forgetSite(target);
-  c.header('x-substrat-platform-request', '1');
   return c.json(result as Record<string, unknown>, 202);
 });
 
@@ -396,11 +394,15 @@ app.post('/internal/rewind', async (c) => {
 });
 
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.
+// The stub carries the #458 drain hint: any operation that enqueues a platform intent
+// flags this response, and the router kicks an immediate drain (#381) — no per-route wiring.
 async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
   const node = await nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
-  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
+  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
+    onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+  });
 }
 
 // ── Members & invites (the post-setup join path — admin-only) ────────────────

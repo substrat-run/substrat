@@ -149,6 +149,26 @@ export interface ScopeStub {
   invoke<O = unknown, I = unknown>(operation: string, input?: I): Promise<O>;
 }
 
+/**
+ * Observers a caller may attach when minting a stub (#458). Harness-level, not
+ * module-level: module code never sees these — they exist so the HTTP layer
+ * around an operation can react to what the operation did without the module
+ * carrying a new surface.
+ */
+export interface ScopeStubOptions {
+  /**
+   * Fired after an invoke through this stub COMMITS having enqueued platform
+   * requests via `ctx.requestPlatform`, with how many. A vertical's request
+   * handler uses this to flag its response `x-substrat-platform-request`
+   * (`PLATFORM_REQUEST_HEADER`) so the router kicks an immediate drain of this
+   * scope (#381) — p50 provisioning latency drops from sweep-cadence to seconds.
+   * Never fired for a rolled-back operation: an intent that did not survive its
+   * transaction is not a signal. Purely advisory — a missed callback costs one
+   * sweep interval, nothing more.
+   */
+  onPlatformRequests?: (count: number) => void;
+}
+
 export interface SqlMigration {
   /** Ordered, unique per module, e.g. '0001-init'. Journaled per (module, version). */
   version: string;
@@ -1464,9 +1484,16 @@ export interface ScopeHost {
   /**
    * Mint a capability stub for a principal. Validates the (tenantId, scopeId)
    * pair against the directory — a mismatched pair fails closed (K-3), it never
-   * resolves to another tenant's scope.
+   * resolves to another tenant's scope. `options` attaches harness-level
+   * observers (`ScopeStubOptions`); they carry no authority and change nothing
+   * about what the stub may do.
    */
-  getScope(principal: PrincipalId, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeStub>;
+  getScope(
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub>;
 
   /**
    * The entry scope-lifecycle transition (control-plane.md §4.2): idempotent,
