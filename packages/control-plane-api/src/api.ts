@@ -9,6 +9,8 @@ import {
   hostnameRegion,
   hostnameStatus,
   identityLink,
+  listPageQuery,
+  pageOf,
   principalId as principalIdSchema,
   promotionAcknowledgement,
   provisionableJurisdiction,
@@ -25,7 +27,14 @@ import {
   tenantStatus,
   z,
 } from '@substrat-run/contracts';
-import type { PlatformActorId, Scope, ScopeId, TenantId } from '@substrat-run/contracts';
+import type {
+  ListPageQuery,
+  Page,
+  PlatformActorId,
+  Scope,
+  ScopeId,
+  TenantId,
+} from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER } from './auth.js';
@@ -255,6 +264,32 @@ const listHostnamesQuery = z.object({
   scopeId: scopeIdSchema.optional(),
 });
 
+// Every GET list below shares ONE pagination convention (contracts pagination.ts):
+// keyset over the list's own sort key, `limit` DEFAULTED at this egress (the kernel
+// reads stay unbounded for in-process callers — the admin-log precedent, generalized),
+// `{ entries, nextCursor }` out. The cursor is the last entry's sort key verbatim.
+const pageParams = (c: { req: { query(key: string): string | undefined } }): ListPageQuery =>
+  listPageQuery.parse({
+    limit: c.req.query('limit'),
+    cursor: c.req.query('cursor'),
+    order: c.req.query('order'),
+  });
+
+/**
+ * Page an already-materialized asc-sorted list — for the one read whose principal
+ * narrowing runs ABOVE the adapter (`GET /verticals`), where a pushed-down page
+ * would terminate early. Same cursor semantics as the keyset reads.
+ */
+const pageSlice = <T>(rows: T[], page: ListPageQuery, key: (row: T) => string): Page<T> => {
+  const found = page.cursor === undefined ? 0 : rows.findIndex((r) => key(r) > page.cursor!);
+  const from = found === -1 ? rows.length : found;
+  const entries = rows.slice(from, from + page.limit);
+  return {
+    entries,
+    nextCursor: from + page.limit < rows.length ? key(entries[entries.length - 1]!) : null,
+  };
+};
+
 /** Repeatable query params arrive as `?status=active&status=suspended`. */
 const listScopesQuery = z.object({
   tenantId: tenantIdSchema.optional(),
@@ -346,15 +381,14 @@ const auditLogQuery = z.object({
   action: z.array(adminAction).optional(),
   since: z.string().optional(),
   until: z.string().optional(),
-  // Defaulted, not merely capped: the admin log is append-only and never swept (the
-  // retention decision — it is the compliance witness, control-plane.md §4.4/§4.8), so
-  // it only grows. An unbounded `GET /admin-log` would dump the whole table; a default
-  // page keeps the external read bounded while `nextCursor` still walks the entire log.
-  // The KERNEL call stays deliberately unbounded (an in-process caller that wants
-  // everything asks for everything) — only this HTTP egress vector is bounded by default.
-  limit: z.coerce.number().int().positive().max(1000).default(200),
-  cursor: z.string().optional(),
-  order: z.enum(['asc', 'desc']).optional(),
+  // The shared page fields (contracts pagination.ts). Defaulted, not merely capped:
+  // the admin log is append-only and never swept (the retention decision — it is the
+  // compliance witness, control-plane.md §4.4/§4.8), so it only grows. An unbounded
+  // `GET /admin-log` would dump the whole table; a default page keeps the external
+  // read bounded while `nextCursor` still walks the entire log. The KERNEL call stays
+  // deliberately unbounded (an in-process caller that wants everything asks for
+  // everything) — only the HTTP egress vectors are bounded by default.
+  ...listPageQuery.shape,
 });
 
 /**
@@ -506,7 +540,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   // -- tenant registry (§4.1) ------------------------------------------------
 
-  app.get('/tenants', async (c) => c.json(await admin.listTenants(c.get('actor'))));
+  app.get('/tenants', async (c) => {
+    const page = pageParams(c);
+    const entries = await admin.listTenants(c.get('actor'), page);
+    return c.json(pageOf(entries, page.limit, (t) => t.id));
+  });
 
   app.post('/tenants', async (c) => {
     const input = createTenantInput.parse(await c.req.json());
@@ -649,7 +687,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       status: c.req.queries('status'),
       vertical: c.req.query('vertical'),
     });
-    return c.json(await admin.listScopes(c.get('actor'), filter));
+    const page = pageParams(c);
+    const entries = await admin.listScopes(c.get('actor'), { ...filter, ...page });
+    return c.json(pageOf(entries, page.limit, (s) => s.id));
   });
 
   // -- fleet migration progress (kernel-design §5.3, #49) ---------------------
@@ -1724,10 +1764,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   app.get('/verticals', async (c) => {
+    const page = pageParams(c);
     const all = await admin.listVerticals(c.get('actor'));
     const p = c.get('principal');
-    // A builder sees only what it owns; staff see the whole registry.
-    return c.json(p.kind === 'builder' ? all.filter((v) => v.ownerTenant === p.tenantId) : all);
+    // A builder sees only what it owns; staff see the whole registry. The narrowing
+    // runs above the adapter, so the page is sliced here — over the narrowed list.
+    const visible = p.kind === 'builder' ? all.filter((v) => v.ownerTenant === p.tenantId) : all;
+    return c.json(pageSlice(visible, page, (v) => v.slug));
   });
 
   app.post('/verticals', async (c) => {
@@ -1758,7 +1801,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
       return c.json({ error: 'not found' }, 404);
     }
-    return c.json(await admin.listVersions(c.get('actor'), slug));
+    const page = pageParams(c);
+    const entries = await admin.listVersions(c.get('actor'), slug, page);
+    return c.json(pageOf(entries, page.limit, (v) => v.id));
   });
 
   app.post('/verticals/:slug/versions', async (c) => {
@@ -1870,7 +1915,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
       return c.json({ error: 'not found' }, 404);
     }
-    return c.json(await admin.listChannels(c.get('actor'), slug));
+    const page = pageParams(c);
+    const entries = await admin.listChannels(c.get('actor'), slug, page);
+    return c.json(pageOf(entries, page.limit, (ch) => ch.channel));
   });
 
   // The promotion timeline (newest first) — what a rollback UI picks a target from.
@@ -1883,7 +1930,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
       return c.json({ error: 'not found' }, 404);
     }
-    return c.json(await admin.listChannelHistory(c.get('actor'), slug, channel));
+    const page = pageParams(c);
+    const entries = await admin.listChannelHistory(c.get('actor'), slug, channel, page);
+    return c.json(pageOf(entries, page.limit, (e) => e.id));
   });
 
   /**
@@ -2331,7 +2380,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A builder's list is ALWAYS its own tenant's — the query may narrow further
     // (scopeId) but never widen; a foreign tenantId in the query loses silently.
     if (p.kind === 'builder') filter.tenantId = p.tenantId;
-    return c.json(await admin.listHostnames(c.get('actor'), filter));
+    const page = pageParams(c);
+    const entries = await admin.listHostnames(c.get('actor'), { ...filter, ...page });
+    return c.json(pageOf(entries, page.limit, (h) => h.hostname));
   });
 
   // Which base domains ride the platform wildcard cert (go straight to `active`);
@@ -2729,7 +2780,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       tenantId: c.req.query('tenantId'),
       source: c.req.query('source'),
     });
-    return c.json(await admin.listRoles(c.get('actor'), filter));
+    const page = pageParams(c);
+    const entries = await admin.listRoles(c.get('actor'), { ...filter, ...page });
+    // Composite sort key (tenant_id, role_key) — the `|` join is the documented
+    // cursor shape (scope-host.ts listRoles).
+    return c.json(pageOf(entries, page.limit, (r) => `${r.tenantId}|${r.key}`));
   });
 
   // -- the admin log (§4.4/§4.5) ---------------------------------------------
@@ -2749,7 +2804,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const entries = await admin.auditLog(c.get('actor'), filter as Parameters<typeof admin.auditLog>[1]);
     // The cursor IS the last entry's id (ULID order is chronological), so the
     // page carries its own continuation and the console never assembles one.
-    return c.json({ entries, nextCursor: entries.at(-1)?.id ?? null });
+    return c.json(pageOf(entries, filter.limit, (e) => e.id));
   });
 
   return app;

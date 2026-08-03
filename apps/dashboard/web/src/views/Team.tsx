@@ -47,6 +47,9 @@ export function Team({
   onResend,
   onRevoke,
   onRemove,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: {
   members: Member[];
   meEmail: string;
@@ -55,6 +58,10 @@ export function Team({
   onResend: (invitationId: string) => void;
   onRevoke: (invitationId: string) => void;
   onRemove: (memberId: string) => void;
+  /** Older roster rows exist beyond the loaded page window (a non-null nextCursor). */
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }) {
   const [invite, setInvite] = useState(false);
   const [email, setEmail] = useState('');
@@ -148,6 +155,13 @@ export function Team({
             </div>
           );
         })}
+        {hasMore && onLoadMore && (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+            <Button variant="secondary" onClick={onLoadMore} disabled={loadingMore}>
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </Button>
+          </div>
+        )}
       </div>
 
       <div style={{ ...card, overflow: 'hidden' }}>

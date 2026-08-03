@@ -3072,5 +3072,170 @@ export function scopeHostContractSuite(
       const until = await host.admin.auditLog(staff, { tenantId: t5, until: pivot });
       expect(until.every((r) => r.at < pivot)).toBe(true);
     });
+
+    // -- keyset pagination on every list read (contracts pagination.ts) -------
+    // One convention, grown from the audit-log read above: each list is ordered
+    // by its own sort key, `cursor` is the last row's key (exclusive), and an
+    // unset `limit` stays the legacy "everything" — internal callers mean it.
+
+    it('pages every directory list by limit + cursor without changing the unpaged read', async () => {
+      // A second channel so the channel list has something to page over.
+      const prodNow = (await host.admin.listChannels(staff, 'egeryds/crm')).find(
+        (c) => c.channel === 'prod',
+      )!.versionId;
+      await host.admin.promoteVersion(staff, 'egeryds/crm', 'dev', prodNow);
+
+      // `limit` bounds the page to a prefix of the unbounded read, and resuming
+      // from the last row's key returns exactly the next prefix.
+      const pages = async <T>(
+        all: T[],
+        key: (row: T) => string,
+        read: (page: { limit?: number; cursor?: string }) => Promise<T[]>,
+      ) => {
+        expect(all.length).toBeGreaterThanOrEqual(2);
+        const first = await read({ limit: 1 });
+        expect(first.map(key)).toEqual(all.slice(0, 1).map(key));
+        const second = await read({ limit: 1, cursor: key(first[0]!) });
+        expect(second.map(key)).toEqual(all.slice(1, 2).map(key));
+      };
+
+      await pages(await host.admin.listTenants(staff), (t) => t.id, (p) =>
+        host.admin.listTenants(staff, p),
+      );
+      await pages(await host.admin.listScopes(staff), (s) => s.id, (p) =>
+        host.admin.listScopes(staff, p),
+      );
+      await pages(await host.admin.listHostnames(staff), (h) => h.hostname, (p) =>
+        host.admin.listHostnames(staff, p),
+      );
+      await pages(await host.admin.listVersions(staff, 'callout'), (v) => v.id, (p) =>
+        host.admin.listVersions(staff, 'callout', p),
+      );
+      await pages(await host.admin.listChannels(staff, 'egeryds/crm'), (c) => c.channel, (p) =>
+        host.admin.listChannels(staff, 'egeryds/crm', p),
+      );
+    });
+
+    it('walks a list to completion by cursor, visiting every row exactly once', async () => {
+      // Seed to at least five verticals so limit-2 paging takes three fetches.
+      for (const slug of ['pag-a', 'pag-b', 'pag-c']) {
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: t2 });
+      }
+      const all = await host.admin.listVerticals(staff); // unset limit = everything
+      expect(all.length).toBeGreaterThanOrEqual(5);
+      expect(all.map((v) => v.slug)).toEqual([...all.map((v) => v.slug)].sort()); // ordered by slug
+
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      let fetches = 0;
+      for (;;) {
+        const page = await host.admin.listVerticals(staff, { limit: 2, cursor });
+        fetches += 1;
+        expect(page.length).toBeLessThanOrEqual(2);
+        seen.push(...page.map((v) => v.slug));
+        if (page.length < 2) break;
+        cursor = page[page.length - 1]!.slug;
+      }
+      expect(fetches).toBeGreaterThanOrEqual(3);
+      expect(seen).toEqual(all.map((v) => v.slug));
+    });
+
+    it('flips listVersions to newest-first on order desc, cursor still exclusive', async () => {
+      const asc = await host.admin.listVersions(staff, 'egeryds/crm');
+      expect(asc.length).toBeGreaterThanOrEqual(4);
+      const desc = await host.admin.listVersions(staff, 'egeryds/crm', { order: 'desc' });
+      expect(desc.map((v) => v.id)).toEqual([...asc.map((v) => v.id)].reverse());
+
+      // Descending pages backward from the cursor, strictly before it.
+      const page = await host.admin.listVersions(staff, 'egeryds/crm', {
+        order: 'desc',
+        limit: 2,
+        cursor: desc[0]!.id,
+      });
+      expect(page.map((v) => v.id)).toEqual(desc.slice(1, 3).map((v) => v.id));
+    });
+
+    it('keeps listChannelHistory newest-first by default and pages it; asc flips the walk', async () => {
+      const newest = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod');
+      expect(newest.length).toBeGreaterThanOrEqual(4);
+      // Entry ids are ULIDs, so newest-first means descending ids — the shipped order.
+      expect(newest.map((h) => h.id)).toEqual([...newest.map((h) => h.id)].sort().reverse());
+
+      const first = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod', { limit: 2 });
+      expect(first.map((h) => h.id)).toEqual(newest.slice(0, 2).map((h) => h.id));
+      const next = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod', {
+        limit: 2,
+        cursor: first[1]!.id,
+      });
+      expect(next.map((h) => h.id)).toEqual(newest.slice(2, 4).map((h) => h.id));
+
+      // 'asc' flips to oldest-first — the whole timeline, reversed.
+      const oldest = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod', {
+        order: 'asc',
+      });
+      expect(oldest.map((h) => h.id)).toEqual([...newest.map((h) => h.id)].reverse());
+    });
+
+    it('pages listRoles across the tenant boundary with the composite cursor', async () => {
+      // Two fresh tenants, two roles each — the walk must cross from one
+      // tenant's last role into the next tenant without skipping or repeating.
+      const ta = tenantId.parse(ulid());
+      const tb = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: ta, slug: `pag-${ta.toLowerCase()}`, name: 'Pag A' });
+      await host.admin.createTenant(staff, { id: tb, slug: `pag-${tb.toLowerCase()}`, name: 'Pag B' });
+      for (const [tid, keys] of [
+        [ta, ['alpha', 'omega']],
+        [tb, ['beta', 'zeta']],
+      ] as const) {
+        for (const key of keys) {
+          await host.admin.defineRole(staff, tid, {
+            key,
+            permissions: [permissionKey.parse('thing:read')],
+            source: 'vertical',
+          });
+        }
+      }
+
+      // The composite cursor is `${tenantId}|${roleKey}` — the tenant id is a
+      // ULID (fixed length, never contains '|'), so string order matches the
+      // (tenant_id, role_key) SQL order.
+      const keyOf = (r: { tenantId: string; key: string }) => `${r.tenantId}|${r.key}`;
+      const all = await host.admin.listRoles(staff); // unset limit = everything
+      expect(all.map(keyOf)).toEqual([...all.map(keyOf)].sort());
+
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await host.admin.listRoles(staff, { limit: 2, cursor });
+        seen.push(...page.map(keyOf));
+        if (page.length < 2) break;
+        cursor = keyOf(page[page.length - 1]!);
+      }
+      expect(seen).toEqual(all.map(keyOf));
+
+      // Resuming from the LAST role of the earlier tenant crosses the boundary.
+      const [lo] = [ta, tb].sort() as [TenantId, TenantId];
+      const lastOfLo = lo === ta ? 'omega' : 'zeta';
+      const idx = all.findIndex((r) => keyOf(r) === `${lo}|${lastOfLo}`);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const after = await host.admin.listRoles(staff, { limit: 2, cursor: `${lo}|${lastOfLo}` });
+      expect(after.map(keyOf)).toEqual(all.slice(idx + 1, idx + 3).map(keyOf));
+    });
+
+    it('pages the access log by cursor like the audit log', async () => {
+      const first = await host.admin.accessLog(staff, { limit: 3 });
+      expect(first).toHaveLength(3);
+      // Oldest first — the ordering the log shipped with.
+      expect(first.map((r) => r.id)).toEqual([...first.map((r) => r.id)].sort());
+      const next = await host.admin.accessLog(staff, { limit: 3, cursor: first[2]!.id });
+      expect(next).toHaveLength(3);
+      // Strictly after the cursor — no overlap with the first page. (The log
+      // grows on every read, so pages are compared by position, not totals.)
+      expect(next[0]!.id > first[2]!.id).toBe(true);
+
+      // desc reads newest-first: its first row postdates everything above.
+      const desc = await host.admin.accessLog(staff, { limit: 1, order: 'desc' });
+      expect(desc[0]!.id >= next[2]!.id).toBe(true);
+    });
   });
 }

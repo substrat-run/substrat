@@ -32,7 +32,9 @@ describe('shared control-plane worker', () => {
   it('serves an empty tenant registry before anything is created', async () => {
     const res = await SELF.fetch('https://cp.test/api/tenants', { headers: authed });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual([]);
+    // Every list route answers the platform page envelope (contracts pagination.ts);
+    // a short (here: empty) page carries `nextCursor: null` — the walk is done.
+    expect(await res.json()).toEqual({ entries: [], nextCursor: null });
   });
 
   it('persists a created tenant through the durable DO', async () => {
@@ -45,11 +47,11 @@ describe('shared control-plane worker', () => {
     expect(create.status).toBe(201);
     expect(await create.json()).toMatchObject({ id, slug: 'acme', name: 'Acme AB', status: 'active' });
 
-    // Read back through the worker.
+    // Read back through the worker — a page envelope now, entries inside.
     const list = (await (await SELF.fetch('https://cp.test/api/tenants', { headers: authed })).json()) as {
-      id: string;
-    }[];
-    expect(list.map((t) => t.id)).toContain(id);
+      entries: { id: string }[];
+    };
+    expect(list.entries.map((t) => t.id)).toContain(id);
 
     // Read back through a brand-new coordinator against the same DO namespace —
     // proof the row is in durable storage, reachable by any stateless host.
@@ -232,11 +234,11 @@ describe('builder auth — live self-serve path', () => {
     expect(res.status).toBe(201);
     expect(await res.json()).toMatchObject({ slug: 'acme-co/helpdesk' });
 
-    // The list is filtered to the builder's own namespace.
+    // The list is filtered to the builder's own namespace (page envelope).
     const list = (await (
       await SELF.fetch('https://cp.test/api/verticals', { headers: { authorization: `Bearer ${token}` } })
-    ).json()) as { slug: string }[];
-    expect(list.map((v) => v.slug)).toContain('acme-co/helpdesk');
+    ).json()) as { entries: { slug: string }[] };
+    expect(list.entries.map((v) => v.slug)).toContain('acme-co/helpdesk');
 
     // Staff-only surfaces stay closed to a builder (default-deny confinement) —
     // including the identity mirror: a builder must not write the directory

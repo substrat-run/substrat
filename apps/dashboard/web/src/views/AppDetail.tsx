@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -203,9 +203,11 @@ function KV({ label, children, last }: { label: string; children: React.ReactNod
 
 function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
-  // The app's REAL audit trail (created / active / failed+reason / deleted). Dev-preview
-  // shows a representative sample; a live deploy reads it from the worker.
+  // The app's REAL audit trail (created / active / failed+reason / deleted), one page
+  // newest-first; `eventsCursor` walks older activity. Dev-preview shows a sample.
   const [events, setEvents] = useState<AppEvent[] | null>(null);
+  const [eventsCursor, setEventsCursor] = useState<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   // The app's REAL running version (the version its scope is bound to — what the router
   // serves), not a hardcoded label. Same source as the Deployments tab.
   const [dep, setDep] = useState<Deployment | null>(null);
@@ -218,7 +220,11 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     let live = true;
     api
       .appEvents(app.app_scope_id)
-      .then((e) => live && setEvents(e))
+      .then((p) => {
+        if (!live) return;
+        setEvents(p.entries);
+        setEventsCursor(p.nextCursor);
+      })
       .catch(() => live && setEvents([]));
     api
       .appDeployments(app.app_scope_id)
@@ -228,6 +234,18 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
       live = false;
     };
   }, [app.app_scope_id]);
+
+  const loadOlderEvents = async () => {
+    if (DEV_MOCK || loadingOlder || !eventsCursor) return;
+    setLoadingOlder(true);
+    try {
+      const p = await api.appEvents(app.app_scope_id, { cursor: eventsCursor });
+      setEvents((prev) => [...(prev ?? []), ...p.entries.filter((e) => !prev?.some((x) => x.id === e.id))]);
+      setEventsCursor(p.nextCursor);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
   // The version the app actually runs: its scope's bound version (fall back to the prod
   // channel only when unpinned). '…' while loading; '—' when nothing is deployed.
   const prodVersionId = dep?.channels.find((c) => c.channel === 'prod')?.versionId;
@@ -324,7 +342,16 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
         ) : events.length === 0 ? (
           <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>No activity recorded yet.</div>
         ) : (
-          <Timeline items={events.map(toTimelineItem)} />
+          <>
+            <Timeline items={events.map(toTimelineItem)} />
+            {eventsCursor !== null && (
+              <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 12 }}>
+                <Button variant="secondary" onClick={() => void loadOlderEvents()} disabled={loadingOlder}>
+                  {loadingOlder ? 'Loading…' : 'Load older activity'}
+                </Button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -389,10 +416,11 @@ function Timeline({ items }: { items: Array<{ dot: TimelineDot; body: React.Reac
 }
 
 function Deployments({ app }: { app: AppRow }) {
-  const [dep, setDep] = useState<Deployment | null>(null);
+  const [dep, setDep] = useState<AppDeployments | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const [updating, setUpdating] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   // Fork-before-promote (default ON): snapshot the app's data before a migration-
   // crossing update, so a bad upgrade has a rollback point. A code-only update
@@ -403,7 +431,7 @@ function Deployments({ app }: { app: AppRow }) {
   const [bookmarks, setBookmarks] = useState<MigrationBookmark[]>([]);
   useEffect(() => {
     if (DEV_MOCK) {
-      setDep(MOCK_DEPLOYMENTS[0] ?? null);
+      setDep(MOCK_DEPLOYMENTS[0] ? { ...MOCK_DEPLOYMENTS[0], nextCursor: null } : null);
       return;
     }
     let live = true;
@@ -419,6 +447,26 @@ function Deployments({ app }: { app: AppRow }) {
       live = false;
     };
   }, [app.app_scope_id, nonce]);
+
+  // Append the next (older) page of versions below the loaded ones.
+  const loadOlderVersions = async () => {
+    if (DEV_MOCK || loadingOlder || !dep?.nextCursor) return;
+    setLoadingOlder(true);
+    try {
+      const p = await api.appDeployments(app.app_scope_id, { cursor: dep.nextCursor });
+      setDep((d) =>
+        d
+          ? {
+              ...d,
+              versions: [...d.versions, ...p.versions.filter((v) => !d.versions.some((x) => x.id === v.id))],
+              nextCursor: p.nextCursor,
+            }
+          : d,
+      );
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
 
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load deployments — {err}</div>;
   if (!dep) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading deployments…</div>;
@@ -584,6 +632,13 @@ function Deployments({ app }: { app: AppRow }) {
               </div>
             );
           })}
+          {dep.nextCursor !== null && (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+              <Button variant="secondary" onClick={() => void loadOlderVersions()} disabled={loadingOlder}>
+                {loadingOlder ? 'Loading…' : 'Load older versions'}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>

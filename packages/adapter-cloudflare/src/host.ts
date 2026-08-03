@@ -52,6 +52,7 @@ import {
   type EntityRef,
   type IdentityLink,
   type IdentityPool,
+  type ListPage,
   type ProjectedIdentityLink,
   type Node,
   type Org,
@@ -212,7 +213,7 @@ interface ControlPlaneStub {
   setTenantName(tenantId: string, name: string): Promise<string>;
   reapTenant(tenantId: string): Promise<string>;
   getTenant(tenantId: string): Promise<Tenant | undefined>;
-  listTenants(): Promise<Tenant[]>;
+  listTenants(page?: ListPage): Promise<Tenant[]>;
   getTenantStore(
     tenantId: string,
     vertical: string,
@@ -254,7 +255,9 @@ interface ControlPlaneStub {
     schemaVersion: string,
     failure: { version: string; error: string } | null,
   ): Promise<void>;
-  listScopes(filter: { tenantId?: string; status?: string[]; vertical?: string }): Promise<ScopeRow[]>;
+  listScopes(
+    filter: { tenantId?: string; status?: string[]; vertical?: string } & ListPage,
+  ): Promise<ScopeRow[]>;
   getScopeRecord(tenantId: string, scopeId: string): Promise<ScopeRow | undefined>;
   validateScopeAccess(tenantId: string, scopeId: string): Promise<void>;
   transitionScope(
@@ -265,7 +268,7 @@ interface ControlPlaneStub {
     action: string,
   ): Promise<{ status: string; vertical: string | null }>;
   defineRole(tenantId: string, role: RoleDefinition): Promise<RoleDefinition | null>;
-  listRoles(filter: { tenantId?: string; source?: string }): Promise<RoleRow[]>;
+  listRoles(filter: { tenantId?: string; source?: string } & ListPage): Promise<RoleRow[]>;
   writeTenantTuple(
     tenantId: string,
     subject: string,
@@ -298,7 +301,9 @@ interface ControlPlaneStub {
     },
   ): Promise<void>;
   deleteHostname(hostname: string): Promise<void>;
-  listHostnames(filter: { tenantId?: string; scopeId?: string; status?: string }): Promise<HostnameRow[]>;
+  listHostnames(
+    filter: { tenantId?: string; scopeId?: string; status?: string } & ListPage,
+  ): Promise<HostnameRow[]>;
   readVertical(slug: string): Promise<VerticalRow | undefined>;
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null, listed?: number | null): Promise<void>;
@@ -308,7 +313,7 @@ interface ControlPlaneStub {
   updateVerticalTenantProvisioner(slug: string, granted: number): Promise<void>;
   countScopesForVertical(slug: string): Promise<number>;
   deleteVertical(slug: string): Promise<void>;
-  listVerticals(): Promise<VerticalRow[]>;
+  listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
   insertVersion(v: {
     id: string; verticalSlug: string; version: string; manifestDigest: string;
@@ -316,7 +321,7 @@ interface ControlPlaneStub {
     admission: string; admissionNote: string | null; manifestJson: string | null;
     createdAt: string;
   }): Promise<void>;
-  listVersions(verticalSlug: string): Promise<VersionRow[]>;
+  listVersions(verticalSlug: string, page?: ListPage): Promise<VersionRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
   setVerticalServing(
@@ -327,9 +332,13 @@ interface ControlPlaneStub {
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): Promise<void>;
-  listChannels(verticalSlug: string): Promise<ChannelRow[]>;
+  listChannels(verticalSlug: string, page?: ListPage): Promise<ChannelRow[]>;
   insertChannelHistory(h: ChannelHistoryRow): Promise<void>;
-  listChannelHistory(verticalSlug: string, channel?: string): Promise<ChannelHistoryRow[]>;
+  listChannelHistory(
+    verticalSlug: string,
+    channel?: string,
+    page?: ListPage,
+  ): Promise<ChannelHistoryRow[]>;
   readOrg(tenantId: string, orgId: string): Promise<OrgRow | undefined>;
   createOrg(
     orgId: string,
@@ -434,8 +443,7 @@ interface ControlPlaneStub {
     actor?: string;
     tenantId?: string;
     method?: string;
-    limit?: number;
-  }): Promise<AccessLogRow[]>;
+  } & ListPage): Promise<AccessLogRow[]>;
   pruneAccessLog(limit: number): Promise<number>;
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
@@ -1773,7 +1781,13 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.fanOut(tenantId); // role definitions are projected into the tenant's scopes
       },
       listRoles: async (actor, filter?: RoleFilter): Promise<TenantRole[]> => {
-        const rows = await this.cp.listRoles({ tenantId: filter?.tenantId, source: filter?.source });
+        const rows = await this.cp.listRoles({
+          tenantId: filter?.tenantId,
+          source: filter?.source,
+          limit: filter?.limit,
+          cursor: filter?.cursor,
+          order: filter?.order,
+        });
         await this.recordAccess(actor, 'listRoles', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
         // Parsed, not cast — the same parse the pure adapter does, which is what
         // makes the shared contract suite mean anything.
@@ -2038,6 +2052,9 @@ export class CloudflareScopeHost implements ScopeHost {
           tenantId: filter?.tenantId,
           scopeId: filter?.scopeId,
           status: filter?.status,
+          limit: filter?.limit,
+          cursor: filter?.cursor,
+          order: filter?.order,
         });
         await this.recordAccess(
           actor,
@@ -2099,9 +2116,9 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString());
         await this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed);
       },
-      listVerticals: async (actor) => {
-        const rows = await this.cp.listVerticals();
-        await this.recordAccess(actor, 'listVerticals', {}, null, rows.length);
+      listVerticals: async (actor, page) => {
+        const rows = await this.cp.listVerticals(page);
+        await this.recordAccess(actor, 'listVerticals', {}, page ?? null, rows.length);
         return rows.map(mapVertical);
       },
       publishVersion: async (actor, input: PublishVersionInput) => {
@@ -2130,8 +2147,8 @@ export class CloudflareScopeHost implements ScopeHost {
           admission: selfAdmits ? 'admitted' : 'pending',
         });
       },
-      listVersions: async (actor, verticalSlug: string) => {
-        const rows = await this.cp.listVersions(verticalSlug);
+      listVersions: async (actor, verticalSlug: string, page) => {
+        const rows = await this.cp.listVersions(verticalSlug, page);
         await this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
         return rows.map(mapVersion);
       },
@@ -2320,8 +2337,8 @@ export class CloudflareScopeHost implements ScopeHost {
           { channel, versionId, version: incoming.version, acknowledged: ack },
         );
       },
-      listChannels: async (actor, verticalSlug: string) => {
-        const rows = await this.cp.listChannels(verticalSlug);
+      listChannels: async (actor, verticalSlug: string, page) => {
+        const rows = await this.cp.listChannels(verticalSlug, page);
         // The serving script runs ONE version (#286); surface it on the prod row so a
         // failed in-place serve (channel moved, serve did not) reads honestly instead of
         // claiming the new version is live (#321).
@@ -2337,8 +2354,8 @@ export class CloudflareScopeHost implements ScopeHost {
           }),
         );
       },
-      listChannelHistory: async (actor, verticalSlug: string, channel?) => {
-        const rows = await this.cp.listChannelHistory(verticalSlug, channel);
+      listChannelHistory: async (actor, verticalSlug: string, channel?, page?) => {
+        const rows = await this.cp.listChannelHistory(verticalSlug, channel, page);
         await this.recordAccess(actor, 'listChannelHistory', {}, { verticalSlug, channel }, rows.length);
         return rows.map((r) =>
           channelHistoryEntry.parse({
@@ -2546,10 +2563,10 @@ export class CloudflareScopeHost implements ScopeHost {
         const before = await this.cp.reapTenant(tenantId);
         await this.recordAdmin(actor, 'reapTenant', { tenantId }, { status: before }, { status: 'reaped' });
       },
-      listTenants: async (actor): Promise<Tenant[]> => {
-        const tenants = (await this.cp.listTenants()).map((t) => tenantSchema.parse(t));
+      listTenants: async (actor, page): Promise<Tenant[]> => {
+        const tenants = (await this.cp.listTenants(page)).map((t) => tenantSchema.parse(t));
         // Enumerating every tenant on the platform is the read this log exists for.
-        await this.recordAccess(actor, 'listTenants', {}, null, tenants.length);
+        await this.recordAccess(actor, 'listTenants', {}, page ?? null, tenants.length);
         return tenants;
       },
       getTenant: async (actor, tenantId): Promise<Tenant | undefined> => {
@@ -2566,6 +2583,9 @@ export class CloudflareScopeHost implements ScopeHost {
               : [filter.status]
             : undefined,
           vertical: filter?.vertical,
+          limit: filter?.limit,
+          cursor: filter?.cursor,
+          order: filter?.order,
         });
         await this.recordAccess(actor, 'listScopes', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
         return rows.map(mapScope);
@@ -2995,6 +3015,8 @@ export class CloudflareScopeHost implements ScopeHost {
           tenantId: filter?.tenantId,
           method: filter?.method,
           limit: filter?.limit,
+          cursor: filter?.cursor,
+          order: filter?.order,
         });
         // Reading the access log is itself a read. Recorded before returning, so
         // the row describing this call is not in its own result.

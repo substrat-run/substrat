@@ -62,7 +62,13 @@ export function App() {
   const [appsLoading, setAppsLoading] = useState(
     () => !DEV_MOCK || new URLSearchParams(window.location.search).get('loading') === '1',
   );
+  // Keyset cursors for the paged lists (#458-shape): non-null ⇒ older entries exist
+  // ("Load more"); null ⇒ the loaded window is the whole list.
+  const [appsCursor, setAppsCursor] = useState<string | null>(null);
+  const [appsLoadingMore, setAppsLoadingMore] = useState(false);
   const [members, setMembers] = useState<Member[]>([]);
+  const [membersCursor, setMembersCursor] = useState<string | null>(null);
+  const [membersLoadingMore, setMembersLoadingMore] = useState(false);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [promoting, setPromoting] = useState(false);
@@ -107,10 +113,29 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Refresh = back to the FIRST page (the newest window); "Load more" appends below.
   const reloadApps = useCallback(async () => {
     if (DEV_MOCK) return;
-    setApps(await api.listApps());
+    const page = await api.listApps();
+    setApps(page.entries);
+    setAppsCursor(page.nextCursor);
   }, []);
+
+  const appsMoreRef = useRef(false);
+  const loadMoreApps = useCallback(async () => {
+    if (DEV_MOCK || appsMoreRef.current || !appsCursor) return;
+    appsMoreRef.current = true;
+    setAppsLoadingMore(true);
+    try {
+      const page = await api.listApps({ cursor: appsCursor });
+      // Dedupe against a refresh that raced this append (the provisioning poll).
+      setApps((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.id === e.id))]);
+      setAppsCursor(page.nextCursor);
+    } finally {
+      appsMoreRef.current = false;
+      setAppsLoadingMore(false);
+    }
+  }, [appsCursor]);
 
   /** The install's durable step record (#424), for the cards' live progress list. */
   const loadInstallSteps = useCallback(
@@ -201,15 +226,18 @@ export function App() {
       setMe(m);
       // A teamless login (onboarding) has nothing to load yet — skip the fetches.
       if (m && !needsOnboarding(m)) {
+        const emptyPage = { entries: [] as Member[], nextCursor: null };
         const [a, mem, c, d] = await Promise.all([
           api.listApps(),
-          api.listMembers().catch(() => [] as Member[]),
+          api.listMembers().catch(() => emptyPage),
           api.catalog(),
           api.listDeployments().catch(() => []),
         ]);
         if (!live) return;
-        setApps(a);
-        setMembers(mem);
+        setApps(a.entries);
+        setAppsCursor(a.nextCursor);
+        setMembers(mem.entries);
+        setMembersCursor(mem.nextCursor);
         setCatalog(c);
         setDeployments(d);
       }
@@ -434,8 +462,25 @@ export function App() {
 
   const reloadMembers = useCallback(async () => {
     if (DEV_MOCK) return;
-    setMembers(await api.listMembers().catch(() => []));
+    const page = await api.listMembers().catch(() => ({ entries: [] as Member[], nextCursor: null }));
+    setMembers(page.entries);
+    setMembersCursor(page.nextCursor);
   }, []);
+
+  const membersMoreRef = useRef(false);
+  const loadMoreMembers = useCallback(async () => {
+    if (DEV_MOCK || membersMoreRef.current || !membersCursor) return;
+    membersMoreRef.current = true;
+    setMembersLoadingMore(true);
+    try {
+      const page = await api.listMembers({ cursor: membersCursor });
+      setMembers((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.id === e.id))]);
+      setMembersCursor(page.nextCursor);
+    } finally {
+      membersMoreRef.current = false;
+      setMembersLoadingMore(false);
+    }
+  }, [membersCursor]);
 
   // Invite a member → returns a shareable accept link (Team shows it to copy). The
   // roster refreshes so the pending invite appears. Dev-preview fakes both.
@@ -512,6 +557,14 @@ export function App() {
   );
 
   const openApp = useMemo(() => (route.app ? apps.find((a) => a.app_scope_id === route.app) : undefined), [apps, route.app]);
+
+  // A deep-linked app can sit beyond the loaded page window — keep walking older
+  // pages until it turns up (or the list is exhausted), instead of flashing a 404.
+  useEffect(() => {
+    if (DEV_MOCK || !route.app || appsLoading || !appsCursor) return;
+    if (apps.some((a) => a.app_scope_id === route.app)) return;
+    void loadMoreApps().catch(() => {});
+  }, [route.app, apps, appsCursor, appsLoading, loadMoreApps]);
 
   // The team's issuer instances offered in Identity pickers (#427): any ACTIVE app of a
   // vertical that DECLARES `provides: ['oidc-issuer']` (capability-driven, from the
@@ -594,15 +647,16 @@ export function App() {
           authServers={authServers}
         />
       ) : route.section === 'apps' && route.app ? (
-        // While the first listApps() is in flight the deep-linked app is merely
-        // unresolved, not missing — the skeleton, never a flashed 404.
-        appsLoading ? (
+        // While the first listApps() is in flight — or older pages are still being
+        // walked for a deep link — the app is merely unresolved, not missing: the
+        // skeleton, never a flashed 404.
+        appsLoading || appsCursor !== null ? (
           <Apps apps={apps} loading onCreate={() => go('#/apps/new')} onOpen={() => {}} onRetry={() => {}} />
         ) : (
           <NotFound label="That app could not be found." onBack={() => go('#/apps')} />
         )
       ) : route.section === 'overview' || route.section === 'apps' ? (
-        <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} />
+        <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
       ) : route.section === 'verticals' ? (
         <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (
@@ -614,6 +668,9 @@ export function App() {
           onResend={(id) => void resendInvite(id)}
           onRevoke={(id) => void revokeInvite(id)}
           onRemove={(id) => void removeMember(id)}
+          hasMore={membersCursor !== null}
+          loadingMore={membersLoadingMore}
+          onLoadMore={() => void loadMoreMembers()}
         />
       ) : route.section === 'domains' ? (
         <Domains />

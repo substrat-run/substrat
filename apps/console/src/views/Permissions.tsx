@@ -5,6 +5,7 @@ import type { TableColumn } from '../components';
 import { ActorCell } from '../patterns/ActorCell';
 import { JsonDiff } from '../patterns/JsonDiff';
 import type { Api } from '../lib/api';
+import { usePagedList } from '../lib/use-paged-list';
 
 /**
  * The runtime half of the permission checkpoint (control-plane.md §4.5).
@@ -33,6 +34,9 @@ import type { Api } from '../lib/api';
 /** The three writes that create permission state at runtime. */
 const REVIEWABLE = ['defineRole', 'grant', 'grantToOrg'] as const;
 
+/** The review queue's page — kept at the pre-pagination read size. */
+const LOG_PAGE = 50;
+
 export interface PermissionsProps {
   api: Api;
   tenants: Map<TenantId, Tenant>;
@@ -41,30 +45,48 @@ export interface PermissionsProps {
 export function Permissions({ api, tenants }: PermissionsProps) {
   const [tab, setTab] = useState('review');
   const [rows, setRows] = useState<AdminLogEntry[]>([]);
-  const [roles, setRoles] = useState<TenantRole[]>([]);
+  // Null = the log is exhausted (pagination.ts); non-null continues the walk below.
+  const [logCursor, setLogCursor] = useState<string | null>(null);
   const [source, setSource] = useState('all');
   const [reviewed, setReviewed] = useState<Record<string, true>>({});
+
+  // The roles table pages like every other list (first page of 20, Load more) —
+  // before pagination this was one unbounded read; a silently truncated page
+  // with no way to continue would hide roles from the one place that shows them.
+  const rolesPage = usePagedList((p) => api.listRoles(p), [api]);
+  const roles = rolesPage.entries;
 
   useEffect(() => {
     let live = true;
     void (async () => {
-      const [page, allRoles] = await Promise.all([
-        api.adminLog({ order: 'desc', limit: 50, action: [...REVIEWABLE] }),
-        api.listRoles(),
-      ]);
+      const page = await api.adminLog({ order: 'desc', limit: LOG_PAGE, action: [...REVIEWABLE] });
       if (!live) return;
       setRows(page.entries);
-      setRoles(allRoles);
+      setLogCursor(page.nextCursor);
     })();
     return () => {
       live = false;
     };
   }, [api]);
 
+  // The AdminLog continuation: older reviewable entries append, newest stay put.
+  async function loadOlder() {
+    if (!logCursor) return;
+    const page = await api.adminLog({
+      order: 'desc',
+      limit: LOG_PAGE,
+      cursor: logCursor,
+      action: [...REVIEWABLE],
+    });
+    setRows((prev) => [...prev, ...page.entries]);
+    setLogCursor(page.nextCursor);
+  }
+
   const pending = rows.filter((r) => !reviewed[r.id]);
-  // Filtered client-side: the whole role set is small (one row per tenant per
-  // role key) and already loaded, so a round-trip per filter change would buy
-  // nothing. The API takes `source` for callers that aren't holding the list.
+  // Filtered client-side over the LOADED pages (the AdminLog `q` pattern): the
+  // role set is small (one row per tenant per role key), so a round-trip per
+  // filter change would buy nothing. The API takes `source` for callers that
+  // aren't holding the list.
   const sources = useMemo(() => [...new Set(roles.map((r) => r.source))].sort(), [roles]);
 
   const roleColumns: TableColumn<TenantRole>[] = [
@@ -146,6 +168,13 @@ export function Permissions({ api, tenants }: PermissionsProps) {
               </div>
             </Card>
           ))}
+          {logCursor && (
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <Button variant="ghost" size="sm" onClick={() => void loadOlder()}>
+                Load older entries
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -171,6 +200,13 @@ export function Permissions({ api, tenants }: PermissionsProps) {
               rows={roles.filter((r) => source === 'all' || r.source === source)}
               emptyText="No roles defined."
             />
+            {rolesPage.nextCursor && (
+              <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
+                <Button variant="ghost" size="sm" onClick={() => void rolesPage.loadMore()}>
+                  Load more
+                </Button>
+              </div>
+            )}
           </Card>
         </div>
       )}

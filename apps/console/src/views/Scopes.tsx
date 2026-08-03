@@ -13,6 +13,7 @@ import {
 } from '../lib/fleet';
 import { portalUrl } from '../lib/portal';
 import type { Api } from '../lib/api';
+import { usePagedList } from '../lib/use-paged-list';
 
 export interface ScopesProps {
   api: Api;
@@ -161,6 +162,15 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
     };
   }, [api, selected, tenants]);
 
+  // The table pages (cursor-walked, `scopes` doubling as the mutation-refresh
+  // signal); the `scopes`/`tenants` PROPS stay the walked directory so the stat
+  // cards and tab counts keep reading the whole fleet, not the loaded window.
+  const paged = usePagedList(
+    (p) => api.listScopes(p),
+    [api, scopes],
+    (e) => onToast('Failed to load scopes', e.message, 'danger'),
+  );
+
   const counts = useMemo(() => fleetCounts(scopes, tenants), [scopes, tenants]);
   const tenantList = useMemo(() => [...tenants.values()], [tenants]);
   const skuTotal = useMemo(
@@ -168,15 +178,18 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
     [entitlements],
   );
 
+  // The tab narrows the LOADED pages (the AdminLog `q` pattern): effective status
+  // is a client-side computation (cascade), so the server's status filter cannot
+  // answer it — the tab counts above still read the whole walked fleet.
   const rows = useMemo(
     () =>
-      scopes.filter((s) => {
+      paged.entries.filter((s) => {
         const eff = effectiveStatus(s, tenants.get(s.tenantId));
         if (tab === 'suspended') return isSuspended(eff);
         if (tab === 'archived') return eff === 'archived' || eff === 'archiving' || eff === 'reaped';
         return true;
       }),
-    [scopes, tenants, tab],
+    [paged.entries, tenants, tab],
   );
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
@@ -270,6 +283,13 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
 
       <Card padding={0}>
         <Table columns={columns} rows={rows} onRowClick={setSelected} emptyText="No scopes match this filter." />
+        {paged.nextCursor && (
+          <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
+            <Button variant="ghost" size="sm" onClick={() => void paged.loadMore()}>
+              Load more
+            </Button>
+          </div>
+        )}
       </Card>
 
       {selected && eff && (

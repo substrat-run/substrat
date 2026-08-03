@@ -43,6 +43,9 @@ export function Apps({
   onRetry,
   onResume,
   loadSteps,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: {
   apps: AppRow[];
   loading?: boolean;
@@ -52,6 +55,10 @@ export function Apps({
   onResume?: (scopeId: string) => void;
   /** Loader for one app's install step record (#424) — threaded to the cards. */
   loadSteps?: (scopeId: string) => Promise<InstallStep[]>;
+  /** Older apps exist beyond the loaded page window (a non-null nextCursor). */
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }) {
   const [mode, setMode] = useState<Mode>('grid');
   const [q, setQ] = useState('');
@@ -104,6 +111,14 @@ export function Apps({
         </div>
       ) : (
         <ListMode cards={filtered} onOpen={onOpen} onRetry={onRetry} />
+      )}
+
+      {hasMore && onLoadMore && (
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <Button variant="secondary" onClick={onLoadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </Button>
+        </div>
       )}
     </Page>
   );

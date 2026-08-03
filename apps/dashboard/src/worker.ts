@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, z, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
@@ -33,7 +33,7 @@ import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@s
 import { dashboardModule, type DashboardAppRow } from './module.js';
 import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
-import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, versionRegistryFromHost, assertOwned } from './deployments.js';
+import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, verticalDeploymentPageFromCp, verticalDeploymentPageFromHost, versionRegistryFromHost, assertOwned } from './deployments.js';
 import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
 import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from './github.js';
@@ -740,13 +740,30 @@ app.post('/api/teams/delete', async (c) => {
   return c.body(null, 204);
 });
 
-/** The current team's roster — active members + outstanding invites. */
+/**
+ * Every GET list below shares the platform-wide pagination convention (contracts
+ * pagination.ts): `?limit&cursor` in (default 20), `{ entries, nextCursor }` out,
+ * keyset on the list's own sort key. The module ops stay unbounded when unpaged.
+ */
+const pageParams = (c: { req: { query(key: string): string | undefined } }) =>
+  listPageQuery.parse({ limit: c.req.query('limit'), cursor: c.req.query('cursor') });
+
+/**
+ * The current team's roster — active members + outstanding invites, one page newest-
+ * first (`{ entries, nextCursor }`, keyset on the roster row id). Org-bounded small,
+ * but the envelope is the ONE list-read shape (contracts pagination.ts).
+ */
 app.get('/api/members', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const page = pageParams(c);
   const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  return c.json(await scope.invoke('dashboard/list-members', {}));
+  const members = (await scope.invoke('dashboard/list-members', {
+    limit: page.limit,
+    cursor: page.cursor,
+  })) as Array<{ id: string }>;
+  return c.json(pageOf(members, page.limit, (m) => m.id));
 });
 
 /**
@@ -982,13 +999,14 @@ app.post('/api/invites/accept', async (c) => {
   return c.json({ teamId: t });
 });
 
-/** My apps. */
+/** My apps — one page, newest first (`{ entries, nextCursor }`, keyset on the row id). */
 app.get('/api/apps', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const page = pageParams(c);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = (await dash.invoke('dashboard/list-apps', { limit: page.limit, cursor: page.cursor })) as DashboardAppRow[];
   // Self-heal the URL from the live directory: the hostname column is a snapshot
   // taken at install time, and an install whose bind was recorded late (or repaired
   // platform-side) leaves it null forever while the router happily serves the app.
@@ -1044,7 +1062,7 @@ app.get('/api/apps', async (c) => {
       if (live) a.hostname = live.hostname;
     }
   }
-  return c.json(apps);
+  return c.json(pageOf(apps, page.limit, (a) => a.id));
 });
 
 /**
@@ -1081,29 +1099,44 @@ app.get('/api/domains', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const page = pageParams(c);
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) return c.json([]);
+  if (!cp) return c.json({ entries: [], nextCursor: null });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  // Unpaged: names + default hostnames must cover EVERY app, whatever page of domains this is.
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appName = new Map(apps.map((a) => [a.app_scope_id, a.name]));
   // Each app's auto-managed default hostname — subtracted so the list shows only the
   // custom domains a tenant added on top (the platform mint is not a "domain" to manage).
   const defaults = new Set(apps.map((a) => a.hostname).filter(Boolean) as string[]);
-  const rows = await cp.listTenantHostnames().catch(() => []);
-  const domains = rows
-    .filter((h) => !defaults.has(h.hostname))
-    .map((h) => ({
-      hostname: h.hostname,
-      appScopeId: h.scopeId,
-      app: appName.get(h.scopeId) ?? h.scopeId,
-      surface: h.surface,
-      status: h.status,
-      statusNote: h.statusNote ?? null,
-      primary: h.canonical,
-      createdAt: h.createdAt,
-      validationRecords: h.validationRecords ?? [],
-    }));
-  return c.json(domains);
+  // Walk the CP's hostname pages (keyset on the hostname — the cursor passes straight
+  // through) until this page of CUSTOM domains is full: the defaults filter can shrink
+  // a CP page below the limit, so one CP page is not necessarily one page here.
+  const domains: Array<Record<string, unknown> & { hostname: string }> = [];
+  let cursor = page.cursor;
+  for (;;) {
+    const res = await cp
+      .listTenantHostnamesPage({ limit: LIST_PAGE_MAX, cursor })
+      .catch(() => ({ entries: [], nextCursor: null as string | null }));
+    for (const h of res.entries) {
+      if (defaults.has(h.hostname)) continue;
+      domains.push({
+        hostname: h.hostname,
+        appScopeId: h.scopeId,
+        app: appName.get(h.scopeId) ?? h.scopeId,
+        surface: h.surface,
+        status: h.status,
+        statusNote: h.statusNote ?? null,
+        primary: h.canonical,
+        createdAt: h.createdAt,
+        validationRecords: h.validationRecords ?? [],
+      });
+      if (domains.length >= page.limit) break;
+    }
+    if (domains.length >= page.limit || res.nextCursor === null) break;
+    cursor = res.nextCursor;
+  }
+  return c.json(pageOf(domains, page.limit, (d) => d.hostname));
 });
 
 const bindDomainBody = z.object({
@@ -1166,16 +1199,23 @@ app.delete('/api/domains/:hostname', async (c) => {
 });
 
 /**
- * One app's audit trail (Activity panel) — created / active / failed(+reason) / deleted.
- * Read from the caller's OWN dashboard scope, so the events are naturally tenant-scoped:
+ * One app's audit trail (Activity panel) — created / active / failed(+reason) / deleted,
+ * one page newest-first (`{ entries, nextCursor }`, keyset on the event id). Read from
+ * the caller's OWN dashboard scope, so the events are naturally tenant-scoped:
  * another tenant's app-scope-id has no events here.
  */
 app.get('/api/apps/:scopeId/events', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const page = pageParams(c);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  return c.json(await dash.invoke('dashboard/app-events', { appScopeId: c.req.param('scopeId') }));
+  const events = (await dash.invoke('dashboard/app-events', {
+    appScopeId: c.req.param('scopeId'),
+    limit: page.limit,
+    cursor: page.cursor,
+  })) as Array<{ id: string }>;
+  return c.json(pageOf(events, page.limit, (e) => e.id));
 });
 
 /**
@@ -1188,6 +1228,9 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  // The versions list pages (`?limit&cursor`, default 20, newest first — the order the
+  // tab always rendered); channels stay complete (~3). `nextCursor` walks older versions.
+  const page = pageParams(c);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
@@ -1201,9 +1244,9 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
   // is what makes prod promotion self-serve (while private) instead of a staff action —
   // the UI words the tab differently for each.
   const [deployment, boundVersionId, mine] = cp
-    ? await Promise.all([verticalDeploymentFromCp(cp, appRow.vertical_slug), cp.boundVersionId(scope), cp.listVerticals()])
+    ? await Promise.all([verticalDeploymentPageFromCp(cp, appRow.vertical_slug, page), cp.boundVersionId(scope), cp.listVerticals()])
     : await Promise.all([
-        verticalDeploymentFromHost(host, STAFF, appRow.vertical_slug),
+        verticalDeploymentPageFromHost(host, STAFF, appRow.vertical_slug, page),
         host.admin.getScopeRecord(STAFF, node.tenantId, scope).then((r) => r?.verticalVersionId ?? null),
         host.admin.listVerticals(STAFF).then((vs) => vs.filter((v) => v.ownerTenant === node.tenantId)),
       ]);

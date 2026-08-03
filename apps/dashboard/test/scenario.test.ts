@@ -27,7 +27,7 @@ import {
   type DashboardAppRow,
   type DashboardNode,
 } from '../src/index.js';
-import { listDeploymentsFromHost, verticalDeploymentFromHost, versionRegistryFromHost, assertOwned } from '../src/deployments.js';
+import { listDeploymentsFromHost, verticalDeploymentFromHost, verticalDeploymentPageFromHost, versionRegistryFromHost, assertOwned } from '../src/deployments.js';
 import { ControlPlaneError } from '../src/authority.js';
 
 /**
@@ -106,6 +106,36 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     const apps = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
     expect(apps.map((a) => a.app_scope_id)).toEqual([appScopeId]);
     expect(apps[0]!.status).toBe('active');
+  });
+
+  it('pages the app-events trail through the module op — keyset on the id, newest first, short page = exhausted', async () => {
+    const acme = await bootstrap('acme');
+    const appScopeId = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme,
+      appScopeId,
+      verticalSlug: 'protocol',
+      name: 'Onboarding',
+      appEntitlements: ['protocol'],
+      appOwnerGrants: [PROTOCOL_PERM.create, PROTOCOL_PERM.read] as PermissionKey[],
+    });
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    // 'created' + 'active' from the install; three updates make five events total.
+    for (const detail of ['0.1 → 0.2', '0.2 → 0.3', '0.3 → 0.4']) {
+      await dash.invoke('dashboard/update-app', { appScopeId, detail });
+    }
+    type Ev = { id: string; kind: string };
+    // Unpaged stays unbounded — existing callers unchanged.
+    const all = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId });
+    expect(all).toHaveLength(5);
+
+    // Walk two pages of 2, then the short tail: cursors key on the last row's id and
+    // the concatenation reproduces the unbounded read exactly (no gaps, no repeats).
+    const p1 = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId, limit: 2 });
+    const p2 = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId, limit: 2, cursor: p1[1]!.id });
+    const p3 = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId, limit: 2, cursor: p2[1]!.id });
+    expect([...p1, ...p2, ...p3].map((e) => e.id)).toEqual(all.map((e) => e.id));
+    expect(p3).toHaveLength(1); // short page — the walk is done
   });
 
   it('manages an app’s env: stores values, masks secrets on read, leaves untouched secrets, removes one', async () => {
@@ -1173,6 +1203,42 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
     // The app runs the PROD version — 0.0.9 — even though 0.0.10 exists but wasn't promoted.
     const prod = dep.channels.find((c) => c.channel === 'prod');
     expect(dep.versions.find((v) => v.id === prod?.versionId)?.version).toBe('0.0.9');
+  });
+
+  it('per-app deployments page: newest-first keyset pages, schemaChange intact across the page boundary', async () => {
+    // Three versions, the newest with a DIFFERENT migration digest — so the page cut
+    // falls exactly where schemaChange needs the (overfetched) predecessor in hand.
+    await host.admin.registerVertical(staff, { slug: 'meridian', name: 'Meridian', source: 'builtin' });
+    const v1 = ulid();
+    const v2 = ulid();
+    const v3 = ulid();
+    await publish('meridian', '0.1.0', v1);
+    await publish('meridian', '0.2.0', v2);
+    await host.admin.publishVersion(staff, {
+      id: v3,
+      verticalSlug: 'meridian',
+      version: '0.3.0',
+      manifestDigest: 'm',
+      permissionDigest: 'p',
+      migrationDigest: 'g2', // differs from its predecessor's 'g'
+      deploymentRef: `meridian-${v3.toLowerCase()}`,
+    });
+    await host.admin.admitVersion(staff, v3);
+    await host.admin.promoteVersion(staff, 'meridian', 'dev', v3);
+
+    const p1 = await verticalDeploymentPageFromHost(host, staff, 'meridian', { limit: 2 });
+    expect(p1.versions.map((v) => v.id)).toEqual([v3, v2]); // newest first
+    expect(p1.nextCursor).toBe(v2); // more exist — the cursor is the last row's id
+    // 0.3.0 crossed a migration boundary (g → g2); 0.2.0 did not — its predecessor
+    // (0.1.0) sits on the NEXT page, and the overfetch still saw it.
+    expect(p1.versions.map((v) => v.schemaChange)).toEqual([true, false]);
+    // Channels ride every page complete (~3 of them, never paged).
+    expect(p1.channels).toContainEqual({ channel: 'dev', versionId: v3, servingVersionId: null });
+
+    const p2 = await verticalDeploymentPageFromHost(host, staff, 'meridian', { limit: 2, cursor: p1.nextCursor! });
+    expect(p2.versions.map((v) => v.id)).toEqual([v1]);
+    expect(p2.versions[0]!.schemaChange).toBe(false); // the first version — nothing precedes it
+    expect(p2.nextCursor).toBeNull(); // short page — the walk is done
   });
 
   it('per-app: reads a version’s declared permission registry from its manifest (#336), null without one', async () => {

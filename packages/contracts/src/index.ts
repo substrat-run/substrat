@@ -23,6 +23,7 @@ export * from './registry.js';
 export * from './routing.js';
 export * from './tenancy.js';
 export * from './introspection.js';
+export * from './pagination.js';
 export * from './connections.js';
 export * from './control-plane.js';
 export * from './permission.js';

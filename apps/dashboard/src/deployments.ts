@@ -1,5 +1,5 @@
 import type { PermissionRegistry, PlatformActorId, TenantId } from '@substrat-run/contracts';
-import { deployManifest } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, deployManifest } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import type { TenantNarrowedControlPlane } from './authority.js';
 
@@ -153,6 +153,85 @@ export async function verticalDeploymentFromCp(cp: TenantNarrowedControlPlane, s
 }
 export async function verticalDeploymentFromHost(host: ScopeHost, actor: PlatformActorId, slug: string): Promise<Deployment> {
   return shape({ slug, name: slug, source: 'builtin', ownerTenant: null }, await host.admin.listVersions(actor, slug), await host.admin.listChannels(actor, slug));
+}
+
+/** A `Deployment` whose `versions` is ONE keyset page (newest first); `nextCursor` walks older. */
+export interface DeploymentPage extends Deployment {
+  nextCursor: string | null;
+}
+
+/**
+ * Shape ONE page of raw versions, newest-first, keyset on the ULID id (#458-shape).
+ * `raws` arrives `order:'desc'` with ONE extra row over `limit` when the fetch could
+ * overfetch, so the last DISPLAYED row still has its predecessor in hand for the
+ * `schemaChange` digest comparison (in desc order a row's predecessor is the next
+ * row). `tailCursor` covers the max-size page that could not overfetch: the source's
+ * own nextCursor (its last row's schemaChange then reads false — predecessor unknown).
+ */
+export function shapeVersionsPage(
+  raws: RawVersion[],
+  limit: number,
+  tailCursor: string | null,
+): { versions: DeploymentVersion[]; nextCursor: string | null } {
+  const display = raws.slice(0, limit);
+  const versions = display.map((r, i) => {
+    const prev = raws[i + 1];
+    return {
+      id: r.id,
+      version: r.version,
+      admission: r.admission,
+      admissionNote: r.admissionNote ?? null,
+      deploymentRef: r.deploymentRef ?? null,
+      schemaChange:
+        prev !== undefined && r.migrationDigest !== undefined && r.migrationDigest !== prev.migrationDigest,
+      createdAt: r.createdAt ?? '',
+    };
+  });
+  const last = display[display.length - 1];
+  const nextCursor = raws.length > limit ? last!.id : display.length === limit ? tailCursor : null;
+  return { versions, nextCursor };
+}
+
+/** The overfetch size for a versions page: one extra row for `schemaChange`, capped at the CP max. */
+const versionsFetchLimit = (limit: number): number => Math.min(limit + 1, LIST_PAGE_MAX);
+
+/**
+ * ONE vertical's deployment record with a PAGED versions list (the per-app
+ * Deployments tab, `GET /api/apps/:scopeId/deployments`): newest first, `limit`
+ * rows, `cursor` walking older. Channels stay complete — there are ~3.
+ */
+export async function verticalDeploymentPageFromCp(
+  cp: TenantNarrowedControlPlane,
+  slug: string,
+  page: { limit: number; cursor?: string },
+): Promise<DeploymentPage> {
+  const fetchLimit = versionsFetchLimit(page.limit);
+  const [res, channels] = await Promise.all([
+    cp.listVersionsPage(slug, { limit: fetchLimit, cursor: page.cursor, order: 'desc' }),
+    cp.listChannels(slug),
+  ]);
+  const { versions, nextCursor } = shapeVersionsPage(res.entries, page.limit, res.nextCursor);
+  return { ...shape({ slug, name: slug, source: 'builtin', ownerTenant: null }, [], channels), versions, nextCursor };
+}
+
+export async function verticalDeploymentPageFromHost(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  slug: string,
+  page: { limit: number; cursor?: string },
+): Promise<DeploymentPage> {
+  const fetchLimit = versionsFetchLimit(page.limit);
+  const [raws, channels] = await Promise.all([
+    host.admin.listVersions(actor, slug, { limit: fetchLimit, cursor: page.cursor, order: 'desc' }),
+    host.admin.listChannels(actor, slug),
+  ]);
+  const { versions, nextCursor } = shapeVersionsPage(
+    raws,
+    page.limit,
+    // A full fetch MAY have more (pageOf semantics); a short one is exhausted.
+    raws.length >= fetchLimit ? (raws[raws.length - 1]?.id ?? null) : null,
+  );
+  return { ...shape({ slug, name: slug, source: 'builtin', ownerTenant: null }, [], channels), versions, nextCursor };
 }
 
 /**

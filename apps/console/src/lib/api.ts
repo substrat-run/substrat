@@ -1,3 +1,4 @@
+import { LIST_PAGE_MAX } from '@substrat-run/contracts';
 import type {
   AdminAction,
   AdminLogEntry,
@@ -7,6 +8,7 @@ import type {
   HostnameBinding,
   HostnameStatus,
   MigrationProgress,
+  Page,
   PromotionAcknowledgement,
   Scope,
   ScopeId,
@@ -78,21 +80,45 @@ function query(params: Record<string, string | string[] | number | undefined>): 
   return s ? `?${s}` : '';
 }
 
-export interface AdminLogPage {
-  entries: AdminLogEntry[];
-  nextCursor: string | null;
+/**
+ * The ONE pagination convention (contracts pagination.ts): every list route takes
+ * `?limit&cursor&order` (limit defaults 20, max 200 at the egress) and answers
+ * `{ entries, nextCursor }`. The admin log shipped this shape first; every list
+ * call below now speaks it, so a view walks any list the way AdminLog always has.
+ */
+export interface PageQuery {
+  limit?: number;
+  cursor?: string;
+  order?: 'asc' | 'desc';
 }
 
-export interface AuditLogQuery {
+/** The admin-log page — now just the shared envelope (kept as the historical name). */
+export type AdminLogPage = Page<AdminLogEntry>;
+
+export interface AuditLogQuery extends PageQuery {
   tenantId?: TenantId;
   scopeId?: ScopeId;
   actor?: string;
   action?: AdminAction[];
   since?: string;
   until?: string;
-  limit?: number;
-  cursor?: string;
-  order?: 'asc' | 'desc';
+}
+
+/**
+ * Walk a paged read to exhaustion — for computations that need the FULL set
+ * (fleet counts, cascade status, the bindable-scope dropdown) now that every
+ * list egress defaults a page. Max-sized pages until the cursor runs out;
+ * `nextCursor: null` is the end of the walk, never a trailing empty fetch.
+ */
+export async function walkAll<T>(fetchPage: (page: PageQuery) => Promise<Page<T>>): Promise<T[]> {
+  const all: T[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await fetchPage({ limit: LIST_PAGE_MAX, cursor });
+    all.push(...page.entries);
+    if (page.nextCursor === null) return all;
+    cursor = page.nextCursor;
+  }
 }
 
 /**
@@ -125,7 +151,7 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     call<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
 
   return {
-    listTenants: () => call<Tenant[]>('/tenants'),
+    listTenants: (page: PageQuery = {}) => call<Page<Tenant>>(`/tenants${query({ ...page })}`),
     getTenant: (id: TenantId) => call<Tenant>(`/tenants/${id}`),
     createTenant: (input: { id: TenantId; slug: string; name: string }) =>
       post<Tenant>('/tenants', input),
@@ -144,8 +170,8 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     revokeEntitlement: (id: TenantId, key: string) =>
       call<EntitlementGrant[]>(`/tenants/${id}/entitlements/${key}`, { method: 'DELETE' }),
 
-    listScopes: (filter?: { tenantId?: TenantId; status?: ScopeStatus[]; vertical?: string }) =>
-      call<Scope[]>(`/scopes${query({ ...filter })}`),
+    listScopes: (filter?: { tenantId?: TenantId; status?: ScopeStatus[]; vertical?: string } & PageQuery) =>
+      call<Page<Scope>>(`/scopes${query({ ...filter })}`),
     // Fleet migration progress (kernel-design §5.3, #49): "release N: X/Y
     // migrated, P pending, F failed" against the deployment's frontier.
     migrationProgress: (vertical?: string) =>
@@ -185,13 +211,14 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     reapScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/reap`),
 
     // Read only — there is no route that writes a role, by design.
-    listRoles: (filter?: { tenantId?: TenantId; source?: string }) =>
-      call<TenantRole[]>(`/roles${query({ ...filter })}`),
+    // Cursor is the composite `${tenantId}|${roleKey}` sort key (scope-host.ts listRoles).
+    listRoles: (filter?: { tenantId?: TenantId; source?: string } & PageQuery) =>
+      call<Page<TenantRole>>(`/roles${query({ ...filter })}`),
 
     // The hostname map (§4.7). `resolveHostname` is absent on purpose — that is the
     // router's per-request path, not a staff action, and it is not on this surface.
-    listHostnames: (filter?: { tenantId?: TenantId; scopeId?: ScopeId }) =>
-      call<HostnameBinding[]>(`/hostnames${query({ ...filter })}`),
+    listHostnames: (filter?: { tenantId?: TenantId; scopeId?: ScopeId } & PageQuery) =>
+      call<Page<HostnameBinding>>(`/hostnames${query({ ...filter })}`),
     bindHostname: (input: {
       hostname: string;
       tenantId: TenantId;
@@ -229,15 +256,17 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // and promote a channel — which refuses a changed permission/migration digest
     // unless acknowledged. Register is a producer action; publishing a version
     // (with digests from a build) is CI/CLI, not hand-entry.
-    listVerticals: () => call<Vertical[]>('/verticals'),
+    listVerticals: (page: PageQuery = {}) => call<Page<Vertical>>(`/verticals${query({ ...page })}`),
     registerVertical: (input: { slug: string; name: string; source: VerticalSource }) =>
       post<Vertical>('/verticals', input),
-    listVersions: (slug: string) => call<VerticalVersion[]>(`/verticals/${encodeURIComponent(slug)}/versions`),
+    listVersions: (slug: string, page: PageQuery = {}) =>
+      call<Page<VerticalVersion>>(`/verticals/${encodeURIComponent(slug)}/versions${query({ ...page })}`),
     admitVersion: (slug: string, id: string) =>
       post<VerticalVersion>(`/verticals/${encodeURIComponent(slug)}/versions/${id}/admit`),
     rejectVersion: (slug: string, id: string, note: string) =>
       post<VerticalVersion>(`/verticals/${encodeURIComponent(slug)}/versions/${id}/reject`, { note }),
-    listChannels: (slug: string) => call<VerticalChannel[]>(`/verticals/${encodeURIComponent(slug)}/channels`),
+    listChannels: (slug: string, page: PageQuery = {}) =>
+      call<Page<VerticalChannel>>(`/verticals/${encodeURIComponent(slug)}/channels${query({ ...page })}`),
     // Publish/unpublish to the PUBLIC marketplace (marketplace-publish.md §5) — the staff
     // admission of a builder's publish request. The API refuses `listed: true` while prod
     // points at an auto-admitted version; that refusal is surfaced verbatim, not pre-checked.

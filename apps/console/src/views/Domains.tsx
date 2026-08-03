@@ -11,6 +11,7 @@ import { Badge, Button, Card, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { scopeHandle } from '../lib/fleet';
 import type { Api } from '../lib/api';
+import { usePagedList } from '../lib/use-paged-list';
 
 /**
  * Domains — the hostname map (control-plane.md §4.7, K-26).
@@ -58,6 +59,16 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
   const [surface, setSurface] = useState('app');
   const [canonical, setCanonical] = useState(true);
   const [busy, setBusy] = useState(false);
+
+  // The table pages (cursor-walked); the `hostnames` prop stays the walked map —
+  // portal links elsewhere read it — and doubles as the mutation-refresh signal.
+  // The bind form's scope dropdown keeps the walked `scopes`: picking a scope is a
+  // whole-directory computation, not a page of one.
+  const paged = usePagedList(
+    (p) => api.listHostnames(p),
+    [api, hostnames],
+    (e) => onToast('Failed to load hostnames', e.message, 'danger'),
+  );
 
   const bindable = useMemo(() => scopes.filter((s) => s.status !== 'archived'), [scopes]);
   const scopeById = useMemo(() => new Map(scopes.map((s) => [s.id, s])), [scopes]);
@@ -218,9 +229,16 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
       <Card padding={0}>
         <Table
           columns={columns}
-          rows={hostnames}
+          rows={paged.entries}
           emptyText="No hostnames bound. A scope with no hostname is unreachable — the router will not serve a name it does not know."
         />
+        {paged.nextCursor && (
+          <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
+            <Button variant="ghost" size="sm" onClick={() => void paged.loadMore()}>
+              Load more
+            </Button>
+          </div>
+        )}
       </Card>
 
       <Card title="Not built yet" description="Stated rather than implied, so the gap is visible.">

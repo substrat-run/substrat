@@ -41,19 +41,29 @@ const STATUS: Record<DomainRow['status'], { kind: 'success' | 'warning' | 'dange
 /** Domains — account level (screens 1o, 1p). Custom hostnames across the team's apps. */
 export function Domains() {
   const [domains, setDomains] = useState<DomainRow[]>([]);
+  // Non-null ⇒ older domains exist beyond the loaded page window ("Load more").
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [apps, setApps] = useState<AppRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [add, setAdd] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
+  // Refresh = back to the first page (verify/remove change rows the loaded window shows).
   const load = useCallback(async () => {
     if (DEV_MOCK) {
       setDomains(MOCK_DOMAINS);
+      setCursor(null);
       setLoading(false);
       return;
     }
-    const [d, a] = await Promise.all([api.listDomains(), api.listApps().catch(() => [])]);
-    setDomains(d);
+    const [d, a] = await Promise.all([
+      api.listDomains(),
+      // The Add-domain picker wants every app — one max-size page covers it.
+      api.listApps({ limit: 200 }).then((p) => p.entries).catch(() => []),
+    ]);
+    setDomains(d.entries);
+    setCursor(d.nextCursor);
     setApps(a);
     setLoading(false);
   }, []);
@@ -61,6 +71,18 @@ export function Domains() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadMore = useCallback(async () => {
+    if (DEV_MOCK || loadingMore || !cursor) return;
+    setLoadingMore(true);
+    try {
+      const page = await api.listDomains({ cursor });
+      setDomains((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.hostname === e.hostname))]);
+      setCursor(page.nextCursor);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [cursor, loadingMore]);
 
   const onVerify = useCallback(
     async (hostname: string) => {
@@ -142,6 +164,13 @@ export function Domains() {
               onRemove={() => onRemove(d.hostname)}
             />
           ))
+        )}
+        {cursor !== null && !loading && (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+            <Button variant="secondary" onClick={() => void loadMore()} disabled={loadingMore}>
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </Button>
+          </div>
         )}
       </div>
       <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>

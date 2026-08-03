@@ -720,11 +720,28 @@ const markAppFailedOp: OperationHandler<z.infer<typeof markAppFailedInput>, Dash
   return row;
 };
 
-/** The account's apps — a plain read, gated by `dashboard:read`. Deleted apps are hidden. */
-const listAppsOp: OperationHandler<Record<string, never>, DashboardAppRow[]> = async (ctx) => {
+/**
+ * Optional keyset page params for the list reads (#458-shape). The sort AND the
+ * cursor key on the row's own ULID id alone: ids are minted at insert, so `id DESC`
+ * is chronologically identical to the created-at order the lists always showed —
+ * and unique, which a timestamp is not. `cursor` is exclusive (rows strictly below
+ * it); unset `limit` = unbounded, so existing callers are unchanged.
+ */
+const listPageInput = {
+  limit: z.number().int().positive().optional(),
+  cursor: z.string().min(1).optional(),
+};
+
+const listAppsInput = z.object(listPageInput);
+
+/** The account's apps, newest first — a plain read, gated by `dashboard:read`. Deleted apps are hidden. */
+const listAppsOp: OperationHandler<z.infer<typeof listAppsInput>, DashboardAppRow[]> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  const input = listAppsInput.parse(raw ?? {});
   return ctx.sql.query<DashboardAppRow>(
-    'SELECT * FROM dashboard_apps WHERE deleted_at IS NULL ORDER BY created_at DESC',
+    `SELECT * FROM dashboard_apps WHERE deleted_at IS NULL${input.cursor ? ' AND id < ?' : ''}
+       ORDER BY id DESC${input.limit ? ' LIMIT ?' : ''}`,
+    [...(input.cursor ? [input.cursor] : []), ...(input.limit ? [input.limit] : [])],
   );
 };
 
@@ -756,15 +773,16 @@ const deleteAppOp: OperationHandler<z.infer<typeof deleteAppInput>, DashboardApp
   return row;
 };
 
-const appEventsInput = z.object({ appScopeId: z.string().min(1) });
+const appEventsInput = z.object({ appScopeId: z.string().min(1), ...listPageInput });
 
-/** The app's audit trail — newest first. A plain read, gated by `dashboard:read`. */
+/** The app's audit trail — newest first (id DESC ≡ created_at DESC; see listPageInput). Gated read. */
 const appEventsOp: OperationHandler<z.infer<typeof appEventsInput>, DashboardAppEventRow[]> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
   const input = appEventsInput.parse(raw);
   return ctx.sql.query<DashboardAppEventRow>(
-    'SELECT * FROM dashboard_app_events WHERE app_scope_id = ? ORDER BY created_at DESC, id DESC',
-    [input.appScopeId],
+    `SELECT * FROM dashboard_app_events WHERE app_scope_id = ?${input.cursor ? ' AND id < ?' : ''}
+       ORDER BY id DESC${input.limit ? ' LIMIT ?' : ''}`,
+    [input.appScopeId, ...(input.cursor ? [input.cursor] : []), ...(input.limit ? [input.limit] : [])],
   );
 };
 
@@ -1116,11 +1134,16 @@ const revokeInviteOp: OperationHandler<z.infer<typeof revokeInviteInput>, void> 
   );
 };
 
-/** The team roster — active members + outstanding invites, newest first. Gated read. */
-const listMembersOp: OperationHandler<Record<string, never>, DashboardMemberRow[]> = async (ctx) => {
+const listMembersInput = z.object(listPageInput);
+
+/** The team roster — active members + outstanding invites, newest first (id DESC ≡ invited_at DESC). Gated read. */
+const listMembersOp: OperationHandler<z.infer<typeof listMembersInput>, DashboardMemberRow[]> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  const input = listMembersInput.parse(raw ?? {});
   return ctx.sql.query<DashboardMemberRow>(
-    `SELECT * FROM dashboard_members WHERE status IN ('active','invited') ORDER BY invited_at DESC`,
+    `SELECT * FROM dashboard_members WHERE status IN ('active','invited')${input.cursor ? ' AND id < ?' : ''}
+       ORDER BY id DESC${input.limit ? ' LIMIT ?' : ''}`,
+    [...(input.cursor ? [input.cursor] : []), ...(input.limit ? [input.limit] : [])],
   );
 };
 

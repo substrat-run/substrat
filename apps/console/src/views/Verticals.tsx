@@ -9,7 +9,9 @@ import type {
 } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
+import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
+import { usePagedList } from '../lib/use-paged-list';
 
 /**
  * The vertical + version registry (orchestration.md §5.7) — where the two human
@@ -27,15 +29,27 @@ export interface VerticalsProps {
 }
 
 const CHANNELS: readonly ChannelName[] = ['dev', 'staging', 'prod'];
+const PAGE = 20;
 
 const admissionTone = (a: VerticalVersion['admission']): 'success' | 'danger' | 'warning' =>
   a === 'admitted' ? 'success' : a === 'rejected' ? 'danger' : 'warning';
 
 export function Verticals({ api, onToast }: VerticalsProps) {
-  const [verticals, setVerticals] = useState<Vertical[]>([]);
+  // Bumped after every mutation — the paged list's refresh signal, replacing the
+  // old explicit reload (the hook re-reads the loaded window, so a flag flip on
+  // page 3 still shows).
+  const [refresh, setRefresh] = useState(0);
+  const verticalsPage = usePagedList(
+    (p) => api.listVerticals(p),
+    [api, refresh],
+    (e) => onToast('Failed to load verticals', e.message, 'danger'),
+  );
+  const verticals = verticalsPage.entries;
   const [selected, setSelected] = useState<Vertical>();
   const [versions, setVersions] = useState<VerticalVersion[]>([]);
   const [channels, setChannels] = useState<VerticalChannel[]>([]);
+  // How much of the walked version list the TABLE shows (the Load-more window).
+  const [versionsShown, setVersionsShown] = useState(PAGE);
 
   const [showRegister, setShowRegister] = useState(false);
   const [reg, setReg] = useState<{ slug: string; name: string; source: VerticalSource }>({
@@ -52,22 +66,24 @@ export function Verticals({ api, onToast }: VerticalsProps) {
   // The delete dialog's type-to-confirm guard. Null when closed.
   const [deleteInput, setDeleteInput] = useState<string | null>(null);
 
-  const loadVerticals = useCallback(async () => {
-    try {
-      const vs = await api.listVerticals();
-      setVerticals(vs);
-      // Keep the detail card on the FRESH row (a flag flip must show), and close it
-      // when the vertical is gone (a delete).
-      setSelected((cur) => (cur ? vs.find((v) => v.slug === cur.slug) : cur));
-    } catch (e) {
-      onToast('Failed to load verticals', (e as Error).message, 'danger');
-    }
-  }, [api, onToast]);
+  // Keep the detail card on the FRESH row (a flag flip must show), and close it
+  // when the vertical is gone (a delete). Runs whenever the loaded window
+  // re-reads; the selected row was clicked, so it is always inside the window.
+  useEffect(() => {
+    setSelected((cur) => (cur ? verticals.find((v) => v.slug === cur.slug) : cur));
+  }, [verticals]);
 
   const loadDetail = useCallback(
     async (slug: string) => {
       try {
-        const [vs, ch] = await Promise.all([api.listVersions(slug), api.listChannels(slug)]);
+        // Walked in FULL, not one page: the channel cards and the promote picker
+        // are computations over the whole version set — a channel pointer whose
+        // version fell outside a loaded page would render as "unset", a lie.
+        // Only the versions TABLE below windows what it shows.
+        const [vs, ch] = await Promise.all([
+          walkAll((p) => api.listVersions(slug, p)),
+          walkAll((p) => api.listChannels(slug, p)),
+        ]);
         setVersions(vs);
         setChannels(ch);
       } catch (e) {
@@ -77,21 +93,19 @@ export function Verticals({ api, onToast }: VerticalsProps) {
     [api, onToast],
   );
 
-  useEffect(() => {
-    void loadVerticals();
-  }, [loadVerticals]);
-
   function openVertical(v: Vertical) {
     setSelected(v);
     setVersions([]);
     setChannels([]);
+    setVersionsShown(PAGE);
     void loadDetail(v.slug);
   }
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     try {
       await fn();
-      await Promise.all([loadVerticals(), selected ? loadDetail(selected.slug) : Promise.resolve()]);
+      setRefresh((n) => n + 1);
+      if (selected) await loadDetail(selected.slug);
       onToast(title, detail);
     } catch (e) {
       onToast('Refused', (e as Error).message, 'danger');
@@ -233,6 +247,13 @@ export function Verticals({ api, onToast }: VerticalsProps) {
           onRowClick={openVertical}
           emptyText="No verticals registered yet."
         />
+        {verticalsPage.nextCursor && (
+          <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
+            <Button variant="ghost" size="sm" onClick={() => void verticalsPage.loadMore()}>
+              Load more
+            </Button>
+          </div>
+        )}
       </Card>
 
       {selected && (
@@ -364,7 +385,20 @@ export function Verticals({ api, onToast }: VerticalsProps) {
             })}
           </div>
 
-          <Table columns={versionColumns} rows={versions} emptyText="No versions published yet." />
+          {/* Publish order preserved (asc — the walk keeps the route's default);
+              the window grows a page at a time over the already-walked set. */}
+          <Table
+            columns={versionColumns}
+            rows={versions.slice(0, versionsShown)}
+            emptyText="No versions published yet."
+          />
+          {versions.length > versionsShown && (
+            <div style={{ padding: '12px 0 0', display: 'flex', justifyContent: 'center' }}>
+              <Button variant="ghost" size="sm" onClick={() => setVersionsShown((n) => n + PAGE)}>
+                Load more
+              </Button>
+            </div>
+          )}
         </Card>
       )}
 

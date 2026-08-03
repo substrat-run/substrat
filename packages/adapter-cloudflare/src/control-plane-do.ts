@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { splitSqlStatements } from './scope-do.js';
 import type {
   AdminLogEntry,
+  ListPage,
   RoleDefinition,
   ScopeStatus,
   Tenant,
@@ -230,6 +231,33 @@ export interface AuditLogQuery {
   limit?: number;
   cursor?: string;
   order?: 'asc' | 'desc';
+}
+
+/**
+ * Fold keyset page params (contracts pagination.ts) into an in-progress WHERE
+ * build and return the `ORDER BY … [LIMIT ?]` tail. The cursor is EXCLUSIVE —
+ * strictly after it ascending, strictly before it descending — and an unset
+ * limit stays unbounded: internal callers mean "everything", and a silent cap
+ * would let them mistake a page for the whole set.
+ */
+function keysetTail(
+  where: string[],
+  params: (string | number)[],
+  key: string,
+  page: ListPage | undefined,
+  defaultOrder: 'asc' | 'desc' = 'asc',
+): string {
+  const order = (page?.order ?? defaultOrder) === 'desc' ? 'DESC' : 'ASC';
+  if (page?.cursor) {
+    where.push(order === 'DESC' ? `${key} < ?` : `${key} > ?`);
+    params.push(page.cursor);
+  }
+  let tail = ` ORDER BY ${key} ${order}`;
+  if (page?.limit !== undefined) {
+    tail += ' LIMIT ?';
+    params.push(page.limit);
+  }
+  return tail;
 }
 
 /** The shape the coordinator hands `recordAdmin`; before/after are arbitrary JSON. */
@@ -841,10 +869,15 @@ export class ControlPlaneDO extends DurableObject {
     return this.readTenant(tenantId);
   }
 
-  listTenants(): Tenant[] {
-    return (
-      this.sql.exec('SELECT * FROM tenants ORDER BY tenant_id').toArray() as unknown as TenantRow[]
-    ).map((r) => this.mapTenant(r));
+  listTenants(page?: ListPage): Tenant[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    const tail = keysetTail(where, params, 'tenant_id', page);
+    const sql =
+      'SELECT * FROM tenants' + (where.length ? ` WHERE ${where.join(' AND ')}` : '') + tail;
+    return (this.sql.exec(sql, ...params).toArray() as unknown as TenantRow[]).map((r) =>
+      this.mapTenant(r),
+    );
   }
 
   // -- per-tenant relational stores (#301) ------------------------------------
@@ -1064,13 +1097,15 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  listScopes(filter: {
-    tenantId?: string;
-    status?: string[];
-    vertical?: string;
-  }): ScopeRow[] {
+  listScopes(
+    filter: {
+      tenantId?: string;
+      status?: string[];
+      vertical?: string;
+    } & ListPage,
+  ): ScopeRow[] {
     const where: string[] = [];
-    const params: string[] = [];
+    const params: (string | number)[] = [];
     if (filter.tenantId) {
       where.push('tenant_id = ?');
       params.push(filter.tenantId);
@@ -1086,10 +1121,9 @@ export class ControlPlaneDO extends DurableObject {
       where.push('vertical = ?');
       params.push(filter.vertical);
     }
+    const tail = keysetTail(where, params, 'scope_id', filter);
     const sql =
-      'SELECT * FROM scopes' +
-      (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
-      ' ORDER BY scope_id';
+      'SELECT * FROM scopes' + (where.length ? ` WHERE ${where.join(' AND ')}` : '') + tail;
     return this.sql.exec(sql, ...params).toArray() as unknown as ScopeRow[];
   }
 
@@ -1209,9 +1243,9 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** Raw rows; the coordinator parses them through the `tenantRole` contract. */
-  listRoles(filter: { tenantId?: string; source?: string }): RoleRow[] {
+  listRoles(filter: { tenantId?: string; source?: string } & ListPage): RoleRow[] {
     const where: string[] = [];
-    const params: string[] = [];
+    const params: (string | number)[] = [];
     if (filter.tenantId) {
       where.push('tenant_id = ?');
       params.push(filter.tenantId);
@@ -1220,10 +1254,25 @@ export class ControlPlaneDO extends DurableObject {
       where.push('source = ?');
       params.push(filter.source);
     }
-    const sql =
+    const order = (filter.order ?? 'asc') === 'desc' ? 'DESC' : 'ASC';
+    if (filter.cursor) {
+      // Composite sort key `${tenantId}|${roleKey}` (pagination.ts) — the
+      // tenant id is a ULID and never contains '|', so split on the FIRST.
+      const split = filter.cursor.indexOf('|');
+      const afterTenant = split === -1 ? filter.cursor : filter.cursor.slice(0, split);
+      const afterKey = split === -1 ? '' : filter.cursor.slice(split + 1);
+      const cmp = order === 'DESC' ? '<' : '>';
+      where.push(`(tenant_id ${cmp} ? OR (tenant_id = ? AND role_key ${cmp} ?))`);
+      params.push(afterTenant, afterTenant, afterKey);
+    }
+    let sql =
       'SELECT tenant_id, role_key, permissions, source FROM _substrat_roles' +
       (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
-      ' ORDER BY tenant_id, role_key';
+      ` ORDER BY tenant_id ${order}, role_key ${order}`;
+    if (filter.limit !== undefined) {
+      sql += ' LIMIT ?';
+      params.push(filter.limit);
+    }
     return this.sql.exec(sql, ...params).toArray() as unknown as RoleRow[];
   }
 
@@ -1354,15 +1403,18 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('DELETE FROM hostnames WHERE hostname = ?', hostname);
   }
 
-  listHostnames(filter: { tenantId?: string; scopeId?: string; status?: string }): HostnameRow[] {
+  listHostnames(
+    filter: { tenantId?: string; scopeId?: string; status?: string } & ListPage,
+  ): HostnameRow[] {
     const where: string[] = [];
-    const params: string[] = [];
+    const params: (string | number)[] = [];
     if (filter.tenantId) { where.push('tenant_id = ?'); params.push(filter.tenantId); }
     if (filter.scopeId) { where.push('scope_id = ?'); params.push(filter.scopeId); }
     if (filter.status) { where.push('status = ?'); params.push(filter.status); }
+    const tail = keysetTail(where, params, 'hostname', filter);
     let sql = 'SELECT * FROM hostnames';
     if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
-    sql += ' ORDER BY hostname';
+    sql += tail;
     return this.sql.exec(sql, ...params).toArray() as unknown as HostnameRow[];
   }
 
@@ -1430,8 +1482,13 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug);
   }
 
-  listVerticals(): VerticalRow[] {
-    return this.sql.exec('SELECT * FROM verticals ORDER BY slug').toArray() as unknown as VerticalRow[];
+  listVerticals(page?: ListPage): VerticalRow[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    const tail = keysetTail(where, params, 'slug', page);
+    const sql =
+      'SELECT * FROM verticals' + (where.length ? ` WHERE ${where.join(' AND ')}` : '') + tail;
+    return this.sql.exec(sql, ...params).toArray() as unknown as VerticalRow[];
   }
 
   readVersion(id: string): VersionRow | undefined {
@@ -1475,9 +1532,12 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?', servingRef, scopeId);
   }
 
-  listVersions(verticalSlug: string): VersionRow[] {
+  listVersions(verticalSlug: string, page?: ListPage): VersionRow[] {
+    const where: string[] = ['vertical_slug = ?'];
+    const params: (string | number)[] = [verticalSlug];
+    const tail = keysetTail(where, params, 'id', page);
     return this.sql
-      .exec('SELECT * FROM vertical_versions WHERE vertical_slug = ? ORDER BY id', verticalSlug)
+      .exec(`SELECT * FROM vertical_versions WHERE ${where.join(' AND ')}${tail}`, ...params)
       .toArray() as unknown as VersionRow[];
   }
 
@@ -1523,9 +1583,12 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  listChannels(verticalSlug: string): ChannelRow[] {
+  listChannels(verticalSlug: string, page?: ListPage): ChannelRow[] {
+    const where: string[] = ['vertical_slug = ?'];
+    const params: (string | number)[] = [verticalSlug];
+    const tail = keysetTail(where, params, 'channel', page);
     return this.sql
-      .exec('SELECT * FROM vertical_channels WHERE vertical_slug = ? ORDER BY channel', verticalSlug)
+      .exec(`SELECT * FROM vertical_channels WHERE ${where.join(' AND ')}${tail}`, ...params)
       .toArray() as unknown as ChannelRow[];
   }
 
@@ -1538,18 +1601,18 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  listChannelHistory(verticalSlug: string, channel?: string): ChannelHistoryRow[] {
-    return (
-      channel
-        ? this.sql.exec(
-            'SELECT * FROM vertical_channel_history WHERE vertical_slug = ? AND channel = ? ORDER BY id DESC',
-            verticalSlug, channel,
-          )
-        : this.sql.exec(
-            'SELECT * FROM vertical_channel_history WHERE vertical_slug = ? ORDER BY id DESC',
-            verticalSlug,
-          )
-    ).toArray() as unknown as ChannelHistoryRow[];
+  listChannelHistory(verticalSlug: string, channel?: string, page?: ListPage): ChannelHistoryRow[] {
+    const where: string[] = ['vertical_slug = ?'];
+    const params: (string | number)[] = [verticalSlug];
+    if (channel) {
+      where.push('channel = ?');
+      params.push(channel);
+    }
+    // Newest first is the shipped order, so 'desc' is the DEFAULT here.
+    const tail = keysetTail(where, params, 'id', page, 'desc');
+    return this.sql
+      .exec(`SELECT * FROM vertical_channel_history WHERE ${where.join(' AND ')}${tail}`, ...params)
+      .toArray() as unknown as ChannelHistoryRow[];
   }
 
   // -- organizations (K-22) ---------------------------------------------------
@@ -2200,17 +2263,17 @@ export class ControlPlaneDO extends DurableObject {
     actor?: string;
     tenantId?: string;
     method?: string;
-    limit?: number;
-  }): AccessLogRow[] {
+  } & ListPage): AccessLogRow[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (query.actor) { where.push('actor = ?'); params.push(query.actor); }
     if (query.tenantId) { where.push('tenant_id = ?'); params.push(query.tenantId); }
     if (query.method) { where.push('method = ?'); params.push(query.method); }
+    // Cursor + order mirror auditLog: the id is a ULID, so it IS the cursor.
+    const tail = keysetTail(where, params, 'id', query);
     let sql = 'SELECT * FROM _substrat_access_log';
     if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
-    sql += ' ORDER BY id';
-    if (query.limit !== undefined) { sql += ' LIMIT ?'; params.push(query.limit); }
+    sql += tail;
     return this.sql.exec(sql, ...params).toArray() as unknown as AccessLogRow[];
   }
 

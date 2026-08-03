@@ -564,8 +564,10 @@ async function cmdHostnames(): Promise<void> {
   // pushed under this slug is a lineage fork. Best-effort — never breaks the listing.
   if (rows.length > 0) {
     const base = controlPlaneUrl.replace(/\/$/, '');
-    const versions = await fetch(`${base}/verticals/${encodeURIComponent(slug)}/versions`, { headers: header })
-      .then((r) => (r.ok ? (r.json() as Promise<unknown[]>) : []))
+    // Only "zero or not" matters here, so one entry of the paged list answers it.
+    const versions = await fetch(`${base}/verticals/${encodeURIComponent(slug)}/versions?limit=1`, { headers: header })
+      .then((r) => (r.ok ? (r.json() as Promise<{ entries: unknown[] }>) : { entries: [] }))
+      .then((page) => page.entries ?? [])
       .catch(() => []);
     if (Array.isArray(versions) && versions.length === 0) {
       console.log(
