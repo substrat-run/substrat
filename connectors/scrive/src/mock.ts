@@ -39,9 +39,10 @@ export interface ScriveMockOptions {
   failWith?: number;
 }
 
-// URL is web-standard everywhere this runs; declared locally so the connector
-// pulls in no platform typings, exactly as the kernel does.
+// URL and TextEncoder are web-standard everywhere this runs; declared locally so
+// the connector pulls in no platform typings, exactly as the kernel does.
 declare const URL: new (input: string) => { pathname: string };
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 
 export class ScriveMock {
   readonly documents = new Map<string, MockDocument>();
@@ -95,6 +96,16 @@ export class ScriveMock {
           status,
           text: () => Promise.resolve(JSON.stringify(body)),
           json: () => Promise.resolve(body),
+          arrayBuffer: () =>
+            Promise.resolve(new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer),
+        });
+      const respondBytes = (bytes: Uint8Array) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(''),
+          json: () => Promise.reject(new Error('mock: binary body is not JSON')),
+          arrayBuffer: () => Promise.resolve(bytes.buffer.slice(0) as ArrayBuffer),
         });
 
       if (this.failWith) return respond(this.failWith, { error_message: 'mock failure' });
@@ -121,6 +132,18 @@ export class ScriveMock {
         };
         this.documents.set(doc.id, doc);
         return respond(200, this.wire(doc));
+      }
+
+      const main = /^\/api\/v2\/documents\/([^/]+)\/files\/main$/.exec(path);
+      if (main) {
+        const doc = this.documents.get(main[1]!);
+        if (!doc) return respond(404, { error_message: `mock: unknown document ${main[1]}` });
+        // Scrive holds no sealed file until a document has one; refuse the fetch
+        // the same way, so a caller that pulls before the file exists fails here.
+        if (!doc.file) return respond(409, { error_message: 'mock: document has no file' });
+        // The bytes carry the id and status so a test can prove it pulled THIS
+        // document's sealed copy — the real API returns the signed PDF.
+        return respondBytes(new TextEncoder().encode(`%PDF sealed ${doc.id} ${doc.status}`));
       }
 
       const m = /^\/api\/v2\/documents\/([^/]+)\/(setfile|update|start|get)$/.exec(path);

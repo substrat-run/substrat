@@ -329,6 +329,13 @@ export interface ConnectorResponse {
   readonly status: number;
   text(): Promise<string>;
   json(): Promise<unknown>;
+  /**
+   * The raw bytes — for provider responses that are a file, not JSON. Scrive's
+   * sealed signed PDF (`documents/{id}/files/main`) comes back as `application/pdf`,
+   * which `text()` would corrupt. Web `Response` already has this, so declaring it
+   * only widens the structural surface the adapter passes straight through.
+   */
+  arrayBuffer(): Promise<ArrayBuffer>;
 }
 
 /**

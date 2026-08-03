@@ -130,6 +130,35 @@ const asJson = async (
   }
 };
 
+/**
+ * Read a binary response as bytes. The success body IS the file — reading it as
+ * text would corrupt the PDF — but a non-2xx body is still Scrive's JSON error,
+ * surfaced identically to {@link asJson} so a disabled feature or a missing file
+ * reads the same everywhere.
+ */
+const asBytes = async (
+  res: {
+    ok: boolean;
+    status: number;
+    text(): Promise<string>;
+    arrayBuffer(): Promise<ArrayBuffer>;
+  },
+  what: string,
+): Promise<Uint8Array> => {
+  if (!res.ok) {
+    const body = await res.text();
+    let detail = body.slice(0, 400);
+    try {
+      const parsed = JSON.parse(body) as { error_message?: string };
+      if (parsed.error_message) detail = parsed.error_message;
+    } catch {
+      /* not JSON; keep the raw slice */
+    }
+    throw new Error(`scrive ${what} failed: HTTP ${res.status} ${detail}`);
+  }
+  return new Uint8Array(await res.arrayBuffer());
+};
+
 export class ScriveApi {
   private readonly secret: ScriveSecret;
 
@@ -242,6 +271,24 @@ export class ScriveApi {
       headers: this.headers(),
     });
     return scriveDocument.parse(await asJson(res, 'get'));
+  }
+
+  /**
+   * The sealed signed PDF — Scrive's own copy with the signing evidence attached,
+   * the thing a customer, a dispute, or an auditor actually asks for.
+   *
+   * `GET /api/v2/documents/{id}/files/main` returns the bytes directly, so this is
+   * the one call that reads the response as an ArrayBuffer rather than JSON. The
+   * sealed file exists only once the document is `closed`; on an open document the
+   * response is the working copy or an error depending on account settings, so the
+   * return path fetches only after `get` reports `closed` (issue #476).
+   */
+  async getMainFile(documentId: string): Promise<Uint8Array> {
+    const res = await this.conn.fetch(
+      `${this.baseUrl}/api/v2/documents/${documentId}/files/main`,
+      { method: 'GET', headers: this.headers() },
+    );
+    return asBytes(res, 'files/main');
   }
 }
 

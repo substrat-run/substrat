@@ -42,5 +42,6 @@ export const connectorTestFetch: FetchLike = (url, init) => {
     status: failing ? 503 : 200,
     text: () => Promise.resolve('{}'),
     json: () => Promise.resolve({}),
+    arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
   });
 };

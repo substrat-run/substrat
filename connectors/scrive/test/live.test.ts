@@ -109,6 +109,13 @@ describe.skipIf(!creds)('scrive connector — LIVE testbed', () => {
     expect(full.parties.length).toBe(2);
     expect(full.parties.some((p) => p.is_author)).toBe(true);
 
+    // The sealed file (issue #476). Even on a prepared document Scrive returns the
+    // working PDF here; the bytes and the `%PDF` magic are what we assert. The
+    // sealed-with-evidence copy is the same call once the document is `closed`.
+    const file = await api.getMainFile(doc.id);
+    expect(file.length).toBeGreaterThan(0);
+    expect(new TextDecoder().decode(file.slice(0, 5))).toBe('%PDF-');
+
     // Good testbed citizen: trash + delete via the real fetch.
     const conn = liveConnection(creds!);
     for (const action of ['trash', 'delete']) {

@@ -15,6 +15,7 @@ describe('createD1TenantStores', () => {
     status,
     text: async () => JSON.stringify(body),
     json: async () => body,
+    arrayBuffer: async () => new ArrayBuffer(0),
   });
 
   const scripted = (handlers: ((url: string, init?: { method?: string; body?: string | Uint8Array }) => ConnectorResponse | undefined)[]) => {
