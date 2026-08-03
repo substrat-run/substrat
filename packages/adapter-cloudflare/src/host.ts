@@ -671,6 +671,8 @@ export class CloudflareScopeHost implements ScopeHost {
 
   private readonly scopeNs: DurableObjectNamespace;
   private readonly cp: ControlPlaneStub;
+  /** No control plane bound — `this.cp` is the throwing null object (Phase 3, CP-less). */
+  private readonly cpLess: boolean;
   /** Project + evaluate permissions scope-locally (scope-local-permissions.md). */
   private readonly scopeLocalPermissions: boolean;
 
@@ -716,6 +718,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.fetchImpl = options.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
+    this.cpLess = !options.controlPlane;
     this.cp = options.controlPlane
       ? (options.controlPlane.get(options.controlPlane.idFromName('control-plane')) as unknown as ControlPlaneStub)
       : nullControlPlane();
@@ -1499,9 +1502,14 @@ export class CloudflareScopeHost implements ScopeHost {
     const schedules = this.moduleSchedules.get(moduleId);
     if (!schedules || schedules.length === 0) return report;
     // Only run on a live scope of this tenant; a scope archived between the sweep's
-    // enumeration and here simply has nothing due.
-    const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-    if (!rec || rec.status !== 'active') return report;
+    // enumeration and here simply has nothing due. A CP-less host has no directory
+    // to ask (#461) — it already trusts the router-asserted (tenant, scope) for the
+    // whole request path, and lifecycle for its scopes lives wherever provisioning
+    // does, so the grant check below is the only gate it can and does enforce.
+    if (!this.cpLess) {
+      const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+      if (!rec || rec.status !== 'active') return report;
+    }
 
     const stub = this.scopeStub(scopeId);
     // The grant IS the switch (#383): run only where the scope holds a live
@@ -3233,6 +3241,20 @@ export class CloudflareScopeHost implements ScopeHost {
           object: `scope:${input.scopeId}`,
           expires_at: null,
         },
+        // #461: each registered module's SCHEDULE grants (#383) ride the same unit —
+        // the CP-less mirror of `provisionScope`'s writeTuple loop. Without them the
+        // grant-is-the-switch check makes every schedule a silent no-op (`fired: 0`,
+        // no error — the #49 unfalsifiable zero).
+        ...[...this.moduleSchedules].flatMap(([modId, schedules]) => {
+          const perms = new Set<string>();
+          for (const s of schedules) for (const p of s.permissions) perms.add(p);
+          return [...perms].map((perm) => ({
+            subject: `system:${modId}`,
+            relation: `granted:${perm}`,
+            object: `scope:${input.scopeId}`,
+            expires_at: null,
+          }));
+        }),
       ],
       // #406: identity links, delivered by the platform with provisioning exactly as
       // entitlements are (#310). Preserve-on-undefined, so an absent field never wipes
