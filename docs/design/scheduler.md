@@ -126,6 +126,32 @@ edits. `ConnectorSweeper` is already the shape that seam would use.
 
 Good enough for the current fleet (single-digit tenants, one connector). Not the end state.
 
+### 3.3 The CP-less vertical's own timer (#461) — landed
+
+A **CP-less dispatch vertical** (scope-local-permissions.md §8 stage 3 — what `substrat push`
+deploys) can run neither shape above: `runPlatformSweep` finds its work via
+`admin.listScopes`, and a CP-less host has no directory to ask. Nor can the control plane
+run the pass *for* it wholesale — the scope DOs live in the vertical's own deployment.
+Before #461 that composed into schedules that parse, declare, grant, and never run.
+
+`defineScopeSweeperDO` (adapter-cloudflare) closes it with the same alarm mechanics as
+`definePlatformSweeperDO`, minus the directory: a singleton DO keeps a **roster** of the
+deployment's scopes — the platform tells it exactly which ones exist, via
+`/internal/provision` and `/internal/reconcile` (`noteScope`) and `/internal/delete-scope`
+(`forgetScope`) — and each alarm pass runs every rostered scope's `drainDue` and
+`runDueSchedules` through the deployment's own host. Forks stay off the roster by
+construction (a snapshot target is never *provisioned*), which preserves the platform
+sweep's "no recurring side effects off a preview copy" rule without needing fork-ness to be
+locally knowable. The alarm lapses on an empty roster and re-arms on the next `noteScope`,
+so an idle deployment costs nothing. Scopes provisioned before the sweeper shipped join on
+their next platform reconcile.
+
+The split this leaves is clean: a CP-less deployment owns its **scope-local** recurring work
+(retries, schedules); the **directory-owned** phases — connector sweeps, snapshot GC, reaps,
+migration reconciliation — stay with the platform, which has the directory and the
+`/internal` surface to orchestrate them. The create-substrat template wires the sweeper by
+default (`SWEEPER` store + the three route calls).
+
 ## 4. Design B — per-scope DO alarms (the scale target)
 
 Cloudflare's idiom is *work lives with the Durable Object that owns the state*. `ScopeDO extends
@@ -161,8 +187,10 @@ alarms. Start with the latter — retry is the higher-frequency, more latency-se
    scrive vertical wiring one up: the node demo registers the connector behind env flags, and a
    Cloudflare deployment additionally needs the connection directory in reach — a CP-less
    dispatch vertical (scope-local-permissions.md Phase 3) has no `listConnections` to enumerate,
-   so its sweep waits on connections becoming reachable from the vertical's runtime (or on the
-   platform running the pass FOR dispatch verticals, the same orchestrated shape as snapshot GC).
+   so its CONNECTOR sweep waits on connections becoming reachable from the vertical's runtime
+   (or on the platform running the pass FOR dispatch verticals, the same orchestrated shape as
+   snapshot GC). Its scope-local halves — retries and schedules — no longer wait: they run on
+   the deployment's own `defineScopeSweeperDO` (§3.3, #461).
 3. **Add the sweeper registry to the host contract** so a connector registers its reconcile
    sweeper beside its dispatch handler — the call site stops assembling the map by hand.
 4. **Move `drainDue` to per-scope alarms (Design B)** when fan-out latency shows up; keep the

@@ -1,9 +1,10 @@
 /**
  * This vertical as a deployable Cloudflare Worker — SANDBOX-CLEAN and
  * control-plane-less: the shape `substrat push` deploys into the platform's
- * dispatch namespace. Its ONLY durable store is its OWN `SCOPE` DO class
- * (kernel + engines + this vertical, bundled); no CONTROL_PLANE binding, no
- * service bindings, no ASSETS binding — the platform refuses those.
+ * dispatch namespace. Its only durable stores are its OWN DO classes — `SCOPE`
+ * (kernel + engines + this vertical, bundled) and `SWEEPER` (the deployment's
+ * own timer, #461); no CONTROL_PLANE binding, no service bindings, no ASSETS
+ * binding — the platform refuses those.
  *
  * `substrat push` derives the deploy config from `substrat.runtimeNeeds` in
  * package.json (entry = this file, stores = the DO classes exported here) —
@@ -35,7 +36,13 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { CloudflareScopeHost, defineScopeDO } from '@substrat-run/adapter-cloudflare';
+import {
+  CloudflareScopeHost,
+  defineScopeDO,
+  defineScopeSweeperDO,
+  SCOPE_SWEEPER_NAME,
+  type ScopeSweeperDo,
+} from '@substrat-run/adapter-cloudflare';
 import {
   assertPlatformCall,
   PlatformCallError,
@@ -47,6 +54,25 @@ import { MODULES, OWNER_ROLE_KEY, ROLES } from './provision.js';
 
 /** The scope-DO class = the app binary: kernel + engines + this vertical, bundled. */
 export const ScopeDO = defineScopeDO(MODULES, {});
+
+/**
+ * The deployment's own timer (#461): a roster-keeping singleton whose alarm runs
+ * each provisioned scope's due recurring work — executor retries and any
+ * `manifest.schedules` your modules declare — with no control plane anywhere.
+ * `/internal/provision` and `/internal/reconcile` add scopes to the roster;
+ * `/internal/delete-scope` removes them. Costs nothing while the roster is empty.
+ */
+export const SweeperDO = defineScopeSweeperDO<Env>({
+  intervalMs: 120_000,
+  host: hostFor,
+});
+
+/** The sweeper singleton's stub — one roster and one alarm per deployment. */
+function sweeper(env: Env): DurableObjectStub & ScopeSweeperDo {
+  return env.SWEEPER.get(
+    env.SWEEPER.idFromName(SCOPE_SWEEPER_NAME),
+  ) as DurableObjectStub & ScopeSweeperDo;
+}
 
 interface Node {
   tenantId: TenantId;
@@ -64,6 +90,8 @@ const DEV_NODE: Node = {
 interface Env {
   /** One DO per scope — the vertical's only durable store (sandbox-clean). */
   SCOPE: DurableObjectNamespace;
+  /** The roster-keeping sweep singleton — the deployment's own timer (#461). */
+  SWEEPER: DurableObjectNamespace;
   /** Local dev only: when 'true', trust the `x-principal` header. NEVER set in prod. */
   ALLOW_DEV_HEADER?: string;
   /** Shared secret the router presents (how this worker knows the asserted node is real). */
@@ -177,6 +205,12 @@ app.post('/internal/provision', async (c) => {
     entitlements: body.entitlements,
     identityLinks: body.identityLinks,
   });
+  // Provision is where the deployment learns a scope exists — put it on the
+  // sweep roster so its declared schedules run. (Never note a snapshot fork:
+  // recurring side effects must not fire off a preview copy, and fork-ness is
+  // only knowable platform-side — which is why this rides provision/reconcile,
+  // not request traffic.)
+  await sweeper(c.env).noteScope(body.tenantId, body.scopeId);
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
 });
 
@@ -204,6 +238,9 @@ app.post('/internal/reconcile', async (c) => {
     entitlements: body.entitlements,
     identityLinks: body.identityLinks,
   });
+  // Reconcile is the roster's backfill: scopes provisioned before the sweeper
+  // shipped join it on their next platform repair.
+  await sweeper(c.env).noteScope(body.tenantId, body.scopeId);
   return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner });
 });
 
@@ -256,6 +293,8 @@ app.post('/internal/delete-scope', async (c) => {
   gatePlatform(c);
   const body = z.object({ scopeId }).parse(await c.req.json());
   await hostFor(c.env).deleteScopeLocal(body.scopeId);
+  // Off the sweep roster too — a deleted scope must not be woken by the alarm.
+  await sweeper(c.env).forgetScope(body.scopeId);
   return c.json({ deleted: body.scopeId });
 });
 app.get('/internal/export', async (c) => {

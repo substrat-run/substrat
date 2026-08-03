@@ -12,5 +12,9 @@ declare module 'cloudflare:test' {
     /** The sweeper tests' own directory + scope namespaces (same classes). */
     SWEEP_SCOPE: DurableObjectNamespace;
     SWEEP_CONTROL_PLANE: DurableObjectNamespace;
+    /** The CP-less scope-local sweep trigger (#461) — scope-sweeper.test.ts… */
+    SCOPE_SWEEPER: DurableObjectNamespace;
+    /** …and its own scope namespace (same ScopeDO class, no directory). */
+    LOCAL_SWEEP_SCOPE: DurableObjectNamespace;
   }
 }

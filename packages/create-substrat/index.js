@@ -20,7 +20,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = join(HERE, 'template');
 
 // Published today; Substrat is 0.x, so these are caret ranges on the current minor.
-const SUBSTRAT = '^0.39.0';
+// 0.40.0 is the release that ships `defineScopeSweeperDO` (#461), which the
+// template's worker imports — this pin and that adapter release move together.
+const SUBSTRAT = '^0.40.0';
 // Engines version on their own line (0.3.x), independent of the kernel/contracts line.
 const ENGINES = '^0.3.37';
 const BOUNDARY_LINT = '^0.0.5';
@@ -72,7 +74,11 @@ function packageJson(name) {
         permissions: 'src/provision.ts',
         runtimeNeeds: {
           entry: 'src/worker.ts',
-          stores: [{ binding: 'SCOPE', class: 'ScopeDO' }],
+          stores: [
+            { binding: 'SCOPE', class: 'ScopeDO' },
+            // The scope-local sweep singleton — the deployment's own timer (#461).
+            { binding: 'SWEEPER', class: 'SweeperDO' },
+          ],
         },
       },
       scripts: {
