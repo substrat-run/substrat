@@ -2213,7 +2213,10 @@ app.get('/api/observability/metrics', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   if (!cp) throw new HTTPException(501, { message: 'observability requires the shared control plane' });
   const hours = Number(c.req.query('hours') ?? '24');
-  return c.json(await cpObservability(() => cp.observabilityMetrics(Number.isFinite(hours) ? hours : 24)));
+  // `vertical` narrows to one owned vertical's versions (the per-app Observability
+  // tab); an unowned slug answers [] in the authority without reaching the plane.
+  const vertical = c.req.query('vertical') || undefined;
+  return c.json(await cpObservability(() => cp.observabilityMetrics(Number.isFinite(hours) ? hours : 24, vertical)));
 });
 
 app.get('/api/observability/logs', async (c) => {
@@ -2227,11 +2230,13 @@ app.get('/api/observability/logs', async (c) => {
   const hours = Number(c.req.query('hours') ?? '1');
   const limit = Number(c.req.query('limit') ?? '100');
   const level = c.req.query('level') || undefined;
+  const search = c.req.query('search') || undefined;
   return c.json(
     await cpObservability(() =>
       cp.observabilityLogs({
         service,
         level,
+        search,
         hours: Number.isFinite(hours) ? hours : 1,
         limit: Number.isFinite(limit) ? limit : 100,
       }),

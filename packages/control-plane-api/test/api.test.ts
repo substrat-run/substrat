@@ -2415,6 +2415,17 @@ describe('control-plane API — observability proxy', () => {
     expect(seen.logs.at(-1)).toEqual({ service: 'my-worker', level: 'error', hours: 1, limit: 50 });
   });
 
+  it('passes the message search term to the reader as a contract field, bounded like every input', async () => {
+    const app = appWith(reader);
+    await app.request(`/observability/logs?service=my-worker&search=${encodeURIComponent('TypeError: undefined')}`, {
+      headers: asStaff,
+    });
+    expect(seen.logs.at(-1)).toEqual({ service: 'my-worker', search: 'TypeError: undefined', hours: 1, limit: 100 });
+    expect(
+      (await app.request(`/observability/logs?service=my-worker&search=${'x'.repeat(201)}`, { headers: asStaff })).status,
+    ).toBe(400);
+  });
+
   it('refuses a builder — staff-only until owner-narrowing exists (default-deny)', async () => {
     // The observability routes are NOT in BUILDER_ROUTES: without narrowing to owned
     // scripts, a builder reading fleet metrics would see every tenant's traffic.

@@ -287,12 +287,69 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
 
   it('observabilityLogs queries an owned service with the narrowing params', async () => {
     const { cp, calls } = routedHarness({ ...registry, '/observability/logs': [] });
-    await cp.observabilityLogs({ service: 'acme-helpdesk-v1', level: 'error', hours: 24, limit: 50 });
+    await cp.observabilityLogs({ service: 'acme-helpdesk-v1', level: 'error', search: 'TypeError', hours: 24, limit: 50 });
     const logCall = calls.find((u) => u.includes('/observability/logs'));
     expect(logCall).toContain('service=acme-helpdesk-v1');
     expect(logCall).toContain('level=error');
+    expect(logCall).toContain('search=TypeError');
     expect(logCall).toContain('hours=24');
     expect(logCall).toContain('limit=50');
+  });
+
+  it('observabilityLogs surfaces the neutral field set ONLY — the backend `raw` payload never passes through', async () => {
+    const { cp } = routedHarness({
+      ...registry,
+      '/observability/logs': [
+        {
+          timestamp: 1722700000000,
+          level: 'error',
+          message: 'boom',
+          service: 'acme-helpdesk-v1',
+          outcome: 'exception',
+          // The plane's staff-facing events carry the provider event verbatim; a
+          // builder response must not inherit it by pass-through.
+          raw: { $metadata: { tenantId: 'someone-else' } },
+        },
+      ],
+    });
+    const events = await cp.observabilityLogs({ service: 'acme-helpdesk-v1' });
+    expect(events).toEqual([
+      { timestamp: 1722700000000, level: 'error', message: 'boom', service: 'acme-helpdesk-v1', outcome: 'exception' },
+    ]);
+  });
+
+  it('observabilityMetrics with a vertical filter keeps that vertical only; an unowned slug never reaches the plane', async () => {
+    const twoOwned = {
+      '/verticals': {
+        entries: [
+          { slug: 'acme/helpdesk', name: 'Helpdesk', source: 'cli', ownerTenant: T },
+          { slug: 'acme/portal', name: 'Portal', source: 'cli', ownerTenant: T },
+          { slug: 'rival/crm', name: 'CRM', source: 'cli', ownerTenant: OTHER },
+        ],
+        nextCursor: null,
+      },
+      '/verticals/acme%2Fhelpdesk/versions': registry['/verticals/acme%2Fhelpdesk/versions'],
+      '/verticals/acme%2Fportal/versions': {
+        entries: [
+          { id: 'p1', version: '1.2.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-portal-p1', createdAt: 'now' },
+        ],
+        nextCursor: null,
+      },
+      '/observability/metrics': [
+        { service: 'acme-helpdesk-v1', requests: 10, errors: 1, subrequests: 20, cpuTimeP50: 900, cpuTimeP99: 4000 },
+        { service: 'acme-portal-p1', requests: 5, errors: 0, subrequests: 2, cpuTimeP50: 100, cpuTimeP99: 200 },
+      ],
+    };
+
+    // The per-app tab's filter: the OTHER owned vertical's rows drop out too.
+    const filtered = await routedHarness(twoOwned).cp.observabilityMetrics(24, 'acme/portal');
+    expect(filtered.map((r) => r.service)).toEqual(['acme-portal-p1']);
+
+    // A vertical this tenant doesn't own (someone else's, or nonsense) narrows the
+    // ownership map to nothing — [] without the staff-wide metrics query ever issuing.
+    const unowned = routedHarness(twoOwned);
+    expect(await unowned.cp.observabilityMetrics(24, 'rival/crm')).toEqual([]);
+    expect(unowned.calls.some((u) => u.includes('/observability/metrics'))).toBe(false);
   });
 
   // The permission-registry read (D-39, #336) the Permissions tab consumes.

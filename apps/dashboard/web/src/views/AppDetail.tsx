@@ -9,6 +9,7 @@ import { Page } from '../components/layout';
 import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, Pill, RowActions } from '../components/ui';
 import { IntegrationCard } from './Integrations';
 import { DnsRecords } from './Domains';
+import { AppObservability } from './AppObservability';
 
 /**
  * App detail (screens 1i, 1j, 1k, 1l). The header and the Overview tab render REAL
@@ -176,6 +177,7 @@ export function AppDetail({
         </div>
       )}
       {main === 'deployments' && <Deployments app={app} />}
+      {main === 'observability' && <AppObservability app={app} />}
       {main === 'permissions' && <Permissions app={app} />}
       {main === 'previews' && <Previews app={app} />}
       {main === 'settings' && (

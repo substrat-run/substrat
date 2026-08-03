@@ -2317,12 +2317,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       .object({
         service: z.string().min(1).max(200).optional(),
         level: z.enum(['log', 'info', 'warn', 'error', 'debug']).optional(),
+        search: z.string().min(1).max(200).optional(),
         hours: z.coerce.number().int().min(1).max(72).default(1),
         limit: z.coerce.number().int().min(1).max(500).default(100),
       })
       .parse({
         service: c.req.query('service') || undefined,
         level: c.req.query('level') || undefined,
+        search: c.req.query('search') || undefined,
         hours: c.req.query('hours'),
         limit: c.req.query('limit'),
       });
