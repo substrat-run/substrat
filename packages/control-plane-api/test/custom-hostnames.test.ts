@@ -132,15 +132,25 @@ describe('reconcilePendingHostnames', () => {
     ...over,
   });
 
+  /** An admin stub over a fixed row set — scopes dead only when listed as such. */
+  const adminOver = (
+    rows: HostnameBinding[],
+    over: Partial<HostnameReconcileAdmin> = {},
+  ): HostnameReconcileAdmin => ({
+    listHostnames: async () => rows,
+    setHostnameIssuance: async () => {},
+    listScopes: async () => [],
+    unbindHostname: async () => {},
+    ...over,
+  });
+
   it('polls verifying rows and records activation', async () => {
     const writes: { hostname: string; status: string }[] = [];
-    const admin: HostnameReconcileAdmin = {
-      listHostnames: async (_a, filter) =>
-        filter?.status === 'verifying' ? [binding({})] : [],
+    const admin = adminOver([binding({})], {
       setHostnameIssuance: async (_a, hostname, fields) => {
         writes.push({ hostname, status: fields.status });
       },
-    };
+    });
     const provisioner = {
       check: async () => ({ customHostnameId: 'ch_123', status: 'active' as const, note: null, records: [] }),
       create: vi.fn(),
@@ -154,16 +164,10 @@ describe('reconcilePendingHostnames', () => {
 
   it('retries create for a stuck pending custom row, skipping platform mints', async () => {
     const created: string[] = [];
-    const admin: HostnameReconcileAdmin = {
-      listHostnames: async (_a, filter) =>
-        filter?.status === 'pending'
-          ? [
-              binding({ hostname: 'legal.acme.com', status: 'pending', customHostnameId: null }),
-              binding({ hostname: 'acme-app.substrat.run', status: 'pending', customHostnameId: null }),
-            ]
-          : [],
-      setHostnameIssuance: async () => {},
-    };
+    const admin = adminOver([
+      binding({ hostname: 'legal.acme.com', status: 'pending', customHostnameId: null }),
+      binding({ hostname: 'acme-app.substrat.run', status: 'pending', customHostnameId: null }),
+    ]);
     const provisioner = {
       create: async (h: string) => {
         created.push(h);
@@ -185,18 +189,12 @@ describe('reconcilePendingHostnames', () => {
 
   it('retries create for a failed row with no CF id (create never landed), not a failed row with one', async () => {
     const created: string[] = [];
-    const admin: HostnameReconcileAdmin = {
-      listHostnames: async (_a, filter) =>
-        filter?.status === 'failed'
-          ? [
-              // A create that never landed (e.g. token without the permission) — retriable.
-              binding({ hostname: 'crm.acme.com', status: 'failed', customHostnameId: null }),
-              // A real validation verdict from CF — terminal for the sweep.
-              binding({ hostname: 'dead.acme.com', status: 'failed', customHostnameId: 'ch_dead' }),
-            ]
-          : [],
-      setHostnameIssuance: async () => {},
-    };
+    const admin = adminOver([
+      // A create that never landed (e.g. token without the permission) — retriable.
+      binding({ hostname: 'crm.acme.com', status: 'failed', customHostnameId: null }),
+      // A real validation verdict from CF — terminal for the sweep.
+      binding({ hostname: 'dead.acme.com', status: 'failed', customHostnameId: 'ch_dead' }),
+    ]);
     const provisioner = {
       create: async (h: string) => {
         created.push(h);
@@ -217,23 +215,22 @@ describe('reconcilePendingHostnames', () => {
     // stuck `verifying` while the router refused it.
     const writes: { hostname: string; fields: Parameters<HostnameReconcileAdmin['setHostnameIssuance']>[2] }[] = [];
     const removed: string[] = [];
-    const admin: HostnameReconcileAdmin = {
-      listHostnames: async (_a, filter) =>
-        filter?.status === 'verifying'
-          ? [
-              binding({
-                hostname: 'authhero.global.substrat.run',
-                customHostnameId: 'ch_relic',
-                validationRecords: [
-                  { type: 'hostname', name: 'authhero.global.substrat.run', value: 'cname.substrat.run', status: 'active' },
-                ],
-              }),
-            ]
-          : [],
-      setHostnameIssuance: async (_a, hostname, fields) => {
-        writes.push({ hostname, fields });
+    const admin = adminOver(
+      [
+        binding({
+          hostname: 'authhero.global.substrat.run',
+          customHostnameId: 'ch_relic',
+          validationRecords: [
+            { type: 'hostname', name: 'authhero.global.substrat.run', value: 'cname.substrat.run', status: 'active' },
+          ],
+        }),
+      ],
+      {
+        setHostnameIssuance: async (_a, hostname, fields) => {
+          writes.push({ hostname, fields });
+        },
       },
-    };
+    );
     const provisioner = {
       check: vi.fn(),
       create: vi.fn(),
@@ -262,10 +259,7 @@ describe('reconcilePendingHostnames', () => {
   });
 
   it('contains a per-row failure without sinking the pass', async () => {
-    const admin: HostnameReconcileAdmin = {
-      listHostnames: async (_a, filter) => (filter?.status === 'verifying' ? [binding({})] : []),
-      setHostnameIssuance: async () => {},
-    };
+    const admin = adminOver([binding({})]);
     const provisioner = {
       check: async () => {
         throw new Error('cloudflare 500');
@@ -275,5 +269,52 @@ describe('reconcilePendingHostnames', () => {
     } as unknown as CustomHostnameProvisioner;
     const out = await reconcilePendingHostnames({ admin, actor: ACTOR, provisioner, isCustom: () => true });
     expect(out.errors).toEqual([{ hostname: 'legal.acme.com', error: 'cloudflare 500' }]);
+  });
+
+  it('unbinds every row of an archived/reaped scope — never heals it back to active', async () => {
+    // The delete-an-app shape: the scope is archived but its rows survived — the
+    // active default mint lingers on the Domains page, and before the orphan pass
+    // the heal below would flip a `failed` mint straight back to `active`.
+    const unbound: string[] = [];
+    const removed: string[] = [];
+    const issuanceWrites = vi.fn(async () => {});
+    const admin = adminOver(
+      [
+        binding({ hostname: 'crm-h0qds9.global.substrat.run', status: 'active', customHostnameId: null, scopeId: 'dead' as HostnameBinding['scopeId'] }),
+        binding({ hostname: 'crm.egeryds.se', status: 'verifying', customHostnameId: 'ch_dead', scopeId: 'dead' as HostnameBinding['scopeId'] }),
+        binding({ hostname: 'live-app.global.substrat.run', status: 'active', customHostnameId: null }),
+      ],
+      {
+        listScopes: async (_a, filter) => {
+          expect(filter?.status).toEqual(['archiving', 'archived', 'reaped']);
+          return [{ id: 'dead' as HostnameBinding['scopeId'] }];
+        },
+        unbindHostname: async (_a, hostname) => {
+          unbound.push(hostname);
+        },
+        setHostnameIssuance: issuanceWrites,
+      },
+    );
+    const provisioner = {
+      check: vi.fn(),
+      create: vi.fn(),
+      remove: async (id: string) => {
+        removed.push(id);
+      },
+    } as unknown as CustomHostnameProvisioner;
+
+    const out = await reconcilePendingHostnames({
+      admin,
+      actor: ACTOR,
+      provisioner,
+      isCustom: (h) => !h.endsWith('.substrat.run'),
+    });
+    expect(out).toMatchObject({ orphaned: 2, healed: 0, polled: 0, created: 0 });
+    // Both dead-scope rows go — whatever their status — and the CF object is released first.
+    expect(unbound.sort()).toEqual(['crm-h0qds9.global.substrat.run', 'crm.egeryds.se']);
+    expect(removed).toEqual(['ch_dead']);
+    // The live scope's active row is untouched; nothing was polled or re-issued.
+    expect(issuanceWrites).not.toHaveBeenCalled();
+    expect(provisioner.check).not.toHaveBeenCalled();
   });
 });
