@@ -1,5 +1,24 @@
 # @substrat-run/engine-invoicing
 
+## 0.4.0
+
+### Minor Changes
+
+- 5a9d7bd: Additive third consumed event: `timesheet.period-closed`. A closed (approved)
+  period of reported time appends lines to the customer's open underlag —
+  snapshot-not-join, `source_type: 'timesheet'`, idempotent on the closing
+  artifact's id. Same pattern `commerce.order-placed` was added with: a new
+  `consumes` entry + the engine's own Zod parse + a consumer; no migration, no
+  permission.
+
+### Patch Changes
+
+- Updated dependencies [d96269e]
+- Updated dependencies [3c77f64]
+- Updated dependencies [d59a515]
+  - @substrat-run/kernel@0.40.0
+  - @substrat-run/contracts@0.40.0
+
 ## 0.3.37
 
 ### Patch Changes
@@ -411,7 +430,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

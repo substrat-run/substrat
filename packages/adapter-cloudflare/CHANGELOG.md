@@ -1,14 +1,53 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.40.0
+
+### Minor Changes
+
+- d96269e: Adapters report committed platform intents to the stub minter (#458). `getScope` accepts `ScopeStubOptions` with an `onPlatformRequests(count)` observer, fired after an invoke commits having enqueued `ctx.requestPlatform` intents — never on rollback. A vertical wires it once in its stub helper to flag responses `x-substrat-platform-request` (new kernel constant `PLATFORM_REQUEST_HEADER`), so the router kick (#381) drains provisioning in seconds without per-route hand-wiring.
+- 3c77f64: Connections become multi-account per provider — the Vercel "Git namespace" shape. Live-uniqueness widens from (tenant, vertical, provider) to (tenant, vertical, provider, account), where the account leg is `COALESCE(external_account_ref, '')`, so providers that never set an account ref keep their singleton semantics while a tenant can now hold one GitHub connection per org/user. `openConnection` gains an optional `externalAccountRef` selector (omitted with several accounts live it throws rather than picking one arbitrarily), `connectionFilter` gains `externalAccountRef`, and both adapters migrate the old `_substrat_connections_live` index in place (`DROP INDEX IF EXISTS` + the new `_substrat_connections_live_account`). The dashboard's git-import flow connects additional GitHub accounts without severing the first, lists repos per selected namespace, and threads the account through branches + one-click CI setup.
+- d59a515: Every list read pages the same way: the admin-log cursor convention, generalized.
+  `@substrat-run/contracts` gains `pagination.ts` (`listPageQuery` — limit default 20,
+  max 200 — `ListPage`, `Page<T>`, `pageOf`); every `HostAdmin.list*` takes an optional
+  keyset page (unset stays unbounded for in-process callers); both adapters implement
+  the keyset SQL and the contract suite proves it. **Wire change:** every control-plane
+  GET list route (`/tenants`, `/scopes`, `/verticals`, `/verticals/:slug/versions`,
+  `/channels`, `/channels/:channel/history`, `/hostnames`, `/roles`, `/admin-log`) now
+  returns `{ entries, nextCursor }` and defaults a 20-row page — older CLI versions
+  parse these as bare arrays and must upgrade; this CLI walks the cursor wherever it
+  needs the complete list.
+- b82d40f: `defineScopeSweeperDO` — the timer a CP-less vertical owns (#461, closing the trigger
+  half). `runPlatformSweep`'s drain and schedule phases enumerate scopes via the
+  control-plane directory, which a CP-less dispatch vertical does not have — so its
+  declared schedules parsed, granted, and never ran. The new singleton DO keeps a roster
+  of the deployment's scopes (fed by the platform through `/internal/provision` and
+  `/internal/reconcile` via `noteScope`, pruned by `/internal/delete-scope` via
+  `forgetScope` — forks stay off by construction, since a snapshot target is never
+  provisioned) and alarm-drives each rostered scope's `drainDue` + `runDueSchedules`
+  through the deployment's own host, with the same non-overlap/never-dies loop as
+  `definePlatformSweeperDO`. The alarm lapses on an empty roster and re-arms on the
+  next `noteScope`, so an idle deployment costs nothing. The create-substrat template
+  wires it by default: a `SWEEPER` store in `substrat.runtimeNeeds`, the three route
+  calls, and the kernel-line pin moves to the release that ships the sweeper.
+
+### Patch Changes
+
+- 3a0eaa4: Declared schedules run on a CP-less host (#461). `provisionScopeLocal` now projects each registered module's `system:<moduleId>` schedule grants (#383) into the scope's tuples, in the same atomic projection unit as the owner grant — without them the grant-is-the-switch check reported `fired: 0` forever, indistinguishable from "nothing due". And `runDueSchedules` skips the control-plane liveness read on a CP-less host, which has no directory to ask and already trusts the router-asserted (tenant, scope). `scheduleMod` is now exported from contract-tests for adapter-level CP-less coverage.
+- Updated dependencies [d96269e]
+- Updated dependencies [3c77f64]
+- Updated dependencies [d59a515]
+  - @substrat-run/kernel@0.40.0
+  - @substrat-run/contracts@0.40.0
+
 ## 0.39.0
 
 ### Minor Changes
 
 - 3cf4e3b: The provisioner capability gains its request half (#455): a manager vertical DECLARES the
   target verticals it provisions — package.json `substrat.provisions`, carried on push to
-  the registry row (`vertical.provisions`, riding the refreshable install_spec bag) — and
+  the registry row (`vertical.provisions`, riding the refreshable install*spec bag) — and
   the console reviews the declaration like a publish request (declared-but-ungranted shows
-  as _provisioner requested_; the grant button reads _Approve provisioner_). Declaration is
+  as \_provisioner requested*; the grant button reads _Approve provisioner_). Declaration is
   a request, never a grant: `tenantProvisioner` stays the staff-flipped flag a push cannot
   touch (contract-tested both ways). The drain's `admitManager` now distinguishes
   _undeclared_ (fix your manifest) from _declared-but-ungranted_ (awaiting staff) in its
@@ -1554,7 +1593,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

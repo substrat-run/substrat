@@ -1,5 +1,28 @@
 # @substrat-run/kernel
 
+## 0.40.0
+
+### Minor Changes
+
+- d96269e: Adapters report committed platform intents to the stub minter (#458). `getScope` accepts `ScopeStubOptions` with an `onPlatformRequests(count)` observer, fired after an invoke commits having enqueued `ctx.requestPlatform` intents — never on rollback. A vertical wires it once in its stub helper to flag responses `x-substrat-platform-request` (new kernel constant `PLATFORM_REQUEST_HEADER`), so the router kick (#381) drains provisioning in seconds without per-route hand-wiring.
+- 3c77f64: Connections become multi-account per provider — the Vercel "Git namespace" shape. Live-uniqueness widens from (tenant, vertical, provider) to (tenant, vertical, provider, account), where the account leg is `COALESCE(external_account_ref, '')`, so providers that never set an account ref keep their singleton semantics while a tenant can now hold one GitHub connection per org/user. `openConnection` gains an optional `externalAccountRef` selector (omitted with several accounts live it throws rather than picking one arbitrarily), `connectionFilter` gains `externalAccountRef`, and both adapters migrate the old `_substrat_connections_live` index in place (`DROP INDEX IF EXISTS` + the new `_substrat_connections_live_account`). The dashboard's git-import flow connects additional GitHub accounts without severing the first, lists repos per selected namespace, and threads the account through branches + one-click CI setup.
+- d59a515: Every list read pages the same way: the admin-log cursor convention, generalized.
+  `@substrat-run/contracts` gains `pagination.ts` (`listPageQuery` — limit default 20,
+  max 200 — `ListPage`, `Page<T>`, `pageOf`); every `HostAdmin.list*` takes an optional
+  keyset page (unset stays unbounded for in-process callers); both adapters implement
+  the keyset SQL and the contract suite proves it. **Wire change:** every control-plane
+  GET list route (`/tenants`, `/scopes`, `/verticals`, `/verticals/:slug/versions`,
+  `/channels`, `/channels/:channel/history`, `/hostnames`, `/roles`, `/admin-log`) now
+  returns `{ entries, nextCursor }` and defaults a 20-row page — older CLI versions
+  parse these as bare arrays and must upgrade; this CLI walks the cursor wherever it
+  needs the complete list.
+
+### Patch Changes
+
+- Updated dependencies [3c77f64]
+- Updated dependencies [d59a515]
+  - @substrat-run/contracts@0.40.0
+
 ## 0.39.0
 
 ### Patch Changes
@@ -1249,7 +1272,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

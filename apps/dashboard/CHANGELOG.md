@@ -1,5 +1,39 @@
 # @substrat-run/dashboard
 
+## 0.12.0
+
+### Minor Changes
+
+- 46c7ba2: The Verticals page can remove a pushed vertical, and each card collapses to its
+  newest 3 versions. Remove renders only while the vertical is PRIVATE (retiring a
+  published one stays a staff decision, mirroring the prod-promotion split) and is
+  owned-slug-checked like promote; below the seam the registry refuses while any
+  scope still runs the vertical, so a removal can never strand an install —
+  deployed dispatch scripts become orphans for cleanup (#248). "All N versions"
+  expands the version list in place.
+
+### Patch Changes
+
+- 523448e: Drop the hardcoded sidebar counts (Apps 4 / Domains 3 / Team 4) — design leftovers
+  that were never wired to data. With keyset pagination the loaded page length isn't a
+  true total either, so the honest sidebar shows no counts at all.
+- Updated dependencies [3a0eaa4]
+- Updated dependencies [d96269e]
+- Updated dependencies [3c77f64]
+- Updated dependencies [5a9d7bd]
+- Updated dependencies [d59a515]
+- Updated dependencies [b82d40f]
+  - @substrat-run/adapter-cloudflare@0.40.0
+  - @substrat-run/kernel@0.40.0
+  - @substrat-run/contracts@0.40.0
+  - @substrat-run/engine-invoicing@0.4.0
+  - @substrat-run/demo-callout@0.1.28
+  - @substrat-run/demo-manyfold@0.5.3
+  - @substrat-run/demo-meridian@0.3.3
+  - @substrat-run/engine-invites@0.0.37
+  - @substrat-run/engine-protocol@0.4.32
+  - @substrat-run/engine-workorder@0.3.38
+
 ## 0.11.4
 
 ### Patch Changes
