@@ -3648,4 +3648,27 @@ export class CloudflareScopeHost implements ScopeHost {
   async assignScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void> {
     await this.scopeStub(scopeId).writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scopeId}`, null);
   }
+
+  /**
+   * Grant a principal an ENTITY-NARROWED permission in a CP-less vertical — the self-service
+   * half of membership, the local equivalent of `HostAdmin.grant` with an `entity`. Where a
+   * role reaches every entity in the scope, this reaches exactly one: an employee logging time
+   * against their OWN record, a portal customer reading their OWN order. Writes the very tuple
+   * the local checker's entity walk reads — `(principal:<id>, granted:<perm>, <type>:<id>)` —
+   * so a grant issued here resolves identically to one the control plane fanned out. Idempotent
+   * (writeTuple is INSERT OR REPLACE), so it is safe to re-issue on every link.
+   */
+  async grantEntityLocal(
+    scopeId: ScopeId,
+    principal: PrincipalId,
+    permission: PermissionKey,
+    entity: EntityRef,
+  ): Promise<void> {
+    await this.scopeStub(scopeId).writeTuple(
+      `principal:${principal}`,
+      `granted:${permission}`,
+      `${entity.entityType}:${entity.entityId}`,
+      null,
+    );
+  }
 }

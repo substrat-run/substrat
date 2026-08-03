@@ -220,13 +220,27 @@ export function AdminPeople({ d, reload, toast }: AdminProps) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [startedAt, setStartedAt] = useState(todayISO());
+  // An admin with no employee record of their own can register themselves here: linking the
+  // new record to their login (`principalRef`) is what earns the self-service grants (time,
+  // leave, expenses) — an hr-admin role alone can manage the team but not report its own time.
+  const [linkMe, setLinkMe] = useState(false);
+  const canLinkMe = !d.me.employeeId;
 
   const nextNumber = () => `E-${String(d.roster.length + 1).padStart(3, '0')}`;
 
   const submit = () =>
     run(async () => {
-      await api.createEmployee({ number: (number || nextNumber()).trim(), name: name.trim(), ...(email ? { email: email.trim() } : {}), startedAt });
+      await api.createEmployee({
+        number: (number || nextNumber()).trim(),
+        name: name.trim(),
+        ...(email ? { email: email.trim() } : {}),
+        startedAt,
+        ...(linkMe && canLinkMe ? { principalRef: d.me.key } : {}),
+      });
       setNumber(''); setName(''); setEmail('');
+      // Registering yourself flips on the "My work" surface (whoami now resolves your
+      // employeeId). That state lives in the app-level load, so refetch it wholesale.
+      if (linkMe && canLinkMe) window.location.reload();
     }, `Added ${name.trim()}`);
 
   return (
@@ -256,7 +270,13 @@ export function AdminPeople({ d, reload, toast }: AdminProps) {
           <input style={inputStyle} type="date" aria-label="Start date" value={startedAt} onChange={(e) => setStartedAt(e.target.value)} />
         </div>
         <input style={inputStyle} aria-label="Email" placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <Button disabled={busy || !name.trim()} onClick={submit}>Add employee</Button>
+        {canLinkMe && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, cursor: 'pointer' }}>
+            <input type="checkbox" checked={linkMe} onChange={(e) => setLinkMe(e.target.checked)} />
+            This is me — link my login so I can report my own time, leave and expenses
+          </label>
+        )}
+        <Button disabled={busy || !name.trim()} onClick={submit}>{linkMe && canLinkMe ? 'Register myself' : 'Add employee'}</Button>
         <div className="muted" style={{ fontSize: 12 }}>National id / salary and country scope are set on the employee record; erasure crypto-shreds the PII while absence facts survive (§8).</div>
       </div>
     </>
