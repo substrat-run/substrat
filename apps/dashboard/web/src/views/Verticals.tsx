@@ -186,16 +186,24 @@ function ProdHistory({
   );
 }
 
+/** How many version rows a card shows before the "all versions" link expands it. */
+const VERSIONS_PREVIEW = 3;
+
 function VerticalCard({
   d,
   busy,
   onPromote,
+  onRemove,
 }: {
   d: Deployment;
   busy: boolean;
   onPromote: (versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
+  onRemove: () => void;
 }) {
   const prod = d.channels.find((c) => c.channel === 'prod');
+  const [allVersions, setAllVersions] = useState(false);
+  const shown = allVersions ? d.versions : d.versions.slice(0, VERSIONS_PREVIEW);
+  const hidden = d.versions.length - shown.length;
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
@@ -204,13 +212,28 @@ function VerticalCard({
         {/* Marketplace visibility (marketplace-publish.md §2): private on push; the
             staff-reviewed publish action flips it. The request button is a later phase. */}
         <Pill kind={d.listed ? 'success' : 'neutral'}>{d.listed ? 'Published' : 'Private'}</Pill>
-        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-tertiary)' }}>
-          {prod ? (
-            <>
-              prod at <MonoTag>{d.versions.find((v) => v.id === prod.versionId)?.version ?? prod.versionId}</MonoTag>
-            </>
-          ) : (
-            'not in production'
+        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 12 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+            {prod ? (
+              <>
+                prod at <MonoTag>{d.versions.find((v) => v.id === prod.versionId)?.version ?? prod.versionId}</MonoTag>
+              </>
+            ) : (
+              'not in production'
+            )}
+          </span>
+          {/* Removing a PUBLISHED vertical is a staff decision (same split as prod
+              promotion), so the button only renders while it's private. */}
+          {!d.listed && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={onRemove}
+              style={{ color: 'var(--status-danger-fg)' }}
+            >
+              Remove
+            </Button>
           )}
         </span>
       </div>
@@ -221,17 +244,29 @@ function VerticalCard({
       ) : (
         <>
           <GridTable columns="1.2fr 1fr 1.4fr 1.6fr" header={['Version', 'Admission', 'Channels', '~Promote']}>
-            {d.versions.map((v, i) => (
+            {shown.map((v, i) => (
               <VersionRow
                 key={v.id}
                 d={d}
                 v={v}
-                last={i === d.versions.length - 1}
+                last={i === shown.length - 1}
                 busy={busy}
                 onPromote={(ch) => onPromote(v.id, ch)}
               />
             ))}
           </GridTable>
+          {(hidden > 0 || allVersions) && (
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                setAllVersions(!allVersions);
+              }}
+              style={{ fontSize: 12, color: 'var(--text-tertiary)', width: 'fit-content' }}
+            >
+              {allVersions ? 'Show recent versions only' : `All ${d.versions.length} versions`}
+            </a>
+          )}
           <ProdHistory d={d} busy={busy} onPromote={onPromote} />
         </>
       )}
@@ -385,11 +420,13 @@ function TrafficPanel() {
 export function Verticals({
   deployments,
   onPromote,
+  onRemove,
   busy,
   loadGitRepos,
 }: {
   deployments: Deployment[];
   onPromote: (slug: string, versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
+  onRemove: (slug: string) => void;
   busy: boolean;
   loadGitRepos: (account?: string) => Promise<GitReposResult>;
 }) {
@@ -430,7 +467,7 @@ export function Verticals({
       ) : (
         <div style={{ display: 'grid', gap: 28 }}>
           {sorted.map((d) => (
-            <VerticalCard key={d.slug} d={d} busy={busy} onPromote={(vid, ch) => onPromote(d.slug, vid, ch)} />
+            <VerticalCard key={d.slug} d={d} busy={busy} onPromote={(vid, ch) => onPromote(d.slug, vid, ch)} onRemove={() => onRemove(d.slug)} />
           ))}
           <TrafficPanel />
         </div>

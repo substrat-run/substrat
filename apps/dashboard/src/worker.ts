@@ -2171,6 +2171,34 @@ app.get('/api/deployments/:slug/channels/:channel/history', async (c) => {
   return c.json(await host.admin.listChannelHistory(STAFF, slug, channel));
 });
 
+/**
+ * Remove one of MY verticals from the registry (versions + channels included). Owned-slug
+ * -checked like promote; a LISTED vertical is refused — publishing widened the audience,
+ * so retiring it is a staff decision. Below the seam the plane refuses while any scope
+ * still runs the vertical (the refusal names the count) — delete the apps first, so this
+ * can never strand an install. Deployed dispatch scripts become orphans for cleanup (#248).
+ */
+app.delete('/api/deployments/:slug', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const deployments = cp
+    ? await listDeploymentsFromCp(cp)
+    : await listDeploymentsFromHost(host, STAFF, node.tenantId);
+  assertOwned(deployments, slug); // your vertical, or 4xx
+  if (deployments.find((d) => d.slug === slug)?.listed) {
+    throw new HTTPException(403, { message: 'a published vertical is removed by the Substrat team' });
+  }
+  if (cp) {
+    await cp.deleteVertical(slug);
+  } else {
+    await host.admin.deleteVertical(STAFF, slug);
+  }
+  return c.body(null, 204);
+});
+
 // -- Git import (GitHub App) — connections.md §3.5.1 -------------------------
 // The dashboard vertical holds the connections; keyed (tenant, 'dashboard',
 // 'github', account). A tenant may connect SEVERAL GitHub accounts/orgs — each
