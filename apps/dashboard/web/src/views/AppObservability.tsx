@@ -141,8 +141,8 @@ export function AppObservability({ app }: { app: AppRow }) {
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          Per deployed version of <span style={{ fontFamily: 'var(--font-mono)' }}>{app.vertical_slug}</span> — sampled,
-          approximate
+          Traffic for the serving version of <span style={{ fontFamily: 'var(--font-mono)' }}>{app.vertical_slug}</span> —
+          sampled, approximate
         </span>
         <div style={{ flex: 1 }} />
         <Select

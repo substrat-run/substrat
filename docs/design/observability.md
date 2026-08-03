@@ -52,6 +52,14 @@ not tenant count (one job / one consumer for all producers). Deferred; see §6.
 
 ## 3. The grain decision: script first, tenant only when forced
 
+> **Post-#286 caveat.** "A script is a vertical" is no longer one-to-one. A vertical now
+> owns *two* script schemes: per-version **archive** scripts (`<slug>-<ulid>`) that admit
+> and probe a push but never serve, and one **stable serving** script (`<slug>`) that
+> carries all production traffic and holds the scopes' DOs (routing dispatches on
+> `scope.servingRef`). Invocation metrics therefore land under the bare `<slug>`, not the
+> per-version ref — so the builder owner-narrowing must map the serving ref too, or the
+> per-version view reads empty. See `apps/dashboard/src/authority.ts` `ownedServiceRefs`.
+
 A script is a **vertical**, and one vertical's worker serves every tenant that installed
 it. That makes script-grain data safe for exactly two audiences and dangerous for a third:
 

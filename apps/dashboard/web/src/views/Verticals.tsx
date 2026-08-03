@@ -334,7 +334,7 @@ function TrafficPanel() {
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
         <h3 style={{ margin: 0, fontSize: 15 }}>Traffic</h3>
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          last 24 hours, per deployed version — sampled, approximate
+          last 24 hours, per serving version — sampled, approximate
         </span>
       </div>
       {state === 'error' ? (
