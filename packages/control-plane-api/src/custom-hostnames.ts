@@ -20,6 +20,8 @@ import type {
   HostnameBinding,
   HostnameStatus,
   PlatformActorId,
+  ScopeId,
+  ScopeStatus,
 } from '@substrat-run/contracts';
 import { getRegistrableDomain, isPublicSuffix, normalizeHost } from '@substrat-run/psl';
 
@@ -249,6 +251,7 @@ export function createCustomHostnameProvisioner(
 
 /** The narrow admin surface the reconcile pass needs — a slice of `HostAdmin`. */
 export interface HostnameReconcileAdmin {
+  /** Unfiltered = the whole map. Called adapter-side, where an omitted limit means everything. */
   listHostnames(
     actor: PlatformActorId,
     filter?: { status?: HostnameStatus },
@@ -263,6 +266,12 @@ export interface HostnameReconcileAdmin {
       validationRecords: DnsRecord[];
     },
   ): Promise<void>;
+  /** The dead-scope set for the orphan pass — only `id` is read off each row. */
+  listScopes(
+    actor: PlatformActorId,
+    filter?: { status?: ScopeStatus | ScopeStatus[] },
+  ): Promise<Array<{ id: ScopeId }>>;
+  unbindHostname(actor: PlatformActorId, hostname: string): Promise<void>;
 }
 
 export interface ReconcileHostnamesResult {
@@ -276,12 +285,23 @@ export interface ReconcileHostnamesResult {
   created: number;
   /** Platform mints found off-`active` (issuance relics, #423) and flipped back. */
   healed: number;
+  /** Rows unbound because their scope is archived/reaped — a hostname must not outlive its app. */
+  orphaned: number;
   /** Per-hostname errors — one bad row never sinks the pass. */
   errors: { hostname: string; error: string }[];
 }
 
+/** The scope statuses past which a hostname serves nothing — its rows are orphans. */
+const DEAD_SCOPE_STATUSES: ScopeStatus[] = ['archiving', 'archived', 'reaped'];
+
 /**
- * One reconcile pass over in-flight custom hostnames (#305, §4.7). Two kinds of row:
+ * One reconcile pass over the hostname map (#305, §4.7). It opens with an ORPHAN pass:
+ * any row — whatever its status — whose scope is archived/reaped is unbound (CF object
+ * released first, same sequence as the manual DELETE /hostnames route). Deleting an app
+ * archives its scope, and without this pass its hostnames lingered on the Domains page
+ * forever — worse, the heal below would flip them back to `active`.
+ *
+ * The live rows then split two ways:
  *
  *   - `verifying` with a CF id — poll Cloudflare and persist the new status/records; a
  *     `verifying → active` here is the automated flip that replaces the old manual one.
@@ -302,11 +322,34 @@ export async function reconcilePendingHostnames(deps: {
   /** True for a hostname the platform issues certs for (a custom domain), false for a platform mint. */
   isCustom: (hostname: string) => boolean;
 }): Promise<ReconcileHostnamesResult> {
-  const out: ReconcileHostnamesResult = { polled: 0, activated: 0, failed: 0, created: 0, healed: 0, errors: [] };
+  const out: ReconcileHostnamesResult = { polled: 0, activated: 0, failed: 0, created: 0, healed: 0, orphaned: 0, errors: [] };
 
-  const verifying = await deps.admin.listHostnames(deps.actor, { status: 'verifying' });
-  const pending = await deps.admin.listHostnames(deps.actor, { status: 'pending' });
-  const failedRows = await deps.admin.listHostnames(deps.actor, { status: 'failed' });
+  // Fork scopes stay `active` until deleted (and their delete removes their rows), so
+  // this set is exactly the retired primaries — never a live preview's hostname.
+  // `archived` is restorable (unarchiveScope), and unbinding here is still deliberate:
+  // delete-app already unbinds at delete time, so a bound row on an archived scope is a
+  // relic; a staff rescue that unarchives re-binds hostnames as part of the restore,
+  // while leaving rows bound would parade dead names on the Domains page all retention.
+  const deadScopes = new Set<string>(
+    (await deps.admin.listScopes(deps.actor, { status: DEAD_SCOPE_STATUSES })).map((s) => s.id),
+  );
+  const rows = await deps.admin.listHostnames(deps.actor);
+
+  for (const h of rows) {
+    if (!deadScopes.has(h.scopeId)) continue;
+    try {
+      if (h.customHostnameId) await deps.provisioner.remove(h.customHostnameId).catch(() => {});
+      await deps.admin.unbindHostname(deps.actor, h.hostname);
+      out.orphaned++;
+    } catch (err) {
+      out.errors.push({ hostname: h.hostname, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  const live = rows.filter((h) => !deadScopes.has(h.scopeId));
+  const verifying = live.filter((h) => h.status === 'verifying');
+  const pending = live.filter((h) => h.status === 'pending');
+  const failedRows = live.filter((h) => h.status === 'failed');
 
   // A platform mint never walks issuance — it rides the wildcard cert and should be
   // `active` from bind. Any platform row found here is a relic of a deployment whose

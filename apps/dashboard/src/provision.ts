@@ -472,15 +472,18 @@ type CreateAppInput = Parameters<typeof createApp>[1];
  * Delete an app: authorize + soft-delete the account's record, then take its scope
  * offline (the mirror of createApp). ARCHIVE — the terminal delete state: the record is
  * retained (audit history) but the scope releases its slug so the name can be reused,
- * and the hostname goes to `failed` so the router stops resolving it. Connected: on the
- * shared plane, tenant-narrowed. Embedded: this host.
+ * and EVERY hostname bound to the scope — the default mint, per-surface mints, custom
+ * domains — is unbound, so the router stops resolving them and the Domains page never
+ * lists a row whose app is gone. Connected: on the shared plane, tenant-narrowed (the
+ * CP's DELETE also releases a custom domain's Cloudflare object). Embedded: this host.
+ * A crash between archive and unbind self-heals: the reconcile sweep unbinds any row
+ * left on an archived scope.
  */
 export async function deprovisionApp(
   host: ScopeHost,
   input: {
     node: DashboardNode;
     appScopeId: ScopeId;
-    hostname: string | null;
     controlPlane?: TenantNarrowedControlPlane;
   },
 ): Promise<void> {
@@ -492,11 +495,13 @@ export async function deprovisionApp(
   // 2. Take the app scope offline in the caller's own tenant (ambient, never a request arg).
   if (input.controlPlane) {
     await input.controlPlane.archiveScope(input.appScopeId);
-    if (input.hostname) await input.controlPlane.setHostnameStatus(input.hostname, 'failed', 'app deleted');
+    await input.controlPlane.unbindScopeHostnames(input.appScopeId);
   } else {
     const staff = platformActorId.parse(ulid());
     await host.admin.archiveScope(staff, input.node.tenantId, input.appScopeId);
-    if (input.hostname) await host.admin.setHostnameStatus(staff, input.hostname, 'failed');
+    for (const h of await host.admin.listHostnames(staff, { scopeId: input.appScopeId })) {
+      await host.admin.unbindHostname(staff, h.hostname);
+    }
   }
 }
 
@@ -514,9 +519,8 @@ export async function retryApp(
   host: ScopeHost,
   input: {
     node: DashboardNode;
-    /** The failed app's current scope + hostname, to release before the fresh attempt. */
+    /** The failed app's current scope, released (with its hostnames) before the fresh attempt. */
     failedScopeId: ScopeId;
-    hostname: string | null;
     /** The scope id the fresh attempt provisions under (minted by the caller). */
     newScopeId: ScopeId;
     verticalSlug: string;
@@ -530,7 +534,6 @@ export async function retryApp(
   await deprovisionApp(host, {
     node: input.node,
     appScopeId: input.failedScopeId,
-    hostname: input.hostname,
     controlPlane: input.controlPlane,
   }).catch(() => {});
   return createApp(host, {

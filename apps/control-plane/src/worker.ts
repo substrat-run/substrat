@@ -530,8 +530,9 @@ export default {
       });
     }
 
-    // #305 §4.7 — the custom-hostname reconcile pass: poll every `verifying` domain
-    // (→ active/failed) and retry any `pending` custom bind whose create never landed.
+    // #305 §4.7 — the custom-hostname reconcile pass: unbind rows whose scope is
+    // archived/reaped (a deleted app's hostnames must not linger), poll every `verifying`
+    // domain (→ active/failed) and retry any `pending` custom bind whose create never landed.
     // This is what makes issuance self-heal without a human flipping status by hand. It
     // needs a CF-for-SaaS zone; without one (dev/self-host) the provisioner is undefined
     // and the pass is skipped. Contained per-row, so a bad domain never sinks the sweep.
@@ -544,7 +545,7 @@ export default {
         provisioner,
         isCustom: (h) => isCustomHostname(h, bases),
       });
-      if (hostnameReport.activated || hostnameReport.failed || hostnameReport.created || hostnameReport.healed || hostnameReport.errors.length) {
+      if (hostnameReport.activated || hostnameReport.failed || hostnameReport.created || hostnameReport.healed || hostnameReport.orphaned || hostnameReport.errors.length) {
         console.log('hostname-reconcile', hostnameReport);
       }
     }

@@ -649,7 +649,6 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     const retried = await retryApp(host, {
       node: acme,
       failedScopeId: failScopeId,
-      hostname: null,
       newScopeId: scopeId.parse(ulid()),
       verticalSlug: 'meridian',
       name: 'People',
@@ -805,7 +804,7 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     });
     expect(app.status).toBe('active');
 
-    await deprovisionApp(host, { node: acme, appScopeId, hostname: app.hostname });
+    await deprovisionApp(host, { node: acme, appScopeId });
 
     // Dropped from the account's app list (soft-deleted)...
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
@@ -813,6 +812,10 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
 
     // ...and the scope is ARCHIVED — getScope fails closed, so the app is offline.
     await expect(host.getScope(acme.principal, acme.tenantId, appScopeId)).rejects.toThrow();
+
+    // ...and EVERY hostname of the scope is UNBOUND — a deleted app leaves no row
+    // behind on the Domains page, not a `failed` relic the sweep could resurrect.
+    expect(await host.admin.listHostnames(staff, { scopeId: appScopeId })).toHaveLength(0);
 
     // ...and the slug is RECLAIMED: a new app can take the same name (the deleted
     // scope no longer holds it). Provisioning a fresh scope with slug 'temp' succeeds.

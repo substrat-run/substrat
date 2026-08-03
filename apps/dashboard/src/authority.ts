@@ -672,6 +672,18 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * Release EVERY hostname bound to one of this tenant's scopes — the delete-app
+   * cleanup. The rows come from the tenant-pinned list, so the narrowing above holds
+   * without a per-name re-check; the CP's DELETE releases a custom domain's Cloudflare
+   * object too, so a name freed here can re-bind cleanly elsewhere.
+   */
+  async unbindScopeHostnames(scopeId: ScopeId): Promise<void> {
+    for (const h of await this.listHostnames(scopeId)) {
+      await this.call(`/hostnames/${encodeURIComponent(h.hostname)}`, { method: 'DELETE' });
+    }
+  }
+
+  /**
    * The version a scope is ACTUALLY pinned to — what the router dispatches on
    * (`scope.verticalVersionId`), which is NOT the same as the vertical's prod channel:
    * an app installed when prod was 0.0.9 stays on 0.0.9 until it is rebound, even after

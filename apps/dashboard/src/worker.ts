@@ -719,7 +719,6 @@ app.post('/api/teams/delete', async (c) => {
       await deprovisionApp(host, {
         node,
         appScopeId: scopeId.parse(a.app_scope_id),
-        hostname: a.hostname,
         controlPlane: cp,
       });
     } catch {
@@ -1972,7 +1971,6 @@ app.delete('/api/apps/:id', async (c) => {
   await deprovisionApp(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
-    hostname: appRow.hostname,
     controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
   });
   return c.body(null, 204);
@@ -2002,7 +2000,6 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
   const appRowNew = await retryApp(host, {
     node,
     failedScopeId: scopeId.parse(appRow.app_scope_id),
-    hostname: appRow.hostname,
     newScopeId: scopeId.parse(ulid()),
     verticalSlug: appRow.vertical_slug,
     name: appRow.name,
