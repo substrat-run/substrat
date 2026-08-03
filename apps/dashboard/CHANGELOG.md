@@ -1,5 +1,42 @@
 # @substrat-run/dashboard
 
+## 0.14.0
+
+### Minor Changes
+
+- 3d53411: Dashboard: per-scope Audit tab (#479). Each app gains an Audit tab that renders its
+  scope's slice of the control-plane admin log — every privileged action against the
+  scope, newest first, with cursor pagination and a read-only before/after detail. A pure
+  consumer of the audit spine the platform already captures: the tenant-narrowed control
+  plane pins `tenantId`, so the viewer can only ever read the caller's own tenant.
+
+### Patch Changes
+
+- 477d472: Observability attributes traffic to the stable serving script, so the per-app
+  and team-wide traffic panels stop reading empty. Since #286 a vertical's real
+  traffic flows through one stable serving script (`<slug>`, addressed by
+  `scope.servingRef`) — not the per-version archive scripts (`<slug>-<ulid>`),
+  which only admit and probe a push. Cloudflare records invocations under the
+  serving name, but the builder owner-narrowing (`ownedServiceRefs`) only mapped
+  the archive refs, so `filter(r => owned.has(r.service))` dropped every
+  real-traffic row and the tab showed "No traffic recorded yet" even under live
+  load. The map now includes each scope's `servingRef`, stamped with the version
+  the scope is bound to (exact for the common single-scope app), and the panel
+  copy reads "serving version" rather than "deployed version" to match. Ownership
+  is unchanged: serving refs come from this tenant's own `listScopes`, and rows
+  outside the map are still filtered out.
+- Updated dependencies [d3c0b16]
+  - @substrat-run/adapter-cloudflare@0.43.0
+  - @substrat-run/demo-callout@0.1.31
+  - @substrat-run/demo-manyfold@0.5.6
+  - @substrat-run/demo-meridian@0.3.6
+  - @substrat-run/contracts@0.43.0
+  - @substrat-run/kernel@0.43.0
+  - @substrat-run/engine-invites@0.0.40
+  - @substrat-run/engine-invoicing@0.4.3
+  - @substrat-run/engine-protocol@0.5.1
+  - @substrat-run/engine-workorder@0.3.41
+
 ## 0.13.1
 
 ### Patch Changes
