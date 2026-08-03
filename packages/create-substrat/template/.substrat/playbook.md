@@ -103,10 +103,12 @@ Imported directly; their in-scope functions run in **your** transaction. Read ea
 **No import.** You emit; they consume. This is the star topology.
 
 - **`engine-invoicing`** — invoice basis and lines, immutable after export. Consumes
-  `workorder.completed` and `commerce.order-placed`, so a vertical that imports zero engines
-  still gets invoicing by emitting an event. Its consumer find-or-creates the customer's
-  *open* basis and appends. It has **no tax/VAT concept** — say so before an EU user
-  discovers it.
+  `workorder.completed`, `commerce.order-placed` **and** `timesheet.period-closed` (a
+  closed/approved period of reported time — `closeId`/`customer`/`period`/`billable`/
+  `total`, deduped on `closeId`), so an e-commerce or time-reporting vertical that imports
+  zero engines still gets invoicing by emitting an event. Its consumer find-or-creates the
+  customer's *open* basis and appends. It has **no tax/VAT concept** — say so before an EU
+  user discovers it.
 
 ### Tier 2b — connectors, for anything off-box
 
@@ -178,7 +180,11 @@ plain language, so nothing there is a surprise:
    than claimed.
 7. **The data we'll store** — the vertical's own tables and fields in plain terms. This
    *previews the migration diff*; migrations are **append-only forever after first ship**,
-   so this is the cheap moment to get the shape right.
+   so this is the cheap moment to get the shape right. **Every human-readable string the
+   design promises on an output artifact needs a named source here** — if §8 shows an
+   invoice line saying "Konsulttid Anna", some table in §7 must own that name, because
+   principals are ULIDs. A promised name with no source table is a missing table,
+   discovered at build time instead of in this review.
 8. **The scenario the test will replay** — the happy path plus the denials that prove
    isolation (wrong role denied, customer A sees theirs and customer B sees nothing, a
    cross-tenant attacker gets nothing).
