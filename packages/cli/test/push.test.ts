@@ -9,7 +9,7 @@ import {
   RUNTIME_BASELINE,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, deriveRegistry, permissionDigest, readVerticalMeta } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta } from '../src/push.js';
 
 const scratch = (pkg?: unknown): string => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-test-'));
@@ -220,5 +220,32 @@ describe('readVerticalMeta — slug identity', () => {
     const meta = readVerticalMeta(scratch());
     expect(meta.slug).toBe('');
     expect(meta.slugExplicit).toBe(false);
+  });
+});
+
+describe('resolveWranglerConfig — the push preflight', () => {
+  it('derives the config from substrat.runtimeNeeds (no wrangler.jsonc needed)', () => {
+    const dir = scratch({
+      name: 'x',
+      substrat: { runtimeNeeds: { entry: 'src/worker.ts', stores: [{ binding: 'SCOPE', class: 'ScopeDO' }] } },
+    });
+    const { cfg, needs } = resolveWranglerConfig(dir);
+    expect(needs?.entry).toBe('src/worker.ts');
+    expect(cfg.main).toBe('src/worker.ts');
+  });
+
+  it('falls back to a hand-authored wrangler.jsonc', () => {
+    const dir = scratch({ name: 'x' });
+    writeFileSync(join(dir, 'wrangler.jsonc'), '{ "main": "src/worker.ts" /* authored */ }');
+    const { cfg, needs } = resolveWranglerConfig(dir);
+    expect(needs).toBeUndefined();
+    expect(cfg.main).toBe('src/worker.ts');
+  });
+
+  it('NEITHER present refuses with the runtimeNeeds recipe, not an ENOENT trace', () => {
+    const dir = scratch({ name: 'x' });
+    expect(() => resolveWranglerConfig(dir)).toThrow(/substrat\.runtimeNeeds/);
+    expect(() => resolveWranglerConfig(dir)).toThrow(/"entry": "src\/worker\.ts"/);
+    expect(() => resolveWranglerConfig(dir)).not.toThrow(/ENOENT/);
   });
 });

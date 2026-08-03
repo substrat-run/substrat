@@ -42,10 +42,21 @@ code** (the rules below bind them); `seed`/`server` are **harness** (exempt).
 src/manifest.ts        moduleManifest.parse({…}) + PERM consts   ← module code
 src/migrations.ts      the SqlMigration[]                         ← module code
 src/module.ts          imports both; operations + registration    ← module code
-src/seed.ts            host, tenants, roles, grants, seed world    ← harness
+src/provision.ts       MODULES, ROLES, grant shapes — node-free    ← module code
+src/seed.ts            host, tenants, demo cast, seed world        ← harness
 src/server.ts          thin wrapper, one route per operation       ← harness
+src/worker.ts          the deployable Cloudflare worker            ← harness
 test/scenario.test.ts  the scenario — including the denials
 ```
+
+`provision.ts` is deliberately node-free: both hosts register from it (the dev
+server's SQLite host and the worker's `ScopeDO`), and `substrat push` reads the
+permission registry from it (package.json `substrat.permissions`). Roles or
+modules defined anywhere else will run locally and silently not deploy.
+`worker.ts` carries the platform's `/internal/*` management contract and **the
+auth seam** — the dev `x-principal` header is the only caller resolution until
+you wire real auth there; deploying with `ALLOW_DEV_HEADER` set is a
+cross-tenant hole with a UI.
 
 ## The rules (non-negotiable)
 

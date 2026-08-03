@@ -5,18 +5,18 @@ import {
   principalId,
   scopeId,
   tenantId,
-  type PermissionKey,
   type PrincipalId,
-  type RoleDefinition,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { workorderModule, PERM as WO } from '@substrat-run/engine-workorder';
-import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
-import { bikeShopModule } from './module.js';
-import { SHOP_PERM } from './manifest.js';
+import { ENTITLEMENT_KEYS, MODULES, OWNER_ROLE_KEY, portalPerms, ROLES } from './provision.js';
+
+// The provisioning surface (modules, roles, grant shapes) lives in
+// provision.ts — node-free so the worker bundles it and `substrat push` reads
+// it. Re-exported here for callers that treat seed.ts as the world's front door.
+export { ENTITY_GRANTS, MODULES, permissions, ROLES } from './provision.js';
 
 // ============================================================================
 // The seeded world. TWO tenants on purpose: the first is the shop the scenario
@@ -41,48 +41,6 @@ export interface BikeShopWorld {
   bianchiId: string; // Otto's bike
 }
 
-/**
- * The modules this vertical composes, in registration order. Exported so the
- * permission checkpoint (`pnpm lint:permissions`) renders from the same array
- * the running host registers — the artifact can never drift from reality.
- */
-export const MODULES = [workorderModule, invoicingModule, bikeShopModule];
-
-const adminPerms: PermissionKey[] = [
-  SHOP_PERM.customerManage,
-  SHOP_PERM.bikeManage,
-  WO.create,
-  WO.read,
-  WO.assign,
-  WO.report,
-  WO.complete,
-  WO.close,
-  INV.read,
-  INV.export,
-];
-
-/**
- * This vertical's role table — identical in every tenant, so it is a plain
- * constant the permission snapshot can render without naming a tenant. Exported
- * for the same reason as MODULES.
- */
-export const ROLES: RoleDefinition[] = [
-  { key: 'workshop-admin', permissions: adminPerms, source: 'vertical' },
-  { key: 'mechanic', permissions: [WO.read, WO.report], source: 'vertical' },
-];
-
-/** What a portal customer receives, narrowed to their own customer record. */
-const portalPerms: PermissionKey[] = [WO.read];
-
-/**
- * Entity-narrowed grant SHAPES. The grants themselves are per-principal and
- * minted at runtime, so they can never be a build artifact; their shape is what
- * tells a reviewer which keys are reachable outside the role table.
- */
-export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
-  { entityType: 'customer', permissions: portalPerms },
-];
-
 export function buildBikeShopHost(dir: string): SqliteScopeHost {
   const host = new SqliteScopeHost({ dir });
   for (const m of MODULES) host.registerModule(m);
@@ -102,7 +60,7 @@ async function provisionShop(
   await host.admin.createTenant(staff, { id: input.tenantId, slug: input.slug, name: input.name });
   // Entitlements are default-deny: the SKU flag for each module this vertical
   // runs must be granted before any of its operations resolve.
-  for (const key of ['workorder', 'invoicing', 'bikeshop']) {
+  for (const key of ENTITLEMENT_KEYS) {
     await host.admin.grantEntitlement(staff, input.tenantId, key);
   }
   await host.provisionScope(staff, {
@@ -117,7 +75,7 @@ async function provisionShop(
   for (const role of ROLES) await host.admin.defineRole(staff, input.tenantId, role);
   await host.admin.assignRole(staff, {
     principalId: input.owner,
-    roleKey: 'workshop-admin',
+    roleKey: OWNER_ROLE_KEY,
     node: { tenantId: input.tenantId, scopeId: null },
   });
 }
