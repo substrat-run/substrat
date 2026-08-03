@@ -355,10 +355,15 @@ and who can see other tenants' data?* A permission diff nobody understands is th
 
 Only if the user asks. Local-first is a legitimate stopping point.
 
-Substrat runs on Cloudflare via `@substrat-run/adapter-cloudflare` (Durable Objects). A
-vertical declares what it needs at runtime with a `substrat.runtimeNeeds` block in
-`package.json` (stores, node-compat, build). The deploy path is the authenticated CLI, and
-the author never holds a Cloudflare token:
+Substrat runs on Cloudflare via `@substrat-run/adapter-cloudflare` (Durable Objects).
+**This starter is pushable as scaffolded**: `src/worker.ts` is the deploy entry (the
+sandbox-clean shape, with the platform's `/internal/*` management contract already
+mounted), and package.json already carries the `substrat.runtimeNeeds` block the CLI
+derives the deploy config from (stores, node-compat, build) — you never author wrangler
+config. When you reshape the vertical, keep `src/provision.ts` the single source of
+MODULES/ROLES: both the dev server and the worker register from it, so a module added
+only in seed.ts would run locally and silently not deploy. The deploy path is the
+authenticated CLI, and the author never holds a Cloudflare token:
 
 - `substrat login` / `substrat whoami` — authenticate against the control plane.
 - `substrat push` — push the vertical; the version auto-bumps. A **private** (tenant-owned)

@@ -205,6 +205,51 @@ export interface PushOptions {
  * credential (`opts.authHeader` — a browser session or a service token), never a
  * hand-picked `--actor`.
  */
+/**
+ * The deploy config for a push: `substrat.runtimeNeeds` (D-38, derived) wins, a
+ * hand-authored wrangler.jsonc is the fallback — and NEITHER is a refusal with the
+ * remedy in it, not an ENOENT stack trace. The remedy leads with runtimeNeeds
+ * because that is the substrate-vocabulary path; wrangler.jsonc stays legal but
+ * is not what a refusal should teach.
+ */
+export function resolveWranglerConfig(
+  dir: string,
+): { cfg: Record<string, unknown>; needs: RuntimeNeeds | undefined } {
+  const needs = readRuntimeNeeds(dir);
+  const hasWranglerFile = existsSync(join(dir, 'wrangler.jsonc'));
+  if (needs && hasWranglerFile) {
+    console.log('note: substrat.runtimeNeeds is set — wrangler.jsonc is ignored for this push');
+  }
+  if (!needs && !hasWranglerFile) {
+    throw new Error(
+      [
+        'nothing to build: no `substrat.runtimeNeeds` in package.json and no wrangler.jsonc.',
+        '',
+        '  A pushable vertical declares what it needs at runtime — the CLI derives the',
+        '  deploy config from it (you never author wrangler config):',
+        '',
+        '    "substrat": {',
+        '      "runtimeNeeds": {',
+        '        "entry": "src/worker.ts",',
+        '        "needsNodeCompat": true,',
+        '        "stores": [',
+        '          { "binding": "SCOPE", "class": "ScopeDO" },',
+        '          { "binding": "AUTH", "class": "IdentityDO" }',
+        '        ]',
+        '      }',
+        '    }',
+        '',
+        '  `entry` is the Cloudflare worker entrypoint (the sandbox-clean shape —',
+        '  demos/meridian/src/worker.ts is the reference); `stores` are the DO classes',
+        '  it exports. A hand-authored wrangler.jsonc also works, but is not required.',
+      ].join('\n'),
+    );
+  }
+  return needs
+    ? { cfg: wranglerConfigFor(needs), needs }
+    : { cfg: readJsonc(join(dir, 'wrangler.jsonc')), needs: undefined };
+}
+
 export async function push(
   opts: PushOptions,
 ): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
@@ -212,11 +257,7 @@ export async function push(
   // authored no wrangler config, so none is read — the CLI derives it. The generated file
   // lands next to the vertical (a relative `main` and the build command's cwd both resolve
   // against the config's directory) and is removed after the build.
-  const needs = readRuntimeNeeds(opts.dir);
-  if (needs && existsSync(join(opts.dir, 'wrangler.jsonc'))) {
-    console.log('note: substrat.runtimeNeeds is set — wrangler.jsonc is ignored for this push');
-  }
-  const cfg = needs ? wranglerConfigFor(needs) : readJsonc(join(opts.dir, 'wrangler.jsonc'));
+  const { cfg, needs } = resolveWranglerConfig(opts.dir);
 
   // A vertical's OWN stores travel with the bundle: its DO classes, and its D1 databases
   // (e.g. a Better-Auth AUTH_DB). The control plane re-checks these against the §4 sandbox

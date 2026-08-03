@@ -182,6 +182,14 @@ Confirm three things the test structurally cannot:
 3. **The Vite proxy reaches the kernel** — `curl localhost:<web>/api/...`, not just the API
    port, so `PORT`/`WEB_PORT` are genuinely wired at both ends.
 
+One assertion trap: **the cross-tenant denial over HTTP legitimately looks like `200 []`,
+not 403.** The server resolves each persona to their OWN (tenant, scope), so the attacker
+never even addresses the victim's database — the attack is unformulable, which is the
+STRONGER isolation. Assert 403 only where the attack is addressable (kernel level:
+`getScope` with the victim's pair, pinned in the scenario test). Over HTTP, the right
+assertion for the other firm's persona is 200 with ZERO of the victim's rows — a naive
+"expect 403" here goes red against a correct system.
+
 Shell quoting mangles this quickly; a throwaway Python/node driver that walks the whole arc
 and prints each persona's status code is more reliable than a chain of `curl | jq`.
 
@@ -204,6 +212,13 @@ and prints each persona's status code is more reliable than a chain of `curl | j
   "compile to a migration" stays a *reviewable artifact* the UI can show, not a live
   `CREATE TABLE`. Manyfold's content types are the reference: `manyfold_content_type` +
   `save-type`/`list-types`, bodies persisted as JSON so adding a field is free.
+- **A vertical is not pushable without a worker entry.** `substrat push` derives the
+  deploy config from `substrat.runtimeNeeds` in package.json (entry, stores, node-compat
+  — never hand-authored wrangler config; a wrangler.jsonc is the legacy fallback). No
+  worker.ts + no runtimeNeeds = the push preflight refuses with the recipe. If the demo
+  is meant to deploy, budget the worker in from the start; `create-substrat`'s template
+  ships one (full `/internal/*` contract, auth seam marked) as the minimal reference,
+  Meridian as the full one.
 - **Sandbox-clean is the default worker shape** (policy: every vertical is sandbox-clean,
   only the dashboard is privileged). Copy Meridian's `worker.ts`/`wrangler.jsonc`: own
   `ScopeDO` + `IdentityDO`, the FULL platform-gated `/internal/*` contract — `provision`,
@@ -213,10 +228,13 @@ and prints each persona's status code is more reliable than a chain of `curl | j
   delete-scope family — SPA inlined via `gen-assets` (no ASSETS binding). **Multi-scope is native**: one `SCOPE` DO namespace,
   `idFromName(tenant, site)` = one DO per site; the router asserts the tenant, the app
   selects the site (`x-scope`), permissions evaluate from that site's own storage.
-- **Kill stale dev servers before driving over HTTP.** A `tsx src/server.ts` left running
-  from an earlier iteration serves the OLD route table — you'll chase phantom
-  `unknown operation` 404s against code you already fixed. `pkill -f 'tsx src/server.ts'`
-  (and check `lsof -ti :<port>`) before each smoke run, and boot fresh.
+- **Kill stale dev servers before driving over HTTP — by PORT, never by pattern.** A
+  `tsx src/server.ts` left running from an earlier iteration serves the OLD route table —
+  you'll chase phantom `unknown operation` 404s against code you already fixed. But
+  EVERY demo starts its server as `tsx src/server.ts`, so `pkill -f` on that pattern
+  kills all of them, including whatever the user has running in the shared tree. Each
+  demo owns a unique port, so the precise kill is: `lsof -ti :<api-port> | xargs kill`
+  before each smoke run, then boot fresh.
 - **Declare every link edge you traverse**: engines link the refs you hand them
   verbatim (workorder → your facility-shaped entity), and the adapter rejects links
   undeclared in any registered manifest — so your `entityRelations` must cover both

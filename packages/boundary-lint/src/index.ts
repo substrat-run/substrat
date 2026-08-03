@@ -116,7 +116,11 @@ const HTTP_CLIENTS = new Set(['undici', 'node-fetch', 'axios', 'got', 'ky']);
  * edge-wiring class as worker.ts/routes.ts. do-contract.ts is the TYPE contract
  * of a Durable Object stub (auth-do.ts's callable shape, split out so node code
  * can import it without `cloudflare:workers`) — its `fetch` is a type signature,
- * not a call.
+ * not a call. assets.ts/assets.generated.ts are the inlined-SPA serving pair
+ * (gen-assets.mjs): the generated file is the BUILT browser bundle as string
+ * literals — its `fetch(` is browser code the worker serves, the same class as
+ * page.ts, and it is gitignored, so linting it fails locally on content CI
+ * never sees.
  */
 export const DEFAULT_HARNESS = [
   'seed.ts',
@@ -131,6 +135,8 @@ export const DEFAULT_HARNESS = [
   'worker.ts',
   'routes.ts',
   'page.ts',
+  'assets.ts',
+  'assets.generated.ts',
 ];
 
 const SOURCE_FILE = /\.(ts|tsx|js|mjs)$/;

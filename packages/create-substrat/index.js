@@ -20,9 +20,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = join(HERE, 'template');
 
 // Published today; Substrat is 0.x, so these are caret ranges on the current minor.
-const SUBSTRAT = '^0.29.0';
+const SUBSTRAT = '^0.39.0';
 // Engines version on their own line (0.3.x), independent of the kernel/contracts line.
-const ENGINES = '^0.3.27';
+const ENGINES = '^0.3.37';
 const BOUNDARY_LINT = '^0.0.5';
 
 const DOCS = 'https://substrat.net';
@@ -64,17 +64,29 @@ function packageJson(name) {
       version: '0.0.0',
       private: true,
       type: 'module',
+      // What `substrat push` reads: the permission surface (the registry the
+      // promotion checkpoint diffs) and the runtime needs the deploy config is
+      // derived from — you never author wrangler config (src/worker.ts is the
+      // entry; ScopeDO is the store it exports).
+      substrat: {
+        permissions: 'src/provision.ts',
+        runtimeNeeds: {
+          entry: 'src/worker.ts',
+          stores: [{ binding: 'SCOPE', class: 'ScopeDO' }],
+        },
+      },
       scripts: {
         dev: 'tsx watch src/server.ts',
         server: 'tsx src/server.ts',
         test: 'vitest run',
-        typecheck: 'tsc --noEmit',
+        typecheck: 'tsc --noEmit && tsc -p tsconfig.worker.json --noEmit',
         'lint:boundaries': 'substrat-boundary-lint',
       },
       dependencies: {
         '@substrat-run/kernel': SUBSTRAT,
         '@substrat-run/contracts': SUBSTRAT,
         '@substrat-run/adapter-sqlite': SUBSTRAT,
+        '@substrat-run/adapter-cloudflare': SUBSTRAT,
         '@substrat-run/engine-workorder': ENGINES,
         '@substrat-run/engine-invoicing': ENGINES,
         hono: '^4.6.0',
@@ -83,7 +95,9 @@ function packageJson(name) {
       },
       devDependencies: {
         '@substrat-run/boundary-lint': BOUNDARY_LINT,
+        '@cloudflare/workers-types': '^4.20250109.0',
         '@types/better-sqlite3': '^7.6.0',
+        '@types/node': '^22.0.0',
         concurrently: '^9.0.0',
         tsx: '^4.19.0',
         typescript: '^5.6.0',
@@ -112,6 +126,9 @@ const TSCONFIG = `${JSON.stringify(
       types: ['node'],
     },
     include: ['src', 'test'],
+    // The worker compiles against workers-types under its own config
+    // (tsconfig.worker.json) — the node config must not see it.
+    exclude: ['src/worker.ts'],
   },
   null,
   2,

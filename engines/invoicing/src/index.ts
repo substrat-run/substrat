@@ -57,6 +57,7 @@ export const invoicingManifest = moduleManifest.parse({
     consumes: [
       { type: 'workorder.completed', schemaVersion: 1 },
       { type: 'commerce.order-placed', schemaVersion: 1 },
+      { type: 'timesheet.period-closed', schemaVersion: 1 },
     ],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
@@ -130,6 +131,28 @@ const commercePlacedPayload = z.object({
   number: z.number().int(),
   customer: entityRef,
   paymentMethod: z.string().min(1),
+  billable: z.array(
+    z.object({
+      article: z.string().min(1),
+      description: z.string().min(1),
+      qty: z.string().min(1),
+      unit: z.string().min(1),
+      unitPrice: money,
+      lineTotal: money,
+    }),
+  ),
+  total: money,
+});
+
+// ADDITIVE (D-28): a THIRD input event — a closed (approved) period of reported
+// time. Same discipline as the two above: the engine's OWN Zod view of the
+// contract, zero imports from the producer. `closeId` is whatever the producer
+// uses as its immutable closing artifact (an attest, an approval, a lock) — it
+// is the idempotency key here, so one closing can never bill twice.
+const timesheetClosedPayload = z.object({
+  closeId: z.string().min(1),
+  customer: entityRef,
+  period: z.string().min(1),
   billable: z.array(
     z.object({
       article: z.string().min(1),
@@ -371,6 +394,75 @@ const onCommerceOrderPlaced: ConsumerHandler = (ctx, event) => {
   });
 };
 
+// ADDITIVE consumer for the closed-timesheet event. Same snapshot-not-join
+// discipline; source_type is 'timesheet' and the closing artifact is the dedup
+// key, so an at-least-once redelivery can never bill a period twice.
+const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
+  const p = timesheetClosedPayload.parse(event.payload);
+  if (p.billable.length === 0) return;
+
+  // Idempotent on at-least-once redelivery (K-11): the closing is the dedup key.
+  const already = ctx.sql.query<{ found: number }>(
+    `SELECT 1 AS found FROM invoicing_lines WHERE source_type = 'timesheet' AND source_id = ? LIMIT 1`,
+    [p.closeId],
+  )[0];
+  if (already) return;
+
+  let underlag = ctx.sql.query<UnderlagRow>(
+    `SELECT * FROM invoicing_underlag WHERE customer_type = ? AND customer_id = ? AND status = 'open'`,
+    [p.customer.entityType, p.customer.entityId],
+  )[0];
+  if (!underlag) {
+    const id = ulid();
+    const number =
+      ctx.sql.query<{ n: number }>(
+        'SELECT COALESCE(MAX(number), 0) + 1 AS n FROM invoicing_underlag',
+      )[0]?.n ?? 1;
+    ctx.sql.exec(
+      `INSERT INTO invoicing_underlag (id, number, customer_type, customer_id, status, created_at)
+       VALUES (?, ?, ?, ?, 'open', ?)`,
+      [id, number, p.customer.entityType, p.customer.entityId, new Date().toISOString()],
+    );
+    underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [id])[0]!;
+  }
+
+  assertSingleCurrency(ctx, underlag.id, p.billable);
+
+  for (const line of p.billable) {
+    ctx.sql.exec(
+      `INSERT INTO invoicing_lines
+         (id, underlag_id, source_type, source_id, article, description, qty, unit,
+          unit_price_amount, currency, line_total_amount, created_at)
+       VALUES (?, ?, 'timesheet', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        ulid(),
+        underlag.id,
+        p.closeId,
+        line.article,
+        line.description,
+        line.qty,
+        line.unit,
+        line.unitPrice.amount,
+        line.unitPrice.currency,
+        line.lineTotal.amount,
+        new Date().toISOString(),
+      ],
+    );
+  }
+
+  ctx.emit({
+    type: 'invoicing.underlag-updated',
+    schemaVersion: 1,
+    entity: { entityType: 'underlag', entityId: underlag.id },
+    piiClass: 'none',
+    payload: {
+      underlagId: underlag.id,
+      addedLines: p.billable.length,
+      source: { entityType: 'timesheet', entityId: p.closeId },
+    },
+  });
+};
+
 const listOp: OperationHandler<
   { status?: string } | undefined,
   (UnderlagRow & { total: string })[]
@@ -443,5 +535,6 @@ export const invoicingModule: ModuleRegistration = {
   consumers: {
     'workorder.completed': onWorkOrderCompleted,
     'commerce.order-placed': onCommerceOrderPlaced,
+    'timesheet.period-closed': onTimesheetPeriodClosed,
   },
 };
