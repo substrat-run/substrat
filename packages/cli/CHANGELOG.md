@@ -1,14 +1,39 @@
 # @substrat-run/cli
 
+## 0.15.0
+
+### Minor Changes
+
+- d59a515: Every list read pages the same way: the admin-log cursor convention, generalized.
+  `@substrat-run/contracts` gains `pagination.ts` (`listPageQuery` — limit default 20,
+  max 200 — `ListPage`, `Page<T>`, `pageOf`); every `HostAdmin.list*` takes an optional
+  keyset page (unset stays unbounded for in-process callers); both adapters implement
+  the keyset SQL and the contract suite proves it. **Wire change:** every control-plane
+  GET list route (`/tenants`, `/scopes`, `/verticals`, `/verticals/:slug/versions`,
+  `/channels`, `/channels/:channel/history`, `/hostnames`, `/roles`, `/admin-log`) now
+  returns `{ entries, nextCursor }` and defaults a 20-row page — older CLI versions
+  parse these as bare arrays and must upgrade; this CLI walks the cursor wherever it
+  needs the complete list.
+
+### Patch Changes
+
+- 5a9d7bd: `substrat push` with neither `substrat.runtimeNeeds` nor a wrangler.jsonc now
+  refuses with the remedy — a minimal `runtimeNeeds` block and a pointer to the
+  sandbox-clean worker shape — instead of surfacing readFileSync's ENOENT. The
+  config resolution is extracted as `resolveWranglerConfig(dir)`.
+- Updated dependencies [3c77f64]
+- Updated dependencies [d59a515]
+  - @substrat-run/contracts@0.40.0
+
 ## 0.14.0
 
 ### Minor Changes
 
 - 3cf4e3b: The provisioner capability gains its request half (#455): a manager vertical DECLARES the
   target verticals it provisions — package.json `substrat.provisions`, carried on push to
-  the registry row (`vertical.provisions`, riding the refreshable install_spec bag) — and
+  the registry row (`vertical.provisions`, riding the refreshable install*spec bag) — and
   the console reviews the declaration like a publish request (declared-but-ungranted shows
-  as _provisioner requested_; the grant button reads _Approve provisioner_). Declaration is
+  as \_provisioner requested*; the grant button reads _Approve provisioner_). Declaration is
   a request, never a grant: `tenantProvisioner` stays the staff-flipped flag a push cannot
   touch (contract-tested both ways). The drain's `admitManager` now distinguishes
   _undeclared_ (fix your manifest) from _declared-but-ungranted_ (awaiting staff) in its

@@ -1,5 +1,35 @@
 # create-substrat
 
+## 0.2.0
+
+### Minor Changes
+
+- 5a9d7bd: The scaffold is pushable from day one. The template gains `src/worker.ts` (the
+  sandbox-clean Cloudflare shape: own `ScopeDO`, the full platform-gated
+  `/internal/*` management contract — provision, reconcile, tables, query,
+  platform-requests, snapshot/export/restore/bookmarks/rewind — and a clearly
+  marked auth seam; the dev `x-principal` header is the only caller resolution
+  until real auth is wired) and `src/provision.ts` (node-free MODULES/ROLES/
+  grant shapes + `definePermissions`, registered by both hosts and read by
+  `substrat push`). The generated package.json now carries
+  `substrat.permissions` + `substrat.runtimeNeeds` (the CLI derives the deploy
+  config — no wrangler.jsonc), a worker typecheck config, and current version
+  pins (kernel line ^0.39.0, engines ^0.3.37, plus @types/node that the old
+  scaffold only got by hoisting luck).
+- b82d40f: `defineScopeSweeperDO` — the timer a CP-less vertical owns (#461, closing the trigger
+  half). `runPlatformSweep`'s drain and schedule phases enumerate scopes via the
+  control-plane directory, which a CP-less dispatch vertical does not have — so its
+  declared schedules parsed, granted, and never ran. The new singleton DO keeps a roster
+  of the deployment's scopes (fed by the platform through `/internal/provision` and
+  `/internal/reconcile` via `noteScope`, pruned by `/internal/delete-scope` via
+  `forgetScope` — forks stay off by construction, since a snapshot target is never
+  provisioned) and alarm-drives each rostered scope's `drainDue` + `runDueSchedules`
+  through the deployment's own host, with the same non-overlap/never-dies loop as
+  `definePlatformSweeperDO`. The alarm lapses on an empty roster and re-arms on the
+  next `noteScope`, so an idle deployment costs nothing. The create-substrat template
+  wires it by default: a `SWEEPER` store in `substrat.runtimeNeeds`, the three route
+  calls, and the kernel-line pin moves to the release that ships the sweeper.
+
 ## 0.1.1
 
 ### Patch Changes
