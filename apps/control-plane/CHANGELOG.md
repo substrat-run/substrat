@@ -1,5 +1,15 @@
 # @substrat-run/control-plane
 
+## 0.5.13
+
+### Patch Changes
+
+- Updated dependencies [3cf4e3b]
+  - @substrat-run/contracts@0.39.0
+  - @substrat-run/adapter-cloudflare@0.39.0
+  - @substrat-run/control-plane-api@0.39.0
+  - @substrat-run/kernel@0.39.0
+
 ## 0.5.12
 
 ### Patch Changes

@@ -1,5 +1,27 @@
 # @substrat-run/contract-tests
 
+## 0.39.0
+
+### Minor Changes
+
+- 3cf4e3b: The provisioner capability gains its request half (#455): a manager vertical DECLARES the
+  target verticals it provisions — package.json `substrat.provisions`, carried on push to
+  the registry row (`vertical.provisions`, riding the refreshable install_spec bag) — and
+  the console reviews the declaration like a publish request (declared-but-ungranted shows
+  as _provisioner requested_; the grant button reads _Approve provisioner_). Declaration is
+  a request, never a grant: `tenantProvisioner` stays the staff-flipped flag a push cannot
+  touch (contract-tested both ways). The drain's `admitManager` now distinguishes
+  _undeclared_ (fix your manifest) from _declared-but-ungranted_ (awaiting staff) in its
+  refusal, and — #412 invariant 4 — bounds a granted manager's `provision-tenant` to its
+  declared targets, phased: a granted manager that declares nothing keeps its pre-#455
+  unbounded behavior until its next push declares.
+
+### Patch Changes
+
+- Updated dependencies [3cf4e3b]
+  - @substrat-run/contracts@0.39.0
+  - @substrat-run/kernel@0.39.0
+
 ## 0.38.0
 
 ### Minor Changes
@@ -1118,7 +1140,7 @@
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

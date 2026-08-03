@@ -1,5 +1,28 @@
 # @substrat-run/dashboard
 
+## 0.11.4
+
+### Patch Changes
+
+- 5a2e4b1: Install derives the vertical's own entitlement key when none are declared (#443): a pushed
+  vertical whose registry row carries no `entitlements` used to resolve to `[]`, which
+  defeated every `?? [slug]` fallback — the installing tenant held zero entitlements and the
+  vertical's projected gate failed closed on its very first gated operation. The install spec
+  (create, retry, resume) and both provision paths now grant the first non-empty declared set
+  or `[slug]` (the `entitlementKey` convention), before the scope provisions, so the
+  entitlement delivery that rides provisioning already carries it.
+- Updated dependencies [3cf4e3b]
+  - @substrat-run/contracts@0.39.0
+  - @substrat-run/adapter-cloudflare@0.39.0
+  - @substrat-run/demo-callout@0.1.27
+  - @substrat-run/demo-manyfold@0.5.2
+  - @substrat-run/demo-meridian@0.3.2
+  - @substrat-run/engine-invites@0.0.36
+  - @substrat-run/engine-invoicing@0.3.37
+  - @substrat-run/engine-protocol@0.4.31
+  - @substrat-run/engine-workorder@0.3.37
+  - @substrat-run/kernel@0.39.0
+
 ## 0.11.3
 
 ### Patch Changes
