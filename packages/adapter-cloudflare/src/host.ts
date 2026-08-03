@@ -311,7 +311,7 @@ interface ControlPlaneStub {
   updateVerticalPublishRequest(slug: string, requestedAt: string): Promise<void>;
   updateVerticalInstallsBlocked(slug: string, blocked: number): Promise<void>;
   updateVerticalTenantProvisioner(slug: string, granted: number): Promise<void>;
-  countScopesForVertical(slug: string): Promise<number>;
+  countScopesForVertical(slug: string): Promise<{ live: number; archived: number }>;
   deleteVertical(slug: string): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
@@ -2194,13 +2194,21 @@ export class CloudflareScopeHost implements ScopeHost {
       deleteVertical: async (actor, slug: string) => {
         const existing = await this.cp.readVertical(slug);
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
-        // Refuse while any scope is bound: a deleted registry row would strand those
-        // scopes' version pins and routing. Deployed dispatch scripts are NOT reaped
-        // here — they become orphans for the cleanup script (#248).
+        // Refuse while any restorable scope is bound: a deleted registry row would strand
+        // those scopes' version pins and routing. An `archived` scope (a deleted app) still
+        // blocks — unarchive can bring it back — but the refusal names reap/restore, not
+        // "delete", because the app itself is already gone. `reaped` is terminal history and
+        // never blocks. Deployed dispatch scripts are NOT reaped here — they become orphans
+        // for the cleanup script (#248).
         const bound = await this.cp.countScopesForVertical(slug);
-        if (bound > 0) {
+        if (bound.live > 0) {
           throw new Error(
-            `vertical '${slug}' still backs ${bound} scope(s) — delete or rebind them first`,
+            `vertical '${slug}' still backs ${bound.live} scope(s) — delete or rebind them first`,
+          );
+        }
+        if (bound.archived > 0) {
+          throw new Error(
+            `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
           );
         }
         await this.cp.deleteVertical(slug);

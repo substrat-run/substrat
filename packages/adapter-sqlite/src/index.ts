@@ -3202,14 +3202,27 @@ export class SqliteScopeHost implements ScopeHost {
       deleteVertical: async (actor, slug: string) => {
         const existing = readVertical(slug);
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
-        // Refuse while any scope is bound: a deleted registry row would strand those
-        // scopes' version pins and routing. The count names the blast radius.
+        // Refuse while any restorable scope is bound: a deleted registry row would strand
+        // those scopes' version pins and routing. An `archived` scope (a deleted app) still
+        // blocks — unarchive can bring it back — but the refusal names reap/restore, not
+        // "delete", because the app itself is already gone. `reaped` is terminal history
+        // and never blocks. The count names the blast radius.
         const bound = this.directory
-          .prepare('SELECT COUNT(*) AS n FROM scopes WHERE vertical = ?')
-          .get(slug) as { n: number };
-        if (bound.n > 0) {
+          .prepare(
+            'SELECT ' +
+              "COUNT(*) FILTER (WHERE status NOT IN ('archived', 'reaped')) AS live, " +
+              "COUNT(*) FILTER (WHERE status = 'archived') AS archived " +
+              'FROM scopes WHERE vertical = ?',
+          )
+          .get(slug) as { live: number; archived: number };
+        if (bound.live > 0) {
           throw new Error(
-            `vertical '${slug}' still backs ${bound.n} scope(s) — delete or rebind them first`,
+            `vertical '${slug}' still backs ${bound.live} scope(s) — delete or rebind them first`,
+          );
+        }
+        if (bound.archived > 0) {
+          throw new Error(
+            `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
           );
         }
         // Deployed dispatch scripts are NOT reaped here — they become orphans for the
