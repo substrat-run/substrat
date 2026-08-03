@@ -1,5 +1,26 @@
 # @substrat-run/cli
 
+## 0.14.0
+
+### Minor Changes
+
+- 3cf4e3b: The provisioner capability gains its request half (#455): a manager vertical DECLARES the
+  target verticals it provisions — package.json `substrat.provisions`, carried on push to
+  the registry row (`vertical.provisions`, riding the refreshable install_spec bag) — and
+  the console reviews the declaration like a publish request (declared-but-ungranted shows
+  as _provisioner requested_; the grant button reads _Approve provisioner_). Declaration is
+  a request, never a grant: `tenantProvisioner` stays the staff-flipped flag a push cannot
+  touch (contract-tested both ways). The drain's `admitManager` now distinguishes
+  _undeclared_ (fix your manifest) from _declared-but-ungranted_ (awaiting staff) in its
+  refusal, and — #412 invariant 4 — bounds a granted manager's `provision-tenant` to its
+  declared targets, phased: a granted manager that declares nothing keeps its pre-#455
+  unbounded behavior until its next push declares.
+
+### Patch Changes
+
+- Updated dependencies [3cf4e3b]
+  - @substrat-run/contracts@0.39.0
+
 ## 0.13.2
 
 ### Patch Changes
