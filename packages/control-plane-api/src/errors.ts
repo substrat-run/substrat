@@ -49,6 +49,10 @@ const STATUS_PATTERNS: readonly [RegExp, ContentfulStatusCode][] = [
   [/belongs to '/, 409],
   [/not admitted/, 409],
   [/acknowledge it explicitly to promote/, 409],
+  // deleteVertical's bound-scope refusal — the message names the count and the way
+  // out (delete or rebind the scopes), so it must reach the caller, not collapse
+  // into the generic 500 below.
+  [/still backs \d+ scope\(s\)/, 409],
   // The §4 sandbox contract: a declared binding reaches platform infrastructure.
   // Forbidden, not a conflict — the upload is well-formed and still refused.
   [/deploy refused:/, 403],

@@ -1603,6 +1603,20 @@ describe('control-plane API — vertical registry', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ registry: null });
   });
+
+  it('maps the bound-scope delete refusal to a 409 naming the count — not a bare 500', async () => {
+    // `sc` is still bound to fsm. The refusal message carries the blast radius and
+    // the way out (delete or rebind), so it must survive mapError instead of
+    // collapsing into the generic "internal error" (the console's 2026-08-03 shape).
+    const refused = await json('/verticals/fsm', 'DELETE');
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/still backs 1 scope\(s\) — delete or rebind/);
+    // A vertical backing no scopes deletes cleanly through the same route.
+    await json('/verticals', 'POST', { slug: 'unbound', name: 'Unbound', source: 'builtin' });
+    const ok = await json('/verticals/unbound', 'DELETE');
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ slug: 'unbound', deleted: true });
+  });
 });
 
 /**
