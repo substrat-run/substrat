@@ -391,6 +391,8 @@ export interface EnvVarSpec {
   secret: boolean;
   default?: string;
   group?: string;
+  /** Auth config the Identity picker owns — hidden on the install form, shown on the Env tab. */
+  identityManaged?: boolean;
 }
 
 /** One stored env var — a secret's value is never sent back (write-only). */

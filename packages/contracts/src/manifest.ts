@@ -62,6 +62,13 @@ export const envVarSpec = z.object({
   secret: z.boolean().default(false), // masked + write-only + delivered as a secret
   default: z.string().optional(), // non-secret default, prefilled
   group: z.string().optional(), // "Bootstrap" · "Email" — form sectioning
+  // This key is auth config the dashboard's INSTALL-TIME Identity picker owns (the
+  // per-scope `substrat:auth` delivery — Built-in / an Auth Server / External OIDC).
+  // The picker supersedes it, so the install form omits it rather than offering two
+  // contradictory ways to set the same thing. Still rendered on the post-install Env
+  // tab as the deployment-level fallback for whoever wants to hand-edit it. Only
+  // meaningful on a vertical that declares `requires: ['oidc-issuer']` (has the picker).
+  identityManaged: z.boolean().default(false),
 });
 export type EnvVarSpec = z.infer<typeof envVarSpec>;
 

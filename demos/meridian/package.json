@@ -42,7 +42,8 @@
         "default": "better-auth-do",
         "required": false,
         "secret": false,
-        "group": "Auth"
+        "group": "Auth",
+        "identityManaged": true
       },
       {
         "key": "OIDC_ISSUER",
@@ -51,7 +52,8 @@
         "placeholder": "https://auth.example.com",
         "required": false,
         "secret": false,
-        "group": "Auth"
+        "group": "Auth",
+        "identityManaged": true
       },
       {
         "key": "OIDC_AUDIENCE",
@@ -60,7 +62,8 @@
         "placeholder": "https://api.example.com",
         "required": false,
         "secret": false,
-        "group": "Auth"
+        "group": "Auth",
+        "identityManaged": true
       }
     ],
     "tenant": "substrat-9yjbbn"

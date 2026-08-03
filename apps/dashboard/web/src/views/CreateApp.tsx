@@ -188,16 +188,26 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
   const [name, setName] = useState(source.defaultName);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // The Identity picker (below) OWNS auth config: for a vertical that declares
+  // `requires: ['oidc-issuer']`, its auth env keys are marked `identityManaged` and the
+  // picker (Built-in / an Auth Server / External OIDC) supersedes them — so drop them from
+  // the raw config form rather than offer two contradictory ways to set the same thing (nor
+  // deliver their defaults, which would pin auth behind the picker's back). They stay on
+  // the post-install Env tab as the hand-edit fallback. `identityApplies` is false for an
+  // `oidc-issuer` PROVIDER itself — an issuer doesn't delegate to another issuer.
+  const identityApplies = !source.provides.includes('oidc-issuer') && source.verticalSlug !== 'auth-server';
+  const formSpecs = source.envSpec.filter((s) => !(identityApplies && s.identityManaged));
   // The vertical's declared config (#426), collected HERE so first-run values ride with
   // provisioning — the instance is born configured (an issuer with its admin) instead of
   // live-but-unconfigured until someone finds the Env tab. Non-secrets prefill their
-  // declared default; secrets always start blank.
+  // declared default; secrets always start blank. Only the VISIBLE (non-identity) specs,
+  // so an identity-managed key's default is never delivered as an install override.
   const [config, setConfig] = useState<Record<string, string>>(() =>
-    Object.fromEntries(source.envSpec.map((s) => [s.key, s.secret ? '' : s.default ?? ''])),
+    Object.fromEntries(formSpecs.map((s) => [s.key, s.secret ? '' : s.default ?? ''])),
   );
-  const requiredMissing = source.envSpec.filter((s) => s.required && !(config[s.key] ?? '').trim());
+  const requiredMissing = formSpecs.filter((s) => s.required && !(config[s.key] ?? '').trim());
   const configGroups = new Map<string, EnvVarSpec[]>();
-  for (const s of source.envSpec) {
+  for (const s of formSpecs) {
     const g = s.group ?? 'Configuration';
     (configGroups.get(g) ?? configGroups.set(g, []).get(g)!).push(s);
   }
@@ -209,10 +219,11 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
   // The Identity choice (vertical-auth-detach.md §2.4). 'builtin' = the vertical's own
   // auth (the safe default — every vertical supports it); an issuer app = one-click SSO
   // (the client is registered there automatically); 'external' = any OIDC issuer,
-  // configured by hand. Hidden when installing an `oidc-issuer` PROVIDER itself (#427,
-  // capability-declared — the legacy `auth-server` slug is grandfathered) — an issuer
+  // configured by hand. `identityApplies` (computed above, where it also gates the
+  // identity-managed env fields) is false for an `oidc-issuer` PROVIDER itself (#427,
+  // capability-declared — the legacy `auth-server` slug is grandfathered): an issuer
   // doesn't authenticate against another issuer.
-  const identityApplies = !source.provides.includes('oidc-issuer') && source.verticalSlug !== 'auth-server';
+  //
   // A declared requirer (#427): the Identity section is the vertical's own delegation
   // seam, so say so — the offer is capability-driven, not a generic form section.
   const declaresOidc = source.requires.includes('oidc-issuer');
@@ -220,6 +231,7 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
   const [issuer, setIssuer] = useState('');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [audience, setAudience] = useState('');
   const identityOptions = [
     { value: 'builtin', label: 'Built-in — this app manages its own users' },
     ...authServers.map((a) => ({ value: a.app_scope_id, label: `Auth Server — ${a.name}` })),
@@ -234,6 +246,7 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
         issuer: issuer.trim(),
         clientId: clientId.trim(),
         ...(clientSecret ? { clientSecret } : {}),
+        ...(audience.trim() ? { audience: audience.trim() } : {}),
       };
     }
     return { source: 'auth-server', scopeId: identity };
@@ -336,6 +349,7 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
                   <Input label="Client ID" value={clientId} onChange={(e) => setClientId(e.target.value)} style={{ flex: 1 }} />
                   <Input label="Client secret" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} style={{ flex: 1 }} />
                 </div>
+                <Input label="Audience (optional)" value={audience} onChange={(e) => setAudience(e.target.value)} placeholder="https://api.example.com" hint="Expected `aud` claim of verified tokens — issuer-dependent." style={{ maxWidth: 420 }} />
               </div>
             )}
           </div>

@@ -25,4 +25,14 @@ describe('envSpec is declared once', () => {
     };
     expect(pkg.substrat?.requires ?? []).toEqual(meridianManifest.requires ?? []);
   });
+
+  it('every auth env key is identityManaged — the install form defers them to the Identity picker', () => {
+    // Meridian declares `requires: ['oidc-issuer']`, so its Identity picker (Built-in / an
+    // Auth Server / External OIDC) is the install-time auth control. The AUTH_PROVIDER /
+    // OIDC_* keys are that same config by other means — marking them identityManaged is
+    // what makes the dashboard hide them there (and keep them on the Env tab).
+    const authKeys = MERIDIAN_ENV.filter((s) => s.group === 'Auth');
+    expect(authKeys.map((s) => s.key)).toEqual(['AUTH_PROVIDER', 'OIDC_ISSUER', 'OIDC_AUDIENCE']);
+    for (const s of authKeys) expect(s.identityManaged).toBe(true);
+  });
 });

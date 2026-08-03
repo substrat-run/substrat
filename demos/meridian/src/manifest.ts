@@ -34,6 +34,9 @@ export const MERIDIAN_ENV: EnvVarSpec[] = [
     required: false,
     secret: false,
     group: 'Auth',
+    // The install-time Identity picker owns this (it's the `substrat:auth` seam) — hidden
+    // there, kept on the Env tab as the hand-edit fallback. See envVarSpec.identityManaged.
+    identityManaged: true,
   },
   {
     key: 'OIDC_ISSUER',
@@ -43,6 +46,7 @@ export const MERIDIAN_ENV: EnvVarSpec[] = [
     required: false,
     secret: false,
     group: 'Auth',
+    identityManaged: true,
   },
   {
     key: 'OIDC_AUDIENCE',
@@ -52,6 +56,7 @@ export const MERIDIAN_ENV: EnvVarSpec[] = [
     required: false,
     secret: false,
     group: 'Auth',
+    identityManaged: true,
   },
 ];
 
