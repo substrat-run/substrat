@@ -19,14 +19,13 @@ interface NavItem {
   key: NavKey;
   label: string;
   icon: IconName;
-  count?: number;
 }
 const MAIN: NavItem[] = [
   { key: 'overview', label: 'Overview', icon: 'grid' },
-  { key: 'apps', label: 'Apps', icon: 'box', count: 4 },
+  { key: 'apps', label: 'Apps', icon: 'box' },
   { key: 'verticals', label: 'Verticals', icon: 'layers' },
-  { key: 'domains', label: 'Domains', icon: 'globe', count: 3 },
-  { key: 'team', label: 'Team', icon: 'users', count: 4 },
+  { key: 'domains', label: 'Domains', icon: 'globe' },
+  { key: 'team', label: 'Team', icon: 'users' },
   { key: 'integrations', label: 'Integrations', icon: 'plug' },
 ];
 const ACCOUNT: NavItem[] = [
@@ -64,9 +63,6 @@ function NavRow({ item, active, onNav }: { item: NavItem; active: boolean; onNav
         <Ic name={item.icon} />
       </span>
       <span style={{ flex: 1 }}>{item.label}</span>
-      {item.count !== undefined && (
-        <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{item.count}</span>
-      )}
     </a>
   );
 }
