@@ -120,6 +120,7 @@ import {
   type ScopeFilter,
   type ScopeHost,
   type ScopeStub,
+  type ScopeStubOptions,
   type SqlValue,
   type TenantRelationalStore,
   type TenantStoreProvisionInput,
@@ -523,7 +524,11 @@ interface ScopeStubRpc {
     requiredEntitlement?: string,
     /** Set when the caller is a MODULE's system principal on a timer (#383). */
     systemModuleId?: string,
-  ): Promise<unknown>;
+  ): Promise<{
+    result: unknown;
+    /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
+    platformRequests: number;
+  }>;
   /** Whether this scope holds a live `system:<moduleId>` grant (#383) — the schedule switch. */
   hasSystemGrant(moduleId: string): Promise<boolean>;
   /** The last time a schedule's operation ran on this scope (#383), or null if never. */
@@ -1420,13 +1425,14 @@ export class CloudflareScopeHost implements ScopeHost {
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    options?: ScopeStubOptions,
   ): Promise<ScopeStub> {
     // Lifecycle gates (control-plane.md §4.1/§4.2), the K-3 fail-closed path,
     // evaluated durably in the ControlPlaneDO. A throw propagates here.
     await this.cp.validateScopeAccess(tenantId, scopeId);
 
     await this.migrateAndRecord(scopeId);
-    return this.buildStub(tenantId, scopeId, principal);
+    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options);
   }
 
   /**
@@ -1536,6 +1542,7 @@ export class CloudflareScopeHost implements ScopeHost {
     principal?: PrincipalId,
     connectionId?: ConnectionId,
     systemModuleId?: string,
+    options?: ScopeStubOptions,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const cp = this.cp;
@@ -1564,7 +1571,7 @@ export class CloudflareScopeHost implements ScopeHost {
             ),
           );
         }
-        const result = (await stub.invoke(
+        const envelope = await stub.invoke(
           operation,
           input,
           asPrincipalId,
@@ -1573,9 +1580,12 @@ export class CloudflareScopeHost implements ScopeHost {
           connectionId,
           requiredKey,
           systemModuleId,
-        )) as O;
+        );
         await this.drainExecutors(tenantId, scopeId);
-        return result;
+        // #458: the operation committed having enqueued platform intents — tell the
+        // caller's harness so it can flag the response for the router kick (#381).
+        if (envelope.platformRequests > 0) options?.onPlatformRequests?.(envelope.platformRequests);
+        return envelope.result as O;
       },
     };
   }

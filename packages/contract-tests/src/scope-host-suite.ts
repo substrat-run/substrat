@@ -284,6 +284,21 @@ export function scopeHostContractSuite(
       expect(after.every((r) => r.kind !== 'provision-sibling' || r.payload !== JSON.stringify({ rolled: 'back' }))).toBe(true);
     });
 
+    it('reports committed platform intents to the stub minter — the drain-hint feed (#458)', async () => {
+      const counts: number[] = [];
+      const stub = await host.getScope(alice, t1, s1, { onPlatformRequests: (n) => counts.push(n) });
+      await stub.invoke<string>('platform/request', { kind: 'provision-sibling', payload: { slug: 'gym' } });
+      expect(counts).toEqual([1]); // fired once, with how many intents that invoke enqueued
+
+      // An operation that enqueues nothing stays silent…
+      await stub.invoke('test/emit-event');
+      expect(counts).toEqual([1]);
+
+      // …and a rolled-back intent is no signal: it did not survive its transaction (K-4).
+      await expect(stub.invoke('platform/request-then-throw', { kind: 'provision-sibling' })).rejects.toThrow('boom');
+      expect(counts).toEqual([1]);
+    });
+
     it('the platform lists pending intents and settles them done (drain surface, Phase B)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const id = await stub.invoke<string>('platform/request', { kind: 'provision-sibling', payload: { slug: 'padel' } });

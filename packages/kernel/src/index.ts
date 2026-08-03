@@ -28,6 +28,7 @@ export type {
   ScopeFilter,
   ScopeHost,
   ScopeStub,
+  ScopeStubOptions,
   SqlMigration,
   SqlValue,
   TenantRelationalStore,
@@ -55,6 +56,7 @@ export {
   assertPlatformCall,
   PlatformCallError,
   PLATFORM_SECRET_HEADER,
+  PLATFORM_REQUEST_HEADER,
 } from './platform-call.js';
 export { runPlatformSweep, startPlatformSweeper } from './platform-sweep.js';
 export type {

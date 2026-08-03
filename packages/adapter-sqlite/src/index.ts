@@ -148,6 +148,7 @@ import {
   type ScopeFilter,
   type ScopeHost,
   type ScopeStub,
+  type ScopeStubOptions,
   type SqlMigration,
   type SqlValue,
   type TenantRelationalStore,
@@ -1540,6 +1541,7 @@ export class SqliteScopeHost implements ScopeHost {
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    options?: ScopeStubOptions,
   ): Promise<ScopeStub> {
     const row = this.directory
       .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
@@ -1582,7 +1584,7 @@ export class SqliteScopeHost implements ScopeHost {
       // the migration's own message, which is the one an operator needs.
       throw new Error(`scope not active (status: ${row.status}): ${scopeId}`);
     }
-    return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal));
+    return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal), options);
   }
 
   /**
@@ -1752,13 +1754,14 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     rt: ScopeRuntime,
     subject: CheckSubject,
+    options?: ScopeStubOptions,
   ): ScopeStub {
     const operations = this.operations;
 
     return {
       tenantId,
       scopeId,
-      invoke: <O, I>(operation: string, input?: I): Promise<O> => {
+      invoke: async <O, I>(operation: string, input?: I): Promise<O> => {
         const handler = operations.get(operation);
         if (!handler) return Promise.reject(new Error(`unknown operation: ${operation}`));
         // Entitlement gate (control-plane.md §4.3): a module loads for a tenant
@@ -1773,10 +1776,14 @@ export class SqliteScopeHost implements ScopeHost {
             ),
           );
         }
-        return rt.actor.enqueue(async () => {
+        // #458: per-invoke tally of `ctx.requestPlatform` calls. Reported to the
+        // harness only after the enqueue task resolves — i.e. after COMMIT — so a
+        // rolled-back intent never signals.
+        const signals = { platformRequests: 0 };
+        const invoked = await rt.actor.enqueue(async () => {
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
-          const ctx = this.operationContext(rt, subject);
+          const ctx = this.operationContext(rt, subject, undefined, signals);
           const clonedInput = structuredClone(input);
           rt.db.exec('BEGIN IMMEDIATE');
           let result: O;
@@ -1802,6 +1809,8 @@ export class SqliteScopeHost implements ScopeHost {
           await this.dispatchExecutors(rt);
           return structuredClone(result);
         });
+        if (signals.platformRequests > 0) options?.onPlatformRequests?.(signals.platformRequests);
+        return invoked;
       },
     };
   }
@@ -4729,6 +4738,8 @@ export class SqliteScopeHost implements ScopeHost {
     rt: ScopeRuntime,
     subject: CheckSubject,
     overrideActor?: { system: string },
+    /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
+    signals?: { platformRequests: number },
   ): OperationContext {
     const principal = subject.id as PrincipalId;
     const checker = this.checker;
@@ -4816,6 +4827,7 @@ export class SqliteScopeHost implements ScopeHost {
             JSON.stringify(requestedBy),
             instant.parse(new Date().toISOString()),
           );
+        if (signals) signals.platformRequests += 1;
         return id;
       },
       check: async (permission, entity?) => {

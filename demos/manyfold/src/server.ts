@@ -7,7 +7,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import Database from 'better-sqlite3';
 import type { ScopeStub } from '@substrat-run/kernel';
-import { ulid } from '@substrat-run/kernel';
+import { PLATFORM_REQUEST_HEADER, ulid } from '@substrat-run/kernel';
 import { platformActorId, principalId, z, type PlatformActorId, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
 import { buildDemoHost, seedDemo, type ManyfoldWorld } from './index.js';
 import { ROLES } from './provision.js';
@@ -106,7 +106,11 @@ function siteScope(headers: Headers): ScopeId {
 async function stub(c: Context): Promise<ScopeStub> {
   const principal = await principalFromSession(c.req.raw.headers);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
-  return host.getScope(principal, world.t1, siteScope(c.req.raw.headers));
+  // #458 parity with the worker: flag responses whose operation enqueued a platform
+  // intent. No router locally, so the header is inert — but visible when driving the API.
+  return host.getScope(principal, world.t1, siteScope(c.req.raw.headers), {
+    onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+  });
 }
 
 async function sha256Hex(s: string): Promise<string> {
