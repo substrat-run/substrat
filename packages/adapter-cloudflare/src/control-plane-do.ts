@@ -1472,12 +1472,24 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?', granted, slug);
   }
 
-  /** How many scopes a vertical still backs — deleteVertical's refusal reads this. */
-  countScopesForVertical(slug: string): number {
+  /**
+   * How many scopes a vertical still backs, split by liveness — deleteVertical's refusal
+   * reads this. `reaped` rows are excluded outright: a reaped scope is terminal history
+   * and must never pin a registry row forever. `archived` counts separately: it can still
+   * be restored (unarchiveScope), so it blocks, but the refusal names reap/restore as the
+   * remaining step — the app was already deleted.
+   */
+  countScopesForVertical(slug: string): { live: number; archived: number } {
     const r = this.sql
-      .exec('SELECT COUNT(*) AS n FROM scopes WHERE vertical = ?', slug)
-      .toArray()[0] as unknown as { n: number } | undefined;
-    return r?.n ?? 0;
+      .exec(
+        'SELECT ' +
+          "COUNT(*) FILTER (WHERE status NOT IN ('archived', 'reaped')) AS live, " +
+          "COUNT(*) FILTER (WHERE status = 'archived') AS archived " +
+          'FROM scopes WHERE vertical = ?',
+        slug,
+      )
+      .toArray()[0] as unknown as { live: number; archived: number } | undefined;
+    return { live: r?.live ?? 0, archived: r?.archived ?? 0 };
   }
 
   /**
