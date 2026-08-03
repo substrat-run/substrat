@@ -7,10 +7,11 @@
  */
 import { platformActorId } from '@substrat-run/contracts';
 import { runPlatformSweep, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
-import { brokenMod, contractTestModules, contractTestBareOps } from '@substrat-run/contract-tests';
+import { brokenMod, contractTestModules, contractTestBareOps, scheduleMod } from '@substrat-run/contract-tests';
 import { defineScopeDO } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
+import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
 
 export const ScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
 
@@ -84,6 +85,31 @@ export const BrokenSweeperDO = definePlatformSweeperDO<SweeperEnv>({
   intervalMs: 60_000,
   sweep: async () => {
     throw new Error('the directory is unreachable');
+  },
+});
+
+// -- the CP-less scope-local sweep trigger (scope-sweeper.test.ts, #461) ------
+
+interface ScopeSweeperEnv {
+  /** The scope-sweeper tests' OWN scope namespace (same ScopeDO class) — no directory. */
+  LOCAL_SWEEP_SCOPE: DurableObjectNamespace;
+}
+
+/**
+ * The trigger under test: a roster-keeping singleton over a CP-LESS host (no
+ * `controlPlane` option — the null-object stand-in, exactly the hosted-vertical
+ * shape). Only `scheduleMod` is registered: the pass's schedule half is what
+ * #461 is about, and the drain half is a no-op on a module with no consumers.
+ */
+export const ScopeSweeperDO = defineScopeSweeperDO<ScopeSweeperEnv>({
+  intervalMs: 60_000,
+  host: (env) => {
+    const host = new CloudflareScopeHost({
+      scope: env.LOCAL_SWEEP_SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(scheduleMod);
+    return host;
   },
 });
 

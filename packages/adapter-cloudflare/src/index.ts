@@ -10,6 +10,8 @@
  *   - defineScopeDO       — one SQLite-backed Durable Object per scope
  *   - ControlPlaneDO      — the cross-DO directory slice (roles + tenant tuples)
  *   - definePlatformSweeperDO — the alarm-driven trigger for `runPlatformSweep`
+ *   - defineScopeSweeperDO    — the CP-less vertical's own timer: roster + alarm
+ *                               driving `drainDue`/`runDueSchedules` per scope (#461)
  */
 export { CloudflareScopeHost } from './host.js';
 export type { CloudflareScopeHostOptions } from './host.js';
@@ -20,6 +22,14 @@ export { doScopedSql } from './sql.js';
 export { createDoTupleChecker } from './checker.js';
 export { definePlatformSweeperDO, PLATFORM_SWEEPER_NAME } from './platform-sweeper-do.js';
 export type { PlatformSweeperDoConfig, PlatformSweepOutcome } from './platform-sweeper-do.js';
+export { defineScopeSweeperDO, SCOPE_SWEEPER_NAME } from './scope-sweeper-do.js';
+export type {
+  ScopeSweeperDo,
+  ScopeSweeperDoConfig,
+  ScopeSweepHost,
+  ScopeSweepOutcome,
+  ScopeSweepReport,
+} from './scope-sweeper-do.js';
 export {
   createD1TenantStores,
   d1TenantRelationalStore,

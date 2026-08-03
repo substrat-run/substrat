@@ -19,7 +19,11 @@
       // would find a stale object and fail with "changed, invalidating this
       // Durable Object". Separate namespaces = separate objects = no collision.
       { "name": "SWEEP_SCOPE", "class_name": "ScopeDO" },
-      { "name": "SWEEP_CONTROL_PLANE", "class_name": "ControlPlaneDO" }
+      { "name": "SWEEP_CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+      // The CP-less scope-local sweep trigger (#461) + its own scope namespace
+      // — see scope-sweeper.test.ts (same isolation reasoning as SWEEP_SCOPE).
+      { "name": "SCOPE_SWEEPER", "class_name": "ScopeSweeperDO" },
+      { "name": "LOCAL_SWEEP_SCOPE", "class_name": "ScopeDO" }
     ]
   },
   "migrations": [
@@ -34,6 +38,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["SweeperDO", "BrokenSweeperDO"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["ScopeSweeperDO"]
     }
   ]
 }

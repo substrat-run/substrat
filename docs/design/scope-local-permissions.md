@@ -168,6 +168,12 @@ still a control-plane act.)
    uploader already wired behind `CF_API_TOKEN`), promote a prod version, and the dashboard's
    `bindScopeVersion` step drives dynamic dispatch. Drop the static `VERTICAL_CALLOUT` bindings.
 
+   A CP-less deployment also owns its own **recurring work** (#461): it cannot be enumerated
+   by `runPlatformSweep` (no directory) and cannot be reached by the platform's scope stubs,
+   so `defineScopeSweeperDO` (adapter-cloudflare) keeps a scope roster fed by
+   `/internal/provision`/`/internal/reconcile` and alarm-drives each scope's `drainDue` +
+   `runDueSchedules` locally — see scheduler.md §3.3.
+
 ## 9. Open questions
 
 1. **Fan-out for large tenants** — synchronous on assign vs a sweep only; the dashboard's own
