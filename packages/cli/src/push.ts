@@ -340,6 +340,10 @@ export async function push(
     // static database id to declare (the platform mints one per tenant), so they never
     // appear in `bindings`/wrangler — only here, for admission + the tenant lifecycle.
     ...(needs?.tenantStores?.length ? { tenantStores: needs.tenantStores } : {}),
+    // Per-tenant blob stores (#473) travel the same way — a NEED, never a static
+    // r2_bucket binding: the platform mints one bucket per tenant, so there is no id to
+    // declare. Carried here for admission + the tenant lifecycle.
+    ...(needs?.blobStores?.length ? { blobStores: needs.blobStores } : {}),
     // The vertical's declared config surface, carried to the registry (control-plane-side
     // validated) so the platform renders a settings form for it. Not part of any admission
     // digest — it's metadata, not code.

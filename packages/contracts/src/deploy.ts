@@ -88,6 +88,49 @@ export function tenantStoreBindingName(binding: string, tenantId: string): strin
 }
 
 /**
+ * A **per-tenant blob store** the platform provisions and hands to the vertical (#473) —
+ * an object store for attachment bytes (an R2 bucket on Cloudflare, a directory on the
+ * pure adapter), reached in the worker through `binding`. The fourth store shape, same
+ * ownership story as `tenantStoreNeed`: the builder supplies **no bucket id** — the
+ * platform mints one per tenant in the tenant lifecycle and injects it, so a blob store
+ * is a `runtimeNeeds` NEED, never a `declaredBinding`. (A hand-authored static
+ * `r2_bucket` binding remains admissible under §4 as an own store — this exists so
+ * attachment bytes don't have to ride one: per-tenant minting closes the shared-bucket
+ * ownership gap, and per-SCOPE isolation inside the store is platform-derived key
+ * prefixes constructed only in kernel/adapter code, never in module or route code.)
+ */
+export const blobStoreNeed = z.object({
+  /** How the worker reaches this tenant's store: `env[blobStoreBindingName(binding, tenantId)]`. */
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  /** The store shape. Only `blob` today; a literal so widening it is an explicit, additive change. */
+  kind: z.literal('blob').default('blob'),
+});
+export type BlobStoreNeed = z.infer<typeof blobStoreNeed>;
+
+/**
+ * A platform-minted per-tenant blob store, as handed over at provision (K-31). `ref` is
+ * **opaque to the vertical**: an R2 bucket name on Cloudflare, a per-tenant directory
+ * token on the pure adapter. The vertical never parses it — request-time reach is the
+ * injected binding (Cloudflare) or the host's own resolution (pure adapter).
+ */
+export const blobStoreHandle = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  kind: z.literal('blob'),
+  ref: z.string().min(1),
+});
+export type BlobStoreHandle = z.infer<typeof blobStoreHandle>;
+
+/**
+ * The env name a tenant's blob store is bound under on the Cloudflare serving script
+ * (#473): `<BINDING>__<TENANTID>` — the same convention, and for the same reason, as
+ * {@link tenantStoreBindingName}; the value narrows to an `R2Bucket` instead of a
+ * `D1Database`. On the pure adapter there is no binding to name.
+ */
+export function blobStoreBindingName(binding: string, tenantId: string): string {
+  return `${binding}__${tenantId}`;
+}
+
+/**
  * What a vertical needs from the runtime, in substrate vocabulary (package.json
  * `substrat.runtimeNeeds`). A vertical authored with this section never writes deploy
  * config for a specific substrate — the CLI derives that at push time (D-38: builders
@@ -108,6 +151,9 @@ export const runtimeNeeds = z.object({
    *  statically — the CLI does not emit a wrangler binding for these, precisely because there
    *  is one database per tenant, minted in the tenant lifecycle rather than at deploy. */
   tenantStores: z.array(tenantStoreNeed).default([]),
+  /** Per-tenant blob stores for attachment bytes (#473). Same non-binding rule as
+   *  `tenantStores`: one bucket per tenant, minted in the tenant lifecycle. */
+  blobStores: z.array(blobStoreNeed).default([]),
 });
 export type RuntimeNeeds = z.infer<typeof runtimeNeeds>;
 
@@ -287,6 +333,9 @@ export const deployManifest = z.object({
    *  there is no static binding for a per-tenant store, so it never rides the sandbox
    *  allowlist; the platform mints one database per tenant and injects the id. */
   tenantStores: z.array(tenantStoreNeed).default([]),
+  /** Per-tenant blob stores (#473) — same carry-for-provisioning rule as `tenantStores`:
+   *  never a static binding; the platform mints one bucket per tenant and injects it. */
+  blobStores: z.array(blobStoreNeed).default([]),
   /** The vertical's declared env-spec (from its package.json `substrat.envSpec`), stored on
    *  the registry so a host/console renders a config form for it. Optional + validated here. */
   envSpec: z.array(envVarSpec).optional(),

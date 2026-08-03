@@ -1,5 +1,9 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
+  ATTACHMENT_ADDED,
+  ATTACHMENT_REMOVED,
+  attachmentRecord,
+  type AttachmentRecord,
   domainEvent,
   domainEventInput,
   eventId,
@@ -30,6 +34,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   ulid,
+  assertAllowed,
   assertReadOnlyQuery,
   PermissionDenied,
   type ConsumerHandler,
@@ -259,6 +264,24 @@ const KERNEL_DDL = `
     scope_id TEXT,
     PRIMARY KEY (tenant_id, provider, external_id)
   );
+  -- Attachment metadata facts (#473): one row per object in the per-tenant blob store,
+  -- keyed to the owning entity a module manifest declared as an attachmentTarget. Lives
+  -- INSIDE the scope database on purpose — scope pull / restore / PITR carry the rows
+  -- like any other scope fact; sha256 is the integrity witness for the bytes outside.
+  CREATE TABLE IF NOT EXISTS _substrat_attachments (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_attachments_entity
+    ON _substrat_attachments (entity_type, entity_id);
 `;
 
 /**
@@ -383,6 +406,8 @@ export function defineScopeDO(
     private readonly predicates = new Map<string, { module: string; handler: GuardPredicate }>();
     private readonly withdrawn = new Map<string, string>();
     private readonly relations = new Map<string, Set<string>>();
+    /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
+    private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
     private readonly checker: PermissionChecker;
     private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
     private readonly applied = new Set<string>();
@@ -461,6 +486,24 @@ export function defineScopeDO(
         const parents = this.relations.get(rel.entityType) ?? new Set<string>();
         parents.add(rel.parentType);
         this.relations.set(rel.entityType, parents);
+      }
+      // Attachment targets (#473): entityType → the gate the attachment surface enforces.
+      // Re-declaring with the same gate is idempotent; a different gate is refused —
+      // ambiguous authority must not depend on registration order (mirror of the pure
+      // adapter, which validates the same way).
+      for (const target of manifest.attachmentTargets) {
+        const gate = {
+          read: target.readPermission,
+          write: target.writePermission ?? target.readPermission,
+        };
+        const existing = this.attachmentTargets.get(target.entityType);
+        if (existing && (existing.read !== gate.read || existing.write !== gate.write)) {
+          throw new Error(
+            `conflicting attachmentTargets for '${target.entityType}': ` +
+              `(${existing.read}/${existing.write}) vs (${gate.read}/${gate.write})`,
+          );
+        }
+        this.attachmentTargets.set(target.entityType, gate);
       }
       for (const name of manifest.withdraws ?? []) {
         this.withdrawn.set(name, manifest.id);
@@ -755,6 +798,196 @@ export function defineScopeDO(
         // Post-commit: drain the outbox to consumers, each delivery its own txn.
         await this.dispatch(tenantId, scopeId);
         return { result, platformRequests: signals.platformRequests };
+      });
+    }
+
+    // -- attachments (#473): the metadata half of the attachment surface --------
+    // The coordinator (worker) holds the bytes and the per-tenant R2 binding; this
+    // DO holds the permission gate and the metadata fact, under the same per-scope
+    // serialization and transactional (row + spine event) semantics as an invoke.
+    // Bytes never cross this boundary — only the small record does.
+
+    private attachmentGate(entityType: string): { read: PermissionKey; write: PermissionKey } {
+      const gate = this.attachmentTargets.get(entityType);
+      if (!gate) {
+        throw new Error(
+          `no registered module declares '${entityType}' in attachmentTargets — attachments ` +
+            `bind only to declared entity types`,
+        );
+      }
+      return gate;
+    }
+
+    private attachmentRow(attachmentId: string): AttachmentRecord | null {
+      const row = this.sql
+        .exec('SELECT * FROM _substrat_attachments WHERE id = ?', attachmentId)
+        .toArray()[0] as
+        | {
+            id: string;
+            entity_type: string;
+            entity_id: string;
+            filename: string;
+            content_type: string;
+            size: number;
+            sha256: string;
+            visibility: string;
+            created_by: string;
+            created_at: string;
+          }
+        | undefined;
+      if (!row) return null;
+      return attachmentRecord.parse({
+        id: row.id,
+        entity: { entityType: row.entity_type, entityId: row.entity_id },
+        filename: row.filename,
+        contentType: row.content_type,
+        size: Number(row.size),
+        sha256: row.sha256,
+        visibility: row.visibility,
+        createdBy: row.created_by,
+        createdAt: row.created_at,
+      });
+    }
+
+    /** Record an uploaded attachment: write gate + row + `attachment.added`, one txn. */
+    async attachmentAdd(
+      record: AttachmentRecord,
+      principal: PrincipalId,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<AttachmentRecord> {
+      await this.ensureMigrations();
+      const parsed = attachmentRecord.parse(record);
+      const gate = this.attachmentGate(parsed.entity.entityType);
+      return this.queue.enqueue(async () => {
+        try {
+          await this.ctx.storage.transaction(async () => {
+            const ctx = this.operationContext(principal, tenantId, scopeId);
+            assertAllowed(await ctx.check(gate.write, parsed.entity));
+            this.sql.exec(
+              `INSERT INTO _substrat_attachments
+                 (id, entity_type, entity_id, filename, content_type, size, sha256,
+                  visibility, created_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              parsed.id,
+              parsed.entity.entityType,
+              parsed.entity.entityId,
+              parsed.filename,
+              parsed.contentType,
+              parsed.size,
+              parsed.sha256,
+              parsed.visibility,
+              parsed.createdBy,
+              parsed.createdAt,
+            );
+            ctx.emit({
+              type: ATTACHMENT_ADDED,
+              schemaVersion: 1,
+              entity: parsed.entity,
+              piiClass: 'none',
+              payload: { attachment: parsed },
+            });
+          });
+        } catch (err) {
+          if (err instanceof PermissionDenied) {
+            this.recordDenial({ kind: 'principal', id: principal }, tenantId, 'attachments.upload', err);
+          }
+          throw toRpcError(err);
+        }
+        await this.dispatch(tenantId, scopeId);
+        return parsed;
+      });
+    }
+
+    /** Records for one entity, newest first — read gate first. */
+    async attachmentList(
+      entity: EntityRef,
+      principal: PrincipalId,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<AttachmentRecord[]> {
+      await this.ensureMigrations();
+      const gate = this.attachmentGate(entity.entityType);
+      try {
+        const ctx = this.operationContext(principal, tenantId, scopeId);
+        assertAllowed(await ctx.check(gate.read, entity));
+      } catch (err) {
+        if (err instanceof PermissionDenied) {
+          this.recordDenial({ kind: 'principal', id: principal }, tenantId, 'attachments.list', err);
+        }
+        throw toRpcError(err);
+      }
+      const rows = this.sql
+        .exec(
+          `SELECT id FROM _substrat_attachments WHERE entity_type = ? AND entity_id = ?
+           ORDER BY id DESC`,
+          entity.entityType,
+          entity.entityId,
+        )
+        .toArray() as unknown as { id: string }[];
+      return rows.map((r) => this.attachmentRow(r.id)).filter((r): r is AttachmentRecord => r !== null);
+    }
+
+    /**
+     * Authorize one attachment (`read` before bytes are served, `write` before a remove is
+     * attempted elsewhere) and return its record — null for an id this scope does not know.
+     */
+    async attachmentAuthorize(
+      attachmentId: string,
+      mode: 'read' | 'write',
+      principal: PrincipalId,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<AttachmentRecord | null> {
+      await this.ensureMigrations();
+      const record = this.attachmentRow(attachmentId);
+      if (!record) return null;
+      const gate = this.attachmentGate(record.entity.entityType);
+      try {
+        const ctx = this.operationContext(principal, tenantId, scopeId);
+        assertAllowed(await ctx.check(mode === 'read' ? gate.read : gate.write, record.entity));
+      } catch (err) {
+        if (err instanceof PermissionDenied) {
+          this.recordDenial({ kind: 'principal', id: principal }, tenantId, 'attachments.open', err);
+        }
+        throw toRpcError(err);
+      }
+      return record;
+    }
+
+    /** Remove an attachment's metadata fact: write gate + delete + `attachment.removed`. */
+    async attachmentRemove(
+      attachmentId: string,
+      principal: PrincipalId,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<AttachmentRecord | null> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () => {
+        const record = this.attachmentRow(attachmentId);
+        if (!record) return null;
+        const gate = this.attachmentGate(record.entity.entityType);
+        try {
+          await this.ctx.storage.transaction(async () => {
+            const ctx = this.operationContext(principal, tenantId, scopeId);
+            assertAllowed(await ctx.check(gate.write, record.entity));
+            this.sql.exec('DELETE FROM _substrat_attachments WHERE id = ?', attachmentId);
+            ctx.emit({
+              type: ATTACHMENT_REMOVED,
+              schemaVersion: 1,
+              entity: record.entity,
+              piiClass: 'none',
+              payload: { attachment: record },
+            });
+          });
+        } catch (err) {
+          if (err instanceof PermissionDenied) {
+            this.recordDenial({ kind: 'principal', id: principal }, tenantId, 'attachments.remove', err);
+          }
+          throw toRpcError(err);
+        }
+        await this.dispatch(tenantId, scopeId);
+        return record;
       });
     }
 

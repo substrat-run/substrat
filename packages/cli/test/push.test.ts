@@ -72,6 +72,7 @@ describe('readRuntimeNeeds', () => {
       needsNodeCompat: false,
       stores: [],
       tenantStores: [],
+      blobStores: [],
     });
   });
 

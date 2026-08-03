@@ -1,9 +1,14 @@
-import { mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
   accessLogEntry,
   adminLogEntry,
+  ATTACHMENT_ADDED,
+  ATTACHMENT_REMOVED,
+  attachmentRecord,
+  type AttachmentRecord,
+  type BlobStoreHandle,
   createTenantInput,
   domainEvent,
   domainEventInput,
@@ -114,11 +119,19 @@ import {
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
+  assertAllowed,
   assertReadOnlyQuery,
+  attachmentBlobKey,
   resolveScopeRecord,
   ulid,
   type AccessLogFilter,
+  type AttachmentUploadInput,
   type AuditLogFilter,
+  type BlobStoreProvisionInput,
+  type BlobStoreRecord,
+  type OpenedAttachment,
+  type ScopeAttachments,
+  type TenantBlobStore,
   type ConsumerHandler,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
@@ -165,6 +178,20 @@ interface ScopeRuntime {
   db: Database.Database;
   actor: ScopeActor;
   appliedMigrations: Set<string>;
+}
+
+/** One `_substrat_attachments` row (#473), as SELECTed. */
+interface AttachmentRow {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  sha256: string;
+  visibility: string;
+  created_by: string;
+  created_at: string;
 }
 
 interface RegisteredModule {
@@ -287,6 +314,24 @@ const KERNEL_DDL = `
     next_attempt_at TEXT,
     PRIMARY KEY (event_id, consumer_module)
   );
+  -- Attachment metadata facts (#473): one row per object in the per-tenant blob store,
+  -- keyed to the owning entity a module manifest declared as an attachmentTarget. Lives
+  -- INSIDE the scope database on purpose — scope pull / restore / PITR carry the rows
+  -- like any other scope fact; sha256 is the integrity witness for the bytes outside.
+  CREATE TABLE IF NOT EXISTS _substrat_attachments (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    visibility TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_attachments_entity
+    ON _substrat_attachments (entity_type, entity_id);
 `;
 
 /** An executor or a connector — same journal and retry, different argument. */
@@ -619,6 +664,8 @@ export class SqliteScopeHost implements ScopeHost {
   /** operation names whose default binding some manifest withdrew (K-17). */
   private readonly withdrawn = new Map<string, string>(); // operation → withdrawing module
   private readonly relations = new Map<string, Set<string>>();
+  /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
+  private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
   /** operation name → its owning module's entitlementKey (§4.3 gate). */
   private readonly operationEntitlement = new Map<string, string>();
   private readonly roles = new Map<string, RoleDefinition>(); // 'tenantId/roleKey'
@@ -729,6 +776,18 @@ export class SqliteScopeHost implements ScopeHost {
       -- provision re-resolves the SAME ref rather than minting a second database, and the
       -- platform knows what to tear down when a tenant is reaped (no orphaned databases).
       CREATE TABLE IF NOT EXISTS tenant_stores (
+        tenant_id  TEXT NOT NULL,
+        vertical   TEXT NOT NULL,
+        binding    TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        ref        TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, vertical, binding)
+      );
+      -- Per-tenant blob stores (#473) — the tenant_stores twin for attachment bytes.
+      -- ref is the opaque handle: a per-tenant directory token here, an R2 bucket name
+      -- on Cloudflare. Same idempotency + reap ledger role.
+      CREATE TABLE IF NOT EXISTS blob_stores (
         tenant_id  TEXT NOT NULL,
         vertical   TEXT NOT NULL,
         binding    TEXT NOT NULL,
@@ -1166,6 +1225,24 @@ export class SqliteScopeHost implements ScopeHost {
       parents.add(rel.parentType);
       this.relations.set(rel.entityType, parents);
     }
+    // Attachment targets (#473): entityType → the permission gate the kernel's attachment
+    // surface enforces. Two modules re-declaring the same entityType with the SAME gate is
+    // tolerated (idempotent); with different gates it is refused — ambiguous authority
+    // over who may read an entity's attachments must not depend on registration order.
+    for (const target of manifest.attachmentTargets) {
+      const gate = {
+        read: target.readPermission,
+        write: target.writePermission ?? target.readPermission,
+      };
+      const existing = this.attachmentTargets.get(target.entityType);
+      if (existing && (existing.read !== gate.read || existing.write !== gate.write)) {
+        throw new Error(
+          `conflicting attachmentTargets for '${target.entityType}': ` +
+            `(${existing.read}/${existing.write}) vs (${gate.read}/${gate.write})`,
+        );
+      }
+      this.attachmentTargets.set(target.entityType, gate);
+    }
     // WITHDRAWAL (K-17): suppress another module's default binding. Order
     // independent — a manifest may withdraw an operation whose module has not
     // registered yet (recorded here, skipped at defineOperation) or one already
@@ -1390,6 +1467,333 @@ export class SqliteScopeHost implements ScopeHost {
       this.tenantStoreDbs.set(ref, db);
     }
     return db;
+  }
+
+  async provisionBlobStore(
+    actor: PlatformActorId,
+    input: BlobStoreProvisionInput,
+  ): Promise<BlobStoreHandle> {
+    // Same fail-closed tenant gate and (tenant, vertical, binding) idempotency as
+    // provisionTenantStore (#301) — the blob store is the fourth store shape, not a
+    // new lifecycle (#473).
+    const tenantRow = this.directory
+      .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
+      .get(input.tenantId) as { status: string } | undefined;
+    if (!tenantRow) {
+      throw new Error(`cannot provision blob store under unknown tenant: ${input.tenantId}`);
+    }
+    if (tenantRow.status !== 'active') {
+      throw new Error(
+        `cannot provision blob store under non-active tenant (status: ${tenantRow.status}): ${input.tenantId}`,
+      );
+    }
+    const existing = this.directory
+      .prepare('SELECT ref FROM blob_stores WHERE tenant_id = ? AND vertical = ? AND binding = ?')
+      .get(input.tenantId, input.vertical, input.binding) as { ref: string } | undefined;
+    if (existing) {
+      return { binding: input.binding, kind: 'blob', ref: existing.ref };
+    }
+    // The opaque `ref` is a bare directory name under `dir`, prefixed `blob__` so it can
+    // never collide with a scope DB or a tenant store file. On Cloudflare the ref is an
+    // R2 bucket name; here it is a per-tenant directory — the same file-per-unit grain
+    // the scope DBs use, so the whole path runs in dev/CI without Cloudflare.
+    const safeVertical = input.vertical.replace(/[^A-Za-z0-9_-]+/g, '-');
+    const ref = `blob__${input.tenantId}__${safeVertical}__${input.binding}__${ulid()}`;
+    mkdirSync(join(this.dir, ref), { recursive: true });
+    this.directory
+      .prepare(
+        `INSERT INTO blob_stores (tenant_id, vertical, binding, kind, ref, created_at)
+         VALUES (?, ?, ?, 'blob', ?, ?)`,
+      )
+      .run(input.tenantId, input.vertical, input.binding, ref, new Date().toISOString());
+    this.recordAdmin(
+      actor,
+      'provisionBlobStore',
+      { tenantId: input.tenantId, vertical: input.vertical },
+      null,
+      { binding: input.binding, kind: 'blob', ref },
+    );
+    return { binding: input.binding, kind: 'blob', ref };
+  }
+
+  /** A `TenantBlobStore` over the per-tenant directory a `ref` names (#473). Keys are
+   *  platform-derived (`attachmentBlobKey`), but both `ref` and key are still guarded at
+   *  the open boundary (parse, don't trust) so neither can escape `this.dir`. */
+  private blobStore(ref: string): TenantBlobStore {
+    if (ref.includes('/') || ref.includes('\\') || ref.includes('..')) {
+      throw new Error(`invalid blob-store ref (must be a bare directory name): ${ref}`);
+    }
+    const root = join(this.dir, ref);
+    const resolveKey = (key: string): string => {
+      if (key.startsWith('/') || key.includes('\\') || key.split('/').some((s) => s === '' || s === '.' || s === '..')) {
+        throw new Error(`invalid blob key: ${key}`);
+      }
+      return join(root, key);
+    };
+    const walk = (d: string, rel: string, out: string[]): void => {
+      if (!existsSync(d)) return;
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(join(d, e.name), r, out);
+        else if (!e.name.endsWith('.meta')) out.push(r);
+      }
+    };
+    return {
+      put: async (key, body, opts) => {
+        const p = resolveKey(key);
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, body);
+        writeFileSync(`${p}.meta`, JSON.stringify({ contentType: opts?.contentType ?? null }));
+      },
+      get: async (key) => {
+        const p = resolveKey(key);
+        if (!existsSync(p)) return null;
+        const body = new Uint8Array(readFileSync(p));
+        let contentType: string | undefined;
+        try {
+          const meta = JSON.parse(readFileSync(`${p}.meta`, 'utf8')) as { contentType?: string | null };
+          contentType = meta.contentType ?? undefined;
+        } catch {
+          // No sidecar (or unreadable): the caller falls back to the metadata row.
+        }
+        return contentType !== undefined ? { body, contentType } : { body };
+      },
+      delete: async (key) => {
+        const p = resolveKey(key);
+        rmSync(p, { force: true });
+        rmSync(`${p}.meta`, { force: true });
+      },
+      list: async (prefix) => {
+        const out: string[] = [];
+        walk(root, '', out);
+        return out.filter((k) => k.startsWith(prefix)).sort();
+      },
+    };
+  }
+
+  /** Resolve the blob store that carries a scope's attachments (#473): the platform-minted
+   *  store for (tenant, the scope's vertical). Fails loudly when none was provisioned —
+   *  the K-31 posture — and refuses ambiguity when several are, unless one is named
+   *  ATTACHMENTS (the convention the deploy vocabulary documents). */
+  private attachmentStore(tenantId: TenantId, vertical: string | null): TenantBlobStore {
+    if (!vertical) {
+      throw new Error('scope runs no vertical; attachments need the vertical\'s platform blob store (#473)');
+    }
+    const rows = this.directory
+      .prepare('SELECT binding, ref FROM blob_stores WHERE tenant_id = ? AND vertical = ? ORDER BY binding')
+      .all(tenantId, vertical) as { binding: string; ref: string }[];
+    if (rows.length === 0) {
+      throw new Error(
+        `no blob store provisioned for (${tenantId}, ${vertical}) — declare runtimeNeeds.blobStores ` +
+          `and provision it in the tenant lifecycle (provisionBlobStore, #473)`,
+      );
+    }
+    const chosen = rows.length === 1 ? rows[0] : rows.find((r) => r.binding === 'ATTACHMENTS');
+    if (!chosen) {
+      throw new Error(
+        `multiple blob stores provisioned for (${tenantId}, ${vertical}); name the one that ` +
+          `carries attachments ATTACHMENTS`,
+      );
+    }
+    return this.blobStore(chosen.ref);
+  }
+
+  async attachments(
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScopeAttachments> {
+    // Same fail-closed (tenantId, scopeId) pair + lifecycle gates + lazy-migration
+    // retry as minting a stub — getScope IS that gate, so go through it.
+    await this.getScope(principal, tenantId, scopeId);
+    const rt = this.runtime(tenantId, scopeId);
+    const scopeRow = this.directory
+      .prepare('SELECT vertical FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { vertical: string | null } | undefined;
+    const store = this.attachmentStore(tenantId, scopeRow?.vertical ?? null);
+    return this.buildAttachments(rt, asPrincipal(principal), store);
+  }
+
+  /**
+   * The attachment surface (#473) — `attachmentTargets` consumed at last. Metadata facts
+   * live in `_substrat_attachments` inside the scope DB and move under the scope's strict
+   * serialization, permission-checked as the ambient principal with the owning entity as
+   * the per-entity ref, with a spine event in the same transaction. Bytes go straight to
+   * the per-tenant blob store — never through the scope pipe (the issue's point).
+   */
+  private buildAttachments(
+    rt: ScopeRuntime,
+    subject: CheckSubject,
+    store: TenantBlobStore,
+  ): ScopeAttachments {
+    const targetGate = (entityType: string): { read: PermissionKey; write: PermissionKey } => {
+      const gate = this.attachmentTargets.get(entityType);
+      if (!gate) {
+        throw new Error(
+          `no registered module declares '${entityType}' in attachmentTargets — attachments bind ` +
+            `only to declared entity types`,
+        );
+      }
+      return gate;
+    };
+    const rowToRecord = (row: AttachmentRow): AttachmentRecord =>
+      attachmentRecord.parse({
+        id: row.id,
+        entity: { entityType: row.entity_type, entityId: row.entity_id },
+        filename: row.filename,
+        contentType: row.content_type,
+        size: row.size,
+        sha256: row.sha256,
+        visibility: row.visibility,
+        createdBy: row.created_by,
+        createdAt: row.created_at,
+      });
+    const sha256Hex = async (body: Uint8Array): Promise<string> => {
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', body);
+      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    };
+    // One attachment mutation/read = one serialized scope task, transactional exactly
+    // like an operation invoke (including K-35 denial recording and prompt dispatch of
+    // the events it emitted).
+    const guarded = <T>(operation: string, fn: (ctx: OperationContext) => Promise<T>): Promise<T> =>
+      rt.actor.enqueue(async () => {
+        const ctx = this.operationContext(rt, subject);
+        rt.db.exec('BEGIN IMMEDIATE');
+        let result: T;
+        try {
+          result = await fn(ctx);
+          rt.db.exec('COMMIT');
+        } catch (err) {
+          rt.db.exec('ROLLBACK');
+          if (err instanceof PermissionDenied) this.recordDenial(rt, subject, operation, err);
+          throw err;
+        }
+        await this.dispatch(rt);
+        await this.dispatchExecutors(rt);
+        return result;
+      });
+
+    return {
+      upload: async (input) => {
+        const gate = targetGate(input.entity.entityType);
+        const id = ulid();
+        const key = attachmentBlobKey(rt.scopeId, id);
+        const record = attachmentRecord.parse({
+          id,
+          entity: input.entity,
+          filename: input.filename,
+          contentType: input.contentType,
+          size: input.body.byteLength,
+          sha256: await sha256Hex(input.body),
+          visibility: input.visibility,
+          createdBy: subject.id,
+          createdAt: new Date().toISOString(),
+        });
+        // Bytes first, row second: a crash between the two leaves an orphaned object
+        // (harmless, GC-able via list), never a row without bytes. A refused check
+        // compensates the object away below.
+        await store.put(key, input.body, { contentType: input.contentType });
+        try {
+          return await guarded('attachments.upload', async (ctx) => {
+            assertAllowed(await ctx.check(gate.write, input.entity));
+            rt.db
+              .prepare(
+                `INSERT INTO _substrat_attachments
+                   (id, entity_type, entity_id, filename, content_type, size, sha256,
+                    visibility, created_by, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              )
+              .run(
+                record.id,
+                record.entity.entityType,
+                record.entity.entityId,
+                record.filename,
+                record.contentType,
+                record.size,
+                record.sha256,
+                record.visibility,
+                record.createdBy,
+                record.createdAt,
+              );
+            ctx.emit({
+              type: ATTACHMENT_ADDED,
+              schemaVersion: 1,
+              entity: input.entity,
+              piiClass: 'none',
+              payload: { attachment: record },
+            });
+            return record;
+          });
+        } catch (err) {
+          await store.delete(key).catch(() => {});
+          throw err;
+        }
+      },
+      list: async (entity) => {
+        const gate = targetGate(entity.entityType);
+        return guarded('attachments.list', async (ctx) => {
+          assertAllowed(await ctx.check(gate.read, entity));
+          const rows = rt.db
+            .prepare(
+              `SELECT * FROM _substrat_attachments WHERE entity_type = ? AND entity_id = ?
+               ORDER BY id DESC`,
+            )
+            .all(entity.entityType, entity.entityId) as AttachmentRow[];
+          return rows.map(rowToRecord);
+        });
+      },
+      open: async (attachmentId) => {
+        const record = await guarded('attachments.open', async (ctx) => {
+          const row = rt.db
+            .prepare('SELECT * FROM _substrat_attachments WHERE id = ?')
+            .get(attachmentId) as AttachmentRow | undefined;
+          if (!row) return null;
+          const gate = targetGate(row.entity_type);
+          assertAllowed(
+            await ctx.check(gate.read, { entityType: row.entity_type, entityId: row.entity_id }),
+          );
+          return rowToRecord(row);
+        });
+        if (!record) return null;
+        const obj = await store.get(attachmentBlobKey(rt.scopeId, record.id));
+        if (!obj) {
+          throw new Error(
+            `attachment ${record.id}: bytes missing from the blob store — the metadata row ` +
+              `survived something the object did not (rewind/reap); see the #473 integrity notes`,
+          );
+        }
+        if ((await sha256Hex(obj.body)) !== record.sha256) {
+          throw new Error(`attachment ${record.id}: bytes do not match the recorded sha256`);
+        }
+        return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
+      },
+      remove: async (attachmentId) => {
+        const removed = await guarded('attachments.remove', async (ctx) => {
+          const row = rt.db
+            .prepare('SELECT * FROM _substrat_attachments WHERE id = ?')
+            .get(attachmentId) as AttachmentRow | undefined;
+          if (!row) return null;
+          const gate = targetGate(row.entity_type);
+          assertAllowed(
+            await ctx.check(gate.write, { entityType: row.entity_type, entityId: row.entity_id }),
+          );
+          rt.db.prepare('DELETE FROM _substrat_attachments WHERE id = ?').run(attachmentId);
+          const record = rowToRecord(row);
+          ctx.emit({
+            type: ATTACHMENT_REMOVED,
+            schemaVersion: 1,
+            entity: record.entity,
+            piiClass: 'none',
+            payload: { attachment: record },
+          });
+          return record;
+        });
+        // Row (and event) first, bytes second: at worst an orphaned object, never a
+        // dangling row.
+        if (removed) await store.delete(attachmentBlobKey(rt.scopeId, removed.id)).catch(() => {});
+        return removed;
+      },
+    };
   }
 
   async importScope(
@@ -3797,6 +4201,50 @@ export class SqliteScopeHost implements ScopeHost {
           vertical: r.vertical,
           binding: r.binding,
           kind: 'relational',
+          ref: r.ref,
+          createdAt: r.created_at,
+        }));
+      },
+      listBlobStores: async (
+        actor,
+        filter?: { tenantId?: TenantId; vertical?: string },
+      ): Promise<BlobStoreRecord[]> => {
+        const where: string[] = [];
+        const params: string[] = [];
+        if (filter?.tenantId) {
+          where.push('tenant_id = ?');
+          params.push(filter.tenantId);
+        }
+        if (filter?.vertical) {
+          where.push('vertical = ?');
+          params.push(filter.vertical);
+        }
+        const rows = this.directory
+          .prepare(
+            'SELECT * FROM blob_stores' +
+              (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+              ' ORDER BY tenant_id, vertical, binding',
+          )
+          .all(...params) as {
+          tenant_id: string;
+          vertical: string;
+          binding: string;
+          kind: string;
+          ref: string;
+          created_at: string;
+        }[];
+        this.recordAccess(
+          actor,
+          'listBlobStores',
+          { tenantId: filter?.tenantId ?? null },
+          filter,
+          rows.length,
+        );
+        return rows.map((r) => ({
+          tenantId: r.tenant_id as TenantId,
+          vertical: r.vertical,
+          binding: r.binding,
+          kind: 'blob',
           ref: r.ref,
           createdAt: r.created_at,
         }));

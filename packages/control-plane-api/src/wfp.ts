@@ -120,19 +120,46 @@ export interface D1BindingSpec {
 }
 
 /**
- * Ensure a set of D1 bindings exists on a dispatch-namespace script WITHOUT redeploying
- * it (#301): attach a freshly-minted tenant store to the vertical's serving script the
- * moment it is provisioned, between full uploads. Resolves without touching Cloudflare
- * when every wanted binding is already present.
+ * One R2 binding to guarantee on a dispatch script (per-tenant blob stores, #473) — the
+ * exact twin of {@link D1BindingSpec}, differing only in the Cloudflare binding shape a
+ * bucket takes (`bucket_name`, not `id`).
  */
-export type PatchScriptBindingsFn = (scriptName: string, ensure: D1BindingSpec[]) => Promise<void>;
+export interface R2BindingSpec {
+  name: string;
+  /** The R2 bucket name (the blob-store ledger's `ref`). */
+  bucketName: string;
+}
+
+/** A binding the patcher guarantees on a serving script — a per-tenant store (#301) or
+ *  blob store (#473). Discriminated so one PATCH carries both kinds. */
+export type ScriptBindingSpec =
+  | ({ type: 'd1' } & D1BindingSpec)
+  | ({ type: 'r2_bucket' } & R2BindingSpec);
+
+/**
+ * Ensure a set of per-tenant bindings exists on a dispatch-namespace script WITHOUT
+ * redeploying it (#301/#473): attach a freshly-minted store to the vertical's serving
+ * script the moment it is provisioned, between full uploads. Resolves without touching
+ * Cloudflare when every wanted binding is already present.
+ */
+export type PatchScriptBindingsFn = (
+  scriptName: string,
+  ensure: ScriptBindingSpec[],
+) => Promise<void>;
+
+/** A `ScriptBindingSpec` → the Cloudflare binding object the settings endpoint wants. */
+function toCfBinding(b: ScriptBindingSpec): { type: string; name: string; [k: string]: unknown } {
+  return b.type === 'd1'
+    ? { type: 'd1', name: b.name, id: b.id }
+    : { type: 'r2_bucket', name: b.name, bucket_name: b.bucketName };
+}
 
 /**
  * A `PatchScriptBindingsFn` over the namespace's script-settings endpoint: read the
- * current bindings, add the missing D1 bindings, PATCH the set back. Additive on
- * purpose — it never removes a binding (reap-time cleanup is the ledger's job, a
- * separate step), and secrets are never round-tripped: the GET cannot return their
- * values, so they ride `keep_bindings` exactly as an in-place upload's do (#286).
+ * current bindings, add the missing ones, PATCH the set back. Additive on purpose — it
+ * never removes a binding (reap-time cleanup is the ledger's job, a separate step), and
+ * secrets are never round-tripped: the GET cannot return their values, so they ride
+ * `keep_bindings` exactly as an in-place upload's do (#286).
  */
 export function createWfpBindingsPatcher(
   opts: Pick<WfpUploaderOptions, 'accountId' | 'namespace' | 'apiToken'>,
@@ -154,8 +181,10 @@ export function createWfpBindingsPatcher(
       bindings?: { type: string; name: string; [k: string]: unknown }[];
     };
     const current = settings.result?.bindings ?? settings.bindings ?? [];
-    const have = new Set(current.filter((b) => b.type === 'd1').map((b) => b.name));
-    const missing = ensure.filter((b) => !have.has(b.name));
+    // Key "have" by (type, name): a store binding and an unrelated binding could in
+    // principle share a name, and only a same-type match means "already attached".
+    const have = new Set(current.map((b) => `${b.type}:${b.name}`));
+    const missing = ensure.filter((b) => !have.has(`${b.type}:${b.name}`));
     if (missing.length === 0) return; // already attached — nothing to send
 
     // Secrets cannot be read back, so they must not be resent (a valueless entry would
@@ -167,7 +196,7 @@ export function createWfpBindingsPatcher(
       new Blob(
         [
           JSON.stringify({
-            bindings: [...carried, ...missing.map((b) => ({ type: 'd1', name: b.name, id: b.id }))],
+            bindings: [...carried, ...missing.map(toCfBinding)],
             keep_bindings: ['secret_text', 'secret_key'],
           }),
         ],

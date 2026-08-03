@@ -66,6 +66,9 @@ import type {
   TenantId,
   TenantRole,
   TenantStoreHandle,
+  AttachmentRecord,
+  BlobStoreHandle,
+  Visibility,
   Vertical,
   VerticalChannel,
   VerticalVersion,
@@ -978,6 +981,15 @@ export interface HostAdmin {
     filter?: { tenantId?: TenantId; vertical?: string },
   ): Promise<TenantStoreRecord[]>;
   /**
+   * The blob-store ledger (#473) — the per-tenant-bucket twin of `listTenantStores`,
+   * with the same two consumers: the deploy path derives the `r2_bucket` bindings that
+   * must ride every serving-script upload, and the console reads it as inventory.
+   */
+  listBlobStores(
+    actor: PlatformActorId,
+    filter?: { tenantId?: TenantId; vertical?: string },
+  ): Promise<BlobStoreRecord[]>;
+  /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and
    * returns undefined on a mismatch rather than another tenant's scope (K-3) —
    * the same fail-closed rule `ScopeHost.getScope` applies when minting a stub.
@@ -1441,6 +1453,99 @@ export interface TenantStoreRecord {
   createdAt: string;
 }
 
+/** What `provisionBlobStore` needs to mint (or idempotently re-resolve) a per-tenant
+ *  blob store (#473). Keyed by (tenant, vertical, binding), exactly like tenant stores. */
+export interface BlobStoreProvisionInput {
+  tenantId: TenantId;
+  /** The vertical the store belongs to — its `blobStoreNeed` binding is scoped to it. */
+  vertical: string;
+  /** The declared `blobStoreNeed.binding` this store satisfies (SCREAMING_SNAKE). */
+  binding: string;
+}
+
+/**
+ * A live per-tenant blob store (#473) — the byte side of the attachment surface. The
+ * contract is async and byte-shaped (Uint8Array + web-standard types only) because the
+ * store is only reachable asynchronously on Cloudflare (an `R2Bucket` binding); the pure
+ * adapter backs it with a per-tenant directory and resolves immediately.
+ *
+ * Keys are PLATFORM-DERIVED (`attachmentBlobKey`), never caller-supplied strings — the
+ * per-scope prefix inside a per-tenant store is constructed in kernel/adapter code, which
+ * is what turns "scope/<id>/ is a convention" into "cross-scope keys are unwritable".
+ */
+export interface TenantBlobStore {
+  put(key: string, body: Uint8Array, opts?: { contentType?: string }): Promise<void>;
+  get(key: string): Promise<{ body: Uint8Array; contentType?: string } | null>;
+  delete(key: string): Promise<void>;
+  /** Keys under `prefix` — the GC/ops walk. */
+  list(prefix: string): Promise<string[]>;
+}
+
+/**
+ * One row of the blob-store ledger (#473) — same idempotency/deploy/reap roles as
+ * {@link TenantStoreRecord}: a retried provision re-resolves the same `ref`, the deploy
+ * path derives which `r2_bucket` bindings must ride every serving-script upload, and a
+ * tenant reap knows what to tear down.
+ */
+export interface BlobStoreRecord {
+  tenantId: TenantId;
+  vertical: string;
+  binding: string;
+  kind: 'blob';
+  ref: string;
+  createdAt: string;
+}
+
+/**
+ * The blob key an attachment's bytes live under inside the per-tenant store (#473).
+ * Scope-prefixed by construction: every key this platform ever writes for a scope sits
+ * under `scope/<scopeId>/`, and the attachment id (a fresh ULID per upload) makes keys
+ * write-once — the two properties the attachment integrity story rests on. Exported so
+ * both adapters (and an ops GC walk) derive the same key; module and route code never do.
+ */
+export function attachmentBlobKey(scopeId: string, attachmentId: string): string {
+  return `scope/${scopeId}/att/${attachmentId}`;
+}
+
+/** Input to `ScopeAttachments.upload` (#473). Bytes ride here — NOT through
+ *  `ScopeStub.invoke`, whose structured-clone pipe and per-scope serialization are
+ *  exactly the wrong path for megabytes of JPEG (the issue's point). */
+export interface AttachmentUploadInput {
+  /** The owning entity — must be a declared `attachmentTargets` entityType. */
+  entity: EntityRef;
+  filename: string;
+  contentType: string;
+  visibility: Visibility;
+  body: Uint8Array;
+}
+
+/** An opened attachment: the metadata fact plus the bytes it witnesses. */
+export interface OpenedAttachment {
+  record: AttachmentRecord;
+  body: Uint8Array;
+  contentType: string;
+}
+
+/**
+ * The attachment surface a host mints per (principal, scope) — `attachmentTargets`
+ * finally consumed (#473). Every method is gated INSIDE the platform by the declared
+ * target's permission, checked as the ambient principal with the owning entity as the
+ * per-entity ref (so entity-narrowed grants resolve): `readPermission` for list/open,
+ * `writePermission` (default: the read key) for upload/remove. The metadata fact lands in
+ * `_substrat_attachments` inside the scope's own database — under scope serialization,
+ * with an `attachment.added`/`attachment.removed` spine event in the same transaction —
+ * while bytes go straight to the per-tenant blob store, never through the scope pipe.
+ */
+export interface ScopeAttachments {
+  upload(input: AttachmentUploadInput): Promise<AttachmentRecord>;
+  /** Records for one entity, newest first. Gated by the target's readPermission. */
+  list(entity: EntityRef): Promise<AttachmentRecord[]>;
+  /** Record + bytes, or null for an id this scope does not know. Gated per entity. */
+  open(attachmentId: string): Promise<OpenedAttachment | null>;
+  /** Delete row (and event) first, then bytes; returns the removed record, null if unknown. */
+  remove(attachmentId: string): Promise<AttachmentRecord | null>;
+}
+
 /**
  * Narrow `listRoles` (control-plane.md §4.5 console item 4 — the permission
  * diff's runtime half).
@@ -1554,6 +1659,38 @@ export interface ScopeHost {
    * from `provisionTenantStore`; never parses `ref` in vertical code.
    */
   openTenantStore(handle: TenantStoreHandle): TenantRelationalStore;
+
+  /**
+   * Mint (or idempotently re-resolve) a **per-tenant blob store** (#473) — the byte home
+   * for the attachment surface. Same ownership story as `provisionTenantStore`: the
+   * platform holds the credential that creates an R2 bucket (D-34), the builder declares
+   * only the NEED (`runtimeNeeds.blobStores`), and the returned `handle.ref` is opaque —
+   * an R2 bucket name on Cloudflare, a per-tenant directory token on the pure adapter.
+   * Idempotent on (tenant, vertical, binding) via the blob-store ledger.
+   */
+  provisionBlobStore(
+    actor: PlatformActorId,
+    input: BlobStoreProvisionInput,
+  ): Promise<BlobStoreHandle>;
+
+  /**
+   * Mint the attachment surface for a principal on a scope (#473) — the runtime consumer
+   * of the manifests' `attachmentTargets`. Same fail-closed (tenantId, scopeId) gate and
+   * lifecycle checks as `getScope`; the returned surface carries the ambient principal, so
+   * every read is `check(target.readPermission, entity)` — proof path included — before a
+   * single byte is served, and every mutation checks the target's write key the same way.
+   *
+   * Deliberately NOT on `ScopeStub`: bytes must never ride the structured-clone invoke
+   * pipe through the scope's strict serialization. Metadata facts go inside the scope
+   * (serialized, transactional, spine event included); bytes go to the per-tenant blob
+   * store the platform minted. Throws when no blob store is configured/provisioned for
+   * the scope's vertical rather than pretending — the K-31 fail-closed posture.
+   */
+  attachments(
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScopeAttachments>;
 
   /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of
