@@ -17,8 +17,9 @@ import {
   resolvePrincipal,
   type AuthAdapter,
 } from './auth-adapters.js';
-import { platformActorId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { platformActorId, principalId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { buildDemoHost, seedDemo, type DemoWorld, type ScriveConfig } from './index.js';
+import { EMPLOYEE_SELF } from './provision.js';
 import { API, API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
 
@@ -183,11 +184,39 @@ app.get('/api/me', async (c) => {
   return c.json({ key: p.key, display: p.display, role: p.role, country: p.country, employeeId: p.employeeId });
 });
 
+/**
+ * Mirror of the worker's `grantEmployeeSelf` (see worker.ts) on the SQLite dev host: when an
+ * employee is created with a login attached, issue that principal the self-service grants
+ * narrowed to their own record via the audited `host.admin.grant`. Keeps `pnpm … dev` behaving
+ * like the deployed worker — an employee you register can actually report time.
+ */
+async function grantEmployeeSelf(p: Persona, result: unknown): Promise<void> {
+  const row = result as { id?: string; principal_ref?: string | null } | null;
+  if (!row?.id || !row.principal_ref) return;
+  // The dev `/api/me` returns a persona KEY, not a principal id; only a real principal is a
+  // grantable subject, so skip the persona-key case rather than throw on parse.
+  const subject = principalId.safeParse(row.principal_ref);
+  if (!subject.success) return;
+  const staff = platformActorId.parse(ulid());
+  for (const permission of EMPLOYEE_SELF) {
+    await host.admin.grant(staff, {
+      principalId: subject.data,
+      permission,
+      node: { tenantId: p.tenantId, scopeId: p.scopeId },
+      entity: { entityType: 'employee', entityId: row.id },
+      grantedBy: p.principal,
+    });
+  }
+}
+
 // Generic invoke: the kernel checks permissions inside every operation, so a
 // generic route is exactly as safe as 18 explicit ones — and far less code.
 app.post('/api/invoke', async (c) => {
   const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
-  return c.json((await (await stub(c)).invoke(op, input)) ?? null);
+  const p = await persona(c);
+  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(op, input)) ?? null;
+  if (op === 'hr/create-employee') await grantEmployeeSelf(p, result);
+  return c.json(result);
 });
 
 // The documented invoke surface + the API reference (design/api-surface.md).
@@ -198,7 +227,10 @@ app.post('/api/op/*', async (c) => {
   const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
   if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
   const body = await c.req.text();
-  return c.json((await (await stub(c)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null);
+  const p = await persona(c);
+  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null;
+  if (name === 'hr/create-employee') await grantEmployeeSelf(p, result);
+  return c.json(result);
 });
 app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
 app.get('/api/docs', (c) => c.html(DOCS_HTML));

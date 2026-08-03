@@ -187,6 +187,7 @@ export function useManagerData(personaKey: string, enabled: boolean): { data: Ma
 }
 
 export interface AdminData {
+  me: Me;
   leaveTypes: LeaveType[];
   roster: RosterMember[];
   projects: Project[];
@@ -222,7 +223,7 @@ export function useAdminData(personaKey: string, enabled: boolean): { data: Admi
         ]);
         if (isNeedsSetup(me)) { if (!cancelled) { setData(null); setLoading(false); } return; }
         if (!cancelled) {
-          setData({ leaveTypes, roster, projects, country: me.country });
+          setData({ me, leaveTypes, roster, projects, country: me.country });
           setLoading(false);
         }
       } catch (e) {

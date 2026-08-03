@@ -273,7 +273,10 @@ export const api = {
   // vocabulary (leave types), adds people, and sets up projects before anyone uses it.
   defineLeaveType: (input: { key: string; label: string; kind: string; annualDays?: string }) =>
     invoke<LeaveType>('hr/define-leave-type', input),
-  createEmployee: (input: { number: string; name: string; email?: string; nationalId?: string; startedAt?: string }) =>
+  // `principalRef` links the record to a login: pass your own principal to register yourself
+  // as an employee (the backend then issues the self-service grants that let that login report
+  // time/leave/expenses against this record). Omit it for a directory-only person with no login.
+  createEmployee: (input: { number: string; name: string; email?: string; nationalId?: string; startedAt?: string; principalRef?: string }) =>
     invoke<RosterMember>('hr/create-employee', input),
   createProject: (input: { code: string; name: string }) => invoke<Project>('hr/create-project', input),
   // Node-level project list (HR admin holds time:read at the node, so no employee ref).

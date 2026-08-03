@@ -26,7 +26,7 @@ import {
   ulid,
 } from '@substrat-run/kernel';
 import type { PrincipalId } from '@substrat-run/contracts';
-import { MODULES, ROLES } from './provision.js';
+import { EMPLOYEE_SELF, MODULES, ROLES } from './provision.js';
 import { MERIDIAN_ENV } from './manifest.js';
 import { API, API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
@@ -686,12 +686,37 @@ app.post('/api/accept-invite', async (c) => {
   return c.json({ ok: true, principal });
 });
 
+/**
+ * After an employee record is created with a login attached (`principalRef`), issue that
+ * principal the self-service grants narrowed to their OWN record — `time:report`,
+ * `absence:request`, `expense:submit` and the read/sign siblings (EMPLOYEE_SELF). Those keys
+ * live in NO role (an hr-admin holds `time:read`, never `time:report`); an employee's
+ * authority is a per-record grant, exactly as the demo seed issues one. Without this a linked
+ * employee lands on "My work" yet every log-time is denied — the tab is on, the grant is not.
+ * Idempotent, and only ever reached by a caller who already passed create-employee's own
+ * `employee:manage` check inside the operation, so no fresh authority is minted here.
+ */
+async function grantEmployeeSelf(env: Env, node: CompanyNode, result: unknown): Promise<void> {
+  const row = result as { id?: string; principal_ref?: string | null } | null;
+  if (!row?.id || !row.principal_ref) return;
+  // A real login is always a principal id here; anything else is not a grantable subject, so
+  // skip rather than throw AFTER the record was already written by the (succeeded) operation.
+  const principal = principalId.safeParse(row.principal_ref);
+  if (!principal.success) return;
+  const host = hostFor(env);
+  for (const permission of EMPLOYEE_SELF) {
+    await host.grantEntityLocal(node.scopeId, principal.data, permission, { entityType: 'employee', entityId: row.id });
+  }
+}
+
 // Generic invoke: the kernel checks the permission inside every operation, so a generic
 // route is exactly as safe as an explicit table — and far less code. The SPA's path;
 // undocumented in the OpenAPI document (one path with a union body reads as nothing).
 app.post('/api/invoke', async (c) => {
   const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
-  return c.json((await (await stub(c)).invoke(op, input)) ?? null);
+  const result = (await (await stub(c)).invoke(op, input)) ?? null;
+  if (op === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
+  return c.json(result);
 });
 
 // The DOCUMENTED invoke surface (design/api-surface.md §2.2): one URL per operation —
@@ -702,7 +727,9 @@ app.post('/api/op/*', async (c) => {
   const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
   if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
   const body = await c.req.text();
-  return c.json((await (await stub(c)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null);
+  const result = (await (await stub(c)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null;
+  if (name === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
+  return c.json(result);
 });
 
 // The OpenAPI 3.1 document, built from the operation catalog — the same schemas the
