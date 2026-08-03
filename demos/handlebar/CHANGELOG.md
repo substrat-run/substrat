@@ -1,5 +1,16 @@
 # @substrat-run/demo-bike-shop
 
+## 0.0.43
+
+### Patch Changes
+
+- @substrat-run/contracts@0.43.0
+- @substrat-run/kernel@0.43.0
+- @substrat-run/adapter-sqlite@0.43.0
+- @substrat-run/engine-invoicing@0.4.3
+- @substrat-run/engine-protocol@0.5.1
+- @substrat-run/engine-workorder@0.3.41
+
 ## 0.0.42
 
 ### Patch Changes
