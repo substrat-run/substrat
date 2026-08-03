@@ -101,7 +101,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         .sort((a, b) => b.requests - a.requests);
     },
 
-    async recentLogs({ service, level, hours, limit }) {
+    async recentLogs({ service, level, search, hours, limit }) {
       const to = Date.now();
       const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
       // `$metadata.service` is the script name in Workers Logs events — the field
@@ -111,6 +111,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       }
       if (level) {
         filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
+      }
+      if (search) {
+        filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
       }
       const res = await authed(
         `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,

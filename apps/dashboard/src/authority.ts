@@ -434,7 +434,7 @@ export class TenantNarrowedControlPlane {
    * Throws `ControlPlaneError(501)` when the plane has no observability backend —
    * callers surface "not available", never an empty chart pretending to be zero traffic.
    */
-  async observabilityMetrics(hours: number): Promise<
+  async observabilityMetrics(hours: number, vertical?: string): Promise<
     Array<{
       vertical: string;
       version: string;
@@ -446,7 +446,13 @@ export class TenantNarrowedControlPlane {
       cpuTimeP99: number;
     }>
   > {
-    const owned = await this.ownedServiceRefs();
+    let owned = await this.ownedServiceRefs();
+    // The per-app tab's filter: not a query param the plane ever sees — the ownership
+    // map itself is narrowed to the one vertical, so a slug this tenant doesn't own
+    // short-circuits to [] exactly like owning nothing at all.
+    if (vertical !== undefined) {
+      owned = new Map([...owned].filter(([, v]) => v.vertical === vertical));
+    }
     if (owned.size === 0) return [];
     const all =
       (await this.call<
@@ -464,6 +470,7 @@ export class TenantNarrowedControlPlane {
   async observabilityLogs(input: {
     service: string;
     level?: string;
+    search?: string;
     hours?: number;
     limit?: number;
   }): Promise<
@@ -473,9 +480,23 @@ export class TenantNarrowedControlPlane {
     if (!owned.has(input.service)) return [];
     const q = new URLSearchParams({ service: input.service });
     if (input.level) q.set('level', input.level);
+    if (input.search) q.set('search', input.search);
     if (input.hours) q.set('hours', String(input.hours));
     if (input.limit) q.set('limit', String(input.limit));
-    return (await this.call(`/observability/logs?${q.toString()}`)) ?? [];
+    const events =
+      (await this.call<
+        Array<{ timestamp?: unknown; level?: unknown; message?: unknown; service?: unknown; outcome?: unknown }>
+      >(`/observability/logs?${q.toString()}`)) ?? [];
+    // Builders get the neutral field set ONLY — the plane's events carry a `raw`
+    // backend payload for staff debuggability, and whatever a future backend adds
+    // must be opted into here, never inherited by pass-through.
+    return events.map((e) => ({
+      timestamp: typeof e.timestamp === 'number' ? e.timestamp : null,
+      level: typeof e.level === 'string' ? e.level : null,
+      message: typeof e.message === 'string' ? e.message : null,
+      service: typeof e.service === 'string' ? e.service : null,
+      outcome: typeof e.outcome === 'string' ? e.outcome : null,
+    }));
   }
 
   /**
