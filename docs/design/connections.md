@@ -160,6 +160,18 @@ would be designing ahead of the second consumer, which is exactly what D-27 forb
 The honest cost: a tenant running two Substrat verticals connects Scrive twice. Given they
 would hold two OAuth clients regardless, that is the true shape rather than a tax.
 
+#### 3.1.1.1 …and the account is a fourth leg of the key
+
+Live-uniqueness is per **(tenant, vertical, provider, account)**, where the account leg is
+`COALESCE(external_account_ref, '')`. A provider that never sets an account ref keeps the
+original singleton semantics — all its NULLs collide — but a multi-namespace provider holds
+one live connection *per external account*. The motivating case is GitHub for git-import
+(the shape Vercel calls "Git namespaces"): one team connects two GitHub orgs, each App
+installation is its own connection, and the dashboard selects among them by account login.
+`openConnection` grew an optional `externalAccountRef` selector to match; omitted with
+several accounts live, it **throws** rather than picking one arbitrarily — acting against
+the wrong tenant account is worse than failing.
+
 ### 3.2 It lives in the directory, not the scope
 
 Three reasons, in order of force:

@@ -1345,6 +1345,70 @@ export function scopeHostContractSuite(
         expect(await host.admin.listConnections(staff, { tenantId: t2 })).toEqual([]);
         expect(await host.admin.openConnection(t2, 'callout', 'scrive')).toBeUndefined();
       });
+
+      // -- multi-account providers (the Vercel git-namespace shape) ------------
+      //
+      // Live-uniqueness is per (tenant, vertical, provider, ACCOUNT): a tenant
+      // may hold the same provider under several external accounts — two GitHub
+      // orgs — each its own connection. Providers that never set an account ref
+      // (everything above) keep the original singleton semantics.
+
+      it('holds several live connections for one provider under distinct accounts', async () => {
+        await host.admin.createConnection(staff, {
+          id: connectionId.parse(ulid()),
+          tenantId: t1,
+          vertical: 'multigit',
+          provider: 'github',
+          label: 'GitHub — acme-inc',
+          externalAccountRef: 'acme-inc',
+          secret: { installationId: '11' },
+        });
+        await host.admin.createConnection(staff, {
+          id: connectionId.parse(ulid()),
+          tenantId: t1,
+          vertical: 'multigit',
+          provider: 'github',
+          label: 'GitHub — octo-labs',
+          externalAccountRef: 'octo-labs',
+          secret: { installationId: '22' },
+        });
+        // The selector opens each account's own credential.
+        const acme = await host.admin.openConnection(t1, 'multigit', 'github', 'acme-inc');
+        expect(acme?.secret).toEqual({ installationId: '11' });
+        const octo = await host.admin.openConnection(t1, 'multigit', 'github', 'octo-labs');
+        expect(octo?.secret).toEqual({ installationId: '22' });
+        // …and the metadata filter narrows the same way.
+        const rows = await host.admin.listConnections(staff, {
+          tenantId: t1,
+          vertical: 'multigit',
+          externalAccountRef: 'acme-inc',
+        });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.label).toBe('GitHub — acme-inc');
+      });
+
+      it('still forbids a second live connection for the SAME account', async () => {
+        await expect(
+          host.admin.createConnection(staff, {
+            id: connectionId.parse(ulid()),
+            tenantId: t1,
+            vertical: 'multigit',
+            provider: 'github',
+            label: 'acme again',
+            externalAccountRef: 'acme-inc',
+            secret: { installationId: '33' },
+          }),
+        ).rejects.toThrow(/already has a live/);
+      });
+
+      it('refuses an account-less open when several accounts are live', async () => {
+        // Failing beats acting against an arbitrary one of the tenant's accounts.
+        await expect(host.admin.openConnection(t1, 'multigit', 'github')).rejects.toThrow(
+          /multiple live/,
+        );
+        // An unknown account is simply not connected — the ordinary miss.
+        expect(await host.admin.openConnection(t1, 'multigit', 'github', 'nobody')).toBeUndefined();
+      });
     });
 
     // -- connector state: a connector's own durable bookkeeping (#101 gap 3) ---

@@ -1179,19 +1179,26 @@ export interface HostAdmin {
   revokeConnection(actor: PlatformActorId, id: ConnectionId): Promise<void>;
 
   /**
-   * Open the credential for one (tenant, vertical, provider) — the connector's
-   * read, and the only path in the system that yields plaintext.
+   * Open the credential for one (tenant, vertical, provider[, account]) — the
+   * connector's read, and the only path in the system that yields plaintext.
    *
    * **Takes no actor and is not audited**, the same exemption `resolveHostname`
    * and `resolveIdentity` hold and for the same reason: it is a machine read on
    * the request path, and an audit row per outbound HTTP call would drown the
    * log that matters. What *is* recorded is health — `recordConnectionUse` below
    * — which is the signal an operator can actually act on.
+   *
+   * A provider that supports several external accounts per tenant (GitHub's
+   * namespaces) may hold several live connections; `externalAccountRef` selects
+   * among them. Omitted, the single live connection is returned — and when more
+   * than one is live the read **throws** rather than picking one arbitrarily,
+   * because acting against the wrong tenant account is worse than failing.
    */
   openConnection(
     tenantId: TenantId,
     vertical: string,
     provider: string,
+    externalAccountRef?: string,
   ): Promise<OpenConnection | undefined>;
 
   /**

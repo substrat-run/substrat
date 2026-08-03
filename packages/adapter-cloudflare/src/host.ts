@@ -375,6 +375,7 @@ interface ControlPlaneStub {
     tenantId?: string;
     vertical?: string;
     provider?: string;
+    externalAccountRef?: string;
     includeRevoked?: boolean;
   }): Promise<ConnectionDoRow[]>;
   readConnection(id: string): Promise<ConnectionDoRow | undefined>;
@@ -382,6 +383,7 @@ interface ControlPlaneStub {
     tenantId: string,
     vertical: string,
     provider: string,
+    externalAccountRef?: string,
   ): Promise<(ConnectionDoRow & { key_id: string; ciphertext: string }) | undefined>;
   updateConnectionSecret(
     id: string,
@@ -2877,8 +2879,13 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
 
-      openConnection: async (tenantId, vertical: string, provider: string) => {
-        const row = await this.cp.readLiveConnection(tenantId, vertical, provider);
+      openConnection: async (
+        tenantId,
+        vertical: string,
+        provider: string,
+        externalAccountRef?: string,
+      ) => {
+        const row = await this.cp.readLiveConnection(tenantId, vertical, provider, externalAccountRef);
         if (!row) return undefined;
         const secret = connectionSecret.parse(
           JSON.parse(

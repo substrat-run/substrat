@@ -473,8 +473,12 @@ const DIRECTORY_DDL = `
     created_at           TEXT NOT NULL,
     revoked_at           TEXT
   );
-  CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connections_live
-    ON _substrat_connections (tenant_id, vertical, provider)
+  -- One LIVE connection per (tenant, vertical, provider, account). COALESCEd so
+  -- providers that never set an external_account_ref keep singleton semantics,
+  -- while a multi-namespace provider (GitHub) holds one live connection PER
+  -- account — the Vercel git-namespace shape.
+  CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connections_live_account
+    ON _substrat_connections (tenant_id, vertical, provider, COALESCE(external_account_ref, ''))
     WHERE revoked_at IS NULL;
   CREATE TABLE IF NOT EXISTS _substrat_connection_secrets (
     connection_id TEXT PRIMARY KEY,
@@ -661,6 +665,11 @@ export class ControlPlaneDO extends DurableObject {
   private ensureDirectoryColumns(): void {
     this.ensureIdentityKey();
     this.ensureAdminLogTenantNullable();
+    // The pre-account-aware live-uniqueness index: superseded by
+    // _substrat_connections_live_account (in the DDL above), which adds the
+    // external-account leg so one tenant can hold the same provider under
+    // several accounts. Existing rows always satisfy the wider key.
+    this.sql.exec('DROP INDEX IF EXISTS _substrat_connections_live');
     for (const ddl of SCOPE_COLUMNS_ADDED) {
       this.addColumn('scopes', ddl);
     }
@@ -1870,19 +1879,25 @@ export class ControlPlaneDO extends DurableObject {
     keyId: string;
     ciphertext: string;
   }): void {
+    // Live-uniqueness is per ACCOUNT (COALESCEd like the index): a provider
+    // without account refs stays a singleton; a multi-namespace provider may
+    // hold one live connection per external account.
     const live = this.sql
       .exec(
         `SELECT id FROM _substrat_connections
-         WHERE tenant_id = ? AND vertical = ? AND provider = ? AND revoked_at IS NULL`,
+         WHERE tenant_id = ? AND vertical = ? AND provider = ?
+           AND COALESCE(external_account_ref, '') = COALESCE(?, '') AND revoked_at IS NULL`,
         row.tenantId,
         row.vertical,
         row.provider,
+        row.externalAccountRef,
       )
       .toArray()[0] as unknown as { id: string } | undefined;
     if (live) {
+      const account = row.externalAccountRef ? ` under account '${row.externalAccountRef}'` : '';
       throw new Error(
         `tenant ${row.tenantId} already has a live '${row.provider}' connection ` +
-          `for vertical '${row.vertical}' — revoke it before connecting another`,
+          `for vertical '${row.vertical}'${account} — revoke it before connecting another`,
       );
     }
     this.sql.exec(
@@ -1916,6 +1931,7 @@ export class ControlPlaneDO extends DurableObject {
     tenantId?: string;
     vertical?: string;
     provider?: string;
+    externalAccountRef?: string;
     includeRevoked?: boolean;
   }): ConnectionDoRow[] {
     const where: string[] = [];
@@ -1923,6 +1939,8 @@ export class ControlPlaneDO extends DurableObject {
     if (filter.tenantId) (where.push('tenant_id = ?'), params.push(filter.tenantId));
     if (filter.vertical) (where.push('vertical = ?'), params.push(filter.vertical));
     if (filter.provider) (where.push('provider = ?'), params.push(filter.provider));
+    if (filter.externalAccountRef)
+      (where.push('external_account_ref = ?'), params.push(filter.externalAccountRef));
     if (!filter.includeRevoked) where.push('revoked_at IS NULL');
     return this.sql
       .exec(
@@ -1940,25 +1958,35 @@ export class ControlPlaneDO extends DurableObject {
       | undefined as ConnectionDoRow | undefined;
   }
 
-  /** The live connection for a triple, plus its sealed blob — the connector read. */
+  /** The live connection for a triple (narrowed to one account when given), plus its sealed blob — the connector read. */
   readLiveConnection(
     tenantId: string,
     vertical: string,
     provider: string,
+    externalAccountRef?: string,
   ): (ConnectionDoRow & { key_id: string; ciphertext: string }) | undefined {
-    return this.sql
+    const rows = this.sql
       .exec(
         `SELECT c.*, s.key_id, s.ciphertext
          FROM _substrat_connections c
          JOIN _substrat_connection_secrets s ON s.connection_id = c.id
-         WHERE c.tenant_id = ? AND c.vertical = ? AND c.provider = ? AND c.revoked_at IS NULL`,
-        tenantId,
-        vertical,
-        provider,
+         WHERE c.tenant_id = ? AND c.vertical = ? AND c.provider = ? AND c.revoked_at IS NULL
+         ${externalAccountRef === undefined ? '' : 'AND c.external_account_ref = ?'}
+         LIMIT 2`,
+        ...(externalAccountRef === undefined
+          ? [tenantId, vertical, provider]
+          : [tenantId, vertical, provider, externalAccountRef]),
       )
-      .toArray()[0] as unknown as
-      | (ConnectionDoRow & { key_id: string; ciphertext: string })
-      | undefined;
+      .toArray() as unknown as (ConnectionDoRow & { key_id: string; ciphertext: string })[];
+    // Several live accounts and no selector: failing beats acting against an
+    // arbitrary one of the tenant's provider accounts (scope-host.ts).
+    if (rows.length > 1) {
+      throw new Error(
+        `tenant ${tenantId} has multiple live '${provider}' connections for vertical ` +
+          `'${vertical}' — pass externalAccountRef to select one`,
+      );
+    }
+    return rows[0];
   }
 
   updateConnectionSecret(

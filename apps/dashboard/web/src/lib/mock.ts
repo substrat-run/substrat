@@ -41,6 +41,7 @@ export const MOCK_GIT_REPOS: GitReposResult = {
   configured: true,
   connected: true,
   account: 'acme-inc',
+  accounts: ['acme-inc', 'acme-labs'],
   repos: [
     { fullName: 'acme-inc/hr-portal', defaultBranch: 'main', private: true, updatedAt: '2026-07-20T10:00:00Z' },
     { fullName: 'acme-inc/legal-docs', defaultBranch: 'main', private: true, updatedAt: '2026-07-16T09:00:00Z' },
