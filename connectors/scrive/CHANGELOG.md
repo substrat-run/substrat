@@ -1,5 +1,50 @@
 # @substrat-run/connector-scrive
 
+## 0.2.0
+
+### Minor Changes
+
+- b0355b4: `ScriveApi.getMainFile(documentId)` — pull the sealed signed PDF. The connector
+  recorded the _fact_ of each signature and walked away from the _artifact_: it
+  could create, set file, set parties, start, and get, but had no
+  `GET /api/v2/documents/{id}/files/main`, so the signed PDF — Scrive's sealed copy
+  with the signing evidence attached — lived only at Scrive, reachable only with the
+  API credential. The legacy CRM this vertical replaces fetches that file on
+  completion and offers "Ladda ned signerat avtal", so it is parity, not polish
+  (issue #476, step 1). `ConnectorResponse` gains `arrayBuffer()` for provider
+  responses that are a file rather than JSON (web `Response` already has it; the
+  declaration only widens the structural surface). Fetch-on-completion into the
+  blob store is step 2, which waits on #473.
+- b0355b4: Connectors can land attachments; Scrive lands the sealed signed PDF (#476 step 2).
+
+  #473 gave attachment bytes a home, but its `attachments()` surface is minted per
+  `PrincipalId` — and a connector's return path acts as a _connection_, not a person,
+  so it had no way to store a provider artifact (bytes cannot ride `getConnectorScope`'s
+  `invoke` pipe). This adds the missing seam and the first consumer:
+
+  - **`ScopeHost.getConnectorAttachments(connectionId, scopeId)`** — the mirror of
+    `getConnectorScope` for bytes: the same `ScopeAttachments` surface, same
+    (tenant, vertical, active) door, but every gate checked against the connection's
+    `connection:<id>` grants, and `createdBy` attributed to the connection. Implemented
+    in both adapters (the Cloudflare ScopeDO threads the connection subject through the
+    attachment gate exactly as `invoke` does) and covered on each.
+  - **`engine-protocol`** declares an explicit `protocol:attach` write permission on its
+    `protocol` attachment target (read stays `protocol:read`). A signing connection is
+    granted `protocol:attach` and nothing else — it can land the sealed PDF but not
+    browse the scope's attachments. No human role holds it yet.
+  - **`connector-scrive`** fetches `files/main` once the document is `closed` and every
+    party is recorded, and lands it as a `customer`-visible attachment on the protocol
+    instance. Marked in the dispatch ledger (`sealedAttachmentId`) so a re-poll never
+    downloads or stores a second copy; a store that is not yet provisioned is reported
+    and retried next poll, never allowed to undo a recorded signature.
+
+### Patch Changes
+
+- Updated dependencies [b0355b4]
+- Updated dependencies [b0355b4]
+  - @substrat-run/kernel@0.42.0
+  - @substrat-run/contracts@0.42.0
+
 ## 0.1.31
 
 ### Patch Changes
