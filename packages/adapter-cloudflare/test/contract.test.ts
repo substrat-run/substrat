@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { warmControlPlane } from './do-warmup.js';
 import {
+  moduleId,
   orgId,
   permissionKey,
   platformActorId,
@@ -17,6 +18,7 @@ import {
   connectorTestFetch,
   permissionContractSuite,
   scheduleContractSuite,
+  scheduleMod,
   scopeHostContractSuite,
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -383,6 +385,66 @@ describe('scope-local permissions — a CP-less host (Phase 3)', () => {
     await expect(
       host.admin.createTenant(platformActorId.parse(ulid()), { id: t, slug: `x-${t.toLowerCase()}`, name: 'X' }),
     ).rejects.toThrow(/control plane unavailable/);
+  });
+});
+
+/**
+ * #461: declared schedules must run on a CP-less host. Two seams, both pinned here:
+ * `provisionScopeLocal` projects the `system:<moduleId>` grants (the CP-less mirror of
+ * `provisionScope`'s loop — without it the grant-is-the-switch check reports `fired: 0`
+ * forever, indistinguishable from "nothing due"), and `runDueSchedules` runs without
+ * the directory liveness read a CP-less host cannot answer.
+ */
+describe('CP-less schedules — declared schedules run without a control plane (#461)', () => {
+  let host: CloudflareScopeHost;
+  const SCHED = moduleId.parse('@test/sched');
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+
+  beforeAll(async () => {
+    // No `controlPlane` — the null-object stand-in, exactly the hosted-vertical shape.
+    host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(scheduleMod);
+    await host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [READ], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+  });
+
+  afterAll(async () => host.close());
+
+  it('fires the due schedule from the projected grant alone — no directory, no error', async () => {
+    const report = await host.runDueSchedules(SCHED, t, s);
+    expect(report.errors).toEqual([]);
+    expect(report.fired).toBe(1);
+    // The tick really landed in the scope, attributed to the module, not a person.
+    const stub = await host.getScope(owner, t, s);
+    expect(await stub.invoke('sched/count')).toBe(1);
+    const outbox = (await stub.invoke('sched/read-outbox')) as { type: string; actor: string }[];
+    const tick = outbox.find((r) => r.type === 'sched.ticked');
+    expect(tick).toBeDefined();
+    expect(JSON.parse(tick!.actor)).toEqual({ system: '@test/sched' });
+  });
+
+  it('cadence still gates the second pass — skipped, not re-fired', async () => {
+    const report = await host.runDueSchedules(SCHED, t, s);
+    expect(report.fired).toBe(0);
+    expect(report.skipped).toBe(1);
+  });
+
+  it('ctx.check stays the gate — the system door is refused an unscheduled permission', async () => {
+    // `sched:admin` is declared but never scheduled, so the projection grants the
+    // system principal `sched:tick` only — same lever as the CP-full suite.
+    const sys = await host.getSystemScope(SCHED, t, s);
+    await expect(sys.invoke('sched/needs-admin')).rejects.toThrow();
   });
 });
 

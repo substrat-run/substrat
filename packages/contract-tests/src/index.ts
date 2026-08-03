@@ -9,6 +9,7 @@ export {
   contractTestBareOps,
   contractTestInitialModules,
   contractTestModules,
+  scheduleMod,
 } from './modules.js';
 export {
   connectorCalls,
