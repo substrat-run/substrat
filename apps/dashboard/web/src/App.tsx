@@ -407,6 +407,36 @@ export function App() {
     [promoting, reloadDeployments],
   );
 
+  // Remove a pushed vertical (versions + channels included). The registry refuses while
+  // any app still runs it — the refusal names the count — so this can never strand an
+  // install; the confirm carries that rule so the refusal is never a surprise.
+  const removeDeployment = useCallback(
+    async (slug: string) => {
+      if (promoting) return;
+      if (
+        !window.confirm(
+          `Remove ${slug}?\n\nIts pushed versions and release channels are deleted from the registry. Apps still running it block the removal — delete them first.`,
+        )
+      )
+        return;
+      setPromoting(true);
+      try {
+        if (DEV_MOCK) {
+          setDeployments((ds) => ds.filter((d) => d.slug !== slug));
+        } else {
+          await api.deleteDeployment(slug);
+          await reloadDeployments();
+        }
+        setToast({ status: 'success', title: 'Vertical removed', detail: `${slug} was removed from the registry.` });
+      } catch (e) {
+        setToast({ status: 'danger', title: 'Removal failed', detail: e instanceof Error ? e.message : String(e) });
+      } finally {
+        setPromoting(false);
+      }
+    },
+    [promoting, reloadDeployments],
+  );
+
   // Switch team → the server pins the choice in a cookie and the whole portal
   // re-scopes on reload. Dev-preview just flips the local mock selection.
   const switchTeam = useCallback(
@@ -658,7 +688,7 @@ export function App() {
       ) : route.section === 'overview' || route.section === 'apps' ? (
         <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
       ) : route.section === 'verticals' ? (
-        <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} busy={promoting} loadGitRepos={loadGitRepos} />
+        <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (
         <Team
           members={members}

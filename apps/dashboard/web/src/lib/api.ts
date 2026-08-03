@@ -762,6 +762,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ channel, versionId, ...(acknowledge ? { acknowledge } : {}) }),
     }),
+  /** Remove one of my verticals (versions + channels included). Refused while any app
+   *  still runs it — delete the apps first — and for a published vertical (staff-only). */
+  deleteDeployment: (slug: string) =>
+    call<void>(`/deployments/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
   /** One channel's promotion timeline (newest first) — the rollback picker's data. */
   channelHistory: (slug: string, channel: 'dev' | 'staging' | 'prod') =>
     call<ChannelHistoryEntry[]>(

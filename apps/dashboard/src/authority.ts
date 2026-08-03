@@ -498,6 +498,16 @@ export class TenantNarrowedControlPlane {
     );
   }
 
+  /**
+   * Delete a vertical + its versions and channels from the shared registry. Over the
+   * service token this is a staff-level act, so the caller's ownership of the slug must
+   * be checked FIRST (`assertOwned`), same as `promote`. The plane refuses while any
+   * scope still runs it — that refusal (naming the count) surfaces verbatim.
+   */
+  deleteVertical(verticalSlug: string): Promise<void> {
+    return this.call<void>(`/verticals/${encodeURIComponent(verticalSlug)}`, { method: 'DELETE' });
+  }
+
   /** One channel's promotion timeline, newest first — the rollback picker's data. */
   async channelHistory(
     verticalSlug: string,
