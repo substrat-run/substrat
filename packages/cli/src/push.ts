@@ -16,7 +16,7 @@ import {
   type RuntimeNeeds,
 } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
-import { parseJsonBody } from './http.js';
+import { parseJsonBody, readAllEntries } from './http.js';
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
@@ -513,9 +513,15 @@ export async function nextVersion(
   const base = controlPlaneUrl.replace(/\/$/, '');
   let best: [number, number, number] | null = null;
   for (const slug of slugs) {
-    const versions = await fetch(`${base}/verticals/${encodeURIComponent(slug)}/versions`, { headers: header })
-      .then((r) => (r.ok ? (r.json() as Promise<{ version: string }[]>) : []))
-      .catch(() => [] as { version: string }[]);
+    // The max semver must see EVERY version, so walk the paged list to the end.
+    const versions = await readAllEntries<{ version: string }>(
+      `${base}/verticals/${encodeURIComponent(slug)}/versions`,
+      async (pageUrl) => {
+        const r = await fetch(pageUrl, { headers: header });
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json() as Promise<{ entries: { version: string }[]; nextCursor: string | null }>;
+      },
+    ).catch(() => [] as { version: string }[]);
     for (const v of versions) {
       const t = parseSemver(v.version);
       if (t && (!best || isNewer(t, best))) best = t;

@@ -82,15 +82,60 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
   });
 
   it('listScopes reads GET /scopes narrowed to the pinned tenant + vertical (Data-tab switcher)', async () => {
-    const { cp, calls } = harness(200, [
-      { id: S, tenantId: T, name: 'Cafe', status: 'active', vertical: 'manyfold' },
-    ]);
+    const { cp, calls } = harness(200, {
+      entries: [{ id: S, tenantId: T, name: 'Cafe', status: 'active', vertical: 'manyfold' }],
+      nextCursor: null,
+    });
     const scopes = await cp.listScopes('manyfold');
 
     expect(calls[0]!.method).toBe('GET');
     expect(calls[0]!.token).toBe('secret-token');
-    expect(calls[0]!.url).toBe(`https://cp/api/scopes?tenantId=${T}&vertical=manyfold`);
+    // Complete-list semantics: the wrapper walks max-size pages until the cursor runs out.
+    expect(calls[0]!.url).toBe(`https://cp/api/scopes?tenantId=${T}&vertical=manyfold&limit=200`);
     expect(scopes).toEqual([{ id: S, tenantId: T, name: 'Cafe', status: 'active', vertical: 'manyfold' }]);
+  });
+
+  it('list reads WALK the CP’s `{entries, nextCursor}` pages to completion (the #458 envelope)', async () => {
+    // Two pages: the first hands back a cursor, the second ends the walk. The wrapper
+    // must follow it — internal callers rely on complete-list semantics.
+    const pages = [
+      { entries: [{ id: 'h1', tenantId: T, name: 'One', status: 'active', vertical: 'manyfold' }], nextCursor: 'h1' },
+      { entries: [{ id: 'h2', tenantId: T, name: 'Two', status: 'active', vertical: 'manyfold' }], nextCursor: null },
+    ];
+    const calls: string[] = [];
+    const fetch = (async (url: string | URL | Request) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify(pages[calls.length - 1] ?? { entries: [], nextCursor: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const cp = new TenantNarrowedControlPlane({
+      baseUrl: 'https://cp/api',
+      actor: '01JZ000000000000000000TEST',
+      serviceToken: 'secret-token',
+      tenantId: T,
+      fetch,
+    });
+    const scopes = await cp.listScopes('manyfold');
+    expect(scopes.map((s) => s.id)).toEqual(['h1', 'h2']);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain('cursor=h1');
+  });
+
+  it('listVersionsPage returns the page envelope VERBATIM (the per-app Deployments walk)', async () => {
+    const { cp, calls } = harness(200, {
+      entries: [{ id: 'v2', version: '0.2.0', admission: 'admitted', admissionNote: null, deploymentRef: null, createdAt: 'now' }],
+      nextCursor: 'v2',
+    });
+    const page = await cp.listVersionsPage('acme/helpdesk', { limit: 1, order: 'desc' });
+    expect(calls[0]!.url).toBe('https://cp/api/verticals/acme%2Fhelpdesk/versions?limit=1&order=desc');
+    expect(page.nextCursor).toBe('v2');
+    expect(page.entries.map((v) => v.id)).toEqual(['v2']);
+
+    // An unknown/unowned slug (404) reads as an exhausted empty page, mirroring listVersions' [].
+    const missing = harness(404, { error: 'not found' });
+    expect(await missing.cp.listVersionsPage('ghost', { limit: 1 })).toEqual({ entries: [], nextCursor: null });
   });
 
   it('the tenant is not a parameter of any method — op code cannot name another', () => {
@@ -189,14 +234,21 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
   }
 
   const registry = {
-    '/verticals': [
-      { slug: 'acme/helpdesk', name: 'Helpdesk', source: 'cli', ownerTenant: T },
-      { slug: 'rival/crm', name: 'CRM', source: 'cli', ownerTenant: OTHER },
-    ],
-    '/verticals/acme%2Fhelpdesk/versions': [
-      { id: 'v1', version: '0.1.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-v1', createdAt: 'now' },
-      { id: 'v0', version: '0.0.9', admission: 'admitted', admissionNote: null, deploymentRef: null, createdAt: 'now' },
-    ],
+    // The CP's list routes answer the `{entries, nextCursor}` envelope now (#458).
+    '/verticals': {
+      entries: [
+        { slug: 'acme/helpdesk', name: 'Helpdesk', source: 'cli', ownerTenant: T },
+        { slug: 'rival/crm', name: 'CRM', source: 'cli', ownerTenant: OTHER },
+      ],
+      nextCursor: null,
+    },
+    '/verticals/acme%2Fhelpdesk/versions': {
+      entries: [
+        { id: 'v1', version: '0.1.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-v1', createdAt: 'now' },
+        { id: 'v0', version: '0.0.9', admission: 'admitted', admissionNote: null, deploymentRef: null, createdAt: 'now' },
+      ],
+      nextCursor: null,
+    },
   };
 
   it('observabilityMetrics keeps only rows for OWNED services, mapped back to (vertical, version)', async () => {

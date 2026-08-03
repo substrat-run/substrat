@@ -106,6 +106,7 @@ import {
   type TenantRole,
   type TenantStatus,
   type TenantStoreHandle,
+  type ListPage,
   SCOPE_TABLE_PAGE_DEFAULT,
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
@@ -431,6 +432,33 @@ const mapHostname = (r: HostnameRow): HostnameBinding =>
     customHostnameId: r.custom_hostname_id,
     validationRecords: r.validation_records ? JSON.parse(r.validation_records) : [],
   });
+
+/**
+ * Fold keyset page params (contracts pagination.ts) into an in-progress WHERE
+ * build and return the `ORDER BY … [LIMIT ?]` tail. The cursor is EXCLUSIVE —
+ * strictly after it ascending, strictly before it descending — and an unset
+ * limit stays unbounded: internal callers mean "everything", and a silent cap
+ * would let them mistake a page for the whole set.
+ */
+function keysetTail(
+  where: string[],
+  params: (string | number)[],
+  key: string,
+  page: ListPage | undefined,
+  defaultOrder: 'asc' | 'desc' = 'asc',
+): string {
+  const order = (page?.order ?? defaultOrder) === 'desc' ? 'DESC' : 'ASC';
+  if (page?.cursor) {
+    where.push(order === 'DESC' ? `${key} < ?` : `${key} > ?`);
+    params.push(page.cursor);
+  }
+  let tail = ` ORDER BY ${key} ${order}`;
+  if (page?.limit !== undefined) {
+    tail += ' LIMIT ?';
+    params.push(page.limit);
+  }
+  return tail;
+}
 
 interface VerticalRow {
   slug: string;
@@ -2595,7 +2623,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       listRoles: async (actor, filter?: RoleFilter): Promise<TenantRole[]> => {
         const where: string[] = [];
-        const params: string[] = [];
+        const params: (string | number)[] = [];
         if (filter?.tenantId) {
           where.push('tenant_id = ?');
           params.push(filter.tenantId);
@@ -2604,10 +2632,25 @@ export class SqliteScopeHost implements ScopeHost {
           where.push('source = ?');
           params.push(filter.source);
         }
-        const sql =
+        const order = (filter?.order ?? 'asc') === 'desc' ? 'DESC' : 'ASC';
+        if (filter?.cursor) {
+          // Composite sort key `${tenantId}|${roleKey}` (pagination.ts) — the
+          // tenant id is a ULID and never contains '|', so split on the FIRST.
+          const split = filter.cursor.indexOf('|');
+          const afterTenant = split === -1 ? filter.cursor : filter.cursor.slice(0, split);
+          const afterKey = split === -1 ? '' : filter.cursor.slice(split + 1);
+          const cmp = order === 'DESC' ? '<' : '>';
+          where.push(`(tenant_id ${cmp} ? OR (tenant_id = ? AND role_key ${cmp} ?))`);
+          params.push(afterTenant, afterTenant, afterKey);
+        }
+        let sql =
           'SELECT tenant_id, role_key, permissions, source FROM _substrat_roles' +
           (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
-          ' ORDER BY tenant_id, role_key';
+          ` ORDER BY tenant_id ${order}, role_key ${order}`;
+        if (filter?.limit !== undefined) {
+          sql += ' LIMIT ?';
+          params.push(filter.limit);
+        }
         const rows = this.directory.prepare(sql).all(...params) as {
           tenant_id: string;
           role_key: string;
@@ -2941,13 +2984,14 @@ export class SqliteScopeHost implements ScopeHost {
       },
       listHostnames: async (actor, filter) => {
         const where: string[] = [];
-        const params: string[] = [];
+        const params: (string | number)[] = [];
         if (filter?.tenantId) { where.push('tenant_id = ?'); params.push(filter.tenantId); }
         if (filter?.scopeId) { where.push('scope_id = ?'); params.push(filter.scopeId); }
         if (filter?.status) { where.push('status = ?'); params.push(filter.status); }
+        const tail = keysetTail(where, params, 'hostname', filter);
         let sql = 'SELECT * FROM hostnames';
         if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
-        sql += ' ORDER BY hostname';
+        sql += tail;
         const rows = this.directory.prepare(sql).all(...params) as HostnameRow[];
         this.recordAccess(
           actor,
@@ -3050,11 +3094,14 @@ export class SqliteScopeHost implements ScopeHost {
           .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString());
         this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed);
       },
-      listVerticals: async (actor) => {
-        const rows = this.directory
-          .prepare('SELECT * FROM verticals ORDER BY slug')
-          .all() as VerticalRow[];
-        this.recordAccess(actor, 'listVerticals', {}, null, rows.length);
+      listVerticals: async (actor, page) => {
+        const where: string[] = [];
+        const params: (string | number)[] = [];
+        const tail = keysetTail(where, params, 'slug', page);
+        const sql =
+          'SELECT * FROM verticals' + (where.length ? ` WHERE ${where.join(' AND ')}` : '') + tail;
+        const rows = this.directory.prepare(sql).all(...params) as VerticalRow[];
+        this.recordAccess(actor, 'listVerticals', {}, page ?? null, rows.length);
         return rows.map(mapVertical);
       },
       publishVersion: async (actor: PlatformActorId, input: PublishVersionInput) => {
@@ -3096,10 +3143,13 @@ export class SqliteScopeHost implements ScopeHost {
           admission: selfAdmits ? 'admitted' : 'pending',
         });
       },
-      listVersions: async (actor, verticalSlug: string) => {
+      listVersions: async (actor, verticalSlug: string, page) => {
+        const where: string[] = ['vertical_slug = ?'];
+        const params: (string | number)[] = [verticalSlug];
+        const tail = keysetTail(where, params, 'id', page);
         const rows = this.directory
-          .prepare('SELECT * FROM vertical_versions WHERE vertical_slug = ? ORDER BY id')
-          .all(verticalSlug) as VersionRow[];
+          .prepare(`SELECT * FROM vertical_versions WHERE ${where.join(' AND ')}${tail}`)
+          .all(...params) as VersionRow[];
         this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
         return rows.map(mapVersion);
       },
@@ -3335,10 +3385,13 @@ export class SqliteScopeHost implements ScopeHost {
           { channel, versionId, version: incoming.version, acknowledged: ack },
         );
       },
-      listChannels: async (actor, verticalSlug: string) => {
+      listChannels: async (actor, verticalSlug: string, page) => {
+        const where: string[] = ['vertical_slug = ?'];
+        const params: (string | number)[] = [verticalSlug];
+        const tail = keysetTail(where, params, 'channel', page);
         const rows = this.directory
-          .prepare('SELECT * FROM vertical_channels WHERE vertical_slug = ? ORDER BY channel')
-          .all(verticalSlug) as ChannelRow[];
+          .prepare(`SELECT * FROM vertical_channels WHERE ${where.join(' AND ')}${tail}`)
+          .all(...params) as ChannelRow[];
         // The serving script runs ONE version (#286); surface it on the prod row so a
         // failed in-place serve reads honestly instead of claiming the new version is
         // live (#321). Parity with the Cloudflare host.
@@ -3359,18 +3412,18 @@ export class SqliteScopeHost implements ScopeHost {
           }),
         );
       },
-      listChannelHistory: async (actor, verticalSlug: string, channel?) => {
-        const rows = (
-          channel
-            ? this.directory
-                .prepare(
-                  'SELECT * FROM vertical_channel_history WHERE vertical_slug = ? AND channel = ? ORDER BY id DESC',
-                )
-                .all(verticalSlug, channel)
-            : this.directory
-                .prepare('SELECT * FROM vertical_channel_history WHERE vertical_slug = ? ORDER BY id DESC')
-                .all(verticalSlug)
-        ) as ChannelHistoryRow[];
+      listChannelHistory: async (actor, verticalSlug: string, channel?, page?) => {
+        const where: string[] = ['vertical_slug = ?'];
+        const params: (string | number)[] = [verticalSlug];
+        if (channel) {
+          where.push('channel = ?');
+          params.push(channel);
+        }
+        // Newest first is the shipped order, so 'desc' is the DEFAULT here.
+        const tail = keysetTail(where, params, 'id', page, 'desc');
+        const rows = this.directory
+          .prepare(`SELECT * FROM vertical_channel_history WHERE ${where.join(' AND ')}${tail}`)
+          .all(...params) as ChannelHistoryRow[];
         this.recordAccess(actor, 'listChannelHistory', {}, { verticalSlug, channel }, rows.length);
         return rows.map((r) =>
           channelHistoryEntry.parse({
@@ -3643,12 +3696,15 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory.prepare('UPDATE tenants SET name = ? WHERE tenant_id = ?').run(name, tenantId);
         this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before.name }, { name });
       },
-      listTenants: async (actor): Promise<Tenant[]> => {
-        const rows = (
-          this.directory.prepare('SELECT * FROM tenants ORDER BY tenant_id').all() as TenantRow[]
-        ).map(mapTenant);
+      listTenants: async (actor, page): Promise<Tenant[]> => {
+        const where: string[] = [];
+        const params: (string | number)[] = [];
+        const tail = keysetTail(where, params, 'tenant_id', page);
+        const sql =
+          'SELECT * FROM tenants' + (where.length ? ` WHERE ${where.join(' AND ')}` : '') + tail;
+        const rows = (this.directory.prepare(sql).all(...params) as TenantRow[]).map(mapTenant);
         // Enumerating every tenant on the platform is the read this log exists for.
-        this.recordAccess(actor, 'listTenants', {}, null, rows.length);
+        this.recordAccess(actor, 'listTenants', {}, page ?? null, rows.length);
         return rows;
       },
       getTenant: async (actor, tenantId: TenantId): Promise<Tenant | undefined> => {
@@ -3675,10 +3731,9 @@ export class SqliteScopeHost implements ScopeHost {
           where.push('vertical = ?');
           params.push(filter.vertical);
         }
+        const tail = keysetTail(where, params, 'scope_id', filter);
         const sql =
-          'SELECT * FROM scopes' +
-          (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
-          ' ORDER BY scope_id';
+          'SELECT * FROM scopes' + (where.length ? ` WHERE ${where.join(' AND ')}` : '') + tail;
         const scopes = (this.directory.prepare(sql).all(...params) as ScopeRow[]).map(mapScope);
         this.recordAccess(
           actor,
@@ -4453,10 +4508,11 @@ export class SqliteScopeHost implements ScopeHost {
         if (filter?.actor) { where.push('actor = ?'); params.push(filter.actor); }
         if (filter?.tenantId) { where.push('tenant_id = ?'); params.push(filter.tenantId); }
         if (filter?.method) { where.push('method = ?'); params.push(filter.method); }
+        // Cursor + order mirror auditLog: the id is a ULID, so it IS the cursor.
+        const tail = keysetTail(where, params, 'id', filter);
         let sql = 'SELECT * FROM _substrat_access_log';
         if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
-        sql += ' ORDER BY id';
-        if (filter?.limit !== undefined) { sql += ' LIMIT ?'; params.push(filter.limit); }
+        sql += tail;
         const rows = this.directory.prepare(sql).all(...params) as AccessLogRow[];
         // Reading the access log is itself a read. Recorded BEFORE the rows are
         // returned, so the row describing this call is not in its own result.

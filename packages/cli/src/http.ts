@@ -26,3 +26,26 @@ export function parseJsonBody<T>(body: string, url: string): T {
 export async function readJson<T>(res: Response, url: string): Promise<T> {
   return parseJsonBody<T>(await res.text(), url);
 }
+
+/**
+ * Read a paged control-plane list to the END. Every GET list route returns
+ * `{ entries, nextCursor }` (contracts pagination.ts) with a defaulted page, and
+ * the CLI's reads are complete-list semantics (find the max semver, join installs
+ * to hostnames) — so walk the cursor until it runs out, at the route's max page
+ * size to keep the walk short. `fetchPage` owns auth headers and error handling.
+ */
+export async function readAllEntries<T>(
+  url: string,
+  fetchPage: (pageUrl: string) => Promise<{ entries: T[]; nextCursor: string | null }>,
+): Promise<T[]> {
+  const out: T[] = [];
+  let cursor: string | null = null;
+  do {
+    const sep = url.includes('?') ? '&' : '?';
+    const pageUrl: string = `${url}${sep}limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+    const page = await fetchPage(pageUrl);
+    out.push(...page.entries);
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  return out;
+}

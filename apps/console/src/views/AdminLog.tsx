@@ -7,7 +7,9 @@ import { JsonDiff } from '../patterns/JsonDiff';
 import type { Api } from '../lib/api';
 
 const ALL_ACTIONS = adminAction.options;
-const PAGE = 25;
+// The platform-wide default page (contracts LIST_PAGE_DEFAULT) — this view grew
+// the convention, and now matches it.
+const PAGE = 20;
 
 export interface AdminLogProps {
   api: Api;
@@ -16,8 +18,9 @@ export interface AdminLogProps {
 
 export function AdminLog({ api, tenants }: AdminLogProps) {
   const [entries, setEntries] = useState<AdminLogEntry[]>([]);
+  // Null IS exhausted now (pagination.ts): a short page answers `nextCursor: null`,
+  // so the old separate short-page detection is gone.
   const [cursor, setCursor] = useState<string | null>(null);
-  const [exhausted, setExhausted] = useState(false);
   const [expanded, setExpanded] = useState<string>();
   const [action, setAction] = useState('all');
   const [tenantFilter, setTenantFilter] = useState('all');
@@ -38,7 +41,6 @@ export function AdminLog({ api, tenants }: AdminLogProps) {
       if (!live) return;
       setEntries(page.entries);
       setCursor(page.nextCursor);
-      setExhausted(page.entries.length < PAGE);
     })();
     return () => {
       live = false;
@@ -56,7 +58,6 @@ export function AdminLog({ api, tenants }: AdminLogProps) {
     });
     setEntries((prev) => [...prev, ...page.entries]);
     setCursor(page.nextCursor);
-    if (page.entries.length < PAGE) setExhausted(true);
   }
 
   const visible = entries.filter((e) => {
@@ -178,7 +179,7 @@ export function AdminLog({ api, tenants }: AdminLogProps) {
             )}
           </tbody>
         </table>
-        {!exhausted && cursor && (
+        {cursor && (
           <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
             <Button variant="ghost" size="sm" onClick={() => void loadOlder()}>
               Load older entries

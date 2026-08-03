@@ -7,7 +7,7 @@
  * Forks (snapshots/previews) are not installs and are excluded.
  */
 import { listVerticalHostnames } from './hostnames.js';
-import { readJson } from './http.js';
+import { readAllEntries, readJson } from './http.js';
 
 interface ScopeRow {
   id: string;
@@ -42,7 +42,10 @@ export async function printInstalls(
   slug: string,
 ): Promise<void> {
   const base = controlPlaneUrl.replace(/\/$/, '');
-  const scopes = await getJson<ScopeRow[]>(`${base}/scopes?tenantId=${encodeURIComponent(tenantId)}`, header);
+  const scopes = await readAllEntries<ScopeRow>(
+    `${base}/scopes?tenantId=${encodeURIComponent(tenantId)}`,
+    (pageUrl) => getJson(pageUrl, header),
+  );
   const installs = scopes
     .filter((s) => !s.forkedFrom && (s.vertical === slug || (s.vertical ?? '').endsWith(`/${slug}`)))
     .sort((a, b) => (a.id < b.id ? 1 : -1)); // ULIDs — newest first

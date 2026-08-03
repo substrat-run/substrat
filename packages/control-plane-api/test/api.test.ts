@@ -99,7 +99,7 @@ describe('control-plane API', () => {
     expect(got.status).toBe(200);
     expect(await got.json()).toMatchObject({ id: t1, slug: 'acme-co', status: 'active' });
 
-    const list = await (await req('/tenants')).json();
+    const list = (await (await req('/tenants')).json()).entries;
     expect(list).toHaveLength(1);
   });
 
@@ -259,17 +259,17 @@ describe('control-plane API', () => {
     await json('/scopes', 'POST', { tenantId: t2, scopeId: s2, slug: 'other-scope' });
     await json(`/tenants/${t2}/scopes/${s2}/activate`, 'POST');
 
-    const all = await (await req('/scopes')).json();
+    const all = (await (await req('/scopes')).json()).entries;
     expect(all).toHaveLength(2);
 
-    const mine = await (await req(`/scopes?tenantId=${t1}`)).json();
+    const mine = (await (await req(`/scopes?tenantId=${t1}`)).json()).entries;
     expect(mine).toHaveLength(1);
 
-    const housing = await (await req('/scopes?vertical=housing')).json();
+    const housing = (await (await req('/scopes?vertical=housing')).json()).entries;
     expect(housing.map((s: { id: string }) => s.id)).toEqual([s1]);
 
     // Repeatable status params — the console's All / Suspended / Archived tabs.
-    const both = await (await req('/scopes?status=active&status=suspended')).json();
+    const both = (await (await req('/scopes?status=active&status=suspended')).json()).entries;
     expect(both).toHaveLength(2);
   });
 
@@ -844,7 +844,7 @@ describe('control-plane API', () => {
     expect((await del.json() as { deleted: string }).deleted).toBe(c.scopeId);
     expect(deletes).toEqual([c.scopeId]);
     expect((await dapp.request(`/tenants/${t1}/scopes/${c.scopeId}`, { headers: auth })).status).toBe(404);
-    const hosts = (await (await dj(`/hostnames?scopeId=${c.scopeId}`, 'GET')).json()) as unknown[];
+    const hosts = ((await (await dj(`/hostnames?scopeId=${c.scopeId}`, 'GET')).json()) as { entries: unknown[] }).entries;
     expect(hosts).toHaveLength(0);
     expect((await (await dj('/verticals/prev-vert/previews/pr-7', 'DELETE')).json() as { deleted: string | null }).deleted).toBeNull();
   });
@@ -1061,13 +1061,13 @@ describe('control-plane API', () => {
       permissions: [permissionKey.parse('workorder:read')],
       source: 'vertical',
     });
-    const roles = await (await req(`/roles?tenantId=${t1}`)).json();
+    const roles = (await (await req(`/roles?tenantId=${t1}`)).json()).entries;
     expect(roles).toHaveLength(1);
     expect(roles[0]).toMatchObject({ tenantId: t1, key: 'site-manager', source: 'vertical' });
 
     // An unknown source returns nothing rather than 400 — the console filters
     // over sources it has seen, and a typo is an empty list, not an error.
-    expect(await (await req('/roles?source=nope')).json()).toEqual([]);
+    expect((await (await req('/roles?source=nope')).json()).entries).toEqual([]);
   });
 
   it('exposes no route that writes a role', async () => {
@@ -1140,9 +1140,9 @@ describe('control-plane API', () => {
   });
 
   it('lists hostnames, filtered by scope', async () => {
-    const all = await (await req('/hostnames')).json();
+    const all = (await (await req('/hostnames')).json()).entries;
     expect(all.map((h: { hostname: string }) => h.hostname)).toContain('acme.example.com');
-    const forScope = await (await req(`/hostnames?scopeId=${s1}`)).json();
+    const forScope = (await (await req(`/hostnames?scopeId=${s1}`)).json()).entries;
     expect(forScope.every((h: { scopeId: string }) => h.scopeId === s1)).toBe(true);
   });
 
@@ -1157,7 +1157,7 @@ describe('control-plane API', () => {
       status: 'failed',
       note: 'DNS validation timed out',
     });
-    const rows = await (await req(`/hostnames?scopeId=${s1}`)).json();
+    const rows = (await (await req(`/hostnames?scopeId=${s1}`)).json()).entries;
     const row = rows.find((h: { hostname: string }) => h.hostname === 'broken.example.com');
     expect(row.status).toBe('failed');
     expect(row.statusNote).toContain('DNS validation');
@@ -1472,7 +1472,7 @@ describe('control-plane API — vertical registry', () => {
     const res = await json('/verticals', 'POST', { slug: 'fsm', name: 'Field Service', source: 'builtin' });
     expect(res.status).toBe(201);
     expect(await res.json()).toMatchObject({ slug: 'fsm', name: 'Field Service', source: 'builtin' });
-    expect(await (await get('/verticals')).json()).toEqual([
+    expect((await (await get('/verticals')).json()).entries).toEqual([
       expect.objectContaining({ slug: 'fsm' }),
     ]);
   });
@@ -1673,7 +1673,7 @@ describe('control-plane API — deploy', () => {
     expect(deployed.at(-1)!.ref).toBe(version.deploymentRef);
     expect(deployed.at(-1)!.bundle.doClasses).toEqual(['ScopeDO']);
     expect(deployed.at(-1)!.bundle.modules).toHaveLength(1);
-    const verticals = await (await app.request('/verticals', { headers: auth })).json();
+    const verticals = (await (await app.request('/verticals', { headers: auth })).json()).entries;
     expect(verticals).toContainEqual(expect.objectContaining({ slug: 'fsm', source: 'cli' }));
   });
 
@@ -2029,7 +2029,7 @@ describe('control-plane API — builder authz', () => {
 
     // GET /scopes: the tenant filter is FORCED to the caller's own — asking for the
     // other tenant's rows still returns only yours (never a 403-vs-data choice).
-    const rows = (await (await acmeReq(`/scopes?tenantId=${other}`)).json()) as Array<{ id: string }>;
+    const rows = ((await (await acmeReq(`/scopes?tenantId=${other}`)).json()) as { entries: Array<{ id: string }> }).entries;
     expect(rows.map((s) => s.id)).toEqual([sAcme]);
 
     // Per-scope reads: own tenant answers; a foreign tenant is hidden as 404 (K-3).
@@ -2051,11 +2051,11 @@ describe('control-plane API — builder authz', () => {
     // Staff register a platform-owned vertical (bare, no prefix); acme must not see it.
     await staffReq('/verticals', 'POST', { slug: 'callout', name: 'Callout', source: 'builtin' });
 
-    const mine = await (await acmeReq('/verticals')).json();
+    const mine = (await (await acmeReq('/verticals')).json()).entries;
     expect(mine.map((v: { slug: string }) => v.slug)).toEqual([`${acmeSlug}/helpdesk`]);
-    expect(await (await otherReq('/verticals')).json()).toEqual([]);
+    expect((await (await otherReq('/verticals')).json()).entries).toEqual([]);
     // Staff see the whole registry, bare and prefixed alike.
-    const all = await (await staffReq('/verticals')).json();
+    const all = (await (await staffReq('/verticals')).json()).entries;
     expect(all.map((v: { slug: string }) => v.slug).sort()).toEqual([`${acmeSlug}/helpdesk`, 'callout']);
   });
 
@@ -2067,7 +2067,7 @@ describe('control-plane API — builder authz', () => {
     expect(res.status).toBe(201);
     expect(await res.json()).toMatchObject({ slug: `${otherSlug}/helpdesk`, ownerTenant: other });
     // And other still cannot see acme's — its list holds only its own helpdesk.
-    expect((await (await otherReq('/verticals')).json()).map((v: { slug: string }) => v.slug)).toEqual([
+    expect((await (await otherReq('/verticals')).json()).entries.map((v: { slug: string }) => v.slug)).toEqual([
       `${otherSlug}/helpdesk`,
     ]);
   });
@@ -2075,7 +2075,7 @@ describe('control-plane API — builder authz', () => {
   const v1 = ulid();
   it('lets the owner publish a version, and reads it back', async () => {
     expect((await acmeReq('/verticals/helpdesk/versions', 'POST', version(v1, 'helpdesk'))).status).toBe(201);
-    const versions = await (await acmeReq('/verticals/helpdesk/versions')).json();
+    const versions = (await (await acmeReq('/verticals/helpdesk/versions')).json()).entries;
     expect(versions.map((v: { id: string }) => v.id)).toEqual([v1]);
   });
 
@@ -2101,7 +2101,7 @@ describe('control-plane API — builder authz', () => {
   it('runs the whole publish flow — builder requests, staff reviews and lists (marketplace-publish.md §5)', async () => {
     const full = `${acmeSlug}/helpdesk`;
     const find = async () =>
-      (await (await staffReq('/verticals')).json()).find((v: { slug: string }) => v.slug === full) as {
+      (await (await staffReq('/verticals')).json()).entries.find((v: { slug: string }) => v.slug === full) as {
         listed: boolean;
         publishRequestedAt?: string | null;
       };
@@ -2164,10 +2164,10 @@ describe('control-plane API — builder authz', () => {
     expect(await otherPush.json()).toMatchObject({ verticalSlug: `${otherSlug}/reports` });
 
     // Each list holds only that tenant's own verticals — prefixed, isolated.
-    expect((await (await acmeReq('/verticals')).json()).map((v: { slug: string }) => v.slug).sort()).toEqual([
+    expect((await (await acmeReq('/verticals')).json()).entries.map((v: { slug: string }) => v.slug).sort()).toEqual([
       `${acmeSlug}/helpdesk`, `${acmeSlug}/reports`,
     ]);
-    expect((await (await otherReq('/verticals')).json()).map((v: { slug: string }) => v.slug).sort()).toEqual([
+    expect((await (await otherReq('/verticals')).json()).entries.map((v: { slug: string }) => v.slug).sort()).toEqual([
       `${otherSlug}/helpdesk`, `${otherSlug}/reports`,
     ]);
   });
@@ -2202,26 +2202,26 @@ describe('control-plane API — builder authz', () => {
   it('lets a builder address its own vertical by FULL id too — effectiveSlug is idempotent', async () => {
     // The deploy response returns the full registry id (`verticalSlug`); follow-up
     // calls (the CLI's same-run --promote) send it back. That must not double-prefix.
-    const versions = await (await acmeReq(`/verticals/${encodeURIComponent(`${acmeSlug}/helpdesk`)}/versions`)).json();
+    const versions = (await (await acmeReq(`/verticals/${encodeURIComponent(`${acmeSlug}/helpdesk`)}/versions`)).json()).entries;
     expect(versions.map((v: { id: string }) => v.id)).toEqual([v1]);
   });
 
   it("a PRIVATE vertical is the owner's end to end: push lands admitted, prod self-serves, history reads back", async () => {
     // `reports` was pushed through the deploy path above and never listed, so its
     // version self-admitted (builder-plane.md §4-revised) — no staff step anywhere.
-    const [pushed] = await (await acmeReq('/verticals/reports/versions')).json();
+    const [pushed] = (await (await acmeReq('/verticals/reports/versions')).json()).entries;
     expect(pushed.admission).toBe('admitted');
 
     // The owner promotes prod itself — merge-to-main's shape (`push --promote prod`).
     expect((await acmeReq('/verticals/reports/channels/prod/promote', 'POST', { versionId: pushed.id })).status).toBe(200);
 
     // The go-live timeline reads back, owner-narrowed: acme sees its promotion...
-    const history = await (await acmeReq('/verticals/reports/channels/prod/history')).json();
+    const history = (await (await acmeReq('/verticals/reports/channels/prod/history')).json()).entries;
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({ versionId: pushed.id, fromVersionId: null });
     // ...`other`'s own `reports` timeline is its own (empty), and a slug it does not
     // own 404s indistinguishably from an absent one.
-    expect(await (await otherReq('/verticals/reports/channels/prod/history')).json()).toEqual([]);
+    expect((await (await otherReq('/verticals/reports/channels/prod/history')).json()).entries).toEqual([]);
     expect((await otherReq('/verticals/nonexistent/channels/prod/history')).status).toBe(404);
   });
 
@@ -2307,12 +2307,12 @@ describe('control-plane API — builder authz', () => {
     });
 
     it('narrows a builder’s list to its own tenant — a foreign tenantId in the query loses silently', async () => {
-      const mine = await (await acmeReq('/hostnames')).json();
+      const mine = (await (await acmeReq('/hostnames')).json()).entries;
       expect(mine.map((h: { hostname: string }) => h.hostname)).toEqual(['acme-crm-eka.global.substrat.run']);
-      const widened = await (await acmeReq(`/hostnames?tenantId=${other}`)).json();
+      const widened = (await (await acmeReq(`/hostnames?tenantId=${other}`)).json()).entries;
       expect(widened.map((h: { hostname: string }) => h.hostname)).toEqual(['acme-crm-eka.global.substrat.run']);
       // Staff still see the whole map.
-      const all = await (await staffReq('/hostnames')).json();
+      const all = (await (await staffReq('/hostnames')).json()).entries;
       expect(all.map((h: { hostname: string }) => h.hostname).sort()).toEqual([
         'acme-crm-eka.global.substrat.run', 'other-crm.global.substrat.run',
       ]);
@@ -2324,12 +2324,12 @@ describe('control-plane API — builder authz', () => {
       ).toBe(404);
       expect((await acmeReq('/hostnames/other-crm.global.substrat.run', 'DELETE')).status).toBe(404);
       // The foreign row survived untouched.
-      const rows = await (await staffReq(`/hostnames?scopeId=${otherScope}`)).json();
+      const rows = (await (await staffReq(`/hostnames?scopeId=${otherScope}`)).json()).entries;
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ hostname: 'other-crm.global.substrat.run', status: 'pending' });
       // Its own binding it may unbind.
       expect((await acmeReq('/hostnames/acme-crm-eka.global.substrat.run', 'DELETE')).status).toBe(200);
-      expect(await (await acmeReq('/hostnames')).json()).toEqual([]);
+      expect((await (await acmeReq('/hostnames')).json()).entries).toEqual([]);
     });
   });
 });
@@ -2631,9 +2631,9 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect(failed.status).toBe(502); // pointer moved to v2, but the serve failed
     failServeRef = null;
 
-    const channels = await (
+    const channels = (await (
       await app.request(`/verticals/${encodeURIComponent(slug)}/channels`, { headers: auth })
-    ).json();
+    ).json()).entries;
     const prod = channels.find((c: { channel: string }) => c.channel === 'prod');
     // The channel pointer is honestly recorded (it IS an audited promotion decision)...
     expect(prod.versionId).toBe(v2);
@@ -3063,42 +3063,42 @@ describe('control-plane API — staff tenant-pin resolution (#417)', () => {
 
   it('resolves a bare slug to the pinned workspace’s prefixed registry id — the #417 repro', async () => {
     // Unpinned staff read of the bare slug: nothing (the pre-#417 symptom, unchanged).
-    expect(await (await staffReq('/verticals/authhero-console/versions')).json()).toEqual([]);
+    expect((await (await staffReq('/verticals/authhero-console/versions')).json()).entries).toEqual([]);
     // Pinned by workspace SLUG: the bare slug reaches `<tenantSlug>/<slug>`.
-    const bySlug = await (await req(pinned(mqkSlug))('/verticals/authhero-console/versions')).json();
+    const bySlug = (await (await req(pinned(mqkSlug))('/verticals/authhero-console/versions')).json()).entries;
     expect(bySlug.map((v: { id: string }) => v.id)).toEqual([v1]);
     // Pinned by workspace ID (the CLI accepts either).
-    const byId = await (await req(pinned(mqk))('/verticals/authhero-console/versions')).json();
+    const byId = (await (await req(pinned(mqk))('/verticals/authhero-console/versions')).json()).entries;
     expect(byId.map((v: { id: string }) => v.id)).toEqual([v1]);
     // Idempotent: the full id under a pin is not double-prefixed.
-    const fullRead = await (await req(pinned(mqkSlug))(`/verticals/${encodeURIComponent(full)}/versions`)).json();
+    const fullRead = (await (await req(pinned(mqkSlug))(`/verticals/${encodeURIComponent(full)}/versions`)).json()).entries;
     expect(fullRead.map((v: { id: string }) => v.id)).toEqual([v1]);
   });
 
   it('promotes and reads channels by bare slug under a pin — the whole manage surface resolves', async () => {
     const p = req(pinned(mqkSlug));
     expect((await p('/verticals/authhero-console/channels/dev/promote', 'POST', { versionId: v1 })).status).toBe(200);
-    const channels = await (await p('/verticals/authhero-console/channels')).json();
+    const channels = (await (await p('/verticals/authhero-console/channels')).json()).entries;
     expect(channels).toMatchObject([{ channel: 'dev', versionId: v1 }]);
     // The pointer landed on the PREFIXED lineage — the unpinned full id reads the same rows.
-    const direct = await (await staffReq(`/verticals/${encodeURIComponent(full)}/channels`)).json();
+    const direct = (await (await staffReq(`/verticals/${encodeURIComponent(full)}/channels`)).json()).entries;
     expect(direct).toMatchObject([{ channel: 'dev', versionId: v1 }]);
-    const history = await (await p('/verticals/authhero-console/channels/dev/history')).json();
+    const history = (await (await p('/verticals/authhero-console/channels/dev/history')).json()).entries;
     expect(history.length).toBe(1);
   });
 
   it('keeps a bare slug the pinned workspace owns addressable as itself (back-compat)', async () => {
-    const rows = await (await req(pinned(mqkSlug))('/verticals/legacy/versions')).json();
+    const rows = (await (await req(pinned(mqkSlug))('/verticals/legacy/versions')).json()).entries;
     expect(rows.map((v: { id: string }) => v.id)).toEqual([legacyV]);
   });
 
   it('never redirects to a lineage that is not there — platform bare slugs and unknown pins are unchanged', async () => {
     // `callout` is platform-owned and `authhero-mqk5x7/callout` does not exist: the pin is
     // irrelevant here (e.g. a stored default workspace) and must not break the read.
-    const callout = await (await req(pinned(mqkSlug))('/verticals/callout/versions')).json();
+    const callout = (await (await req(pinned(mqkSlug))('/verticals/callout/versions')).json()).entries;
     expect(callout.map((v: { id: string }) => v.id)).toEqual([calloutV]);
     // An unknown pin resolves to the raw slug — today's behavior, not a 404.
-    const unknown = await (await req(pinned('no-such-workspace'))('/verticals/callout/versions')).json();
+    const unknown = (await (await req(pinned('no-such-workspace'))('/verticals/callout/versions')).json()).entries;
     expect(unknown.map((v: { id: string }) => v.id)).toEqual([calloutV]);
   });
 });

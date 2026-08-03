@@ -13,6 +13,30 @@ import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
  * lib/demo.ts) with the honesty banners the design calls for.
  */
 
+/**
+ * The envelope every paged list read returns (the platform-wide convention,
+ * contracts pagination.ts): one page of entries, newest first, and the cursor
+ * that fetches the next (older) page — `null` when the walk is done.
+ */
+export interface ListPage<T> {
+  entries: T[];
+  nextCursor: string | null;
+}
+
+/** Optional page params for a list read; unset = the server's default page (20). */
+export interface PageOpts {
+  limit?: number;
+  cursor?: string;
+}
+
+const pageQs = (opts?: PageOpts): string => {
+  const q = new URLSearchParams();
+  if (opts?.limit != null) q.set('limit', String(opts.limit));
+  if (opts?.cursor) q.set('cursor', opts.cursor);
+  const s = q.toString();
+  return s ? `?${s}` : '';
+};
+
 /** One team (tenant) the signed-in user belongs to — drives the team switcher. */
 export interface Team {
   id: TenantId;
@@ -225,6 +249,11 @@ export interface Deployment {
    * prod was 0.0.9 stays on 0.0.9 until updated. `null` ⇒ unpinned (static binding).
    */
   boundVersionId?: string | null;
+}
+
+/** The per-app deployments read: `versions` is ONE page (newest first); `nextCursor` walks older. */
+export interface AppDeployments extends Deployment {
+  nextCursor: string | null;
 }
 
 /**
@@ -536,8 +565,8 @@ export const api = {
   deleteTeam: (confirm: string) =>
     call<void>('/teams/delete', { method: 'POST', body: JSON.stringify({ confirm }) }),
   catalog: () => call<CatalogEntry[]>('/catalog'),
-  /** The current team's roster (active members + outstanding invites). */
-  listMembers: () => call<Member[]>('/members'),
+  /** The current team's roster (active members + outstanding invites), one page newest-first. */
+  listMembers: (opts?: PageOpts) => call<ListPage<Member>>(`/members${pageQs(opts)}`),
   /** Invite someone at a role; returns a shareable accept link (no email delivery yet). */
   inviteMember: (email: string, roleKey: InviteRole) =>
     call<{ invitationId: string; acceptUrl: string }>('/members/invite', {
@@ -567,11 +596,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ token }),
     }),
-  listApps: () => call<AppRow[]>('/apps'),
+  /** My apps, one page newest-first; follow `nextCursor` for older ones. */
+  listApps: (opts?: PageOpts) => call<ListPage<AppRow>>(`/apps${pageQs(opts)}`),
   createApp: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) =>
     call<AppRow>('/apps', { method: 'POST', body: JSON.stringify(input) }),
   // -- custom domains (§4.7) -------------------------------------------------
-  listDomains: () => call<DomainRow[]>('/domains'),
+  listDomains: (opts?: PageOpts) => call<ListPage<DomainRow>>(`/domains${pageQs(opts)}`),
   addDomain: (input: { hostname: string; appScopeId: string; surface?: string }) =>
     call<HostnameBinding>('/domains', { method: 'POST', body: JSON.stringify(input) }),
   verifyDomain: (hostname: string) =>
@@ -582,11 +612,15 @@ export const api = {
   retryApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/retry`, { method: 'POST' }),
   /** Resume an app stuck at 'provisioning' — re-runs the idempotent install tail in place (#424). */
   resumeApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/resume`, { method: 'POST' }),
-  appEvents: (scopeId: string) => call<AppEvent[]>(`/apps/${encodeURIComponent(scopeId)}/events`),
+  /** One page of the app's audit trail, newest first; `nextCursor` walks older activity. */
+  appEvents: (scopeId: string, opts?: PageOpts) =>
+    call<ListPage<AppEvent>>(`/apps/${encodeURIComponent(scopeId)}/events${pageQs(opts)}`),
   /** The install's durable step record (#424) — rendered live while an install runs. */
   installSteps: (scopeId: string) => call<InstallStep[]>(`/apps/${encodeURIComponent(scopeId)}/steps`),
-  /** The app's vertical version registry + channels + the version THIS scope actually runs (`boundVersionId`). */
-  appDeployments: (scopeId: string) => call<Deployment>(`/apps/${encodeURIComponent(scopeId)}/deployments`),
+  /** The app's vertical version registry (one page of versions, newest first) + channels +
+   *  the version THIS scope actually runs (`boundVersionId`). `cursor` walks older versions. */
+  appDeployments: (scopeId: string, opts?: PageOpts) =>
+    call<AppDeployments>(`/apps/${encodeURIComponent(scopeId)}/deployments${pageQs(opts)}`),
   /** The declared permission surface (D-39, #336) of the version this app runs, plus the
    *  update target's, for the Permissions tab's table + update diff. */
   appPermissions: (scopeId: string) => call<AppPermissionsView>(`/apps/${encodeURIComponent(scopeId)}/permissions`),

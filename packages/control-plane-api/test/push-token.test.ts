@@ -132,7 +132,7 @@ describe('push tokens', () => {
       // In: the builder surface (its own — empty — vertical list).
       const list = await app.request('/verticals', { headers: asCi });
       expect(list.status).toBe(200);
-      expect(await list.json()).toEqual([]);
+      expect(await list.json()).toEqual({ entries: [], nextCursor: null });
 
       // Out: everything off the allowlist — staff registry reads, minting more tokens.
       expect((await app.request('/tenants', { headers: asCi })).status).toBe(403);

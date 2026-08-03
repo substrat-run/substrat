@@ -292,6 +292,18 @@ for everything; a silent cap there would let a truncated page pass for the whole
 tenant is reaped (§4.8) its scope data and PII directory rows are destroyed, but its admin-log
 rows are **kept** — the witness of what was done to that tenant must outlive the tenant.
 
+**The admin-log read pattern is now the platform-wide list convention** (contracts
+`pagination.ts`): every GET list route on the control-plane surface — tenants, scopes,
+verticals, versions, channels, channel history, hostnames, roles, the admin log — accepts
+`limit` (default 20, max 200) + `cursor` (+ `order` where the walk direction is meaningful)
+and returns `{ entries, nextCursor }`, keyset over the list's own sort key. `nextCursor` is
+the last entry's key when the page came back full, `null` when short (the walk is done).
+The same two-layer rule holds everywhere: kernel `HostAdmin.list*` reads stay unbounded
+unless a page is passed (internal enumerate-everything callers — sweeps, catalogs,
+reconciliation — must never mistake a page for the inventory); only the HTTP egress
+defaults a page. Dashboard list routes (`/api/apps`, `/api/apps/:id/deployments`,
+`/api/apps/:id/events`, …) follow the identical shape.
+
 ### 4.5 The console
 
 Thin, over the above. In build order:

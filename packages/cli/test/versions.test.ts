@@ -15,9 +15,16 @@ type Routes = Record<string, unknown>;
 
 function stubFetch(routes: Routes) {
   vi.stubGlobal('fetch', async (url: string | URL) => {
-    const path = String(url).replace(CP, '');
+    // List routes are paged ({entries, nextCursor} + limit/cursor params); the route
+    // table stays declared as plain arrays and the stub speaks the wire shape.
+    const u = new URL(String(url));
+    u.searchParams.delete('limit');
+    u.searchParams.delete('cursor');
+    const path = u.pathname + (u.searchParams.size > 0 ? `?${u.searchParams}` : '');
     if (path in routes) {
-      return new Response(JSON.stringify(routes[path]), {
+      const value = routes[path];
+      const body = Array.isArray(value) ? { entries: value, nextCursor: null } : value;
+      return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });

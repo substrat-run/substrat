@@ -1,5 +1,6 @@
 import type {
   AdminAction,
+  ListPage,
   Connection,
   ConnectionFilter,
   ConnectionId,
@@ -499,6 +500,7 @@ export interface HostAdmin {
    * and needs §5.4's admin-query RPC — the two are not the same size of problem.
    */
   listRoles(actor: PlatformActorId, filter?: RoleFilter): Promise<TenantRole[]>;
+  // ^ pages over (tenant_id, role_key); the cursor is `${tenantId}|${roleKey}`.
   assignRole(actor: PlatformActorId, assignment: RoleAssignment): Promise<void>;
   /**
    * Revoke a role assignment — the inverse of `assignRole`, same `RoleAssignment`
@@ -604,7 +606,8 @@ export interface HostAdmin {
    * (different source) throws rather than silently rebinding what a scope runs.
    */
   registerVertical(actor: PlatformActorId, input: RegisterVerticalInput): Promise<void>;
-  listVerticals(actor: PlatformActorId): Promise<Vertical[]>;
+  /** Ordered by slug; `page.cursor` is a slug. Unset limit = everything (pagination.ts). */
+  listVerticals(actor: PlatformActorId, page?: ListPage): Promise<Vertical[]>;
 
   /**
    * Publish a version. It lands **pending** — a push is not a deploy — with ONE
@@ -622,7 +625,12 @@ export interface HostAdmin {
    * rather than where the typing was.
    */
   publishVersion(actor: PlatformActorId, input: PublishVersionInput): Promise<void>;
-  listVersions(actor: PlatformActorId, verticalSlug: string): Promise<VerticalVersion[]>;
+  /** Ordered by id (ULID = publish order), `asc` unless `page.order` says otherwise. */
+  listVersions(
+    actor: PlatformActorId,
+    verticalSlug: string,
+    page?: ListPage,
+  ): Promise<VerticalVersion[]>;
 
   /**
    * Admit a pending version — the gates passed. Idempotent on an already-admitted one,
@@ -705,7 +713,12 @@ export interface HostAdmin {
     versionId: string,
     acknowledge?: PromotionAcknowledgement,
   ): Promise<void>;
-  listChannels(actor: PlatformActorId, verticalSlug: string): Promise<VerticalChannel[]>;
+  /** Ordered by channel name; `page.cursor` is a channel name. */
+  listChannels(
+    actor: PlatformActorId,
+    verticalSlug: string,
+    page?: ListPage,
+  ): Promise<VerticalChannel[]>;
 
   /**
    * The promotion timeline (append-only, newest first) — every pointer move
@@ -717,7 +730,10 @@ export interface HostAdmin {
     actor: PlatformActorId,
     verticalSlug: string,
     channel?: ChannelName,
+    page?: ListPage,
   ): Promise<ChannelHistoryEntry[]>;
+  // ^ newest first is the shipped order, so `page.order` DEFAULTS to 'desc' here;
+  //   the cursor is an entry id.
 
   /**
    * Point a scope at a version.
@@ -858,9 +874,10 @@ export interface HostAdmin {
    * so a cleanup pass can re-run over a partial failure.
    */
   unbindHostname(actor: PlatformActorId, hostname: string): Promise<void>;
+  /** Ordered by hostname; the cursor is a hostname. */
   listHostnames(
     actor: PlatformActorId,
-    filter?: { tenantId?: TenantId; scopeId?: ScopeId; status?: HostnameStatus },
+    filter?: { tenantId?: TenantId; scopeId?: ScopeId; status?: HostnameStatus } & ListPage,
   ): Promise<HostnameBinding[]>;
 
   /**
@@ -924,8 +941,11 @@ export interface HostAdmin {
    * failure converges (the DELETEs and the status flip are all set-to-empty).
    */
   reapTenant(actor: PlatformActorId, tenantId: TenantId): Promise<void>;
-  /** The tenant registry — the directory's inventory (control-plane.md §4.5 console item 1). */
-  listTenants(actor: PlatformActorId): Promise<Tenant[]>;
+  /**
+   * The tenant registry — the directory's inventory (control-plane.md §4.5 console
+   * item 1). Ordered by tenant id (ULID = chronological); the cursor is a tenant id.
+   */
+  listTenants(actor: PlatformActorId, page?: ListPage): Promise<Tenant[]>;
   getTenant(actor: PlatformActorId, tenantId: TenantId): Promise<Tenant | undefined>;
 
   // -- the scope directory, read side (control-plane.md §3.2/§4.5) -----------
@@ -945,7 +965,7 @@ export interface HostAdmin {
   // make that trail's "every row is an effect" property false, and would force
   // one retention policy onto two things that need different ones.
 
-  /** The scope inventory. Ordered by scope_id (ULID = chronological). */
+  /** The scope inventory. Ordered by scope_id (ULID = chronological); cursor = scope id. */
   listScopes(actor: PlatformActorId, filter?: ScopeFilter): Promise<Scope[]>;
   /**
    * The tenant-store ledger (#301): every platform-minted per-tenant store, optionally
@@ -1425,7 +1445,7 @@ export interface TenantStoreRecord {
  * Narrow `listRoles` (control-plane.md §4.5 console item 4 — the permission
  * diff's runtime half).
  */
-export interface RoleFilter {
+export interface RoleFilter extends ListPage {
   tenantId?: TenantId;
   /**
    * A module id, or 'vertical'. Both mean "declared in code" — see
@@ -1436,7 +1456,7 @@ export interface RoleFilter {
 }
 
 /** Narrow `listScopes` (control-plane.md §4.5 console items 1 and 6). */
-export interface ScopeFilter {
+export interface ScopeFilter extends ListPage {
   tenantId?: TenantId;
   /** One status or any of several — the console's All / Suspended / Archived tabs. */
   status?: ScopeStatus | ScopeStatus[];
@@ -1448,11 +1468,10 @@ export interface ScopeFilter {
  * conjunctive AND; omitting all of them reads the whole log, which is why `limit`
  * exists — the table is append-only and only grows.
  */
-export interface AccessLogFilter {
+export interface AccessLogFilter extends ListPage {
   actor?: PlatformActorId;
   tenantId?: TenantId;
   method?: string;
-  limit?: number;
 }
 
 export interface AuditLogFilter {

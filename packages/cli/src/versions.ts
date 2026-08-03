@@ -6,7 +6,7 @@
  * this works for staff now and for builders once builder-scoped authz lands.
  */
 import { listVerticalHostnames } from './hostnames.js';
-import { readJson } from './http.js';
+import { readAllEntries, readJson } from './http.js';
 
 interface Version {
   id: string;
@@ -30,6 +30,10 @@ async function getJson<T>(url: string, header: Record<string, string>): Promise<
   return readJson<T>(res, url);
 }
 
+/** Walk a paged list route to the end (the CLI wants the whole list, not a screenful). */
+const getAll = <T>(url: string, header: Record<string, string>): Promise<T[]> =>
+  readAllEntries<T>(url, (pageUrl) => getJson(pageUrl, header));
+
 /**
  * Resolve the registry identity `versions <slug>` should read (#399): the exact slug
  * when it has versions, else — with exactly the tail-tolerance `hostnames` already
@@ -45,17 +49,17 @@ async function resolveVersionsSlug(
   header: Record<string, string>,
   slug: string,
 ): Promise<{ slug: string; versions: Version[]; note?: string; ambiguous?: string[] }> {
-  const exact = await getJson<Version[]>(`${base}/verticals/${encodeURIComponent(slug)}/versions`, header);
+  const exact = await getAll<Version>(`${base}/verticals/${encodeURIComponent(slug)}/versions`, header);
   if (exact.length > 0) return { slug, versions: exact };
   // The registry list is visibility-scoped server-side (staff: all; builder: own), so a
   // tail match never reveals a foreign tenant's registration the caller couldn't read.
-  const registry = await getJson<Array<{ slug: string }>>(`${base}/verticals`, header).catch(
+  const registry = await getAll<{ slug: string }>(`${base}/verticals`, header).catch(
     () => [] as Array<{ slug: string }>,
   );
   const candidates = registry.filter((v) => v.slug !== slug && v.slug.endsWith(`/${slug}`));
   const withVersions: Array<{ slug: string; versions: Version[] }> = [];
   for (const c of candidates) {
-    const versions = await getJson<Version[]>(`${base}/verticals/${encodeURIComponent(c.slug)}/versions`, header).catch(
+    const versions = await getAll<Version>(`${base}/verticals/${encodeURIComponent(c.slug)}/versions`, header).catch(
       () => [] as Version[],
     );
     if (versions.length > 0) withVersions.push({ slug: c.slug, versions });
@@ -95,7 +99,7 @@ export async function printVersions(
   }
   const { versions } = resolved;
   // Channels are best-effort — a vertical with none registered still lists its versions.
-  const channels = await getJson<Channel[]>(
+  const channels = await getAll<Channel>(
     `${base}/verticals/${encodeURIComponent(resolved.slug)}/channels`,
     header,
   ).catch(() => [] as Channel[]);

@@ -5,6 +5,7 @@ import type { TableColumn } from '../components';
 import { ulid } from '@substrat-run/kernel';
 import { tenantTone } from '../lib/fleet';
 import type { Api } from '../lib/api';
+import { usePagedList } from '../lib/use-paged-list';
 import { CreateInstance } from './CreateInstance';
 
 export interface TenantsProps {
@@ -23,6 +24,16 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
   const [slug, setSlug] = useState('');
   const [name, setName] = useState('');
   const [error, setError] = useState<string>();
+
+  // The table pages (first page of 20, cursor-walked below); the `tenants`/`scopes`
+  // props stay the WALKED directory the aggregates read (scope counts, entitlement
+  // tags) — and `tenants` doubles as the refresh signal: a mutation's `onChanged`
+  // reload swaps its identity, which re-reads the loaded window.
+  const paged = usePagedList(
+    (p) => api.listTenants(p),
+    [api, tenants],
+    (e) => onToast('Failed to load tenants', e.message, 'danger'),
+  );
 
   const scopeCount = (id: TenantId) => scopes.filter((s) => s.tenantId === id).length;
 
@@ -95,7 +106,14 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
       </div>
 
       <Card padding={0}>
-        <Table columns={columns} rows={tenants} onRowClick={(t) => onOpen(t.id)} emptyText="No tenants yet." />
+        <Table columns={columns} rows={paged.entries} onRowClick={(t) => onOpen(t.id)} emptyText="No tenants yet." />
+        {paged.nextCursor && (
+          <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
+            <Button variant="ghost" size="sm" onClick={() => void paged.loadMore()}>
+              Load more
+            </Button>
+          </div>
+        )}
       </Card>
 
       <Dialog

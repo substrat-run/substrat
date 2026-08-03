@@ -34,7 +34,7 @@ export interface HostnameRow {
   validationRecords: DnsRecordRow[];
 }
 
-import { parseJsonBody } from './http.js';
+import { parseJsonBody, readAllEntries } from './http.js';
 
 async function request<T>(url: string, header: Record<string, string>, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
@@ -59,7 +59,10 @@ export async function listVerticalHostnames(
   slug: string,
 ): Promise<HostnameRow[]> {
   const base = controlPlaneUrl.replace(/\/$/, '');
-  const rows = await request<HostnameRow[]>(`${base}/hostnames?tenantId=${encodeURIComponent(tenantId)}`, header);
+  const rows = await readAllEntries<HostnameRow>(
+    `${base}/hostnames?tenantId=${encodeURIComponent(tenantId)}`,
+    (pageUrl) => request(pageUrl, header),
+  );
   return rows.filter((h) => h.verticalSlug === slug || (h.verticalSlug ?? '').endsWith(`/${slug}`));
 }
 

@@ -1,4 +1,6 @@
 import type {
+  ListPage,
+  Page,
   PermissionRegistry,
   PrincipalId,
   Scope,
@@ -10,6 +12,7 @@ import type {
   ScopeTablePage,
   TenantId,
 } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX } from '@substrat-run/contracts';
 
 /**
  * The tenant-narrowed platform authority — the crux of docs/design/dashboard.md §4.
@@ -141,6 +144,41 @@ export class TenantNarrowedControlPlane {
     return this.call<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body), idempotent });
   }
 
+  /**
+   * GET one page of a CP list route — the platform-wide `{ entries, nextCursor }`
+   * envelope (contracts pagination.ts), verbatim. A bare array from a pre-envelope
+   * plane (deploy skew: the dashboard and the CP ship separately) is tolerated as
+   * a single exhausted page.
+   */
+  private async page<T>(path: string, page: ListPage = {}): Promise<Page<T>> {
+    const q = new URLSearchParams();
+    if (page.limit !== undefined) q.set('limit', String(page.limit));
+    if (page.cursor !== undefined) q.set('cursor', page.cursor);
+    if (page.order !== undefined) q.set('order', page.order);
+    const qs = q.toString();
+    const url = qs ? `${path}${path.includes('?') ? '&' : '?'}${qs}` : path;
+    const res = await this.call<Page<T> | T[] | undefined>(url);
+    if (Array.isArray(res)) return { entries: res, nextCursor: null };
+    return res ?? { entries: [], nextCursor: null };
+  }
+
+  /**
+   * Walk a CP list route to completion (max-size pages, cursor followed until null).
+   * The CP defaults every list read to one page now; internal callers of this class
+   * (provisioning, catalogs, the observability ownership map) mean "everything", so
+   * the complete-list semantics they were built on are preserved HERE, at the seam.
+   */
+  private async listAll<T>(path: string): Promise<T[]> {
+    const all: T[] = [];
+    let cursor: string | undefined;
+    do {
+      const { entries, nextCursor } = await this.page<T>(path, { limit: LIST_PAGE_MAX, cursor });
+      all.push(...entries);
+      cursor = nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    return all;
+  }
+
   /** Ensure the caller's tenant exists in the shared directory (idempotent). */
   ensureTenant(slug: string, name: string): Promise<void> {
     return this.post('/tenants', { id: this.tenantId, slug, name }, true);
@@ -244,7 +282,13 @@ export class TenantNarrowedControlPlane {
   /** Every hostname across all of this tenant's scopes — the account-level Domains list. */
   listTenantHostnames(): Promise<HostnameBindingRow[]> {
     const q = new URLSearchParams({ tenantId: this.tenantId });
-    return this.call<HostnameBindingRow[]>(`/hostnames?${q}`);
+    return this.listAll<HostnameBindingRow>(`/hostnames?${q}`);
+  }
+
+  /** One page of the tenant's hostnames (keyset on the hostname) — the paged Domains read. */
+  listTenantHostnamesPage(page: ListPage): Promise<Page<HostnameBindingRow>> {
+    const q = new URLSearchParams({ tenantId: this.tenantId });
+    return this.page<HostnameBindingRow>(`/hostnames?${q}`, page);
   }
 
   setHostnameStatus(hostname: string, status: 'active' | 'pending' | 'failed', note?: string): Promise<void> {
@@ -262,10 +306,9 @@ export class TenantNarrowedControlPlane {
   async listVerticals(): Promise<
     Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean }>
   > {
-    const all =
-      (await this.call<Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean }>>(
-        '/verticals',
-      )) ?? [];
+    const all = await this.listAll<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean }>(
+      '/verticals',
+    );
     return all.filter((v) => v.ownerTenant === this.tenantId);
   }
 
@@ -278,10 +321,9 @@ export class TenantNarrowedControlPlane {
   async listCatalog(): Promise<
     Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[] }>
   > {
-    const all =
-      (await this.call<
-        Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[] }>
-      >('/verticals')) ?? [];
+    const all = await this.listAll<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[] }>(
+      '/verticals',
+    );
     return all
       .filter((v) => v.listed || v.ownerTenant === this.tenantId)
       .map((v) => ({
@@ -311,9 +353,28 @@ export class TenantNarrowedControlPlane {
     Array<{ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; createdAt: string }>
   > {
     try {
-      return (await this.call(`/verticals/${encodeURIComponent(verticalSlug)}/versions`)) ?? [];
+      return await this.listAll(`/verticals/${encodeURIComponent(verticalSlug)}/versions`);
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * ONE page of a vertical's versions — the `{ entries, nextCursor }` envelope
+   * verbatim, keyset on the version's ULID id (order flippable; the per-app
+   * Deployments tab walks `desc` = newest first). An unknown/unowned slug reads
+   * as an exhausted empty page, mirroring `listVersions`' `[]`.
+   */
+  async listVersionsPage(
+    verticalSlug: string,
+    page: ListPage,
+  ): Promise<
+    Page<{ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; createdAt: string }>
+  > {
+    try {
+      return await this.page(`/verticals/${encodeURIComponent(verticalSlug)}/versions`, page);
+    } catch {
+      return { entries: [], nextCursor: null };
     }
   }
 
@@ -343,7 +404,7 @@ export class TenantNarrowedControlPlane {
    */
   async listChannels(verticalSlug: string): Promise<Array<{ channel: string; versionId: string }>> {
     try {
-      return (await this.call(`/verticals/${encodeURIComponent(verticalSlug)}/channels`)) ?? [];
+      return await this.listAll(`/verticals/${encodeURIComponent(verticalSlug)}/channels`);
     } catch {
       return [];
     }
@@ -443,10 +504,8 @@ export class TenantNarrowedControlPlane {
     channel: string,
   ): Promise<Array<{ id: string; versionId: string; fromVersionId: string | null; actor: string; at: string }>> {
     try {
-      return (
-        (await this.call(
-          `/verticals/${encodeURIComponent(verticalSlug)}/channels/${encodeURIComponent(channel)}/history`,
-        )) ?? []
+      return await this.listAll(
+        `/verticals/${encodeURIComponent(verticalSlug)}/channels/${encodeURIComponent(channel)}/history`,
       );
     } catch {
       return [];
@@ -584,7 +643,7 @@ export class TenantNarrowedControlPlane {
    *  are exactly what the settings section renders. */
   listHostnames(scopeId: ScopeId): Promise<HostnameBindingRow[]> {
     const q = new URLSearchParams({ tenantId: this.tenantId, scopeId });
-    return this.call<HostnameBindingRow[]>(`/hostnames?${q}`);
+    return this.listAll<HostnameBindingRow>(`/hostnames?${q}`);
   }
 
   /**
@@ -653,7 +712,7 @@ export class TenantNarrowedControlPlane {
    */
   listScopes(vertical: string): Promise<Scope[]> {
     const q = new URLSearchParams({ tenantId: this.tenantId, vertical });
-    return this.call<Scope[]>(`/scopes?${q}`);
+    return this.listAll<Scope>(`/scopes?${q}`);
   }
 
   // -- read-only scope-DB introspection (§5.4 admin-query RPC; the Data tab) ---

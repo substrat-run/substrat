@@ -1,3 +1,4 @@
+import { LIST_PAGE_MAX } from '@substrat-run/contracts';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import type { Api } from './api';
 
@@ -119,7 +120,11 @@ export async function createInstance(
   // one, or one not yet promoted — has nothing to pin; the scope then serves via the
   // router's static-binding fallback, so this is a no-op rather than an error.
   await step('bindVersion', async () => {
-    const prod = (await api.listChannels(verticalSlug)).find((c) => c.channel === 'prod');
+    // One max page IS the full set: channels are a bounded, named handful
+    // (dev/staging/prod), nowhere near LIST_PAGE_MAX — no walk loop needed
+    // to keep "find prod" a whole-set computation.
+    const { entries: channels } = await api.listChannels(verticalSlug, { limit: LIST_PAGE_MAX });
+    const prod = channels.find((c) => c.channel === 'prod');
     if (prod) await api.bindScopeVersion(tenantId, scopeId, prod.versionId);
   });
 

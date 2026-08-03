@@ -31,7 +31,8 @@ function fakeApi(overrides: Partial<Record<keyof Api, unknown>> = {}) {
     provisionInstance: rec('provisionInstance'),
     provisionScope: rec('provisionScope'),
     // Default: no promoted version, so bindVersion resolves nothing (a static vertical).
-    listChannels: rec('listChannels', []),
+    // Lists answer the platform envelope now: `{ entries, nextCursor }`.
+    listChannels: rec('listChannels', { entries: [], nextCursor: null }),
     bindScopeVersion: rec('bindScopeVersion'),
     bindHostname: rec('bindHostname'),
     setHostnameStatus: rec('setHostnameStatus'),
@@ -61,9 +62,10 @@ describe('createInstance', () => {
     // router dispatches on that version (orchestration.md §5.4).
     const bind = vi.fn(async () => ({}));
     const { api, calls } = fakeApi({
-      listChannels: async () => [
-        { channel: 'prod', versionId: '01JZVERSION', verticalSlug: 'fsm', updatedAt: '' },
-      ],
+      listChannels: async () => ({
+        entries: [{ channel: 'prod', versionId: '01JZVERSION', verticalSlug: 'fsm', updatedAt: '' }],
+        nextCursor: null,
+      }),
       bindScopeVersion: bind,
     });
     await createInstance(api, { ...ids, verticalSlug: 'fsm', slug: 'acme', name: 'Acme' });

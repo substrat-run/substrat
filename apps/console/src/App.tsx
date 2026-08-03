@@ -4,7 +4,7 @@ import { Card, Toast } from './components';
 import { ConsoleShell } from './ConsoleShell';
 import type { ViewKey } from './ConsoleShell';
 import type { BreadcrumbItem } from './components';
-import { createApi } from './lib/api';
+import { createApi, walkAll } from './lib/api';
 import { getSession, signIn, signOut, type StaffSession } from './lib/auth';
 import { AdminLog } from './views/AdminLog';
 import { Domains } from './views/Domains';
@@ -149,7 +149,16 @@ export function App() {
   const load = useCallback(async () => {
     if (!authed) return;
     try {
-      const [ts, ss, hs] = await Promise.all([api.listTenants(), api.listScopes(), api.listHostnames()]);
+      // Walked to exhaustion, not one page: everything the console COMPUTES —
+      // cascade status, fleet counts, portal links, the bindable-scope dropdown,
+      // a deep-linked tenant detail — needs the whole directory, and a silent
+      // first page would make those aggregates lie. The list VIEWS page their
+      // own tables (use-paged-list.ts); these arrays feed the computations.
+      const [ts, ss, hs] = await Promise.all([
+        walkAll((p) => api.listTenants(p)),
+        walkAll((p) => api.listScopes(p)),
+        walkAll((p) => api.listHostnames(p)),
+      ]);
       // No batch read for entitlements — one call per tenant. Fine at fleet
       // sizes the console handles today; a real N+1 to revisit if it isn't.
       const keys = await Promise.all(ts.map((t) => api.listEntitlements(t.id)));
