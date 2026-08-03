@@ -1340,6 +1340,33 @@ app.get('/api/apps/:scopeId/events', async (c) => {
 });
 
 /**
+ * One app's Audit tab (#479) — the control-plane admin log filtered to THIS scope,
+ * newest first (`{ entries, nextCursor }`, keyset on the entry id). This is the tenant
+ * viewer over Substrat's audit spine: every privileged action against the scope (role
+ * changes, version binds, hostname edits, lifecycle transitions) landed here already —
+ * we only surface it.
+ *
+ * Authorized like the sibling tabs: the app is resolved from the caller's OWN
+ * tenant-scoped `list-apps` (a foreign scope id 404s), and the read then goes through
+ * the tenant-narrowed control plane, which pins `tenantId` — so no query can name
+ * another tenant's log. Embedded mode has no control plane, so the tab reports 501.
+ */
+app.get('/api/apps/:scopeId/audit', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'the audit log requires the control plane (unavailable in embedded mode)' });
+  const page = pageParams(c);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  return c.json(await cp.auditLogPage({ limit: page.limit, cursor: page.cursor }, scope));
+});
+
+/**
  * One app's Deployments tab — its vertical's REAL version registry + which version each
  * channel points at (the `prod` one is what the app runs). Read-only: for a platform
  * vertical the versions are managed by the Substrat team; this just surfaces the truth

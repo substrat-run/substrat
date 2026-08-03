@@ -160,6 +160,25 @@ export interface AppEvent {
   created_at: string;
 }
 
+/**
+ * One entry in an app scope's control-plane audit log (#479) — an append-only admin
+ * action (control-plane.md §4.4), mirrors the worker's `AdminLogEntry`. `before`/`after`
+ * are the prior/applied state where cheaply captured; `causedBy` is the domain event id
+ * that triggered the action, when one did.
+ */
+export interface AuditEntry {
+  id: string;
+  actor: string;
+  action: string;
+  tenantId: string | null;
+  scopeId: string | null;
+  vertical: string | null;
+  before: unknown;
+  after: unknown;
+  causedBy: string | null;
+  at: string;
+}
+
 /** One version of a deployed vertical — mirrors the worker's DeploymentVersion. */
 export interface DeploymentVersion {
   id: string;
@@ -617,6 +636,9 @@ export const api = {
     call<ListPage<AppEvent>>(`/apps/${encodeURIComponent(scopeId)}/events${pageQs(opts)}`),
   /** The install's durable step record (#424) — rendered live while an install runs. */
   installSteps: (scopeId: string) => call<InstallStep[]>(`/apps/${encodeURIComponent(scopeId)}/steps`),
+  /** One page of the app scope's control-plane audit log (#479), newest first; `nextCursor` walks older. */
+  auditLog: (scopeId: string, opts?: PageOpts) =>
+    call<ListPage<AuditEntry>>(`/apps/${encodeURIComponent(scopeId)}/audit${pageQs(opts)}`),
   /** The app's vertical version registry (one page of versions, newest first) + channels +
    *  the version THIS scope actually runs (`boundVersionId`). `cursor` walks older versions. */
   appDeployments: (scopeId: string, opts?: PageOpts) =>

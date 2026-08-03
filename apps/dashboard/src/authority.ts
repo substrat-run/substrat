@@ -1,4 +1,5 @@
 import type {
+  AdminLogEntry,
   ListPage,
   Page,
   PermissionRegistry,
@@ -300,6 +301,20 @@ export class TenantNarrowedControlPlane {
   listTenantHostnamesPage(page: ListPage): Promise<Page<HostnameBindingRow>> {
     const q = new URLSearchParams({ tenantId: this.tenantId });
     return this.page<HostnameBindingRow>(`/hostnames?${q}`, page);
+  }
+
+  /**
+   * One page of the tenant's control-plane audit log (the append-only admin log,
+   * control-plane.md §4.4), newest first (#479). `tenantId` is always pinned by this
+   * seam, so the read can only ever see the caller's own tenant; `scope` narrows it
+   * further to a single app's scope. `order: 'desc'` matches the console's read and the
+   * dashboard's "newest first" framing — `nextCursor` (the last entry's id, ULID order)
+   * then walks older entries.
+   */
+  auditLogPage(page: ListPage, scope?: ScopeId): Promise<Page<AdminLogEntry>> {
+    const q = new URLSearchParams({ tenantId: this.tenantId, order: 'desc' });
+    if (scope) q.set('scopeId', scope);
+    return this.page<AdminLogEntry>(`/admin-log?${q}`, page);
   }
 
   setHostnameStatus(hostname: string, status: 'active' | 'pending' | 'failed', note?: string): Promise<void> {
