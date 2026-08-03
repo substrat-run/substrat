@@ -1,5 +1,45 @@
 # @substrat-run/dashboard
 
+## 0.13.0
+
+### Minor Changes
+
+- 1f51134: Per-app Observability tab (#471): the app detail page gains logs + metrics for
+  the app's vertical, per deployed version, with level / message-search filters
+  and a 1h/24h/72h window. The `ObservabilityReader` contract grows an optional
+  `search` term (neutral substring-on-message capability — each backend maps it
+  to its own query language; Cloudflare's reader files it as a telemetry-query
+  filter), threaded through the plane's `/observability/logs` route. Isolation is
+  unchanged in kind and now tested wider: "filtered by app" narrows the ownership
+  map server-side (an unowned slug answers `[]` without the staff-wide query ever
+  issuing), and builder log responses are projected to the neutral field set — a
+  backend's `raw` payload never passes through the seam.
+- 652657e: Per-PR previews get a platform half: the GitHub App now listens to `pull_request`
+  webhooks (`POST /api/github/webhook`, HMAC-gated). The one-click CI setup records a
+  durable repo → tenant-app link in a per-repo `GithubRepoLinkDO`; on a PR push the DO
+  watches the control plane until CI's `substrat preview create` lands, then posts the
+  sticky preview-URL comment itself (same `<!-- substrat-preview -->` marker as the CI
+  step, so the two writers upsert one comment); on PR close it reaps the preview fork
+  and flips the comment — even when the repo's workflow is stale or CI is red. Builds
+  stay in the repo's own Actions: the platform only ever comments and reaps. Needs the
+  App's webhook configured (`GITHUB_APP_WEBHOOK_SECRET`) and the `pull_requests: write`
+  permission; repos wired before this link existed pick it up on their next setup re-run.
+
+### Patch Changes
+
+- Updated dependencies [e9c7bd0]
+- Updated dependencies [d222905]
+  - @substrat-run/adapter-cloudflare@0.41.0
+  - @substrat-run/contracts@0.41.0
+  - @substrat-run/kernel@0.41.0
+  - @substrat-run/demo-callout@0.1.29
+  - @substrat-run/demo-meridian@0.3.4
+  - @substrat-run/demo-manyfold@0.5.4
+  - @substrat-run/engine-protocol@0.4.33
+  - @substrat-run/engine-invites@0.0.38
+  - @substrat-run/engine-invoicing@0.4.1
+  - @substrat-run/engine-workorder@0.3.39
+
 ## 0.12.0
 
 ### Minor Changes
