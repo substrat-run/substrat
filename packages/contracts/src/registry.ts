@@ -84,13 +84,25 @@ export const vertical = z.object({
    */
   installsBlocked: z.boolean().default(false),
   /**
+   * The DECLARED provisioner intent (#455, the request half of #412's capability): the
+   * target verticals this manager provisions tenants OF, carried on push from the
+   * manifest's `provisions`. Declaration is a request, never a grant — it feeds the
+   * console's review surface (declared-but-ungranted renders as *requested*, the same
+   * shape as a publish request) and, once granted, bounds `provision-tenant` to the
+   * declared targets (#412 invariant 4). Rides the install_spec bag: refreshed on every
+   * re-push, exactly because it grants nothing by itself.
+   */
+  provisions: z.array(verticalSlug).optional(),
+  /**
    * Holds the TENANT-PROVISIONER capability (#412, platform-intents.md) — this vertical's
    * scopes may enqueue `provision-tenant` / `set-entitlements` intents that the platform
    * executes (a manager console whose job is to add customer tenants). A directory-backed
    * staff grant, not deployment config: flipped by `setVerticalTenantProvisioner`, audited,
    * and read by the drain's `admitManager` at execution time. Like `installsBlocked`,
    * never set at registration and NEVER touched by a re-push refresh — pushing new code
-   * must not be able to grant (or silently keep) platform authority.
+   * must not be able to grant (or silently keep) platform authority. The grant's *scope*
+   * is the declared `provisions` above: the flag says "may act as a manager", the
+   * declaration says "of what".
    */
   tenantProvisioner: z.boolean().default(false),
   /**
@@ -126,7 +138,7 @@ export const verticalServingState = z.object({
 export type VerticalServingState = z.infer<typeof verticalServingState>;
 
 export const registerVerticalInput = vertical
-  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, surfaces: true, listed: true })
+  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, provisions: true, surfaces: true, listed: true })
   .extend({
   // Optional on input — a staff/platform push omits it (⇒ platform-owned).
   ownerTenant: tenantId.nullable().default(null),

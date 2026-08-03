@@ -290,7 +290,8 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(outcome.status).toBe('failed');
     expect(outcome.error).toMatch(/tenant-provisioner capability/);
 
-    // …and registered but UNGRANTED: registration (a push) is not the grant.
+    // …and registered but UNGRANTED: registration (a push) is not the grant. With no
+    // declared `provisions` either, the refusal points at the manifest fix (#455).
     await host.admin.registerVertical(staff, { slug: 'pushed-console', name: 'Pushed', source: 'cli' });
     const ungranted = await provisionTenantHandler(deps())(
       { ...ctx, vertical: 'pushed-console' },
@@ -298,6 +299,54 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     );
     expect(ungranted.status).toBe('failed');
     expect(ungranted.error).toMatch(/tenant-provisioner capability/);
+    expect(ungranted.error).toMatch(/declares no `provisions`/);
+  });
+
+  it('distinguishes declared-but-ungranted (#455): the request awaits the staff grant', async () => {
+    await host.admin.registerVertical(staff, {
+      slug: 'requested-console',
+      name: 'Requested',
+      source: 'cli',
+      provisions: ['managed-product'],
+    });
+    const outcome = await provisionTenantHandler(deps())(
+      { ...ctx, vertical: 'requested-console' },
+      intent('provision-tenant', { payload: payloadFor(ulid(), ulid()) }),
+    );
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/declares provisions \[managed-product\] but the tenant-provisioner capability has not been granted/);
+  });
+
+  it('bounds a granted manager to its DECLARED targets (#412 invariant 4) — and only when it declares', async () => {
+    await host.admin.registerVertical(staff, {
+      slug: 'bounded-console',
+      name: 'Bounded',
+      source: 'cli',
+      entitlements: ['flows'],
+      provisions: ['managed-product'],
+    });
+    await host.admin.setVerticalTenantProvisioner(staff, 'bounded-console', true);
+
+    // A payload naming a vertical OUTSIDE the declaration settles failed, naming both sides.
+    const outside = payloadFor(ulid(), ulid());
+    outside.instance.vertical = 'some-other-product';
+    const refused = await provisionTenantHandler(deps())(
+      { ...ctx, vertical: 'bounded-console' },
+      intent('provision-tenant', { payload: outside }),
+    );
+    expect(refused.status).toBe('failed');
+    expect(refused.error).toMatch(/does not include the payload's vertical 'some-other-product'/);
+
+    // A declared target passes the bound end-to-end.
+    const inside = payloadFor(ulid(), ulid());
+    inside.tenant.slug = `bounded-${inside.tenant.id.slice(-8).toLowerCase()}`;
+    const admitted = await provisionTenantHandler(deps())(
+      { ...ctx, vertical: 'bounded-console' },
+      intent('provision-tenant', { payload: inside }),
+    );
+    expect(admitted.status).toBe('done');
+    // The suite's main manager ('manager-console') declares nothing and stays UNBOUNDED —
+    // the pre-declaration behavior every other test in this file exercises.
   });
 
   it('refuses an entitlement key outside the manager\'s declared SKUs', async () => {

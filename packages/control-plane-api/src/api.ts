@@ -2203,6 +2203,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ...(manifest.entitlements ? { entitlements: manifest.entitlements } : {}),
       ...(manifest.provides ? { provides: manifest.provides } : {}),
       ...(manifest.requires ? { requires: manifest.requires } : {}),
+      // The declared provisioner intent (#455) — a REQUEST the console reviews; the
+      // tenant-provisioner grant itself is never touched by a push. Refreshes on every
+      // re-push like the rest of the install spec, exactly because it grants nothing.
+      ...(manifest.provisions ? { provisions: manifest.provisions } : {}),
       // The declared surfaces (K-26) ride like envSpec: registry metadata for the
       // hostname-binding picker, never behavior. Not part of any admission digest.
       ...(manifest.surfaces ? { surfaces: manifest.surfaces } : {}),

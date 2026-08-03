@@ -295,6 +295,7 @@ async function cmdPush(): Promise<void> {
     entitlements: meta.entitlements,
     provides: meta.provides,
     requires: meta.requires,
+    provisions: meta.provisions,
     surfaces: meta.surfaces,
     controlPlaneUrl, authHeader: header,
   });
@@ -628,6 +629,7 @@ async function cmdPreview(): Promise<void> {
       entitlements: meta.entitlements,
       provides: meta.provides,
       requires: meta.requires,
+      provisions: meta.provisions,
       surfaces: meta.surfaces,
       controlPlaneUrl, authHeader: header,
     });

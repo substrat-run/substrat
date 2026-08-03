@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { moduleId, permissionKey } from './ids.js';
+import { moduleId, permissionKey, verticalSlug } from './ids.js';
 import { envVarSpec, capability, type ModuleManifest } from './manifest.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
@@ -296,6 +296,11 @@ export const deployManifest = z.object({
   entitlements: z.array(z.string()).optional(),
   provides: z.array(capability).optional(),
   requires: z.array(capability).optional(),
+  /** DECLARED provisioner intent (#455): the target verticals this manager provisions
+   *  tenants of (package.json `substrat.provisions`). A request, never a grant — the
+   *  tenant-provisioner capability stays a staff-flipped registry flag; this feeds the
+   *  console's requested/granted review surface and bounds `provision-tenant` targets. */
+  provisions: z.array(verticalSlug).optional(),
   /** The surfaces the vertical serves (package.json `substrat.surfaces`, K-26 multi-surface) —
    *  labels only, carried to the registry for the hostname-binding picker. Metadata, not code. */
   surfaces: z.array(declaredSurface).optional(),

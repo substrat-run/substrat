@@ -245,13 +245,18 @@ export function archiveScopeHandler(deps: ArchiveScopeDeps): PlatformRequestHand
  *
  *  1. the `tenantProvisioner` registry flag — the staff-granted provisioner capability
  *     (#444), flipped by `setVerticalTenantProvisioner` and read here at drain time.
- *     An ungranted vertical settles `failed`.
+ *     An ungranted vertical settles `failed` — the refusal distinguishes *undeclared*
+ *     (the manifest never asked, #455) from *declared-but-ungranted* (awaiting the staff
+ *     grant), so a vertical author gets a self-serve diagnosis instead of a dead end.
  *  2. SKU bound — every entitlement key a payload names must be in the manager's
  *     registry-declared `entitlements` (its manifest's, carried on push), read at drain time.
+ *  3. target bound (#412 invariant 4) — when the manager DECLARES `provisions`, a
+ *     `provision-tenant` payload's vertical must be among the declared targets. Phased:
+ *     a granted manager with no declaration keeps its unbounded #444 behavior until its
+ *     next push declares (then the bound engages, reviewably).
  *
- * Still phased (#412 invariants 2/4, before any third-party manager): `tenants.provisionedBy`
- * ownership — until it exists, a listed manager can `set-entitlements` on any tenant — and
- * a declared-target-verticals bound (`manifest.provisions`).
+ * Still phased (#412 invariant 2, before any third-party manager): `tenants.provisionedBy`
+ * ownership — until it exists, a listed manager can `set-entitlements` on any tenant.
  */
 export interface ManagedTenantDeps {
   host: ScopeHost;
@@ -275,15 +280,27 @@ async function admitManager(
   deps: ManagedTenantDeps,
   ctx: PlatformRequestContext,
   requestedKeys: string[],
+  targetVertical?: string,
 ): Promise<{ declared: string[] } | { refusal: PlatformRequestOutcome }> {
   const registered = (await deps.host.admin.listVerticals(deps.actor)).find(
     (v) => v.slug === ctx.vertical,
   );
   if (!registered?.tenantProvisioner) {
+    // Undeclared vs declared-but-ungranted (#455): the former is a manifest fix the
+    // vertical author makes alone; the latter is a request already on the console's
+    // review surface, waiting for the staff grant.
+    const error = registered?.provisions?.length
+      ? `vertical '${ctx.vertical}' declares provisions [${registered.provisions.join(', ')}] but the tenant-provisioner capability has not been granted — staff approves the request in the console (setVerticalTenantProvisioner)`
+      : `vertical '${ctx.vertical}' does not hold the tenant-provisioner capability and its manifest declares no \`provisions\` — declare the target verticals it provisions (package.json \`substrat.provisions\`) and push, then staff grants the capability in the console`;
+    return { refusal: { status: 'failed', error } };
+  }
+  // Target bound (#412 invariant 4): only when the manager declares — an undeclared
+  // grant keeps the pre-#455 unbounded behavior until the next push declares.
+  if (targetVertical !== undefined && registered.provisions?.length && !registered.provisions.includes(targetVertical)) {
     return {
       refusal: {
         status: 'failed',
-        error: `vertical '${ctx.vertical}' does not hold the tenant-provisioner capability — staff grants it in the console (registry flag, setVerticalTenantProvisioner)`,
+        error: `vertical '${ctx.vertical}' declares provisions [${registered.provisions.join(', ')}], which does not include the payload's vertical '${targetVertical}'`,
       },
     };
   }
@@ -316,7 +333,12 @@ async function admitManager(
 export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequestHandler {
   return async (ctx, request) => {
     const payload = provisionTenantPayload.parse(request.payload);
-    const admitted = await admitManager(deps, ctx, payload.entitlements.map((e) => e.key));
+    const admitted = await admitManager(
+      deps,
+      ctx,
+      payload.entitlements.map((e) => e.key),
+      payload.instance.vertical,
+    );
     if ('refusal' in admitted) return admitted.refusal;
     const { host, actor } = deps;
     const admin = host.admin;

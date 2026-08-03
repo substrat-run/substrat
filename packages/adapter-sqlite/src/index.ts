@@ -2990,6 +2990,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (parsed.ownerGrants) installSpec.ownerGrants = parsed.ownerGrants;
         if (parsed.provides) installSpec.provides = parsed.provides;
         if (parsed.requires) installSpec.requires = parsed.requires;
+        if (parsed.provisions) installSpec.provisions = parsed.provisions;
         if (parsed.surfaces) installSpec.surfaces = parsed.surfaces;
         const installSpecJson = Object.keys(installSpec).length ? JSON.stringify(installSpec) : null;
         const existing = readVertical(parsed.slug);
