@@ -116,6 +116,14 @@ export interface ScriveDispatchState {
   }[];
   /** Requests already recorded by a prior poll — so a re-poll is a no-op, not a double. */
   recordedRequestIds?: string[];
+  /**
+   * The attachment id of the sealed signed PDF, once landed (#476 step 2). Set after the
+   * document closes and the file is fetched and stored via the blob-store attachment
+   * surface; its presence is what makes a re-poll skip the download rather than land a
+   * second copy — the connection can write attachments but not list them, so the ledger is
+   * the only idempotency handle.
+   */
+  sealedAttachmentId?: string;
   dispatchedAt: string;
 }
 
@@ -288,6 +296,13 @@ export interface ScriveReconcileResult {
   skipped: { requestId: string; reason: string }[];
   /** True once every party in the set has been recorded into the scope. */
   complete: boolean;
+  /**
+   * The sealed signed PDF's fate this run (#476 step 2): `{ attachmentId }` when it was
+   * fetched and landed, `{ skipped }` with a reason when the document is not yet closed,
+   * already landed, or the store was unreachable (retried next poll). Absent when the
+   * document never reached completion.
+   */
+  sealedDocument?: { attachmentId: string } | { skipped: string };
 }
 
 /**
@@ -347,7 +362,8 @@ export async function reconcileScriveDispatch(
     state.vertical,
     options.timeoutMs ?? 30_000,
   );
-  const doc = await new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED).get(state.documentId);
+  const api = new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED);
+  const doc = await api.get(state.documentId);
 
   // The connection acting as itself (#97). Refuses a scope in another tenant or
   // running another vertical by construction, and every write below is gated on
@@ -415,13 +431,52 @@ export async function reconcileScriveDispatch(
     }
   }
 
-  // Remember what is recorded so a re-poll skips it without leaning on
-  // `recordSignature` throwing. Same row as the dispatch ledger, so the dispatch
-  // idempotency guard still finds it.
-  if (recorded.length) {
+  const complete = state.parties.every((p) => done.has(p.requestId));
+
+  // The sealed document (#476 step 2). Once the provider closes the document and every
+  // party is recorded in the scope, the signing evidence exists only at Scrive — pull the
+  // sealed PDF once and land it as an attachment on the protocol instance, keyed to the
+  // `protocol` attachment target the engine declares. The connection lands it as ITSELF
+  // (`getConnectorAttachments` gates on its `protocol:attach` grant), so the row and the
+  // object are born together inside the scope. Attempted after signatures are recorded and
+  // never allowed to undo them: a failure here (store not provisioned yet, transient
+  // egress) is reported and retried next poll, not thrown.
+  let sealedDocument: ScriveReconcileResult['sealedDocument'];
+  let sealedAttachmentId = state.sealedAttachmentId;
+  if (doc.status === 'closed' && complete && !sealedAttachmentId) {
+    try {
+      const bytes = await api.getMainFile(state.documentId);
+      const attachments = await host.getConnectorAttachments(
+        connectionId,
+        scopeId.parse(state.scopeId),
+      );
+      const record = await attachments.upload({
+        entity: { entityType: 'protocol', entityId: state.instanceId },
+        filename: `signed-${state.documentId}.pdf`,
+        contentType: 'application/pdf',
+        // The signed contract is the customer-facing proof of the signature.
+        visibility: 'customer',
+        body: bytes,
+      });
+      sealedAttachmentId = record.id;
+      sealedDocument = { attachmentId: record.id };
+    } catch (err) {
+      sealedDocument = { skipped: err instanceof Error ? err.message : String(err) };
+    }
+  } else if (sealedAttachmentId) {
+    sealedDocument = { skipped: 'already landed' };
+  } else if (doc.status === 'closed' && !complete) {
+    sealedDocument = { skipped: 'document closed but not every party is recorded yet' };
+  }
+
+  // Remember what is recorded — and whether the sealed PDF landed — so a re-poll skips both
+  // without leaning on `recordSignature` throwing. Same row as the dispatch ledger, so the
+  // dispatch idempotency guard still finds it.
+  if (recorded.length || sealedAttachmentId !== state.sealedAttachmentId) {
     await admin.putConnectorState(connectionId, key, {
       ...state,
       recordedRequestIds: [...done],
+      ...(sealedAttachmentId ? { sealedAttachmentId } : {}),
     } satisfies ScriveDispatchState);
   }
 
@@ -430,7 +485,8 @@ export async function reconcileScriveDispatch(
     documentStatus: doc.status,
     recorded,
     skipped,
-    complete: state.parties.every((p) => done.has(p.requestId)),
+    complete,
+    ...(sealedDocument ? { sealedDocument } : {}),
   };
 }
 

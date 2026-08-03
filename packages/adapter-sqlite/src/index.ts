@@ -2067,6 +2067,38 @@ export class SqliteScopeHost implements ScopeHost {
     });
   }
 
+  async getConnectorAttachments(
+    connectionId: ConnectionId,
+    scopeId: ScopeId,
+  ): Promise<ScopeAttachments> {
+    // The exact door `getConnectorScope` opens — same (tenant, vertical, active)
+    // gate — but it returns the attachment surface instead of the invoke stub, with
+    // every gate checked as the connection rather than a principal (#476).
+    const conn = this.connectionRow(connectionId);
+    if (conn.revoked_at) {
+      throw new Error(`connection ${connectionId} is revoked`);
+    }
+    const scope = this.directory
+      .prepare('SELECT tenant_id, vertical, status FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { tenant_id: string; vertical: string | null; status: string } | undefined;
+    if (!scope || scope.tenant_id !== conn.tenant_id) {
+      throw new Error(`unknown scope for connection: ${scopeId}`);
+    }
+    if (scope.vertical !== conn.vertical) {
+      throw new Error(
+        `connection ${connectionId} is for vertical '${conn.vertical}' and scope ${scopeId} ` +
+          `runs '${scope.vertical ?? 'none'}'`,
+      );
+    }
+    if (scope.status !== 'active') {
+      throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
+    }
+    const rt = this.runtime(conn.tenant_id as TenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    const store = this.attachmentStore(conn.tenant_id as TenantId, scope.vertical);
+    return this.buildAttachments(rt, { kind: 'connection', id: connectionId }, store);
+  }
+
   async getSystemScope(
     moduleId: ModuleId,
     tenantId: TenantId,

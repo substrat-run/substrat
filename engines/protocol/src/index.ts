@@ -111,6 +111,7 @@ export const PROTOCOL_PERM = {
   sign: permissionKey.parse('protocol:sign'),
   countersign: permissionKey.parse('protocol:countersign'),
   read: permissionKey.parse('protocol:read'),
+  attach: permissionKey.parse('protocol:attach'),
   void: permissionKey.parse('protocol:void'),
 };
 
@@ -127,6 +128,7 @@ export const protocolManifest = moduleManifest.parse({
     { key: 'protocol:sign', description: 'Sign a protocol in-app — freezes it forever (separate from fill: the technician fills, the arbetsledare signs)' },
     { key: 'protocol:countersign', description: 'Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup)' },
     { key: 'protocol:read', description: 'Read protocol templates, instances, responses, signature requests and signatures' },
+    { key: 'protocol:attach', description: 'Attach a document to a protocol instance — the sealed signed PDF a signing connector lands on completion, or a human-uploaded document (the attachmentTargets write gate)' },
     { key: 'protocol:void', description: 'Void (supersede) a protocol — never deletes' },
   ],
   events: {
@@ -144,7 +146,9 @@ export const protocolManifest = moduleManifest.parse({
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
-  attachmentTargets: [{ entityType: 'protocol', readPermission: 'protocol:read' }],
+  attachmentTargets: [
+    { entityType: 'protocol', readPermission: 'protocol:read', writePermission: 'protocol:attach' },
+  ],
   entitlementKey: 'protocol',
   ui: {
     entityViews: [{ entityType: 'protocol', view: './ui/ProtocolPanel' }],

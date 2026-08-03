@@ -1825,6 +1825,33 @@ export interface ScopeHost {
   getConnectorScope(connectionId: ConnectionId, scopeId: ScopeId): Promise<ScopeStub>;
 
   /**
+   * The attachment surface for a CONNECTION on a scope (#476) — the connector's
+   * door to `attachmentTargets`, the mirror of `getConnectorScope` for bytes.
+   *
+   * A connector runs sanctioned egress (it holds the provider credential), so it
+   * is the only code that can fetch a provider artifact — the sealed signed PDF a
+   * signing flow leaves at the provider, a document a webhook references. Landing
+   * those bytes is exactly what `attachments()` does, but that surface is minted
+   * per `PrincipalId` and a connection is not a person; and bytes cannot ride
+   * `getConnectorScope`'s `invoke` (the structured-clone pipe #473 exists to
+   * bypass). This is the missing seam: the same `ScopeAttachments` surface, but
+   * every gate checked as the connection.
+   *
+   * **Same inheritance and enforcement as `getConnectorScope`.** Refuses a scope
+   * outside the connection's tenant or not running its vertical; every
+   * upload/remove is gated by the target's `writePermission` and every read by its
+   * `readPermission`, checked against `connection:<id>` grants — so a connection
+   * lands an attachment only where it was granted the write key (it appears in the
+   * permission diff like any grant). `createdBy` on the record is the connection,
+   * not a laundered principal. Throws when no blob store is provisioned for the
+   * scope's vertical, exactly like `attachments`.
+   */
+  getConnectorAttachments(
+    connectionId: ConnectionId,
+    scopeId: ScopeId,
+  ): Promise<ScopeAttachments>;
+
+  /**
    * A scope stub whose authority is a MODULE acting on a timer (#383) — the
    * scheduler's door, the mirror of `getConnectorScope`.
    *

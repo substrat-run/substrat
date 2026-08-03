@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-callout
 
-19 keys · 4 modules · 2 roles
+20 keys · 4 modules · 2 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -15,6 +15,7 @@
 | `facility:manage` | Manage facilities | `@substrat-run/demo-callout` |
 | `invoicing:export` | Export an invoice basis (makes it immutable) | `@substrat-run/engine-invoicing` |
 | `invoicing:read` | Read invoice bases | `@substrat-run/engine-invoicing` |
+| `protocol:attach` | Attach a document to a protocol instance — the sealed signed PDF a signing connector lands on completion, or a human-uploaded document (the attachmentTargets write gate) | `@substrat-run/engine-protocol` |
 | `protocol:bind` | Bind vertical-owned document content (ref + hash) to an open document protocol | `@substrat-run/engine-protocol` |
 | `protocol:countersign` | Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup) | `@substrat-run/engine-protocol` |
 | `protocol:create` | Define protocol templates and start protocol instances on entities | `@substrat-run/engine-protocol` |
@@ -48,6 +49,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `facility:manage` | `office-admin` |
 | `invoicing:export` | `office-admin` |
 | `invoicing:read` | `office-admin` |
+| `protocol:attach` | — no role — |
 | `protocol:bind` | — no role — |
 | `protocol:countersign` | — no role — |
 | `protocol:create` | `office-admin` |

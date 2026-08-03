@@ -11,7 +11,7 @@ import {
   tenantId,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
@@ -55,7 +55,10 @@ describe('attachment surface (pure adapter)', () => {
 
   const world = async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-attach-'));
-    const host = new SqliteScopeHost({ dir });
+    const host = new SqliteScopeHost({
+      dir,
+      secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(5)),
+    });
     host.registerModule(docMod);
     const staff = platformActorId.parse(ulid());
     const t = tenantId.parse(ulid());
@@ -205,9 +208,85 @@ describe('attachment surface (pure adapter)', () => {
     expect(table!.rows).toHaveLength(1);
   });
 
+  // -- a connection as the uploader (#476): getConnectorAttachments -----------
+  //
+  // A signing connector fetches the sealed PDF and must land it into the scope, but
+  // it is a connection, not a person. This is the mirror of getConnectorScope for
+  // bytes: the same surface, gated on the connection's own grants.
+
+  const withConnection = async (opts: { grantWrite: boolean }) => {
+    const world0 = await world();
+    const connId = ulid();
+    await world0.host.admin.createConnection(world0.staff, {
+      id: connId as never,
+      tenantId: world0.t,
+      vertical: 'docs',
+      provider: 'signer',
+      label: 'signer',
+      secret: { token: 'x' },
+    });
+    if (opts.grantWrite) {
+      // The write key ONLY — mirrors granting a Scrive connection `protocol:attach`
+      // and nothing else, so it can land bytes but not browse the scope's attachments.
+      await world0.host.admin.grantToConnection(world0.staff, {
+        connectionId: connId,
+        permission: DOC_WRITE,
+        node: { tenantId: world0.t, scopeId: world0.s },
+        grantedBy: world0.staff,
+      });
+    }
+    return { ...world0, connId };
+  };
+
+  it('lets a granted connection upload as itself, attributed to the connection', async () => {
+    const { host, t, s, editor, connId } = await withConnection({ grantWrite: true });
+    const att = await host.getConnectorAttachments(connId as never, s);
+    const rec = await att.upload({
+      entity: { entityType: 'doc', entityId: 'd1' },
+      filename: 'sealed.pdf',
+      contentType: 'application/pdf',
+      visibility: 'customer',
+      body: bytes('the sealed bytes'),
+    });
+    // createdBy is the connection id, not a laundered principal.
+    expect(rec.createdBy).toBe(connId);
+
+    // The bytes and row really landed: a principal with read sees them.
+    const opened = await (await host.attachments(editor, t, s)).open(rec.id);
+    expect(opened).not.toBeNull();
+    expect(new TextDecoder().decode(opened!.body)).toBe('the sealed bytes');
+  });
+
+  it('refuses a connection that was never granted the write key (fail closed)', async () => {
+    const { host, s, connId } = await withConnection({ grantWrite: false });
+    const att = await host.getConnectorAttachments(connId as never, s);
+    await expect(
+      att.upload({
+        entity: { entityType: 'doc', entityId: 'd1' },
+        filename: 'x.pdf',
+        contentType: 'application/pdf',
+        visibility: 'internal',
+        body: bytes('x'),
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('refuses a scope the connection is not for', async () => {
+    const { host, staff, t, connId } = await withConnection({ grantWrite: true });
+    const otherScope = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: otherScope, vertical: 'other' });
+    await host.admin.activateScope(staff, t, otherScope);
+    await expect(host.getConnectorAttachments(connId as never, otherScope)).rejects.toThrow(
+      /vertical|unknown scope/,
+    );
+  });
+
   it('fails closed when no blob store is provisioned for the vertical', async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-attach-'));
-    const host = new SqliteScopeHost({ dir });
+    const host = new SqliteScopeHost({
+      dir,
+      secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(5)),
+    });
     host.registerModule(docMod);
     const staff = platformActorId.parse(ulid());
     const t = tenantId.parse(ulid());

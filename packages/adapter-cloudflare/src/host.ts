@@ -103,6 +103,7 @@ import {
   type BlobStoreProvisionInput,
   type BlobStoreRecord,
   type ScopeAttachments,
+  type TenantBlobStore,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
   type ExecutorHandler,
@@ -584,18 +585,21 @@ interface ScopeStubRpc {
   ): Promise<void>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
-  /** Attachment surface, metadata half (#473) — see the ScopeDO methods of the same names. */
+  /** Attachment surface, metadata half (#473) — see the ScopeDO methods of the same names.
+   *  `connectionId` (#476) gates as a connection instead of `principal` when set. */
   attachmentAdd(
     record: AttachmentRecord,
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    connectionId?: string,
   ): Promise<AttachmentRecord>;
   attachmentList(
     entity: EntityRef,
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    connectionId?: string,
   ): Promise<AttachmentRecord[]>;
   attachmentAuthorize(
     attachmentId: string,
@@ -603,12 +607,14 @@ interface ScopeStubRpc {
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    connectionId?: string,
   ): Promise<AttachmentRecord | null>;
   attachmentRemove(
     attachmentId: string,
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    connectionId?: string,
   ): Promise<AttachmentRecord | null>;
   /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local.
    *  `entitlements` (#304) rides the same snapshot — preserve-on-undefined, so a role-only re-projection
@@ -1448,6 +1454,36 @@ export class CloudflareScopeHost implements ScopeHost {
     // binding the vertical's worker resolved — never through the DO.
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
+    const store = await this.resolveAttachmentStore(tenantId);
+    return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
+  }
+
+  async getConnectorAttachments(
+    connectionId: ConnectionId,
+    scopeId: ScopeId,
+  ): Promise<ScopeAttachments> {
+    // The exact door `getConnectorScope` opens — same (tenant, vertical) gate — but it
+    // returns the attachment surface instead of the invoke stub, gated as the connection
+    // rather than a principal (#476).
+    const conn = await this.cp.readConnection(connectionId);
+    if (!conn) throw new Error(`connection not found: ${connectionId}`);
+    if (conn.revoked_at) throw new Error(`connection ${connectionId} is revoked`);
+    const scope = await this.cp.getScopeRecord(conn.tenant_id, scopeId);
+    if (!scope) throw new Error(`unknown scope for connection: ${scopeId}`);
+    if (scope.vertical !== conn.vertical) {
+      throw new Error(
+        `connection ${connectionId} is for vertical '${conn.vertical}' and scope ${scopeId} ` +
+          `runs '${scope.vertical ?? 'none'}'`,
+      );
+    }
+    await this.cp.validateScopeAccess(conn.tenant_id as TenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    const store = await this.resolveAttachmentStore(conn.tenant_id as TenantId);
+    return this.buildAttachmentSurface({ connectionId }, conn.tenant_id as TenantId, scopeId, store);
+  }
+
+  /** Resolve the per-tenant R2 blob store, or fail closed exactly as `attachments` did. */
+  private async resolveAttachmentStore(tenantId: TenantId): Promise<TenantBlobStore> {
     if (!this.attachmentBuckets) {
       throw new Error(
         `attachments are not configured on this host (#473): pass ` +
@@ -1462,7 +1498,29 @@ export class CloudflareScopeHost implements ScopeHost {
           `store provisioned and its r2_bucket binding attached to the serving script?`,
       );
     }
-    const store = r2TenantBlobStore(bucket);
+    return r2TenantBlobStore(bucket);
+  }
+
+  /**
+   * The `ScopeAttachments` surface, gated as either a principal or a connection (#473/#476).
+   * The subject decides two things: `createdBy` on the record, and the `connectionId` threaded
+   * to the DO so its permission gate resolves against `connection:<id>` grants (and a denial is
+   * attributed to the connection, not a laundered principal). Bytes never cross the DO boundary.
+   */
+  private buildAttachmentSurface(
+    subject: { principal: PrincipalId } | { connectionId: ConnectionId },
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    store: TenantBlobStore,
+  ): ScopeAttachments {
+    const connectionId = 'connectionId' in subject ? subject.connectionId : undefined;
+    const createdBy = 'principal' in subject ? subject.principal : subject.connectionId;
+    // The DO needs SOME principal-shaped value for `ctx.principal`; for a connection it is
+    // the connection id, and the honest attribution rides the event actor — the same trick
+    // `buildStub` uses for the invoke path.
+    const asPrincipalId = ('principal' in subject
+      ? subject.principal
+      : (subject.connectionId as unknown as PrincipalId)) as PrincipalId;
     const stub = this.scopeStub(scopeId);
     const sha256Hex = async (body: Uint8Array): Promise<string> => {
       const digest = await crypto.subtle.digest('SHA-256', body);
@@ -1480,22 +1538,29 @@ export class CloudflareScopeHost implements ScopeHost {
           size: input.body.byteLength,
           sha256: await sha256Hex(input.body),
           visibility: input.visibility,
-          createdBy: principal,
+          createdBy,
           createdAt: new Date().toISOString(),
         });
         // Bytes first, row second — a crash between the two leaves an orphaned object
         // (harmless, GC-able), never a row without bytes; a refused gate compensates.
         await store.put(key, input.body, { contentType: input.contentType });
         try {
-          return await stub.attachmentAdd(record, principal, tenantId, scopeId);
+          return await stub.attachmentAdd(record, asPrincipalId, tenantId, scopeId, connectionId);
         } catch (err) {
           await store.delete(key).catch(() => {});
           throw err;
         }
       },
-      list: (entity) => stub.attachmentList(entity, principal, tenantId, scopeId),
+      list: (entity) => stub.attachmentList(entity, asPrincipalId, tenantId, scopeId, connectionId),
       open: async (attachmentId) => {
-        const record = await stub.attachmentAuthorize(attachmentId, 'read', principal, tenantId, scopeId);
+        const record = await stub.attachmentAuthorize(
+          attachmentId,
+          'read',
+          asPrincipalId,
+          tenantId,
+          scopeId,
+          connectionId,
+        );
         if (!record) return null;
         const obj = await store.get(attachmentBlobKey(scopeId, record.id));
         if (!obj) {
@@ -1510,7 +1575,13 @@ export class CloudflareScopeHost implements ScopeHost {
         return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
       },
       remove: async (attachmentId) => {
-        const removed = await stub.attachmentRemove(attachmentId, principal, tenantId, scopeId);
+        const removed = await stub.attachmentRemove(
+          attachmentId,
+          asPrincipalId,
+          tenantId,
+          scopeId,
+          connectionId,
+        );
         if (removed) await store.delete(attachmentBlobKey(scopeId, removed.id)).catch(() => {});
         return removed;
       },
