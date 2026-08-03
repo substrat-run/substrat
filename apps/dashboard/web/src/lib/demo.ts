@@ -276,6 +276,7 @@ export const APP_TABS: Array<{ value: string; label: string; count?: number; fut
   { value: 'deployments', label: 'Deployments', future: true },
   { value: 'observability', label: 'Observability' },
   { value: 'permissions', label: 'Permissions' },
+  { value: 'audit', label: 'Audit' },
   { value: 'previews', label: 'Previews' },
   { value: 'settings', label: 'Settings' },
 ];

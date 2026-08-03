@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppPermissionsView, AppRow, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow } from './api';
+import type { AppHostnamesView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -197,6 +197,19 @@ export const MOCK_APPS: AppRow[] = [
 export const MOCK_OBSERVABILITY: ObservabilityRow[] = [
   { vertical: 'acme/helpdesk', version: '0.3.0', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', requests: 12840, errors: 23, subrequests: 31200, cpuTimeP50: 2400, cpuTimeP99: 18200 },
   { vertical: 'acme/helpdesk', version: '0.2.0', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', requests: 3120, errors: 1, subrequests: 7400, cpuTimeP50: 2100, cpuTimeP99: 15400 },
+];
+
+/**
+ * Dev-preview sample for the Audit tab — a scope's control-plane admin log, newest
+ * first. Real rows come from `GET /api/apps/:scopeId/audit`; this only lets the tab
+ * be built and reviewed without a live control plane. Scope id matches MOCK_APPS[0].
+ */
+export const MOCK_AUDIT_ENTRIES: AuditEntry[] = [
+  { id: '01J2Q8ZAUDIT000000000000A9', actor: 'dana@acme.com', action: 'assignRole', tenantId: '01J2Q8Z3V9K4W7X2M5N6P7TNT0', scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: 'protocol', before: null, after: { principal: '01J2Q8…MBER2', role: 'editor' }, causedBy: null, at: ago(90 * 60e3) },
+  { id: '01J2Q8ZAUDIT000000000000A8', actor: 'service:control-plane', action: 'bindScopeVersion', tenantId: '01J2Q8Z3V9K4W7X2M5N6P7TNT0', scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: 'protocol', before: { versionId: '01J2Q8…V030' }, after: { versionId: '01J2Q8…V040' }, causedBy: '01J2Q8Z3EVENT00000000DEPLOY', at: ago(4 * 3600e3) },
+  { id: '01J2Q8ZAUDIT000000000000A7', actor: 'service:control-plane', action: 'setHostnameStatus', tenantId: '01J2Q8Z3V9K4W7X2M5N6P7TNT0', scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: null, before: { status: 'pending' }, after: { status: 'active', hostname: 'acme-hr.substrat.run' }, causedBy: null, at: ago(26 * 3600e3) },
+  { id: '01J2Q8ZAUDIT000000000000A6', actor: 'dana@acme.com', action: 'grantEntitlement', tenantId: '01J2Q8Z3V9K4W7X2M5N6P7TNT0', scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: null, before: null, after: { key: 'protocol.pro' }, causedBy: null, at: ago(2 * 86400e3) },
+  { id: '01J2Q8ZAUDIT000000000000A5', actor: 'service:control-plane', action: 'provisionScope', tenantId: '01J2Q8Z3V9K4W7X2M5N6P7TNT0', scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: 'protocol', before: null, after: { status: 'active' }, causedBy: null, at: ago(2 * 86400e3 + 3 * 60e3) },
 ];
 
 export const MOCK_OBSERVABILITY_LOGS: ObservabilityLogEvent[] = [

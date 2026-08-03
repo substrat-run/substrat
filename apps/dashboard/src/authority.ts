@@ -1,4 +1,5 @@
 import type {
+  AdminLogEntry,
   ListPage,
   Page,
   PermissionRegistry,
@@ -302,6 +303,20 @@ export class TenantNarrowedControlPlane {
     return this.page<HostnameBindingRow>(`/hostnames?${q}`, page);
   }
 
+  /**
+   * One page of the tenant's control-plane audit log (the append-only admin log,
+   * control-plane.md §4.4), newest first (#479). `tenantId` is always pinned by this
+   * seam, so the read can only ever see the caller's own tenant; `scope` narrows it
+   * further to a single app's scope. `order: 'desc'` matches the console's read and the
+   * dashboard's "newest first" framing — `nextCursor` (the last entry's id, ULID order)
+   * then walks older entries.
+   */
+  auditLogPage(page: ListPage, scope?: ScopeId): Promise<Page<AdminLogEntry>> {
+    const q = new URLSearchParams({ tenantId: this.tenantId, order: 'desc' });
+    if (scope) q.set('scopeId', scope);
+    return this.page<AdminLogEntry>(`/admin-log?${q}`, page);
+  }
+
   setHostnameStatus(hostname: string, status: 'active' | 'pending' | 'failed', note?: string): Promise<void> {
     return this.call(`/hostnames/${encodeURIComponent(hostname)}/status`, {
       method: 'PATCH',
@@ -422,15 +437,37 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
-   * Every deployed service ref belonging to THIS tenant's verticals, mapped back to
+   * Every service ref that can carry THIS tenant's traffic, mapped back to
    * (vertical, version). The ownership universe for the observability reads below:
    * a ref outside this map does not exist as far as this tenant is concerned.
+   *
+   * TWO ref schemes live here (both since #286):
+   * - Per-version archive scripts (`<slug>-<ulid>`, `version.deploymentRef`): the push
+   *   archive — readiness probes address them, but they do NOT serve production traffic.
+   * - The stable serving script (`<slug>`, `scope.servingRef`): where real traffic and
+   *   the scope's Durable Objects live. The router dispatches on `scope.servingRef`, so
+   *   Cloudflare records invocations under THIS name. Omitting it is why the per-version
+   *   view read empty — every real-traffic row was filtered out (the archive refs it
+   *   knew about serve ~zero requests). We stamp the serving ref with the version the
+   *   scope is bound to; the stable script runs one code version, so for the common
+   *   single-scope app this is exact. A later-writing scope wins only if it carries a
+   *   real (non-placeholder) label, so a not-yet-rebound sibling can't blank it out.
    */
   private async ownedServiceRefs(): Promise<Map<string, { vertical: string; version: string }>> {
     const owned = new Map<string, { vertical: string; version: string }>();
     for (const v of await this.listVerticals()) {
-      for (const ver of await this.listVersions(v.slug)) {
+      const versions = await this.listVersions(v.slug);
+      const labelOf = new Map(versions.map((ver) => [ver.id, ver.version]));
+      for (const ver of versions) {
         if (ver.deploymentRef) owned.set(ver.deploymentRef, { vertical: v.slug, version: ver.version });
+      }
+      for (const s of await this.listScopes(v.slug)) {
+        if (!s.servingRef) continue;
+        const version = (s.verticalVersionId && labelOf.get(s.verticalVersionId)) || '—';
+        const existing = owned.get(s.servingRef);
+        if (!existing || (existing.version === '—' && version !== '—')) {
+          owned.set(s.servingRef, { vertical: v.slug, version });
+        }
       }
     }
     return owned;

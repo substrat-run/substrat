@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
+import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
-import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
@@ -179,6 +179,7 @@ export function AppDetail({
       {main === 'deployments' && <Deployments app={app} />}
       {main === 'observability' && <AppObservability app={app} />}
       {main === 'permissions' && <Permissions app={app} />}
+      {main === 'audit' && <Audit app={app} />}
       {main === 'previews' && <Previews app={app} />}
       {main === 'settings' && (
         <Settings
@@ -879,6 +880,153 @@ const TTL_CHOICES = [
   { value: '30', label: '30 days' },
   { value: '0', label: 'Keep until deleted' },
 ] as const;
+
+/** Which admin actions read as a status colour in the Audit table. Most are neutral
+ *  record-keeping; destructive/terminal ones warn, provisioning/grants affirm. */
+function auditStatus(action: string): 'success' | 'danger' | 'warning' | 'neutral' {
+  if (/^(delete|reap|reject|unbind|revoke|remove|unassign|suspend|archive)/i.test(action)) return 'danger';
+  if (/^(provision|activate|admit|grant|create|bind|promote|assign|restore|import|unsuspend|unarchive)/i.test(action)) return 'success';
+  if (/^(set|rewind|publish|request)/i.test(action)) return 'warning';
+  return 'neutral';
+}
+
+/** A compact one-line summary of what an entry changed, from its applied payload. */
+function auditSummary(entry: AuditEntry): string {
+  const after = entry.after;
+  if (after && typeof after === 'object') {
+    const s = Object.entries(after as Record<string, unknown>)
+      .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+      .join(' · ');
+    return s.length > 80 ? `${s.slice(0, 79)}…` : s || '—';
+  }
+  return entry.vertical ?? '—';
+}
+
+/**
+ * The Audit tab (#479): this app scope's slice of Substrat's control-plane admin log —
+ * every privileged action against the scope, append-only, newest first. A pure READ of
+ * the audit spine the platform already writes (control-plane.md §4.4); nothing here
+ * mutates. `cursor` walks older entries; a row opens its full before/after. The control
+ * plane serves this, so embedded mode has nothing to show and the tab says so.
+ */
+function Audit({ app }: { app: AppRow }) {
+  const [entries, setEntries] = useState<AuditEntry[] | null>(null);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+  const [selected, setSelected] = useState<AuditEntry | null>(null);
+
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setEntries(MOCK_AUDIT_ENTRIES);
+      return;
+    }
+    let live = true;
+    api
+      .auditLog(app.app_scope_id)
+      .then((p) => {
+        if (!live) return;
+        setEntries(p.entries);
+        setCursor(p.nextCursor);
+      })
+      .catch((e) => {
+        if (!live) return;
+        if (e instanceof ApiError && e.status === 501) setUnavailable(true);
+        setEntries([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+
+  const loadOlder = async () => {
+    if (DEV_MOCK || loadingOlder || !cursor) return;
+    setLoadingOlder(true);
+    try {
+      const p = await api.auditLog(app.app_scope_id, { cursor });
+      setEntries((prev) => [...(prev ?? []), ...p.entries.filter((e) => !prev?.some((x) => x.id === e.id))]);
+      setCursor(p.nextCursor);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
+  const columns: TableColumn<AuditEntry>[] = [
+    { header: 'When', width: 130, render: (e) => <span title={e.at}>{relativeTime(e.at)}</span> },
+    { header: 'Action', width: 210, render: (e) => <Badge status={auditStatus(e.action)} dot={false}>{e.action}</Badge> },
+    { header: 'Actor', mono: true, muted: true, render: (e) => <span title={e.actor}>{e.actor}</span> },
+    { header: 'Change', muted: true, render: (e) => auditSummary(e) },
+  ];
+
+  return (
+    <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <Eyebrow>Audit log</Eyebrow>
+        <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)', paddingTop: 4 }}>
+          Every privileged action against this app&rsquo;s scope, newest first — the append-only record
+          Substrat keeps of who changed what. Read-only.
+        </div>
+      </div>
+      {entries === null ? (
+        <div style={{ padding: 20, fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading audit log…</div>
+      ) : unavailable ? (
+        <div style={{ padding: 20, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          The audit log is served by the control plane, which isn&rsquo;t available in this environment.
+        </div>
+      ) : (
+        <>
+          <Table columns={columns} rows={entries} onRowClick={(e) => setSelected(e)} emptyText="No audited actions yet." />
+          {cursor !== null && (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 12 }}>
+              <Button variant="secondary" onClick={() => void loadOlder()} disabled={loadingOlder}>
+                {loadingOlder ? 'Loading…' : 'Load older entries'}
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+      {selected && <AuditDetail entry={selected} onClose={() => setSelected(null)} />}
+    </div>
+  );
+}
+
+/** Read-only detail for one audit entry — the shared Dialog is confirm-shaped, so this
+ *  is a plain overlay with a single Close. Shows before/after and the causing event. */
+function AuditDetail({ entry, onClose }: { entry: AuditEntry; onClose: () => void }) {
+  const mono = { fontFamily: 'var(--font-mono)' } as const;
+  const field = (label: string, node: React.ReactNode) => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 'var(--tracking-caps)', color: 'var(--text-tertiary)' }}>{label}</span>
+      <div style={{ color: 'var(--text-primary)', fontSize: 13 }}>{node}</div>
+    </div>
+  );
+  const json = (value: unknown) => (
+    <pre style={{ margin: 0, padding: 10, background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 6, ...mono, fontSize: 12, overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+      {JSON.stringify(value, null, 2)}
+    </pre>
+  );
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(14,16,23,0.4)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 520, maxWidth: '100%', maxHeight: '80vh', overflowY: 'auto', background: 'var(--surface-raised)', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-popover)', fontFamily: 'var(--font-sans)' }}>
+        <div style={{ padding: '20px 20px 0', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Badge status={auditStatus(entry.action)} dot={false}>{entry.action}</Badge>
+        </div>
+        <div style={{ padding: '16px 20px 0', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {field('When', <span>{shortDate(entry.at)} · <span style={mono} title={entry.at}>{entry.at}</span></span>)}
+          {field('Actor', <span style={mono}>{entry.actor}</span>)}
+          {field('Entry id', <span style={mono}>{entry.id}</span>)}
+          {entry.vertical && field('Vertical', entry.vertical)}
+          {entry.causedBy && field('Caused by', <span><span style={mono} title={entry.causedBy}>{entry.causedBy}</span> <span style={{ color: 'var(--text-tertiary)' }}>(domain event)</span></span>)}
+          {entry.before != null && field('Before', json(entry.before))}
+          {entry.after != null && field('After', json(entry.after))}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', padding: 20 }}>
+          <Button variant="secondary" onClick={onClose}>Close</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /**
  * The Previews tab (preview-and-snapshots.md §3): create a preview — a full copy of
