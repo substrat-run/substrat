@@ -80,6 +80,8 @@ const MANIFEST = {
       GITHUB_APP_ID: 'GITHUB_APP_ID',
       GITHUB_APP_SLUG: 'GITHUB_APP_SLUG',
       GITHUB_APP_PRIVATE_KEY: 'GITHUB_APP_PRIVATE_KEY',
+      // Must equal the App settings' webhook secret (per-PR previews, github-webhook.ts).
+      GITHUB_APP_WEBHOOK_SECRET: 'GITHUB_APP_WEBHOOK_SECRET',
       EMAIL_FROM: 'DASH_EMAIL_FROM',
       CP_ACTOR: 'DASH_CP_ACTOR',
     },
