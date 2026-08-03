@@ -153,6 +153,26 @@ the CLI derives it at push time:
 `wrangler dev` — the CLI still reads it when no `runtimeNeeds` block is present. When both
 exist, `runtimeNeeds` wins.)
 
+The same `substrat` block also carries your **install spec** — what the dashboard grants and
+renders when someone installs your vertical, no catalog edit needed:
+
+- `entitlements` — the full entitlement set an install grants the installing tenant (your
+  own SKU flag plus any engine you compose, e.g. `["helpdesk", "workorder"]`). **Absent, the
+  platform derives your slug** — so a vertical whose module gates on
+  `entitlementKey: '<slug>'` (the convention) installs entitled to itself out of the box.
+  Declare the list explicitly the moment you gate on anything else.
+- `ownerGrants` — the permissions the installing owner holds inside the fresh scope on day
+  one.
+- `envSpec` / `surfaces` — the install form's config fields and your declared UI surfaces.
+
+Entitlements are delivered to your vertical **with provisioning** and projected locally; your
+per-operation gate fails closed on anything the tenant doesn't hold. If a live install ever
+ends up missing one (granted later, or repaired), the control plane re-delivers through your
+`/internal/reconcile` route — part of the required `/internal` contract for hosted verticals
+(`/internal/provision`, `/internal/reconcile`, `/internal/configure`, and the
+snapshot/export family; Meridian's `worker.ts` in the monorepo is the reference
+implementation). A vertical without `/internal/reconcile` cannot be repaired in place.
+
 A push then:
 
 1. **Builds the bundle** with `wrangler deploy --dry-run --outdir` against the derived config —

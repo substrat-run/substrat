@@ -163,6 +163,24 @@ export async function provisionDashboard(
 }
 
 /**
+ * The entitlement set an install grants the installing tenant: the first DECLARED
+ * (non-empty) set wins, else the vertical's slug — the manifest contract's documented
+ * default ("absent ⇒ derive from `entitlementKey`", whose convention is the slug).
+ *
+ * The derivation must treat an EMPTY list as undeclared (#443): a pushed vertical
+ * whose registry row carries no `entitlements` used to resolve to `[]`, which defeated
+ * every `?? [slug]` fallback downstream — so the installing tenant held ZERO
+ * entitlements and the vertical's own gate failed closed on its very first operation.
+ */
+export function installEntitlements(
+  verticalSlug: string,
+  ...declared: Array<readonly string[] | undefined>
+): string[] {
+  for (const set of declared) if (set && set.length > 0) return [...set];
+  return [verticalSlug];
+}
+
+/**
  * Create an app — provision a new scope running `verticalSlug` **in the caller's
  * own tenant**. This is the load-bearing claim of the whole design cashed out:
  *
@@ -932,9 +950,14 @@ async function provisionOnSharedPlane(
 
   await step('directory', async () => {
     await cp.ensureTenant(tenantSlug, input.tenantName ?? 'Workspace');
-    // Belt-and-braces: the vertical grants these too, but an idempotent grant here
-    // keeps the shared directory's entitlement view complete regardless.
-    for (const key of input.appEntitlements ?? [input.verticalSlug]) await cp.grantEntitlement(key);
+    // The tenant must hold the vertical's SKU flags BEFORE the instance provisions:
+    // the control plane gathers entitlements at provision time and delivers them with
+    // it (#310), and the vertical's projected gate fails closed on an empty set (#443).
+    // `installEntitlements` derives `[slug]` when nothing is declared, so a fresh
+    // install is never born unentitled to its own vertical.
+    for (const key of installEntitlements(input.verticalSlug, input.appEntitlements)) {
+      await cp.grantEntitlement(key);
+    }
     await cp.provisionScope({ scopeId: input.appScopeId, slug, name: input.name, vertical: input.verticalSlug, jurisdiction: 'global' });
   });
 
@@ -1030,7 +1053,9 @@ async function provisionEmbedded(
   const staff = platformActorId.parse(ulid());
   const tenantId = input.node.tenantId;
   await step('directory', async () => {
-    for (const key of input.appEntitlements ?? [input.verticalSlug]) {
+    // Same derivation as the shared-plane path (#443): an undeclared set means the
+    // vertical's own slug, never an empty grant that fails closed on first use.
+    for (const key of installEntitlements(input.verticalSlug, input.appEntitlements)) {
       await host.admin.grantEntitlement(staff, tenantId, key);
     }
     await host.provisionScope(staff, { tenantId, scopeId: input.appScopeId, jurisdiction: 'global', vertical: input.verticalSlug });

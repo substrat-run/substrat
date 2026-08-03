@@ -15,6 +15,7 @@ import {
   MODULES,
   provisionDashboard,
   createApp,
+  installEntitlements,
   deprovisionApp,
   retryApp,
   resumeApp,
@@ -180,6 +181,74 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
     const apps = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
     expect(apps.find((a) => a.app_scope_id === failScopeId)?.status).toBe('failed');
+  });
+
+  it('#443: an install that declares no entitlements derives the vertical’s own SKU — never an empty, fail-closed grant', async () => {
+    const acme = await bootstrap('acme-derived-sku');
+
+    // The registry-empty shape that bit authhero-console: a pushed vertical with no
+    // `entitlements` in its substrat block resolves to exactly [] — which used to
+    // defeat the `?? [slug]` fallback and install the app with ZERO entitlements.
+    const appScopeId = scopeId.parse(ulid());
+    const app = await createApp(host, {
+      node: acme,
+      appScopeId,
+      verticalSlug: 'protocol',
+      name: 'Underdeclared',
+      appEntitlements: [],
+      appOwnerGrants: [PROTOCOL_PERM.create, PROTOCOL_PERM.read] as PermissionKey[],
+    });
+    expect(app.status).toBe('active');
+
+    // The installing tenant HOLDS the derived SKU...
+    const held = await host.admin.listEntitlements(staff, acme.tenantId);
+    expect(held.map((e) => e.entitlementKey)).toContain('protocol');
+
+    // ...so the vertical's own gate opens on first use instead of failing closed.
+    const appScope = await host.getScope(acme.principal, acme.tenantId, appScopeId);
+    await appScope.invoke('protocol/define-template', {
+      key: 'welcome',
+      title: 'Welcome',
+      content: { kind: 'document', documentType: 'welcome', hashRecipe: 'sha256 over the terms' },
+    });
+
+    // Connected mode grants the same derived set on the shared plane — in the
+    // directory step, BEFORE the instance provisions, so the entitlement delivery
+    // that rides provisioning (#310) already carries it.
+    const granted: string[] = [];
+    const cp = {
+      tenantId: acme.tenantId,
+      ensureTenant: async () => {},
+      grantEntitlement: async (key: string) => {
+        granted.push(key);
+      },
+      provisionScope: async () => {},
+      provisionInstance: async () => {},
+      activateScope: async () => {},
+      listChannels: async () => [],
+      bindHostname: async () => {},
+      setHostnameStatus: async () => {},
+    } as unknown as Parameters<typeof createApp>[1]['controlPlane'];
+    await createApp(host, {
+      node: acme,
+      appScopeId: scopeId.parse(ulid()),
+      verticalSlug: 'meridian',
+      name: 'Pushed',
+      appEntitlements: [],
+      appOwnerGrants: [],
+      controlPlane: cp,
+    });
+    expect(granted).toEqual(['meridian']);
+  });
+
+  it('installEntitlements: the first non-empty declared set wins; empty or absent derives the slug', () => {
+    expect(installEntitlements('helpdesk')).toEqual(['helpdesk']);
+    expect(installEntitlements('helpdesk', undefined, [])).toEqual(['helpdesk']);
+    expect(installEntitlements('callout', [], ['workorder', 'invoicing', 'callout'])).toEqual([
+      'workorder',
+      'invoicing',
+      'callout',
+    ]);
   });
 
   it('delivers the Identity choice as substrat:auth AFTER the hostname binds; a delivery failure fails the app', async () => {
