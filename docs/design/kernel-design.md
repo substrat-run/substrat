@@ -702,6 +702,25 @@ the owning entity's declared permission key) but not referential *integrity* acr
 opaque boundary — a module deleting an entity is responsible for emitting the deletion
 event; attachment GC is a spine consumer.
 
+**Document/comment/custom-field collections above remain a sketch; the *byte* half shipped
+first (#473).** A module's manifest `attachmentTargets` — declared by every engine, consumed
+by nothing until now — is the runtime input to `ScopeHost.attachments(principal, tenant,
+scope)`, the surface a vertical uses to attach file bytes to a declared entity (the signed
+contract PDF, field photos). It sits deliberately OFF `ScopeStub`: bytes must never ride the
+structured-clone invoke pipe through the scope's strict serialization. Instead the metadata
+fact (`_substrat_attachments` — filename, content-type, size, SHA-256, visibility) lands
+inside the scope database under that serialization, transactional with an
+`attachment.added`/`attachment.removed` spine event, so `scope pull`/restore/PITR carry it
+like any scope fact; the bytes go to a **platform-minted per-tenant blob store** (a
+`blobStoreNeed` in `runtimeNeeds.blobStores` — R2 on Cloudflare, a per-tenant directory on
+the pure adapter; self-serve-deploy.md §4, the `tenantStoreNeed` sibling). Every read is
+gated by the target's `readPermission` and every mutation by its `writePermission` (proof
+path included, per-entity) — the read gate the issue's hand-rolled route handler could not
+prove now runs where `ctx.check` does. Keys are platform-derived (`scope/<scopeId>/att/<id>`),
+so per-scope isolation inside a per-tenant store is construction, not a key-prefix convention;
+and because bytes are write-once under a fresh ULID key with their SHA-256 recorded, a PITR
+rewind can at worst orphan an object (GC-able), never re-point a row at different content.
+
 ### 7.3 Module storage model
 
 Engines own **tables and migrations, never databases**. The decisive reason is

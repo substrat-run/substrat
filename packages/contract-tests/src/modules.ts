@@ -177,9 +177,19 @@ export const permModManifest = moduleManifest.parse({
     { key: 'perm:use', description: 'use the thing' },
     { key: 'perm:read', description: 'read the thing' },
   ],
-  events: { emits: [], consumes: [] },
+  events: {
+    // #473: the attachment surface emits these on upload/remove; declaring them keeps the
+    // module's emitted-event set honest (an attachment target implies these events).
+    emits: [
+      { type: 'attachment.added', schemaVersion: 1 },
+      { type: 'attachment.removed', schemaVersion: 1 },
+    ],
+    consumes: [],
+  },
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
-  attachmentTargets: [],
+  // #473: an attachment target on `item`, gated read=perm:read / write=perm:use — reusing
+  // the permission model the suite already sets up, so both adapters exercise attachments.
+  attachmentTargets: [{ entityType: 'item', readPermission: 'perm:read', writePermission: 'perm:use' }],
   entityRelations: [{ entityType: 'item', parentType: 'box' }],
   entitlementKey: 'perm',
 });

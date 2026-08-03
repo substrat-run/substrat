@@ -1,12 +1,14 @@
 import {
+  blobStoreBindingName,
   storedDeployManifest,
   tenantStoreBindingName,
+  type BlobStoreHandle,
   type PlatformActorId,
   type TenantId,
   type TenantStoreHandle,
 } from '@substrat-run/contracts';
-import type { ScopeHost, TenantStoreRecord } from '@substrat-run/kernel';
-import type { D1BindingSpec, PatchScriptBindingsFn } from './wfp.js';
+import type { BlobStoreRecord, ScopeHost, TenantStoreRecord } from '@substrat-run/kernel';
+import type { ScriptBindingSpec, PatchScriptBindingsFn } from './wfp.js';
 
 /**
  * The provision-time half of per-tenant relational stores (#301, PR-2): resolve what a
@@ -83,7 +85,76 @@ export async function collectTenantStoreHandles(opts: {
   return handles;
 }
 
+/**
+ * The provision-time half of per-tenant blob stores (#473) — the byte-store twin of
+ * {@link collectTenantStoreHandles}: mint one R2 bucket per declared `blobStoreNeed` for
+ * this tenant (idempotent) and attach its `r2_bucket` binding to the serving script.
+ * Unlike tenant stores, blob stores need no migration ready-gate (there is no schema), so
+ * this returns nothing for the provision callback — the effect is the ledger + bindings.
+ */
+export async function collectBlobStoreHandles(opts: {
+  host: ScopeHost;
+  actor: PlatformActorId;
+  slug: string;
+  tenantId: TenantId;
+  patchBindings?: PatchScriptBindingsFn;
+}): Promise<BlobStoreHandle[]> {
+  const admin = opts.host.admin;
+  const serving = await admin.verticalServing(opts.actor, opts.slug).catch(() => null);
+  let versionId = serving?.versionId ?? null;
+  if (!versionId) {
+    const prod = (await admin.listChannels(opts.actor, opts.slug).catch(() => [])).find(
+      (c) => c.channel === 'prod',
+    );
+    versionId = prod?.versionId ?? null;
+  }
+  if (!versionId) return [];
+  const manifestJson = await admin
+    .versionManifest(opts.actor, opts.slug, versionId)
+    .catch(() => null);
+  if (!manifestJson) return [];
+  const needs = storedDeployManifest.parse(JSON.parse(manifestJson)).blobStores;
+  if (needs.length === 0) return [];
+
+  const handles: BlobStoreHandle[] = [];
+  for (const need of needs) {
+    handles.push(
+      await opts.host.provisionBlobStore(opts.actor, {
+        tenantId: opts.tenantId,
+        vertical: opts.slug,
+        binding: need.binding,
+      }),
+    );
+  }
+
+  if (opts.patchBindings) {
+    const scriptRef =
+      serving?.ref ??
+      (await admin.listVersions(opts.actor, opts.slug)).find((v) => v.id === versionId)
+        ?.deploymentRef ??
+      null;
+    if (scriptRef) {
+      const ledger = await admin.listBlobStores(opts.actor, { vertical: opts.slug });
+      await opts.patchBindings(scriptRef, blobStoreBindings(ledger));
+    }
+  }
+  return handles;
+}
+
 /** Ledger rows → the D1 bindings a script serving this vertical must carry (#301). */
-export function tenantStoreBindings(ledger: TenantStoreRecord[]): D1BindingSpec[] {
-  return ledger.map((r) => ({ name: tenantStoreBindingName(r.binding, r.tenantId), id: r.ref }));
+export function tenantStoreBindings(ledger: TenantStoreRecord[]): ScriptBindingSpec[] {
+  return ledger.map((r) => ({
+    type: 'd1',
+    name: tenantStoreBindingName(r.binding, r.tenantId),
+    id: r.ref,
+  }));
+}
+
+/** Ledger rows → the R2 bindings a script serving this vertical must carry (#473). */
+export function blobStoreBindings(ledger: BlobStoreRecord[]): ScriptBindingSpec[] {
+  return ledger.map((r) => ({
+    type: 'r2_bucket',
+    name: blobStoreBindingName(r.binding, r.tenantId),
+    bucketName: r.ref,
+  }));
 }

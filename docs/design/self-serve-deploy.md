@@ -162,6 +162,33 @@ default on promote): per-version scripts get a best-effort attach at provision, 
 serving script's bindings are re-derived on every upload. Store deletion at tenant reap is a
 tracked follow-up — the ledger row is the teardown list.
 
+**Per-tenant blob stores (#473) — the same shape, for attachment bytes.** A vertical that needs
+to store file bytes (a signed contract PDF, field photos as work evidence) declares a
+**`blobStoreNeed`** in `runtimeNeeds.blobStores` — the fourth store shape, and the exact
+`tenantStoreNeed` story with R2 in place of D1: the platform mints one bucket **per tenant** in
+the tenant lifecycle, the builder supplies **no bucket id**, so it is a *need* the platform
+provisions, never a `r2_bucket` *binding* the bundle carries. (A hand-authored static `r2_bucket`
+binding remains admissible as an own store — this exists so **attachment** bytes don't have to
+ride one: per-tenant minting closes the shared-bucket ownership gap, and per-**scope** isolation
+inside the store is platform-derived key prefixes (`attachmentBlobKey` → `scope/<scopeId>/att/…`)
+constructed only in kernel/adapter code, never in module or route code.) The seams are
+`provisionBlobStore` (platform mints + ledgers the bucket) and the kernel's **`attachments()`**
+surface — the runtime consumer of every engine's `attachmentTargets`, at last. `attachments()`
+gates every read by the declared target's `readPermission` and every mutation by its
+`writePermission` (proof path included, per-entity), writes the metadata fact into the scope's
+own `_substrat_attachments` table (so `scope pull` / restore / PITR carry it like any scope fact,
+with an `attachment.added`/`attachment.removed` spine event in the same transaction), and sends
+the bytes straight to the per-tenant bucket — never through the scope's structured-clone invoke
+pipe. The live Cloudflare path mirrors #301 PR-2 exactly: `createR2BlobStores` mints on the
+platform credential, the `blob_stores` ledger is the idempotency + reap source of truth, the
+`r2_bucket` binding rides the WfP script-settings PATCH under `blobStoreBindingName(binding,
+tenantId)` and is re-derived from the ledger on every serving upload. **Attachment-byte integrity
+across the row/object split:** bytes are hashed (SHA-256) at upload and written once under a fresh
+ULID key, so a metadata row can never point at bytes other than the ones it was born with — after
+a PITR rewind the worst case is an orphaned object (harmless, GC-able via the store's `list`),
+never a row silently re-pointed at different content. Bucket deletion at tenant reap is the same
+tracked follow-up as tenant stores — the ledger row is the teardown list.
+
 If an uploaded bundle's declared bindings exceed this contract, the deploy endpoint refuses it
 before it ever reaches the namespace. That refusal — not code inspection — is the primary
 structural defense in model B.

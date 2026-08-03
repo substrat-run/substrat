@@ -1,6 +1,9 @@
 export type {
   AccessLogFilter,
+  AttachmentUploadInput,
   AuditLogFilter,
+  BlobStoreProvisionInput,
+  BlobStoreRecord,
   ConsumerHandler,
   ExecutorDeadLetter,
   ExecutorDrainReport,
@@ -18,12 +21,14 @@ export type {
   MigrateScopeOutcome,
   MigrationFrontier,
   ModuleRegistration,
+  OpenedAttachment,
   OperationContext,
   OperationHandler,
   ProvisionScopeInput,
   RoleFilter,
   ScheduleRegistration,
   ScheduleRunReport,
+  ScopeAttachments,
   ScopedSql,
   ScopeFilter,
   ScopeHost,
@@ -31,11 +36,12 @@ export type {
   ScopeStubOptions,
   SqlMigration,
   SqlValue,
+  TenantBlobStore,
   TenantRelationalStore,
   TenantStoreProvisionInput,
   TenantStoreRecord,
 } from './scope-host.js';
-export { backoffAt, resolveRetryPolicy } from './scope-host.js';
+export { attachmentBlobKey, backoffAt, resolveRetryPolicy } from './scope-host.js';
 export { unconfiguredSecretBox, webCryptoSecretBox } from './secret-box.js';
 export type { SealedSecret, SecretBox } from './secret-box.js';
 export { resolveScopeRecord } from './scope-record.js';

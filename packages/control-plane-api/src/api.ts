@@ -56,7 +56,12 @@ import {
 } from './deploy.js';
 import type { DeployVerticalFn, FetchVerticalModulesFn } from './deploy.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
-import { collectTenantStoreHandles, tenantStoreBindings } from './tenant-stores.js';
+import {
+  blobStoreBindings,
+  collectBlobStoreHandles,
+  collectTenantStoreHandles,
+  tenantStoreBindings,
+} from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import type { ObservabilityReader } from './observability.js';
 import {
@@ -1663,6 +1668,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       tenantId: input.tenantId,
       patchBindings: options.patchScriptBindings,
     });
+    // #473: per-tenant BLOB stores the vertical declared, minted + bound the same way.
+    // No handle rides the provision callback (a blob store has no schema to migrate), so
+    // the effect is purely the ledger row + the attached r2_bucket binding.
+    await collectBlobStoreHandles({
+      host: options.host,
+      actor: c.get('actor'),
+      slug,
+      tenantId: input.tenantId,
+      patchBindings: options.patchScriptBindings,
+    });
     try {
       // #424 case 2: the binding attach above races Cloudflare script-settings
       // propagation, so the vertical's FIRST answer can be a transient 5xx that a
@@ -1974,9 +1989,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // happened to carry) is what makes a re-deploy structurally unable to drop a
     // tenant's store. Platform-granted after the §4 sandbox check, like injectSecrets:
     // the builder never declared these and never named the ids.
-    const storeBindings = tenantStoreBindings(
-      await admin.listTenantStores(actor, { vertical: slug }),
-    ).map((b) => ({ type: 'd1', name: b.name, id: b.id }));
+    const storeBindings = [
+      ...tenantStoreBindings(await admin.listTenantStores(actor, { vertical: slug })),
+      // #473: the per-tenant blob-store r2_bucket bindings, re-derived from the ledger on
+      // every serving upload for the same reason — an upload replaces the script's binding
+      // set, so a re-deploy must never drop a tenant's attachment bucket.
+      ...blobStoreBindings(await admin.listBlobStores(actor, { vertical: slug })),
+    ].map((b) =>
+      b.type === 'd1'
+        ? { type: 'd1', name: b.name, id: b.id }
+        : { type: 'r2_bucket', name: b.name, bucket_name: b.bucketName },
+    );
     await options.deployVertical(
       ref,
       {
