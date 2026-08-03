@@ -92,6 +92,17 @@ export interface SnapshotRecord {
   url?: string | null;
 }
 
+/** One per-PR preview row, as the CP's `GET /verticals/:slug/previews` returns it. */
+export interface PreviewRecord {
+  scopeId: string;
+  tag: string | null;
+  versionId: string | null;
+  forkedFrom: string | null;
+  expiresAt: string | null;
+  hostname: string | null;
+  url: string | null;
+}
+
 export class TenantNarrowedControlPlane {
   private readonly baseUrl: string;
   private readonly actor: string;
@@ -607,6 +618,24 @@ export class TenantNarrowedControlPlane {
   /** Reap one snapshot. The CP refuses anything that is not a fork (409). */
   deleteSnapshot(snapshotScopeId: ScopeId): Promise<void> {
     return this.call(`/tenants/${this.tenantId}/scopes/${snapshotScopeId}`, { method: 'DELETE' });
+  }
+
+  // -- per-PR previews (preview-and-snapshots.md §2/§9) -----------------------
+  // The CP's builder-facing preview routes, reached over the service token: the
+  // `x-substrat-tenant` header this class always sends resolves the bare vertical
+  // slug to this tenant's `<tenantSlug>/<slug>` registry id (#417), so the webhook
+  // DO speaks the same route CI's `substrat preview` does — no parallel surface.
+
+  /** The live previews of a vertical (fork + PR version + `--<tag>` URL each). */
+  listPreviews(verticalSlug: string): Promise<PreviewRecord[]> {
+    return this.call<PreviewRecord[]>(`/verticals/${encodeURIComponent(verticalSlug)}/previews`);
+  }
+
+  /** Reap one preview by tag. Idempotent on the CP: already-gone ⇒ `deleted: null`. */
+  deletePreview(verticalSlug: string, tag: string): Promise<{ deleted: string | null }> {
+    return this.call(`/verticals/${encodeURIComponent(verticalSlug)}/previews/${encodeURIComponent(tag)}`, {
+      method: 'DELETE',
+    });
   }
 
   /** The PITR bookmarks a scope recorded before its migration passes (#286) —

@@ -344,6 +344,46 @@ ${setup}
 `;
 }
 
+/**
+ * Create-or-update the sticky preview comment on a PR (the platform half of the
+ * per-PR preview loop — the webhook DO calls this once CI's `preview create`
+ * lands, and again with the reaped body on close). Finds the comment by its
+ * leading marker — the SAME convention as the generated workflow's comment step,
+ * so whichever writer runs first, the other updates in place. PR comments ride
+ * the issues API; writing them needs the App's `pull_requests: write` permission,
+ * and a 403/404 from an installation approved before that widening surfaces as
+ * `needsPermissions` (retrying cannot fix it — the caller should stop, not loop).
+ */
+export async function upsertPrComment(
+  cfg: GithubConfig,
+  installationId: string,
+  repoFullName: string,
+  prNumber: number,
+  marker: string,
+  body: string,
+): Promise<{ ok: true } | { needsPermissions: true }> {
+  const token = await installationToken(cfg, installationId);
+  const repo = encodeRepo(repoFullName);
+  let existingId: number | undefined;
+  for (let page = 1; page <= 3 && existingId === undefined; page++) {
+    const res = await gh(cfg, `/repos/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`, `token ${token}`);
+    if (res.status === 403 || res.status === 404) return { needsPermissions: true };
+    if (!res.ok) throw new Error(`github: list PR comments failed (${res.status})`);
+    const comments = (await res.json()) as Array<{ id: number; body?: string }>;
+    existingId = comments.find((x) => x.body?.startsWith(marker))?.id;
+    if (comments.length < 100) break;
+  }
+  const res = await gh(
+    cfg,
+    existingId !== undefined ? `/repos/${repo}/issues/comments/${existingId}` : `/repos/${repo}/issues/${prNumber}/comments`,
+    `token ${token}`,
+    { method: existingId !== undefined ? 'PATCH' : 'POST', body: JSON.stringify({ body }), headers: { 'content-type': 'application/json' } },
+  );
+  if (res.status === 403 || res.status === 404) return { needsPermissions: true };
+  if (!res.ok) throw new Error(`github: write PR comment failed (${res.status})`);
+  return { ok: true };
+}
+
 /** List the repos the tenant granted this installation (paginates to a sane cap). */
 export async function listInstallationRepos(cfg: GithubConfig, installationId: string): Promise<GithubRepo[]> {
   const token = await installationToken(cfg, installationId);
