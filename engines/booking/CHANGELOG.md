@@ -1,5 +1,13 @@
 # @substrat-run/engine-booking
 
+## 0.1.36
+
+### Patch Changes
+
+- Updated dependencies [d222905]
+  - @substrat-run/contracts@0.41.0
+  - @substrat-run/kernel@0.41.0
+
 ## 0.1.35
 
 ### Patch Changes

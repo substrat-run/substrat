@@ -1,5 +1,71 @@
 # @substrat-run/control-plane-api
 
+## 0.41.0
+
+### Minor Changes
+
+- e3cd3cd: Hostnames die with their scope. Deleting an app archived its scope but left
+  every hostname row behind — the default mint lingered on the Domains page
+  (App column showing a raw scope ULID), and the #423 heal pass would flip it
+  back to `active` forever. Two-sided fix: the dashboard's `deprovisionApp` now
+  unbinds ALL of the scope's hostnames (default mint, per-surface mints, custom
+  domains — the CP DELETE releases a custom domain's Cloudflare object), and
+  `reconcilePendingHostnames` opens with an orphan pass that unbinds any row —
+  whatever its status — whose scope is `archiving`/`archived`/`reaped`, so
+  existing orphans clear on the next sweep instead of needing a manual click.
+  `HostnameReconcileAdmin` grows `listScopes` + `unbindHostname` (both already
+  on `HostAdmin`), and the reconcile result reports `orphaned`.
+- 1f51134: Per-app Observability tab (#471): the app detail page gains logs + metrics for
+  the app's vertical, per deployed version, with level / message-search filters
+  and a 1h/24h/72h window. The `ObservabilityReader` contract grows an optional
+  `search` term (neutral substring-on-message capability — each backend maps it
+  to its own query language; Cloudflare's reader files it as a telemetry-query
+  filter), threaded through the plane's `/observability/logs` route. Isolation is
+  unchanged in kind and now tested wider: "filtered by app" narrows the ownership
+  map server-side (an unowned slug answers `[]` without the staff-wide query ever
+  issuing), and builder log responses are projected to the neutral field set — a
+  backend's `raw` payload never passes through the seam.
+- d222905: Platform blob store + attachment surface (#473): `attachmentTargets`, declared by
+  the contract and every engine but implemented by nothing, now has a runtime home.
+
+  - **A fourth store shape.** `blobStoreNeed` in `runtimeNeeds.blobStores` — the
+    `tenantStoreNeed` sibling for attachment bytes: the platform mints one bucket per
+    tenant (R2 on `adapter-cloudflare`, a per-tenant directory on the pure adapter), the
+    builder declares no id, so it is a _need_ the platform provisions, never an `r2_bucket`
+    binding the bundle carries. Seams: `ScopeHost.provisionBlobStore` / `listBlobStores`,
+    a `blob_stores` ledger in both adapters, and the `createR2BlobStores` REST client.
+  - **`attachmentTargets` consumed.** `ScopeHost.attachments(principal, tenant, scope)`
+    gates every read by the declared target's `readPermission` and every mutation by its
+    new optional `writePermission` (default: the read key) — proof path included,
+    per-entity, evaluated where `ctx.check` is. The read gate no longer leaves `ctx` for a
+    hand-rolled route handler.
+  - **Rows in the scope, bytes in the store.** The metadata fact lands in a new
+    `_substrat_attachments` table inside the scope database (so `scope pull` / restore /
+    PITR carry it), transactional with an `attachment.added` / `attachment.removed` spine
+    event. Bytes go straight to the per-tenant store, never through the scope's
+    structured-clone invoke pipe. Keys are platform-derived (`scope/<scopeId>/att/<id>`),
+    so per-scope isolation inside a per-tenant store is construction, not convention.
+  - **Integrity across the split.** Bytes are SHA-256'd at upload and written once under a
+    fresh ULID key, so a row can never point at bytes other than the ones it was born with;
+    a PITR rewind can at worst orphan an object (GC-able), never re-point a row.
+  - **Deploy path.** The WfP bindings patcher and every in-place serving upload now
+    re-derive `r2_bucket` bindings from the blob-store ledger alongside the D1 tenant-store
+    bindings (`blobStoreBindingName(binding, tenantId)`), so a re-deploy is structurally
+    unable to drop a tenant's attachment bucket. The CLI carries `blobStores` from
+    `runtimeNeeds` into the deploy manifest, admitted as a need (never a binding).
+
+### Patch Changes
+
+- 653a592: The bound-scope delete refusal reaches the caller. `deleteVertical` refuses
+  while any scope is still bound, naming the count and the way out ("still backs
+  N scope(s) — delete or rebind them first"), but `mapError` had no pattern for
+  the message, so the console showed the generic 500 "internal error" instead —
+  exactly the masking the route's own comment claimed could not happen. The
+  message now maps to a 409 like the registry's other state conflicts.
+- Updated dependencies [d222905]
+  - @substrat-run/contracts@0.41.0
+  - @substrat-run/kernel@0.41.0
+
 ## 0.40.0
 
 ### Minor Changes
