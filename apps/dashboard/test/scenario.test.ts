@@ -479,6 +479,29 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     expect(slugs.has('meridian')).toBe(false); // requiring is not providing
   });
 
+  it('#389: ensureCatalog retires a builtin row that dropped out of CATALOG — blocked, unlisted, no longer offered', async () => {
+    // Meridian's shape: seeded as a listed builtin by an older CATALOG, then removed
+    // from the map. The row persists for its scopes, but the seed loop never touches
+    // it again — without reconciliation it kept offering an install the control
+    // plane's kill-switch refuses.
+    await host.admin.registerVertical(staff, {
+      slug: 'retired-builtin', name: 'Retired', source: 'builtin', listed: true,
+    });
+    await ensureCatalog(host, staff);
+    const row = (await host.admin.listVerticals(staff)).find((v) => v.slug === 'retired-builtin');
+    expect(row).toMatchObject({ installsBlocked: true, listed: false });
+    const offered = availableCatalog(await host.admin.listVerticals(staff), { tenantId: null });
+    expect(offered.map((v) => v.slug)).not.toContain('retired-builtin');
+    // Entries still in CATALOG are untouched, and the audited retirement fired once —
+    // a second pass (every /api/catalog read runs this) records nothing new.
+    expect(offered.map((v) => v.slug)).toContain('callout');
+    await ensureCatalog(host, staff);
+    const blocks = (await host.admin.auditLog(staff)).filter(
+      (e) => e.action === 'setVerticalInstallsBlocked',
+    );
+    expect(blocks).toHaveLength(1);
+  });
+
   it('#391: a cold-start 502 on the identity delivery is retried; persistent failure names the transient; a 501 never retries', async () => {
     const acme = await bootstrap('acme-cold-start');
     const appAuth = { source: 'external', issuer: 'https://auth.example.com', clientId: 'cid', clientSecret: 'cs' } as const;

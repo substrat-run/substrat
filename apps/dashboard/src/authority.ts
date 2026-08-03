@@ -92,6 +92,17 @@ export interface SnapshotRecord {
   url?: string | null;
 }
 
+/** One per-PR preview row, as the CP's `GET /verticals/:slug/previews` returns it. */
+export interface PreviewRecord {
+  scopeId: string;
+  tag: string | null;
+  versionId: string | null;
+  forkedFrom: string | null;
+  expiresAt: string | null;
+  hostname: string | null;
+  url: string | null;
+}
+
 export class TenantNarrowedControlPlane {
   private readonly baseUrl: string;
   private readonly actor: string;
@@ -434,7 +445,7 @@ export class TenantNarrowedControlPlane {
    * Throws `ControlPlaneError(501)` when the plane has no observability backend —
    * callers surface "not available", never an empty chart pretending to be zero traffic.
    */
-  async observabilityMetrics(hours: number): Promise<
+  async observabilityMetrics(hours: number, vertical?: string): Promise<
     Array<{
       vertical: string;
       version: string;
@@ -446,7 +457,13 @@ export class TenantNarrowedControlPlane {
       cpuTimeP99: number;
     }>
   > {
-    const owned = await this.ownedServiceRefs();
+    let owned = await this.ownedServiceRefs();
+    // The per-app tab's filter: not a query param the plane ever sees — the ownership
+    // map itself is narrowed to the one vertical, so a slug this tenant doesn't own
+    // short-circuits to [] exactly like owning nothing at all.
+    if (vertical !== undefined) {
+      owned = new Map([...owned].filter(([, v]) => v.vertical === vertical));
+    }
     if (owned.size === 0) return [];
     const all =
       (await this.call<
@@ -464,6 +481,7 @@ export class TenantNarrowedControlPlane {
   async observabilityLogs(input: {
     service: string;
     level?: string;
+    search?: string;
     hours?: number;
     limit?: number;
   }): Promise<
@@ -473,9 +491,23 @@ export class TenantNarrowedControlPlane {
     if (!owned.has(input.service)) return [];
     const q = new URLSearchParams({ service: input.service });
     if (input.level) q.set('level', input.level);
+    if (input.search) q.set('search', input.search);
     if (input.hours) q.set('hours', String(input.hours));
     if (input.limit) q.set('limit', String(input.limit));
-    return (await this.call(`/observability/logs?${q.toString()}`)) ?? [];
+    const events =
+      (await this.call<
+        Array<{ timestamp?: unknown; level?: unknown; message?: unknown; service?: unknown; outcome?: unknown }>
+      >(`/observability/logs?${q.toString()}`)) ?? [];
+    // Builders get the neutral field set ONLY — the plane's events carry a `raw`
+    // backend payload for staff debuggability, and whatever a future backend adds
+    // must be opted into here, never inherited by pass-through.
+    return events.map((e) => ({
+      timestamp: typeof e.timestamp === 'number' ? e.timestamp : null,
+      level: typeof e.level === 'string' ? e.level : null,
+      message: typeof e.message === 'string' ? e.message : null,
+      service: typeof e.service === 'string' ? e.service : null,
+      outcome: typeof e.outcome === 'string' ? e.outcome : null,
+    }));
   }
 
   /**
@@ -607,6 +639,24 @@ export class TenantNarrowedControlPlane {
   /** Reap one snapshot. The CP refuses anything that is not a fork (409). */
   deleteSnapshot(snapshotScopeId: ScopeId): Promise<void> {
     return this.call(`/tenants/${this.tenantId}/scopes/${snapshotScopeId}`, { method: 'DELETE' });
+  }
+
+  // -- per-PR previews (preview-and-snapshots.md §2/§9) -----------------------
+  // The CP's builder-facing preview routes, reached over the service token: the
+  // `x-substrat-tenant` header this class always sends resolves the bare vertical
+  // slug to this tenant's `<tenantSlug>/<slug>` registry id (#417), so the webhook
+  // DO speaks the same route CI's `substrat preview` does — no parallel surface.
+
+  /** The live previews of a vertical (fork + PR version + `--<tag>` URL each). */
+  listPreviews(verticalSlug: string): Promise<PreviewRecord[]> {
+    return this.call<PreviewRecord[]>(`/verticals/${encodeURIComponent(verticalSlug)}/previews`);
+  }
+
+  /** Reap one preview by tag. Idempotent on the CP: already-gone ⇒ `deleted: null`. */
+  deletePreview(verticalSlug: string, tag: string): Promise<{ deleted: string | null }> {
+    return this.call(`/verticals/${encodeURIComponent(verticalSlug)}/previews/${encodeURIComponent(tag)}`, {
+      method: 'DELETE',
+    });
   }
 
   /** The PITR bookmarks a scope recorded before its migration passes (#286) —

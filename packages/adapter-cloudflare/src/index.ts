@@ -36,6 +36,12 @@ export {
   tenantStoreDatabaseName,
 } from './d1.js';
 export type { D1TenantStores, D1TenantStoresOptions } from './d1.js';
+export {
+  blobStoreBucketName,
+  createR2BlobStores,
+  r2TenantBlobStore,
+} from './r2.js';
+export type { R2BlobStores, R2BlobStoresOptions } from './r2.js';
 export { createRouteResolver } from './route-resolver.js';
 export type { RouteResolver } from './route-resolver.js';
 export type { ControlPlaneReader, DoCheckerDeps } from './checker.js';

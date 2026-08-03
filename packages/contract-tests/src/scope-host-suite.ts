@@ -1796,6 +1796,29 @@ export function scopeHostContractSuite(
       await expect(host.admin.deleteVertical(staff, 'no-such-vertical')).rejects.toThrow(/unknown vertical/);
     });
 
+    it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {
+      // A deleted app leaves an `archived` row (restorable via unarchive), then a
+      // `reaped` tombstone (terminal). The first still pins the registry — a restore
+      // would need the version pin — but the refusal must name reap/restore, not
+      // "delete": the app itself is already gone. The tombstone must never pin it,
+      // or a vertical that ever had an install becomes permanently undeletable.
+      const sRet = scopeId.parse(ulid());
+      await host.admin.registerVertical(staff, { slug: 'retirable', name: 'Retirable', source: 'cli', ownerTenant: t2 });
+      await host.provisionScope(staff, { tenantId: t2, scopeId: sRet, jurisdiction: 'eu', vertical: 'retirable' });
+      await expect(host.admin.deleteVertical(staff, 'retirable')).rejects.toThrow(
+        /still backs 1 scope\(s\) — delete or rebind/,
+      );
+
+      await host.admin.archiveScope(staff, t2, sRet);
+      await expect(host.admin.deleteVertical(staff, 'retirable')).rejects.toThrow(
+        /1 archived scope\(s\) — reap or restore/,
+      );
+
+      await host.admin.reapScope(staff, t2, sRet);
+      await host.admin.deleteVertical(staff, 'retirable');
+      expect((await host.admin.listVerticals(staff)).some((v) => v.slug === 'retirable')).toBe(false);
+    });
+
     it('refreshes `listed` on builtin re-registration (the catalog re-seed can list a row)', async () => {
       const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
       // A builtin first registered UNLISTED (bundled but not yet deployable, or a row

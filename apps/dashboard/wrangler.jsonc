@@ -23,11 +23,17 @@
 			// The Dashboard runs its customers' dashboard scopes AND (M0, single
 			// deployment) the app scopes they provision. Own directory DO.
 			{ "name": "SCOPE", "class_name": "ScopeDO" },
-			{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" }
+			{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+			// One per GitHub repo: the repo → tenant-app link + the per-PR preview
+			// watch (comment the URL, reap on close). Fed by the App webhook; needs
+			//   wrangler secret put GITHUB_APP_WEBHOOK_SECRET
+			// to match the App settings' webhook secret.
+			{ "name": "GITHUB_REPO_LINK", "class_name": "GithubRepoLinkDO" }
 		]
 	},
 	"migrations": [
-		{ "tag": "v1", "new_sqlite_classes": ["ScopeDO", "ControlPlaneDO"] }
+		{ "tag": "v1", "new_sqlite_classes": ["ScopeDO", "ControlPlaneDO"] },
+		{ "tag": "v2", "new_sqlite_classes": ["GithubRepoLinkDO"] }
 	],
 	// CONNECTED mode (dashboard.md §6): a service binding to the SHARED control plane —
 	// the directory the router reads. When present, apps provision there through the
@@ -84,10 +90,14 @@
 			"durable_objects": {
 				"bindings": [
 					{ "name": "SCOPE", "class_name": "ScopeDO" },
-					{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" }
+					{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
+					{ "name": "GITHUB_REPO_LINK", "class_name": "GithubRepoLinkDO" }
 				]
 			},
-			"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ScopeDO", "ControlPlaneDO"] }],
+			"migrations": [
+				{ "tag": "v1", "new_sqlite_classes": ["ScopeDO", "ControlPlaneDO"] },
+				{ "tag": "v2", "new_sqlite_classes": ["GithubRepoLinkDO"] }
+			],
 			// Provision against the TEST control plane, not prod.
 			"services": [
 				{ "binding": "CONTROL_PLANE_SVC", "service": "substrat-control-plane-test" } // differs

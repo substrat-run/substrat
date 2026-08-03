@@ -90,6 +90,17 @@ export async function ensureCatalog(host: ScopeHost, staff: PlatformActorId): Pr
       ...(e.requires ? { requires: e.requires } : {}),
     });
   }
+  // Reconcile RETIREMENTS: a builtin row that has dropped out of this map (Meridian,
+  // Manyfold — #389) persists in the registry for its remaining scopes, but the seed
+  // loop above never touches it again, so a stale row kept offering an install the
+  // control plane refuses. Removal from CATALOG *is* the retirement signal: block and
+  // unlist the row to match. Guarded per-flag so the audited admin actions fire once,
+  // not on every catalog read.
+  for (const v of await host.admin.listVerticals(staff)) {
+    if (v.source !== 'builtin' || v.slug in CATALOG) continue;
+    if (!v.installsBlocked) await host.admin.setVerticalInstallsBlocked(staff, v.slug, true);
+    if (v.listed) await host.admin.setVerticalListed(staff, v.slug, false);
+  }
 }
 
 /**

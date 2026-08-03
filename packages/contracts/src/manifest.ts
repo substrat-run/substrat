@@ -154,10 +154,18 @@ export const moduleManifest = z.object({
     journalDir: z.string().min(1), // Drizzle journal location within the package
     compatibleFrom: z.string().min(1), // skew window: oldest schema this code tolerates
   }),
+  // Entity types this module exposes to attachment (#473). CONSUMED by the kernel's
+  // attachment surface (`ScopeHost.attachments`): an upload is accepted only for a
+  // declared entityType, a read is gated by `readPermission` (proof path included, and
+  // per-entity — entity-narrowed grants resolve through the same evaluator as ctx.check).
   attachmentTargets: z.array(
     z.object({
       entityType: z.string().min(1),
       readPermission: permissionKey, // attachment access checks the owning entity's key
+      // The mutation gate (upload/remove). Optional + additive (D-28): absent, mutations
+      // check `readPermission` — the pre-#473 declarations keep parsing and get the
+      // conservative-enough default; an engine tightens it by declaring one.
+      writePermission: permissionKey.optional(),
     }),
   ),
   // Declared entity parent edges, e.g. workorder → facility. Permission flows

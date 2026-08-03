@@ -364,6 +364,18 @@ const DIRECTORY_DDL = `
     created_at TEXT NOT NULL,
     PRIMARY KEY (tenant_id, vertical, binding)
   );
+  -- Per-tenant blob stores (#473) -- the tenant_stores twin for attachment bytes. ref is
+  -- an R2 bucket name (buckets are addressed by name; there is no separate id). Same
+  -- idempotency + deploy-rederive + reap ledger roles.
+  CREATE TABLE IF NOT EXISTS blob_stores (
+    tenant_id  TEXT NOT NULL,
+    vertical   TEXT NOT NULL,
+    binding    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    ref        TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, vertical, binding)
+  );
   CREATE TABLE IF NOT EXISTS verticals (
     slug         TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -984,6 +996,96 @@ export class ControlPlaneDO extends DurableObject {
     }[];
   }
 
+  // -- per-tenant blob stores (#473) ------------------------------------------
+  // Ledger only, exactly like tenant_stores above: minting the actual bucket (a live
+  // R2 create) is the coordinator's job — it holds the platform's credential.
+
+  getBlobStore(
+    tenantId: string,
+    vertical: string,
+    binding: string,
+  ): { kind: string; ref: string } | undefined {
+    return this.sql
+      .exec(
+        'SELECT kind, ref FROM blob_stores WHERE tenant_id = ? AND vertical = ? AND binding = ?',
+        tenantId,
+        vertical,
+        binding,
+      )
+      .toArray()[0] as { kind: string; ref: string } | undefined;
+  }
+
+  /** Record a minted blob store — FIRST WRITER WINS, same race protocol as
+   *  putTenantStore: INSERT OR IGNORE then read back; the loser tears its orphan down. */
+  putBlobStore(row: {
+    tenantId: string;
+    vertical: string;
+    binding: string;
+    kind: string;
+    ref: string;
+    createdAt: string;
+  }): { kind: string; ref: string } {
+    const tenantRow = this.sql
+      .exec('SELECT status FROM tenants WHERE tenant_id = ?', row.tenantId)
+      .toArray()[0] as { status: string } | undefined;
+    if (!tenantRow) {
+      throw new Error(`cannot provision blob store under unknown tenant: ${row.tenantId}`);
+    }
+    if (tenantRow.status !== 'active') {
+      throw new Error(
+        `cannot provision blob store under non-active tenant (status: ${tenantRow.status}): ${row.tenantId}`,
+      );
+    }
+    this.sql.exec(
+      `INSERT OR IGNORE INTO blob_stores (tenant_id, vertical, binding, kind, ref, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      row.tenantId,
+      row.vertical,
+      row.binding,
+      row.kind,
+      row.ref,
+      row.createdAt,
+    );
+    const stored = this.getBlobStore(row.tenantId, row.vertical, row.binding);
+    if (!stored) throw new Error(`blob store write did not land for tenant ${row.tenantId}`);
+    return stored;
+  }
+
+  listBlobStores(filter: { tenantId?: string; vertical?: string }): {
+    tenant_id: string;
+    vertical: string;
+    binding: string;
+    kind: string;
+    ref: string;
+    created_at: string;
+  }[] {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (filter.tenantId) {
+      where.push('tenant_id = ?');
+      params.push(filter.tenantId);
+    }
+    if (filter.vertical) {
+      where.push('vertical = ?');
+      params.push(filter.vertical);
+    }
+    return this.sql
+      .exec(
+        'SELECT * FROM blob_stores' +
+          (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+          ' ORDER BY tenant_id, vertical, binding',
+        ...params,
+      )
+      .toArray() as unknown as {
+      tenant_id: string;
+      vertical: string;
+      binding: string;
+      kind: string;
+      ref: string;
+      created_at: string;
+    }[];
+  }
+
   // -- scope lifecycle (control-plane.md §4.1/§4.2) ---------------------------
 
   /**
@@ -1472,12 +1574,24 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?', granted, slug);
   }
 
-  /** How many scopes a vertical still backs — deleteVertical's refusal reads this. */
-  countScopesForVertical(slug: string): number {
+  /**
+   * How many scopes a vertical still backs, split by liveness — deleteVertical's refusal
+   * reads this. `reaped` rows are excluded outright: a reaped scope is terminal history
+   * and must never pin a registry row forever. `archived` counts separately: it can still
+   * be restored (unarchiveScope), so it blocks, but the refusal names reap/restore as the
+   * remaining step — the app was already deleted.
+   */
+  countScopesForVertical(slug: string): { live: number; archived: number } {
     const r = this.sql
-      .exec('SELECT COUNT(*) AS n FROM scopes WHERE vertical = ?', slug)
-      .toArray()[0] as unknown as { n: number } | undefined;
-    return r?.n ?? 0;
+      .exec(
+        'SELECT ' +
+          "COUNT(*) FILTER (WHERE status NOT IN ('archived', 'reaped')) AS live, " +
+          "COUNT(*) FILTER (WHERE status = 'archived') AS archived " +
+          'FROM scopes WHERE vertical = ?',
+        slug,
+      )
+      .toArray()[0] as unknown as { live: number; archived: number } | undefined;
+    return { live: r?.live ?? 0, archived: r?.archived ?? 0 };
   }
 
   /**

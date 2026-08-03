@@ -725,10 +725,14 @@ export const api = {
   // -- observability (design/observability.md §5, view 2) -------------------
   // Metrics/logs for THIS team's pushed verticals only — the worker narrows by
   // owned deployment refs. 501 = the platform has no observability backend.
-  observabilityMetrics: (hours = 24) => call<ObservabilityRow[]>(`/observability/metrics?hours=${hours}`),
-  observabilityLogs: (q: { service: string; level?: string; hours?: number; limit?: number }) => {
+  observabilityMetrics: (hours = 24, vertical?: string) =>
+    call<ObservabilityRow[]>(
+      `/observability/metrics?hours=${hours}${vertical ? `&vertical=${encodeURIComponent(vertical)}` : ''}`,
+    ),
+  observabilityLogs: (q: { service: string; level?: string; search?: string; hours?: number; limit?: number }) => {
     const p = new URLSearchParams({ service: q.service });
     if (q.level) p.set('level', q.level);
+    if (q.search) p.set('search', q.search);
     if (q.hours) p.set('hours', String(q.hours));
     if (q.limit) p.set('limit', String(q.limit));
     return call<ObservabilityLogEvent[]>(`/observability/logs?${p.toString()}`);

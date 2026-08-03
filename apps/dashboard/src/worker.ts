@@ -34,9 +34,11 @@ import { dashboardModule, type DashboardAppRow } from './module.js';
 import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, verticalDeploymentPageFromCp, verticalDeploymentPageFromHost, versionRegistryFromHost, assertOwned } from './deployments.js';
-import { ControlPlaneError, TenantNarrowedControlPlane } from './authority.js';
+import { DurableObject } from 'cloudflare:workers';
+import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
-import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from './github.js';
+import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi, upsertPrComment } from './github.js';
+import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
 import { b64url, b64urlToBytes } from './b64.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
@@ -110,6 +112,13 @@ interface Env extends OidcEnv {
   GITHUB_APP_SLUG?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   /**
+   * The App-level webhook secret (GitHub App settings → Webhook). A secret; absent ⇒
+   * `POST /api/github/webhook` 503s and per-PR previews stay CI-commented only.
+   */
+  GITHUB_APP_WEBHOOK_SECRET?: string;
+  /** repo → tenant-app link + per-PR preview watch (GithubRepoLinkDO, one per repo). */
+  GITHUB_REPO_LINK: DurableObjectNamespace;
+  /**
    * The control plane's PUBLIC base URL (e.g. `https://console.substrat.net/api`) — what
    * a customer repo's CI needs as `SUBSTRAT_CP_URL`, since GitHub Actions cannot reach
    * the service binding. A plain var (wrangler.jsonc), not a secret. Absent ⇒ the
@@ -145,6 +154,119 @@ function controlPlaneFor(env: Env, tenantId: DashboardNode['tenantId']): TenantN
     tenantId,
     fetch: env.CONTROL_PLANE_SVC.fetch.bind(env.CONTROL_PLANE_SVC),
   });
+}
+
+// -- per-PR preview webhooks (preview-and-snapshots.md §2) -------------------
+
+/** The durable repo → tenant-app link, written by the one-click CI setup. */
+interface RepoLink {
+  tenantId: TenantId;
+  /** The BARE vertical slug pushes register under (setup-ci's slugify of the repo name). */
+  slug: string;
+  /** `owner/name` in GitHub's casing — comment calls use it verbatim. */
+  repo: string;
+}
+
+/** One PR's preview watch: who to comment as, and when to give up. */
+interface PrPoll {
+  installationId: string;
+  deadline: number;
+}
+
+/** The RPC surface of GithubRepoLinkDO, for the worker-side stub cast. */
+interface RepoLinkStub {
+  setLink(link: RepoLink): Promise<void>;
+  onPullRequest(evt: { action: 'sync' | 'closed'; prNumber: number; installationId: string }): Promise<{ handled: boolean }>;
+}
+
+const PR_POLL_INTERVAL_MS = 60_000;
+/** How long after a PR push the DO keeps watching for CI's preview to land. */
+const PR_POLL_WINDOW_MS = 30 * 60_000;
+
+/**
+ * One DO per GitHub repo (id = lowercased `owner/name`): the link between a repo
+ * and the tenant app it deploys, plus the small state machine around a PR's
+ * preview. The platform cannot build a PR's code — the repo's own CI does
+ * (`substrat preview create`, the generated workflow) — so on a PR push this
+ * watches the CP until the preview EXISTS, then posts the sticky PR comment; on
+ * close it reaps the fork and flips the comment. Events for unlinked repos are
+ * acknowledged and dropped.
+ */
+export class GithubRepoLinkDO extends DurableObject<Env> {
+  /** Record (or refresh) which tenant app this repo deploys — setup-ci calls this. */
+  async setLink(link: RepoLink): Promise<void> {
+    await this.ctx.storage.put('link', link);
+  }
+
+  async onPullRequest(evt: { action: 'sync' | 'closed'; prNumber: number; installationId: string }): Promise<{ handled: boolean }> {
+    const link = await this.ctx.storage.get<RepoLink>('link');
+    if (!link) return { handled: false };
+    const key = `poll:${evt.prNumber}`;
+    if (evt.action === 'closed') {
+      await this.ctx.storage.delete(key);
+      await this.reap(link, evt.prNumber, evt.installationId);
+      return { handled: true };
+    }
+    await this.ctx.storage.put<PrPoll>(key, { installationId: evt.installationId, deadline: Date.now() + PR_POLL_WINDOW_MS });
+    // One alarm serves every active poll; arm only when none is pending.
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + PR_POLL_INTERVAL_MS);
+    }
+    return { handled: true };
+  }
+
+  async alarm(): Promise<void> {
+    const link = await this.ctx.storage.get<RepoLink>('link');
+    if (!link) return;
+    const polls = await this.ctx.storage.list<PrPoll>({ prefix: 'poll:' });
+    if (polls.size === 0) return;
+    const cp = controlPlaneFor(this.env, link.tenantId);
+    const cfg = githubConfig(this.env);
+    // One CP read serves every open PR; a CP hiccup just means the next tick retries.
+    const previews: PreviewRecord[] = cp ? await cp.listPreviews(link.slug).catch(() => []) : [];
+    let remaining = 0;
+    for (const [key, poll] of polls) {
+      const prNumber = Number(key.slice('poll:'.length));
+      const row = previews.find((p) => p.tag === previewTag(prNumber) && p.url);
+      try {
+        if (row?.url && cfg) {
+          // Done either way: `needsPermissions` needs a human re-approve of the App —
+          // looping on it cannot fix it, and the CI comment step remains the fallback.
+          await upsertPrComment(cfg, poll.installationId, link.repo, prNumber, PREVIEW_COMMENT_MARKER, previewCommentBody(row.url));
+          await this.ctx.storage.delete(key);
+          continue;
+        }
+      } catch {
+        // GitHub hiccup — retried next tick, bounded by the deadline below.
+      }
+      if (Date.now() > poll.deadline) await this.ctx.storage.delete(key);
+      else remaining++;
+    }
+    if (remaining > 0) await this.ctx.storage.setAlarm(Date.now() + PR_POLL_INTERVAL_MS);
+  }
+
+  /** Close ⇒ delete the CP fork; the comment flips to "reaped" only if one existed. */
+  private async reap(link: RepoLink, prNumber: number, installationId: string): Promise<void> {
+    const cp = controlPlaneFor(this.env, link.tenantId);
+    if (!cp) return;
+    let deleted: string | null = null;
+    try {
+      ({ deleted } = await cp.deletePreview(link.slug, previewTag(prNumber)));
+    } catch {
+      // The GC sweep (expiresAt) is the backstop for a reap the CP refused.
+      return;
+    }
+    const cfg = githubConfig(this.env);
+    if (deleted && cfg) {
+      await upsertPrComment(cfg, installationId, link.repo, prNumber, PREVIEW_COMMENT_MARKER, previewReapedBody()).catch(() => {});
+    }
+  }
+}
+
+/** The repo's link DO — id'd by lowercased `owner/name`, GitHub's unique handle. */
+function repoLinkStub(env: Env, repoFullName: string): RepoLinkStub {
+  const ns = env.GITHUB_REPO_LINK;
+  return ns.get(ns.idFromName(repoFullName.toLowerCase())) as unknown as RepoLinkStub;
 }
 
 /** The AES-256 SecretBox that seals connection credentials, or undefined when unset
@@ -2091,7 +2213,10 @@ app.get('/api/observability/metrics', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   if (!cp) throw new HTTPException(501, { message: 'observability requires the shared control plane' });
   const hours = Number(c.req.query('hours') ?? '24');
-  return c.json(await cpObservability(() => cp.observabilityMetrics(Number.isFinite(hours) ? hours : 24)));
+  // `vertical` narrows to one owned vertical's versions (the per-app Observability
+  // tab); an unowned slug answers [] in the authority without reaching the plane.
+  const vertical = c.req.query('vertical') || undefined;
+  return c.json(await cpObservability(() => cp.observabilityMetrics(Number.isFinite(hours) ? hours : 24, vertical)));
 });
 
 app.get('/api/observability/logs', async (c) => {
@@ -2105,11 +2230,13 @@ app.get('/api/observability/logs', async (c) => {
   const hours = Number(c.req.query('hours') ?? '1');
   const limit = Number(c.req.query('limit') ?? '100');
   const level = c.req.query('level') || undefined;
+  const search = c.req.query('search') || undefined;
   return c.json(
     await cpObservability(() =>
       cp.observabilityLogs({
         service,
         level,
+        search,
         hours: Number.isFinite(hours) ? hours : 1,
         limit: Number.isFinite(limit) ? limit : 100,
       }),
@@ -2396,6 +2523,10 @@ app.post('/api/github/setup-ci', async (c) => {
     // Structured, not an HTTP error: the UI offers the re-approve link + manual path.
     return c.json({ ok: false, needsPermissions: true });
   }
+  // The durable repo → app link: what lets the App's webhook stream route a PR
+  // event back to this tenant's app (preview comment + reap). Idempotent; re-running
+  // setup refreshes it. Repos wired before this existed link on their next re-run.
+  await repoLinkStub(c.env, body.repo).setLink({ tenantId: node.tenantId, slug, repo: body.repo });
   return c.json({
     ok: true,
     workflowPath,
@@ -2404,6 +2535,31 @@ app.post('/api/github/setup-ci', async (c) => {
     // What the pushed versions will be registered under (builder-plane.md §5).
     vertical: `${tenantSlug}/${slug}`,
   });
+});
+
+/**
+ * The GitHub App's webhook sink — ONE URL for every installation (App settings →
+ * Webhook; `GITHUB_APP_WEBHOOK_SECRET` is that page's secret). Unauthenticated by
+ * nature, so the HMAC over the RAW body is the whole gate, and everything after it
+ * is routing: `pull_request` events go to the repo's link DO, which knows (or
+ * doesn't) which tenant app the repo deploys. Everything else — other event types,
+ * unlinked repos — is acknowledged and dropped: a webhook is a nudge, not a fact.
+ */
+app.post('/api/github/webhook', async (c) => {
+  const secret = c.env.GITHUB_APP_WEBHOOK_SECRET;
+  if (!secret) throw new HTTPException(503, { message: 'GitHub webhooks are not configured' });
+  const raw = await c.req.text();
+  if (!(await verifyGithubSignature(secret, raw, c.req.header('x-hub-signature-256')))) {
+    throw new HTTPException(401, { message: 'bad webhook signature' });
+  }
+  const evt = parsePullRequestWebhook(c.req.header('x-github-event') ?? '', raw);
+  if (!evt) return c.json({ ok: true, ignored: true });
+  const { handled } = await repoLinkStub(c.env, evt.repo).onPullRequest({
+    action: evt.action,
+    prNumber: evt.prNumber,
+    installationId: evt.installationId,
+  });
+  return c.json({ ok: true, handled });
 });
 
 /** The manual path's copy-paste workflow — same generator as the committed one (github.ts). */

@@ -1,6 +1,9 @@
 import {
   accessLogEntry,
   adminLogEntry,
+  attachmentRecord,
+  type AttachmentRecord,
+  type BlobStoreHandle,
   createTenantInput,
   identityLink,
   identityPool,
@@ -92,10 +95,14 @@ import {
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
+  attachmentBlobKey,
   resolveScopeRecord,
   ulid,
   type AccessLogFilter,
   type AuditLogFilter,
+  type BlobStoreProvisionInput,
+  type BlobStoreRecord,
+  type ScopeAttachments,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
   type ExecutorHandler,
@@ -128,6 +135,7 @@ import {
   type TenantStoreRecord,
 } from '@substrat-run/kernel';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
+import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
 import type {
   AccessLogRow,
   AuditLogQuery,
@@ -237,6 +245,29 @@ interface ControlPlaneStub {
       created_at: string;
     }[]
   >;
+  getBlobStore(
+    tenantId: string,
+    vertical: string,
+    binding: string,
+  ): Promise<{ kind: string; ref: string } | undefined>;
+  putBlobStore(row: {
+    tenantId: string;
+    vertical: string;
+    binding: string;
+    kind: string;
+    ref: string;
+    createdAt: string;
+  }): Promise<{ kind: string; ref: string }>;
+  listBlobStores(filter: { tenantId?: string; vertical?: string }): Promise<
+    {
+      tenant_id: string;
+      vertical: string;
+      binding: string;
+      kind: string;
+      ref: string;
+      created_at: string;
+    }[]
+  >;
   provisionScope(
     tenantId: string,
     scopeId: string,
@@ -311,7 +342,7 @@ interface ControlPlaneStub {
   updateVerticalPublishRequest(slug: string, requestedAt: string): Promise<void>;
   updateVerticalInstallsBlocked(slug: string, blocked: number): Promise<void>;
   updateVerticalTenantProvisioner(slug: string, granted: number): Promise<void>;
-  countScopesForVertical(slug: string): Promise<number>;
+  countScopesForVertical(slug: string): Promise<{ live: number; archived: number }>;
   deleteVertical(slug: string): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
@@ -553,6 +584,32 @@ interface ScopeStubRpc {
   ): Promise<void>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
+  /** Attachment surface, metadata half (#473) — see the ScopeDO methods of the same names. */
+  attachmentAdd(
+    record: AttachmentRecord,
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<AttachmentRecord>;
+  attachmentList(
+    entity: EntityRef,
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<AttachmentRecord[]>;
+  attachmentAuthorize(
+    attachmentId: string,
+    mode: 'read' | 'write',
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<AttachmentRecord | null>;
+  attachmentRemove(
+    attachmentId: string,
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<AttachmentRecord | null>;
   /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local.
    *  `entitlements` (#304) rides the same snapshot — preserve-on-undefined, so a role-only re-projection
    *  leaves projected entitlements untouched. */
@@ -632,6 +689,22 @@ export interface CloudflareScopeHostOptions {
    */
   scopeLocalPermissions?: boolean;
   /**
+   * The live R2 client for per-tenant blob stores (#473) — `createR2BlobStores` with the
+   * platform's Cloudflare credential. Same split as `tenantStores`: the ControlPlaneDO
+   * keeps the ledger, this client mints. Omitted, `provisionBlobStore` refuses loudly.
+   */
+  blobStores?: R2BlobStores;
+  /**
+   * Worker-side reach to the per-tenant attachment bucket (#473): given a tenant, return
+   * the `R2Bucket` binding carrying its attachments — typically
+   * `env[blobStoreBindingName('<BINDING>', tenantId)]`, where `<BINDING>` is the
+   * vertical's declared `blobStoreNeed.binding`. The VERTICAL's worker supplies this
+   * because only it knows its declared binding name; the kernel owns everything else
+   * (key derivation, permission gates, metadata facts). Omitted (or resolving null),
+   * `attachments()` refuses loudly rather than serving ungated bytes.
+   */
+  attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
+  /**
    * The live D1 client for per-tenant relational stores (#301) —
    * `createD1TenantStores` with the platform's Cloudflare credential. Lives on the
    * COORDINATOR like `secretBox`: the ControlPlaneDO keeps the ledger and has never
@@ -700,6 +773,10 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly fetchImpl: FetchLike;
   /** The live D1 client for per-tenant stores (#301); undefined ⇒ refuse loudly. */
   private readonly tenantStores?: D1TenantStores;
+  /** The live R2 client for per-tenant blob stores (#473); undefined ⇒ refuse loudly. */
+  private readonly blobStores?: R2BlobStores;
+  /** Worker-side attachment-bucket resolver (#473); undefined ⇒ attachments() refuses. */
+  private readonly attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
   private readonly executors = new Map<string, RegisteredEffector>();
   /**
    * The event currently being effected, stamped onto admin rows the executor writes.
@@ -725,6 +802,8 @@ export class CloudflareScopeHost implements ScopeHost {
   constructor(options: CloudflareScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.tenantStores = options.tenantStores;
+    this.blobStores = options.blobStores;
+    this.attachmentBuckets = options.attachmentBuckets;
     this.fetchImpl = options.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
@@ -1299,6 +1378,143 @@ export class CloudflareScopeHost implements ScopeHost {
       );
     }
     return this.tenantStores;
+  }
+
+  async provisionBlobStore(
+    actor: PlatformActorId,
+    input: BlobStoreProvisionInput,
+  ): Promise<BlobStoreHandle> {
+    // Mirror of provisionTenantStore (#301) with R2 in place of D1: fail-closed tenant
+    // gate, ledger idempotency, deterministic name so a crashed retry converges, DO
+    // first-writer-wins with loser teardown.
+    const r2 = this.requireBlobStores(
+      `provisionBlobStore(tenant=${input.tenantId} vertical=${input.vertical} binding=${input.binding})`,
+    );
+    const tenant = await this.cp.getTenant(input.tenantId);
+    if (!tenant) {
+      throw new Error(`cannot provision blob store under unknown tenant: ${input.tenantId}`);
+    }
+    if (tenant.status !== 'active') {
+      throw new Error(
+        `cannot provision blob store under non-active tenant (status: ${tenant.status}): ${input.tenantId}`,
+      );
+    }
+    const existing = await this.cp.getBlobStore(input.tenantId, input.vertical, input.binding);
+    if (existing) return { binding: input.binding, kind: 'blob', ref: existing.ref };
+    const name = await blobStoreBucketName(input.tenantId, input.vertical, input.binding);
+    const ref = await r2.create(name);
+    const stored = await this.cp.putBlobStore({
+      tenantId: input.tenantId,
+      vertical: input.vertical,
+      binding: input.binding,
+      kind: 'blob',
+      ref,
+      createdAt: new Date().toISOString(),
+    });
+    if (stored.ref !== ref) {
+      await r2.remove(ref).catch(() => undefined);
+      return { binding: input.binding, kind: 'blob', ref: stored.ref };
+    }
+    await this.recordAdmin(
+      actor,
+      'provisionBlobStore',
+      { tenantId: input.tenantId, vertical: input.vertical },
+      null,
+      { binding: input.binding, kind: 'blob', ref },
+    );
+    return { binding: input.binding, kind: 'blob', ref };
+  }
+
+  /** The injected R2 client, or a loud refusal naming what to configure. */
+  private requireBlobStores(what: string): R2BlobStores {
+    if (!this.blobStores) {
+      throw new Error(
+        `per-tenant blob stores are not configured on this host (#473): pass ` +
+          `CloudflareScopeHostOptions.blobStores (createR2BlobStores with the platform's ` +
+          `Cloudflare credential) — refused ${what}`,
+      );
+    }
+    return this.blobStores;
+  }
+
+  async attachments(
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScopeAttachments> {
+    // Same fail-closed lifecycle gate + lazy-migration as getScope (#473). The permission
+    // gates and metadata facts live in the ScopeDO (per-scope serialization, spine event
+    // in the same transaction); bytes go straight to the per-tenant R2 bucket through the
+    // binding the vertical's worker resolved — never through the DO.
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    if (!this.attachmentBuckets) {
+      throw new Error(
+        `attachments are not configured on this host (#473): pass ` +
+          `CloudflareScopeHostOptions.attachmentBuckets — (tenantId) => ` +
+          `env[blobStoreBindingName('<BINDING>', tenantId)] for the vertical's declared blob store`,
+      );
+    }
+    const bucket = await this.attachmentBuckets(tenantId);
+    if (!bucket) {
+      throw new Error(
+        `no attachment bucket resolved for tenant ${tenantId} (#473) — is the per-tenant blob ` +
+          `store provisioned and its r2_bucket binding attached to the serving script?`,
+      );
+    }
+    const store = r2TenantBlobStore(bucket);
+    const stub = this.scopeStub(scopeId);
+    const sha256Hex = async (body: Uint8Array): Promise<string> => {
+      const digest = await crypto.subtle.digest('SHA-256', body);
+      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    };
+    return {
+      upload: async (input) => {
+        const id = ulid();
+        const key = attachmentBlobKey(scopeId, id);
+        const record = attachmentRecord.parse({
+          id,
+          entity: input.entity,
+          filename: input.filename,
+          contentType: input.contentType,
+          size: input.body.byteLength,
+          sha256: await sha256Hex(input.body),
+          visibility: input.visibility,
+          createdBy: principal,
+          createdAt: new Date().toISOString(),
+        });
+        // Bytes first, row second — a crash between the two leaves an orphaned object
+        // (harmless, GC-able), never a row without bytes; a refused gate compensates.
+        await store.put(key, input.body, { contentType: input.contentType });
+        try {
+          return await stub.attachmentAdd(record, principal, tenantId, scopeId);
+        } catch (err) {
+          await store.delete(key).catch(() => {});
+          throw err;
+        }
+      },
+      list: (entity) => stub.attachmentList(entity, principal, tenantId, scopeId),
+      open: async (attachmentId) => {
+        const record = await stub.attachmentAuthorize(attachmentId, 'read', principal, tenantId, scopeId);
+        if (!record) return null;
+        const obj = await store.get(attachmentBlobKey(scopeId, record.id));
+        if (!obj) {
+          throw new Error(
+            `attachment ${record.id}: bytes missing from the blob store — the metadata row ` +
+              `survived something the object did not (rewind/reap); see the #473 integrity notes`,
+          );
+        }
+        if ((await sha256Hex(obj.body)) !== record.sha256) {
+          throw new Error(`attachment ${record.id}: bytes do not match the recorded sha256`);
+        }
+        return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
+      },
+      remove: async (attachmentId) => {
+        const removed = await stub.attachmentRemove(attachmentId, principal, tenantId, scopeId);
+        if (removed) await store.delete(attachmentBlobKey(scopeId, removed.id)).catch(() => {});
+        return removed;
+      },
+    };
   }
 
   async importScope(
@@ -2194,13 +2410,21 @@ export class CloudflareScopeHost implements ScopeHost {
       deleteVertical: async (actor, slug: string) => {
         const existing = await this.cp.readVertical(slug);
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
-        // Refuse while any scope is bound: a deleted registry row would strand those
-        // scopes' version pins and routing. Deployed dispatch scripts are NOT reaped
-        // here — they become orphans for the cleanup script (#248).
+        // Refuse while any restorable scope is bound: a deleted registry row would strand
+        // those scopes' version pins and routing. An `archived` scope (a deleted app) still
+        // blocks — unarchive can bring it back — but the refusal names reap/restore, not
+        // "delete", because the app itself is already gone. `reaped` is terminal history and
+        // never blocks. Deployed dispatch scripts are NOT reaped here — they become orphans
+        // for the cleanup script (#248).
         const bound = await this.cp.countScopesForVertical(slug);
-        if (bound > 0) {
+        if (bound.live > 0) {
           throw new Error(
-            `vertical '${slug}' still backs ${bound} scope(s) — delete or rebind them first`,
+            `vertical '${slug}' still backs ${bound.live} scope(s) — delete or rebind them first`,
+          );
+        }
+        if (bound.archived > 0) {
+          throw new Error(
+            `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
           );
         }
         await this.cp.deleteVertical(slug);
@@ -2617,6 +2841,30 @@ export class CloudflareScopeHost implements ScopeHost {
           vertical: r.vertical,
           binding: r.binding,
           kind: 'relational',
+          ref: r.ref,
+          createdAt: r.created_at,
+        }));
+      },
+      listBlobStores: async (
+        actor,
+        filter?: { tenantId?: TenantId; vertical?: string },
+      ): Promise<BlobStoreRecord[]> => {
+        const rows = await this.cp.listBlobStores({
+          tenantId: filter?.tenantId,
+          vertical: filter?.vertical,
+        });
+        await this.recordAccess(
+          actor,
+          'listBlobStores',
+          { tenantId: filter?.tenantId ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows.map((r) => ({
+          tenantId: r.tenant_id as TenantId,
+          vertical: r.vertical,
+          binding: r.binding,
+          kind: 'blob',
           ref: r.ref,
           createdAt: r.created_at,
         }));

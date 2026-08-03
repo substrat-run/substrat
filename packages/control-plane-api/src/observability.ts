@@ -43,10 +43,16 @@ export interface RecentLogEvent {
 export interface ObservabilityReader {
   /** Per-service invocation metrics for the trailing window (fleet + builder views). */
   serviceMetrics(input: { hours: number }): Promise<ServiceMetricsRow[]>;
-  /** Recent log events, optionally narrowed to one service and/or level. */
+  /**
+   * Recent log events, optionally narrowed to one service and/or level.
+   * `search` is a case-sensitive substring match on the event message — a contract
+   * capability, so each backend maps it to its own query language (never a
+   * provider-shaped filter passed through the seam).
+   */
   recentLogs(input: {
     service?: string;
     level?: string;
+    search?: string;
     hours: number;
     limit: number;
   }): Promise<RecentLogEvent[]>;

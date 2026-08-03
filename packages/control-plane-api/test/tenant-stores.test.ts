@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId, tenantId, scopeId, tenantStoreBindingName } from '@substrat-run/contracts';
+import { blobStoreBindingName, platformActorId, tenantId, scopeId, tenantStoreBindingName } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   createWfpBindingsPatcher,
@@ -12,7 +12,7 @@ import {
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
   stableDeploymentRefFor,
-  type D1BindingSpec,
+  type ScriptBindingSpec,
 } from '../src/index.js';
 
 /**
@@ -31,9 +31,9 @@ describe('control-plane API — per-tenant stores (#301)', () => {
   const auth = { [DEV_ACTOR_HEADER]: staff };
 
   /** Every serving upload the fake uploader received: ref → bindings sent. */
-  const uploads: { ref: string; bindings: { type: string; name: string; id?: string }[] }[] = [];
+  const uploads: { ref: string; bindings: { type: string; name: string; [k: string]: unknown }[] }[] = [];
   /** Every attach the fake patcher received. */
-  const patches: { script: string; ensure: D1BindingSpec[] }[] = [];
+  const patches: { script: string; ensure: ScriptBindingSpec[] }[] = [];
   /** The provision callbacks the fake vertical received. */
   const provisioned: { tenantId: string; tenantStores?: { binding: string; kind: string; ref: string }[] }[] = [];
 
@@ -117,7 +117,7 @@ describe('control-plane API — per-tenant stores (#301)', () => {
     // …and the serving script was patched with the worker-side binding, ledger-derived.
     const patch = patches.at(-1)!;
     expect(patch.script).toBe(stableDeploymentRefFor(slug));
-    expect(patch.ensure).toEqual([{ name: tenantStoreBindingName('AUTH_DB', t), id: ledger[0]!.ref }]);
+    expect(patch.ensure).toEqual([{ type: 'd1', name: tenantStoreBindingName('AUTH_DB', t), id: ledger[0]!.ref }]);
 
     // Idempotent: a re-provision re-resolves the SAME handle and mints nothing new.
     const again = await app.request(`/verticals/${encodeURIComponent(slug)}/instances`, {
@@ -160,6 +160,49 @@ describe('control-plane API — per-tenant stores (#301)', () => {
     expect(await host.admin.listTenantStores(staff, { tenantId: t })).toHaveLength(0);
     expect(provisioned.at(-1)!.tenantStores).toBeUndefined();
     expect(patches.length).toBe(before);
+  });
+
+  it('mints a declared BLOB store at provision, attaches its r2_bucket binding, and re-derives it on serve (#473)', async () => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'blob-co', name: 'Blob Co' });
+    // A vertical declaring a per-tenant blob store instead of a relational one.
+    const v1 = await (
+      await push('blob-co', manifest({ tenantStores: [], blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] }))
+    ).json();
+    const slug: string = v1.verticalSlug;
+    expect((await promote(slug, v1.id)).status).toBe(200);
+
+    const res = await app.request(`/verticals/${encodeURIComponent(slug)}/instances`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ tenantId: t, scopeId: scopeId.parse(ulid()), owner: '01JZ00000000000000000000OW', slug: 'main', name: 'Main' }),
+    });
+    expect(res.status).toBe(201);
+
+    // The blob-store ledger holds the platform-minted bucket…
+    const ledger = await host.admin.listBlobStores(staff, { tenantId: t, vertical: slug });
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]!.binding).toBe('ATTACHMENTS');
+    expect(ledger[0]!.kind).toBe('blob');
+    // …the serving script was patched with the worker-side r2_bucket binding, ledger-derived.
+    expect(patches.at(-1)!.ensure).toContainEqual({
+      type: 'r2_bucket',
+      name: blobStoreBindingName('ATTACHMENTS', t),
+      bucketName: ledger[0]!.ref,
+    });
+
+    // A later in-place serve re-derives the r2_bucket binding from the ledger — a re-deploy
+    // cannot drop a tenant's attachment bucket.
+    const v2 = await (
+      await push('blob-co', manifest({ version: '0.2.0', tenantStores: [], blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] }))
+    ).json();
+    expect((await promote(slug, v2.id)).status).toBe(200);
+    const serving = uploads.filter((u) => u.ref === stableDeploymentRefFor(slug)).at(-1)!;
+    expect(serving.bindings).toContainEqual({
+      type: 'r2_bucket',
+      name: blobStoreBindingName('ATTACHMENTS', t),
+      bucket_name: ledger[0]!.ref,
+    });
   });
 });
 
@@ -204,8 +247,8 @@ describe('createWfpBindingsPatcher', () => {
     );
 
     await patcher()('authy', [
-      { name: 'AUTH_DB__01OLD', id: 'db-old' }, // already present — must not resend needlessly
-      { name: 'AUTH_DB__01NEW', id: 'db-new' },
+      { type: 'd1', name: 'AUTH_DB__01OLD', id: 'db-old' }, // already present — must not resend needlessly
+      { type: 'd1', name: 'AUTH_DB__01NEW', id: 'db-new' },
     ]);
 
     const patch = sent.find((s) => s.method === 'PATCH')!;
@@ -231,7 +274,7 @@ describe('createWfpBindingsPatcher', () => {
         );
       }),
     );
-    await patcher()('authy', [{ name: 'AUTH_DB__01T', id: 'db-1' }]);
+    await patcher()('authy', [{ type: 'd1', name: 'AUTH_DB__01T', id: 'db-1' }]);
     expect(calls).toEqual(['GET']);
   });
 
@@ -244,7 +287,7 @@ describe('createWfpBindingsPatcher', () => {
 
   it('surfaces an upstream refusal with the script named', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 403 })));
-    await expect(patcher()('authy', [{ name: 'A__T', id: 'db' }])).rejects.toThrow(
+    await expect(patcher()('authy', [{ type: 'd1', name: 'A__T', id: 'db' }])).rejects.toThrow(
       /settings read failed \(403\) for 'authy'/,
     );
   });

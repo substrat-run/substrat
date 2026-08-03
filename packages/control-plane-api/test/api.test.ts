@@ -1603,6 +1603,20 @@ describe('control-plane API — vertical registry', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ registry: null });
   });
+
+  it('maps the bound-scope delete refusal to a 409 naming the count — not a bare 500', async () => {
+    // `sc` is still bound to fsm. The refusal message carries the blast radius and
+    // the way out (delete or rebind), so it must survive mapError instead of
+    // collapsing into the generic "internal error" (the console's 2026-08-03 shape).
+    const refused = await json('/verticals/fsm', 'DELETE');
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/still backs 1 scope\(s\) — delete or rebind/);
+    // A vertical backing no scopes deletes cleanly through the same route.
+    await json('/verticals', 'POST', { slug: 'unbound', name: 'Unbound', source: 'builtin' });
+    const ok = await json('/verticals/unbound', 'DELETE');
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ slug: 'unbound', deleted: true });
+  });
 });
 
 /**
@@ -2413,6 +2427,17 @@ describe('control-plane API — observability proxy', () => {
     });
     expect(res.status).toBe(200);
     expect(seen.logs.at(-1)).toEqual({ service: 'my-worker', level: 'error', hours: 1, limit: 50 });
+  });
+
+  it('passes the message search term to the reader as a contract field, bounded like every input', async () => {
+    const app = appWith(reader);
+    await app.request(`/observability/logs?service=my-worker&search=${encodeURIComponent('TypeError: undefined')}`, {
+      headers: asStaff,
+    });
+    expect(seen.logs.at(-1)).toEqual({ service: 'my-worker', search: 'TypeError: undefined', hours: 1, limit: 100 });
+    expect(
+      (await app.request(`/observability/logs?service=my-worker&search=${'x'.repeat(201)}`, { headers: asStaff })).status,
+    ).toBe(400);
   });
 
   it('refuses a builder — staff-only until owner-narrowing exists (default-deny)', async () => {

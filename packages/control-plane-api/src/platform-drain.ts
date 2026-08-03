@@ -14,7 +14,7 @@ import {
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from './client.js';
 import type { VerticalClient } from './vertical-client.js';
-import { collectTenantStoreHandles } from './tenant-stores.js';
+import { collectBlobStoreHandles, collectTenantStoreHandles } from './tenant-stores.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 
 /**
@@ -156,6 +156,15 @@ export async function provisionSiblingScope(
   // install's does — the stores are per (tenant, vertical), so this re-resolves what the
   // first install minted rather than minting anything new.
   const tenantStores = await collectTenantStoreHandles({
+    host,
+    actor,
+    slug: parent.vertical,
+    tenantId: input.tenantId,
+    patchBindings: deps.patchScriptBindings,
+  });
+  // #473: mint + attach the tenant's blob stores on the sibling-provision path too, so a
+  // reconcile heals a missing attachment-bucket binding exactly as it heals a store one.
+  await collectBlobStoreHandles({
     host,
     actor,
     slug: parent.vertical,
@@ -381,6 +390,14 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     // #301: a NEW tenant's first install is exactly the minting path — the stores are
     // per (tenant, target vertical), keyed by the PAYLOAD's vertical, not the manager's.
     const tenantStores = await collectTenantStoreHandles({
+      host,
+      actor,
+      slug: payload.instance.vertical,
+      tenantId,
+      patchBindings: deps.patchScriptBindings,
+    });
+    // #473: same blob-store minting on the manager-driven provision-tenant path.
+    await collectBlobStoreHandles({
       host,
       actor,
       slug: payload.instance.vertical,
