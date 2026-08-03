@@ -300,8 +300,10 @@ export interface GitReposResult {
   configured: boolean;
   /** Has this tenant connected GitHub? `false` ⇒ show the Connect button. */
   connected: boolean;
-  /** The connected GitHub account (org/user login), when connected. */
+  /** The SELECTED GitHub account (org/user login), when connected. */
   account?: string | null;
+  /** Every connected account (namespace) — the picker's list; `repos` belongs to `account`. */
+  accounts: string[];
   repos: GitRepo[];
 }
 
@@ -697,14 +699,20 @@ export const api = {
     if (q.limit) p.set('limit', String(q.limit));
     return call<ObservabilityLogEvent[]>(`/observability/logs?${p.toString()}`);
   },
-  /** The tenant's GitHub-import state — connection status + the repos it can see. */
-  gitRepos: () => call<GitReposResult>('/github/repos'),
+  /** The tenant's GitHub-import state — connection status + the selected account's repos. */
+  gitRepos: (account?: string) =>
+    call<GitReposResult>(`/github/repos${account ? `?account=${encodeURIComponent(account)}` : ''}`),
   /** A repo's branches, for the import step's branch picker. */
-  gitBranches: (repo: string) =>
-    call<{ branches: Array<{ name: string }> }>(`/github/branches?repo=${encodeURIComponent(repo)}`),
+  gitBranches: (repo: string, account?: string) =>
+    call<{ branches: Array<{ name: string }> }>(
+      `/github/branches?repo=${encodeURIComponent(repo)}${account ? `&account=${encodeURIComponent(account)}` : ''}`,
+    ),
   /** One-click deploy setup: commit the workflow + write the scoped push credential. */
-  setupCi: (repo: string, branch: string) =>
-    call<SetupCiResult>('/github/setup-ci', { method: 'POST', body: JSON.stringify({ repo, branch }) }),
+  setupCi: (repo: string, branch: string, account?: string) =>
+    call<SetupCiResult>('/github/setup-ci', {
+      method: 'POST',
+      body: JSON.stringify({ repo, branch, ...(account ? { account } : {}) }),
+    }),
   /** The manual path's workflow YAML (same generator the one-click commit uses). */
   workflowPreview: (repo: string, branch: string) =>
     call<WorkflowPreview>(

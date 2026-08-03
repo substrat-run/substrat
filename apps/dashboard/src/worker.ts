@@ -2129,7 +2129,10 @@ app.get('/api/deployments/:slug/channels/:channel/history', async (c) => {
 });
 
 // -- Git import (GitHub App) — connections.md §3.5.1 -------------------------
-// The dashboard vertical holds the connection; keyed (tenant, 'dashboard', 'github').
+// The dashboard vertical holds the connections; keyed (tenant, 'dashboard',
+// 'github', account). A tenant may connect SEVERAL GitHub accounts/orgs — each
+// installation is its own connection, selected by its account login (the Vercel
+// "Git namespace" shape).
 const GIT_VERTICAL = 'dashboard';
 
 /**
@@ -2173,9 +2176,13 @@ app.get('/api/github/callback', async (c) => {
   }
 
   const account = await installationAccount(cfg, installationId);
-  // Reconnect cleanly: revoke any live github connection first (uniqueness ignores revoked rows).
+  // Reconnect the SAME account cleanly (a reinstall mints a new installationId) —
+  // other connected accounts stay untouched: uniqueness is per account, and adding
+  // a second org must never sever the first.
   const existing = await host.admin.listConnections(STAFF, { tenantId: node.tenantId, vertical: GIT_VERTICAL, provider: 'github' });
-  for (const conn of existing) await host.admin.revokeConnection(STAFF, conn.id);
+  for (const conn of existing) {
+    if ((conn.externalAccountRef ?? '') === (account ?? '')) await host.admin.revokeConnection(STAFF, conn.id);
+  }
   await host.admin.createConnection(STAFF, {
     id: connectionId.parse(ulid()),
     tenantId: node.tenantId,
@@ -2193,33 +2200,67 @@ app.get('/api/github/callback', async (c) => {
 });
 
 /**
- * List the repos the tenant granted us — `{ connected: false }` when no connection
- * exists yet (the UI shows Connect). The installation token is minted fresh from the
- * stored installationId on each call, so nothing durable is a bearer secret.
+ * The tenant's live GitHub connections (one per account/namespace) and the one
+ * `account` selects — omitted, the oldest connection is the default namespace.
  */
-app.get('/api/github/repos', async (c) => {
-  const cfg = githubConfig(c.env);
-  if (!cfg) return c.json({ configured: false, connected: false, repos: [] });
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const conn = (await host.admin.listConnections(STAFF, { tenantId: node.tenantId, vertical: GIT_VERTICAL, provider: 'github' }))[0];
-  if (!conn) return c.json({ configured: true, connected: false, repos: [] });
-  const open = await host.admin.openConnection(node.tenantId, GIT_VERTICAL, 'github');
-  const installationId = open?.secret.installationId;
-  if (!installationId) return c.json({ configured: true, connected: false, repos: [] });
-  const repos = await listInstallationRepos(cfg, installationId);
-  return c.json({ configured: true, connected: true, account: conn.externalAccountRef, repos });
-});
+async function githubConnectionFor(
+  host: ReturnType<typeof hostFor>,
+  tenantId: DashboardNode['tenantId'],
+  account?: string,
+) {
+  const conns = (
+    await host.admin.listConnections(STAFF, { tenantId, vertical: GIT_VERTICAL, provider: 'github' })
+  ).sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  const selected =
+    account === undefined ? conns[0] : conns.find((x) => x.externalAccountRef === account);
+  return { conns, selected: selected ?? null };
+}
 
-/** The connected installation's id for this tenant, or null (worker-local helper). */
+/** The selected connection's installationId for this tenant, or null (worker-local helper). */
 async function githubInstallationFor(
   host: ReturnType<typeof hostFor>,
   tenantId: DashboardNode['tenantId'],
+  account?: string,
 ): Promise<string | null> {
-  const open = await host.admin.openConnection(tenantId, GIT_VERTICAL, 'github');
+  const { conns, selected } = await githubConnectionFor(host, tenantId, account);
+  if (!selected) return null;
+  // A row without an account ref (the GitHub lookup failed at connect time) can only
+  // be opened while it is the sole live connection — the selector cannot name it.
+  if (selected.externalAccountRef === null && conns.length > 1) {
+    throw new HTTPException(409, { message: 'this GitHub connection has no account recorded — reconnect it' });
+  }
+  const open = await host.admin.openConnection(
+    tenantId,
+    GIT_VERTICAL,
+    'github',
+    selected.externalAccountRef ?? undefined,
+  );
   return open?.secret.installationId ?? null;
 }
+
+/**
+ * List the repos the tenant granted us — `{ connected: false }` when no connection
+ * exists yet (the UI shows Connect). `?account=` picks among several connected
+ * accounts; `accounts` always carries the full namespace list for the picker. The
+ * installation token is minted fresh from the stored installationId on each call,
+ * so nothing durable is a bearer secret.
+ */
+app.get('/api/github/repos', async (c) => {
+  const cfg = githubConfig(c.env);
+  if (!cfg) return c.json({ configured: false, connected: false, accounts: [], repos: [] });
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const account = c.req.query('account') || undefined;
+  const { conns, selected } = await githubConnectionFor(host, node.tenantId, account);
+  const accounts = conns.map((x) => x.externalAccountRef).filter((x): x is string => x !== null);
+  if (conns.length === 0) return c.json({ configured: true, connected: false, accounts: [], repos: [] });
+  if (!selected) throw new HTTPException(404, { message: `GitHub account '${account}' is not connected` });
+  const installationId = await githubInstallationFor(host, node.tenantId, account);
+  if (!installationId) return c.json({ configured: true, connected: false, accounts, repos: [] });
+  const repos = await listInstallationRepos(cfg, installationId);
+  return c.json({ configured: true, connected: true, account: selected.externalAccountRef, accounts, repos });
+});
 
 /** A repo's branches — the import step's branch picker. */
 app.get('/api/github/branches', async (c) => {
@@ -2230,7 +2271,7 @@ app.get('/api/github/branches', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const repo = c.req.query('repo');
   if (!repo || !/^[^/\s]+\/[^/\s]+$/.test(repo)) throw new HTTPException(400, { message: 'missing or malformed repo (owner/name)' });
-  const installationId = await githubInstallationFor(host, node.tenantId);
+  const installationId = await githubInstallationFor(host, node.tenantId, c.req.query('account') || undefined);
   if (!installationId) throw new HTTPException(409, { message: 'GitHub is not connected' });
   return c.json({ branches: await listRepoBranches(cfg, installationId, repo) });
 });
@@ -2238,6 +2279,8 @@ app.get('/api/github/branches', async (c) => {
 const setupCiBody = z.object({
   repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
   branch: z.string().min(1).max(200),
+  /** Which connected GitHub account (namespace) holds the repo — omitted, the default. */
+  account: z.string().min(1).optional(),
 });
 
 /**
@@ -2260,7 +2303,7 @@ app.post('/api/github/setup-ci', async (c) => {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   await dash.invoke('dashboard/begin-connection', { provider: 'github' });
 
-  const installationId = await githubInstallationFor(host, node.tenantId);
+  const installationId = await githubInstallationFor(host, node.tenantId, body.account);
   if (!installationId) throw new HTTPException(409, { message: 'GitHub is not connected' });
 
   const cp = controlPlaneFor(c.env, node.tenantId);

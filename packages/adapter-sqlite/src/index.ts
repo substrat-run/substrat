@@ -876,11 +876,15 @@ export class SqliteScopeHost implements ScopeHost {
         created_at           TEXT NOT NULL,
         revoked_at           TEXT
       );
-      -- One LIVE connection per (tenant, vertical, provider). Revoked rows are
-      -- kept as evidence (K-21's tombstone rule) and must not block a successor,
-      -- which is why the index is partial rather than a table constraint.
-      CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connections_live
-        ON _substrat_connections (tenant_id, vertical, provider)
+      -- One LIVE connection per (tenant, vertical, provider, account). Revoked
+      -- rows are kept as evidence (K-21's tombstone rule) and must not block a
+      -- successor, which is why the index is partial rather than a table
+      -- constraint. The account leg is COALESCEd so providers that never set an
+      -- external_account_ref keep the original singleton semantics (all their
+      -- NULLs collide on ''), while a multi-namespace provider (GitHub) holds
+      -- one live connection PER account — the Vercel git-namespace shape.
+      CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connections_live_account
+        ON _substrat_connections (tenant_id, vertical, provider, COALESCE(external_account_ref, ''))
         WHERE revoked_at IS NULL;
       -- Sealed credentials, in their own table so that reading a connection's
       -- METADATA never touches ciphertext. Nothing above SecretBox sees plaintext.
@@ -4158,9 +4162,12 @@ export class SqliteScopeHost implements ScopeHost {
             );
         } catch (err) {
           if (/UNIQUE constraint failed/i.test((err as Error).message)) {
+            const account = input.externalAccountRef
+              ? ` under account '${input.externalAccountRef}'`
+              : '';
             throw new Error(
               `tenant ${input.tenantId} already has a live '${input.provider}' connection ` +
-                `for vertical '${input.vertical}' — revoke it before connecting another`,
+                `for vertical '${input.vertical}'${account} — revoke it before connecting another`,
             );
           }
           throw err;
@@ -4197,6 +4204,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (f.tenantId) (where.push('tenant_id = ?'), params.push(f.tenantId));
         if (f.vertical) (where.push('vertical = ?'), params.push(f.vertical));
         if (f.provider) (where.push('provider = ?'), params.push(f.provider));
+        if (f.externalAccountRef) (where.push('external_account_ref = ?'), params.push(f.externalAccountRef));
         if (!f.includeRevoked) where.push('revoked_at IS NULL');
         const rows = this.directory
           .prepare(
@@ -4269,13 +4277,33 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
 
-      openConnection: async (tenantId: TenantId, vertical: string, provider: string) => {
-        const row = this.directory
+      openConnection: async (
+        tenantId: TenantId,
+        vertical: string,
+        provider: string,
+        externalAccountRef?: string,
+      ) => {
+        const rows = this.directory
           .prepare(
             `SELECT * FROM _substrat_connections
-             WHERE tenant_id = ? AND vertical = ? AND provider = ? AND revoked_at IS NULL`,
+             WHERE tenant_id = ? AND vertical = ? AND provider = ? AND revoked_at IS NULL
+             ${externalAccountRef === undefined ? '' : 'AND external_account_ref = ?'}
+             LIMIT 2`,
           )
-          .get(tenantId, vertical, provider) as ConnectionRow | undefined;
+          .all(
+            ...(externalAccountRef === undefined
+              ? [tenantId, vertical, provider]
+              : [tenantId, vertical, provider, externalAccountRef]),
+          ) as ConnectionRow[];
+        // Several live accounts and no selector: failing beats acting against
+        // an arbitrary one of the tenant's provider accounts (scope-host.ts).
+        if (rows.length > 1) {
+          throw new Error(
+            `tenant ${tenantId} has multiple live '${provider}' connections for vertical ` +
+              `'${vertical}' — pass externalAccountRef to select one`,
+          );
+        }
+        const row = rows[0];
         if (!row) return undefined;
         const sealed = this.directory
           .prepare('SELECT key_id, ciphertext FROM _substrat_connection_secrets WHERE connection_id = ?')
@@ -4628,6 +4656,11 @@ export class SqliteScopeHost implements ScopeHost {
   private ensureDirectoryColumns(): void {
     this.ensureIdentityKey();
     this.ensureAdminLogTenantNullable();
+    // The pre-account-aware live-uniqueness index: superseded by
+    // _substrat_connections_live_account (created in the bootstrap DDL), which
+    // adds the external-account leg so one tenant can hold the same provider
+    // under several accounts. Existing data always satisfies the wider key.
+    this.directory.exec('DROP INDEX IF EXISTS _substrat_connections_live');
     this.ensureColumn(this.directory, '_substrat_admin_log', 'caused_by', 'caused_by TEXT');
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
     this.ensureColumn(this.directory, 'tenants', 'deleting_at', 'deleting_at TEXT');

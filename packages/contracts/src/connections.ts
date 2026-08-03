@@ -37,11 +37,16 @@ export type ConnectionStatus = z.infer<typeof connectionStatus>;
 /**
  * A connection as the directory holds it.
  *
- * Keyed on **(tenant, vertical, provider)** rather than tenant alone
+ * Keyed on **(tenant, vertical, provider, account)** rather than tenant alone
  * (connections.md §3.1.1): a vertical is a blast-radius boundary (D-30) and
  * verticals are built by different companies (D-33), so one vendor's host code
  * must not reach a credential another vendor connected. It also matches how
  * OAuth issues clients — two vendors acting for one tenant hold two clients.
+ * The account leg is `externalAccountRef` (Vercel's "Git namespace" shape): one
+ * tenant may hold the SAME provider under several external accounts — two
+ * GitHub orgs, say — and each is its own connection. Providers that never set
+ * an account ref collapse back to one live connection per (tenant, vertical,
+ * provider), the pre-#101-widening behavior.
  */
 export const connection = z.object({
   id: connectionId,
@@ -111,6 +116,8 @@ export const connectionFilter = z.object({
   tenantId: tenantId.optional(),
   vertical: z.string().min(1).optional(),
   provider: connectionProvider.optional(),
+  /** Narrow to one external account — the multi-namespace provider's selector. */
+  externalAccountRef: z.string().optional(),
   /** Revoked connections are evidence, not roster — excluded unless asked for. */
   includeRevoked: z.boolean().optional(),
 });

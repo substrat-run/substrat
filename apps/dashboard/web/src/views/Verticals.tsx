@@ -391,21 +391,25 @@ export function Verticals({
   deployments: Deployment[];
   onPromote: (slug: string, versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
   busy: boolean;
-  loadGitRepos: () => Promise<GitReposResult>;
+  loadGitRepos: (account?: string) => Promise<GitReposResult>;
 }) {
   // The repo picked for CI setup — swaps the add-a-vertical section for the scaffold panel.
-  const [repo, setRepo] = useState<{ fullName: string; branch: string } | null>(null);
+  const [repo, setRepo] = useState<{ fullName: string; branch: string; account?: string } | null>(null);
   const [git, setGit] = useState<GitReposResult | null>(null);
+  // Which connected GitHub account (namespace) the repo list shows — undefined = default.
+  const [gitAccount, setGitAccount] = useState<string | undefined>(undefined);
   const [gitError, setGitError] = useState(false);
   useEffect(() => {
     let live = true;
-    loadGitRepos()
+    setGit(null);
+    setGitError(false);
+    loadGitRepos(gitAccount)
       .then((r) => live && setGit(r))
       .catch(() => live && setGitError(true));
     return () => {
       live = false;
     };
-  }, [loadGitRepos]);
+  }, [loadGitRepos, gitAccount]);
 
   // Sort newest-active first by the most recent version id.
   const sorted = useMemo(
@@ -438,7 +442,7 @@ export function Verticals({
           <RepoDeploy repo={repo} onBack={() => setRepo(null)} onDone={() => setRepo(null)} />
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: 16, alignItems: 'start' }}>
-            <GitImportCard git={git} error={gitError} onPick={setRepo} />
+            <GitImportCard git={git} error={gitError} onPick={setRepo} onSelectAccount={setGitAccount} />
             <CliPushPanel />
           </div>
         )}
@@ -472,8 +476,13 @@ function CliPushPanel() {
   );
 }
 
-/** Connect GitHub, then list + import repos. Picking one opens the CI scaffold panel. */
-function GitImportCard({ git, error, onPick }: { git: GitReposResult | null; error: boolean; onPick: (repo: { fullName: string; branch: string }) => void }) {
+/**
+ * Connect GitHub, then list + import repos. Picking one opens the CI scaffold panel.
+ * Several GitHub accounts (namespaces, Vercel-style) may be connected; the picker
+ * switches which account's repos are listed, and connecting another account is the
+ * same App-install flow as the first.
+ */
+function GitImportCard({ git, error, onPick, onSelectAccount }: { git: GitReposResult | null; error: boolean; onPick: (repo: { fullName: string; branch: string; account?: string }) => void; onSelectAccount: (account: string) => void }) {
   const [filter, setFilter] = useState('');
   const repos = git?.repos ?? [];
   const shown = filter.trim() ? repos.filter((r) => r.fullName.toLowerCase().includes(filter.toLowerCase())) : repos;
@@ -483,11 +492,18 @@ function GitImportCard({ git, error, onPick }: { git: GitReposResult | null; err
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '16px 16px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Import a Git repository</span>
-          {git?.connected && git.account && (
+          {git?.connected && git.accounts.length > 1 ? (
+            <Select
+              options={git.accounts}
+              value={git.account ?? git.accounts[0]}
+              onChange={(e) => onSelectAccount(e.target.value)}
+              style={{ width: 170, fontFamily: 'var(--font-mono)', fontSize: 12 }}
+            />
+          ) : git?.connected && git.account ? (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, height: 24, padding: '0 8px', border: '1px solid var(--border-default)', borderRadius: 6, background: 'var(--surface-card)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
               {git.account}
             </span>
-          )}
+          ) : null}
         </div>
         {git?.connected && (
           <Input placeholder="Search repositories…" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ flex: 1 }} />
@@ -519,7 +535,7 @@ function GitImportCard({ git, error, onPick }: { git: GitReposResult | null; err
               <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{r.fullName}</span>
               <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{`${r.private ? 'Private' : 'Public'} · default ${r.defaultBranch}`}</span>
             </span>
-            <Button variant="secondary" size="sm" onClick={() => onPick({ fullName: r.fullName, branch: r.defaultBranch })}>Import</Button>
+            <Button variant="secondary" size="sm" onClick={() => onPick({ fullName: r.fullName, branch: r.defaultBranch, account: git?.account ?? undefined })}>Import</Button>
           </div>
         ))
       )}
@@ -536,6 +552,18 @@ function GitImportCard({ git, error, onPick }: { git: GitReposResult | null; err
           >
             Adjust the GitHub App’s access
           </a>
+          {' · '}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              // Same install flow — pick a different org/user on GitHub's chooser and
+              // it lands as an additional namespace next to the ones already here.
+              connectGithub();
+            }}
+          >
+            Connect another GitHub account
+          </a>
         </div>
       )}
     </div>
@@ -551,7 +579,7 @@ function GitImportCard({ git, error, onPick }: { git: GitReposResult | null; err
  * in the list above. The copy-paste manual path remains as the fallback (older App
  * installations may lack the write permissions until re-approved).
  */
-function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch: string }; onBack: () => void; onDone: () => void }) {
+function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch: string; account?: string }; onBack: () => void; onDone: () => void }) {
   const [branches, setBranches] = useState<string[] | null>(null);
   const [branch, setBranch] = useState(repo.branch);
   const [busy, setBusy] = useState(false);
@@ -563,7 +591,7 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
   useEffect(() => {
     let live = true;
     api
-      .gitBranches(repo.fullName)
+      .gitBranches(repo.fullName, repo.account)
       .then((r) => {
         if (!live) return;
         const names = r.branches.map((b) => b.name);
@@ -574,13 +602,13 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
     return () => {
       live = false;
     };
-  }, [repo.fullName, repo.branch]);
+  }, [repo.fullName, repo.branch, repo.account]);
 
   const setup = async () => {
     setBusy(true);
     setError(undefined);
     try {
-      const result = await api.setupCi(repo.fullName, branch);
+      const result = await api.setupCi(repo.fullName, branch, repo.account);
       if (result.ok) setDone(result);
       else setNeedsPermissions(true);
     } catch (e) {

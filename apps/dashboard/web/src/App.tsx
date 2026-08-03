@@ -125,7 +125,7 @@ export function App() {
 
   // Git-import state is fetched lazily by the Create-App view (it hits GitHub), so it
   // isn't loaded on every dashboard open. Mock-aware so the dev preview renders it.
-  const loadGitRepos = useCallback(async (): Promise<GitReposResult> => (DEV_MOCK ? MOCK_GIT_REPOS : api.gitRepos()), []);
+  const loadGitRepos = useCallback(async (account?: string): Promise<GitReposResult> => (DEV_MOCK ? MOCK_GIT_REPOS : api.gitRepos(account)), []);
 
   // Session check → on sign-in, load apps + members + catalog + deployments. First,
   // handle an invite acceptance (a `/invite/<token>` link, or one stashed across the
