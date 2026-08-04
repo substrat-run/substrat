@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
-import type { EntitlementGrant, HostnameBinding, MigrationProgress, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, KeyValue, Select, Tabs, Tag } from '../components';
+import type { EntitlementGrant, MigrationProgress, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
+import { Badge, Button, Card, Dialog, Input, Select, Tabs, Tag } from '../components';
 import {
   availableActions,
   effectiveStatus,
@@ -11,7 +11,6 @@ import {
   statusLabel,
   statusTone,
 } from '../lib/fleet';
-import { portalUrl } from '../lib/portal';
 import type { Api } from '../lib/api';
 
 export interface ScopesProps {
@@ -19,7 +18,8 @@ export interface ScopesProps {
   scopes: Scope[];
   tenants: Map<TenantId, Tenant>;
   entitlements: Map<TenantId, EntitlementGrant[]>;
-  hostnames: HostnameBinding[];
+  /** Open a scope's routed detail view (App owns the URL + which scope is open). */
+  onOpen: (id: ScopeId) => void;
   onChanged: () => void;
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
 }
@@ -180,22 +180,11 @@ const BULK_ACTIONS: {
 /** Options for the client-side page-size control. */
 const PAGE_SIZES = [25, 50, 100];
 
-export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChanged, onToast }: ScopesProps) {
+export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, onToast }: ScopesProps) {
   const [tab, setTab] = useState('all');
-  const [selected, setSelected] = useState<Scope>();
-  // Reap is the one irreversible scope action, so it is armed behind a type-the-slug
-  // dialog (the TenantDetail suspend pattern) rather than the bare `run()` the reversible
-  // actions use. `confirmReap` keeps the dialog open independently of `selected`, which
-  // `run()` clears on success.
-  const [confirmReap, setConfirmReap] = useState(false);
-  const [reapArmed, setReapArmed] = useState('');
   // Null until it loads; stays null where the API predates /fleet/migrations —
   // the card simply does not render, nothing else degrades.
   const [migrations, setMigrations] = useState<MigrationProgress | null>(null);
-  // Role-projection health for the selected scope (#321): fetched lazily on select, so
-  // the fleet list stays one directory read while a detail view still reveals the silent
-  // "active but zero roles" condition. Null = not-yet/unavailable (degrades to nothing).
-  const [health, setHealth] = useState<{ roleProjectionEmpty: boolean; roleCount: number | null } | null>(null);
 
   // Filters — all client-side over the walked `scopes` prop (the whole fleet is
   // already in memory, App-level `walkAll`). The tabs above own the status facet;
@@ -228,27 +217,6 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
       cancelled = true;
     };
   }, [api, scopes]);
-
-  // Probe the selected scope's role projection. Only an ACTIVE scope can exhibit the
-  // silent-deny condition; skip the call otherwise.
-  useEffect(() => {
-    setHealth(null);
-    if (!selected) return;
-    const eff = effectiveStatus(selected, tenants.get(selected.tenantId));
-    if (eff !== 'active') return;
-    let cancelled = false;
-    api
-      .scopeHealth(selected.tenantId, selected.id)
-      .then((h) => {
-        if (!cancelled) setHealth({ roleProjectionEmpty: h.roleProjectionEmpty, roleCount: h.roleCount });
-      })
-      .catch(() => {
-        if (!cancelled) setHealth(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [api, selected, tenants]);
 
   const counts = useMemo(() => fleetCounts(scopes, tenants), [scopes, tenants]);
   const tenantList = useMemo(() => [...tenants.values()], [tenants]);
@@ -329,17 +297,6 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
     setSelectedIds(new Set());
   }
 
-  async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
-    try {
-      await fn();
-      onChanged();
-      setSelected(undefined);
-      onToast(title, detail);
-    } catch (e) {
-      onToast('Refused', (e as Error).message, 'danger');
-    }
-  }
-
   /** Selected rows for which `action` is a legal transition (its eligible subset). */
   function eligibleFor(action: BulkAction): Scope[] {
     return selectedRows.filter((s) =>
@@ -380,9 +337,6 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
       failed > 0 ? 'danger' : 'success',
     );
   }
-
-  const eff = selected ? effectiveStatus(selected, tenants.get(selected.tenantId)) : undefined;
-  const actions = eff ? availableActions(eff) : [];
 
   const reapTargets = eligibleFor('reap');
 
@@ -575,7 +529,7 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
               return (
                 <tr
                   key={s.id}
-                  onClick={() => setSelected(s)}
+                  onClick={() => onOpen(s.id)}
                   style={{
                     cursor: 'pointer',
                     background: checked ? 'var(--surface-hover)' : 'transparent',
@@ -660,184 +614,6 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
           </div>
         )}
       </Card>
-
-      {selected && eff && (
-        <Card
-          title={selected.name}
-          description={`Scope detail — ${scopeHandle(selected, tenants)}`}
-          actions={
-            <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-              {portalUrl(selected, hostnames) && (
-                <a
-                  href={portalUrl(selected, hostnames)!}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--brand-700)', textDecoration: 'none', marginRight: 4 }}
-                >
-                  Open portal ↗
-                </a>
-              )}
-              {actions.includes('unsuspend') && (
-                <Button onClick={() => run(() => api.unsuspendScope(selected.tenantId, selected.id), 'Scope unsuspended', selected.slug)}>
-                  Unsuspend
-                </Button>
-              )}
-              {actions.includes('unarchive') && (
-                <Button onClick={() => run(() => api.unarchiveScope(selected.tenantId, selected.id), 'Scope restored', `${selected.slug} · migrations replay on next access`)}>
-                  Restore scope
-                </Button>
-              )}
-              {actions.includes('suspend') && (
-                <Button variant="danger" onClick={() => run(() => api.suspendScope(selected.tenantId, selected.id), 'Scope suspended', `${selected.slug} fails closed`)}>
-                  Suspend
-                </Button>
-              )}
-              {actions.includes('archive') && (
-                <Button variant="secondary" onClick={() => run(() => api.archiveScope(selected.tenantId, selected.id), 'Scope archived', selected.slug)}>
-                  Archive
-                </Button>
-              )}
-              {/* Reap frees the scope's DO storage for good — the one unrestorable action,
-                  so it opens the type-to-arm dialog instead of acting on click. */}
-              {actions.includes('reap') && (
-                <Button variant="danger" onClick={() => { setReapArmed(''); setConfirmReap(true); }}>
-                  Reap storage
-                </Button>
-              )}
-              <Button variant="secondary" onClick={() => setSelected(undefined)}>
-                Close
-              </Button>
-            </span>
-          }
-        >
-          <KeyValue
-            columns={4}
-            items={[
-              { label: 'Scope ID', value: selected.id, mono: true },
-              { label: 'Tenant', value: tenants.get(selected.tenantId)?.name ?? '—' },
-              { label: 'Vertical', value: selected.vertical ?? '—', mono: true },
-              { label: 'Kind', value: selected.kind, mono: true },
-              { label: 'Storage shape', value: `Shape ${selected.storageShape}` },
-              // Fixed at provisioning (K-7) — displayed, never editable.
-              {
-                label: 'Jurisdiction',
-                value:
-                  selected.jurisdiction === 'global'
-                    ? 'Global — unconstrained'
-                    : `${selected.jurisdiction.toUpperCase()} — fixed at provisioning`,
-              },
-              { label: 'Schema', value: selected.schemaVersion, mono: true },
-              ...(selected.migrationFailure
-                ? [
-                    {
-                      label: 'Migration failed',
-                      value: selected.migrationFailure.version,
-                      mono: true,
-                    },
-                    {
-                      label: 'Attempts',
-                      value: String(selected.migrationFailure.attempts),
-                      mono: true,
-                    },
-                  ]
-                : []),
-              { label: 'Created', value: selected.createdAt.slice(0, 10), mono: true },
-              // Only meaningful once archived; drives the auto-reap age (§4.4).
-              ...(selected.archivedAt
-                ? [{ label: 'Archived', value: selected.archivedAt.slice(0, 10), mono: true }]
-                : []),
-            ]}
-          />
-          {health?.roleProjectionEmpty && (
-            <div style={{ margin: '12px 0 0', display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <Badge status="danger">Empty role projection</Badge>
-              <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: '18px' }}>
-                This active scope serves traffic from a Durable Object whose <code>_substrat_roles</code>{' '}
-                projection is empty — identity resolves but <strong>every permission check denies</strong>, so
-                the app renders a no-access page (#321). Usually a scope stranded on a fresh serving script:
-                re-project its roles, or run <code>substrat scope adopt-serving</code> if it never adopted.
-              </p>
-            </div>
-          )}
-          {eff === 'reaped' && (
-            <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-              Storage reaped — this scope's Durable Object was wiped (§4.4). The row is kept
-              as a tombstone for the audit trail and to keep its slug burned; there is no
-              restore.
-            </p>
-          )}
-          {selected.migrationFailure && (
-            <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-              This scope failed closed and is serving nothing — the schema count above is
-              what landed before <code>{selected.migrationFailure.version}</code> rolled back.
-              Recovery is per-scope PITR plus a patched forward migration (kernel-design §5.3).
-              Last attempt {selected.migrationFailure.lastAttemptAt.slice(0, 19).replace('T', ' ')}:{' '}
-              {selected.migrationFailure.error}
-            </p>
-          )}
-          {eff === 'suspended-via-tenant' && (
-            <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-              Suspended by a tenant-wide cascade — unsuspend the tenant to release it; per-scope unsuspend is not offered.
-            </p>
-          )}
-          {(eff === 'provisioning' || eff === 'archiving') && (
-            <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-              Transient state — actions available when it settles.
-            </p>
-          )}
-        </Card>
-      )}
-
-      {/* Reap confirmation — the type-to-arm gate (TenantDetail suspend precedent). Reap
-          is the one scope action with no restore: it wipes the DO storage for good. The
-          slug must be typed to enable Confirm; an unarmed dialog passes onConfirm=undefined,
-          which the Dialog renders as a disabled button. */}
-      <Dialog
-        open={confirmReap && !!selected}
-        title={selected ? `Reap ${scopeHandle(selected, tenants)}?` : 'Reap scope?'}
-        danger
-        confirmLabel="Reap storage"
-        width={520}
-        onConfirm={
-          selected && reapArmed === selected.slug
-            ? () => {
-                const target = selected;
-                setConfirmReap(false);
-                setReapArmed('');
-                void run(
-                  () => api.reapScope(target.tenantId, target.id),
-                  'Storage reaped',
-                  `${target.slug} · Durable Object wiped, tombstone kept`,
-                );
-              }
-            : undefined
-        }
-        onCancel={() => {
-          setConfirmReap(false);
-          setReapArmed('');
-        }}
-      >
-        {selected && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
-              This permanently wipes the scope's Durable Object storage — every table, event,
-              and migration record. It <strong>cannot be undone</strong>: unlike archive, there
-              is no restore. The directory row is kept as a tombstone (audit trail + burned slug).
-            </p>
-            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-              {selected.vertical ? `Vertical ${selected.vertical}` : 'No vertical bound'}
-              {selected.archivedAt ? ` · archived ${selected.archivedAt.slice(0, 10)}` : ''}
-            </span>
-            <Input
-              label="Type the scope slug to arm this action"
-              mono
-              placeholder={selected.slug}
-              value={reapArmed}
-              onChange={(e) => setReapArmed(e.target.value)}
-            />
-          </div>
-        )}
-      </Dialog>
 
       {/* Bulk reap confirmation. Reap is irreversible, and a bulk reap multiplies
           that — so the gate is typing the exact count, forcing the operator to

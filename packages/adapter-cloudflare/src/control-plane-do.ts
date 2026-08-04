@@ -42,6 +42,7 @@ interface TenantRow {
   status: string;
   created_at: string;
   deleting_at: string | null;
+  provisioned_by_tenant: string | null;
 }
 
 /** An entitlement grant as stored (#33) — nulls = the pre-widening boolean flag. */
@@ -287,7 +288,10 @@ const DIRECTORY_DDL = `
     created_at TEXT NOT NULL,
     -- When the tenant last entered the deleting state; NULL otherwise. The
     -- grace-window reap sweep ages a tenant off this (§4.8), mirroring archived_at.
-    deleting_at TEXT
+    deleting_at TEXT,
+    -- Provenance (#412): the tenant that provisioned this one via a manager vertical,
+    -- or NULL for a direct staff create. A FK to another tenants row.
+    provisioned_by_tenant TEXT REFERENCES tenants(tenant_id)
   );
   -- slug/kind/name/vertical are nullable here but required (except vertical) by
   -- the scope contract — the column set must match whether the table was created
@@ -715,6 +719,8 @@ export class ControlPlaneDO extends DurableObject {
     }
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
     this.addColumn('tenants', 'deleting_at TEXT');
+    // #412 provenance: the manager tenant that provisioned this one (NULL = direct staff).
+    this.addColumn('tenants', 'provisioned_by_tenant TEXT REFERENCES tenants(tenant_id)');
     // §4.7 custom-hostname issuance: CF's hostname id + the DNS records to publish (JSON).
     this.addColumn('hostnames', 'custom_hostname_id TEXT');
     this.addColumn('hostnames', 'validation_records TEXT');
@@ -777,6 +783,7 @@ export class ControlPlaneDO extends DurableObject {
       status: r.status,
       createdAt: r.created_at,
       deletingAt: r.deleting_at ?? null,
+      provisionedByTenant: r.provisioned_by_tenant ?? null,
     } as Tenant;
   }
 
@@ -788,7 +795,13 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** Idempotent on the id; return the new tenant, or null if it already existed. */
-  createTenant(id: string, slug: string, name: string, createdAt: string): Tenant | null {
+  createTenant(
+    id: string,
+    slug: string,
+    name: string,
+    createdAt: string,
+    provisionedByTenant: string | null = null,
+  ): Tenant | null {
     if (this.readTenant(id)) return null; // idempotent — nothing created
     // Checked explicitly rather than left to `INSERT OR IGNORE` + the
     // `tenants_slug` UNIQUE index: OR IGNORE would swallow a collision from a
@@ -801,12 +814,13 @@ export class ControlPlaneDO extends DurableObject {
       throw new Error(`tenant slug '${slug}' already taken by ${slugOwner.tenant_id} (slugs are unique)`);
     }
     this.sql.exec(
-      `INSERT INTO tenants (tenant_id, slug, name, status, created_at)
-       VALUES (?, ?, ?, 'active', ?)`,
+      `INSERT INTO tenants (tenant_id, slug, name, status, created_at, provisioned_by_tenant)
+       VALUES (?, ?, ?, 'active', ?, ?)`,
       id,
       slug,
       name,
       createdAt,
+      provisionedByTenant,
     );
     return this.readTenant(id) ?? null;
   }

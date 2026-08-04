@@ -29,12 +29,23 @@ export const tenant = z.object({
   // reap sweep ages a tenant off this to decide when the grace window has elapsed
   // (control-plane.md §4.8) — mirrors `scope.archivedAt`. Cleared on un-delete.
   deletingAt: instant.nullable(),
+  // Provenance (#412): the tenant that PROVISIONED this one — set only when a manager
+  // vertical created it via the `provision-tenant` platform intent, so the value is the
+  // manager's own tenant id (a FK to another `tenants` row, guaranteed to exist). Null
+  // for a tenant created directly by staff (console/CLI). Distinguishes first-class
+  // tenants from app-provisioned customer accounts, and is the ownership key #412
+  // invariant 2 bounds `set-entitlements` on. Host-stamped at creation, never mutated.
+  provisionedByTenant: tenantId.nullable(),
 });
 export type Tenant = z.infer<typeof tenant>;
 
-// What the caller supplies to createTenant (control-plane.md §4.1); `status`
-// (active) and `createdAt` are stamped host-side, never caller-supplied.
-export const createTenantInput = tenant.pick({ id: true, slug: true, name: true });
+// What the caller supplies to createTenant (control-plane.md §4.1); `status` (active)
+// and `createdAt` are stamped host-side, never caller-supplied. `provisionedByTenant`
+// is optional: the provisioning drain supplies the manager tenant id, a direct staff
+// create omits it (→ null).
+export const createTenantInput = tenant
+  .pick({ id: true, slug: true, name: true })
+  .extend({ provisionedByTenant: tenantId.nullable().optional() });
 export type CreateTenantInput = z.infer<typeof createTenantInput>;
 
 /**

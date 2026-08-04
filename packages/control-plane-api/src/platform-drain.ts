@@ -358,6 +358,10 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
         id: tenantId,
         slug: payload.tenant.slug,
         name: payload.tenant.name,
+        // Provenance (#412): stamp the MANAGER's tenant (the authoritative context the
+        // host derived from the provisioning scope's directory row — the vertical never
+        // asserts it), so the fleet can tell an app-provisioned tenant from a direct one.
+        provisionedByTenant: ctx.tenantId,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

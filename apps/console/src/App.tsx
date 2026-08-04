@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { EntitlementGrant, HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
+import type { EntitlementGrant, HostnameBinding, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
 import { Card, Toast } from './components';
+import { scopeHandle } from './lib/fleet';
 import { ConsoleShell } from './ConsoleShell';
 import type { ViewKey } from './ConsoleShell';
 import type { BreadcrumbItem } from './components';
@@ -11,6 +12,7 @@ import { Domains } from './views/Domains';
 import { Observability } from './views/Observability';
 import { Login } from './views/Login';
 import { Permissions } from './views/Permissions';
+import { ScopeDetail } from './views/ScopeDetail';
 import { Scopes } from './views/Scopes';
 import { Settings } from './views/Settings';
 import { TenantDetail } from './views/TenantDetail';
@@ -53,26 +55,52 @@ interface Toast {
 const VIEWS: ViewKey[] = ['tenants', 'scopes', 'domains', 'verticals', 'observability', 'admin-log', 'permissions', 'settings'];
 
 /**
- * Navigation lives in the URL — which view, and any drilled-into tenant — so a
- * refresh or a shared link lands where you were, not back on the start page. The
- * `actor` param is left untouched (useDevActor owns it). Only top-level nav is
- * encoded; per-view state (a selected scope, a filter tab) is not, yet.
+ * Navigation lives in the URL path — `/scopes`, `/verticals`, and one drilled-in
+ * segment (`/scopes/<id>`, `/tenants/<id>`, `/verticals/<slug>`) — so a refresh or
+ * a shared link lands where you were, not back on the start page. Clean paths, not
+ * `?view=` query params (the control-plane worker serves the SPA with
+ * `not_found_handling: single-page-application`, so a deep path resolves on refresh).
+ * The `actor` search param is left untouched (useDevActor owns it). Per-view state
+ * (a filter tab, a text query) is not encoded, yet.
+ *
+ * Detail identifier per view: id for tenant and scope, slug for vertical.
  */
-function readNav(): { view: ViewKey; tenant?: TenantId } {
-  const p = new URLSearchParams(window.location.search);
-  const v = p.get('view');
-  const view = v && (VIEWS as string[]).includes(v) ? (v as ViewKey) : 'tenants';
-  return { view, tenant: (p.get('tenant') as TenantId | null) ?? undefined };
+interface Nav {
+  view: ViewKey;
+  tenant?: TenantId;
+  scope?: ScopeId;
+  vertical?: string;
 }
 
-function writeNav(view: ViewKey, tenant?: TenantId): void {
+function readNav(): Nav {
+  const segments = window.location.pathname.split('/').filter(Boolean);
+  const first = segments[0];
+  // Back-compat: an old `?view=` link (or a bare `/`) still resolves; writeNav
+  // then normalizes it to the path form on the next reflect.
+  const legacy = new URLSearchParams(window.location.search).get('view');
+  const candidate = first ?? legacy ?? undefined;
+  const view = candidate && (VIEWS as string[]).includes(candidate) ? (candidate as ViewKey) : 'tenants';
+  const detail = segments[1];
+  const nav: Nav = { view };
+  if (detail) {
+    if (view === 'tenants') nav.tenant = detail as TenantId;
+    else if (view === 'scopes') nav.scope = detail as ScopeId;
+    else if (view === 'verticals') nav.vertical = detail;
+  }
+  return nav;
+}
+
+function writeNav(view: ViewKey, detail?: string): void {
+  const path = `/${view}${detail ? `/${detail}` : ''}`;
+  // Preserve the search so the dev `?actor=` override survives — but drop a legacy
+  // `?view=` once we've read it into the path, so a back-compat link normalizes fully
+  // to `/scopes` rather than lingering as `/scopes?view=scopes`.
   const p = new URLSearchParams(window.location.search);
-  p.set('view', view);
-  if (tenant) p.set('tenant', tenant);
-  else p.delete('tenant');
+  p.delete('view');
+  const search = p.toString();
   // replaceState, not push: a refresh should restore state without every nav
   // click stacking a history entry. Back/forward still works via popstate below.
-  window.history.replaceState(null, '', `${window.location.pathname}?${p.toString()}`);
+  window.history.replaceState(null, '', `${path}${search ? `?${search}` : ''}`);
 }
 
 // Co-located quick path: a build-time dev actor (set by `pnpm dev`) means the
@@ -91,6 +119,8 @@ export function App() {
   );
   const [view, setView] = useState<ViewKey>(() => readNav().view);
   const [openTenant, setOpenTenant] = useState<TenantId | undefined>(() => readNav().tenant);
+  const [openScope, setOpenScope] = useState<ScopeId | undefined>(() => readNav().scope);
+  const [openVertical, setOpenVertical] = useState<string | undefined>(() => readNav().vertical);
   const [dark, setDark] = useState(false);
   const [toast, setToast] = useState<Toast>();
   const [error, setError] = useState<string>();
@@ -124,10 +154,13 @@ export function App() {
     document.documentElement.dataset['theme'] = dark ? 'dark' : 'light';
   }, [dark]);
 
+  // The drilled-in segment for the current view (each view carries at most one).
+  const openDetail = view === 'tenants' ? openTenant : view === 'scopes' ? openScope : view === 'verticals' ? openVertical : undefined;
+
   // Reflect nav into the URL so a refresh restores it.
   useEffect(() => {
-    writeNav(view, openTenant);
-  }, [view, openTenant]);
+    writeNav(view, openDetail);
+  }, [view, openDetail]);
 
   // Honour browser back/forward.
   useEffect(() => {
@@ -135,6 +168,8 @@ export function App() {
       const n = readNav();
       setView(n.view);
       setOpenTenant(n.tenant);
+      setOpenScope(n.scope);
+      setOpenVertical(n.vertical);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -183,12 +218,27 @@ export function App() {
     [],
   );
 
-  const detail = openTenant ? tenantMap.get(openTenant) : undefined;
+  const tenantDetail = openTenant ? tenantMap.get(openTenant) : undefined;
+  const scopeDetail = view === 'scopes' && openScope ? scopes.find((s) => s.id === openScope) : undefined;
+
+  // Clear whichever drill-in the current view owns — the view-name crumb returns to its list.
+  const clearDetail = () => {
+    setOpenTenant(undefined);
+    setOpenScope(undefined);
+    setOpenVertical(undefined);
+  };
+  const detailCrumb: BreadcrumbItem | undefined = tenantDetail
+    ? { label: tenantDetail.slug, mono: true }
+    : scopeDetail
+      ? { label: scopeHandle(scopeDetail, tenantMap), mono: true }
+      : view === 'verticals' && openVertical
+        ? { label: openVertical, mono: true }
+        : undefined;
 
   const crumbs: BreadcrumbItem[] = [
     { label: view === 'settings' ? 'Console' : 'Fleet' },
-    { label: view === 'admin-log' ? 'Admin log' : view[0]!.toUpperCase() + view.slice(1), onClick: () => setOpenTenant(undefined) },
-    ...(detail ? [{ label: detail.slug, mono: true }] : []),
+    { label: view === 'admin-log' ? 'Admin log' : view[0]!.toUpperCase() + view.slice(1), onClick: clearDetail },
+    ...(detailCrumb ? [detailCrumb] : []),
   ];
 
   // Session mode: checking → blank (also covers the redirect to the IdP); signed out
@@ -240,7 +290,7 @@ export function App() {
       active={view}
       onNav={(v) => {
         setView(v);
-        setOpenTenant(undefined);
+        clearDetail();
       }}
       onToggleDark={() => setDark((d) => !d)}
       crumbs={crumbs}
@@ -257,13 +307,17 @@ export function App() {
       )}
 
       {view === 'tenants' &&
-        (detail ? (
+        (tenantDetail ? (
           <TenantDetail
             api={api}
-            tenant={detail}
-            scopes={scopes.filter((s) => s.tenantId === detail.id)}
-            entitlements={entitlements.get(detail.id) ?? []}
+            tenant={tenantDetail}
+            scopes={scopes.filter((s) => s.tenantId === tenantDetail.id)}
+            entitlements={entitlements.get(tenantDetail.id) ?? []}
             hostnames={hostnames}
+            provisionedByName={
+              tenantDetail.provisionedByTenant ? tenantMap.get(tenantDetail.provisionedByTenant)?.name : undefined
+            }
+            onOpen={setOpenTenant}
             onBack={() => setOpenTenant(undefined)}
             onChanged={() => void load()}
             onToast={notify}
@@ -280,9 +334,28 @@ export function App() {
           />
         ))}
 
-      {view === 'scopes' && (
-        <Scopes api={api} scopes={scopes} tenants={tenantMap} entitlements={entitlements} hostnames={hostnames} onChanged={() => void load()} onToast={notify} />
-      )}
+      {view === 'scopes' &&
+        (scopeDetail ? (
+          <ScopeDetail
+            api={api}
+            scope={scopeDetail}
+            tenants={tenantMap}
+            hostnames={hostnames}
+            onBack={() => setOpenScope(undefined)}
+            onChanged={() => void load()}
+            onToast={notify}
+          />
+        ) : (
+          <Scopes
+            api={api}
+            scopes={scopes}
+            tenants={tenantMap}
+            entitlements={entitlements}
+            onOpen={setOpenScope}
+            onChanged={() => void load()}
+            onToast={notify}
+          />
+        ))}
       {view === 'domains' && (
         <Domains
           api={api}
@@ -293,7 +366,15 @@ export function App() {
           onToast={notify}
         />
       )}
-      {view === 'verticals' && <Verticals api={api} onToast={notify} />}
+      {view === 'verticals' && (
+        <Verticals
+          api={api}
+          openSlug={openVertical}
+          onOpen={setOpenVertical}
+          onBack={() => setOpenVertical(undefined)}
+          onToast={notify}
+        />
+      )}
       {view === 'observability' && <Observability api={api} />}
       {view === 'admin-log' && <AdminLog api={api} tenants={tenantMap} />}
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}

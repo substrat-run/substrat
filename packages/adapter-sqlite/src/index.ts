@@ -395,6 +395,7 @@ interface TenantRow {
   status: string;
   created_at: string;
   deleting_at: string | null;
+  provisioned_by_tenant: string | null;
 }
 
 interface ScopeRow {
@@ -700,7 +701,10 @@ export class SqliteScopeHost implements ScopeHost {
         created_at TEXT NOT NULL,
         -- When the tenant last entered the deleting state; NULL otherwise. The
         -- grace-window reap sweep ages a tenant off this (§4.8), mirroring archived_at.
-        deleting_at TEXT
+        deleting_at TEXT,
+        -- Provenance (#412): the tenant that provisioned this one via a manager
+        -- vertical, or NULL for a direct staff create. A FK to another tenants row.
+        provisioned_by_tenant TEXT REFERENCES tenants(tenant_id)
       );
       -- The scope directory (§3.2). slug/kind/name/vertical are nullable HERE but
       -- required (except vertical) by the scope contract: the column set must be
@@ -2788,6 +2792,7 @@ export class SqliteScopeHost implements ScopeHost {
         status: r.status,
         createdAt: r.created_at,
         deletingAt: r.deleting_at ?? null,
+        provisionedByTenant: r.provisioned_by_tenant ?? null,
       });
     const readTenant = (id: TenantId): Tenant | undefined => {
       const r = this.directory.prepare('SELECT * FROM tenants WHERE tenant_id = ?').get(id) as
@@ -4101,10 +4106,16 @@ export class SqliteScopeHost implements ScopeHost {
         }
         this.directory
           .prepare(
-            `INSERT INTO tenants (tenant_id, slug, name, status, created_at)
-             VALUES (?, ?, ?, 'active', ?)`,
+            `INSERT INTO tenants (tenant_id, slug, name, status, created_at, provisioned_by_tenant)
+             VALUES (?, ?, ?, 'active', ?, ?)`,
           )
-          .run(parsed.id, parsed.slug, parsed.name, new Date().toISOString());
+          .run(
+            parsed.id,
+            parsed.slug,
+            parsed.name,
+            new Date().toISOString(),
+            parsed.provisionedByTenant ?? null,
+          );
         this.recordAdmin(actor, 'createTenant', { tenantId: parsed.id }, null, readTenant(parsed.id));
       },
       setTenantStatus: async (actor: PlatformActorId, tenantId: TenantId, status: TenantStatus) => {
@@ -5232,6 +5243,12 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, '_substrat_admin_log', 'caused_by', 'caused_by TEXT');
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
     this.ensureColumn(this.directory, 'tenants', 'deleting_at', 'deleting_at TEXT');
+    this.ensureColumn(
+      this.directory,
+      'tenants',
+      'provisioned_by_tenant',
+      'provisioned_by_tenant TEXT REFERENCES tenants(tenant_id)',
+    );
     // §4.7 custom-hostname issuance: CF's hostname id + the DNS records to publish (JSON).
     this.ensureColumn(this.directory, 'hostnames', 'custom_hostname_id', 'custom_hostname_id TEXT');
     this.ensureColumn(this.directory, 'hostnames', 'validation_records', 'validation_records TEXT');
