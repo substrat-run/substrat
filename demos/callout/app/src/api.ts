@@ -68,8 +68,10 @@ export interface Underlag {
 
 export interface UnderlagLine {
   id: string;
-  source_type: string;
-  source_id: string;
+  document_type: string;
+  document_id: string;
+  source_type: string | null;
+  source_id: string | null;
   article: string;
   description: string;
   qty: string;

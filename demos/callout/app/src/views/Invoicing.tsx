@@ -79,8 +79,8 @@ export function InvoicingView() {
                     <td className="num">{l.unit_price_amount}</td>
                     <td className="num">{l.line_total_amount}</td>
                     <td>
-                      <a href={`#/orders/${l.source_id}`}>
-                        {l.source_type}:{l.source_id.slice(0, 8)}…
+                      <a href={`#/orders/${l.document_id}`}>
+                        {l.document_type}:{l.document_id.slice(0, 8)}…
                       </a>
                     </td>
                   </tr>
