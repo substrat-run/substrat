@@ -9,7 +9,7 @@ import { NotificationsPopover } from './components/NotificationsPopover';
 import { SignIn, Interstitial, InviteBlocked } from './views/SignIn';
 import { Onboarding } from './views/Onboarding';
 import { Apps } from './views/Apps';
-import { Verticals } from './views/Verticals';
+import { Verticals, VerticalDetail } from './views/Verticals';
 import { CreateApp } from './views/CreateApp';
 import { AppDetail } from './views/AppDetail';
 import { Team } from './views/Team';
@@ -19,11 +19,12 @@ import { Billing } from './views/Billing';
 import { Analytics } from './views/Analytics';
 import { Settings } from './views/Settings';
 
-/** The hash route, parsed. `section` maps to the sidebar; `app`/`tab` drive detail. */
+/** The hash route, parsed. `section` maps to the sidebar; `app`/`tab`/`vertical` drive detail. */
 interface Route {
   section: NavKey | 'new';
   app?: string;
   tab?: string;
+  vertical?: string;
 }
 
 function parseHash(): Route {
@@ -32,6 +33,9 @@ function parseHash(): Route {
   if (parts[0] === 'apps' && parts[1] === 'new') return { section: 'new' };
   // The tab may carry a sub-section (settings/environment); AppDetail parses it.
   if (parts[0] === 'apps' && parts[1]) return { section: 'apps', app: parts[1], tab: parts.slice(2).join('/') || 'overview' };
+  // A vertical's slug (acme-co/helpdesk) carries a slash, so it's URI-encoded into the
+  // single segment — never split across parts.
+  if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: decodeURIComponent(parts[1]) };
   // Legacy alias: the page was called "Deployments" before the apps/verticals split.
   if (parts[0] === 'deployments') return { section: 'verticals' };
   const known: NavKey[] = ['overview', 'apps', 'verticals', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
@@ -587,6 +591,7 @@ export function App() {
   );
 
   const openApp = useMemo(() => (route.app ? apps.find((a) => a.app_scope_id === route.app) : undefined), [apps, route.app]);
+  const openVertical = useMemo(() => (route.vertical ? deployments.find((d) => d.slug === route.vertical) : undefined), [deployments, route.vertical]);
 
   // A deep-linked app can sit beyond the loaded page window — keep walking older
   // pages until it turns up (or the list is exhausted), instead of flashing a 404.
@@ -638,7 +643,11 @@ export function App() {
   if (route.section === 'apps' || route.section === 'new') crumbs.push({ label: 'Apps', onClick: () => go('#/apps') });
   if (route.section === 'new') crumbs.push({ label: 'New app' });
   if (route.section === 'apps' && openApp) crumbs.push({ label: openApp.name });
-  if (['verticals', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'].includes(route.section)) {
+  if (route.section === 'verticals') {
+    crumbs.push({ label: 'Verticals', onClick: route.vertical ? () => go('#/verticals') : undefined });
+    if (openVertical) crumbs.push({ label: openVertical.name });
+  }
+  if (['domains', 'team', 'integrations', 'analytics', 'billing', 'settings'].includes(route.section)) {
     crumbs.push({ label: route.section.charAt(0).toUpperCase() + route.section.slice(1) });
   }
 
@@ -687,8 +696,24 @@ export function App() {
         )
       ) : route.section === 'overview' || route.section === 'apps' ? (
         <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
+      ) : route.section === 'verticals' && openVertical ? (
+        <VerticalDetail
+          d={openVertical}
+          busy={promoting}
+          onPromote={(vid, ch) => void promoteDeployment(openVertical.slug, vid, ch)}
+          onRemove={() => void removeDeployment(openVertical.slug)}
+          onBack={() => go('#/verticals')}
+        />
+      ) : route.section === 'verticals' && route.vertical ? (
+        // The deployments list loads with the first session fetch — while it's in flight
+        // the vertical is unresolved, not missing (the same 404-flash guard as apps).
+        appsLoading ? (
+          <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-tertiary)' }}>Loading…</div>
+        ) : (
+          <NotFound label="That vertical could not be found." backLabel="Back to verticals" onBack={() => go('#/verticals')} />
+        )
       ) : route.section === 'verticals' ? (
-        <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} busy={promoting} loadGitRepos={loadGitRepos} />
+        <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} onOpen={(slug) => go(`#/verticals/${encodeURIComponent(slug)}`)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (
         <Team
           members={members}
@@ -753,10 +778,10 @@ export function App() {
   );
 }
 
-function NotFound({ label, onBack }: { label: string; onBack: () => void }) {
+function NotFound({ label, onBack, backLabel = 'Back to apps' }: { label: string; onBack: () => void; backLabel?: string }) {
   return (
     <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-tertiary)' }}>
-      {label} <a href="#" onClick={(e) => { e.preventDefault(); onBack(); }}>Back to apps</a>
+      {label} <a href="#" onClick={(e) => { e.preventDefault(); onBack(); }}>{backLabel}</a>
     </div>
   );
 }
