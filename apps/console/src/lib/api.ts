@@ -209,6 +209,10 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // directory row as a tombstone. Staff-only server-side; the console arms it behind a
     // type-to-confirm dialog because, unlike archive, there is no restore.
     reapScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/reap`),
+    // Hard-delete a SNAPSHOT fork (forkedFrom set): wipes its storage, hostnames, and the
+    // row (unlike reap, which keeps a tombstone). Refused (409) on a non-fork primary scope.
+    deleteScope: (t: TenantId, s: ScopeId) =>
+      call<{ deleted: ScopeId }>(`/tenants/${t}/scopes/${s}`, { method: 'DELETE' }),
 
     // Read only — there is no route that writes a role, by design.
     // Cursor is the composite `${tenantId}|${roleKey}` sort key (scope-host.ts listRoles).
@@ -232,6 +236,10 @@ export function createApi(actor: string | null, baseUrl = '/api') {
         method: 'PATCH',
         body: JSON.stringify({ status, note }),
       }),
+    // Release a bound name — what a retire pass runs before reaping a scope, so the
+    // reap's bound-hostname guard is satisfied and the router stops resolving it.
+    unbindHostname: (hostname: string) =>
+      call<void>(`/hostnames/${encodeURIComponent(hostname)}`, { method: 'DELETE' }),
 
     /**
      * Create one instance of a vertical (K-31). The control plane calls the

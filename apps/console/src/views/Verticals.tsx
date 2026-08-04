@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type {
   ChannelName,
   PromotionAcknowledgement,
+  Scope,
   Vertical,
   VerticalChannel,
   VerticalSource,
@@ -11,6 +12,7 @@ import { Badge, Button, Card, Checkbox, Dialog, Input, Select, Table, Tag } from
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
+import { statusLabel, statusTone } from '../lib/fleet';
 import { usePagedList } from '../lib/use-paged-list';
 
 /**
@@ -66,6 +68,14 @@ export function Verticals({ api, onToast }: VerticalsProps) {
   // The delete dialog's type-to-confirm guard. Null when closed.
   const [deleteInput, setDeleteInput] = useState<string | null>(null);
 
+  // Scopes (installs) still bound to the selected vertical — what the delete refusal
+  // counts, and what the retire panel below lets an operator clear. Excludes `reaped`
+  // tombstones (terminal, they never block the delete). The retire dialog target + its
+  // hostnames, plus a type-to-confirm guard because retiring a primary scope reaps it.
+  const [boundScopes, setBoundScopes] = useState<Scope[]>([]);
+  const [retire, setRetire] = useState<{ scope: Scope; hostnames: string[] } | null>(null);
+  const [retireInput, setRetireInput] = useState('');
+
   // Keep the detail card on the FRESH row (a flag flip must show), and close it
   // when the vertical is gone (a delete). Runs whenever the loaded window
   // re-reads; the selected row was clicked, so it is always inside the window.
@@ -80,12 +90,16 @@ export function Verticals({ api, onToast }: VerticalsProps) {
         // are computations over the whole version set — a channel pointer whose
         // version fell outside a loaded page would render as "unset", a lie.
         // Only the versions TABLE below windows what it shows.
-        const [vs, ch] = await Promise.all([
+        const [vs, ch, sc] = await Promise.all([
           walkAll((p) => api.listVersions(slug, p)),
           walkAll((p) => api.listChannels(slug, p)),
+          walkAll((p) => api.listScopes({ vertical: slug, ...p })),
         ]);
         setVersions(vs);
         setChannels(ch);
+        // Reaped rows are terminal tombstones that never block the delete — the retire
+        // panel lists only what still does (live + archived).
+        setBoundScopes(sc.filter((s) => s.status !== 'reaped'));
       } catch (e) {
         onToast('Failed to load versions', (e as Error).message, 'danger');
       }
@@ -97,9 +111,59 @@ export function Verticals({ api, onToast }: VerticalsProps) {
     setSelected(v);
     setVersions([]);
     setChannels([]);
+    setBoundScopes([]);
     setVersionsShown(PAGE);
     void loadDetail(v.slug);
   }
+
+  // Open the retire confirm for one bound scope, pre-loading the hostnames it will
+  // release so the dialog can name exactly what goes offline (the visibility the
+  // incident lacked — a reap that named nothing).
+  async function openRetire(s: Scope) {
+    try {
+      const hs = await walkAll((p) => api.listHostnames({ scopeId: s.id, ...p }));
+      setRetireInput('');
+      setRetire({ scope: s, hostnames: hs.map((h) => h.hostname) });
+    } catch (e) {
+      onToast('Failed to load hostnames', (e as Error).message, 'danger');
+    }
+  }
+
+  // Retire one scope: release its names, then reap it (a fork is hard-deleted). Unbinding
+  // FIRST is what satisfies reap's bound-hostname guard — the same order the platform
+  // enforces — so a still-serving scope can never be wiped by accident.
+  async function confirmRetire() {
+    if (!retire) return;
+    const s = retire.scope;
+    await run(
+      async () => {
+        for (const h of retire.hostnames) await api.unbindHostname(h);
+        if (s.forkedFrom) {
+          await api.deleteScope(s.tenantId, s.id);
+        } else {
+          if (s.status !== 'archived') await api.archiveScope(s.tenantId, s.id);
+          await api.reapScope(s.tenantId, s.id);
+        }
+      },
+      s.forkedFrom ? 'Snapshot deleted' : 'Scope retired',
+      s.slug,
+    ).then(() => setRetire(null));
+  }
+
+  const scopeColumns: TableColumn<Scope>[] = [
+    { header: 'Scope', render: (s) => <Tag mono>{s.slug}</Tag> },
+    { header: 'Status', render: (s) => <Badge status={statusTone(s.status)}>{statusLabel(s.status)}</Badge> },
+    { header: 'Kind', render: (s) => <Tag mono>{s.forkedFrom ? 'snapshot' : s.kind}</Tag> },
+    {
+      header: '',
+      align: 'right',
+      render: (s) => (
+        <Button size="sm" variant="danger" onClick={() => void openRetire(s)}>
+          Retire…
+        </Button>
+      ),
+    },
+  ];
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     try {
@@ -399,6 +463,22 @@ export function Verticals({ api, onToast }: VerticalsProps) {
               </Button>
             </div>
           )}
+
+          {/* Bound scopes — the installs this vertical still backs, and what the delete
+              refusal counts. Retiring each (release names → reap; forks are hard-deleted)
+              is what frees the vertical for deletion, done here where the operator can see
+              exactly which scope and which names, per the reap-safety lesson. */}
+          {boundScopes.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+                <h4 style={{ margin: 0, fontSize: 13 }}>Bound scopes ({boundScopes.length})</h4>
+                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                  installs still on this vertical — retire each before the vertical can be deleted
+                </span>
+              </div>
+              <Table columns={scopeColumns} rows={boundScopes} emptyText="" />
+            </div>
+          )}
         </Card>
       )}
 
@@ -441,7 +521,7 @@ export function Verticals({ api, onToast }: VerticalsProps) {
         title={selected ? `Delete ${selected.slug}` : ''}
         description="Removes the vertical, its versions, and its channels from the registry. Refused while any scope is still bound to it. Deployed scripts are left for orphan cleanup."
         confirmLabel="Delete vertical"
-        confirmDisabled={deleteInput !== selected?.slug}
+        confirmDisabled={deleteInput !== selected?.slug || boundScopes.length > 0}
         onConfirm={() => {
           if (!selected) return;
           void run(() => api.deleteVertical(selected.slug), 'Vertical deleted', selected.slug).then(
@@ -450,6 +530,11 @@ export function Verticals({ api, onToast }: VerticalsProps) {
         }}
         onCancel={() => setDeleteInput(null)}
       >
+        {boundScopes.length > 0 && (
+          <div style={{ marginBottom: 12, fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
+            {boundScopes.length} scope(s) still bound — retire them in the vertical detail first.
+          </div>
+        )}
         <Input
           label={`Type ${selected?.slug ?? ''} to confirm`}
           mono
@@ -457,6 +542,52 @@ export function Verticals({ api, onToast }: VerticalsProps) {
           value={deleteInput ?? ''}
           onChange={(e) => setDeleteInput(e.target.value)}
         />
+      </Dialog>
+
+      {/* Retire one bound scope — the reap, made visible. Names every hostname it will
+          release, and arms behind a type-the-slug confirm because retiring a primary scope
+          reaps its storage (a fork is hard-deleted); there is no restore either way. */}
+      <Dialog
+        open={retire !== null}
+        danger
+        title={retire ? `Retire ${retire.scope.slug}` : ''}
+        description={
+          retire?.scope.forkedFrom
+            ? 'Deletes this snapshot fork — its storage, hostnames, and directory row. Irreversible.'
+            : 'Unbinds every hostname below, then archives and reaps the scope — its storage is wiped. Irreversible; there is no restore.'
+        }
+        confirmLabel={retire?.scope.forkedFrom ? 'Delete snapshot' : 'Retire scope'}
+        confirmDisabled={retireInput !== retire?.scope.slug}
+        onConfirm={() => void confirmRetire()}
+        onCancel={() => setRetire(null)}
+      >
+        {retire && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {retire.hostnames.length > 0 ? (
+              <div style={{ fontSize: 12.5 }}>
+                <div style={{ color: 'var(--text-tertiary)', marginBottom: 6 }}>
+                  These names go offline first:
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {retire.hostnames.map((h) => (
+                    <Tag key={h} mono>
+                      {h}
+                    </Tag>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>No hostnames bound.</div>
+            )}
+            <Input
+              label={`Type ${retire.scope.slug} to confirm`}
+              mono
+              placeholder={retire.scope.slug}
+              value={retireInput}
+              onChange={(e) => setRetireInput(e.target.value)}
+            />
+          </div>
+        )}
       </Dialog>
 
       {/* Promote — the blast-radius moment. The digest diff is shown, and a changed
