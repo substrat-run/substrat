@@ -318,10 +318,32 @@ const timelineOp: OperationHandler<
   );
 };
 
+/**
+ * "Who am I" for the app shell — the caller's own role hint, resolved from THIS scope.
+ * No permission gate: every principal in the scope may ask about themselves (it reveals
+ * only their own role, already theirs). The role is a UI hint derived by probing the
+ * caller's own grants — the kernel still enforces the real permission on every operation
+ * regardless of what this returns. `portal` (an entity-narrowed customer login) is not
+ * detectable here — it holds no node-level permission — so it reads as `none`; a portal
+ * user is a dev-cast concern (server.ts), never a hosted OIDC login.
+ */
+export interface WhoAmI {
+  role: 'office-admin' | 'technician' | 'none';
+}
+const whoamiOp: OperationHandler<undefined, WhoAmI> = async (ctx) => {
+  const role: WhoAmI['role'] = (await ctx.check(SC_PERM.customerManage)).allowed
+    ? 'office-admin'
+    : (await ctx.check(WO.report)).allowed
+      ? 'technician'
+      : 'none';
+  return { role };
+};
+
 export const calloutModule: ModuleRegistration = {
   manifest: calloutManifest,
   migrations: calloutMigrations,
   operations: {
+    'callout/whoami': whoamiOp as never,
     'callout/create-customer': createCustomerOp as never,
     'callout/list-customers': listCustomersOp as never,
     'callout/create-facility': createFacilityOp as never,

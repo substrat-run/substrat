@@ -1,116 +1,72 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useState } from 'react';
 import { api, auth, ApiError } from './api';
 import { Button, Card } from './ui';
 
-const inp: CSSProperties = {
-  font: 'inherit', fontSize: 14, width: '100%', padding: '10px 12px',
-  borderRadius: 'var(--r-input)', border: '1px solid var(--border2)', background: 'var(--surface)', color: 'var(--ink)',
-};
-
 /**
- * Sign-in / first-run setup for a HOSTED instance (the deployed worker has no persona
- * picker — auth is the tenant's IdentityDO via Better Auth). On a freshly-installed
- * instance the owner seat is unclaimed (`needs-setup`), so the only path is to CREATE the
- * admin account, and the first sign-in claims that seat (→ admin). On success we reload so
- * `/api/me` resolves the new session cookie.
+ * OIDC-only (oidc-only-demos.md): the vertical holds no accounts. Login, sign-up, password, and
+ * reset all live at the instance's OIDC issuer. These screens only redirect there; the first
+ * sign-in on a fresh instance still claims the owner seat (→ admin) via the worker binding.
  */
-/** An invited teammate arrived via ?invite=<token>: create their account (allowed by the
- *  token) and immediately claim the invite so their login binds to the pre-granted member. */
-export function AcceptInvite({ token }: { token: string }) {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
 
-  const submit = async () => {
-    if (busy || !email.trim() || password.length < 8) return;
-    setBusy(true); setErr('');
-    try {
-      await auth.signUpWithInvite(email.trim(), password, name.trim() || email.trim(), token);
-      await api.acceptInvite(token);
-      window.history.replaceState({}, '', location.pathname + location.hash); // drop ?invite=
-      location.reload();
-    } catch (e) {
-      setErr(e instanceof ApiError ? e.message : String(e));
-      setBusy(false);
-    }
-  };
-
+function Frame({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
   return (
     <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--bg)', padding: 24 }}>
       <Card style={{ width: 372 }}>
         <div style={{ textAlign: 'center', marginBottom: 18 }}>
           <span style={{ display: 'inline-block', width: 26, height: 26, borderRadius: 8, background: 'var(--accent)', marginBottom: 10 }} />
-          <div style={{ fontSize: 20, fontWeight: 700 }}>Join the workspace</div>
-          <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 4 }}>Create your account to accept the invite</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>{title}</div>
+          <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 4 }}>{subtitle}</div>
         </div>
-        {err && <div style={{ padding: '9px 12px', borderRadius: 'var(--r-input)', background: 'var(--st-danger-bg)', color: 'var(--st-danger-fg)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
-        <div style={{ display: 'grid', gap: 10 }}>
-          <input style={inp} placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} />
-          <input style={inp} type="email" placeholder="Email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <input style={inp} type="password" placeholder="Password (8+ characters)" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }} />
-          <Button variant="primary" disabled={busy || !email.trim() || password.length < 8} onClick={() => void submit()}>
-            {busy ? 'Please wait…' : 'Accept invite'}
-          </Button>
-        </div>
+        {children}
       </Card>
     </div>
   );
 }
 
-export function SignIn({ firstRun }: { firstRun: boolean }) {
-  const [mode, setMode] = useState<'in' | 'up'>(firstRun ? 'up' : 'in');
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
+/**
+ * Accept an invite. The invitee's account lives at the issuer, so there is nothing to create
+ * here — sign in (via the issuer), then claim the invite to bind this login to the pre-granted
+ * member principal. On arrival we try the claim straight away (a session may already exist from
+ * the redirect back); a 401 means "sign in first" and carries the token through the round-trip.
+ */
+export function AcceptInvite({ token }: { token: string }) {
+  const [state, setState] = useState<'trying' | 'needs-login' | 'error'>('trying');
   const [err, setErr] = useState('');
-
-  const submit = async () => {
-    if (busy || !email.trim() || password.length < 8) return;
-    setBusy(true); setErr('');
-    try {
-      if (mode === 'up') await auth.signUp(email.trim(), password, name.trim() || email.trim());
-      else await auth.signIn(email.trim(), password);
-      location.reload();
-    } catch (e) {
-      setErr(e instanceof ApiError ? e.message : String(e));
-      setBusy(false);
-    }
-  };
-
+  useEffect(() => {
+    let alive = true;
+    api.acceptInvite(token).then(
+      () => {
+        window.history.replaceState({}, '', location.pathname + location.hash); // drop ?invite=
+        location.reload();
+      },
+      (e) => {
+        if (!alive) return;
+        if (e instanceof ApiError && e.status === 401) setState('needs-login');
+        else { setErr(e instanceof ApiError ? e.message : String(e)); setState('error'); }
+      },
+    );
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per token
+  }, [token]);
   return (
-    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--bg)', padding: 24 }}>
-      <Card style={{ width: 372 }}>
-        <div style={{ textAlign: 'center', marginBottom: 18 }}>
-          <span style={{ display: 'inline-block', width: 26, height: 26, borderRadius: 8, background: 'var(--accent)', marginBottom: 10 }} />
-          <div style={{ fontSize: 20, fontWeight: 700 }}>Manyfold</div>
-          <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 4 }}>
-            {firstRun ? 'Set up your workspace — create the admin account' : mode === 'in' ? 'Sign in to your workspace' : 'Create your account'}
-          </div>
-        </div>
-        {err && <div style={{ padding: '9px 12px', borderRadius: 'var(--r-input)', background: 'var(--st-danger-bg)', color: 'var(--st-danger-fg)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
-        <div style={{ display: 'grid', gap: 10 }}>
-          {mode === 'up' && <input style={inp} placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} />}
-          <input style={inp} type="email" placeholder="Email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <input
-            style={inp} type="password" placeholder="Password (8+ characters)"
-            autoComplete={mode === 'in' ? 'current-password' : 'new-password'}
-            value={password} onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
-          />
-          <Button variant="primary" disabled={busy || !email.trim() || password.length < 8} onClick={() => void submit()}>
-            {busy ? 'Please wait…' : firstRun ? 'Create admin account' : mode === 'in' ? 'Sign in' : 'Create account'}
-          </Button>
-          {!firstRun && (
-            <button type="button" onClick={() => { setMode(mode === 'in' ? 'up' : 'in'); setErr(''); }} style={{ background: 'none', border: 0, color: 'var(--accent)', fontSize: 13, cursor: 'pointer', padding: 4 }}>
-              {mode === 'in' ? 'New here? Create an account' : 'Have an account? Sign in'}
-            </button>
-          )}
-          {firstRun && <div style={{ color: 'var(--muted)', fontSize: 12, textAlign: 'center', lineHeight: 1.5 }}>You're the first here — this becomes the workspace admin.</div>}
-        </div>
-      </Card>
-    </div>
+    <Frame title="Join the workspace" subtitle="Sign in with your identity provider to accept the invite">
+      {err && <div style={{ padding: '9px 12px', borderRadius: 'var(--r-input)', background: 'var(--st-danger-bg)', color: 'var(--st-danger-fg)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+      {state === 'trying' ? (
+        <div style={{ color: 'var(--muted)', fontSize: 13, textAlign: 'center' }}>Checking your invite…</div>
+      ) : (
+        <Button variant="primary" onClick={() => auth.login(`/?invite=${encodeURIComponent(token)}`)}>Continue to sign-in</Button>
+      )}
+    </Frame>
+  );
+}
+
+export function SignIn({ firstRun }: { firstRun: boolean }) {
+  return (
+    <Frame
+      title="Manyfold"
+      subtitle={firstRun ? 'Sign in with your identity provider to claim this workspace' : 'Sign in to your workspace'}
+    >
+      <Button variant="primary" onClick={() => auth.login('/')}>Continue to sign-in</Button>
+    </Frame>
   );
 }

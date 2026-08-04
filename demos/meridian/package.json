@@ -37,9 +37,9 @@
       {
         "key": "AUTH_PROVIDER",
         "label": "Auth provider",
-        "description": "Which auth the app runs when no per-scope `substrat:auth` choice was delivered: 'better-auth-do' (accounts in the tenant's own identity DO) or 'oidc' (verify bearer tokens against OIDC_ISSUER).",
-        "placeholder": "better-auth-do",
-        "default": "better-auth-do",
+        "description": "OIDC-only: the vertical runs no built-in credential store. When no per-scope `substrat:auth` choice is delivered, 'oidc' verifies bearer tokens against OIDC_ISSUER (standalone deploys); anything else leaves the instance without a configured issuer.",
+        "placeholder": "oidc",
+        "default": "oidc",
         "required": false,
         "secret": false,
         "group": "Auth"
@@ -91,7 +91,6 @@
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
-    "better-auth": "^1.6.23",
     "better-sqlite3": "^12.0.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",

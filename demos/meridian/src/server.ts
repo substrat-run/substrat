@@ -4,14 +4,12 @@ import { dirname, join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import Database from 'better-sqlite3';
 import { PermissionDenied, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
   sweepScriveReconciliations,
 } from '@substrat-run/connector-scrive';
-import { buildAuthNode, migrateAuth } from './auth-node.js';
 import {
   devHeaderAdapter,
   resolvePrincipal,
@@ -29,9 +27,11 @@ import { DOCS_HTML } from './docs.js';
  * logic here; every route is a wrapper over an operation, and the kernel
  * enforces the permission on every op regardless of how the route reached it.
  *
- * There is no Better Auth here yet. The `x-principal` picker is an
- * impersonation bypass by design — anyone naming a persona becomes it — so it is
- * mounted ONLY when ALLOW_DEV_HEADER=true, matching Callout's posture.
+ * OIDC-only (oidc-only-demos.md): the vertical runs no credential store, so this dev
+ * server hosts NO accounts and NO `/api/auth/*`. Local dev authenticates with the
+ * `x-principal` persona picker — an impersonation bypass by design, mounted ONLY when
+ * ALLOW_DEV_HEADER=true. A real login is the OIDC round-trip, exercised via the worker
+ * (`wrangler dev`) against a running `demos/auth-server` issuer.
  *
  * Secure by default matters more here than it did as a demo: this is a template
  * now (D-33), and a template is COPIED. A default that impersonates is one people
@@ -86,12 +86,6 @@ const scrive = resolveScrive();
 const host = buildDemoHost(dataDir, scrive?.config);
 const world: DemoWorld = await seedDemo(host, dataDir, scrive?.config.secret);
 
-const auth = buildAuthNode(dataDir, `http://localhost:${PORT}`, [
-  `http://localhost:${PORT}`,
-  `http://localhost:${WEB_PORT}`,
-]);
-await migrateAuth(auth);
-
 interface Persona {
   key: string;
   display: string;
@@ -129,9 +123,6 @@ if (process.env.ALLOW_DEV_HEADER === 'true') adapters.push(devHeaderAdapter());
 
 async function persona(c: Context): Promise<Persona> {
   const headers = c.req.raw.headers;
-  const session = await sessionPersona(headers);
-  if (session) return session;
-
   const viaAdapters = await resolvePrincipal(adapters, headers);
   if (viaAdapters) {
     const found = CAST.find((p) => p.principal === viaAdapters.principal);
@@ -146,17 +137,6 @@ async function persona(c: Context): Promise<Persona> {
     if (byKey) return byKey;
   }
   throw new PermissionDenied('not authenticated');
-}
-
-/** A Better Auth session → the persona that login is bound to, in whichever company. */
-async function sessionPersona(headers: Headers): Promise<Persona | null> {
-  const s = await auth.api.getSession({ headers });
-  if (!s?.user) return null;
-  for (const p of CAST) {
-    const mapped = await host.admin.resolveIdentity(p.tenantId, 'better-auth', s.user.id);
-    if (mapped && mapped.principal === p.principal) return p;
-  }
-  return null;
 }
 
 async function stub(c: Context): Promise<ScopeStub> {
@@ -261,10 +241,8 @@ if (scrive?.mock && process.env.ALLOW_DEV_HEADER === 'true') {
   });
 }
 
-// Better Auth owns /api/auth/*. Mounted last so it cannot shadow a demo route.
-app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw));
-
-await seedPersonaLogins();
+// No /api/auth/* here: the vertical runs no credential store (oidc-only-demos.md). Dev auth is
+// the x-principal persona picker; real login is the OIDC round-trip via the worker + issuer.
 
 // The scheduler's call site. One timer drives the whole platform sweep:
 //   - #96: poll Scrive so a completed signature is recorded back with no caller;
@@ -298,44 +276,3 @@ serve({ fetch: app.fetch, port: PORT });
 console.log(`\n  Meridian (HR) demo API  http://localhost:${PORT}`);
 console.log(`  employee app            http://localhost:${WEB_PORT}`);
 console.log(`  data                    ${dataDir}\n`);
-
-/**
- * Demo logins for the cast, so the template runs with a real session out of the
- * box rather than only with the dev header.
- *
- * Idempotent on both sides: sign-up throws when the email exists, in which case
- * the id is read back, and an already-linked identity is skipped. The two stores
- * have independent lifecycles, so neither may assume the other is empty.
- */
-async function seedPersonaLogins(): Promise<void> {
-  const staff = platformActorId.parse(ulid());
-  const db = new Database(join(dataDir, 'better-auth.sqlite'), { readonly: true });
-  try {
-    for (const p of CAST) {
-      const email = `${p.key}@meridian.test`;
-      let externalId: string | undefined;
-      try {
-        externalId = (
-          await auth.api.signUpEmail({
-            body: { email, password: 'meridian-demo', name: p.display },
-          })
-        ).user.id;
-      } catch {
-        externalId = (db.prepare('SELECT id FROM user WHERE email = ?').get(email) as
-          | { id: string }
-          | undefined)?.id;
-      }
-      if (!externalId) continue;
-      if (await host.admin.resolveIdentity(p.tenantId, 'better-auth', externalId)) continue;
-      await host.admin.linkIdentity(staff, {
-        provider: 'better-auth',
-        externalId,
-        principal: p.principal,
-        tenantId: p.tenantId,
-        scopeId: p.scopeId,
-      });
-    }
-  } finally {
-    db.close();
-  }
-}

@@ -34,7 +34,6 @@ import { serveAsset } from './assets.js';
 import type { CompanyNode } from './auth-adapters.js';
 import {
   IdentityDO,
-  doAuthProvider,
   oidcAuthProvider,
   oidcRpAuthProvider,
   type AuthProvider,
@@ -136,7 +135,10 @@ function identityDo(env: Env, node: CompanyNode) {
  * lock an instance out.
  */
 const authChoice = z.object({
-  mode: z.enum(['oidc', 'builtin']),
+  // OIDC-only (oidc-only-demos.md): the vertical runs no credential store, so `oidc` is the
+  // only supported mode. A delivered `builtin` (or anything else) fails this parse → treated
+  // as "no choice" → the deployment default / a fail-closed 503, never a local account store.
+  mode: z.literal('oidc'),
   issuer: z.string().url().optional(),
   clientId: z.string().min(1).optional(),
   clientSecret: z.string().optional(),
@@ -203,11 +205,13 @@ async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
     if (!settings.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
     return oidcAuthProvider({ issuer: settings.OIDC_ISSUER, ...(settings.OIDC_AUDIENCE ? { audience: settings.OIDC_AUDIENCE } : {}) });
   }
-  return doAuthProvider(
-    identityDo(env, node),
-    originOf(req),
-    choice?.cookieDomain ? { cookieDomain: choice.cookieDomain } : undefined,
-  );
+  // No builtin credential store any more (oidc-only-demos.md): the vertical owns no accounts.
+  // A scope authenticates either through a delivered `substrat:auth` issuer (the RP branch
+  // above) or a standalone `AUTH_PROVIDER=oidc` bearer issuer. Anything else is unconfigured —
+  // fail closed rather than silently minting local Better-Auth accounts.
+  throw new HTTPException(503, {
+    message: "this instance has no identity provider configured — deliver substrat:auth with mode 'oidc'",
+  });
 }
 
 /**
@@ -246,47 +250,10 @@ const provisionInstanceBody = z.object({
 
 const app = new Hono<{ Bindings: Env }>();
 
-/**
- * Open sign-up is allowed ONLY during first-run setup (the owner seat unclaimed). Once the
- * admin has claimed it, this instance is invite-only: a stranger who finds the URL can no
- * longer self-register. (Better-Auth-DO only; an OIDC deployment never hits this route — its
- * users come from the issuer.) Must be registered BEFORE the /api/auth/* catch-all forward.
- */
-app.post('/api/auth/sign-up/email', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
-  // In OIDC mode there is nothing to sign up to HERE — accounts live at the issuer. The
-  // provider's own handle would 404 anyway; answering before the gate keeps the error honest.
-  const { choice } = await authWiringFor(c.env, node);
-  if (choice?.mode === 'oidc') {
-    return c.json({ error: 'accounts are managed at this workspace’s identity provider' }, 404);
-  }
-  const id = identityDo(c.env, node);
-  // Allowed during first-run setup (creates the admin), OR when the request carries a valid
-  // unclaimed invite token (`?invite=<token>`) — that's how an invited teammate registers
-  // after the workspace is closed. Anything else is refused.
-  const token = new URL(c.req.raw.url).searchParams.get('invite');
-  const allowed =
-    (await id.needsSetup(node.scopeId)) || (token ? await id.inviteExists(node.scopeId, await sha256Hex(token)) : false);
-  if (!allowed) {
-    return c.json({ error: 'Sign-up is closed for this workspace — ask an admin to invite you.' }, 403);
-  }
-  return (await authProviderFor(c.env, c.req.raw)).handle(c.req.raw);
-});
-
-/**
- * Which auth this instance runs — the SPA's sign-in screen branches on it: `builtin`
- * renders the email/password forms, `oidc` a "continue with your identity provider"
- * redirect. Deliberately tiny and unauthenticated (it gates nothing; the providers do).
- */
-app.get('/api/auth-mode', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
-  const { choice, settings } = await authWiringFor(c.env, node);
-  const oidc = choice?.mode === 'oidc' || (!choice && settings.AUTH_PROVIDER === 'oidc');
-  return c.json({ mode: oidc ? 'oidc' : 'builtin' });
-});
-
-// Identity/credentials/sessions live behind the AuthProvider contract — Better Auth in the
-// tenant's own AuthDO, or the OIDC relying-party flow — the worker only forwards.
+// Identity/credentials/sessions live entirely at the OIDC issuer (oidc-only-demos.md): the
+// vertical runs no credential store and hosts no sign-up. `/api/auth/*` is the relying-party
+// flow only — `/login` → issuer → `/callback` → session cookie → `/logout`; the provider's
+// handle 404s every other credential path (sign-up, password, reset), which live at the issuer.
 app.on(['GET', 'POST'], '/api/auth/*', async (c) => (await authProviderFor(c.env, c.req.raw)).handle(c.req.raw));
 
 /** The verified subject behind the current session, or null — the contract's `resolve`. */

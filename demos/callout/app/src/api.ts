@@ -223,34 +223,18 @@ export async function me(): Promise<MeResult> {
   }
 }
 
-/** Better Auth email+password sign-in; throws with the server message on failure. */
-export async function signIn(email: string, password: string): Promise<void> {
-  const res = await fetch('/api/auth/sign-in/email', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) {
-    let message = `${res.status}`;
-    try {
-      const body = (await res.json()) as { message?: string };
-      if (body.message) message = body.message;
-    } catch {
-      /* non-JSON error body */
-    }
-    throw new Error(message);
-  }
+// OIDC-only (oidc-only-demos.md): the vertical hosts no credential endpoints. Sign-in,
+// sign-up, password, and reset all live at the issuer; the SPA redirects to `/api/auth/login`
+// (see the LoginScreen in App.tsx). There is no `signIn` client here any more.
+
+/** Send the browser to the issuer to sign in, returning to `returnTo` on this origin. */
+export function loginAt(returnTo = '/'): void {
+  window.location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
 }
 
-/** Better Auth sign-out; clears the session cookie. */
-export async function signOut(): Promise<void> {
-  await fetch('/api/auth/sign-out', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: '{}',
-  });
+/** Sign out at the issuer (clears the session cookie), then land back on this origin. */
+export function signOut(): void {
+  window.location.assign('/api/auth/logout');
 }
 
 export const api = {

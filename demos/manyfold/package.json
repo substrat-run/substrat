@@ -50,7 +50,6 @@
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
-    "better-auth": "^1.6.23",
     "better-sqlite3": "^13.0.2",
     "hono": "^4.12.32",
     "zod": "^4.4.3"

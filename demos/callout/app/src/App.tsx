@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   api,
   currentPrincipal,
+  loginAt,
   me,
   setHeaderAuth,
   setPrincipal,
-  signIn,
   signOut,
   type CastMember,
   type Session,
@@ -65,16 +65,8 @@ export default function App() {
     );
   }
   if (auth.kind === 'header') return <HeaderModeApp />;
-  if (!auth.session) return <LoginScreen onSignedIn={probe} />;
-  return (
-    <AuthedApp
-      session={auth.session}
-      onSignOut={async () => {
-        await signOut();
-        await probe();
-      }}
-    />
-  );
+  if (!auth.session) return <LoginScreen />;
+  return <AuthedApp session={auth.session} onSignOut={() => signOut()} />;
 }
 
 /** The shared chrome (topbar + nav + routed view). `identity` is the right-hand slot. */
@@ -200,26 +192,13 @@ function AuthedApp({ session, onSignOut }: { session: Session; onSignOut: () => 
   return <AppShell cast={{}} isPortal={isPortal} identity={identity} sessionKey={session.principal} />;
 }
 
-/** Better Auth email+password login (Worker mode, no active session). */
-function LoginScreen({ onSignedIn }: { onSignedIn: () => void | Promise<void> }) {
-  const [email, setEmail] = useState('anna@elmontage.se');
-  const [password, setPassword] = useState('demo1234');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError('');
-    try {
-      await signIn(email, password);
-      await onSignedIn();
-    } catch (err) {
-      setError((err as Error).message);
-      setBusy(false);
-    }
-  };
-
+/**
+ * Sign-in for a hosted instance (Worker mode, no active session). OIDC-only
+ * (oidc-only-demos.md): accounts and passwords live at the identity provider, so the only
+ * action here is to go there. The first sign-in on a fresh instance still claims the owner
+ * seat (→ office-admin) via the worker's provider-agnostic sub→principal binding.
+ */
+function LoginScreen() {
   return (
     <>
       <header className="topbar">
@@ -230,45 +209,12 @@ function LoginScreen({ onSignedIn }: { onSignedIn: () => void | Promise<void> })
       <main className="page">
         <div className="card" style={{ maxWidth: 380, margin: '48px auto' }}>
           <h2>Logga in</h2>
-          {error && <div className="alert error">{error}</div>}
-          <form onSubmit={submit}>
-            <div className="kv" style={{ gridTemplateColumns: '1fr', rowGap: 10 }}>
-              <label>
-                <div className="muted" style={{ marginBottom: 4 }}>
-                  E-post
-                </div>
-                <input
-                  style={{ width: '100%' }}
-                  type="email"
-                  value={email}
-                  autoComplete="username"
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </label>
-              <label>
-                <div className="muted" style={{ marginBottom: 4 }}>
-                  Lösenord
-                </div>
-                <input
-                  style={{ width: '100%' }}
-                  type="password"
-                  value={password}
-                  autoComplete="current-password"
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </label>
-              <button className="btn primary" type="submit" disabled={busy}>
-                {busy ? 'Loggar in…' : 'Logga in'}
-              </button>
-            </div>
-          </form>
-          <div className="alert info" style={{ marginTop: 16 }}>
-            Demokonton:
-            <br />
-            <code>anna@elmontage.se</code> / <code>demo1234</code> — kontor (office-admin)
-            <br />
-            <code>harald@elmontage.se</code> / <code>demo1234</code> — tekniker (technician)
-          </div>
+          <p className="muted" style={{ marginBottom: 16 }}>
+            Logga in med din identitetsleverantör för att komma åt din arbetsyta.
+          </p>
+          <button className="btn primary" onClick={() => loginAt('/')}>
+            Fortsätt till inloggning
+          </button>
         </div>
       </main>
     </>

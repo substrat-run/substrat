@@ -146,7 +146,7 @@ export default function App() {
           navigate({ kind: 'home' });
           refresh();
         }}
-        onSignOut={async () => { await auth.signOut().catch(() => undefined); location.reload(); }}
+        onSignOut={() => auth.logout()}
         onTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
       />
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>

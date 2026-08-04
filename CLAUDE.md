@@ -30,6 +30,12 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 - `pnpm callout-demo dev` — run the Callout demo (API :8871 + web :5271). Demo dev
   ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ` overrides both ends of the proxy.
+- **Callout, Meridian, and Manyfold are OIDC-only** (`docs/design/oidc-only-demos.md`): they run
+  no credential store — login/sign-up/password/reset live at the OIDC issuer (`demos/auth-server`),
+  and the vertical only maps the authenticated `sub` → a scope principal (owner-claim + invites in
+  the per-tenant `IdentityDO`). Local `… dev` authenticates with the `x-principal` persona picker;
+  a real OIDC login is exercised via the worker (`wrangler dev`) against a running issuer. Only
+  `demos/auth-server` (the issuer) and the Node-only demos (shop/rally/handlebar) still run Better Auth.
 - `pnpm --filter @substrat-run/demo-shop dev` — the shop demo runs **three** processes:
   API :8873, storefront :5273, back-office :5274 (`ADMIN_PORT=…`). Customer-facing and
   staff-facing surfaces are separate Vite apps against one API — the split is chrome and

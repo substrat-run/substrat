@@ -7,5 +7,5 @@
     "rootDir": ".",
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["src/worker.ts", "src/routes.ts", "src/module.ts", "src/auth.ts", "src/auth-adapters.ts", "src/auth-schema.ts", "src/assets.ts", "src/assets.generated.ts"]
+  "include": ["src/worker.ts", "src/routes.ts", "src/module.ts", "src/auth-adapters.ts", "src/assets.ts", "src/assets.generated.ts"]
 }
