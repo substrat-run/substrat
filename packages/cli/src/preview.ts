@@ -38,7 +38,14 @@ async function request<T>(url: string, header: Record<string, string>, init?: Re
   if (!res.ok) {
     let message = body.slice(0, 400);
     try {
-      message = (JSON.parse(body) as { error?: string }).error ?? message;
+      const parsed = JSON.parse(body) as { error?: string; issues?: unknown[] };
+      message = parsed.error ?? message;
+      // A control-plane Zod refusal (`{ error: 'invalid request', issues }`) is useless
+      // without the issues: 'invalid request' alone gives the operator nothing to fix.
+      // Append the failing path(s) so a preview 400 names the field instead of hiding it.
+      if (Array.isArray(parsed.issues) && parsed.issues.length > 0) {
+        message += ` — ${JSON.stringify(parsed.issues)}`;
+      }
     } catch {
       // Not JSON — the raw body is the message.
     }
