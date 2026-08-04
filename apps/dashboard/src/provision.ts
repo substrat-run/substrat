@@ -493,17 +493,33 @@ export async function deprovisionApp(
   await scope.invoke('dashboard/delete-app', { appScopeId: input.appScopeId });
 
   // 2. Take the app scope offline in the caller's own tenant (ambient, never a request arg).
+  //    Idempotent against a scope that has already LEFT the archivable states — a delete
+  //    retried after a partial failure, or a scope reaped out-of-band (e.g. a console reap):
+  //    only `provisioning|active|suspended` may be archived, so archiving an already
+  //    `archived`/`reaped` scope would throw an illegal-transition and strand the app row
+  //    forever. Skip the transition when it no longer applies, but still release any
+  //    hostname rows an earlier attempt left bound (unbind is itself idempotent).
   if (input.controlPlane) {
-    await input.controlPlane.archiveScope(input.appScopeId);
+    const cur = await input.controlPlane.scopeStatus(input.appScopeId);
+    if (cur && ARCHIVABLE_STATUSES.has(cur.status)) {
+      await input.controlPlane.archiveScope(input.appScopeId);
+    }
     await input.controlPlane.unbindScopeHostnames(input.appScopeId);
   } else {
     const staff = platformActorId.parse(ulid());
-    await host.admin.archiveScope(staff, input.node.tenantId, input.appScopeId);
+    const cur = await host.admin.getScopeRecord(staff, input.node.tenantId, input.appScopeId);
+    if (cur && ARCHIVABLE_STATUSES.has(cur.status)) {
+      await host.admin.archiveScope(staff, input.node.tenantId, input.appScopeId);
+    }
     for (const h of await host.admin.listHostnames(staff, { scopeId: input.appScopeId })) {
       await host.admin.unbindHostname(staff, h.hostname);
     }
   }
 }
+
+/** The scope statuses `archiveScope` accepts — anything else means the scope is already
+ *  torn down, so deprovision skips the archive rather than throwing an illegal transition. */
+const ARCHIVABLE_STATUSES = new Set(['provisioning', 'active', 'suspended']);
 
 /**
  * Retry a FAILED app: best-effort tear down the failed attempt, then re-provision

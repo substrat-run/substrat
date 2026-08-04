@@ -2635,6 +2635,37 @@ export function scopeHostContractSuite(
       await expect(host.admin.reapScope(staff, t3, s)).rejects.toThrow(/not archived/);
     });
 
+    it('reap refuses while a hostname still resolves; unbind first, then it reaps (§4.4)', async () => {
+      // The regression this guards: a console `archiveScope` (unlike the dashboard delete
+      // path) does NOT release hostnames, so an archived-but-still-bound scope used to walk
+      // straight into reap and wipe a live app. A serving scope always holds a bound name;
+      // reap must fail closed until that name is unbound — the wall in front of the wipe.
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t3, scopeId: s, slug: 'still-serving', jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t3, s);
+      await host.admin.bindHostname(staff, {
+        hostname: 'still-serving.example.com',
+        tenantId: t3,
+        scopeId: s,
+        surface: 'app',
+        region: null,
+        canonical: true,
+      });
+      // Archive alone (the console path) leaves the hostname bound…
+      await host.admin.archiveScope(staff, t3, s);
+      // …so reap refuses, naming the offending hostname, and the row survives untouched.
+      await expect(host.admin.reapScope(staff, t3, s)).rejects.toThrow(
+        /still resolves hostname 'still-serving\.example\.com'/,
+      );
+      expect((await host.admin.getScopeRecord(staff, t3, s))!.status).toBe('archived');
+
+      // Unbinding is the visible, reversible step that clears the wall…
+      await host.admin.unbindHostname(staff, 'still-serving.example.com');
+      // …and only then does reap go through.
+      await host.admin.reapScope(staff, t3, s);
+      expect((await host.admin.getScopeRecord(staff, t3, s))!.status).toBe('reaped');
+    });
+
     // -- tenant delete lifecycle (control-plane.md §4.8) ----------------------
 
     it('delete stamps deletingAt and fails getScope closed; un-delete restores (§4.8)', async () => {

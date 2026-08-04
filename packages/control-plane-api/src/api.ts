@@ -615,7 +615,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if (scope.status !== 'archived') await admin.archiveScope(actor, tenantId, scope.id);
         const vertical = await verticalForScope(c, scope);
         if (vertical) await vertical.deleteScope({ scopeId: scope.id });
-        await admin.reapScope(actor, tenantId, scope.id);
+        // Tenant teardown reaps every scope and releases every name by design — force past
+        // the bound-hostname guard (which fences the interactive per-scope reap route below).
+        await admin.reapScope(actor, tenantId, scope.id, { force: true });
       }
       await admin.reapTenant(actor, tenantId);
       return c.json(await admin.getTenant(actor, tenantId));
@@ -1342,6 +1344,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (scope.status !== 'archived') {
       return c.json(
         { error: `scope ${scopeId} is ${scope.status}, not archived — only an archived scope may be reaped` },
+        409,
+      );
+    }
+    // Refuse a scope that still resolves a hostname BEFORE any delegation — the vertical's
+    // `deleteScope` below wipes the hosted DO's bytes, so this must gate ahead of it, not
+    // only in `reapScope` after. A serving app always holds a bound name; unbind it first.
+    // (This route is the interactive per-scope reap; the tenant-teardown route forces past
+    // the same guard because releasing every name is the point there.)
+    const boundNames = await admin.listHostnames(actor, { scopeId, limit: 1 });
+    if (boundNames.length > 0) {
+      return c.json(
+        {
+          error:
+            `scope ${scopeId} still resolves hostname '${boundNames[0]!.hostname}' — ` +
+            `unbind it before reaping (reap wipes storage and cannot be undone)`,
+        },
         409,
       );
     }
@@ -2569,8 +2587,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // into the PR version's deployment — the one genuinely byte-moving path (§9), gated
   // below exactly as the governed pull is: `global`-only + the canonical audited export.
 
-  /** The preview scope's deterministic slug — how a `(vertical, tag)` is looked up + reaped. */
-  const previewSlug = (slug: string, tag: string): string => `${slug}--${tag}`;
+  /** The preview scope's deterministic slug — how a `(vertical, tag)` is looked up + reaped.
+   *  Derived from the vertical's BARE label, never the qualified `<tenant>/<label>` registry
+   *  id `resolveVerticalId` hands the routes: a scope slug is a DNS label (`slugSchema`), so a
+   *  `/` in it fails `provisionScope`'s parse (#498). Slugs are unique per tenant, and the
+   *  label is unique within a tenant, so dropping the prefix stays collision-free. Both
+   *  create (provision + reuse-match) and delete (reap-match) run through here, so they agree. */
+  const previewSlug = (slug: string, tag: string): string => `${slug.split('/').at(-1)}--${tag}`;
 
   /** Mint (or find) the preview's `--<tag>` platform hostname, derived from the source
    *  scope's canonical URL. Non-canonical, so it never demotes the prod surface. */

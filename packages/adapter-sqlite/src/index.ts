@@ -4419,7 +4419,7 @@ export class SqliteScopeHost implements ScopeHost {
         transitionScope(actor, 'archiveScope', tenantId, scopeId, ['provisioning', 'active', 'suspended'], 'archived'),
       unarchiveScope: async (actor, tenantId, scopeId) =>
         transitionScope(actor, 'unarchiveScope', tenantId, scopeId, ['archived'], 'active'),
-      reapScope: async (actor, tenantId, scopeId) => {
+      reapScope: async (actor, tenantId, scopeId, opts) => {
         // Reap an ARCHIVED scope's storage while keeping its directory row as a tombstone
         // (§4.4). Only `archived` may be reaped — an illegal source fails closed. The
         // STORAGE goes before the status flip (the ordering deleteSnapshot keeps): a crash
@@ -4436,6 +4436,25 @@ export class SqliteScopeHost implements ScopeHost {
         if (rec.status !== 'archived') {
           throw new Error(
             `scope ${scopeId} is ${rec.status}, not archived — only an archived scope may be reaped`,
+          );
+        }
+        // A serving scope always holds ≥1 bound hostname; a truly-dead one has been
+        // unbound. The dashboard delete path unbinds AT archive, but a bare console
+        // `archiveScope` does not — so reap cannot ASSUME the release, it must verify it.
+        // Refuse (fail closed) while any name still resolves here: unbinding first is a
+        // visible, reversible step, and it is the wall that stops the irreversible wipe
+        // from ever landing on an app that is still online (§4.4). `force` is the
+        // deliberate-teardown bypass (tenant reap / retention sweep), where every name is
+        // being released anyway; the interactive per-scope reap never sets it.
+        const bound = opts?.force
+          ? undefined
+          : (this.directory
+              .prepare('SELECT hostname FROM hostnames WHERE scope_id = ? LIMIT 1')
+              .get(scopeId) as { hostname: string } | undefined);
+        if (bound) {
+          throw new Error(
+            `scope ${scopeId} still resolves hostname '${bound.hostname}' — ` +
+              `unbind it before reaping (reap wipes storage and cannot be undone)`,
           );
         }
         const key = `${tenantId}/${scopeId}`;

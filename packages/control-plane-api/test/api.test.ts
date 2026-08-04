@@ -859,6 +859,58 @@ describe('control-plane API', () => {
     expect(((await res.json()) as { error: string }).error).toMatch(/private/i);
   });
 
+  it('forks a vertical addressed by its QUALIFIED registry id (#498)', async () => {
+    // A builder push addresses the prefixed id `<tenant>/<label>` — the shape `resolveVerticalId`
+    // hands every preview route. The preview scope slug must be derived from the BARE label, or
+    // `provisionScope`'s DNS-label parse rejects the `/` with a 400 the create never recovers from.
+    await host.admin.registerVertical(staff, {
+      slug: 'acme/prev-q', name: 'Prev Q', source: 'cli', ownerTenant: t1,
+    });
+    const id = ulid();
+    await host.admin.publishVersion(staff, {
+      id, verticalSlug: 'acme/prev-q', version: '1.0.0',
+      manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+    });
+    await host.admin.admitVersion(staff, id);
+
+    const prod = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: prod, vertical: 'acme/prev-q' });
+    await host.admin.activateScope(staff, t1, prod);
+    await host.admin.bindScopeVersion(staff, t1, prod, id);
+    await host.admin.bindHostname(staff, {
+      hostname: 'prev-q-acme.global.substrat.run',
+      tenantId: t1, scopeId: prod, surface: 'app', region: null, canonical: true,
+    });
+
+    const fakeVertical = {
+      exportScope: async (): Promise<ScopeDumpTable[]> => [
+        { name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: [['a']] },
+      ],
+      restoreScope: async (_t: string, _sid: string, tables: ScopeDumpTable[]) => ({ tables: tables.length }),
+      deleteScope: async (_input: { scopeId: string }) => {},
+    } as unknown as VerticalClient;
+    const dapp = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'acme/prev-q': fakeVertical },
+      platformBaseDomains: ['global.substrat.run'],
+    });
+    const path = `/verticals/${encodeURIComponent('acme/prev-q')}/previews`;
+    const dj = (p: string, method: string, body?: unknown) =>
+      dapp.request(p, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    // Before the fix this POST 400'd on the scope slug `acme/prev-q--pr-9`; now it forks cleanly.
+    const created = await dj(path, 'POST', { tag: 'pr-9', versionId: id });
+    expect(created.status).toBe(201);
+    const c = (await created.json()) as { scopeId: string; hostname: string };
+    expect(c.hostname).toBe('prev-q-acme--pr-9.global.substrat.run');
+    // The preview scope carries the BARE-label slug, and delete's reap-match agrees with it.
+    const row = (await (await dj(`/tenants/${t1}/scopes/${c.scopeId}`, 'GET')).json()) as { slug: string };
+    expect(row.slug).toBe('prev-q--pr-9');
+    const del = await dj(`${path}/pr-9`, 'DELETE');
+    expect(((await del.json()) as { deleted: string | null }).deleted).toBe(c.scopeId);
+  });
+
   // -- the governed pull (preview-and-snapshots.md §6/§8) --------------------
 
   it('exports a scope masked by default; ?full=true is the break-glass', async () => {
@@ -993,9 +1045,27 @@ describe('control-plane API', () => {
     expect((await early.json()).error).toMatch(/not archived/);
     expect(deletes).toEqual([]);
 
-    // Archive, then reap: the storage wipe reaches the vertical, and the directory row
-    // SURVIVES here as a `reaped` tombstone (unlike the fork DELETE, which removes it).
+    // A scope that still resolves a hostname is refused too — and, like the archived-only
+    // gate, BEFORE any delegation, so the vertical never wipes a scope that is still online.
+    // This is the regression the incident exposed: a console archive does not release
+    // hostnames, so reap must fence on them itself rather than assume the release.
+    await host.admin.bindHostname(staff, {
+      hostname: 'reap-me.example.com',
+      tenantId: tR,
+      scopeId: sR,
+      surface: 'app',
+      region: null,
+      canonical: true,
+    });
     await host.admin.archiveScope(staff, tR, sR);
+    const stillBound = await djson(`/tenants/${tR}/scopes/${sR}/reap`, 'POST');
+    expect(stillBound.status).toBe(409);
+    expect((await stillBound.json()).error).toMatch(/still resolves hostname 'reap-me\.example\.com'/);
+    expect(deletes).toEqual([]); // the wipe never reached the vertical
+
+    // Unbind (the visible, reversible step) and only then does reap go through: the storage
+    // wipe reaches the vertical, and the directory row SURVIVES here as a `reaped` tombstone.
+    await host.admin.unbindHostname(staff, 'reap-me.example.com');
     const reaped = await djson(`/tenants/${tR}/scopes/${sR}/reap`, 'POST');
     expect(reaped.status).toBe(200);
     expect(await reaped.json()).toMatchObject({ status: 'reaped' });
@@ -1016,6 +1086,17 @@ describe('control-plane API', () => {
     await host.provisionScope(staff, { tenantId: tR, scopeId: sArch, vertical: 'demo-vert' });
     await host.admin.activateScope(staff, tR, sArch);
     await host.admin.archiveScope(staff, tR, sArch);
+    // The active scope still resolves a hostname — tenant teardown must force PAST the
+    // per-scope bound-hostname guard (releasing every name is the point of a tenant reap),
+    // unlike the interactive per-scope route above which the same binding would block.
+    await host.admin.bindHostname(staff, {
+      hostname: 'tenant-reap-me.example.com',
+      tenantId: tR,
+      scopeId: sActive,
+      surface: 'app',
+      region: null,
+      canonical: true,
+    });
 
     const deletes: string[] = [];
     const fakeVertical = {

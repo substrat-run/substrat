@@ -855,6 +855,35 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     expect(reApp.hostname).toBe('temp.global.substrat.run');
   });
 
+  it('deleting an app whose scope was already reaped out-of-band cleans up, does not throw', async () => {
+    // The split-brain the incident left behind: a scope reaped straight from the console
+    // while the dashboard app row still existed. deleteApp used to blindly re-archive it
+    // and throw `reaped → archived`, stranding the row forever. It must be idempotent.
+    const acme = await bootstrap('acme-reaped');
+    const appScopeId = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme,
+      appScopeId,
+      verticalSlug: 'protocol',
+      name: 'Gone',
+      appEntitlements: ['protocol'],
+      appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
+    });
+
+    // Reap it out-of-band (archive → unbind its names → reap), leaving the app row behind.
+    await host.admin.archiveScope(staff, acme.tenantId, appScopeId);
+    for (const h of await host.admin.listHostnames(staff, { scopeId: appScopeId })) {
+      await host.admin.unbindHostname(staff, h.hostname);
+    }
+    await host.admin.reapScope(staff, acme.tenantId, appScopeId);
+    expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))!.status).toBe('reaped');
+
+    // Deleting the app now SUCCEEDS and drops the orphan row, rather than throwing.
+    await expect(deprovisionApp(host, { node: acme, appScopeId })).resolves.toBeUndefined();
+    const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    expect(await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {})).toHaveLength(0);
+  });
+
   it('an owner provisions a real Callout app — a live multi-engine scope with a default hostname', async () => {
     const acme = await bootstrap('acme-callout');
     const appScopeId = scopeId.parse(ulid());
