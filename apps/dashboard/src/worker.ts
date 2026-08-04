@@ -11,6 +11,7 @@
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
@@ -2603,8 +2604,15 @@ app.get('/api/github/workflow-preview', async (c) => {
 });
 
 app.onError((err, c) => {
-  const status = err instanceof HTTPException ? err.status : 400;
   const m = err instanceof Error ? err.message : String(err);
+  // A ControlPlaneError carries the plane's OWN status. Honor it rather than letting the
+  // `: 400` default below flatten an upstream 5xx to a 400 — that mislabels a server/upstream
+  // fault (e.g. the CF observability token 403 that the plane surfaces as a 500 `internal error`)
+  // as the caller's mistake. status 0 = plane unreachable → 502.
+  if (err instanceof ControlPlaneError) {
+    return c.json({ error: m }, (err.status >= 400 ? err.status : 502) as ContentfulStatusCode);
+  }
+  const status = err instanceof HTTPException ? err.status : 400;
   if (status === 400 && /permission denied/.test(m)) return c.json({ error: m }, 403);
   // A slug that isn't the caller's own deployment reads as not-found, not a leak.
   if (status === 400 && /not one of your deployments/.test(m)) return c.json({ error: m }, 404);
