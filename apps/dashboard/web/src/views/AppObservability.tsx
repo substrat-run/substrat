@@ -38,7 +38,7 @@ export function AppObservability({ app }: { app: AppRow }) {
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
   const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
-  const [logsFailed, setLogsFailed] = useState(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -89,7 +89,7 @@ export function AppObservability({ app }: { app: AppRow }) {
     }
     let live = true;
     setLogs(null);
-    setLogsFailed(false);
+    setLogsError(null);
     void (async () => {
       try {
         const events = DEV_MOCK
@@ -107,8 +107,18 @@ export function AppObservability({ app }: { app: AppRow }) {
               limit: 100,
             });
         if (live) setLogs(events);
-      } catch {
-        if (live) setLogsFailed(true);
+      } catch (e) {
+        if (!live) return;
+        // Surface WHY, not a blanket "unavailable" — the plane's status is the whole
+        // signal (501 = not configured, 5xx = an upstream/query failure worth reporting).
+        // The plane returns sanitized bodies, so `e.message` is safe to show.
+        setLogsError(
+          e instanceof ApiError
+            ? e.status === 501
+              ? 'Log streaming is not configured on this platform.'
+              : `Logs are unavailable (${e.status}): ${e.message}`
+            : 'Logs are unavailable right now.',
+        );
       }
     })();
     return () => {
@@ -142,7 +152,7 @@ export function AppObservability({ app }: { app: AppRow }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
           Traffic for the serving version of <span style={{ fontFamily: 'var(--font-mono)' }}>{app.vertical_slug}</span> —
-          sampled, approximate
+          approximate, sampled at high volume
         </span>
         <div style={{ flex: 1 }} />
         <Select
@@ -239,8 +249,8 @@ export function AppObservability({ app }: { app: AppRow }) {
             </form>
             <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{range.label.toLowerCase()}, newest 100</span>
           </div>
-          {logsFailed ? (
-            <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>Logs are unavailable right now.</div>
+          {logsError ? (
+            <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>{logsError}</div>
           ) : logs === null ? (
             <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading…</div>
           ) : logs.length === 0 ? (
