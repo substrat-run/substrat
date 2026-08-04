@@ -104,6 +104,11 @@
 	// no ACM (a two-level console.test.substrat.net would need an advanced cert).
 	"env": {
 		"test": {
+			// Non-inheritable, exactly like the bindings below: wrangler does NOT carry the
+			// top-level `triggers` into a named env, so without this line `substrat-control-plane-test`
+			// deploys with NO cron and its scheduled pass — the platform-intent drain included —
+			// never runs (#444). Same schedule as prod.
+			"triggers": { "crons": ["*/15 * * * *"] },
 			"routes": [{ "pattern": "console-test.substrat.net", "custom_domain": true }], // differs
 			"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run" },
 			"durable_objects": {

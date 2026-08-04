@@ -516,16 +516,25 @@ export default {
       // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
       drainPlatformRequestsFn: (t, s) => drainOneScope(env, t, s),
     });
+    // Log whenever the pass DID something — reaps, errors, or any platform-intent
+    // activity (drained/failed/still-pending). The last one matters most (#444): a
+    // scope with intents stuck `pending` should leave a trace on every pass, so a
+    // drain that silently never converges is visible in the tail instead of invisible.
+    const pr = report.platformRequestTotals;
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
       report.tenantsReaped > 0 ||
-      report.errors.length > 0
+      report.errors.length > 0 ||
+      pr.drained > 0 ||
+      pr.failed > 0 ||
+      pr.pending > 0
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
         archivedScopesReaped: report.archivedScopesReaped,
         tenantsReaped: report.tenantsReaped,
+        platformRequests: pr,
         errors: report.errors,
       });
     }
