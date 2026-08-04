@@ -1123,8 +1123,18 @@ export interface HostAdmin {
    * The CP-less byte-wipe (a hosted scope's DO lives in the vertical's own deployment)
    * is orchestrated by the caller via the vertical's `deleteScope` before this; the
    * adapter half wipes any co-located storage and flips the status.
+   *
+   * Refuses (fail closed) while the scope still holds a bound hostname — a serving app
+   * always does, so the wipe cannot land on one that is still online; unbind it first.
+   * `force` is the deliberate-teardown bypass (tenant reap §4.8, retention sweeps §4.4),
+   * where releasing every name is the point; interactive per-scope reap never sets it.
    */
-  reapScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
+  reapScope(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    opts?: { force?: boolean },
+  ): Promise<void>;
 
   // -- entitlements (control-plane.md §4.3) ----------------------------------
   // What finally makes `manifest.entitlementKey` mean something (D-20). An

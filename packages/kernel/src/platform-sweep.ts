@@ -516,7 +516,10 @@ export async function runPlatformSweep(
     const due = archived.filter((s) => s.archivedAt !== null && s.archivedAt <= cutoff);
     const reap =
       options.reapScopeFn ??
-      ((tenantId: TenantId, scopeId: ScopeId) => host.admin.reapScope(options.actor, tenantId, scopeId));
+      // Retention reap is a deliberate policy on already-archived scopes: force past the
+      // bound-hostname guard (which exists to stop the INTERACTIVE per-scope mistake).
+      ((tenantId: TenantId, scopeId: ScopeId) =>
+        host.admin.reapScope(options.actor, tenantId, scopeId, { force: true }));
     await mapBounded(due, concurrency, async (s) => {
       try {
         await reap(s.tenantId, s.id);
@@ -546,8 +549,9 @@ export async function runPlatformSweep(
     );
     const reapOneScope =
       options.reapScopeFn ??
+      // Tenant teardown releases every name by design: force past the bound-hostname guard.
       ((tenantId: TenantId, scopeId: ScopeId) =>
-        host.admin.reapScope(options.actor, tenantId, scopeId));
+        host.admin.reapScope(options.actor, tenantId, scopeId, { force: true }));
     const reapTenant =
       options.reapTenantFn ??
       (async (tenantId: TenantId) => {

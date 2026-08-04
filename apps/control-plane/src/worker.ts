@@ -502,7 +502,9 @@ export default {
           const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
           if (vertical) await vertical.deleteScope({ scopeId });
         }
-        await host.admin.reapScope(SWEEP_ACTOR, tenantId, scopeId);
+        // Automated retention / tenant-teardown reap: force past the bound-hostname guard
+        // (that guard stops the interactive per-scope mistake, not the aged-out sweep).
+        await host.admin.reapScope(SWEEP_ACTOR, tenantId, scopeId, { force: true });
       },
       // §4.8 tenant reap — opt-in via TENANT_RETENTION_DAYS. The kernel's default
       // `reapTenantFn` composes the `reapScopeFn` above (archive-if-needed → wipe each
