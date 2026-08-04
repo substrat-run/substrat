@@ -1,5 +1,31 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.44.0
+
+### Minor Changes
+
+- 3246681: Guard `reapScope` so a still-serving scope can never be reaped. A serving app
+  always holds ≥1 bound hostname, so `reapScope` now refuses (fail closed) while
+  any hostname is bound to the scope — unbind first, a visible and reversible step.
+
+  The hole this closes: `reapScope` _assumed_ "hostnames were released at archive",
+  which is true for the dashboard delete path (it unbinds) but not for a bare
+  console `archiveScope` (a status flip only). An archived-but-still-bound scope
+  walked straight into the irreversible wipe, taking a live app's storage with it.
+
+  The guard is enforced in two places — the host adapter (so the contract suite
+  asserts it for every adapter) and the per-scope reap route, ahead of the
+  vertical's `deleteScope` where the production wipe actually happens. `HostAdmin.reapScope`
+  gains an optional `{ force?: boolean }`: deliberate teardown (tenant reap §4.8,
+  retention sweeps §4.4) releases every name by design and sets `force: true`; the
+  interactive per-scope reap never does.
+
+### Patch Changes
+
+- Updated dependencies [3246681]
+  - @substrat-run/kernel@0.44.0
+  - @substrat-run/contracts@0.44.0
+
 ## 0.43.0
 
 ### Minor Changes
@@ -1701,7 +1727,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

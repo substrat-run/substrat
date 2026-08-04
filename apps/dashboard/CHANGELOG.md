@@ -1,5 +1,52 @@
 # @substrat-run/dashboard
 
+## 0.14.3
+
+### Patch Changes
+
+- 10733c4: The Verticals page had no per-vertical detail view — the only entry point into a
+  vertical's history was the "All N versions" link, which merely expanded the collapsed
+  list in place. A vertical is a first-class thing (its pushed versions, admission state,
+  channels, and prod go-live history), so it now has a page of its own.
+
+  Add a `#/verticals/<slug>` route rendering a new `VerticalDetail` page: the full version
+  list (not just the newest three), the same self-serve channel promotion, and the prod
+  go-live / rollback history that used to be an inline expand on the card. The slug carries
+  a slash (`acme/helpdesk`), so it's URI-encoded into a single hash segment and decoded on
+  the way back. Breadcrumbs read `Verticals › <name>`, and a deep link to an unknown slug
+  shows a not-found (a loading state while the deployments list is still in flight, so it
+  never flashes 404).
+
+  The summary card keeps its newest-three preview; the title and the version-count link now
+  navigate to the detail page (`View all N versions →` / `View details →`) instead of
+  toggling local state.
+
+- de11d64: The app Observability tab collapsed any logs-fetch failure into a single blanket
+  "Logs are unavailable right now." — indistinguishable from a real outage, a
+  misconfiguration, or a permission gap. It now surfaces the plane's status: `501`
+  reads as "Log streaming is not configured on this platform.", any other error as
+  "Logs are unavailable (`<status>`): `<message>`" (the plane returns sanitized bodies,
+  so the message is safe to show). This is what made a `CF_API_TOKEN` missing
+  `Workers Observability: Read` — the telemetry query 403 the plane maps to a 500 —
+  undiagnosable from the UI alone.
+
+  Also softens the traffic-panel caption from "sampled, approximate" to "approximate,
+  sampled at high volume": adaptive sampling only kicks in at volume, so at a few
+  hundred requests the numbers are exact and the old blanket "sampled" read as wrong.
+
+- Updated dependencies [3246681]
+- Updated dependencies [2314d79]
+  - @substrat-run/kernel@0.44.0
+  - @substrat-run/adapter-cloudflare@0.44.0
+  - @substrat-run/engine-invoicing@0.5.0
+  - @substrat-run/demo-callout@0.1.32
+  - @substrat-run/demo-manyfold@0.5.7
+  - @substrat-run/demo-meridian@0.3.7
+  - @substrat-run/engine-invites@0.0.41
+  - @substrat-run/engine-protocol@0.5.2
+  - @substrat-run/engine-workorder@0.3.42
+  - @substrat-run/contracts@0.44.0
+
 ## 0.14.2
 
 ### Patch Changes
