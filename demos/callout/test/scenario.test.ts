@@ -159,14 +159,16 @@ describe('FSM demo scenario (spec §8)', () => {
     expect(underlag[0]!.status).toBe('open');
     expect(underlag[0]!.total).toBe('2051.25');
 
-    const detail = await anna.invoke<{ lines: { source_id: string; source_type: string }[] }>(
-      'invoicing/get',
-      { underlagId: underlag[0]!.id },
-    );
+    const detail = await anna.invoke<
+      { lines: { document_type: string; document_id: string; source_type: string | null }[] }
+    >('invoicing/get', { underlagId: underlag[0]!.id });
     expect(detail.lines).toHaveLength(2);
-    expect(detail.lines.every((l) => l.source_type === 'workorder' && l.source_id === orderId)).toBe(
-      true,
-    );
+    // Document-level provenance: the work order these lines came from (#328).
+    expect(
+      detail.lines.every((l) => l.document_type === 'workorder' && l.document_id === orderId),
+    ).toBe(true);
+    // The workorder path DOES carry per-line provenance — it is populated, not NULL.
+    expect(detail.lines.every((l) => l.source_type !== null)).toBe(true);
   });
 
   it('7. portal isolation: berit sees her order, styrbjörn sees nothing, invoicing denied', async () => {

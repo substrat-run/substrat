@@ -48,15 +48,19 @@ function orderPlaced(orderId: string, billable: unknown[], paymentMethod = 'invo
   } as DomainEventInput;
 }
 
-const line = (article: string, amount: string, currency = 'SEK') => ({
+const line = (
+  article: string,
+  amount: string,
+  currency = 'SEK',
+  source: { sourceType: string; sourceId: string } = { sourceType: 'time', sourceId: 'src-1' },
+) => ({
   article,
   description: `${article} line`,
   qty: '1',
   unit: 'st',
   unitPrice: moneyOf(amount, currency),
   lineTotal: moneyOf(amount, currency),
-  sourceType: 'time',
-  sourceId: 'src-1',
+  ...source,
 });
 
 describe('engine-invoicing', () => {
@@ -99,14 +103,42 @@ describe('engine-invoicing', () => {
   // -- the consumers -------------------------------------------------------
 
   it('consumes workorder.completed: snapshots lines with provenance', async () => {
-    await h.emit(completed('wo-1', [line('arbete', '100'), line('material', '50')]));
+    await h.emit(
+      completed('wo-1', [
+        line('arbete', '100', 'SEK', { sourceType: 'time', sourceId: 'te-1' }),
+        line('material', '50', 'SEK', { sourceType: 'material', sourceId: 'ma-1' }),
+      ]),
+    );
 
     const [u] = await list();
     expect(u).toBeDefined();
     const detail = await get(u!.id);
     expect(detail.lines).toHaveLength(2);
-    expect(detail.lines.every((l) => l.source_type === 'workorder' && l.source_id === 'wo-1')).toBe(true);
+    // Document-level provenance: which delivery produced the lines (#328).
+    expect(detail.lines.every((l) => l.document_type === 'workorder' && l.document_id === 'wo-1')).toBe(
+      true,
+    );
+    // Per-line provenance is now CARRIED, not discarded — the field the payload
+    // validated reaches the row, distinct per line (#328).
+    expect(detail.lines.map((l) => ({ t: l.source_type, id: l.source_id }))).toEqual([
+      { t: 'time', id: 'te-1' },
+      { t: 'material', id: 'ma-1' },
+    ]);
     expect(detail.total).toBe('150');
+  });
+
+  it('a producer without per-line provenance (commerce) leaves source_* NULL, document_* set', async () => {
+    // commerce.order-placed carries no per-line sourceType/sourceId, so per-line
+    // provenance is honestly absent rather than a document value masquerading as
+    // one — while document_* still records which delivery produced the line (#328).
+    await h.emit(orderPlaced('ord-1', [line('kaffe', '100')]));
+    const [u] = await list();
+    const detail = await get(u!.id);
+    expect(detail.lines).toHaveLength(1);
+    expect(detail.lines[0]!.document_type).toBe('order');
+    expect(detail.lines[0]!.document_id).toBe('ord-1');
+    expect(detail.lines[0]!.source_type).toBeNull();
+    expect(detail.lines[0]!.source_id).toBeNull();
   });
 
   it('consumes commerce.order-placed only when paid by invoice', async () => {

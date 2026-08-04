@@ -154,11 +154,16 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
     expect(underlag[0]!.status).toBe('open');
     expect(underlag[0]!.total).toBe('170.1'); // product line + discount line, net
 
-    const detail = await astrid.invoke<{ lines: { source_type: string; source_id: string }[] }>('invoicing/get', {
+    const detail = await astrid.invoke<
+      { lines: { document_type: string; document_id: string; source_type: string | null }[] }
+    >('invoicing/get', {
       underlagId: underlag[0]!.id,
     });
     expect(detail.lines).toHaveLength(2); // the bag + the discount line
-    expect(detail.lines.every((l) => l.source_type === 'order' && l.source_id === orderId)).toBe(true);
+    // Document-level provenance: the retail order these lines came from (#328).
+    expect(detail.lines.every((l) => l.document_type === 'order' && l.document_id === orderId)).toBe(true);
+    // commerce.order-placed carries no per-line provenance, so it is honestly absent.
+    expect(detail.lines.every((l) => l.source_type === null)).toBe(true);
   });
 
   it('7. portal isolation: Elin sees her order, Otto and the guest see nothing', async () => {

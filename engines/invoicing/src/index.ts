@@ -99,6 +99,48 @@ export const invoicingMigrations = [
       );
     `,
   },
+  {
+    // #328: split DOCUMENT-level provenance (which delivery produced the line —
+    // a `workorder`/`order`/`timesheet` + its id) from PER-LINE provenance (what
+    // the line itself is — `time` vs `material`). Until now `source_type`/
+    // `source_id` carried the document, and the per-line `sourceType`/`sourceId`
+    // the `workorder.completed` payload validates were parsed and discarded.
+    // `document_*` is always known, so NOT NULL; per-line provenance exists only
+    // where a producer supplies it (the workorder path today), so `source_*`
+    // becomes nullable — which in SQLite means rebuilding the table. Existing
+    // rows hold the document in `source_*`: move it to `document_*` and leave
+    // per-line provenance NULL (it was never captured, so it cannot be invented).
+    version: '0002-split-line-provenance',
+    sql: `
+      CREATE TABLE invoicing_lines_new (
+        id                TEXT PRIMARY KEY,
+        underlag_id       TEXT NOT NULL REFERENCES invoicing_underlag(id),
+        document_type     TEXT NOT NULL,
+        document_id       TEXT NOT NULL,
+        source_type       TEXT,
+        source_id         TEXT,
+        article           TEXT NOT NULL,
+        description       TEXT NOT NULL,
+        qty               TEXT NOT NULL,
+        unit              TEXT NOT NULL,
+        unit_price_amount TEXT NOT NULL,
+        currency          TEXT NOT NULL,
+        line_total_amount TEXT NOT NULL,
+        created_at        TEXT NOT NULL
+      );
+      INSERT INTO invoicing_lines_new
+        (id, underlag_id, document_type, document_id, source_type, source_id,
+         article, description, qty, unit, unit_price_amount, currency,
+         line_total_amount, created_at)
+      SELECT
+        id, underlag_id, source_type, source_id, NULL, NULL,
+        article, description, qty, unit, unit_price_amount, currency,
+        line_total_amount, created_at
+      FROM invoicing_lines;
+      DROP TABLE invoicing_lines;
+      ALTER TABLE invoicing_lines_new RENAME TO invoicing_lines;
+    `,
+  },
 ];
 
 // What this engine needs from the fat event payload — its OWN parse of the
@@ -179,8 +221,14 @@ export interface UnderlagRow {
 export interface UnderlagLine {
   id: string;
   underlag_id: string;
-  source_type: string;
-  source_id: string;
+  // The delivery that produced this line — `workorder`/`order`/`timesheet` + its
+  // id. Always known; also the idempotency key each consumer dedups on (#328).
+  document_type: string;
+  document_id: string;
+  // What the line itself is — `time`/`material`. Per-line provenance, carried
+  // only where the producer supplies it (the workorder path); NULL otherwise.
+  source_type: string | null;
+  source_id: string | null;
   article: string;
   description: string;
   qty: string;
@@ -260,7 +308,7 @@ const onWorkOrderCompleted: ConsumerHandler = (ctx, event) => {
   // consumers of one engine disagreed about whether replay was possible — and
   // the docs promised the guard for both.
   const already = ctx.sql.query<{ found: number }>(
-    `SELECT 1 AS found FROM invoicing_lines WHERE source_type = 'workorder' AND source_id = ? LIMIT 1`,
+    `SELECT 1 AS found FROM invoicing_lines WHERE document_type = 'workorder' AND document_id = ? LIMIT 1`,
     [p.orderId],
   )[0];
   if (already) return;
@@ -291,13 +339,16 @@ const onWorkOrderCompleted: ConsumerHandler = (ctx, event) => {
   for (const line of p.billable) {
     ctx.sql.exec(
       `INSERT INTO invoicing_lines
-         (id, underlag_id, source_type, source_id, article, description, qty, unit,
+         (id, underlag_id, document_type, document_id, source_type, source_id,
+          article, description, qty, unit,
           unit_price_amount, currency, line_total_amount, created_at)
-       VALUES (?, ?, 'workorder', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, 'workorder', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         ulid(),
         underlag.id,
         p.orderId,
+        line.sourceType,
+        line.sourceId,
         line.article,
         line.description,
         line.qty,
@@ -334,7 +385,7 @@ const onCommerceOrderPlaced: ConsumerHandler = (ctx, event) => {
   // Idempotent on at-least-once redelivery (K-11): the order is the dedup key.
   // Its lines are already present → this delivery is a replay, do nothing.
   const already = ctx.sql.query<{ found: number }>(
-    `SELECT 1 AS found FROM invoicing_lines WHERE source_type = 'order' AND source_id = ? LIMIT 1`,
+    `SELECT 1 AS found FROM invoicing_lines WHERE document_type = 'order' AND document_id = ? LIMIT 1`,
     [p.orderId],
   )[0];
   if (already) return;
@@ -362,9 +413,10 @@ const onCommerceOrderPlaced: ConsumerHandler = (ctx, event) => {
   for (const line of p.billable) {
     ctx.sql.exec(
       `INSERT INTO invoicing_lines
-         (id, underlag_id, source_type, source_id, article, description, qty, unit,
+         (id, underlag_id, document_type, document_id, source_type, source_id,
+          article, description, qty, unit,
           unit_price_amount, currency, line_total_amount, created_at)
-       VALUES (?, ?, 'order', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, 'order', ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         ulid(),
         underlag.id,
@@ -403,7 +455,7 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
 
   // Idempotent on at-least-once redelivery (K-11): the closing is the dedup key.
   const already = ctx.sql.query<{ found: number }>(
-    `SELECT 1 AS found FROM invoicing_lines WHERE source_type = 'timesheet' AND source_id = ? LIMIT 1`,
+    `SELECT 1 AS found FROM invoicing_lines WHERE document_type = 'timesheet' AND document_id = ? LIMIT 1`,
     [p.closeId],
   )[0];
   if (already) return;
@@ -431,9 +483,10 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
   for (const line of p.billable) {
     ctx.sql.exec(
       `INSERT INTO invoicing_lines
-         (id, underlag_id, source_type, source_id, article, description, qty, unit,
+         (id, underlag_id, document_type, document_id, source_type, source_id,
+          article, description, qty, unit,
           unit_price_amount, currency, line_total_amount, created_at)
-       VALUES (?, ?, 'timesheet', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, 'timesheet', ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         ulid(),
         underlag.id,
