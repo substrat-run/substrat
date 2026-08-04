@@ -194,20 +194,32 @@ function VerticalCard({
   busy,
   onPromote,
   onRemove,
+  onOpen,
 }: {
   d: Deployment;
   busy: boolean;
   onPromote: (versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
   onRemove: () => void;
+  onOpen: () => void;
 }) {
   const prod = d.channels.find((c) => c.channel === 'prod');
-  const [allVersions, setAllVersions] = useState(false);
-  const shown = allVersions ? d.versions : d.versions.slice(0, VERSIONS_PREVIEW);
+  // The card is a summary: newest few versions, with the full list (and the go-live
+  // history) living on the vertical's detail page — the title and the count both open it.
+  const shown = d.versions.slice(0, VERSIONS_PREVIEW);
   const hidden = d.versions.length - shown.length;
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-        <h3 style={{ margin: 0, fontSize: 16 }}>{d.name}</h3>
+        <a
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            onOpen();
+          }}
+          style={{ textDecoration: 'none' }}
+        >
+          <h3 style={{ margin: 0, fontSize: 16, color: 'var(--text-primary)' }}>{d.name}</h3>
+        </a>
         <MonoTag>{d.displaySlug}</MonoTag>
         {/* Marketplace visibility (marketplace-publish.md §2): private on push; the
             staff-reviewed publish action flips it. The request button is a later phase. */}
@@ -255,22 +267,113 @@ function VerticalCard({
               />
             ))}
           </GridTable>
-          {(hidden > 0 || allVersions) && (
-            <a
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                setAllVersions(!allVersions);
-              }}
-              style={{ fontSize: 12, color: 'var(--text-tertiary)', width: 'fit-content' }}
-            >
-              {allVersions ? 'Show recent versions only' : `All ${d.versions.length} versions`}
-            </a>
-          )}
-          <ProdHistory d={d} busy={busy} onPromote={onPromote} />
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              onOpen();
+            }}
+            style={{ fontSize: 12, color: 'var(--text-tertiary)', width: 'fit-content' }}
+          >
+            {hidden > 0 ? `View all ${d.versions.length} versions →` : 'View details →'}
+          </a>
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * A single vertical, full-page (builder-plane.md Phase 4) — the detail the summary card
+ * links to. Every pushed version (not just the newest few), the same self-serve channel
+ * promotion, and the prod go-live history / rollback that used to be an inline expand.
+ */
+export function VerticalDetail({
+  d,
+  busy,
+  onPromote,
+  onRemove,
+  onBack,
+}: {
+  d: Deployment;
+  busy: boolean;
+  onPromote: (versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
+  onRemove: () => void;
+  onBack: () => void;
+}) {
+  const prod = d.channels.find((c) => c.channel === 'prod');
+  return (
+    <Page>
+      <div style={{ display: 'grid', gap: 20 }}>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              onBack();
+            }}
+            style={{ fontSize: 12.5, color: 'var(--text-tertiary)', width: 'fit-content' }}
+          >
+            ← All verticals
+          </a>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0, fontSize: 20 }}>{d.name}</h2>
+            <MonoTag>{d.displaySlug}</MonoTag>
+            {/* Marketplace visibility (marketplace-publish.md §2): private on push; the
+                staff-reviewed publish action flips it. */}
+            <Pill kind={d.listed ? 'success' : 'neutral'}>{d.listed ? 'Published' : 'Private'}</Pill>
+            <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 12 }}>
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                {prod ? (
+                  <>
+                    prod at <MonoTag>{d.versions.find((v) => v.id === prod.versionId)?.version ?? prod.versionId}</MonoTag>
+                  </>
+                ) : (
+                  'not in production'
+                )}
+              </span>
+              {/* Removing a PUBLISHED vertical is a staff decision (same split as prod
+                  promotion), so the button only renders while it's private. */}
+              {!d.listed && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={onRemove}
+                  style={{ color: 'var(--status-danger-fg)' }}
+                >
+                  Remove
+                </Button>
+              )}
+            </span>
+          </div>
+        </div>
+        {d.versions.length === 0 ? (
+          <div style={{ padding: 16, color: 'var(--text-tertiary)', fontSize: 13 }}>
+            No versions yet — <code>substrat push</code> one.
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <h3 style={{ margin: 0, fontSize: 15 }}>Versions</h3>
+              <GridTable columns="1.2fr 1fr 1.4fr 1.6fr" header={['Version', 'Admission', 'Channels', '~Promote']}>
+                {d.versions.map((v, i) => (
+                  <VersionRow
+                    key={v.id}
+                    d={d}
+                    v={v}
+                    last={i === d.versions.length - 1}
+                    busy={busy}
+                    onPromote={(ch) => onPromote(v.id, ch)}
+                  />
+                ))}
+              </GridTable>
+            </div>
+            <ProdHistory d={d} busy={busy} onPromote={onPromote} />
+          </>
+        )}
+      </div>
+    </Page>
   );
 }
 
@@ -421,12 +524,14 @@ export function Verticals({
   deployments,
   onPromote,
   onRemove,
+  onOpen,
   busy,
   loadGitRepos,
 }: {
   deployments: Deployment[];
   onPromote: (slug: string, versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
   onRemove: (slug: string) => void;
+  onOpen: (slug: string) => void;
   busy: boolean;
   loadGitRepos: (account?: string) => Promise<GitReposResult>;
 }) {
@@ -467,7 +572,7 @@ export function Verticals({
       ) : (
         <div style={{ display: 'grid', gap: 28 }}>
           {sorted.map((d) => (
-            <VerticalCard key={d.slug} d={d} busy={busy} onPromote={(vid, ch) => onPromote(d.slug, vid, ch)} onRemove={() => onRemove(d.slug)} />
+            <VerticalCard key={d.slug} d={d} busy={busy} onPromote={(vid, ch) => onPromote(d.slug, vid, ch)} onRemove={() => onRemove(d.slug)} onOpen={() => onOpen(d.slug)} />
           ))}
           <TrafficPanel />
         </div>
