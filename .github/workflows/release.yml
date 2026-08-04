@@ -82,6 +82,15 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      # The dispatch namespace's outbound worker (#442). Deploys BEFORE the router: the
+      # router names it in `dispatch_namespaces.outbound`, and the egress worker holds a
+      # service binding back to the already-live router — so the pair settles router → egress → router.
+      - name: Deploy vertical-egress
+        if: steps.gate.outputs.release == 'true'
+        run: pnpm --filter @substrat-run/vertical-egress cf:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy router
         if: steps.gate.outputs.release == 'true'
         run: pnpm --filter @substrat-run/router cf:deploy

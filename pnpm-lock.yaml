@@ -239,6 +239,21 @@ importers:
         specifier: ^4.110.0
         version: 4.110.0(@cloudflare/workers-types@4.20260702.1)
 
+  apps/vertical-egress:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20250109.0
+        version: 4.20260702.1
+      typescript:
+        specifier: ^7.0.0
+        version: 7.0.2
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.1.1)(tsx@4.23.1)(yaml@2.9.0)
+      wrangler:
+        specifier: ^4.110.0
+        version: 4.116.0(@cloudflare/workers-types@4.20260702.1)
+
   connectors/scrive:
     dependencies:
       '@substrat-run/contracts':
@@ -11537,6 +11552,23 @@ snapshots:
       workerd: 1.20260708.1
     optionalDependencies:
       '@cloudflare/workers-types': 5.20260731.1
+      fsevents: 2.3.3
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  wrangler@4.116.0(@cloudflare/workers-types@4.20260702.1):
+    dependencies:
+      '@cloudflare/kv-asset-handler': 0.5.0
+      '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260730.1)
+      blake3-wasm: 2.1.5
+      esbuild: 0.28.1
+      miniflare: 4.20260730.0
+      path-to-regexp: 6.3.0
+      unenv: 2.0.0-rc.24
+      workerd: 1.20260730.1
+    optionalDependencies:
+      '@cloudflare/workers-types': 4.20260702.1
       fsevents: 2.3.3
     transitivePeerDependencies:
       - bufferutil

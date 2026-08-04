@@ -78,6 +78,9 @@ jobs:
       # control-plane owns the dispatch namespace the router/dashboard read, so it
       # deploys first; each step fails fast (no continue-on-error) on a bad deploy.
       - run: pnpm --filter @substrat-run/control-plane cf:deploy:test
+      # Outbound worker for the test dispatch namespace (#442) — before the router, which
+      # names it in `dispatch_namespaces.outbound`.
+      - run: pnpm --filter @substrat-run/vertical-egress cf:deploy:test
       - run: pnpm --filter @substrat-run/router cf:deploy:test
       - run: pnpm --filter @substrat-run/dashboard cf:deploy:test
       - run: pnpm --filter @substrat-run/docs cf:deploy:test
