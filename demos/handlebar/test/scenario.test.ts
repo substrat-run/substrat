@@ -158,14 +158,16 @@ describe('Handlebar demo scenario (spec §7)', () => {
     expect(underlag[0]!.status).toBe('open');
     expect(underlag[0]!.total).toBe('336.5');
 
-    const detail = await greta.invoke<{ lines: { source_id: string; source_type: string }[] }>(
-      'invoicing/get',
-      { underlagId: underlag[0]!.id },
-    );
+    const detail = await greta.invoke<
+      { lines: { document_type: string; document_id: string; source_type: string | null }[] }
+    >('invoicing/get', { underlagId: underlag[0]!.id });
     expect(detail.lines).toHaveLength(2);
+    // Document-level provenance: the repair work order these lines came from (#328).
     expect(
-      detail.lines.every((l) => l.source_type === 'workorder' && l.source_id === repairId),
+      detail.lines.every((l) => l.document_type === 'workorder' && l.document_id === repairId),
     ).toBe(true);
+    // The workorder path DOES carry per-line provenance — it is populated, not NULL.
+    expect(detail.lines.every((l) => l.source_type !== null)).toBe(true);
   });
 
   it('7. portal isolation: lisbeth sees her repair, otto sees nothing, invoicing denied', async () => {
