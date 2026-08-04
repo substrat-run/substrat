@@ -1,5 +1,22 @@
 # @substrat-run/dashboard
 
+## 0.14.4
+
+### Patch Changes
+
+- Updated dependencies [e3f86b0]
+- Updated dependencies [846af24]
+  - @substrat-run/demo-meridian@0.4.0
+  - @substrat-run/demo-manyfold@0.6.0
+  - @substrat-run/demo-callout@0.2.0
+  - @substrat-run/contracts@0.45.0
+  - @substrat-run/adapter-cloudflare@0.45.0
+  - @substrat-run/engine-invites@0.0.42
+  - @substrat-run/engine-invoicing@0.5.1
+  - @substrat-run/engine-protocol@0.5.3
+  - @substrat-run/engine-workorder@0.3.43
+  - @substrat-run/kernel@0.45.0
+
 ## 0.14.3
 
 ### Patch Changes

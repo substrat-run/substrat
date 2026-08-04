@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/cli",
-  "version": "0.16.4",
+  "version": "0.16.5",
   "description": "The substrat CLI — authenticated deploy tooling: push a vertical to the platform, manage its versions and channels",
   "license": "Apache-2.0",
   "repository": {
