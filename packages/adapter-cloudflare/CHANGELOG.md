@@ -1,5 +1,32 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.45.0
+
+### Minor Changes
+
+- 846af24: Record tenant **provenance** so the fleet can tell an app-provisioned customer tenant
+  from a first-class one. `Tenant` gains `provisionedByTenant: TenantId | null` — a FK to
+  the manager's tenant, set only when a manager vertical creates the tenant via the
+  `provision-tenant` platform intent (#412), and null for a direct staff create.
+
+  The value is host-derived, never caller-supplied: `provisionTenantHandler` stamps
+  `ctx.tenantId` (the manager tenant the host resolved from the provisioning scope's
+  directory row — the vertical can't forge it), and the direct `POST /tenants` route forces
+  it null. `createTenantInput` gains the field as **optional** (drain supplies it; staff
+  create omits it), so the `HostAdmin.createTenant` signature is unchanged and every
+  existing call site keeps compiling. Both adapters persist a nullable
+  `provisioned_by_tenant` column (a directory schema change, not a module migration).
+
+  This unblocks the #412 invariant-2 entitlement-ownership bound (a listed manager may only
+  `set-entitlements` on tenants it provisioned) — this change records the ownership fact;
+  enabling that enforcement is a separate follow-up.
+
+### Patch Changes
+
+- Updated dependencies [846af24]
+  - @substrat-run/contracts@0.45.0
+  - @substrat-run/kernel@0.45.0
+
 ## 0.44.0
 
 ### Minor Changes
@@ -1727,7 +1754,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
