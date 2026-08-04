@@ -264,6 +264,10 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     const record = await host.admin.getScopeRecord(staff, tenantId.parse(newTenant), scopeId.parse(newScope));
     expect(record?.status).toBe('active');
     expect(record?.vertical).toBe('managed-product'); // the payload's vertical, never the manager's
+    // Provenance (#412): the customer tenant is stamped with the MANAGER's tenant id
+    // (from ctx, host-derived), so the fleet can tell it from a direct staff create.
+    const created = (await host.admin.listTenants(staff)).find((t) => t.id === newTenant);
+    expect(created?.provisionedByTenant).toBe(managerTenant);
     // The instance was materialized with the granted plan projected (#310) and config delivered.
     expect(provisioned?.scopeId).toBe(newScope);
     expect(provisioned?.owner).toBe(owner);

@@ -553,7 +553,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.post('/tenants', async (c) => {
     const input = createTenantInput.parse(await c.req.json());
-    await admin.createTenant(c.get('actor'), input);
+    // Provenance (#412) is a host-derived fact set ONLY by the provisioning drain
+    // (from the manager scope's directory row) — never caller-supplied. A direct staff
+    // create is first-class by definition, so force it null even if a body carries it,
+    // so the field can't be forged into a false ownership relationship.
+    await admin.createTenant(c.get('actor'), { ...input, provisionedByTenant: null });
     // Idempotent (§4.1): re-creating an existing tenant is a no-op, not an error,
     // so this reads back rather than reporting a create that may not have happened.
     return c.json(await admin.getTenant(c.get('actor'), input.id), 201);

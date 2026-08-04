@@ -217,7 +217,13 @@ const toConnection = (r: ConnectionDoRow): Connection =>
   });
 
 interface ControlPlaneStub {
-  createTenant(id: string, slug: string, name: string, createdAt: string): Promise<Tenant | null>;
+  createTenant(
+    id: string,
+    slug: string,
+    name: string,
+    createdAt: string,
+    provisionedByTenant?: string | null,
+  ): Promise<Tenant | null>;
   setTenantStatus(tenantId: string, status: TenantStatus): Promise<string>;
   setTenantName(tenantId: string, name: string): Promise<string>;
   reapTenant(tenantId: string): Promise<string>;
@@ -2838,6 +2844,7 @@ export class CloudflareScopeHost implements ScopeHost {
           parsed.slug,
           parsed.name,
           new Date().toISOString(),
+          parsed.provisionedByTenant ?? null,
         );
         // Idempotent: re-creating an existing tenant is a no-op, not audited.
         if (!created) return;

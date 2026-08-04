@@ -21,12 +21,16 @@ export interface TenantDetailProps {
   scopes: Scope[];
   entitlements: EntitlementGrant[];
   hostnames: HostnameBinding[];
+  /** Display name of the tenant that provisioned this one (#412), if any. */
+  provisionedByName?: string;
+  /** Open another tenant's detail (used by the provenance link to the parent). */
+  onOpen?: (id: TenantId) => void;
   onBack: () => void;
   onChanged: () => void;
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
 }
 
-export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, onBack, onChanged, onToast }: TenantDetailProps) {
+export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, provisionedByName, onOpen, onBack, onChanged, onToast }: TenantDetailProps) {
   const [confirmSuspend, setConfirmSuspend] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmReap, setConfirmReap] = useState(false);
@@ -102,6 +106,32 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, onB
           <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
             {tenant.slug} · created {tenant.createdAt.slice(0, 10)}
           </p>
+          {/* Provenance (#412): a manager vertical provisioned this tenant inside another
+              tenant's app — link back to that provisioner so the relationship is walkable. */}
+          {tenant.provisionedByTenant && (
+            <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              Provisioned by{' '}
+              {onOpen ? (
+                <button
+                  type="button"
+                  onClick={() => onOpen(tenant.provisionedByTenant!)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    font: 'inherit',
+                    color: 'var(--brand-700)',
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {provisionedByName ?? tenant.provisionedByTenant}
+                </button>
+              ) : (
+                <strong>{provisionedByName ?? tenant.provisionedByTenant}</strong>
+              )}
+            </p>
+          )}
         </div>
         <Button variant="secondary" onClick={onBack}>
           All tenants
