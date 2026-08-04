@@ -281,6 +281,14 @@ describe('GitHub App client', () => {
       // One run per PR at a time, and the create job can comment the URL back.
       expect(yaml).toContain('concurrency: substrat-preview-${{ github.event.number }}');
       expect(yaml).toContain('pull-requests: write');
+      // Regression: the comment body is a single-quoted printf, so any apostrophe in the
+      // prose (e.g. "PR's") closes the quote and bash dies with a syntax error — the whole
+      // preview job goes red on a copy-edit. Keep the body apostrophe-free.
+      const body = yaml.split("BODY=$(printf '")[1]?.split("' \"$URL\")")[0] ?? '';
+      expect(body).not.toContain("'");
+      // And a failed preview push must fail the step (pipefail) rather than let a masked
+      // non-zero exit fall through to a comment pointing at a garbage URL.
+      expect(yaml).toContain('set -euo pipefail');
     });
 
     it('surfaces missing App write-permissions as needsPermissions, before any write', async () => {

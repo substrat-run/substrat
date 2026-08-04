@@ -309,15 +309,18 @@ ${setup}
           SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: ${cpUrl}
         run: |
+          set -euo pipefail
           npx @substrat-run/cli preview create . --slug ${slug} --tag pr-\${{ github.event.number }} | tee preview.out
-          grep -oE 'https://[a-zA-Z0-9.-]+' preview.out | tail -1 > preview.url
+          # Take the URL from the CLI's success line (the ✓ marker) only — the push it runs
+          # first also prints an https:// *deploy endpoint* we must never mistake for a preview.
+          grep -F '✓ preview' preview.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > preview.url || true
       - name: Comment the preview URL
         env:
           GH_TOKEN: \${{ github.token }}
         run: |
           URL=$(cat preview.url)
           [ -z "$URL" ] && exit 0
-          BODY=$(printf '<!-- substrat-preview -->\\n🔎 **Substrat preview:** %s\\n\\n_Runs this PR's code against a fork of prod. Reaped when the PR closes._' "$URL")
+          BODY=$(printf '<!-- substrat-preview -->\\n🔎 **Substrat preview:** %s\\n\\n_Runs the code in this PR against a fork of prod. Reaped when the PR closes._' "$URL")
           REPO=\${{ github.repository }}
           PR=\${{ github.event.number }}
           ID=$(gh api "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.body | startswith("<!-- substrat-preview -->")) | .id' | head -1)
