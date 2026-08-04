@@ -51,7 +51,21 @@
 	// version falls back to a static VERTICAL_<SLUG> binding (none bound today).
 	// ROUTER_SECRET is set together with the first vertical's own, not before: with
 	// nothing to forward to, there is no secret to match.
-	"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals" }],
+	//
+	// `outbound` names the egress worker (`substrat-vertical-egress`) that every dispatched
+	// vertical's `fetch()` is routed through (#442). It sends platform-bound egress back
+	// through this router so a vertical calling another vertical's public `*.substrat.run` API
+	// works instead of 522-ing at the same-zone edge; everything else passes through untouched.
+	// The egress worker must already exist when this deploys (it holds a service binding to this
+	// router) — CI deploys it between control-plane and router; on a brand-new env, deploy the
+	// router once without this line, then the egress worker, then re-add it.
+	"dispatch_namespaces": [
+		{
+			"binding": "DISPATCH",
+			"namespace": "substrat-verticals",
+			"outbound": { "service": "substrat-vertical-egress" }
+		}
+	],
 
 	// Tenant-keyed request metering (design/observability.md §4.2): one datapoint per
 	// resolved request, index = tenantId. ONE shared dataset, not per-tenant/-namespace —
@@ -92,7 +106,13 @@
 					}
 				]
 			},
-			"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals-test" }], // differs
+			"dispatch_namespaces": [
+				{
+					"binding": "DISPATCH",
+					"namespace": "substrat-verticals-test", // differs
+					"outbound": { "service": "substrat-vertical-egress-test" } // differs: test egress worker
+				}
+			],
 			"services": [{ "binding": "CONTROL_PLANE_KICK", "service": "substrat-control-plane-test" }], // differs: test CP worker
 			"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_router_test" }], // differs: test data stays out of prod charts
 			// Test tenant hostnames: <slug>.global.test.substrat.run. This two-level

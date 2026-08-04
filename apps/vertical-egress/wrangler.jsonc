@@ -1,0 +1,33 @@
+{
+	"name": "substrat-vertical-egress",
+	"main": "src/worker.ts",
+	"compatibility_date": "2025-01-01",
+
+	// The one binding: the router, as a service (a direct in-process call, not an edge
+	// subrequest). Platform-bound egress from any dispatched vertical loops back through
+	// here so it re-enters resolution+dispatch instead of 522-ing at the same-zone edge (#442).
+	"services": [{ "binding": "ROUTER", "service": "substrat-router" }],
+
+	// What counts as "our own zone" — same var + meaning as the control plane. Any host that
+	// is or ends in one of these goes to the router; everything else passes through to the
+	// internet.
+	"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run" },
+
+	// No public route and no workers.dev hostname: this worker is only ever reached as the
+	// dispatch namespace's outbound worker, never addressed directly.
+	"workers_dev": false,
+
+	"observability": { "enabled": true },
+
+	"env": {
+		"test": {
+			// The router's test deployment is `substrat-router-test` (wrangler suffixes the env).
+			"services": [{ "binding": "ROUTER", "service": "substrat-router-test" }], // differs
+			// Test hosts (`*.global.test.substrat.run`) still end in `substrat.run`, so the same
+			// base-domain match routes them; the differing ROUTER binding keeps test loops off prod.
+			"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run" },
+			"workers_dev": false,
+			"observability": { "enabled": true }
+		}
+	}
+}

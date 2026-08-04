@@ -1,0 +1,21 @@
+{
+  "name": "@substrat-run/vertical-egress",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The dispatch-namespace outbound worker — platform-bound vertical egress loops back through the router (#442, K-27)",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "cf:deploy": "wrangler deploy",
+    "cf:deploy:test": "wrangler deploy --env test",
+    "dry-run": "wrangler deploy --dry-run --outdir dist-worker"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "typescript": "^7.0.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.110.0"
+  }
+}
