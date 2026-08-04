@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { EntitlementGrant, HostnameBinding, MigrationProgress, Scope, Tenant, TenantId } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, KeyValue, Table, Tabs, Tag } from '../components';
-import type { TableColumn } from '../components';
+import type { CSSProperties } from 'react';
+import type { EntitlementGrant, HostnameBinding, MigrationProgress, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
+import { Badge, Button, Card, Dialog, Input, KeyValue, Select, Tabs, Tag } from '../components';
 import {
   availableActions,
   effectiveStatus,
@@ -13,7 +13,6 @@ import {
 } from '../lib/fleet';
 import { portalUrl } from '../lib/portal';
 import type { Api } from '../lib/api';
-import { usePagedList } from '../lib/use-paged-list';
 
 export interface ScopesProps {
   api: Api;
@@ -109,6 +108,78 @@ function MigrationProgressCard({ progress, tenants }: { progress: MigrationProgr
   );
 }
 
+/**
+ * A compact table checkbox with a third, indeterminate state (some-but-not-all
+ * of a select-all group checked). The shared `Checkbox` has no indeterminate
+ * visual and always lays out a label line, so the table hand-rolls this one.
+ */
+function SelectBox({
+  checked,
+  indeterminate,
+  onChange,
+  ariaLabel,
+}: {
+  checked: boolean;
+  indeterminate?: boolean;
+  onChange: (checked: boolean) => void;
+  ariaLabel: string;
+}) {
+  const on = checked || !!indeterminate;
+  return (
+    <span
+      role="checkbox"
+      aria-checked={indeterminate ? 'mixed' : checked}
+      aria-label={ariaLabel}
+      onClick={(e) => {
+        // The checkbox lives inside a row whose click opens the detail panel —
+        // toggling selection must not also open it.
+        e.stopPropagation();
+        onChange(!checked);
+      }}
+      style={{
+        width: 16,
+        height: 16,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 'var(--radius-xs)',
+        border: '1px solid ' + (on ? 'var(--brand-600)' : 'var(--border-strong)'),
+        background: on ? 'var(--brand-600)' : 'var(--surface-card)',
+        cursor: 'pointer',
+        flexShrink: 0,
+      }}
+    >
+      {indeterminate ? (
+        <svg viewBox="0 0 12 12" width="10" height="10">
+          <path d="M2.5 6h7" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      ) : checked ? (
+        <svg viewBox="0 0 12 12" width="10" height="10">
+          <path d="M2.5 6.5l2.5 2.5 4.5-5" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : null}
+    </span>
+  );
+}
+
+/** The bulk levers, in the order they render. Reap is destructive and armed separately. */
+type BulkAction = 'suspend' | 'unsuspend' | 'archive' | 'unarchive' | 'reap';
+const BULK_ACTIONS: {
+  action: BulkAction;
+  label: string;
+  variant: 'secondary' | 'danger';
+  past: string;
+}[] = [
+  { action: 'unsuspend', label: 'Unsuspend', variant: 'secondary', past: 'unsuspended' },
+  { action: 'unarchive', label: 'Restore', variant: 'secondary', past: 'restored' },
+  { action: 'suspend', label: 'Suspend', variant: 'danger', past: 'suspended' },
+  { action: 'archive', label: 'Archive', variant: 'secondary', past: 'archived' },
+  { action: 'reap', label: 'Reap storage', variant: 'danger', past: 'reaped' },
+];
+
+/** Options for the client-side page-size control. */
+const PAGE_SIZES = [25, 50, 100];
+
 export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChanged, onToast }: ScopesProps) {
   const [tab, setTab] = useState('all');
   const [selected, setSelected] = useState<Scope>();
@@ -125,6 +196,23 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
   // the fleet list stays one directory read while a detail view still reveals the silent
   // "active but zero roles" condition. Null = not-yet/unavailable (degrades to nothing).
   const [health, setHealth] = useState<{ roleProjectionEmpty: boolean; roleCount: number | null } | null>(null);
+
+  // Filters — all client-side over the walked `scopes` prop (the whole fleet is
+  // already in memory, App-level `walkAll`). The tabs above own the status facet;
+  // these narrow within it.
+  const [q, setQ] = useState('');
+  const [tenantFilter, setTenantFilter] = useState('all');
+  const [verticalFilter, setVerticalFilter] = useState('all');
+  const [jurisFilter, setJurisFilter] = useState('all');
+  const [pageSize, setPageSize] = useState(PAGE_SIZES[0]!);
+  const [pageIndex, setPageIndex] = useState(0);
+
+  // Bulk selection, keyed by scope id so it survives the re-sliced page window.
+  const [selectedIds, setSelectedIds] = useState<Set<ScopeId>>(new Set());
+  // The bulk reap gate (destructive, no restore) — armed by typing the count.
+  const [bulkReap, setBulkReap] = useState(false);
+  const [bulkArmed, setBulkArmed] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,15 +250,6 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
     };
   }, [api, selected, tenants]);
 
-  // The table pages (cursor-walked, `scopes` doubling as the mutation-refresh
-  // signal); the `scopes`/`tenants` PROPS stay the walked directory so the stat
-  // cards and tab counts keep reading the whole fleet, not the loaded window.
-  const paged = usePagedList(
-    (p) => api.listScopes(p),
-    [api, scopes],
-    (e) => onToast('Failed to load scopes', e.message, 'danger'),
-  );
-
   const counts = useMemo(() => fleetCounts(scopes, tenants), [scopes, tenants]);
   const tenantList = useMemo(() => [...tenants.values()], [tenants]);
   const skuTotal = useMemo(
@@ -178,19 +257,77 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
     [entitlements],
   );
 
-  // The tab narrows the LOADED pages (the AdminLog `q` pattern): effective status
-  // is a client-side computation (cascade), so the server's status filter cannot
-  // answer it — the tab counts above still read the whole walked fleet.
-  const rows = useMemo(
-    () =>
-      paged.entries.filter((s) => {
-        const eff = effectiveStatus(s, tenants.get(s.tenantId));
-        if (tab === 'suspended') return isSuspended(eff);
-        if (tab === 'archived') return eff === 'archived' || eff === 'archiving' || eff === 'reaped';
-        return true;
-      }),
-    [paged.entries, tenants, tab],
-  );
+  // The vertical facet — every distinct binding present in the fleet, so the
+  // dropdown only offers verticals that can actually match.
+  const verticals = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of scopes) if (s.vertical) set.add(s.vertical);
+    return [...set].sort();
+  }, [scopes]);
+
+  // The full filter pipeline, client-side over the walked fleet. The tab owns the
+  // effective-status facet (cascade is a client computation the server cannot
+  // filter); the rest narrow within it. Order is the directory's own.
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return scopes.filter((s) => {
+      const eff = effectiveStatus(s, tenants.get(s.tenantId));
+      if (tab === 'suspended' && !isSuspended(eff)) return false;
+      if (tab === 'archived' && !(eff === 'archived' || eff === 'archiving' || eff === 'reaped')) return false;
+      if (tenantFilter !== 'all' && s.tenantId !== tenantFilter) return false;
+      if (verticalFilter !== 'all' && (s.vertical ?? '') !== verticalFilter) return false;
+      if (jurisFilter !== 'all' && s.jurisdiction !== jurisFilter) return false;
+      if (needle) {
+        const hay = `${s.name} ${scopeHandle(s, tenants)} ${s.slug} ${s.vertical ?? ''} ${s.kind} ${s.id}`.toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    });
+  }, [scopes, tenants, tab, tenantFilter, verticalFilter, jurisFilter, q]);
+
+  // A filter change can shrink the result below the current page — reset to the
+  // first page so the operator never lands on an empty tail.
+  useEffect(() => {
+    setPageIndex(0);
+  }, [tab, tenantFilter, verticalFilter, jurisFilter, q, pageSize]);
+
+  const total = filtered.length;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(pageIndex, pageCount - 1);
+  const start = page * pageSize;
+  const pageRows = filtered.slice(start, start + pageSize);
+
+  // Selection is scoped to what the filters currently show: everything derived
+  // from `filtered`, so a hidden-but-still-selected row never silently rides
+  // along a bulk action. `selectedIds` may retain hidden ids; they simply don't
+  // count until they match again.
+  const selectedRows = useMemo(() => filtered.filter((s) => selectedIds.has(s.id)), [filtered, selectedIds]);
+  const allSelected = filtered.length > 0 && selectedRows.length === filtered.length;
+  const someSelected = selectedRows.length > 0 && !allSelected;
+
+  function toggleOne(id: ScopeId, on: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function toggleAll(on: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const s of filtered) {
+        if (on) next.add(s.id);
+        else next.delete(s.id);
+      }
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     try {
@@ -203,43 +340,73 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
     }
   }
 
-  const columns: TableColumn<Scope>[] = [
-    { header: 'Scope', render: (s) => s.name },
-    { header: 'Slug', render: (s) => scopeHandle(s, tenants), mono: true, muted: true },
-    { header: 'Kind', render: (s) => <Tag mono>{s.kind}</Tag> },
-    { header: 'Shape', render: (s) => s.storageShape, mono: true, align: 'center', width: 70 },
-    {
-      header: 'Jurisdiction',
-      render: (s) => <Tag mono>{s.jurisdiction}</Tag>,
-    },
-    { header: 'Schema', render: (s) => s.schemaVersion, mono: true, muted: true, width: 80 },
-    {
-      header: 'Status',
-      align: 'right',
-      render: (s) => {
-        const eff = effectiveStatus(s, tenants.get(s.tenantId));
-        return (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
-            {/* A cascade-suspended scope's own row still says `active`. The note
-                is what keeps the badge from looking like a per-scope suspend the
-                operator could undo here. */}
-            {eff === 'suspended-via-tenant' && (
-              <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>via tenant</span>
-            )}
-            {/* A scope whose migration failed is `active` in the lifecycle and
-                serving nothing. Shown BESIDE the status rather than replacing it:
-                the two are orthogonal, and collapsing them would hide which of the
-                two an operator has to act on. */}
-            {s.migrationFailure && <Badge status="danger">Migration failed</Badge>}
-            <Badge status={statusTone(eff)}>{statusLabel(eff)}</Badge>
-          </span>
-        );
-      },
-    },
-  ];
+  /** Selected rows for which `action` is a legal transition (its eligible subset). */
+  function eligibleFor(action: BulkAction): Scope[] {
+    return selectedRows.filter((s) =>
+      availableActions(effectiveStatus(s, tenants.get(s.tenantId))).includes(action),
+    );
+  }
+
+  const apiForAction: Record<BulkAction, (t: TenantId, s: ScopeId) => Promise<unknown>> = {
+    suspend: api.suspendScope,
+    unsuspend: api.unsuspendScope,
+    archive: api.archiveScope,
+    unarchive: api.unarchiveScope,
+    reap: api.reapScope,
+  };
+
+  // Fan the per-scope endpoints out sequentially — each stays its own audited
+  // transition, and a mid-run failure (illegal transition, race) is counted, not
+  // fatal. The whole selection is refreshed and cleared once at the end.
+  async function runBulk(action: BulkAction, targets: Scope[]) {
+    const label = BULK_ACTIONS.find((a) => a.action === action)!.past;
+    setBulkBusy(true);
+    let ok = 0;
+    let failed = 0;
+    for (const s of targets) {
+      try {
+        await apiForAction[action](s.tenantId, s.id);
+        ok++;
+      } catch {
+        failed++;
+      }
+    }
+    setBulkBusy(false);
+    clearSelection();
+    onChanged();
+    onToast(
+      `${ok} scope${ok === 1 ? '' : 's'} ${label}`,
+      failed > 0 ? `${failed} failed` : undefined,
+      failed > 0 ? 'danger' : 'success',
+    );
+  }
 
   const eff = selected ? effectiveStatus(selected, tenants.get(selected.tenantId)) : undefined;
   const actions = eff ? availableActions(eff) : [];
+
+  const reapTargets = eligibleFor('reap');
+
+  const th: CSSProperties = {
+    textAlign: 'left',
+    padding: '0 16px',
+    height: 36,
+    fontSize: 11,
+    fontWeight: 500,
+    letterSpacing: '0.06em',
+    textTransform: 'uppercase',
+    color: 'var(--text-tertiary)',
+    borderBottom: '1px solid var(--border-default)',
+    background: 'var(--surface-inset)',
+    whiteSpace: 'nowrap',
+  };
+  const td: CSSProperties = {
+    padding: '0 16px',
+    height: 'var(--table-row-h)',
+    borderBottom: '1px solid var(--border-subtle)',
+    fontSize: 14,
+    whiteSpace: 'nowrap',
+  };
+  const anyFilter = q !== '' || tenantFilter !== 'all' || verticalFilter !== 'all' || jurisFilter !== 'all';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -281,12 +448,214 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
         ]}
       />
 
+      {/* Filter row — the AdminLog convention: free-text search plus the facets
+          the fleet actually varies over. All client-side against the walked set. */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Input
+          placeholder="Search name, slug, tenant, vertical, or id…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{ width: 320 }}
+        />
+        <Select
+          options={[{ value: 'all', label: 'All tenants' }, ...tenantList.map((t) => ({ value: t.id, label: t.slug }))]}
+          value={tenantFilter}
+          onChange={(e) => setTenantFilter(e.target.value)}
+          style={{ width: 170 }}
+        />
+        <Select
+          options={[
+            { value: 'all', label: 'All verticals' },
+            ...verticals.map((v) => ({ value: v, label: v })),
+          ]}
+          value={verticalFilter}
+          onChange={(e) => setVerticalFilter(e.target.value)}
+          style={{ width: 170 }}
+        />
+        <Select
+          options={[
+            { value: 'all', label: 'All jurisdictions' },
+            { value: 'global', label: 'Global' },
+            { value: 'eu', label: 'EU' },
+            { value: 'us', label: 'US' },
+          ]}
+          value={jurisFilter}
+          onChange={(e) => setJurisFilter(e.target.value)}
+          style={{ width: 160 }}
+        />
+        {anyFilter && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setQ('');
+              setTenantFilter('all');
+              setVerticalFilter('all');
+              setJurisFilter('all');
+            }}
+          >
+            Clear filters
+          </Button>
+        )}
+      </div>
+
+      {/* Bulk action bar — only the levers legal for at least one selected scope.
+          Each button carries its eligible count; the rest of the selection is left
+          untouched. Reap is armed behind a confirm because it does not restore. */}
+      {selectedRows.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '10px 14px',
+            borderRadius: 8,
+            border: '1px solid var(--border-default)',
+            background: 'var(--surface-inset)',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
+            {selectedRows.length} selected
+          </span>
+          <span style={{ flex: 1 }} />
+          {BULK_ACTIONS.map(({ action, label, variant }) => {
+            const targets = eligibleFor(action);
+            if (targets.length === 0) return null;
+            return (
+              <Button
+                key={action}
+                variant={variant}
+                size="sm"
+                disabled={bulkBusy}
+                onClick={
+                  action === 'reap'
+                    ? () => {
+                        setBulkArmed('');
+                        setBulkReap(true);
+                      }
+                    : () => void runBulk(action, targets)
+                }
+              >
+                {label} ({targets.length})
+              </Button>
+            );
+          })}
+          <Button variant="ghost" size="sm" disabled={bulkBusy} onClick={clearSelection}>
+            Clear
+          </Button>
+        </div>
+      )}
+
       <Card padding={0}>
-        <Table columns={columns} rows={rows} onRowClick={setSelected} emptyText="No scopes match this filter." />
-        {paged.nextCursor && (
-          <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
-            <Button variant="ghost" size="sm" onClick={() => void paged.loadMore()}>
-              Load more
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, width: 44, paddingRight: 0 }}>
+                <SelectBox
+                  checked={allSelected}
+                  indeterminate={someSelected}
+                  onChange={toggleAll}
+                  ariaLabel={allSelected ? 'Deselect all' : 'Select all matching'}
+                />
+              </th>
+              <th style={th}>Scope</th>
+              <th style={th}>Slug</th>
+              <th style={th}>Kind</th>
+              <th style={{ ...th, textAlign: 'center' }}>Shape</th>
+              <th style={th}>Jurisdiction</th>
+              <th style={th}>Schema</th>
+              <th style={{ ...th, textAlign: 'right' }}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pageRows.map((s) => {
+              const rowEff = effectiveStatus(s, tenants.get(s.tenantId));
+              const checked = selectedIds.has(s.id);
+              return (
+                <tr
+                  key={s.id}
+                  onClick={() => setSelected(s)}
+                  style={{
+                    cursor: 'pointer',
+                    background: checked ? 'var(--surface-hover)' : 'transparent',
+                  }}
+                >
+                  <td style={{ ...td, paddingRight: 0 }}>
+                    <SelectBox
+                      checked={checked}
+                      onChange={(on) => toggleOne(s.id, on)}
+                      ariaLabel={`Select ${scopeHandle(s, tenants)}`}
+                    />
+                  </td>
+                  <td style={{ ...td, color: 'var(--text-primary)' }}>{s.name}</td>
+                  <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+                    {scopeHandle(s, tenants)}
+                  </td>
+                  <td style={td}>
+                    <Tag mono>{s.kind}</Tag>
+                  </td>
+                  <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{s.storageShape}</td>
+                  <td style={td}>
+                    <Tag mono>{s.jurisdiction}</Tag>
+                  </td>
+                  <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+                    {s.schemaVersion}
+                  </td>
+                  <td style={{ ...td, textAlign: 'right' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+                      {/* A cascade-suspended scope's own row still says `active`. The note
+                          keeps the badge from looking like a per-scope suspend to undo here. */}
+                      {rowEff === 'suspended-via-tenant' && (
+                        <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>via tenant</span>
+                      )}
+                      {/* Migration failure is orthogonal to lifecycle status — shown beside it. */}
+                      {s.migrationFailure && <Badge status="danger">Migration failed</Badge>}
+                      <Badge status={statusTone(rowEff)}>{statusLabel(rowEff)}</Badge>
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+            {pageRows.length === 0 && (
+              <tr>
+                <td colSpan={8} style={{ ...td, textAlign: 'center', color: 'var(--text-placeholder)', height: 80 }}>
+                  No scopes match this filter.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        {total > 0 && (
+          <div
+            style={{
+              padding: '10px 14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              borderTop: '1px solid var(--border-subtle)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              Showing {start + 1}–{Math.min(start + pageSize, total)} of {total}
+            </span>
+            <Select
+              size="sm"
+              options={PAGE_SIZES.map((n) => ({ value: String(n), label: `${n} / page` }))}
+              value={String(pageSize)}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              style={{ width: 110 }}
+            />
+            <span style={{ flex: 1 }} />
+            <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              Page {page + 1} of {pageCount}
+            </span>
+            <Button variant="secondary" size="sm" disabled={page === 0} onClick={() => setPageIndex(page - 1)}>
+              Prev
+            </Button>
+            <Button variant="secondary" size="sm" disabled={page >= pageCount - 1} onClick={() => setPageIndex(page + 1)}>
+              Next
             </Button>
           </div>
         )}
@@ -468,6 +837,72 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onChange
             />
           </div>
         )}
+      </Dialog>
+
+      {/* Bulk reap confirmation. Reap is irreversible, and a bulk reap multiplies
+          that — so the gate is typing the exact count, forcing the operator to
+          register the magnitude before it arms. Only the eligible (archived)
+          subset of the selection is reaped. */}
+      <Dialog
+        open={bulkReap}
+        title={`Reap ${reapTargets.length} scope${reapTargets.length === 1 ? '' : 's'}?`}
+        danger
+        confirmLabel="Reap storage"
+        width={520}
+        confirmDisabled={bulkArmed !== String(reapTargets.length)}
+        onConfirm={
+          bulkArmed === String(reapTargets.length)
+            ? () => {
+                const targets = reapTargets;
+                setBulkReap(false);
+                setBulkArmed('');
+                void runBulk('reap', targets);
+              }
+            : undefined
+        }
+        onCancel={() => {
+          setBulkReap(false);
+          setBulkArmed('');
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
+            This permanently wipes the Durable Object storage of{' '}
+            <strong>
+              {reapTargets.length} scope{reapTargets.length === 1 ? '' : 's'}
+            </strong>{' '}
+            — every table, event, and migration record. It <strong>cannot be undone</strong>: unlike
+            archive, there is no restore. Each directory row is kept as a tombstone.
+          </p>
+          {/* The eligible subset — the selection may hold rows that are not
+              archived (and so cannot be reaped); those are left untouched. */}
+          <div
+            style={{
+              maxHeight: 140,
+              overflowY: 'auto',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 6,
+              padding: '6px 10px',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 12,
+              color: 'var(--text-tertiary)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+            }}
+          >
+            {reapTargets.map((s) => (
+              <span key={s.id}>{scopeHandle(s, tenants)}</span>
+            ))}
+          </div>
+          <Input
+            label={`Type ${reapTargets.length} to arm this action`}
+            mono
+            placeholder={String(reapTargets.length)}
+            value={bulkArmed}
+            onChange={(e) => setBulkArmed(e.target.value)}
+          />
+        </div>
       </Dialog>
     </div>
   );
