@@ -1,4 +1,47 @@
-import { moduleManifest, permissionKey } from '@substrat-run/contracts';
+import { moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
+
+/**
+ * Callout's ORDINARY declared environment — the deployment-default half of its auth
+ * config (the structured per-scope `substrat:auth` choice always wins over these; see
+ * worker.ts `authProviderFor`). OIDC-only (oidc-only-demos.md): the vertical runs no
+ * built-in credential store. Read exclusively through `resolveScopedEnvSpec`
+ * (delivered > env > default, #398), never via bare `env.X`. Harness secrets
+ * (ROUTER_SECRET, PLATFORM_SECRET, ALLOW_DEV_HEADER) are deliberately NOT declared.
+ *
+ * MIRRORED in `package.json` `substrat.envSpec` (what `substrat push` carries — it reads
+ * JSON, not TS); keep the two in sync.
+ */
+export const CALLOUT_ENV: EnvVarSpec[] = [
+  {
+    key: 'AUTH_PROVIDER',
+    label: 'Auth provider',
+    description:
+      "OIDC-only: the vertical runs no built-in credential store. When no per-scope `substrat:auth` choice is delivered, 'oidc' verifies bearer tokens against OIDC_ISSUER (standalone deploys); anything else leaves the instance without a configured issuer.",
+    placeholder: 'oidc',
+    default: 'oidc',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+  {
+    key: 'OIDC_ISSUER',
+    label: 'OIDC issuer',
+    description: "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
+    placeholder: 'https://auth.example.com',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+  {
+    key: 'OIDC_AUDIENCE',
+    label: 'OIDC audience',
+    description: 'Expected `aud` claim of verified bearer tokens (optional; issuer-dependent).',
+    placeholder: 'https://api.example.com',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+];
 
 // ============================================================================
 // The Callout vertical's declarative surface (spec/testrun.md §5.1): the
@@ -39,4 +82,10 @@ export const calloutManifest = moduleManifest.parse({
     { entityType: 'protocol', parentType: 'workorder' },
   ],
   entitlementKey: 'callout',
+  envSpec: CALLOUT_ENV,
+  // This app can DELEGATE sign-in to an OIDC issuer (manifest `requires`, #427): at
+  // install the dashboard offers the tenant's `oidc-issuer` providers to bind — issuer
+  // from the provider's hostname, client minted by dynamic registration, delivered as
+  // `substrat:auth`. Mirrored in `package.json` `substrat.requires`.
+  requires: ['oidc-issuer'],
 });

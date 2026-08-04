@@ -36,23 +36,13 @@ async function get<T>(path: string): Promise<T> {
   return body;
 }
 
-// Better Auth via the worker → the tenant's IdentityDO. A successful call sets the
-// same-origin session cookie; the app reloads and /api/me resolves. The FIRST sign-in on a
-// fresh instance claims the owner seat (→ admin).
-async function authPost(path: string, body: unknown): Promise<void> {
-  const res = await fetch(`/api/auth/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) });
-  if (!res.ok) {
-    const b = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-    throw new ApiError(b.message ?? b.error ?? `Auth failed (${res.status})`, res.status);
-  }
-}
+// OIDC-only (oidc-only-demos.md): the vertical hosts no credential endpoints. Login, sign-up,
+// password, and reset all live at the issuer; the app redirects to `/api/auth/{login,logout}`
+// (the relying-party flow). The first sign-in on a fresh instance still claims the owner seat
+// (→ admin) via the worker's provider-agnostic sub→principal binding.
 export const auth = {
-  signUp: (email: string, password: string, name: string) => authPost('sign-up/email', { email, password, name }),
-  /** Sign up WITH an invite token — allowed even after open sign-up has closed. */
-  signUpWithInvite: (email: string, password: string, name: string, token: string) =>
-    authPost(`sign-up/email?invite=${encodeURIComponent(token)}`, { email, password, name }),
-  signIn: (email: string, password: string) => authPost('sign-in/email', { email, password }),
-  signOut: () => authPost('sign-out', {}),
+  login: (returnTo = '/') => { location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`); },
+  logout: () => { location.assign('/api/auth/logout'); },
 };
 
 // A POST to one of the worker's own JSON routes (invites / accept), not the op transport.

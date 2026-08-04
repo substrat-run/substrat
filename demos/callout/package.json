@@ -7,7 +7,40 @@
   "substrat": {
     "slug": "callout",
     "name": "Callout",
-    "permissions": "src/provision.ts"
+    "permissions": "src/provision.ts",
+    "requires": [
+      "oidc-issuer"
+    ],
+    "envSpec": [
+      {
+        "key": "AUTH_PROVIDER",
+        "label": "Auth provider",
+        "description": "OIDC-only: the vertical runs no built-in credential store. When no per-scope `substrat:auth` choice is delivered, 'oidc' verifies bearer tokens against OIDC_ISSUER (standalone deploys); anything else leaves the instance without a configured issuer.",
+        "placeholder": "oidc",
+        "default": "oidc",
+        "required": false,
+        "secret": false,
+        "group": "Auth"
+      },
+      {
+        "key": "OIDC_ISSUER",
+        "label": "OIDC issuer",
+        "description": "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
+        "placeholder": "https://auth.example.com",
+        "required": false,
+        "secret": false,
+        "group": "Auth"
+      },
+      {
+        "key": "OIDC_AUDIENCE",
+        "label": "OIDC audience",
+        "description": "Expected `aud` claim of verified bearer tokens (optional; issuer-dependent).",
+        "placeholder": "https://api.example.com",
+        "required": false,
+        "secret": false,
+        "group": "Auth"
+      }
+    ]
   },
   "type": "module",
   "exports": {
@@ -21,7 +54,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "test": "vitest run",
     "server": "tsx src/server.ts",
-    "dev": "concurrently -n api,web -c blue,green \"tsx src/server.ts\" \"pnpm --dir app dev\"",
+    "dev": "concurrently -n api,web -c blue,green \"ALLOW_DEV_HEADER=true tsx src/server.ts\" \"pnpm --dir app dev\"",
     "demo": "pnpm run dev",
     "cf:dev": "wrangler dev --var ALLOW_DEV_HEADER:true",
     "cf:deploy": "node ../../tools/preflight-migrations.mjs && wrangler deploy",
@@ -36,8 +69,8 @@
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/engine-workorder": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
+    "@substrat-run/vertical-auth": "workspace:^",
     "@hono/node-server": "^1.13.0",
-    "better-auth": "^1.6.23",
     "better-sqlite3": "^12.0.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",

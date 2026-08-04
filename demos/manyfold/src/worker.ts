@@ -20,7 +20,7 @@ import { HTTPException } from 'hono/http-exception';
 import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, projectedIdentityLink, platformRequestId, platformRequestStatus, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { assertPlatformCall, PlatformCallError, PLATFORM_REQUEST_HEADER, readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
-import { IdentityDO, doAuthProvider, oidcAuthProvider, type AuthProvider } from '@substrat-run/vertical-auth';
+import { IdentityDO, oidcAuthProvider, oidcRpAuthProvider, type AuthProvider } from '@substrat-run/vertical-auth';
 import { MODULES, ROLES } from './provision.js';
 import { serveAsset } from './assets.js';
 import { mountApi } from './routes.js';
@@ -114,12 +114,67 @@ async function sha256Hex(s: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function authProviderFor(env: Env, req: Request): AuthProvider {
-  if ((env.AUTH_PROVIDER ?? 'better-auth-do') === 'oidc') {
+/**
+ * The scope's DELIVERED auth choice (`substrat:auth`, the dashboard configured at install /
+ * Settings), stored in the tenant's identity DO. OIDC-only (oidc-only-demos.md): `oidc` is the
+ * only supported mode; a malformed / `builtin` entry fails this parse → "no choice delivered".
+ */
+const authChoice = z.object({
+  mode: z.literal('oidc'),
+  issuer: z.string().url().optional(),
+  clientId: z.string().min(1).optional(),
+  clientSecret: z.string().optional(),
+  audience: z.string().optional(),
+  cookieDomain: z.string().min(1).optional(),
+});
+const AUTH_CONFIG_KEY = 'substrat:auth';
+
+/** The scope's auth wiring in one DO hop: the delivered choice + the tenant's session secret. */
+async function authWiringFor(env: Env, base: SiteNode) {
+  const wiring = await identityDo(env, base).authWiring(base.scopeId);
+  const raw = wiring.config[AUTH_CONFIG_KEY];
+  let choice: z.infer<typeof authChoice> | null = null;
+  if (raw) {
+    try {
+      const parsed = authChoice.safeParse(JSON.parse(raw));
+      choice = parsed.success ? parsed.data : null;
+    } catch {
+      choice = null;
+    }
+  }
+  return { choice, sessionSecret: wiring.sessionSecret };
+}
+
+/**
+ * The `AuthProvider` for this request, chosen by CONFIG (oidc-only-demos.md): the vertical runs
+ * no credential store. A delivered `substrat:auth` (mode 'oidc') builds the relying-party
+ * provider (browser login at the issuer, cookie sessions signed with the tenant's DO-minted
+ * secret, bearer fallback for API clients); a standalone `AUTH_PROVIDER=oidc` verifies bearer
+ * tokens against OIDC_ISSUER. Anything else is unconfigured — fail closed.
+ */
+async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
+  const base = baseNode(req, env);
+  const { choice, sessionSecret } = await authWiringFor(env, base);
+  if (choice?.mode === 'oidc') {
+    if (!choice.issuer || !choice.clientId) {
+      throw new HTTPException(503, { message: "this instance's OIDC configuration is incomplete — set issuer and clientId" });
+    }
+    return oidcRpAuthProvider({
+      issuer: choice.issuer,
+      clientId: choice.clientId,
+      clientSecret: choice.clientSecret ?? '',
+      sessionSecret,
+      ...(choice.audience ? { audience: choice.audience } : {}),
+      ...(choice.cookieDomain ? { cookieDomain: choice.cookieDomain } : {}),
+    });
+  }
+  if (env.AUTH_PROVIDER === 'oidc') {
     if (!env.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
     return oidcAuthProvider({ issuer: env.OIDC_ISSUER, ...(env.OIDC_AUDIENCE ? { audience: env.OIDC_AUDIENCE } : {}) });
   }
-  return doAuthProvider(identityDo(env, baseNode(req, env)), originOf(req));
+  throw new HTTPException(503, {
+    message: "this instance has no identity provider configured — deliver substrat:auth with mode 'oidc'",
+  });
 }
 
 /** Resolve the caller → a PrincipalId in the selected site (provider-agnostic). Null ⇒ nobody. */
@@ -128,7 +183,7 @@ async function principalFor(env: Env, req: Request): Promise<PrincipalId | null>
     const parsed = principalId.safeParse(req.headers.get('x-principal') ?? '');
     if (parsed.success) return parsed.data;
   }
-  const subject = await authProviderFor(env, req).resolve(req.headers);
+  const subject = await (await authProviderFor(env, req)).resolve(req.headers);
   if (!subject) return null;
   const node = await nodeFor(req, env);
   const principal = await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub);
@@ -137,19 +192,12 @@ async function principalFor(env: Env, req: Request): Promise<PrincipalId | null>
 
 const app = new Hono<{ Bindings: Env }>();
 
-// Open sign-up is allowed only during first-run setup or with a valid invite token.
-app.post('/api/auth/sign-up/email', async (c) => {
-  const node = await nodeFor(c.req.raw, c.env);
-  const id = identityDo(c.env, node);
-  const token = new URL(c.req.raw.url).searchParams.get('invite');
-  const allowed =
-    (await id.needsSetup(node.scopeId)) || (token ? await id.inviteExists(node.scopeId, await sha256Hex(token)) : false);
-  if (!allowed) return c.json({ error: 'Sign-up is closed for this workspace — ask an admin to invite you.' }, 403);
-  return authProviderFor(c.env, c.req.raw).handle(c.req.raw);
-});
-
-app.on(['GET', 'POST'], '/api/auth/*', (c) => authProviderFor(c.env, c.req.raw).handle(c.req.raw));
-app.get('/api/session', async (c) => c.json(await authProviderFor(c.env, c.req.raw).resolve(c.req.raw.headers)));
+// Identity/credentials/sessions live entirely at the OIDC issuer (oidc-only-demos.md): the
+// vertical runs no credential store and hosts no sign-up. `/api/auth/*` is the relying-party
+// flow only (login → issuer → callback → session cookie → logout); the provider's handle 404s
+// every other credential path (sign-up, password, reset), which live at the issuer.
+app.on(['GET', 'POST'], '/api/auth/*', async (c) => (await authProviderFor(c.env, c.req.raw)).handle(c.req.raw));
+app.get('/api/session', async (c) => c.json(await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers)));
 
 // Who am I, in the selected site, and what may I do — needs-setup aware (first-run).
 app.get('/api/me', async (c) => {
@@ -161,7 +209,7 @@ app.get('/api/me', async (c) => {
   }
   const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
   const who = (await scope.invoke('manyfold/whoami', undefined)) as { can: Record<string, boolean> };
-  const subject = await authProviderFor(c.env, c.req.raw).resolve(c.req.raw.headers).catch(() => null);
+  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers).catch(() => null);
   return c.json({ key: principal, display: subject?.name ?? subject?.email ?? 'You', site: node.scopeId, can: who.can });
 });
 
@@ -449,7 +497,7 @@ app.post('/api/invites/:principal/revoke', async (c) => {
  *  login to the pre-minted member principal. */
 app.post('/api/accept-invite', async (c) => {
   const node = await nodeFor(c.req.raw, c.env);
-  const subject = await authProviderFor(c.env, c.req.raw).resolve(c.req.raw.headers);
+  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
   if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const principal = await identityDo(c.env, node).claimInvite(node.scopeId, subject.sub, await sha256Hex(token));

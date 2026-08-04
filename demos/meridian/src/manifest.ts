@@ -28,9 +28,9 @@ export const MERIDIAN_ENV: EnvVarSpec[] = [
     key: 'AUTH_PROVIDER',
     label: 'Auth provider',
     description:
-      "Which auth the app runs when no per-scope `substrat:auth` choice was delivered: 'better-auth-do' (accounts in the tenant's own identity DO) or 'oidc' (verify bearer tokens against OIDC_ISSUER).",
-    placeholder: 'better-auth-do',
-    default: 'better-auth-do',
+      "OIDC-only: the vertical runs no built-in credential store. When no per-scope `substrat:auth` choice is delivered, 'oidc' verifies bearer tokens against OIDC_ISSUER (standalone deploys); anything else leaves the instance without a configured issuer.",
+    placeholder: 'oidc',
+    default: 'oidc',
     required: false,
     secret: false,
     group: 'Auth',

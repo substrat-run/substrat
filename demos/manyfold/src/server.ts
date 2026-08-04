@@ -11,7 +11,6 @@ import { PLATFORM_REQUEST_HEADER, ulid } from '@substrat-run/kernel';
 import { platformActorId, principalId, z, type PlatformActorId, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
 import { buildDemoHost, seedDemo, type ManyfoldWorld } from './index.js';
 import { ROLES } from './provision.js';
-import { buildAuthNode, migrateAuth } from './auth-node.js';
 import { mountApi } from './routes.js';
 import { API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
@@ -20,11 +19,12 @@ import { DOCS_HTML } from './docs.js';
  * Dev API server for Manyfold. Deliberately thin: resolve (principal, site) → getScope →
  * invoke. Every route is a wrapper over an operation; no business logic here.
  *
- * Auth is REAL and the same shape as the deployed worker: a Better Auth session cookie →
- * a verified subject → the principal that login is bound to (the kernel's identity
- * directory). There is NO `x-principal` impersonation bypass — dev and prod authenticate
- * the same way; the dev server just seeds a login per cast member so the demo runs out of
- * the box, and prints the credentials on startup.
+ * OIDC-only (oidc-only-demos.md): the vertical runs no credential store, so this dev server
+ * hosts NO accounts and NO `/api/auth/*`. Local dev authenticates with the `x-principal`
+ * persona picker (defaulting to a cast member so the app runs out of the box) — an
+ * impersonation bypass that only ever exists on this dev-only Node server, never the worker.
+ * A real login is the OIDC round-trip, exercised via the worker against a running
+ * `demos/auth-server` issuer.
  *
  * Multi-scope is the twist: `x-site` selects which of the tenant's sites (scopes) the
  * request runs against — that is site SELECTION, not auth.
@@ -42,57 +42,34 @@ const webOrigin = `http://localhost:${webPort}`;
 const host = buildDemoHost(dataDir);
 const world: ManyfoldWorld = await seedDemo(host, dataDir);
 
-// Better Auth — its own store, migrated on startup. The browser hits /api/auth/* through
-// the Vite proxy, so BOTH origins must be trusted or login silently fails on the one left out.
-const auth = buildAuthNode(dataDir, apiOrigin, [apiOrigin, webOrigin]);
-await migrateAuth(auth);
-
 const staff: PlatformActorId = platformActorId.parse(ulid());
 const siteBySlug = new Map(world.sites.map((s) => [s.slug, s]));
 
-// The demo cast: a real login each, bound to the seeded principal (roles are held per site
-// — see seed.ts). Sign in as any of these; the password is shared for the demo.
-const DEMO_PASSWORD = 'manyfold-demo';
-const LOGINS: Array<{ principal: PrincipalId; email: string; name: string }> = [
-  { principal: world.maja, email: 'maja@manyfold.test', name: 'Maja Lindqvist' },
-  { principal: world.emil, email: 'emil@manyfold.test', name: 'Emil Berg' },
-  { principal: world.sofia, email: 'sofia@manyfold.test', name: 'Sofia Ruiz' },
+// The demo cast: their seeded principals (roles are held per site — see seed.ts). Dev picks one
+// with the `x-principal` header; with none set the server defaults to the first, so the app runs
+// out of the box. These are principal ids, NOT logins — real accounts live at the OIDC issuer.
+const CAST: Array<{ principal: PrincipalId; name: string }> = [
+  { principal: world.maja, name: 'Maja Lindqvist' },
+  { principal: world.emil, name: 'Emil Berg' },
+  { principal: world.sofia, name: 'Sofia Ruiz' },
 ];
+const DEFAULT_PERSONA = CAST[0]!;
+const nameOf = (p: PrincipalId): string => CAST.find((c) => c.principal === p)?.name ?? 'You';
 
-/** Seed a login per cast member and bind it to their principal. Idempotent on both stores. */
-async function seedPersonaLogins(): Promise<void> {
-  const db = new Database(join(dataDir, 'better-auth.sqlite'), { readonly: true });
-  try {
-    for (const p of LOGINS) {
-      let externalId: string | undefined;
-      try {
-        externalId = (await auth.api.signUpEmail({ body: { email: p.email, password: DEMO_PASSWORD, name: p.name } })).user.id;
-      } catch {
-        externalId = (db.prepare('SELECT id FROM user WHERE email = ?').get(p.email) as { id: string } | undefined)?.id;
-      }
-      if (!externalId) continue;
-      if (await host.admin.resolveIdentity(world.t1, 'better-auth', externalId)) continue;
-      await host.admin.linkIdentity(staff, {
-        provider: 'better-auth',
-        externalId,
-        principal: p.principal,
-        tenantId: world.t1,
-        scopeId: world.cafe,
-      });
-    }
-  } finally {
-    db.close();
+// ── Identity: dev persona (x-principal) + selected site ───────────────────────
+
+/**
+ * The dev principal: the `x-principal` header if it names one, else the default persona so the
+ * app is usable without a picker. Dev-only — this Node server is never deployed; the worker is
+ * the production surface and authenticates via OIDC.
+ */
+function devPrincipal(headers: Headers): PrincipalId {
+  const raw = headers.get('x-principal');
+  if (raw) {
+    const parsed = principalId.safeParse(raw);
+    if (parsed.success) return parsed.data;
   }
-}
-
-// ── Identity: session → principal + selected site ────────────────────────────
-
-/** The Better Auth session's subject → the principal that login is bound to, or null. */
-async function principalFromSession(headers: Headers): Promise<PrincipalId | null> {
-  const session = await auth.api.getSession({ headers });
-  if (!session?.user) return null;
-  const mapped = await host.admin.resolveIdentity(world.t1, 'better-auth', session.user.id);
-  return mapped ? principalId.parse(mapped.principal) : null;
+  return DEFAULT_PERSONA.principal;
 }
 
 /** Which of the tenant's sites (scopes) this request targets — `x-site` slug, default cafe. */
@@ -104,8 +81,7 @@ function siteScope(headers: Headers): ScopeId {
 }
 
 async function stub(c: Context): Promise<ScopeStub> {
-  const principal = await principalFromSession(c.req.raw.headers);
-  if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
+  const principal = devPrincipal(c.req.raw.headers);
   // #458 parity with the worker: flag responses whose operation enqueued a platform
   // intent. No router locally, so the header is inert — but visible when driving the API.
   return host.getScope(principal, world.t1, siteScope(c.req.raw.headers), {
@@ -128,24 +104,22 @@ app.onError((err, c) => {
   return c.json({ error: m }, 400);
 });
 
-// Better Auth owns /api/auth/* (sign-up, sign-in, sign-out, session). Open in dev — a login
-// unknown to the directory resolves to nobody (401 from /api/me), same as the worker.
-app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw));
+// No /api/auth/* here: the vertical runs no credential store (oidc-only-demos.md). Dev auth is
+// the x-principal persona picker; real login is the OIDC round-trip via the worker + issuer.
 
 // The tenant's sites — the in-app site switcher's list. Public: it is just the switcher's
 // options; the kernel still checks every op per site. Mirrors the worker's shape.
 app.get('/api/sites', (c) => c.json(world.sites.map((s) => ({ slug: s.slug, name: s.name }))));
 
-// Who am I, in the selected site, and what may I do — the worker's `can` shape. 401 = anon.
+// Who am I, in the selected site, and what may I do — the worker's `can` shape. Dev always
+// resolves a persona (default or `x-principal`), so there is no anonymous state here.
 app.get('/api/me', async (c) => {
-  const principal = await principalFromSession(c.req.raw.headers);
-  if (!principal) return c.json({ error: 'unauthorized' }, 401);
+  const principal = devPrincipal(c.req.raw.headers);
   const scope = siteScope(c.req.raw.headers);
   const who = (await (await host.getScope(principal, world.t1, scope)).invoke('manyfold/whoami', undefined)) as {
     can: Record<string, boolean>;
   };
-  const session = await auth.api.getSession({ headers: c.req.raw.headers });
-  return c.json({ key: principal, display: session?.user?.name ?? session?.user?.email ?? 'You', site: scope, can: who.can });
+  return c.json({ key: principal, display: nameOf(principal), site: scope, can: who.can });
 });
 
 // ── Members & invites (the post-setup join path — admin-only) ────────────────
@@ -200,30 +174,22 @@ app.post('/api/invites/:principal/revoke', async (c) => {
 });
 
 app.post('/api/accept-invite', async (c) => {
-  const session = await auth.api.getSession({ headers: c.req.raw.headers });
-  if (!session?.user) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
+  // Dev has no credential store: the `x-principal` persona IS the identity, so there is no login
+  // to bind. The invited principal already holds its role (granted at create), so accepting just
+  // consumes the invite — switch to it with `x-principal` to see the member's view. (In the
+  // worker, this binds the invitee's OIDC subject to the member principal in the IdentityDO.)
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const row = invitesDb
     .prepare('SELECT scope_id as scopeId, principal FROM manyfold_dev_invites WHERE token_hash = ?')
     .get(await sha256Hex(token)) as { scopeId: string; principal: string } | undefined;
   if (!row) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
-  await host.admin.linkIdentity(staff, {
-    provider: 'better-auth',
-    externalId: session.user.id,
-    principal: principalId.parse(row.principal),
-    tenantId: world.t1,
-    scopeId: row.scopeId as ScopeId,
-  });
   invitesDb.prepare('DELETE FROM manyfold_dev_invites WHERE scope_id = ? AND principal = ?').run(row.scopeId, row.principal);
   return c.json({ ok: true, principal: row.principal });
 });
 
-// The OpenAPI document + Scalar reference (design/api-surface.md). Session-gated like the
-// rest of /api/* — the persona headers are gone, so the docs require a real login too.
-app.get('/openapi.json', async (c) => {
-  if (!(await principalFromSession(c.req.raw.headers))) throw new HTTPException(401, { message: 'unauthorized' });
-  return c.json(API_DOCUMENT);
-});
+// The OpenAPI document + Scalar reference (design/api-surface.md). Open in dev (no credential
+// store); the worker gates it on a real session.
+app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
 app.get('/api/docs', (c) => c.html(DOCS_HTML));
 const scalarJs = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -236,8 +202,6 @@ app.get('/assets/scalar-api-reference.js', (c) =>
 // The whole data API — shared with the Cloudflare Worker (src/routes.ts).
 mountApi(app, stub);
 
-await seedPersonaLogins();
-
 serve({ fetch: app.fetch, port });
 
 const lines = [
@@ -247,9 +211,9 @@ const lines = [
   `      vertical API   ${apiOrigin}`,
   `      app (vite)     ${webOrigin}`,
   '  ' + '─'.repeat(52),
-  `    data   ${dataDir}`,
-  `    sites  ${world.sites.map((s) => s.slug).join(', ')}`,
-  `    logins ${LOGINS.map((l) => l.email).join(', ')}  ·  password: ${DEMO_PASSWORD}`,
+  `    data     ${dataDir}`,
+  `    sites    ${world.sites.map((s) => s.slug).join(', ')}`,
+  `    personas ${CAST.map((c) => c.name).join(', ')}  ·  default: ${DEFAULT_PERSONA.name} (set x-principal to switch)`,
   '',
 ];
 console.log(lines.join('\n'));
