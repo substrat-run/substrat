@@ -11,6 +11,7 @@ import {
   statusLabel,
   statusTone,
 } from '../lib/fleet';
+import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
 
 export interface ScopesProps {
@@ -200,6 +201,11 @@ export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, 
   const [selectedIds, setSelectedIds] = useState<Set<ScopeId>>(new Set());
   // The bulk reap gate (destructive, no restore) — armed by typing the count.
   const [bulkReap, setBulkReap] = useState(false);
+  // The bulk PRUNE gate — the cleanup counterpart: retire every dead scope in the
+  // selection at once (a fork is deleted; anything else is unbound → archived → reaped),
+  // spanning the states the plain lifecycle levers can't (forks, provisioning). Same
+  // type-the-count arming as reap, since it, too, wipes storage with no restore.
+  const [bulkPrune, setBulkPrune] = useState(false);
   const [bulkArmed, setBulkArmed] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
 
@@ -339,6 +345,59 @@ export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, 
   }
 
   const reapTargets = eligibleFor('reap');
+
+  // "No active app" — a scope safe to prune: a snapshot fork (deleted, not reaped), or
+  // one that is archived or stuck provisioning. Deliberately EXCLUDES a live `active`
+  // primary (a serving app) and a `suspended` one (a deliberate pause) — the lifecycle
+  // levers own those. This is what closes the gaps the plain bulk actions leave: forks
+  // (no reap transition) and provisioning (no legal transition at all).
+  function isPrunable(s: Scope): boolean {
+    if (s.forkedFrom) return true;
+    const eff = effectiveStatus(s, tenants.get(s.tenantId));
+    return eff === 'archived' || eff === 'provisioning';
+  }
+  const pruneTargets = selectedRows.filter(isPrunable);
+
+  // Retire one dead scope, mirroring the platform's own order: release its names FIRST
+  // (so reap's bound-hostname guard is satisfied — a serving scope is never here anyway),
+  // then delete a fork outright, or archive-if-needed and reap a primary.
+  async function pruneOne(s: Scope) {
+    for (const h of await walkAll((p) => api.listHostnames({ scopeId: s.id, ...p }))) {
+      await api.unbindHostname(h.hostname);
+    }
+    if (s.forkedFrom) {
+      await api.deleteScope(s.tenantId, s.id);
+      return;
+    }
+    if (effectiveStatus(s, tenants.get(s.tenantId)) !== 'archived') {
+      await api.archiveScope(s.tenantId, s.id);
+    }
+    await api.reapScope(s.tenantId, s.id);
+  }
+
+  // Fan the prune out sequentially — each step is its own audited action, and a mid-run
+  // failure is counted, not fatal — then refresh and clear the selection once.
+  async function runPrune(targets: Scope[]) {
+    setBulkBusy(true);
+    let ok = 0;
+    let failed = 0;
+    for (const s of targets) {
+      try {
+        await pruneOne(s);
+        ok++;
+      } catch {
+        failed++;
+      }
+    }
+    setBulkBusy(false);
+    clearSelection();
+    onChanged();
+    onToast(
+      `${ok} scope${ok === 1 ? '' : 's'} pruned`,
+      failed > 0 ? `${failed} failed` : undefined,
+      failed > 0 ? 'danger' : 'success',
+    );
+  }
 
   const th: CSSProperties = {
     textAlign: 'left',
@@ -495,6 +554,22 @@ export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, 
               </Button>
             );
           })}
+          {/* Prune — the cleanup lever the lifecycle buttons can't be: it spans forks and
+              provisioning, and does the whole unbind → archive → reap (or fork-delete) in
+              one pass. Armed like reap because it also wipes storage. */}
+          {pruneTargets.length > 0 && (
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={bulkBusy}
+              onClick={() => {
+                setBulkArmed('');
+                setBulkPrune(true);
+              }}
+            >
+              Prune ({pruneTargets.length})
+            </Button>
+          )}
           <Button variant="ghost" size="sm" disabled={bulkBusy} onClick={clearSelection}>
             Clear
           </Button>
@@ -675,6 +750,74 @@ export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, 
             label={`Type ${reapTargets.length} to arm this action`}
             mono
             placeholder={String(reapTargets.length)}
+            value={bulkArmed}
+            onChange={(e) => setBulkArmed(e.target.value)}
+          />
+        </div>
+      </Dialog>
+
+      {/* Prune confirmation — same type-the-count arming as reap (it, too, is
+          irreversible), but the copy names what prune does that reap alone can't:
+          release hostnames, delete forks, and reap the archived/provisioning rest. */}
+      <Dialog
+        open={bulkPrune}
+        title={`Prune ${pruneTargets.length} scope${pruneTargets.length === 1 ? '' : 's'}?`}
+        danger
+        confirmLabel="Prune"
+        width={520}
+        confirmDisabled={bulkArmed !== String(pruneTargets.length)}
+        onConfirm={
+          bulkArmed === String(pruneTargets.length)
+            ? () => {
+                const targets = pruneTargets;
+                setBulkPrune(false);
+                setBulkArmed('');
+                void runPrune(targets);
+              }
+            : undefined
+        }
+        onCancel={() => {
+          setBulkPrune(false);
+          setBulkArmed('');
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
+            Retires{' '}
+            <strong>
+              {pruneTargets.length} scope{pruneTargets.length === 1 ? '' : 's'}
+            </strong>{' '}
+            with no active app — each has its hostnames released, then a snapshot fork is
+            deleted and every other scope is archived and reaped. It{' '}
+            <strong>cannot be undone</strong>: storage is wiped, there is no restore. Live
+            (active) and suspended scopes are never included.
+          </p>
+          <div
+            style={{
+              maxHeight: 140,
+              overflowY: 'auto',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 6,
+              padding: '6px 10px',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 12,
+              color: 'var(--text-tertiary)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+            }}
+          >
+            {pruneTargets.map((s) => (
+              <span key={s.id}>
+                {scopeHandle(s, tenants)}
+                {s.forkedFrom ? ' · fork' : ` · ${statusLabel(effectiveStatus(s, tenants.get(s.tenantId)))}`}
+              </span>
+            ))}
+          </div>
+          <Input
+            label={`Type ${pruneTargets.length} to arm this action`}
+            mono
+            placeholder={String(pruneTargets.length)}
             value={bulkArmed}
             onChange={(e) => setBulkArmed(e.target.value)}
           />
