@@ -870,14 +870,76 @@ describe('control-plane API', () => {
     expect((await (await dj('/verticals/prev-vert/previews/pr-7', 'DELETE')).json() as { deleted: string | null }).deleted).toBeNull();
   });
 
-  it('refuses previews for a LISTED vertical (audience widened → staff-gated)', async () => {
+  it('lets a LISTED vertical owner preview a PENDING version into their own scope (#509 (d))', async () => {
+    // Publishing widens who may INSTALL, not who may preview their own code. A listed
+    // vertical's owner still forks their own prod scope and runs their (not-yet-admitted)
+    // PR code on it — the same own-tenant blast radius a private vertical self-admits under.
     await host.admin.registerVertical(staff, {
-      slug: 'listed-vert', name: 'Listed Vert', source: 'cli', ownerTenant: t1,
+      slug: 'listed-prev', name: 'Listed Prev', source: 'cli', ownerTenant: t1,
     });
-    await host.admin.setVerticalListed(staff, 'listed-vert', true);
-    const res = await json('/verticals/listed-vert/previews', 'POST', { tag: 'pr-1', versionId: ulid() });
-    expect(res.status).toBe(403);
-    expect(((await res.json()) as { error: string }).error).toMatch(/private/i);
+    await host.admin.setVerticalListed(staff, 'listed-prev', true);
+    const publish = async (version: string, admit: boolean): Promise<string> => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: 'listed-prev', version,
+        manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+      });
+      if (admit) await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const live = await publish('1.0.0', true); // the admitted version the prod scope runs
+    const pending = await publish('1.1.0', false); // the un-admitted PR code to rehearse
+
+    const prod = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: prod, vertical: 'listed-prev' });
+    await host.admin.activateScope(staff, t1, prod);
+    await host.admin.bindScopeVersion(staff, t1, prod, live);
+    await host.admin.bindHostname(staff, {
+      hostname: 'shop-acme.global.substrat.run',
+      tenantId: t1, scopeId: prod, surface: 'app', region: null, canonical: true,
+    });
+
+    const fakeVertical = {
+      exportScope: async (): Promise<ScopeDumpTable[]> => [
+        { name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: [['a']] },
+      ],
+      restoreScope: async () => ({ tables: 1 }),
+      deleteScope: async () => {},
+    } as unknown as VerticalClient;
+    const lapp = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'listed-prev': fakeVertical },
+      platformBaseDomains: ['global.substrat.run'],
+    });
+    const lj = (path: string, method: string, body?: unknown) =>
+      lapp.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    // The pending version binds onto the preview fork — the carve-out the admission gate now makes.
+    const res = await lj('/verticals/listed-prev/previews', 'POST', { tag: 'pr-1', versionId: pending });
+    expect(res.status).toBe(201);
+    const created = (await res.json()) as { scopeId: string; hostname: string; reused: boolean };
+    expect(created.reused).toBe(false);
+    expect(created.hostname).toBe('shop-acme--pr-1.global.substrat.run');
+    const row = (await (await lj(`/tenants/${t1}/scopes/${created.scopeId}`, 'GET')).json()) as {
+      kind: string; verticalVersionId: string;
+    };
+    expect(row.kind).toBe('preview');
+    expect(row.verticalVersionId).toBe(pending); // runs the un-admitted PR code
+
+    // The very same pending version must STILL be refused on a live (non-preview) scope —
+    // the carve-out is preview-only, the install gate is intact.
+    await expect(host.admin.bindScopeVersion(staff, t1, prod, pending)).rejects.toThrow(/not admitted/);
+  });
+
+  it('refuses a preview for a first-party vertical — no owner scope to fork', async () => {
+    await host.admin.registerVertical(staff, {
+      slug: 'firstparty', name: 'First Party', source: 'builtin', ownerTenant: null,
+    });
+    await host.admin.setVerticalListed(staff, 'firstparty', true);
+    const res = await json('/verticals/firstparty/previews', 'POST', { tag: 'pr-1', versionId: ulid() });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/no owner tenant/i);
   });
 
   it('forks a vertical addressed by its QUALIFIED registry id (#498)', async () => {
