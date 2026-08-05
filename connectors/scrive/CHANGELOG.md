@@ -1,5 +1,12 @@
 # @substrat-run/connector-scrive
 
+## 0.2.4
+
+### Patch Changes
+
+- @substrat-run/contracts@0.46.0
+- @substrat-run/kernel@0.46.0
+
 ## 0.2.3
 
 ### Patch Changes

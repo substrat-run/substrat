@@ -1,9 +1,9 @@
 {
   "name": "@substrat-run/demo-manyfold",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "license": "Apache-2.0",
-  "description": "CMS demo vertical (Manyfold) \u2014 multi-scope headless CMS, see spec/concept.md",
+  "description": "CMS demo vertical (Manyfold) — multi-scope headless CMS, see spec/concept.md",
   "substrat": {
     "slug": "manyfold",
     "name": "Manyfold",

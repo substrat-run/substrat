@@ -1,9 +1,9 @@
 {
   "name": "@substrat-run/demo-meridian",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "license": "Apache-2.0",
-  "description": "HR demo vertical (Meridian) \u2014 see spec/concept.md",
+  "description": "HR demo vertical (Meridian) — see spec/concept.md",
   "substrat": {
     "slug": "meridian",
     "name": "Meridian",
@@ -47,7 +47,7 @@
       {
         "key": "OIDC_ISSUER",
         "label": "OIDC issuer",
-        "description": "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, \u2026",
+        "description": "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
         "placeholder": "https://auth.example.com",
         "required": false,
         "secret": false,
