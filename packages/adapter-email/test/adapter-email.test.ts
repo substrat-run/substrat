@@ -156,10 +156,12 @@ describe('the platform email relay transport (#303)', () => {
 
     expect(result).toEqual({ delivered: ['user@example.com'], queued: [], bounced: [] });
     expect(calls).toHaveLength(1);
+    const [call] = calls;
+    if (!call) throw new Error('expected exactly one relay call');
     // Trailing slash on controlPlaneUrl is normalized, endpoint is /internal/email/send.
-    expect(calls[0].url).toBe('https://console.substrat.net/internal/email/send');
-    expect(calls[0].init.headers['x-substrat-platform']).toBe('plat-secret');
-    expect(JSON.parse(calls[0].init.body)).toEqual({
+    expect(call.url).toBe('https://console.substrat.net/internal/email/send');
+    expect(call.init.headers['x-substrat-platform']).toBe('plat-secret');
+    expect(JSON.parse(call.init.body)).toEqual({
       tenantId: '01TENANT',
       scopeId: '01SCOPE',
       to: 'user@example.com',
