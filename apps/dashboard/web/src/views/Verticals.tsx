@@ -41,7 +41,7 @@ function channelsFor(d: Deployment, versionId: string): string[] {
   return d.channels.filter((c) => c.versionId === versionId).map((c) => c.channel);
 }
 
-const CHANNEL_PILL: Record<string, PillKind> = { prod: 'success', staging: 'info', dev: 'neutral' };
+const CHANNEL_PILL: Record<string, PillKind> = { prod: 'success' };
 
 function VersionRow({
   d,
@@ -54,7 +54,7 @@ function VersionRow({
   v: DeploymentVersion;
   last: boolean;
   busy: boolean;
-  onPromote: (channel: 'dev' | 'staging' | 'prod') => void;
+  onPromote: (channel: 'prod') => void;
 }) {
   const here = channelsFor(d, v.id);
   const admitted = v.admission === 'admitted';
@@ -119,7 +119,7 @@ function ProdHistory({
 }: {
   d: Deployment;
   busy: boolean;
-  onPromote: (versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
+  onPromote: (versionId: string, channel: 'prod') => void;
 }) {
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<ChannelHistoryEntry[] | null>(null);
@@ -201,7 +201,7 @@ function VerticalCard({
 }: {
   d: Deployment;
   busy: boolean;
-  onPromote: (versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
+  onPromote: (versionId: string, channel: 'prod') => void;
   onRemove: () => void;
   onOpen: () => void;
 }) {
@@ -300,7 +300,7 @@ export function VerticalDetail({
 }: {
   d: Deployment;
   busy: boolean;
-  onPromote: (versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
+  onPromote: (versionId: string, channel: 'prod') => void;
   onRemove: () => void;
   onBack: () => void;
 }) {
@@ -517,7 +517,7 @@ export function Verticals({
   loadGitRepos,
 }: {
   deployments: Deployment[];
-  onPromote: (slug: string, versionId: string, channel: 'dev' | 'staging' | 'prod') => void;
+  onPromote: (slug: string, versionId: string, channel: 'prod') => void;
   onRemove: (slug: string) => void;
   onOpen: (slug: string) => void;
   busy: boolean;

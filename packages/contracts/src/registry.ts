@@ -239,11 +239,14 @@ export type PublishVersionInput = z.infer<typeof publishVersionInput>;
 /**
  * Where a version is promoted to (#31 step 2).
  *
- * A channel is a named pointer per vertical. Promotion moves it. Dev, staging and
- * prod are therefore the same vertical at different versions, which is the sentence
- * the registry existed to make sayable.
+ * A vertical has exactly ONE channel — `prod`, the serving pointer: the version an
+ * install runs. The old `dev`/`staging` pointers were write-only (nothing ever served
+ * or read them), so they were retired (#509): a non-prod environment is a *scope with
+ * data* — a preview (`substrat preview create`), not a second pointer at the same code.
+ * `prod` stays the wire name so `--promote prod`, generated CI, and existing history
+ * rows keep working unchanged; the enum is what keeps it from becoming stringly-typed.
  */
-export const channelName = z.enum(['dev', 'staging', 'prod']);
+export const channelName = z.enum(['prod']);
 export type ChannelName = z.infer<typeof channelName>;
 
 export const verticalChannel = z.object({
@@ -257,8 +260,8 @@ export const verticalChannel = z.object({
    * (the pointer, audited) BEFORE the in-place serve; `servingVersionId` advances only
    * after a serve succeeds. So `servingVersionId !== versionId` on prod is the honest
    * signal that a serve failed (or is mid-flight): the channel was promoted but the
-   * scopes still run the previous code (#321). Null for dev/staging (no in-place serve)
-   * and for a vertical with no serving script yet.
+   * scopes still run the previous code (#321). Null for a vertical with no serving
+   * script yet.
    */
   servingVersionId: z.string().min(1).nullish(),
 });

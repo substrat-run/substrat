@@ -1874,7 +1874,7 @@ export function scopeHostContractSuite(
         deploymentRef: null,
       });
       await host.admin.admitVersion(staff, versionId);
-      await host.admin.promoteVersion(staff, 'deletable', 'dev', versionId);
+      await host.admin.promoteVersion(staff, 'deletable', 'prod', versionId);
 
       await host.admin.deleteVertical(staff, 'deletable');
       expect((await host.admin.listVerticals(staff)).some((v) => v.slug === 'deletable')).toBe(false);
@@ -2048,17 +2048,9 @@ export function scopeHostContractSuite(
       expect(acknowledged[0]!.actor).toBe(staff);
     });
 
-    it('promotes per channel — dev moving does not move prod', async () => {
-      // The whole point of channels: the same vertical at different versions.
-      const preview = await publish('2.3.0-preview', { perm: 'pC', mig: 'gC' });
-      const prodBefore = (await host.admin.listChannels(staff, 'callout')).find(
-        (c) => c.channel === 'prod',
-      )?.versionId;
-      await host.admin.promoteVersion(staff, 'callout', 'dev', preview);
-      const channels = await host.admin.listChannels(staff, 'callout');
-      expect(channels.find((c) => c.channel === 'dev')?.versionId).toBe(preview);
-      expect(channels.find((c) => c.channel === 'prod')?.versionId).toBe(prodBefore);
-    });
+    // (Retired #509: `dev`/`staging` are gone, so there is no "dev moves independently of
+    //  prod" to assert — a vertical has exactly one channel. A non-prod environment is a
+    //  preview, exercised in the preview suite.)
 
     it('refuses to promote a version that was never admitted', async () => {
       const pending = ulid();
@@ -2071,7 +2063,7 @@ export function scopeHostContractSuite(
         migrationDigest: 'g',
         deploymentRef: null,
       });
-      await expect(host.admin.promoteVersion(staff, 'callout', 'dev', pending)).rejects.toThrow(
+      await expect(host.admin.promoteVersion(staff, 'callout', 'prod', pending)).rejects.toThrow(
         /pending, not admitted/,
       );
     });
@@ -2141,8 +2133,6 @@ export function scopeHostContractSuite(
       // rollback would rewind to (preview-and-snapshots.md §7).
       expect(timeline[0]!.actor).toBe(staff);
       expect(new Date(timeline[0]!.at).getTime()).toBeGreaterThan(0);
-      // Narrowing by channel works: dev never moved, so its timeline is empty.
-      expect(await host.admin.listChannelHistory(staff, 'egeryds/crm', 'dev')).toHaveLength(0);
     });
 
     it("prod promote of a private vertical re-points the owner's live scopes (merge IS the deploy)", async () => {
@@ -3290,12 +3280,6 @@ export function scopeHostContractSuite(
     // unset `limit` stays the legacy "everything" — internal callers mean it.
 
     it('pages every directory list by limit + cursor without changing the unpaged read', async () => {
-      // A second channel so the channel list has something to page over.
-      const prodNow = (await host.admin.listChannels(staff, 'egeryds/crm')).find(
-        (c) => c.channel === 'prod',
-      )!.versionId;
-      await host.admin.promoteVersion(staff, 'egeryds/crm', 'dev', prodNow);
-
       // `limit` bounds the page to a prefix of the unbounded read, and resuming
       // from the last row's key returns exactly the next prefix.
       const pages = async <T>(
@@ -3322,9 +3306,7 @@ export function scopeHostContractSuite(
       await pages(await host.admin.listVersions(staff, 'callout'), (v) => v.id, (p) =>
         host.admin.listVersions(staff, 'callout', p),
       );
-      await pages(await host.admin.listChannels(staff, 'egeryds/crm'), (c) => c.channel, (p) =>
-        host.admin.listChannels(staff, 'egeryds/crm', p),
-      );
+      // (A vertical has exactly one channel since #509, so there is no channel list to page.)
     });
 
     it('walks a list to completion by cursor, visiting every row exactly once', async () => {

@@ -629,7 +629,7 @@ function Deployments({ app }: { app: AppRow }) {
                 </span>
                 <span><Pill kind={v.admission === 'admitted' ? 'success' : v.admission === 'rejected' ? 'danger' : 'warning'}>{v.admission}</Pill></span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {chans.length === 0 ? <span style={{ color: 'var(--text-tertiary)' }}>—</span> : chans.map((ch) => <Pill key={ch} kind={ch === 'prod' ? 'success' : ch === 'staging' ? 'info' : 'neutral'}>{ch}</Pill>)}
+                  {chans.length === 0 ? <span style={{ color: 'var(--text-tertiary)' }}>—</span> : chans.map((ch) => <Pill key={ch} kind={ch === 'prod' ? 'success' : 'neutral'}>{ch}</Pill>)}
                 </span>
                 <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{v.createdAt ? relativeTime(v.createdAt) : '—'}</span>
               </div>

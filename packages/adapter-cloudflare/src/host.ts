@@ -2653,7 +2653,10 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
       listChannels: async (actor, verticalSlug: string, page) => {
-        const rows = await this.cp.listChannels(verticalSlug, page);
+        // `prod` is the only live channel (#509 retired dev/staging). Filter before the parse
+        // so a legacy dev/staging row — inert data a pre-retirement push may have left — never
+        // reaches the now-`prod`-only `verticalChannel.parse` and throws.
+        const rows = (await this.cp.listChannels(verticalSlug, page)).filter((r) => r.channel === 'prod');
         // The serving script runs ONE version (#286); surface it on the prod row so a
         // failed in-place serve (channel moved, serve did not) reads honestly instead of
         // claiming the new version is live (#321).

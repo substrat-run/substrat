@@ -374,7 +374,7 @@ export function App() {
   );
 
   const promoteDeployment = useCallback(
-    async (slug: string, versionId: string, channel: 'dev' | 'staging' | 'prod') => {
+    async (slug: string, versionId: string, channel: 'prod') => {
       if (promoting) return;
       setPromoting(true);
       try {

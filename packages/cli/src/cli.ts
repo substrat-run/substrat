@@ -67,16 +67,16 @@ Usage:
   substrat whoami                             show who you are + your workspaces
   substrat workspaces                         list your workspaces (alias of whoami)
   substrat version                            print the CLI version (also --version, -v)
-  substrat push     [dir] [--promote <channel>] push a vertical (slug/name/version default
+  substrat push     [dir] [--promote prod]     push a vertical (slug/name/version default
                                                from package.json; version auto-bumps);
-                                               --promote points the channel at it in the
-                                               same run (merge-to-main deploys with
-                                               --promote prod). A push that would CREATE
+                                               --promote prod points the serving channel at
+                                               it in the same run (merge-to-main deploys
+                                               with --promote prod). A push that would CREATE
                                                a new lineage next to a same-named one
                                                (another owner) is refused — pass
                                                --allow-fork to do it deliberately
-  substrat promote  <slug> --channel dev|staging|prod --version <versionId>
-                    [--ack-permissions] [--ack-migrations]
+  substrat promote  <slug> --version <versionId>
+                    [--ack-permissions] [--ack-migrations]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
@@ -150,11 +150,13 @@ Options (any command):
                    commands fall back to the workspace stored at login.
 
 A builder pushes a BARE --slug; the control plane forms '<tenantSlug>/<slug>' (§5). A
-PRIVATE vertical's push lands ADMITTED and every channel is self-serve — prod included —
+PRIVATE vertical's push lands ADMITTED and prod (the one serving channel) is self-serve,
 so '--promote prod' is a complete deploy. Once a vertical is LISTED on the marketplace its
 pushes land PENDING and prod promotion + admission are a staff decision again. A promotion
 that changes the permission or migration surface is refused until the change is
-acknowledged (--ack-permissions / --ack-migrations) — read the diff it names first.
+acknowledged (--ack-permissions / --ack-migrations) — read the diff it names first. For a
+non-prod environment, run the version against a copy of the data with 'substrat preview
+create' — dev/staging channels were retired (#509).
 
 Auth resolves: explicit --token/SUBSTRAT_SERVICE_TOKEN → stored browser session →
 stored service token. URL resolves flag → SUBSTRAT_CP_URL → ~/.substrat/config.json.
@@ -366,10 +368,12 @@ async function cmdInstalls(): Promise<void> {
 
 async function cmdPromote(): Promise<void> {
   const slug = argv[1];
-  const channel = flag('channel');
+  // `prod` is the only channel (#509 retired dev/staging), so --channel is optional and
+  // defaults to it; a non-prod value still passes through and the control plane refuses it.
+  const channel = flag('channel') ?? 'prod';
   const version = flag('version');
-  if (!slug || slug.startsWith('--') || !channel || !version) {
-    console.error('usage: substrat promote <slug> --channel dev|staging|prod --version <versionId> [--ack-permissions] [--ack-migrations]');
+  if (!slug || slug.startsWith('--') || !version) {
+    console.error('usage: substrat promote <slug> --version <versionId> [--ack-permissions] [--ack-migrations]');
     process.exit(1);
   }
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
