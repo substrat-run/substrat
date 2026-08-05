@@ -1,5 +1,51 @@
 # @substrat-run/cli
 
+## 0.18.0
+
+### Minor Changes
+
+- 791e4fd: Retire the `dev`/`staging` channels — a vertical has exactly ONE channel now (#509, #515,
+  Tier 4). `channelName` narrows to `z.enum(['prod'])`: `prod` is the serving pointer, and the
+  old `dev`/`staging` pointers were write-only (nothing ever served or read them, #509 §2). A
+  non-prod environment is a _scope with data_ — a preview (`substrat preview create`) — not a
+  second pointer at the same code.
+
+  `prod` stays the wire name, so `--promote prod`, generated CI, and existing `channel_history`
+  rows keep working unchanged — this is a narrowing, not a rename.
+
+  - **Promote/history routes** refuse a non-prod channel with a `400` pointing at previews
+    (`substrat preview create --tag <tag>`), instead of silently accepting a dead pointer.
+  - **`listChannels`** filters to the serving channel in both adapters, so an inert `dev`/`staging`
+    row a pre-retirement push may have left never reaches the now-`prod`-only parse. `channel_history`
+    is untouched (audit + the PITR anchor `at`).
+  - **CLI**: `substrat promote` no longer needs `--channel` (it defaults to `prod`); `--promote`
+    documents `prod` only.
+  - **Console (dashboard + control-plane)**: channel types, pills, and the promote picker narrow
+    to `prod` — the dead dev/staging buttons were already removed in #512.
+
+  The two human checkpoints are unchanged: the `--ack-permissions`/`--ack-migrations` gate still
+  fires on the `prod` promote (the digest-change consent), and the fork-before-promote snapshot
+  still runs at the bind. No migration is required — legacy dev/staging rows become inert data the
+  readers now skip.
+
+- 0507abf: Add `substrat scope domain <scopeId> --domain <fqdn>` — bind a custom domain to ANY owned scope,
+  not just a prod app (#509). The hostname bind path was already scope-generic; this is the
+  scope-addressed surface a bare **preview** or long-lived **test** scope needs, so a pinned preview
+  can carry a stable address like `crm-test.ahero.se` (the router resolves `hostname → scope` and
+  serves whatever version the scope is bound to). `--surface` (default `app`) and `--canonical`
+  (default: an additive alias, never demoting the `--<tag>` URL) round it out; it walks the same
+  DNS/cert issuance as a prod domain.
+
+  The dashboard gains the matching builder surfaces (a per-vertical **Previews & environments** panel
+  — create/pin/delete a preview and attach a custom domain to one — and a per-scope **Bind version**
+  action), and the docs get a new **Environments & previews** guide plus a sweep of the pages that
+  still described the retired `dev`/`staging` channels.
+
+### Patch Changes
+
+- Updated dependencies [791e4fd]
+  - @substrat-run/contracts@0.48.0
+
 ## 0.17.0
 
 ### Minor Changes
