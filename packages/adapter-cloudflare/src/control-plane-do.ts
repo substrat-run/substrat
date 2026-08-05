@@ -1165,6 +1165,16 @@ export class ControlPlaneDO extends DurableObject {
       // A scope born while its vertical serves in place (#286) is born ON the serving
       // script — provisioning dispatches there — so its routing points there from row
       // one. Sub-selected at insert: per-scope truth that later serves can't disturb.
+      //
+      // EXCEPTION (#527): a PREVIEW must NOT inherit the serving script. A preview forks
+      // into — and binds — a specific (usually not-yet-serving) version's per-version
+      // dispatch script, which is where `orchestratedPreview` restores its data. Inheriting
+      // `serving_ref` would make `readHostname`'s `COALESCE(s.serving_ref, vv.deployment_ref)`
+      // route the preview to the PROD serving script (prod code, and a fresh/empty DO in
+      // that script) instead of the version it just bound — reporting success while serving
+      // someone else's build. A null slug matches no `verticals` row, so the scalar
+      // sub-select yields NULL and routing falls through to the bound version's ref.
+      const inheritServingSlug = record.kind === 'preview' ? null : record.vertical;
       this.sql.exec(
         `INSERT INTO scopes
            (scope_id, tenant_id, parent_scope_id, slug, kind, name, vertical,
@@ -1183,7 +1193,7 @@ export class ControlPlaneDO extends DurableObject {
         record.forkedFrom,
         record.forkedAt,
         record.expiresAt,
-        record.vertical,
+        inheritServingSlug,
         createdAt,
       );
     }

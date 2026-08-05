@@ -1653,6 +1653,58 @@ export function scopeHostContractSuite(
       await expect(host.admin.bindScopeVersion(staff, t1, s1, pending)).rejects.toThrow(/pending, not admitted/);
     });
 
+    it('routes a PREVIEW to its bound version, not the vertical serving script (#527)', async () => {
+      // The bug: a preview forks into — and binds — a specific (usually not-yet-serving)
+      // version, and its data is restored into THAT version's per-version dispatch script.
+      // But every scope inherited the vertical's stable `serving_ref` at provision (#286),
+      // and routing is `COALESCE(s.serving_ref, vv.deployment_ref)` — so the preview
+      // resolved to the PROD serving script (prod code, a fresh/empty DO there) instead of
+      // the version it just bound, while reporting success. A preview must route by its
+      // bound version; an INSTALL still follows the serving script.
+      const slug = 'routed';
+      // PRIVATE (owned, unlisted) → a published version self-admits, so the SAME version
+      // binds onto a normal install scope too, letting one version assert both outcomes.
+      await host.admin.registerVertical(staff, { slug, name: 'Routed', source: 'cli', ownerTenant: t1 });
+      const versionId = ulid();
+      await host.admin.publishVersion(staff, {
+        id: versionId, verticalSlug: slug, version: '1.0.0',
+        manifestDigest: 'm1', permissionDigest: 'p1', migrationDigest: 'g1',
+        deploymentRef: 'per-version-script',
+      });
+      // The vertical serves in place off a DIFFERENT, stable script (a promoted prod build).
+      await host.admin.setVerticalServing(staff, slug, {
+        ref: 'stable-serving-script', versionId, doClasses: [], migrationTag: 'g1',
+      });
+
+      // An INSTALL scope is born ON the serving script and routes there (#286 — unchanged).
+      const install = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: install, vertical: slug });
+      await host.admin.activateScope(staff, t1, install);
+      expect((await host.admin.getScopeRecord(staff, t1, install))?.servingRef).toBe('stable-serving-script');
+      await host.admin.bindScopeVersion(staff, t1, install, versionId);
+      await host.admin.bindHostname(staff, {
+        hostname: 'install.example.com', tenantId: t1, scopeId: install, surface: 'app', region: null, canonical: true,
+      });
+      await host.admin.setHostnameStatus(staff, 'install.example.com', 'active');
+      expect((await host.admin.resolveHostname('install.example.com'))?.deploymentRef).toBe('stable-serving-script');
+
+      // A PREVIEW of the SAME vertical does NOT inherit the serving script (its data lives
+      // in the bound version's per-version script), so it routes to the PR's own code.
+      const preview = scopeId.parse(ulid());
+      await host.provisionScope(staff, {
+        tenantId: t1, scopeId: preview, kind: 'preview', vertical: slug,
+        forkedFrom: install, forkedAt: new Date().toISOString(),
+      });
+      await host.admin.activateScope(staff, t1, preview);
+      expect((await host.admin.getScopeRecord(staff, t1, preview))?.servingRef).toBeUndefined();
+      await host.admin.bindScopeVersion(staff, t1, preview, versionId);
+      await host.admin.bindHostname(staff, {
+        hostname: 'preview.example.com', tenantId: t1, scopeId: preview, surface: 'app', region: null, canonical: true,
+      });
+      await host.admin.setHostnameStatus(staff, 'preview.example.com', 'active');
+      expect((await host.admin.resolveHostname('preview.example.com'))?.deploymentRef).toBe('per-version-script');
+    });
+
     it('records the owning tenant and fixes it at first push (claim-on-first-push)', async () => {
       // builder-plane.md Phase 1b: a vertical is owned by a TENANT (null = platform).
       // 'callout' above was registered platform-owned; a builder-pushed one carries
