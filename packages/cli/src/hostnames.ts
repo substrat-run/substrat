@@ -146,6 +146,41 @@ export async function bindSurfaceHostname(opts: {
 }
 
 /**
+ * Bind a custom domain to a scope **by id** — the scope-addressed complement to
+ * `bindSurfaceHostname` (which resolves a scope through a vertical slug's existing
+ * bindings). Addressing the scope directly is what lets a bare **preview** or long-lived
+ * **test** scope carry a custom domain: it has no install lineage to resolve through, and
+ * the whole point is a stable address like `crm-test.ahero.se` on a scope whose binding
+ * moves. The bind path is scope-generic (nothing checks prod/channel); the router resolves
+ * `hostname → scope` and serves whatever version the scope is bound to.
+ *
+ * `canonical` defaults false — additive, never silently demoting the URL the surface
+ * already serves on (the `--<tag>` hostname a preview minted). Pass it to make the custom
+ * domain the surface's primary (the generated-URL / email address).
+ */
+export async function bindScopeHostname(opts: {
+  controlPlaneUrl: string;
+  header: Record<string, string>;
+  tenantId: string;
+  scopeId: string;
+  surface: string;
+  domain: string;
+  canonical?: boolean;
+}): Promise<HostnameRow> {
+  const base = opts.controlPlaneUrl.replace(/\/$/, '');
+  return request<HostnameRow>(`${base}/hostnames`, opts.header, {
+    method: 'POST',
+    body: JSON.stringify({
+      hostname: opts.domain.toLowerCase(),
+      tenantId: opts.tenantId,
+      scopeId: opts.scopeId,
+      surface: opts.surface,
+      canonical: !!opts.canonical,
+    }),
+  });
+}
+
+/**
  * Re-poll a custom hostname's Cloudflare-for-SaaS issuance ("check again") — CI/support
  * parity with the dashboard's button. Returns the row with its refreshed status +
  * records. Tenant-narrowed server-side: a foreign hostname is a 404.

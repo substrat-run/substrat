@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -497,7 +497,7 @@ function Deployments({ app }: { app: AppRow }) {
   const serveStalled = !!prod && prod.servingVersionId != null && prod.servingVersionId !== prod.versionId;
   const promotedVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.versionId) : undefined;
   const servingVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.servingVersionId) : undefined;
-  const COLS = '1fr 1.2fr 1.6fr 1.4fr';
+  const COLS = '1fr 1fr 1.3fr 1.1fr 0.8fr';
 
   const doUpdate = async () => {
     setUpdating(true);
@@ -506,6 +506,32 @@ function Deployments({ app }: { app: AppRow }) {
       const r = await api.updateApp(app.app_scope_id, { snapshot: snapFirst });
       setNote(r.updated ? `Updated ${r.previousVersion ?? '—'} → ${r.version ?? ''}` : 'Already on the latest version.');
       setNonce((n) => n + 1); // refetch so Running + the table reflect the rebind
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  // Pin THIS scope to a specific version (#509 (c)) — the manual per-scope rollout: a
+  // canary, or catching one app up ahead of the rest. `update` always chases prod; this
+  // binds an exact version. A schema-crossing bind forks the data first (the rollback point).
+  const doBind = async (v: DeploymentVersion) => {
+    const snap = !!v.schemaChange;
+    const ok = window.confirm(
+      `Bind this app to ${v.version}?\n\n` +
+        (snap
+          ? 'This version changes the schema — a snapshot is taken first so the bind has a rollback point. '
+          : '') +
+        'The router will serve it for this app immediately.',
+    );
+    if (!ok) return;
+    setUpdating(true);
+    setNote(null);
+    try {
+      await api.bindAppVersion(app.app_scope_id, v.id, snap ? { snapshot: true } : undefined);
+      setNote(`Bound this app to ${v.version}.`);
+      setNonce((n) => n + 1);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     } finally {
@@ -616,7 +642,7 @@ function Deployments({ app }: { app: AppRow }) {
       ) : (
         <div style={{ ...card, overflow: 'hidden' }}>
           <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
-            <span>Version</span><span>Admission</span><span>Channels</span><span>Pushed</span>
+            <span>Version</span><span>Admission</span><span>Channels</span><span>Pushed</span><span style={{ textAlign: 'right' }}>Bind</span>
           </div>
           {dep.versions.map((v, i) => {
             const chans = channelsOf(v.id);
@@ -632,6 +658,13 @@ function Deployments({ app }: { app: AppRow }) {
                   {chans.length === 0 ? <span style={{ color: 'var(--text-tertiary)' }}>—</span> : chans.map((ch) => <Pill key={ch} kind={ch === 'prod' ? 'success' : 'neutral'}>{ch}</Pill>)}
                 </span>
                 <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{v.createdAt ? relativeTime(v.createdAt) : '—'}</span>
+                {/* Pin THIS scope to an exact version (#509 (c)) — a canary/rollback distinct from
+                    "Update to latest". Only an admitted version that isn't already running. */}
+                <span style={{ textAlign: 'right' }}>
+                  {v.admission === 'admitted' && v.id !== dep.boundVersionId ? (
+                    <Button variant="ghost" size="sm" disabled={updating} onClick={() => void doBind(v)}>Bind</Button>
+                  ) : null}
+                </span>
               </div>
             );
           })}

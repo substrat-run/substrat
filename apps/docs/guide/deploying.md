@@ -4,22 +4,24 @@
 your laptop and the Cloudflare adapter you deploy on are the same kernel above
 [the scope-host contract](/concepts/scope-host) — *only the composition root changes*. This
 page is how you cross that gap. The tool is the **`substrat` CLI**, and the shape of the
-crossing is two ideas: a **push** uploads a version; a **promotion** points a channel at it
-and makes scopes serve it. For a vertical you own, both are yours — prod included.
+crossing is two ideas: a **push** uploads a version; a **promotion** points the `prod` channel at
+it and makes scopes serve it. For a vertical you own, both are yours.
 
-The model this page assumes — push vs deploy, admission, channels, in-place updates,
-previews, backout — is written up conceptually in [the deploy model](/concepts/deploying).
-This page is the how-to.
+The model this page assumes — push vs deploy, admission, the one `prod` channel, in-place updates,
+previews, backout — is written up conceptually in [the deploy model](/concepts/deploying). For
+non-production environments (test, canary, PR previews) see
+[Environments & previews](/guide/environments-and-previews). This page is the how-to.
 
 ## Push is not deploy — but promotion is yours
 
 The single idea to hold onto:
 
-> A push uploads a version; it does not serve. A **promotion** points a channel
-> (`dev` / `staging` / `prod`) at a version and makes scopes run it. For a **private**
-> vertical — one you own, not listed on the marketplace — a push lands **admitted**
-> automatically and you promote every channel yourself, **prod included**. So
+> A push uploads a version; it does not serve. A **promotion** points the `prod` channel at a
+> version and makes scopes run it. For a **private** vertical — one you own, not listed on the
+> marketplace — a push lands **admitted** automatically and you promote `prod` yourself. So
 > `substrat push --promote prod` is a complete deploy, and merge-to-main can be the deploy.
+> (`prod` is the *only* channel — a test or preview environment is a
+> [scope with data](/guide/environments-and-previews), not a second pointer.)
 
 There are two separate questions hiding in "can this go live", and Substrat answers them at
 two different boundaries (decision D-36):
@@ -72,7 +74,7 @@ then closes.
 
 For CI, where there is no browser, the credential is a **tenant-scoped push token**
 (`spt1.…`) in the `SUBSTRAT_SERVICE_TOKEN` environment variable — the dashboard's one-click CI
-setup mints and installs it for you ([below](#deploy-from-ci-—-the-push-token)).
+setup mints and installs it for you ([below](#deploy-from-ci)).
 
 Either way, auth resolves in this order at push time: explicit `--token` /
 `SUBSTRAT_SERVICE_TOKEN` → a stored browser session → a stored service token. Two consequences
@@ -302,8 +304,8 @@ Legacy scopes that predate the stable serving script hop onto it once with
 substrat versions helpdesk
 # VERSION  ADMISSION  CHANNELS      ID
 # 0.2.1    admitted   prod          01J…
-# 0.2.0    admitted   staging       01J…
-# 0.1.0    admitted   dev           01J…
+# 0.2.0    admitted                 01J…
+# 0.1.0    admitted                 01J…
 ```
 
 A bare slug again — the control plane resolves it under your workspace. The same view is in the
@@ -312,23 +314,26 @@ the CLI. (If a prod promote's in-place serve ever failed, `versions` flags the s
 channel points at the new version but the scopes still run the old one — as `prod(promoted)` vs
 `prod(serving)`, so a stalled serve is visible rather than silently assumed live.)
 
-## Promote to a channel — `substrat promote`
+## Promote to prod — `substrat promote` {#promote-to-prod}
 
-Once a version is **admitted** — which for your private verticals is immediately — you move it
-onto a channel yourself:
+Once a version is **admitted** — which for your private verticals is immediately — you point
+`prod` at it yourself. `prod` is the only channel, so `--channel` defaults to it and you rarely
+type it:
 
 ```bash
-substrat promote helpdesk --channel staging --version 01J…
-substrat promote helpdesk --channel prod    --version 01J… --ack-migrations
+substrat promote helpdesk --version 01J… --ack-migrations
 ```
 
-Channels are named pointers per vertical — `dev`, `staging`, `prod` are the same vertical pinned
-differently. For a vertical you own privately you self-serve **all** of them, **prod included**:
-a prod promote re-points your live scopes in the same act (there are no *other* tenants to keep
-in lockstep — that concern, D-30, is a shared vertical's many tenants, which a private vertical
-cannot have). Every promotion appends to the vertical's channel history — what went live, what
-it replaced, who, and exactly when — which is what the dashboard's rollback picker reads and
+Promotion re-points the prod scope at a new version — a **rebind**: the same scope and data,
+serving new code. For a vertical you own privately you self-serve it (there are no *other* tenants
+to keep in lockstep — that concern, D-30, is a shared vertical's many tenants, which a private
+vertical cannot have). Every promotion appends to the vertical's channel history — what went live,
+what it replaced, who, and exactly when — which is what the dashboard's rollback picker reads and
 what a rewind anchors to.
+
+There is no `dev` or `staging` to promote to — a non-production environment is a
+[preview](/guide/environments-and-previews), a scope with data at its own URL, not a second pointer
+at the same code. A promote to any channel but `prod` is refused, naming the preview command.
 
 The one thing a promote will stop for is a **changed surface**: a promotion whose permission or
 migration digest differs from what is live is refused until you acknowledge the diff
@@ -364,14 +369,20 @@ or updates its preview and comments the URL; closing the PR reaps it.** If your 
 set up before previews existed, re-run the dashboard's one-click CI setup (or copy the
 regenerated `.github/workflows/substrat-deploy.yml`) to pick up the PR jobs.
 
-Two limits worth knowing. Previews are for **private** verticals — they bind an unpromoted
-version, which only a private vertical's self-admission makes a self-serve act; a listed
-vertical's previews wait on the marketplace admission path. And the source scope must be
-`global`-jurisdiction: forking pins the copy's *execution*, so an `eu`/`us` scope is refused
-until Regional Services, the same residency gate as `scope pull`. The fork carries real data
-and its `--<tag>` URL is non-canonical and not public — treat it as production data.
+A preview forks *your own tenant's* scope and serves no install, so you may preview a vertical you
+own whether it is **private or listed** — publishing widens who may *install* your code, not who may
+preview their own pending version (#513). A vertical's *first* environment, before any prod scope
+exists to fork, is `substrat preview create --tag … --empty` — a clean-room scope, no source
+(#514). The one hard limit is jurisdiction: forking pins the copy's *execution*, so an `eu`/`us`
+source scope is refused until Regional Services, the same residency gate as `scope pull`. The fork
+carries real data and its `--<tag>` URL is non-canonical and not public — treat it as production
+data.
 
-## Deploy from CI — the push token
+Previews are the substrate for every non-production environment — sticky-per-PR and per-build URLs,
+a long-lived test environment on a custom domain, canary rollout, a release candidate. Those
+patterns, and the CI recipe that wires them, are [Environments & previews](/guide/environments-and-previews).
+
+## Deploy from CI — the push token {#deploy-from-ci}
 
 Your laptop authenticates with a browser login; a pipeline cannot. The CI credential is a
 **tenant-scoped push token** — a long-lived machine credential, recognizable by its `spt1.`
@@ -406,9 +417,10 @@ if nothing appears, the place to look is the repository's Actions tab, not the D
 ## Watch it in the dashboard
 
 Everything above is mirrored in the [dashboard](/platform/dashboard)'s **Deployments** view: the
-verticals your workspace has pushed, each version's admission state, and which channel points
-where — with the same self-serve promotion across `dev` / `staging` / `prod` for a vertical you
-own, and the channel history behind the rollback picker. Push from the CLI, manage from either.
+verticals your workspace has pushed, each version's admission state, and where `prod` points — with
+self-serve prod promotion for a vertical you own, the channel history behind the rollback picker,
+and a **Previews / Environments** surface for the non-prod work ([test env, PR previews,
+canary](/guide/environments-and-previews)). Push from the CLI, manage from either.
 
 ## The whole path
 
@@ -419,7 +431,7 @@ never holding a Cloudflare credential, data carried forward across every update:
 |---|---|---|
 | `push` a bare slug → `<workspace>/<slug>` version | you (the owner) | CLI |
 | admission — automatic for a private vertical (the sandbox contract *is* the gate) | the control plane | — |
-| promote `dev` / `staging` / `prod` (prod re-points your live scopes) | you | CLI or dashboard |
+| promote `prod` (re-points your live scopes; the only channel) | you | CLI or dashboard |
 | serve in place — DOs/data stay put, migrations run forward | the vertical's serving script | — |
 | backout — time-boxed PITR rewind, then `scope restore` | you | CLI / dashboard |
 | resolve hostname → scope → dispatch | the [router](/platform/router) | — |
@@ -430,8 +442,8 @@ is the point where *other* tenants run your code against their data.
 
 ## Where this is going
 
-Self-serve end to end for a vertical you own — push it, promote every channel including prod,
-serve in place with data carried forward — is what ships today. The remaining evolution is on the
+Self-serve end to end for a vertical you own — push it, promote prod, serve in place with data
+carried forward — is what ships today. The remaining evolution is on the
 *publish* side: admitting an **untrusted, listed** builder's source safely — building a
 customer's code in a disposable sandbox so the digest checkpoints become verified rather than
 advisory — at which point even the marketplace staff gate can relax. That trust model is the

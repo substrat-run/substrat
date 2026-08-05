@@ -276,6 +276,30 @@ export interface AppDeployments extends Deployment {
 }
 
 /**
+ * One builder preview of a vertical — a scope with data bound to a version, at its own
+ * `--<tag>` URL (#509). A pinned one (`expiresAt: null`) with a custom domain is a
+ * long-lived test environment.
+ */
+export interface VerticalPreview {
+  scopeId: string;
+  tag: string | null;
+  versionId: string | null;
+  forkedFrom: string | null;
+  expiresAt: string | null;
+  hostname: string | null;
+  url: string | null;
+}
+
+/** The result of creating (or reusing) a preview. `reused` ⇒ an existing tag was rebound. */
+export interface PreviewCreated {
+  scopeId: string;
+  hostname: string;
+  url: string;
+  versionId: string;
+  reused: boolean;
+}
+
+/**
  * One recorded go-live: what a channel started serving, what it replaced, who moved the
  * pointer and exactly when — the rollback picker's row. `at` is also the instant a
  * point-in-time data restore would rewind to.
@@ -805,6 +829,44 @@ export const api = {
   channelHistory: (slug: string, channel: 'prod') =>
     call<ChannelHistoryEntry[]>(
       `/deployments/${encodeURIComponent(slug)}/channels/${encodeURIComponent(channel)}/history`,
+    ),
+
+  // -- per-scope rollout + builder previews (#509) --------------------------
+  /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),
+   *  vs `updateApp` which always rebinds to wherever prod points. `snapshot` forks first. */
+  bindAppVersion: (scopeId: string, versionId: string, opts?: { snapshot?: boolean }) =>
+    call<void>(`/apps/${encodeURIComponent(scopeId)}/bind`, {
+      method: 'POST',
+      body: JSON.stringify({ versionId, ...(opts?.snapshot ? { snapshot: true } : {}) }),
+    }),
+  /** A vertical's live builder previews (each a fork/clean-room scope + `--<tag>` URL). */
+  listPreviews: (slug: string) => call<VerticalPreview[]>(`/deployments/${encodeURIComponent(slug)}/previews`),
+  /** Create (or reuse, per tag) a preview of an admitted version. `ttlHours: null` pins it
+   *  (a test env); `empty` provisions a clean-room scope when there is no prod to fork. */
+  createPreview: (
+    slug: string,
+    input: { tag: string; versionId: string; ttlHours?: number | null; empty?: boolean; sourceScopeId?: string; surface?: string; refresh?: boolean },
+  ) =>
+    call<PreviewCreated>(`/deployments/${encodeURIComponent(slug)}/previews`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** Reap one preview by tag (idempotent). */
+  deletePreview: (slug: string, tag: string) =>
+    call<{ deleted: string | null }>(
+      `/deployments/${encodeURIComponent(slug)}/previews/${encodeURIComponent(tag)}`,
+      { method: 'DELETE' },
+    ),
+  /** Attach a custom domain to a preview scope — what turns a pinned preview into a
+   *  test environment at a stable address (crm-test.ahero.se). Lands pending, walks DNS. */
+  addPreviewDomain: (
+    slug: string,
+    tag: string,
+    input: { domain: string; surface?: string; canonical?: boolean },
+  ) =>
+    call<AppHostnameRow>(
+      `/deployments/${encodeURIComponent(slug)}/previews/${encodeURIComponent(tag)}/domain`,
+      { method: 'POST', body: JSON.stringify(input) },
     ),
 };
 
