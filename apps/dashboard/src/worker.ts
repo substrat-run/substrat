@@ -2557,9 +2557,10 @@ app.get('/api/github/callback', async (c) => {
     secret: { installationId },
     createdBy: node.principal, // B: the authorizing principal, never STAFF.
   });
-  // Back to the create-app flow; the Git card re-fetches and shows the repos. No query
-  // suffix — it would land inside the hash fragment and break the SPA's route parse.
-  return c.redirect('/#/apps/new');
+  // Back to the create-app flow; the Git card re-fetches and shows the repos. The SPA
+  // router reads the path, so the deep link resolves via the assets' single-page-application
+  // fallback and boots straight onto the create-app screen.
+  return c.redirect('/apps/new');
 });
 
 /**

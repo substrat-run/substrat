@@ -885,7 +885,7 @@ export const signIn = (
   const qs = p.toString();
   window.location.href = `/api/auth/login${qs ? `?${qs}` : ''}`;
 };
-/** Connect GitHub — a full-page redirect to the App install flow (returns to #/apps/new). */
+/** Connect GitHub — a full-page redirect to the App install flow (returns to /apps/new). */
 export const connectGithub = () => {
   window.location.href = '/api/github/connect';
 };

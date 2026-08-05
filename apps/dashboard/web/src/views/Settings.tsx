@@ -103,8 +103,9 @@ function DeleteOrgCard({ org }: { org: string }) {
     setError(null);
     try {
       if (!DEV_MOCK) await api.deleteTeam(confirm);
-      location.hash = '';
-      location.reload();
+      // The team is gone — a full navigation to root re-boots the portal (onboarding
+      // or the next team).
+      location.href = '/';
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
       setBusy(false);

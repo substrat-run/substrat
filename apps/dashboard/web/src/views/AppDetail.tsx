@@ -8,6 +8,7 @@ import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
 import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, Pill, RowActions } from '../components/ui';
 import { IntegrationCard } from './Integrations';
+import { navigate } from '../lib/router';
 import { DnsRecords } from './Domains';
 import { AppObservability } from './AppObservability';
 
@@ -313,7 +314,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
                 Running <span style={{ fontFamily: 'var(--font-mono)' }}>{versionLabel}</span>
-                {updateAvailable && <> · <a href={`#/apps/${app.app_scope_id}/deployments`} style={{ color: 'var(--text-brand)' }}>update available →</a></>}
+                {updateAvailable && <> · <a href={`/apps/${app.app_scope_id}/deployments`} onClick={(e) => { e.preventDefault(); navigate(`/apps/${app.app_scope_id}/deployments`); }} style={{ color: 'var(--text-brand)' }}>update available →</a></>}
                 {' · '}the API reference rides the app&rsquo;s own session — sign in to the app first.
               </div>
             </>
@@ -581,7 +582,7 @@ function Deployments({ app }: { app: AppRow }) {
           <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>
             <MonoTag>{newestAdmitted.version}</MonoTag> is admitted but not in <b>prod</b>
             {selfServe ? (
-              <> — <a href="#/verticals" style={{ color: 'var(--text-brand)' }}>promote it on Verticals →</a></>
+              <> — <a href="/verticals" onClick={(e) => { e.preventDefault(); navigate('/verticals'); }} style={{ color: 'var(--text-brand)' }}>promote it on Verticals →</a></>
             ) : (
               <> — the Substrat team promotes it</>
             )}
@@ -605,7 +606,7 @@ function Deployments({ app }: { app: AppRow }) {
             <b>prod</b> was promoted to <MonoTag>{promotedVersion?.version ?? prod!.versionId}</MonoTag> but its in-place
             serve failed — your app still runs <MonoTag>{servingVersion?.version ?? prod!.servingVersionId}</MonoTag>.
             {selfServe ? (
-              <> Re-promote on <a href="#/verticals" style={{ color: 'var(--text-brand)' }}>Verticals →</a> to retry the serve.</>
+              <> Re-promote on <a href="/verticals" onClick={(e) => { e.preventDefault(); navigate('/verticals'); }} style={{ color: 'var(--text-brand)' }}>Verticals →</a> to retry the serve.</>
             ) : (
               <> The Substrat team can re-promote it to retry.</>
             )}
@@ -632,7 +633,7 @@ function Deployments({ app }: { app: AppRow }) {
       })()}
       <HonestyBanner>
         {selfServe ? (
-          <>Read live from the registry. “Running” is the version the router serves for this app. To ship a newer one, promote it to <b>prod</b> on the <a href="#/verticals" style={{ color: 'inherit' }}>Verticals page</a>, then update here.</>
+          <>Read live from the registry. “Running” is the version the router serves for this app. To ship a newer one, promote it to <b>prod</b> on the <a href="/verticals" onClick={(e) => { e.preventDefault(); navigate('/verticals'); }} style={{ color: 'inherit' }}>Verticals page</a>, then update here.</>
         ) : (
           <>Read live from the registry. “Running” is the version the router serves for this app. The Substrat team promotes versions to prod; updating here moves this app to the current prod version.</>
         )}
@@ -784,7 +785,7 @@ function Permissions({ app }: { app: AppRow }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <Eyebrow>If you update</Eyebrow>
               <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-                <MonoTag>{view.running.version}</MonoTag> → <MonoTag>{update.version}</MonoTag> — review before updating on the <a href="#/apps" style={{ color: 'var(--text-brand)' }}>Deployments tab</a>
+                <MonoTag>{view.running.version}</MonoTag> → <MonoTag>{update.version}</MonoTag> — review before updating on the <a href="/apps" onClick={(e) => { e.preventDefault(); navigate('/apps'); }} style={{ color: 'var(--text-brand)' }}>Deployments tab</a>
               </span>
             </div>
             {diff!.addedKeys.length > 0 && <DiffRow label="New permissions" kind="info">{diff!.addedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
@@ -882,7 +883,7 @@ function Permissions({ app }: { app: AppRow }) {
       )}
 
       <HonestyBanner>
-        The <b>declared</b> permission surface the vertical ships, read live from its running version. Approving a widened role happens when you update on the <a href="#/apps" style={{ color: 'inherit' }}>Deployments tab</a>, not here.
+        The <b>declared</b> permission surface the vertical ships, read live from its running version. Approving a widened role happens when you update on the <a href="/apps" onClick={(e) => { e.preventDefault(); navigate('/apps'); }} style={{ color: 'inherit' }}>Deployments tab</a>, not here.
       </HonestyBanner>
     </div>
   );

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input } from '@substrat-run/ui';
 import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
+import { navigate as go } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
 import { CommandPalette } from './components/CommandPalette';
@@ -19,7 +20,7 @@ import { Billing } from './views/Billing';
 import { Analytics } from './views/Analytics';
 import { Settings } from './views/Settings';
 
-/** The hash route, parsed. `section` maps to the sidebar; `app`/`tab`/`vertical` drive detail. */
+/** The path route, parsed. `section` maps to the sidebar; `app`/`tab`/`vertical` drive detail. */
 interface Route {
   section: NavKey | 'new';
   app?: string;
@@ -27,24 +28,19 @@ interface Route {
   vertical?: string;
 }
 
-function parseHash(): Route {
-  const h = window.location.hash.replace(/^#\/?/, '');
-  const parts = h.split('/').filter(Boolean);
+function parsePath(): Route {
+  const parts = window.location.pathname.split('/').filter(Boolean);
   if (parts[0] === 'apps' && parts[1] === 'new') return { section: 'new' };
   // The tab may carry a sub-section (settings/environment); AppDetail parses it.
   if (parts[0] === 'apps' && parts[1]) return { section: 'apps', app: parts[1], tab: parts.slice(2).join('/') || 'overview' };
   // A vertical's slug (acme-co/helpdesk) carries a slash, so it's URI-encoded into the
-  // single segment — never split across parts.
+  // single segment — the `/` stays as `%2F` in the pathname, so it never splits across parts.
   if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: decodeURIComponent(parts[1]) };
   // Legacy alias: the page was called "Deployments" before the apps/verticals split.
   if (parts[0] === 'deployments') return { section: 'verticals' };
   const known: NavKey[] = ['overview', 'apps', 'verticals', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
   const section = (known.includes(parts[0] as NavKey) ? parts[0] : 'overview') as NavKey;
   return { section };
-}
-
-function go(hash: string) {
-  window.location.hash = hash;
 }
 
 /** Fallback org label from the signed-in email domain (acme.com → "Acme"). */
@@ -76,7 +72,7 @@ export function App() {
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [promoting, setPromoting] = useState(false);
-  const [route, setRoute] = useState<Route>(parseHash);
+  const [route, setRoute] = useState<Route>(parsePath);
   const [dark, setDark] = useState(() => {
     // `?theme=dark|light` wins on load (handy for demos + screenshots); otherwise
     // the per-user preference persisted in localStorage.
@@ -98,11 +94,12 @@ export function App() {
     localStorage.setItem('substrat.dash.theme', dark ? 'dark' : 'light');
   }, [dark]);
 
-  // Hash routing.
+  // Path routing (History API): Back/Forward and our own `navigate()` both fire
+  // `popstate`, so re-parse the location from there.
   useEffect(() => {
-    const onHash = () => setRoute(parseHash());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
+    const onPop = () => setRoute(parsePath());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
   }, []);
 
   // ⌘K opens the palette.
@@ -203,7 +200,7 @@ export function App() {
         }
         try {
           await api.acceptInvite(token);
-          window.history.replaceState(null, '', '/#/team');
+          window.history.replaceState(null, '', '/team');
           window.location.reload();
           return;
         } catch {
@@ -223,7 +220,7 @@ export function App() {
       const m = await api.me();
       if (!live) return;
       if (m === null && new URLSearchParams(window.location.search).get('error') !== 'auth') {
-        const here = `${window.location.pathname}${window.location.hash}`;
+        const here = `${window.location.pathname}${window.location.search}`;
         signIn(here !== '/' ? { returnTo: here } : {});
         return; // `me` stays undefined → interstitial while the browser navigates
       }
@@ -280,12 +277,12 @@ export function App() {
           name = row.name;
           await reloadApps();
         }
-        go('#/apps');
+        go('/apps');
         setToast({ status: 'success', title: `${name} is provisioning`, detail: 'It will appear in your grid as it comes up.' });
       } catch (e) {
         // The row (if any) is now `failed`, not silently `provisioning` — surface why.
         await reloadApps().catch(() => {});
-        go('#/apps');
+        go('/apps');
         setToast({ status: 'danger', title: `Couldn’t create ${name}`, detail: e instanceof Error ? e.message : String(e) });
       }
     },
@@ -304,13 +301,13 @@ export function App() {
           await api.deleteApp(app.id);
           await reloadApps();
         }
-        go('#/apps');
+        go('/apps');
         setToast({ status: 'success', title: `${app.name} deleted`, detail: 'Its hostname is offline; audit history is retained.' });
       } catch (e) {
         // Already gone (e.g. a slipped double-submit) is the state we wanted, not an error.
         if (e instanceof ApiError && e.status === 404) {
           await reloadApps();
-          go('#/apps');
+          go('/apps');
         } else {
           setToast({ status: 'danger', title: 'Delete failed', detail: e instanceof Error ? e.message : String(e) });
         }
@@ -334,12 +331,12 @@ export function App() {
           await api.retryApp(scopeId);
           await reloadApps();
         }
-        go('#/apps');
+        go('/apps');
         setToast({ status: 'success', title: 'Retrying', detail: 'Re-provisioning the app — it will update in your grid as it comes up.' });
       } catch (e) {
         // A retry that still fails re-marks the row failed and surfaces the REAL error.
         await reloadApps().catch(() => {});
-        go('#/apps');
+        go('/apps');
         setToast({ status: 'danger', title: 'Retry failed', detail: e instanceof Error ? e.message : String(e) });
       } finally {
         retryingRef.current = false;
@@ -448,13 +445,13 @@ export function App() {
       if (!me || needsOnboarding(me) || teamId === me.currentTeamId) return;
       if (DEV_MOCK) {
         setMe((m) => (m ? { ...m, currentTeamId: teamId as Me['currentTeamId'], tenant: teamId as Me['tenant'] } : m));
-        go('#/overview');
+        go('/overview');
         return;
       }
       try {
         await api.switchTeam(teamId);
-        window.location.hash = '#/overview';
-        window.location.reload();
+        // A full navigation to /overview re-scopes the whole portal on the new team.
+        window.location.href = '/overview';
       } catch (e) {
         setToast({ status: 'danger', title: 'Could not switch team', detail: e instanceof Error ? e.message : String(e) });
       }
@@ -479,7 +476,7 @@ export function App() {
           });
           setNewTeamOpen(false);
           setNewTeamName('');
-          go('#/overview');
+          go('/overview');
           setToast({ status: 'success', title: `${teamName} created`, detail: 'You’re now in your new team.' });
           return;
         }
@@ -639,12 +636,12 @@ export function App() {
 
   const authServers = apps.filter((a) => oidcProviderSlugs.has(a.vertical_slug) && a.status === 'active' && a.hostname);
 
-  const crumbs: Crumb[] = [{ label: org, onClick: () => go('#/overview') }];
-  if (route.section === 'apps' || route.section === 'new') crumbs.push({ label: 'Apps', onClick: () => go('#/apps') });
+  const crumbs: Crumb[] = [{ label: org, onClick: () => go('/overview') }];
+  if (route.section === 'apps' || route.section === 'new') crumbs.push({ label: 'Apps', onClick: () => go('/apps') });
   if (route.section === 'new') crumbs.push({ label: 'New app' });
   if (route.section === 'apps' && openApp) crumbs.push({ label: openApp.name });
   if (route.section === 'verticals') {
-    crumbs.push({ label: 'Verticals', onClick: route.vertical ? () => go('#/verticals') : undefined });
+    crumbs.push({ label: 'Verticals', onClick: route.vertical ? () => go('/verticals') : undefined });
     if (openVertical) crumbs.push({ label: openVertical.name });
   }
   if (['domains', 'team', 'integrations', 'analytics', 'billing', 'settings'].includes(route.section)) {
@@ -654,7 +651,7 @@ export function App() {
   return (
     <DashShell
       active={activeNav}
-      onNav={(k) => go(`#/${k}`)}
+      onNav={(k) => go(`/${k}`)}
       org={org}
       teams={me.teams ?? []}
       currentTeamId={me.currentTeamId}
@@ -674,14 +671,14 @@ export function App() {
           catalog={catalog}
           teamName={currentTeam?.name}
           authServers={authServers}
-          onCancel={() => go('#/apps')}
+          onCancel={() => go('/apps')}
           onCreate={createApp}
         />
       ) : route.section === 'apps' && openApp ? (
         <AppDetail
           app={openApp}
           tab={route.tab ?? 'overview'}
-          onTab={(t) => go(`#/apps/${openApp.app_scope_id}/${t}`)}
+          onTab={(t) => go(`/apps/${openApp.app_scope_id}/${t}`)}
           onDeleted={() => void deleteApp(openApp)}
           authServers={authServers}
         />
@@ -690,19 +687,19 @@ export function App() {
         // walked for a deep link — the app is merely unresolved, not missing: the
         // skeleton, never a flashed 404.
         appsLoading || appsCursor !== null ? (
-          <Apps apps={apps} loading onCreate={() => go('#/apps/new')} onOpen={() => {}} onRetry={() => {}} />
+          <Apps apps={apps} loading onCreate={() => go('/apps/new')} onOpen={() => {}} onRetry={() => {}} />
         ) : (
-          <NotFound label="That app could not be found." onBack={() => go('#/apps')} />
+          <NotFound label="That app could not be found." onBack={() => go('/apps')} />
         )
       ) : route.section === 'overview' || route.section === 'apps' ? (
-        <Apps apps={apps} loading={appsLoading} onCreate={() => go('#/apps/new')} onOpen={(s) => go(`#/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
+        <Apps apps={apps} loading={appsLoading} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
       ) : route.section === 'verticals' && openVertical ? (
         <VerticalDetail
           d={openVertical}
           busy={promoting}
           onPromote={(vid, ch) => void promoteDeployment(openVertical.slug, vid, ch)}
           onRemove={() => void removeDeployment(openVertical.slug)}
-          onBack={() => go('#/verticals')}
+          onBack={() => go('/verticals')}
         />
       ) : route.section === 'verticals' && route.vertical ? (
         // The deployments list loads with the first session fetch — while it's in flight
@@ -710,10 +707,10 @@ export function App() {
         appsLoading ? (
           <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-tertiary)' }}>Loading…</div>
         ) : (
-          <NotFound label="That vertical could not be found." backLabel="Back to verticals" onBack={() => go('#/verticals')} />
+          <NotFound label="That vertical could not be found." backLabel="Back to verticals" onBack={() => go('/verticals')} />
         )
       ) : route.section === 'verticals' ? (
-        <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} onOpen={(slug) => go(`#/verticals/${encodeURIComponent(slug)}`)} busy={promoting} loadGitRepos={loadGitRepos} />
+        <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} onOpen={(slug) => go(`/verticals/${encodeURIComponent(slug)}`)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (
         <Team
           members={members}
@@ -743,13 +740,13 @@ export function App() {
         <CommandPalette
           apps={apps.map((a) => {
             const m = verticalMeta(a.vertical_slug);
-            return { name: a.name, accent: m.accent, status: a.status, host: a.hostname, onOpen: () => go(`#/apps/${a.app_scope_id}/overview`) };
+            return { name: a.name, accent: m.accent, status: a.status, host: a.hostname, onOpen: () => go(`/apps/${a.app_scope_id}/overview`) };
           })}
           onClose={() => setPalette(false)}
           onAction={(label) => {
-            if (label === 'Create app') go('#/apps/new');
-            else if (label === 'Invite member') go('#/team');
-            else if (label === 'Add domain') go('#/domains');
+            if (label === 'Create app') go('/apps/new');
+            else if (label === 'Invite member') go('/team');
+            else if (label === 'Add domain') go('/domains');
           }}
         />
       )}
