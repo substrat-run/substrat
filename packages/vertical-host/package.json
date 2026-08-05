@@ -1,0 +1,41 @@
+{
+  "name": "@substrat-run/vertical-host",
+  "version": "0.45.0",
+  "description": "The platform's /internal/* surface + error envelope, authored once — mount it in a vertical worker instead of re-copying the control-plane contract",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "packages/vertical-host"
+  },
+  "homepage": "https://substrat.net/reference/vertical-host",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/kernel": "workspace:^",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.0",
+    "vitest": "^3.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

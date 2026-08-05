@@ -16,11 +16,10 @@
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, queryScopeInput, readScopeTableInput, entitlementGrant, projectedIdentityLink, resolveScopedEnvSpec, z } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, resolveScopedEnvSpec, z } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
+import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import {
-  assertPlatformCall,
-  PlatformCallError,
   readRoutedNode,
   RouterAssertionError,
   ulid,
@@ -233,21 +232,6 @@ async function principalFor(env: Env, req: Request): Promise<PrincipalId | null>
   return principal ? principalId.parse(principal) : null;
 }
 
-const provisionInstanceBody = z.object({
-  tenantId,
-  scopeId,
-  owner: principalId,
-  slug: z.string().min(1),
-  name: z.string().min(1),
-  // #310: the tenant's entitlements, projected into the scope so ctx.entitlement + the
-  // per-operation gate work here without a control-plane binding (#304). Optional so an
-  // older platform (or one that hasn't granted any) provisions unchanged.
-  entitlements: z.array(entitlementGrant).optional(),
-  // #406: the tenant's identity links, projected so an external-IdP auth adapter could
-  // resolve (provider, externalId) → principal scope-locally. Optional.
-  identityLinks: z.array(projectedIdentityLink).optional(),
-});
-
 const app = new Hono<{ Bindings: Env }>();
 
 // Identity/credentials/sessions live entirely at the OIDC issuer (oidc-only-demos.md): the
@@ -259,269 +243,25 @@ app.on(['GET', 'POST'], '/api/auth/*', async (c) => (await authProviderFor(c.env
 /** The verified subject behind the current session, or null — the contract's `resolve`. */
 app.get('/api/session', async (c) => c.json(await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers)));
 
-/**
- * Provision ONE instance on the platform's instruction (K-31), CP-less. The shared
- * control plane already owns this scope's directory row + entitlements (the dashboard
- * wrote them before calling here), so the vertical sets up only the scope's OWN state:
- * migrate the module tables, project the role defs, grant the owner `hr-admin` at scope
- * level. No tenant, no control plane. Platform-secret gated; NOT under /api/*. Idempotent.
- */
-app.post('/internal/provision', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const body = provisionInstanceBody.parse(await c.req.json());
-  await hostFor(c.env).provisionScopeLocal({
-    tenantId: body.tenantId,
-    scopeId: body.scopeId,
-    owner: body.owner,
-    roles: ROLES,
-    ownerRoleKey: 'hr-admin',
-    entitlements: body.entitlements,
-    identityLinks: body.identityLinks,
-  });
-  // Record the owner seat: whoever first signs in and reaches this scope claims it (becomes
-  // hr-admin), whichever provider verifies them. This is how a provisioned instance becomes
-  // usable by a real login without the platform knowing the login's subject up front.
-  await identityDo(c.env, { tenantId: body.tenantId, scopeId: body.scopeId }).setPendingOwner(body.scopeId, body.owner);
-  return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
-});
-
-/** A reconcile carries no owner — the vertical re-sources it from its own owner-of-record (#332). */
-const reconcileInstanceBody = z.object({
-  tenantId,
-  scopeId,
-  entitlements: z.array(entitlementGrant).optional(),
-  identityLinks: z.array(projectedIdentityLink).optional(),
-});
-
-/**
- * Repair a scope stuck at the #332 lockout: role definitions projected but no principal holding a
- * role (e.g. a promote recreated this scope's DO storage, #321), so `permission_source = 'local'`
- * enforces against an empty tuple table and every login denies. The builder can't call the
- * platform-secret-gated `/internal/provision`, so the control plane calls THIS on their behalf
- * after checking they own the vertical. It re-sources the owner from this vertical's durable
- * owner-of-record — which lives in the per-tenant IdentityDO, a different DO from the wiped scope
- * DO, so it survives — and re-runs the idempotent provision. No owner in the body: the platform
- * never persisted one. Platform-secret gated; NOT under /api/*. Idempotent.
- */
-app.post('/internal/reconcile', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const body = reconcileInstanceBody.parse(await c.req.json());
-  const owner = await identityDo(c.env, {
-    tenantId: body.tenantId,
-    scopeId: body.scopeId,
-  }).getOwnerOfRecord(body.scopeId);
-  if (!owner) {
-    // No owner of record: a scope never provisioned through this vertical (a legacy install
-    // predating owner-of-record, or a wrong scope id). There is nobody to re-grant, so refuse
-    // actionably rather than silently succeed against a scope that would still deny every login.
-    throw new HTTPException(409, {
-      message: `no owner of record for scope ${body.scopeId} — cannot reconcile; re-run the full install`,
-    });
-  }
-  await hostFor(c.env).provisionScopeLocal({
-    tenantId: body.tenantId,
-    scopeId: body.scopeId,
-    owner: principalId.parse(owner),
-    roles: ROLES,
-    ownerRoleKey: 'hr-admin',
-    entitlements: body.entitlements,
-    identityLinks: body.identityLinks,
-  });
-  return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner });
-});
-
-/**
- * Read-only introspection of a scope's OWN database on the platform's instruction
- * (kernel-design §5.4's admin-query RPC) — this is what the console/dashboard "Data"
- * view reads. The scope's data DO lives HERE (K-31), so the control plane delegates to
- * the vertical; the scope id is trusted from the platform-secret-gated call (the control
- * plane already did the K-3 cross-check + audit). Read-only, table-shaped, no SQL.
- */
-app.get('/internal/tables', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const scope = scopeId.parse(c.req.query('scopeId'));
-  return c.json(await hostFor(c.env).introspectScopeTables(scope));
-});
-
-app.get('/internal/tables/:table', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const scope = scopeId.parse(c.req.query('scopeId'));
-  const input = readScopeTableInput.parse({
-    table: c.req.param('table'),
-    limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
-    offset: c.req.query('offset') ? Number(c.req.query('offset')) : undefined,
-  });
-  return c.json(await hostFor(c.env).introspectScopeTable(scope, input));
-});
-
-// The SQL console (#219): one read-only statement, enforced in the DO (the kernel's
-// textual gate + a transaction that always rolls back). The gate's refusal is the
-// caller's mistake, not this worker's fault — 400, relayed verbatim by the platform.
-app.post('/internal/query', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const body = queryScopeInput.extend({ scopeId }).parse(await c.req.json());
-  try {
-    return c.json(await hostFor(c.env).introspectScopeQuery(body.scopeId, { sql: body.sql }));
-  } catch (e) {
-    if (e instanceof Error && e.message.includes('read-only console')) {
-      throw new HTTPException(400, { message: e.message });
-    }
-    throw e;
-  }
-});
-
-// Scope-storage lifecycle (preview-and-snapshots.md §9): copy a scope into a sibling
-// DO / wipe a reaped fork — both inside this deployment; no bytes cross the boundary.
-app.post('/internal/snapshot', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const body = z
-    .object({ sourceScopeId: scopeId, newScopeId: scopeId })
-    .parse(await c.req.json());
-  return c.json(await hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId), 201);
-});
-
-app.post('/internal/delete-scope', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const body = z.object({ scopeId }).parse(await c.req.json());
-  await hostFor(c.env).deleteScopeLocal(body.scopeId);
-  return c.json({ deleted: body.scopeId });
-});
-
-// The full dump behind a governed `scope pull` (preview-and-snapshots.md §8): the one
-// /internal verb that deliberately moves scope bytes out; the control plane is the gate.
-app.get('/internal/export', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const scope = scopeId.parse(c.req.query('scopeId'));
-  return c.json(await hostFor(c.env).exportScopeLocal(scope));
-});
-
-// The write half (§8): load a dump into one existing scope, replacing its data — the
-// governed restore/backout, and the data hop of adopt-serving (#286). After the import
-// the vertical's OWN role definitions are re-projected: a dump from a CP-full world
-// carries tuples but no role definitions, and without the repair every check denies
-// while /me still names the role. Roles are code-defined, so re-projecting is safe.
-app.post('/internal/restore', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const body = z
-    .object({
-      tenantId: tenantId.optional(),
-      scopeId,
-      tables: z.array(
-        z.object({
-          name: z.string(),
-          ddl: z.string(),
-          columns: z.array(z.string()),
-          rows: z.array(z.array(z.unknown())),
-        }),
-      ),
-    })
-    .parse(await c.req.json());
-  const host = hostFor(c.env);
-  const result = await host.restoreScopeLocal(body.scopeId, body.tables);
-  if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, ROLES);
-  return c.json(result);
-});
-
-// #286: the PITR bookmarks one scope recorded before its migration passes — the
-// rewind points a backout offers. Metadata only; no scope bytes cross the boundary.
-app.get('/internal/bookmarks', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const scope = scopeId.parse(c.req.query('scopeId'));
-  return c.json(await hostFor(c.env).migrationBookmarksLocal(scope));
-});
-
-// #286's backout: rewind one scope's ENTIRE storage — schema and data — to a
-// pre-migration bookmark, discarding every write since. The scope DO enforces the
-// freshness window (24h without force) and restarts itself to complete the restore;
-// the control plane is the gate and the auditor.
-app.post('/internal/rewind', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const body = z
-    .object({ scopeId, bookmark: z.string().min(1), force: z.boolean().optional() })
-    .parse(await c.req.json());
-  return c.json(
-    await hostFor(c.env).rewindScopeLocal(body.scopeId, body.bookmark, { force: body.force }),
-  );
-});
-
-/**
- * Upsert per-instance config on the platform's instruction (vertical-auth-detach.md
- * §2.2) — the delivery half of the dashboard's Env tab, and how a scope's
- * `substrat:auth` issuer choice arrives. Stored in the tenant's identity DO (the
- * vertical's harness store), keyed by scope; the body carries the tenant id because a
- * platform call has no router assertion to derive it from. Idempotent upserts.
- */
-app.post('/internal/configure', async (c) => {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-  const body = z
-    .object({
-      tenantId,
-      scopeId,
-      entries: z.array(z.object({ key: z.string().min(1), value: z.string() })).min(1),
-    })
-    .parse(await c.req.json());
-  await identityDo(c.env, { tenantId: body.tenantId, scopeId: body.scopeId }).setScopeConfig(body.scopeId, body.entries);
-  return c.json({ applied: body.entries.length });
+// The platform's entire /internal/* contract — provision, reconcile, introspection, the
+// read-only SQL console, platform-request drain, snapshot/delete/export/restore,
+// bookmarks/rewind, and per-instance configure — plus the guaranteed { error } envelope,
+// authored once in @substrat-run/vertical-host (issue #510) and mounted here. The three
+// flavored routes take Meridian's own hooks: the pending-owner claim, the owner-of-record
+// re-source for a #332 reconcile, and the identity-DO config store.
+mountPlatformSurface<Env>(app, {
+  platformSecret: (env) => env.PLATFORM_SECRET,
+  hostFor,
+  roles: ROLES,
+  ownerRoleKey: 'hr-admin',
+  onProvision: (env, b) =>
+    identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner),
+  resolveOwner: async (env, ref) => {
+    const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);
+    return owner ? principalId.parse(owner) : null;
+  },
+  onConfigure: (env, b) =>
+    identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setScopeConfig(b.scopeId, b.entries),
 });
 
 // Any OTHER platform verb is honestly unimplemented: JSON 501, never the SPA fallback —
@@ -720,13 +460,5 @@ app.get('/api/docs', async (c) => {
 // after all those routes so Hono handles /api/auth/* etc. first; the catch-all then serves
 // the bundled SPA (src/assets.ts), returning index.html for unknown client routes.
 app.all('*', (c) => serveAsset(new URL(c.req.url)));
-
-app.onError((err, c) => {
-  const status = err instanceof HTTPException ? err.status : 400;
-  const m = err instanceof Error ? err.message : String(err);
-  if (status === 400 && /permission denied/.test(m)) return c.json({ error: m }, 403);
-  if (status === 400 && /not found|unknown scope/.test(m)) return c.json({ error: m }, 404);
-  return c.json({ error: m }, status);
-});
 
 export default app;

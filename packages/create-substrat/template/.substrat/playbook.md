@@ -363,8 +363,9 @@ Only if the user asks. Local-first is a legitimate stopping point.
 
 Substrat runs on Cloudflare via `@substrat-run/adapter-cloudflare` (Durable Objects).
 **This starter is pushable as scaffolded**: `src/worker.ts` is the deploy entry (the
-sandbox-clean shape, with the platform's `/internal/*` management contract already
-mounted), and package.json already carries the `substrat.runtimeNeeds` block the CLI
+sandbox-clean shape, with the platform's `/internal/*` management contract already mounted
+via `mountPlatformSurface` from `@substrat-run/vertical-host` — you never re-author those
+routes), and package.json already carries the `substrat.runtimeNeeds` block the CLI
 derives the deploy config from (stores, node-compat, build) — you never author wrangler
 config. When you reshape the vertical, keep `src/provision.ts` the single source of
 MODULES/ROLES: both the dev server and the worker register from it, so a module added

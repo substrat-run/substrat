@@ -3,7 +3,7 @@
   "version": "0.6.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "CMS demo vertical (Manyfold) — multi-scope headless CMS, see spec/concept.md",
+  "description": "CMS demo vertical (Manyfold) \u2014 multi-scope headless CMS, see spec/concept.md",
   "substrat": {
     "slug": "manyfold",
     "name": "Manyfold",
@@ -50,6 +50,7 @@
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
     "better-sqlite3": "^13.0.2",
     "hono": "^4.12.32",
     "zod": "^4.4.3"

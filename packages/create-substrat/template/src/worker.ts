@@ -24,14 +24,9 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
-  entitlementGrant,
   principalId,
-  projectedIdentityLink,
-  queryScopeInput,
-  readScopeTableInput,
   scopeId,
   tenantId,
-  z,
   type PrincipalId,
   type ScopeId,
   type TenantId,
@@ -43,13 +38,8 @@ import {
   SCOPE_SWEEPER_NAME,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
-import {
-  assertPlatformCall,
-  PlatformCallError,
-  readRoutedNode,
-  RouterAssertionError,
-  type ScopeStub,
-} from '@substrat-run/kernel';
+import { readRoutedNode, RouterAssertionError, type ScopeStub } from '@substrat-run/kernel';
+import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { MODULES, OWNER_ROLE_KEY, ROLES } from './provision.js';
 
 /** The scope-DO class = the app binary: kernel + engines + this vertical, bundled. */
@@ -143,15 +133,6 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.onError((err, c) => {
-  if (err instanceof HTTPException) return err.getResponse();
-  const m = err instanceof Error ? err.message : String(err);
-  if (/permission denied/i.test(m)) return c.json({ error: m }, 403);
-  if (/not found|unknown scope/i.test(m)) return c.json({ error: m }, 404);
-  if (/invalid transition|immutable/i.test(m)) return c.json({ error: m }, 409);
-  return c.json({ error: m }, 400);
-});
-
 // Who am I — resolves the caller without invoking anything.
 app.get('/api/me', async (c) => {
   const principal = await authenticatedPrincipal(c.req.raw, c.env);
@@ -168,167 +149,23 @@ app.post('/api/invoke', async (c) => {
 
 // ── /internal/* — the platform-gated management contract ────────────────────
 // The control plane provisions, heals, inspects and restores installs through
-// these routes. A vertical without them cannot be installed or repaired, so
-// keep the FULL set even though your app code never calls them.
-
-function gatePlatform(c: { env: Env; req: { raw: Request } }): void {
-  try {
-    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
-  } catch (e) {
-    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
-    throw e;
-  }
-}
-
-const provisionBody = z.object({
-  tenantId,
-  scopeId,
-  owner: principalId,
-  slug: z.string().min(1),
-  name: z.string().min(1),
-  entitlements: z.array(entitlementGrant).optional(),
-  identityLinks: z.array(projectedIdentityLink).optional(),
-});
-
-// Provision ONE scope on the platform's instruction, CP-lessly: migrate the
-// modules, project this vertical's roles + the tenant's entitlements locally,
-// grant the owner their role at scope level. Platform-secret gated; idempotent.
-app.post('/internal/provision', async (c) => {
-  gatePlatform(c);
-  const body = provisionBody.parse(await c.req.json());
-  await hostFor(c.env).provisionScopeLocal({
-    tenantId: body.tenantId,
-    scopeId: body.scopeId,
-    owner: body.owner,
-    roles: ROLES,
-    ownerRoleKey: OWNER_ROLE_KEY,
-    entitlements: body.entitlements,
-    identityLinks: body.identityLinks,
-  });
-  // Provision is where the deployment learns a scope exists — put it on the
-  // sweep roster so its declared schedules run. (Never note a snapshot fork:
-  // recurring side effects must not fire off a preview copy, and fork-ness is
-  // only knowable platform-side — which is why this rides provision/reconcile,
-  // not request traffic.)
-  await sweeper(c.env).noteScope(body.tenantId, body.scopeId);
-  return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
-});
-
-// Repair (reconcile): re-deliver roles/entitlements/identity links to a scope.
-// This starter has no durable owner-of-record store (that lives with real auth
-// — the auth seam), so the owner must be re-supplied; without one the refusal
-// names the remedy instead of healing wrongly.
-const reconcileBody = provisionBody.partial({ owner: true, slug: true, name: true });
-app.post('/internal/reconcile', async (c) => {
-  gatePlatform(c);
-  const body = reconcileBody.parse(await c.req.json());
-  if (!body.owner) {
-    throw new HTTPException(409, {
-      message:
-        'no owner of record: this starter keeps none (an identity store — the auth seam — owns it). ' +
-        'Re-run the full install, or wire auth and record the owner durably.',
-    });
-  }
-  await hostFor(c.env).provisionScopeLocal({
-    tenantId: body.tenantId,
-    scopeId: body.scopeId,
-    owner: body.owner,
-    roles: ROLES,
-    ownerRoleKey: OWNER_ROLE_KEY,
-    entitlements: body.entitlements,
-    identityLinks: body.identityLinks,
-  });
-  // Reconcile is the roster's backfill: scopes provisioned before the sweeper
-  // shipped join it on their next platform repair.
-  await sweeper(c.env).noteScope(body.tenantId, body.scopeId);
-  return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner });
-});
-
-// Read-only scope-table introspection (console/dashboard Data view).
-app.get('/internal/tables', async (c) => {
-  gatePlatform(c);
-  return c.json(await hostFor(c.env).introspectScopeTables(scopeId.parse(c.req.query('scopeId'))));
-});
-app.get('/internal/tables/:table', async (c) => {
-  gatePlatform(c);
-  const scope = scopeId.parse(c.req.query('scopeId'));
-  const input = readScopeTableInput.parse({
-    table: c.req.param('table'),
-    limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
-    offset: c.req.query('offset') ? Number(c.req.query('offset')) : undefined,
-  });
-  return c.json(await hostFor(c.env).introspectScopeTable(scope, input));
-});
-// The SQL console: one read-only statement, enforced in the DO.
-app.post('/internal/query', async (c) => {
-  gatePlatform(c);
-  const body = queryScopeInput.extend({ scopeId }).parse(await c.req.json());
-  try {
-    return c.json(await hostFor(c.env).introspectScopeQuery(body.scopeId, { sql: body.sql }));
-  } catch (e) {
-    if (e instanceof Error && e.message.includes('read-only console')) {
-      throw new HTTPException(400, { message: e.message });
-    }
-    throw e;
-  }
-});
-
-// Platform-intent drain surface: the control plane PULLS pending intents from
-// this deployment's scope DOs and journals outcomes back.
-app.get('/internal/platform-requests', async (c) => {
-  gatePlatform(c);
-  const t = tenantId.parse(c.req.query('tenantId'));
-  const s = scopeId.parse(c.req.query('scopeId'));
-  return c.json(await hostFor(c.env).listPlatformRequests(t, s));
-});
-
-// Scope-storage lifecycle: snapshot/delete/export/restore/bookmarks/rewind —
-// what `substrat scope pull`/`restore` and the in-place update backout use.
-app.post('/internal/snapshot', async (c) => {
-  gatePlatform(c);
-  const body = z.object({ sourceScopeId: scopeId, newScopeId: scopeId }).parse(await c.req.json());
-  return c.json(await hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId), 201);
-});
-app.post('/internal/delete-scope', async (c) => {
-  gatePlatform(c);
-  const body = z.object({ scopeId }).parse(await c.req.json());
-  await hostFor(c.env).deleteScopeLocal(body.scopeId);
-  // Off the sweep roster too — a deleted scope must not be woken by the alarm.
-  await sweeper(c.env).forgetScope(body.scopeId);
-  return c.json({ deleted: body.scopeId });
-});
-app.get('/internal/export', async (c) => {
-  gatePlatform(c);
-  return c.json(await hostFor(c.env).exportScopeLocal(scopeId.parse(c.req.query('scopeId'))));
-});
-app.post('/internal/restore', async (c) => {
-  gatePlatform(c);
-  const body = z
-    .object({
-      tenantId: tenantId.optional(),
-      scopeId,
-      tables: z.array(
-        z.object({ name: z.string(), ddl: z.string(), columns: z.array(z.string()), rows: z.array(z.array(z.unknown())) }),
-      ),
-    })
-    .parse(await c.req.json());
-  const host = hostFor(c.env);
-  const result = await host.restoreScopeLocal(body.scopeId, body.tables);
-  // Re-project role definitions after an import — a dump may carry tuples but
-  // no role definitions; roles are code-defined, so re-projecting is always safe.
-  if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, ROLES);
-  return c.json(result);
-});
-app.get('/internal/bookmarks', async (c) => {
-  gatePlatform(c);
-  return c.json(await hostFor(c.env).migrationBookmarksLocal(scopeId.parse(c.req.query('scopeId'))));
-});
-app.post('/internal/rewind', async (c) => {
-  gatePlatform(c);
-  const body = z
-    .object({ scopeId, bookmark: z.string().min(1), force: z.boolean().optional() })
-    .parse(await c.req.json());
-  return c.json(await hostFor(c.env).rewindScopeLocal(body.scopeId, body.bookmark, { force: body.force }));
+// these routes. The whole contract — provision, reconcile, introspection, the
+// read-only SQL console, platform-request drain, snapshot/delete/export/restore,
+// and bookmarks/rewind — plus the guaranteed { error } envelope is authored ONCE
+// in @substrat-run/vertical-host (issue #510); mount it and it cannot drift.
+//
+// This starter's hooks keep the deployment's sweep roster (#461) in step: a newly
+// provisioned scope joins it (so its schedules run), and a deleted one leaves it.
+// Reconcile needs a durable owner-of-record to heal from — this starter keeps none
+// (that lives with real auth, the auth seam), so `resolveOwner` is omitted and
+// /internal/reconcile answers 501 until you wire auth and supply one.
+mountPlatformSurface<Env>(app, {
+  platformSecret: (env) => env.PLATFORM_SECRET,
+  hostFor,
+  roles: ROLES,
+  ownerRoleKey: OWNER_ROLE_KEY,
+  onProvision: (env, b) => sweeper(env).noteScope(b.tenantId, b.scopeId),
+  onDeleteScope: (env, s) => sweeper(env).forgetScope(s),
 });
 
 // Unmatched /api/* fails as JSON; everything else gets a pointer, not a UI —

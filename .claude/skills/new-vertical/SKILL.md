@@ -217,15 +217,20 @@ and prints each persona's status code is more reliable than a chain of `curl | j
   — never hand-authored wrangler config; a wrangler.jsonc is the legacy fallback). No
   worker.ts + no runtimeNeeds = the push preflight refuses with the recipe. If the demo
   is meant to deploy, budget the worker in from the start; `create-substrat`'s template
-  ships one (full `/internal/*` contract, auth seam marked) as the minimal reference,
+  ships one (mounts the `/internal/*` contract, auth seam marked) as the minimal reference,
   Meridian as the full one.
 - **Sandbox-clean is the default worker shape** (policy: every vertical is sandbox-clean,
   only the dashboard is privileged). Copy Meridian's `worker.ts`/`wrangler.jsonc`: own
-  `ScopeDO` + `IdentityDO`, the FULL platform-gated `/internal/*` contract — `provision`,
-  `reconcile` (the control plane's in-place repair: it re-delivers entitlements +
-  identity links through this route, so a vertical without it cannot be healed),
-  `configure`, `tables`, `query`, and the snapshot/export/restore/bookmarks/rewind/
-  delete-scope family — SPA inlined via `gen-assets` (no ASSETS binding). **Multi-scope is native**: one `SCOPE` DO namespace,
+  `ScopeDO` + `IdentityDO`, and **mount the platform-gated `/internal/*` contract with one
+  `mountPlatformSurface(app, {…})` call** from `@substrat-run/vertical-host` — never
+  hand-copy those routes (they are `provision`, `reconcile` — the control plane's in-place
+  repair, re-delivering entitlements + identity links, so a vertical without it cannot be
+  healed — `configure`, `tables`, `query`, `platform-requests`, and the
+  snapshot/export/restore/bookmarks/rewind/delete-scope family, plus the `{ error }` envelope
+  the control plane reads a failure from; authoring them by hand is how they drift or ship
+  without the error handler). You supply the vertical's hooks (`onProvision`, `resolveOwner`,
+  `onConfigure`, `onDeleteScope`); the SPA is inlined via `gen-assets` (no ASSETS binding).
+  **Multi-scope is native**: one `SCOPE` DO namespace,
   `idFromName(tenant, site)` = one DO per site; the router asserts the tenant, the app
   selects the site (`x-scope`), permissions evaluate from that site's own storage.
 - **Kill stale dev servers before driving over HTTP — by PORT, never by pattern.** A

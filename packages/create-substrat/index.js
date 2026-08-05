@@ -20,9 +20,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = join(HERE, 'template');
 
 // Published today; Substrat is 0.x, so these are caret ranges on the current minor.
-// 0.40.0 is the release that ships `defineScopeSweeperDO` (#461), which the
-// template's worker imports — this pin and that adapter release move together.
-const SUBSTRAT = '^0.40.0';
+// 0.45.0 is the release that ships `@substrat-run/vertical-host` (#510) — the
+// mountPlatformSurface the template's worker mounts — so this pin and that release
+// move together (it also covers `defineScopeSweeperDO`, #461, from 0.40.0).
+const SUBSTRAT = '^0.45.0';
 // Engines version on their own line (0.3.x), independent of the kernel/contracts line.
 const ENGINES = '^0.3.37';
 const BOUNDARY_LINT = '^0.0.5';
@@ -93,6 +94,7 @@ function packageJson(name) {
         '@substrat-run/contracts': SUBSTRAT,
         '@substrat-run/adapter-sqlite': SUBSTRAT,
         '@substrat-run/adapter-cloudflare': SUBSTRAT,
+        '@substrat-run/vertical-host': SUBSTRAT,
         '@substrat-run/engine-workorder': ENGINES,
         '@substrat-run/engine-invoicing': ENGINES,
         hono: '^4.6.0',
