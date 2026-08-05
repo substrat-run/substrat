@@ -145,6 +145,8 @@ export interface VerticalRow {
   installs_blocked: number;
   /** Tenant-provisioner capability (0/1, #412) — staff grant; never touched by a re-push. */
   tenant_provisioner: number;
+  /** Email-sender capability (0/1, #303) — staff grant; never touched by a re-push. */
+  email_sender: number;
   /** The stable serving script's name (#286); null = no serving script yet. */
   serving_ref: string | null;
   /** The version whose bundle the serving script currently runs (may trail prod). */
@@ -404,6 +406,9 @@ const DIRECTORY_DDL = `
     -- provision-tenant / set-entitlements intents the platform executes. A staff grant,
     -- never set on insert or touched by a re-push refresh.
     tenant_provisioner INTEGER NOT NULL DEFAULT 0,
+    -- Email-sender capability (#303). 1 = this vertical's scopes may relay transactional
+    -- mail through the control plane. A staff grant, never set on insert or by a re-push.
+    email_sender INTEGER NOT NULL DEFAULT 0,
     -- The ONE stable serving script (#286) and what it currently runs. serving_ref is
     -- the script name every new scope's data DO lives in; serving_version_id is the
     -- version whose bundle was last uploaded onto it (may trail the prod channel if a
@@ -738,6 +743,8 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('verticals', 'installs_blocked INTEGER NOT NULL DEFAULT 0');
     // #412: the tenant-provisioner capability — a staff grant on the registry row.
     this.addColumn('verticals', 'tenant_provisioner INTEGER NOT NULL DEFAULT 0');
+    // #303: the email-sender capability — a staff grant on the registry row.
+    this.addColumn('verticals', 'email_sender INTEGER NOT NULL DEFAULT 0');
     this.addColumn('verticals', 'serving_ref TEXT');
     this.addColumn('verticals', 'serving_version_id TEXT');
     this.addColumn('verticals', 'serving_do_classes TEXT');
@@ -1586,6 +1593,11 @@ export class ControlPlaneDO extends DurableObject {
   /** Grant/revoke the tenant-provisioner capability (#412, staff grant). */
   updateVerticalTenantProvisioner(slug: string, granted: number): void {
     this.sql.exec('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?', granted, slug);
+  }
+
+  /** Grant/revoke the email-sender capability (#303, staff grant). */
+  updateVerticalEmailSender(slug: string, granted: number): void {
+    this.sql.exec('UPDATE verticals SET email_sender = ? WHERE slug = ?', granted, slug);
   }
 
   /**

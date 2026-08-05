@@ -349,6 +349,7 @@ interface ControlPlaneStub {
   updateVerticalPublishRequest(slug: string, requestedAt: string): Promise<void>;
   updateVerticalInstallsBlocked(slug: string, blocked: number): Promise<void>;
   updateVerticalTenantProvisioner(slug: string, granted: number): Promise<void>;
+  updateVerticalEmailSender(slug: string, granted: number): Promise<void>;
   countScopesForVertical(slug: string): Promise<{ live: number; archived: number }>;
   deleteVertical(slug: string): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
@@ -1941,6 +1942,7 @@ export class CloudflareScopeHost implements ScopeHost {
         ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         installsBlocked: !!r.installs_blocked,
         tenantProvisioner: !!r.tenant_provisioner,
+        emailSender: !!r.email_sender,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
@@ -2377,6 +2379,8 @@ export class CloudflareScopeHost implements ScopeHost {
         // Declared provisioner intent (#455) — the request half of the tenant-provisioner
         // capability; the grant is its own column, never part of this refreshable bag.
         if (parsed.provisions) installSpec.provisions = parsed.provisions;
+        // Declared email-sender intent (#303) — the request half; the grant is its own column.
+        if (parsed.sendsEmail) installSpec.sendsEmail = parsed.sendsEmail;
         const installSpecJson = Object.keys(installSpec).length ? JSON.stringify(installSpec) : null;
         const existing = await this.cp.readVertical(parsed.slug);
         if (existing) {
@@ -2483,6 +2487,12 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!existing) throw new Error(`unknown vertical '${slug}'`);
         await this.cp.updateVerticalTenantProvisioner(slug, granted ? 1 : 0);
         await this.recordAdmin(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: !!existing.tenant_provisioner }, { tenantProvisioner: granted });
+      },
+      setVerticalEmailSender: async (actor, slug: string, granted: boolean) => {
+        const existing = await this.cp.readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        await this.cp.updateVerticalEmailSender(slug, granted ? 1 : 0);
+        await this.recordAdmin(actor, 'setVerticalEmailSender', { tenantId: null }, { emailSender: !!existing.email_sender }, { emailSender: granted });
       },
       deleteVertical: async (actor, slug: string) => {
         const existing = await this.cp.readVertical(slug);
