@@ -994,6 +994,52 @@ describe('control-plane API', () => {
     expect(((await del.json()) as { deleted: string | null }).deleted).toBe(c.scopeId);
   });
 
+  it("provisions a clean-room (empty, source-less) preview — a vertical's first environment (#509 (b))", async () => {
+    // A brand-new vertical with NO prod scope. A fork has nothing to copy; `empty:true`
+    // provisions an EMPTY scope instead, so the first environment can be a throwaway preview.
+    await host.admin.registerVertical(staff, {
+      slug: 'cleanroom', name: 'Clean Room', source: 'cli', ownerTenant: t1,
+    });
+    const vId = ulid();
+    await host.admin.publishVersion(staff, {
+      id: vId, verticalSlug: 'cleanroom', version: '1.0.0',
+      manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+    });
+    // private (owned, unlisted) → self-admits, so the version binds.
+    const capp = createControlPlaneApi({
+      host, authenticate: UNSAFE_devPlatformActorAuth(), platformBaseDomains: ['global.substrat.run'],
+    });
+    const cj = (p: string, method: string, body?: unknown) =>
+      capp.request(p, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    // With no source scope, the URL follows the tenant-app convention `<vertical>-<tenant>`.
+    const tSlug = ((await (await cj(`/tenants/${t1}`, 'GET')).json()) as { slug: string }).slug;
+
+    const res = await cj('/verticals/cleanroom/previews', 'POST', { tag: 'pr-1', versionId: vId, empty: true });
+    expect(res.status).toBe(201);
+    const created = (await res.json()) as { scopeId: string; hostname: string; reused: boolean };
+    expect(created.reused).toBe(false);
+    expect(created.hostname).toBe(`cleanroom-${tSlug}--pr-1.global.substrat.run`);
+
+    const row = (await (await cj(`/tenants/${t1}/scopes/${created.scopeId}`, 'GET')).json()) as {
+      kind: string; forkedFrom: string | null; verticalVersionId: string; expiresAt: string | null;
+    };
+    expect(row.kind).toBe('preview');
+    expect(row.forkedFrom).toBeNull(); // NOT a fork — the clean-room distinction the reaper now handles
+    expect(row.verticalVersionId).toBe(vId);
+    expect(row.expiresAt).toBeTruthy();
+
+    // It deletes like any preview — deleteSnapshot now accepts a non-fork preview scope.
+    const del = await cj('/verticals/cleanroom/previews/pr-1', 'DELETE');
+    expect(((await del.json()) as { deleted: string | null }).deleted).toBe(created.scopeId);
+
+    // `empty` and a sourceScopeId are mutually exclusive — the request is refused, not guessed.
+    const bad = await cj('/verticals/cleanroom/previews', 'POST', {
+      tag: 'pr-2', versionId: vId, empty: true, sourceScopeId: scopeId.parse(ulid()),
+    });
+    expect(bad.status).toBe(400);
+  });
+
   // -- the governed pull (preview-and-snapshots.md §6/§8) --------------------
 
   it('exports a scope masked by default; ?full=true is the break-glass', async () => {

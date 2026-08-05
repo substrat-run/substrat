@@ -67,6 +67,7 @@ export async function createPreview(opts: {
   tag: string;
   versionId: string;
   sourceScopeId?: string;
+  empty?: boolean;
   ttlHours?: number | null;
   surface?: string;
   refresh?: boolean;
@@ -77,6 +78,7 @@ export async function createPreview(opts: {
     body: JSON.stringify({
       tag: opts.tag,
       versionId: opts.versionId,
+      ...(opts.empty ? { empty: true } : {}),
       ...(opts.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
       // `null` (pinned) must reach the wire, so send whenever a value was given — not just truthy.
       ...(opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}),
