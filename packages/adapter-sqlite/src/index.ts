@@ -3910,19 +3910,23 @@ export class SqliteScopeHost implements ScopeHost {
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const v = readVersion(versionId);
         if (!v) throw new Error(`unknown version ${versionId}`);
+        const scope = this.directory
+          .prepare('SELECT tenant_id, kind, vertical_version_id FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string; kind: string; vertical_version_id: string | null } | undefined;
+        if (!scope || scope.tenant_id !== tenantId) {
+          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
         // The refusal this registry exists for. Without it, "a push lands pending"
         // is a convention, and D-30's argument is that we cannot afford conventions
-        // where lockstep upgrades are the failure mode.
-        if (v.admission !== 'admitted') {
+        // where lockstep upgrades are the failure mode. Scoped to a SERVING bind, though:
+        // a PREVIEW fork serves no install (the builder's own tenant's data, non-canonical
+        // URL), so it may run pending PR code — the own-tenant blast radius that lets a
+        // private vertical self-admit, and what lets a LISTED vertical's builder keep
+        // previewing their own new code (issue #509 ask (d)).
+        if (v.admission !== 'admitted' && scope.kind !== 'preview') {
           throw new Error(
             `version ${versionId} is ${v.admission}, not admitted — it cannot be bound to a scope`,
           );
-        }
-        const scope = this.directory
-          .prepare('SELECT tenant_id, vertical_version_id FROM scopes WHERE scope_id = ?')
-          .get(scopeId) as { tenant_id: string; vertical_version_id: string | null } | undefined;
-        if (!scope || scope.tenant_id !== tenantId) {
-          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
         }
         // Fork-before-promote (§4): snapshot the pre-migration data if this rebind
         // crosses a migration boundary. Gated on a real digest change — a code-only

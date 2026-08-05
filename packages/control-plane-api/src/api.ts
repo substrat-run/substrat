@@ -2745,9 +2745,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return { scopeId: previewId, hostname, url: `https://${hostname}`, versionId: opts.versionId, reused: false };
   };
 
-  // The owning tenant of a builder's OWN, PRIVATE vertical — the gate every preview route
-  // shares. Previews bind UNPROMOTED PR code, which only a private vertical's self-admission
-  // makes a self-serve act; a listed vertical's prod is staff-gated (marketplace-publish.md §2).
+  // The owning tenant of a builder's OWN vertical — the gate every preview route shares. A
+  // preview forks THIS tenant's own scope and binds the version onto that fork (never an
+  // install), so it survives publication: previewing your own new code into your own data is
+  // the same own-tenant blast radius a private vertical self-admits under, and `bindScopeVersion`
+  // admits a pending version onto a preview scope for exactly this reason (issue #509 ask (d)).
+  // A builder is still confined to a vertical it OWNS, and a first-party vertical (no owner
+  // tenant) has no scope of its own to fork.
   const previewVertical = async (
     c: Context<{ Variables: Vars }>,
   ): Promise<{ tenantId: TenantId; slug: string } | { error: string; status: ContentfulStatusCode }> => {
@@ -2756,9 +2760,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const v = await verticalOf(c.get('actor'), slug);
     if (!v) return { error: `unknown vertical '${slug}'`, status: 404 };
     if (p.kind === 'builder' && v.ownerTenant !== p.tenantId) return { error: 'forbidden', status: 403 };
-    if (v.listed) {
-      return { error: 'previews are available for private (unlisted) verticals only', status: 403 };
-    }
     if (v.ownerTenant === null) return { error: `vertical '${slug}' has no owner tenant`, status: 409 };
     return { tenantId: v.ownerTenant, slug };
   };

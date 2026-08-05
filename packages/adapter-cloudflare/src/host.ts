@@ -2686,14 +2686,19 @@ export class CloudflareScopeHost implements ScopeHost {
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const v = await this.cp.readVersion(versionId);
         if (!v) throw new Error(`unknown version ${versionId}`);
-        // The refusal the registry exists for.
-        if (v.admission !== 'admitted') {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        // The refusal the registry exists for — but scoped to a SERVING bind. Admission
+        // gates code reaching an install; a PREVIEW fork is the builder's own tenant's data
+        // at a non-canonical URL, serving no install, so it may run pending PR code — the
+        // same own-tenant blast radius that lets a private vertical self-admit. This is what
+        // lets a LISTED vertical's builder still preview their own new code (marketplace-publish.md
+        // §2; issue #509 ask (d)). Every other scope kind keeps the refusal.
+        if (v.admission !== 'admitted' && scope.kind !== 'preview') {
           throw new Error(
             `version ${versionId} is ${v.admission}, not admitted — it cannot be bound to a scope`,
           );
         }
-        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
         // Fork-before-promote (§4): snapshot the pre-migration data if this rebind
         // crosses a migration boundary. Gated on a real digest change and on opt-in.
         if (opts?.snapshot && scope.vertical_version_id) {

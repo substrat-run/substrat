@@ -1589,6 +1589,37 @@ export function scopeHostContractSuite(
       expect(scope?.vertical).toBe('callout');
     });
 
+    it('admits a PENDING version onto a preview fork — but still refuses it on a serving scope (#509 (d))', async () => {
+      // Admission gates code reaching an INSTALL. A preview is a fork of the builder's own
+      // scope at a non-canonical URL, serving no install, so it may run not-yet-admitted PR
+      // code — the same own-tenant blast radius a private vertical self-admits under, and what
+      // lets a LISTED vertical's builder keep previewing their own new code.
+      const pending = ulid();
+      await host.admin.registerVertical(staff, { slug: 'previewable', name: 'Previewable', source: 'cli', ownerTenant: t1 });
+      // LISTED, so the version does NOT self-admit (the private self-admit rule is what makes
+      // a private preview already work; the carve-out is what a listed vertical needs).
+      await host.admin.setVerticalListed(staff, 'previewable', true);
+      await host.admin.publishVersion(staff, {
+        id: pending, verticalSlug: 'previewable', version: '2.0.0',
+        manifestDigest: 'm2', permissionDigest: 'p2', migrationDigest: 'g2', deploymentRef: null,
+      });
+      const [v] = await host.admin.listVersions(staff, 'previewable');
+      expect(v?.admission).toBe('pending');
+
+      const preview = scopeId.parse(ulid());
+      await host.provisionScope(staff, {
+        tenantId: t1, scopeId: preview, kind: 'preview', vertical: 'previewable',
+        forkedFrom: s1, forkedAt: new Date().toISOString(),
+      });
+      await host.admin.activateScope(staff, t1, preview);
+
+      // The fork accepts the pending version…
+      await host.admin.bindScopeVersion(staff, t1, preview, pending);
+      expect((await host.admin.getScopeRecord(staff, t1, preview))?.verticalVersionId).toBe(pending);
+      // …while a normal (serving) scope keeps the refusal the registry exists for.
+      await expect(host.admin.bindScopeVersion(staff, t1, s1, pending)).rejects.toThrow(/pending, not admitted/);
+    });
+
     it('records the owning tenant and fixes it at first push (claim-on-first-push)', async () => {
       // builder-plane.md Phase 1b: a vertical is owned by a TENANT (null = platform).
       // 'callout' above was registered platform-owned; a builder-pushed one carries
