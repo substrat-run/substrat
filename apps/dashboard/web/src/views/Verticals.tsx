@@ -16,6 +16,7 @@ import { Ic } from '../lib/icons';
 import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
 import { card, CopyButton, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
+import { LogList } from '../components/LogList';
 
 /**
  * Verticals (builder-plane.md Phase 4; formerly "Deployments") — the supply side of the
@@ -497,22 +498,7 @@ function TrafficPanel() {
           ) : logs.length === 0 ? (
             <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>No log events in the last 24 hours.</div>
           ) : (
-            <div style={{ maxHeight: 320, overflowY: 'auto' }}>
-              {logs.map((l, i) => (
-                <div
-                  key={i}
-                  style={{ display: 'flex', gap: 12, padding: '8px 14px', borderBottom: i === logs.length - 1 ? 'none' : '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', fontSize: 12 }}
-                >
-                  <span style={{ color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                    {l.timestamp ? new Date(l.timestamp).toISOString().slice(5, 19).replace('T', ' ') : '—'}
-                  </span>
-                  <span style={{ width: 44, color: l.level === 'error' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)' }}>
-                    {l.level ?? '—'}
-                  </span>
-                  <span style={{ flex: 1, wordBreak: 'break-all', color: 'var(--text-primary)' }}>{l.message ?? '(no message)'}</span>
-                </div>
-              ))}
-            </div>
+            <LogList events={logs} maxHeight={320} />
           )}
         </div>
       )}

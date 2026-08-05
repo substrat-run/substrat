@@ -35,6 +35,18 @@ export interface RecentLogEvent {
   service: string | null;
   /** How the invocation ended (e.g. `ok`, `exception`), provider-worded. */
   outcome: string | null;
+  /** What set the invocation off — an operation/route/RPC name (e.g. `default.importDump`).
+   *  Neutral vocabulary: each backend maps its own trigger concept onto this string. */
+  trigger: string | null;
+  /** The shape of the invocation (`fetch`, `rpc`, `scheduled`, `alarm`, …), backend-worded. */
+  eventType: string | null;
+  /** The handler that ran (a class/entrypoint name), when the backend distinguishes one. */
+  entrypoint: string | null;
+  /** Correlates events from the same invocation — the key to grouping a request's lines. */
+  requestId: string | null;
+  /** CPU / wall time for the invocation, milliseconds (Tier-3: sampled, approximate). */
+  cpuTimeMs: number | null;
+  wallTimeMs: number | null;
   /** The event as the backend returned it — the fields above are a best-effort
    *  projection, and the raw event is what makes a projection miss debuggable. */
   raw: unknown;

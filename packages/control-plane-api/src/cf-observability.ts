@@ -140,20 +140,27 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<
         Record<string, unknown>
       >;
+      const str = (v: unknown) => (typeof v === 'string' ? v : null);
+      const num = (v: unknown) => (typeof v === 'number' ? v : null);
       return events.map((e) => {
         const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
         const workers = (e['$workers'] ?? {}) as Record<string, unknown>;
         return {
-          timestamp: typeof e['timestamp'] === 'number' ? e['timestamp'] : null,
-          level: typeof metadata['level'] === 'string' ? metadata['level'] : null,
-          message: typeof metadata['message'] === 'string' ? metadata['message'] : null,
-          service:
-            typeof metadata['service'] === 'string'
-              ? metadata['service']
-              : typeof workers['scriptName'] === 'string'
-                ? workers['scriptName']
-                : null,
-          outcome: typeof workers['outcome'] === 'string' ? workers['outcome'] : null,
+          timestamp: num(e['timestamp']),
+          level: str(metadata['level']),
+          message: str(metadata['message']),
+          service: str(metadata['service']) ?? str(workers['scriptName']),
+          outcome: str(workers['outcome']),
+          // `$metadata.trigger` reads like `<entrypoint>.<method>` (e.g. `default.importDump`);
+          // fall back to the `$workers.event` sub-shape (`rpcMethod`) when it is absent.
+          trigger:
+            str(metadata['trigger']) ??
+            str((workers['event'] as Record<string, unknown> | undefined)?.['rpcMethod']),
+          eventType: str(workers['eventType']),
+          entrypoint: str(workers['entrypoint']),
+          requestId: str(metadata['requestId']) ?? str(workers['requestId']),
+          cpuTimeMs: num(workers['cpuTimeMs']),
+          wallTimeMs: num(workers['wallTimeMs']),
           raw: e,
         };
       });

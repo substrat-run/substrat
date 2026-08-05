@@ -522,7 +522,20 @@ export class TenantNarrowedControlPlane {
     hours?: number;
     limit?: number;
   }): Promise<
-    Array<{ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null }>
+    Array<{
+      timestamp: number | null;
+      level: string | null;
+      message: string | null;
+      service: string | null;
+      outcome: string | null;
+      trigger: string | null;
+      eventType: string | null;
+      entrypoint: string | null;
+      requestId: string | null;
+      cpuTimeMs: number | null;
+      wallTimeMs: number | null;
+      raw: unknown;
+    }>
   > {
     const owned = await this.ownedServiceRefs();
     if (!owned.has(input.service)) return [];
@@ -533,17 +546,40 @@ export class TenantNarrowedControlPlane {
     if (input.limit) q.set('limit', String(input.limit));
     const events =
       (await this.call<
-        Array<{ timestamp?: unknown; level?: unknown; message?: unknown; service?: unknown; outcome?: unknown }>
+        Array<{
+          timestamp?: unknown;
+          level?: unknown;
+          message?: unknown;
+          service?: unknown;
+          outcome?: unknown;
+          trigger?: unknown;
+          eventType?: unknown;
+          entrypoint?: unknown;
+          requestId?: unknown;
+          cpuTimeMs?: unknown;
+          wallTimeMs?: unknown;
+          raw?: unknown;
+        }>
       >(`/observability/logs?${q.toString()}`)) ?? [];
-    // Builders get the neutral field set ONLY — the plane's events carry a `raw`
-    // backend payload for staff debuggability, and whatever a future backend adds
-    // must be opted into here, never inherited by pass-through.
+    // A builder only ever reaches an OWNED service here (checked above), so the event —
+    // `raw` included — is already this tenant's own telemetry: passing the whole thing
+    // through is a deliberate widening (the drill-down the per-app tab renders), not a
+    // leak. The one narrowing that remains is the ownership gate, not the field set.
+    const str = (v: unknown) => (typeof v === 'string' ? v : null);
+    const num = (v: unknown) => (typeof v === 'number' ? v : null);
     return events.map((e) => ({
-      timestamp: typeof e.timestamp === 'number' ? e.timestamp : null,
-      level: typeof e.level === 'string' ? e.level : null,
-      message: typeof e.message === 'string' ? e.message : null,
-      service: typeof e.service === 'string' ? e.service : null,
-      outcome: typeof e.outcome === 'string' ? e.outcome : null,
+      timestamp: num(e.timestamp),
+      level: str(e.level),
+      message: str(e.message),
+      service: str(e.service),
+      outcome: str(e.outcome),
+      trigger: str(e.trigger),
+      eventType: str(e.eventType),
+      entrypoint: str(e.entrypoint),
+      requestId: str(e.requestId),
+      cpuTimeMs: num(e.cpuTimeMs),
+      wallTimeMs: num(e.wallTimeMs),
+      raw: e.raw,
     }));
   }
 

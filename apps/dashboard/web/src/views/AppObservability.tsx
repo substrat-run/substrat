@@ -4,6 +4,7 @@ import { api, ApiError, type AppRow, type ObservabilityLogEvent, type Observabil
 import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
+import { LogList } from '../components/LogList';
 
 const fmtCpu = (us: number) => (us >= 100_000 ? `${Math.round(us / 1000)} ms` : `${(us / 1000).toFixed(1)} ms`);
 
@@ -258,25 +259,7 @@ export function AppObservability({ app }: { app: AppRow }) {
               No log events match in this window.
             </div>
           ) : (
-            <div style={{ maxHeight: 420, overflowY: 'auto' }}>
-              {logs.map((l, i) => (
-                <div
-                  key={i}
-                  style={{ display: 'flex', gap: 12, padding: '8px 14px', borderBottom: i === logs.length - 1 ? 'none' : '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', fontSize: 12 }}
-                >
-                  <span style={{ color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                    {l.timestamp ? new Date(l.timestamp).toISOString().slice(5, 19).replace('T', ' ') : '—'}
-                  </span>
-                  <span style={{ width: 44, color: l.level === 'error' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)' }}>
-                    {l.level ?? '—'}
-                  </span>
-                  <span style={{ flex: 1, wordBreak: 'break-all', color: 'var(--text-primary)' }}>{l.message ?? '(no message)'}</span>
-                  {l.outcome && l.outcome !== 'ok' && (
-                    <span style={{ color: 'var(--status-danger-fg)', whiteSpace: 'nowrap' }}>{l.outcome}</span>
-                  )}
-                </div>
-              ))}
-            </div>
+            <LogList events={logs} />
           )}
         </div>
       )}
