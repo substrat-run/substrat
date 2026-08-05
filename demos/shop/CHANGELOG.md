@@ -1,5 +1,14 @@
 # @substrat-run/demo-shop
 
+## 0.0.45
+
+### Patch Changes
+
+- @substrat-run/contracts@0.46.0
+- @substrat-run/kernel@0.46.0
+- @substrat-run/adapter-sqlite@0.46.0
+- @substrat-run/engine-invoicing@0.5.2
+
 ## 0.0.44
 
 ### Patch Changes
