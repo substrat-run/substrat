@@ -116,8 +116,18 @@ export function availableActions(
     // Terminal: storage is gone, the row is a tombstone. Nothing to offer.
     case 'reaped':
       return [];
-    // Transient states settle into one of the above; nothing to offer meanwhile.
+    // Provisioning is meant to be transient, but it stalls — a failed migration or a
+    // dispatch gap can strand a scope here indefinitely (#49), and with nothing to offer
+    // the console becomes a dead-end (#500). The server permits `provisioning → archived`
+    // (host.ts archiveScope allows it) precisely so a stuck scope can be abandoned, then
+    // reaped once archived; bulk Prune already relies on this edge. Offer it here too so a
+    // single stranded scope has the same escape.
     case 'provisioning':
+      return ['archive'];
+    // `archiving` is genuinely mid-flight (it settles into `archived` on its own), and a
+    // cascade-suspended scope's lever is the tenant, not the scope — its row is `active`,
+    // so a per-scope action would either be an illegal transition or a wrong one. Both are
+    // handled by an explanatory note in the detail view rather than a button.
     case 'archiving':
     case 'suspended-via-tenant':
       return [];
