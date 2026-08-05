@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/dashboard-web",
-  "version": "0.5.17",
+  "version": "0.6.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "The Dashboard SPA — Substrat's tenant-facing self-service surface (docs/design/dashboard-ui.md). Served by the dashboard worker.",
