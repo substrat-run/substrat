@@ -185,6 +185,16 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect((calls[0]!.body as { versionId: string }).versionId).toBe('01JVERSION');
   });
 
+  it('createPreview posts to the vertical previews route with the version + pin/empty flags (#509)', async () => {
+    const { cp, calls } = harness(201, { scopeId: '01JPREVIEW', hostname: 'crm--test.example', url: 'https://crm--test.example', versionId: '01JVERSION', reused: false });
+    const out = await cp.createPreview('crm', { tag: 'test', versionId: '01JVERSION', ttlHours: null, empty: true });
+    // The bare slug — the seam's x-substrat-tenant header resolves it to the tenant's registry id.
+    expect(calls[0]!.url).toBe('https://cp/api/verticals/crm/previews');
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({ tag: 'test', versionId: '01JVERSION', ttlHours: null, empty: true });
+    expect(out).toMatchObject({ scopeId: '01JPREVIEW', reused: false });
+  });
+
   it('mirrors identity links under the pinned tenant, idempotently', async () => {
     const { cp, calls } = harness();
     await cp.linkIdentity({ provider: 'authhero', externalId: 'auth0|u1', principal: owner, scopeId: S });

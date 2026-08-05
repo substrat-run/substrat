@@ -56,16 +56,26 @@ The human gate did not disappear; it moved to the boundary where it means someth
 private vertical becomes listed — `substrat publish`, the `setVerticalListed` decision — is where
 a human vouches. Publishing is the checkpoint, not every push.
 
-## Channels and owner-driven promotion
+## The one channel: `prod`
 
-A **channel** is a named pointer per vertical: `dev`, `staging`, `prod` are the same vertical
-pinned to (potentially) different versions. Promotion re-points a channel.
+A vertical has exactly **one channel — `prod`**: the pointer at the version its scopes serve.
+There is no `dev` or `staging`. Those existed once and were *write-only* — nothing ever read or
+served them (#509) — because a channel names a *pointer at code*, and an immutable version id
+already does that. What a real non-production environment needs is not a second pointer but a
+second **scope with data**, which is a [preview](#previews-run-a-version-against-a-copy-of-the-data).
+The full argument, and how to run test / canary / release-candidate environments on previews, is
+[Environments & previews](/guide/environments-and-previews).
 
-For a vertical you own privately you self-serve **every** channel, **production included**.
-`substrat push --promote prod` is a complete deploy, so a merge-to-main workflow can be the
-deploy. A prod promote re-points your live scopes in the same act — there are no *other* tenants
-who would be forced into lockstep (that concern, from decision D-30, is a shared vertical's many
-tenants, which a private vertical cannot have).
+`prod` stays a *moving target* — a [promote](/guide/deploying#promote-to-prod) re-points the prod
+scope at a new version — but it is a **rebind**, not a rename: the same scope, the same data,
+serving new code. For a vertical you own privately you self-serve it, so
+`substrat push --promote prod` is a complete deploy and a merge-to-main workflow can be the deploy.
+A prod promote re-points your live scopes in the same act — there are no *other* tenants who would
+be forced into lockstep (that concern, from decision D-30, is a shared vertical's many tenants,
+which a private vertical cannot have). For a shared vertical, that cascade is exactly why prod is a
+fleet-wide rebind, and why bringing *one* tenant forward first is a
+[per-scope bind](/guide/environments-and-previews#canary-pinned-tenants-per-scope-rollout), not a
+channel.
 
 Two things a promotion always respects:
 

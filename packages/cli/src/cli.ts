@@ -32,6 +32,7 @@ import { createPreview, deletePreview, listPreviews, formatPreviews, parseTtlHou
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
+  bindScopeHostname,
   unbindHostname,
   verifyHostname,
   formatHostnames,
@@ -103,6 +104,12 @@ Usage:
                                               fleet). --snapshot archives the pre-migration
                                               data first when the bind crosses a migration
                                               boundary (the rollback point)
+  substrat scope domain <scopeId> --domain <fqdn> [--surface app] [--canonical]
+                                              bind a custom domain to ANY owned scope — a
+                                              prod app, a preview, or a long-lived test
+                                              env (crm-test.ahero.se). Walks DNS/cert
+                                              issuance; --canonical makes it the surface's
+                                              primary URL (default: an additive alias)
   substrat scope rebind <scopeId> --to <vertical>
                                               move a scope onto a DIFFERENT vertical
                                               lineage's serving script, data carried
@@ -424,10 +431,11 @@ async function cmdScope(): Promise<void> {
     '       substrat scope adopt-serving <scopeId> [--tenant <id-or-slug>]\n' +
     '       substrat scope adopt-serving --vertical <slug>\n' +
     '       substrat scope bind <scopeId> --version <versionId> [--snapshot] [--tenant <id-or-slug>]\n' +
+    '       substrat scope domain <scopeId> --domain <fqdn> [--surface app] [--canonical] [--tenant <id-or-slug>]\n' +
     '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--abandon-data] [--tenant <id-or-slug>]';
   const known =
     sub === 'pull' || sub === 'restore' || sub === 'status' || sub === 'provision' ||
-    sub === 'adopt-serving' || sub === 'bind' || sub === 'rebind';
+    sub === 'adopt-serving' || sub === 'bind' || sub === 'domain' || sub === 'rebind';
   // adopt-serving --vertical takes no positional scopeId; every other form requires one.
   const wantsScope = !(sub === 'adopt-serving' && flag('vertical'));
   if (!known || (wantsScope && (!scope || scope.startsWith('--')))) {
@@ -468,6 +476,27 @@ async function cmdScope(): Promise<void> {
       controlPlaneUrl, header, tenantId, scopeId: scope,
       versionId: version, snapshot: argv.includes('--snapshot'),
     });
+    return;
+  }
+  if (sub === 'domain') {
+    const domain = flag('domain');
+    if (!domain) {
+      console.error(usage);
+      process.exit(1);
+    }
+    const surface = flag('surface') ?? 'app';
+    const bound = await bindScopeHostname({
+      controlPlaneUrl, header, tenantId, scopeId: scope, surface, domain,
+      canonical: argv.includes('--canonical'),
+    });
+    if (bound.status === 'active') {
+      console.log(`✓ https://${bound.hostname} serves scope ${scope} (surface '${surface}')`);
+    } else {
+      console.log(`✓ ${bound.hostname} recorded (${bound.status}) on scope ${scope}, surface '${surface}'`);
+      console.log('  it goes live once DNS validation and certificate issuance complete');
+      const records = formatDnsRecords(bound.validationRecords ?? []);
+      if (records) console.log(records);
+    }
     return;
   }
   if (sub === 'rebind') {

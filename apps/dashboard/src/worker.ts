@@ -1630,6 +1630,39 @@ app.post('/api/apps/:scopeId/update', async (c) => {
 });
 
 /**
+ * Pin THIS app's scope to a specific admitted version of its vertical — the per-scope
+ * rollout primitive (#509 (c)). `update` rebinds to wherever `prod` points; this binds an
+ * arbitrary version, which is what a canary (tenant A ahead of the fleet) or a long-lived
+ * test environment (rebound to head-of-main each merge) needs. Ownership is the same
+ * list-apps check as update; the control plane refuses a cross-vertical or a non-admitted
+ * version below the seam (a preview scope is the one carve-out, #513). `snapshot` forks the
+ * data before a migration-crossing bind — the rollback point.
+ */
+app.post('/api/apps/:scopeId/bind', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const body = z.object({ versionId: z.string().min(1), snapshot: z.boolean().optional() }).parse(await c.req.json());
+  const target = scopeId.parse(appRow.app_scope_id);
+  try {
+    const cp = controlPlaneFor(c.env, node.tenantId);
+    if (cp) {
+      await cp.bindScopeVersion(target, body.versionId, body.snapshot ? { snapshot: true } : undefined);
+    } else {
+      await host.admin.bindScopeVersion(STAFF, node.tenantId, target, body.versionId, body.snapshot ? { snapshot: true } : undefined);
+    }
+    return c.body(null, 204);
+  } catch (e) {
+    if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
+    throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind version' });
+  }
+});
+
+/**
  * #286: the PITR bookmarks an app recorded before its migration passes — the rewind
  * points the Deployments tab offers for a backout. Same ownership check as every
  * per-app route; connected-plane only (PITR is a Durable-Object-plane mechanism).
@@ -2273,12 +2306,13 @@ app.get('/api/observability/logs', async (c) => {
 });
 
 /**
- * Promote one of MY verticals. dev/staging always; `prod` while the vertical is PRIVATE
- * (its blast radius is this tenant alone — merge-to-main deploys and dashboard rollback
- * both land here). Prod on a LISTED vertical is refused: publishing widened the audience,
- * so that promotion is a staff decision again. The slug is verified to be one of the
- * caller's own deployments before anything is promoted; the registry additionally
- * refuses non-admitted versions and unacknowledged digest changes below the seam.
+ * Promote one of MY verticals to `prod` — the one channel (#524; dev/staging retired). Self-
+ * serve while the vertical is PRIVATE (its blast radius is this tenant alone — merge-to-main
+ * deploys and dashboard rollback both land here). Prod on a LISTED vertical is refused:
+ * publishing widened the audience, so that promotion is a staff decision again. For a non-prod
+ * environment a builder creates a preview, not a second channel. The slug is verified to be one
+ * of the caller's own deployments before anything is promoted; the registry additionally refuses
+ * non-admitted versions and unacknowledged digest changes below the seam.
  */
 app.post('/api/deployments/:slug/promote', async (c) => {
   const host = hostFor(c.env);
@@ -2349,6 +2383,112 @@ app.delete('/api/deployments/:slug', async (c) => {
     await host.admin.deleteVertical(STAFF, slug);
   }
   return c.body(null, 204);
+});
+
+// -- builder previews / environments (#509) ---------------------------------
+// The per-vertical, builder-facing half of `substrat preview`: create / list / reap a
+// preview (a scope with data bound to a version, at its own URL), and attach a custom
+// domain to one — turning a pinned preview into a long-lived test environment. Owned-slug
+// checked like promote; a preview forks the caller's OWN tenant scope and serves no
+// install, so it is self-serve for a vertical they own whether private or LISTED (#513).
+// A control-plane orchestration — connected-plane only (embedded mode has no preview host).
+
+const cpOrThrow = (env: Env, tenantId: DashboardNode['tenantId']): TenantNarrowedControlPlane => {
+  const cp = controlPlaneFor(env, tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'previews require the shared control plane' });
+  return cp;
+};
+
+app.get('/api/deployments/:slug/previews', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const cp = cpOrThrow(c.env, node.tenantId);
+  assertOwned(await listDeploymentsFromCp(cp), slug); // your vertical, or 4xx
+  return c.json(await cp.listPreviews(slug));
+});
+
+const createPreviewBody = z.object({
+  tag: z
+    .string()
+    .regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/, 'tag must be a short DNS-safe label, e.g. pr-123'),
+  versionId: z.string().min(1),
+  // `null` PINS the preview (a long-lived test env); absent = the CP's 72h default.
+  ttlHours: z.number().int().positive().max(720).nullable().optional(),
+  empty: z.boolean().optional(),
+  sourceScopeId: z.string().optional(),
+  surface: z.string().optional(),
+  refresh: z.boolean().optional(),
+});
+
+app.post('/api/deployments/:slug/previews', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const body = createPreviewBody.parse(await c.req.json());
+  const cp = cpOrThrow(c.env, node.tenantId);
+  assertOwned(await listDeploymentsFromCp(cp), slug);
+  try {
+    const out = await cp.createPreview(slug, {
+      tag: body.tag,
+      versionId: body.versionId,
+      ...(body.ttlHours !== undefined ? { ttlHours: body.ttlHours } : {}),
+      ...(body.empty ? { empty: true } : {}),
+      ...(body.sourceScopeId ? { sourceScopeId: scopeId.parse(body.sourceScopeId) } : {}),
+      ...(body.surface ? { surface: body.surface } : {}),
+      ...(body.refresh ? { refresh: true } : {}),
+    });
+    return c.json(out, out.reused ? 200 : 201);
+  } catch (e) {
+    if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
+    throw e;
+  }
+});
+
+app.delete('/api/deployments/:slug/previews/:tag', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const cp = cpOrThrow(c.env, node.tenantId);
+  assertOwned(await listDeploymentsFromCp(cp), slug);
+  return c.json(await cp.deletePreview(slug, c.req.param('tag')));
+});
+
+/**
+ * Attach a custom domain to a preview scope — what makes a pinned preview a long-lived test
+ * environment at a stable address (crm-test.ahero.se). The preview is resolved by tag under
+ * an owned vertical (so a builder can only domain their own preview); the bind path is
+ * scope-generic below the seam. `canonical` defaults false — an additive alias next to the
+ * `--<tag>` URL, never silently demoting it.
+ */
+app.post('/api/deployments/:slug/previews/:tag/domain', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const tag = c.req.param('tag');
+  const body = z
+    .object({ domain: z.string().min(1).max(253), surface: z.string().min(1).max(32).optional(), canonical: z.boolean().optional() })
+    .parse(await c.req.json());
+  const cp = cpOrThrow(c.env, node.tenantId);
+  assertOwned(await listDeploymentsFromCp(cp), slug);
+  const preview = (await cp.listPreviews(slug)).find((p) => p.tag === tag);
+  if (!preview) throw new HTTPException(404, { message: `no preview '${tag}' for '${slug}'` });
+  try {
+    const bound = await cp.bindHostname({
+      hostname: body.domain.toLowerCase(),
+      scopeId: scopeId.parse(preview.scopeId),
+      surface: body.surface ?? 'app',
+      canonical: !!body.canonical,
+    });
+    return c.json(bound, 201);
+  } catch (e) {
+    if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
+    throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind domain' });
+  }
 });
 
 // -- Git import (GitHub App) — connections.md §3.5.1 -------------------------

@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow } from './api';
+import type { AppHostnamesView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -160,6 +160,28 @@ export const MOCK_SNAPSHOTS: SnapshotRow[] = [
     expiresAt: null,
     verticalVersionId: '01J2Q8Z3V9K4W7X2M5N6P7V100',
     createdAt: ago(9 * 86400e3),
+  },
+];
+
+/** Previews/Environments sample for a mock vertical: a pinned test env on a custom domain + a live PR preview. */
+export const MOCK_PREVIEWS: VerticalPreview[] = [
+  {
+    scopeId: '01J2Q8Z3V9K4W7X2M5N6P7PV01',
+    tag: 'test',
+    versionId: '01J2Q8Z3V9K4W7X2M5N6P7V200',
+    forkedFrom: '01J2Q8Z3V9K4W7X2M5N6P789AB',
+    expiresAt: null, // pinned — a long-lived test environment
+    hostname: 'crm-test.acme.example',
+    url: 'https://crm-test.acme.example',
+  },
+  {
+    scopeId: '01J2Q8Z3V9K4W7X2M5N6P7PV02',
+    tag: 'pr-42',
+    versionId: '01J2Q8Z3V9K4W7X2M5N6P7V210',
+    forkedFrom: '01J2Q8Z3V9K4W7X2M5N6P789AB',
+    expiresAt: new Date(now + 2 * 86400e3).toISOString(),
+    hostname: 'acme-hr--pr-42.global.substrat.run',
+    url: 'https://acme-hr--pr-42.global.substrat.run',
   },
 ];
 

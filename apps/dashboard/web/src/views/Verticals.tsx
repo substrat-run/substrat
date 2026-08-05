@@ -10,10 +10,11 @@ import {
   type GitReposResult,
   type ObservabilityLogEvent,
   type ObservabilityRow,
+  type VerticalPreview,
   type WorkflowPreview,
 } from '../lib/api';
 import { Ic } from '../lib/icons';
-import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS } from '../lib/mock';
+import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_PREVIEWS } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
 import { card, CopyButton, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 import { LogList } from '../components/LogList';
@@ -291,6 +292,187 @@ function VerticalCard({
  * links to. Every pushed version (not just the newest few), the same self-serve channel
  * promotion, and the prod go-live history / rollback that used to be an inline expand.
  */
+/**
+ * Previews & environments (#509) — the builder-facing half of `substrat preview`. A
+ * non-production environment is not a second channel; it is a scope with data bound to a
+ * version, at its own URL. Create one of an admitted version (fork prod, or a clean-room
+ * `empty` scope); pin it and give it a custom domain to make a long-lived test environment
+ * (crm-test.…). Available for a vertical you own whether private or listed (#513).
+ */
+function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
+  const [previews, setPreviews] = useState<VerticalPreview[] | null>(DEV_MOCK ? MOCK_PREVIEWS : null);
+  const [err, setErr] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const admitted = useMemo(() => d.versions.filter((v) => v.admission === 'admitted'), [d.versions]);
+
+  // Create form.
+  const [tag, setTag] = useState('');
+  const [versionId, setVersionId] = useState('');
+  const [pin, setPin] = useState(false);
+  const [empty, setEmpty] = useState(false);
+  // Per-preview inline "attach domain" input, keyed by tag.
+  const [domainFor, setDomainFor] = useState<string | null>(null);
+  const [domain, setDomain] = useState('');
+
+  const reload = () => {
+    if (DEV_MOCK) return;
+    void api
+      .listPreviews(d.slug)
+      .then((p) => {
+        setPreviews(p);
+        setErr(null);
+      })
+      // 501 = no shared control plane (embedded/self-host) — the surface simply isn't available.
+      .catch((e) => setErr(e instanceof ApiError && e.status === 501 ? null : e instanceof Error ? e.message : 'failed to load'));
+  };
+  useEffect(reload, [d.slug]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const create = async () => {
+    if (!tag || !versionId) return;
+    setWorking(true);
+    setErr(null);
+    try {
+      await api.createPreview(d.slug, { tag, versionId, ...(pin ? { ttlHours: null } : {}), ...(empty ? { empty: true } : {}) });
+      setTag('');
+      setVersionId('');
+      setPin(false);
+      setEmpty(false);
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'could not create preview');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const remove = async (t: string) => {
+    setWorking(true);
+    try {
+      await api.deletePreview(d.slug, t);
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'could not delete preview');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const attachDomain = async (t: string) => {
+    if (!domain) return;
+    setWorking(true);
+    setErr(null);
+    try {
+      await api.addPreviewDomain(d.slug, t, { domain });
+      setDomain('');
+      setDomainFor(null);
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'could not attach domain');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  // No shared plane, or the vertical has no admitted version to preview — nothing to show.
+  if (previews === null && err === null) return null;
+  const disabled = busy || working;
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Previews &amp; environments</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          A non-production environment is a scope with data bound to a version, at its own URL. Pin one and add a
+          custom domain to make a long-lived test environment.
+        </p>
+      </div>
+
+      {previews && previews.length > 0 && (
+        <GridTable columns="0.9fr 0.8fr 1.8fr 1fr 0.8fr" header={['Tag', 'Version', 'URL', 'Expiry', '~Actions']}>
+          {previews.map((p, i) => {
+            const ver = d.versions.find((v) => v.id === p.versionId)?.version ?? '—';
+            return (
+              <Row key={p.scopeId} columns="0.9fr 0.8fr 1.8fr 1fr 0.8fr" last={i === previews.length - 1}>
+                <span style={{ fontWeight: 500 }}>{p.tag ?? '—'}</span>
+                <span><MonoTag>{ver}</MonoTag></span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                  {p.url ? (
+                    <>
+                      <a href={p.url} target="_blank" rel="noreferrer" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {p.hostname}
+                      </a>
+                      <CopyButton text={p.url} size={12} />
+                    </>
+                  ) : (
+                    <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                  )}
+                </span>
+                <span>
+                  {p.expiresAt === null ? (
+                    <Pill kind="info">pinned</Pill>
+                  ) : (
+                    <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                      {new Date(p.expiresAt).toLocaleDateString()}
+                    </span>
+                  )}
+                </span>
+                <span style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <Button variant="ghost" size="sm" disabled={disabled} onClick={() => setDomainFor(domainFor === p.tag ? null : p.tag)}>
+                    Domain
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={disabled} onClick={() => remove(p.tag!)} style={{ color: 'var(--status-danger-fg)' }}>
+                    Delete
+                  </Button>
+                </span>
+              </Row>
+            );
+          })}
+        </GridTable>
+      )}
+
+      {domainFor && (
+        <div style={{ ...card, padding: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+            Custom domain for <strong>{domainFor}</strong>:
+          </span>
+          <Input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="crm-test.ahero.se" style={{ minWidth: 220 }} />
+          <Button size="sm" disabled={disabled || !domain} onClick={() => attachDomain(domainFor)}>
+            Add domain
+          </Button>
+          <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+            Lands pending — publish the DNS records it returns, then it goes live.
+          </span>
+        </div>
+      )}
+
+      <div style={{ ...card, padding: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Input value={tag} onChange={(e) => setTag(e.target.value)} placeholder="tag (e.g. test, pr-42)" style={{ minWidth: 150 }} />
+        <Select
+          size="sm"
+          value={versionId}
+          onChange={(e) => setVersionId(e.target.value)}
+          style={{ minWidth: 160 }}
+          options={[{ value: '', label: 'version…' }, ...admitted.map((v) => ({ value: v.id, label: v.version }))]}
+        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5 }}>
+          <input type="checkbox" checked={pin} onChange={(e) => setPin(e.target.checked)} /> pin (test env)
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5 }}>
+          <input type="checkbox" checked={empty} onChange={(e) => setEmpty(e.target.checked)} /> clean room
+        </label>
+        <Button size="sm" disabled={disabled || !tag || !versionId} onClick={create}>
+          New preview
+        </Button>
+        {admitted.length === 0 && (
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>No admitted version to preview yet.</span>
+        )}
+      </div>
+
+      {err && <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</p>}
+    </div>
+  );
+}
+
 export function VerticalDetail({
   d,
   busy,
@@ -373,6 +555,7 @@ export function VerticalDetail({
               </GridTable>
             </div>
             <ProdHistory d={d} busy={busy} onPromote={onPromote} />
+            <PreviewsPanel d={d} busy={busy} />
           </>
         )}
       </div>

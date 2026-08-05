@@ -25,7 +25,8 @@ instead of being re-invented. The Vercel analogy maps almost one-to-one:
 | Domains | **hostname bindings** |
 | Integrations | **connections** (Scrive, Fortnox) |
 | "New Project from a template" | **create instance** (catalog → provision) |
-| Preview / staging data | **[preview](/concepts/snapshots)** — a test copy of an app's data ("snapshot" stays the internal name) |
+| Preview deployment | **[preview](/guide/environments-and-previews)** — a version bound to a scope with data, at its own URL |
+| Preview / staging *environment* | a **pinned preview + custom domain** — there is no `staging` channel, [only `prod`](/concepts/deploying#the-one-channel-prod) |
 
 Concretely: a customer *is* a tenant; sign-up bootstraps that tenant, one **dashboard scope** (the
 customer's home), and the signer as its **owner**. A customer's apps are **scopes** in that same
@@ -89,13 +90,17 @@ platform forks a safety preview first.
 For a customer who *builds* a vertical (not just instantiates one from the catalog), the
 **Deployments** tab is the builder-facing mirror of the staff [console](/platform/console)'s
 Verticals view — narrowed to the verticals **this workspace owns** (the ones it
-[pushed with the CLI](/guide/deploying)). Per vertical: each version's admission state, and which
-channel points where. "Running" is the version this app's scope is pinned to (what the router
-dispatches on), not the vertical's prod channel — they diverge when prod moves after install. A
-builder self-serves `dev`/`staging` promotion right here; `prod` promotion is self-serve for an
-**owned, private** vertical but a platform decision for a **listed** one (model B). Every read and
-promotion is checked to be one of the caller's own verticals — the dashboard's shared-plane
-credential can't be turned into a lever on another tenant's deployment.
+[pushed with the CLI](/guide/deploying)). Per vertical: each version's admission state, and whether
+**`prod`** — the one channel ([dev/staging retired](/concepts/deploying#the-one-channel-prod)) —
+points at it. "Running" is the version this app's scope is pinned to (what the router dispatches on),
+not the vertical's prod channel — they diverge when prod moves after install. A builder self-serves
+`prod` promotion right here for an **owned, private** vertical; a **listed** vertical's prod promotion
+is a platform decision (the marketplace gate). A non-production environment is not a second channel to
+promote — it is a [preview](#previews-environments) below. Every read and promotion is checked to be
+one of the caller's own verticals — the dashboard's shared-plane credential can't be turned into a
+lever on another tenant's deployment. Beside promotion, a **Bind version** action pins *this* scope to
+any admitted version of its vertical — the per-scope catch-up (and the primitive behind a canary or a
+test environment); it carries the same *Snapshot data first* safety copy as an update.
 
 When prod points somewhere other than where this app is pinned, **Update to latest** rebinds it. Two
 safety affordances sit alongside it. A **Snapshot data first** checkbox (on by default) takes a copy
@@ -106,20 +111,39 @@ window the platform honors (~24h): rewinding the whole database to just before t
 *discarding everything written since* — an honest first-hours backout, not a merge. For anything
 older, restore a preview instead.
 
-### Previews
+### Previews & environments {#previews-environments}
 
-Each app has a **Previews** tab — [test copies](/concepts/snapshots) of the app's data. ("Preview" is
-the user-facing noun; "snapshot" stays the internal name for the data artifact.) **Create preview**
-forks the app's entire database into an independent copy with a retention choice (1/7/30 days, or keep
-until deleted); the list shows each copy's provenance, its own URL, and a live expiry countdown;
-expired copies are reaped by the platform's scheduled sweep. A preview is unmistakably *not* the live
-app: it receives no traffic, integrations are off, and deleting it is safe by construction — the
-platform refuses to hard-delete anything that isn't a copy. The same machinery backs the *Snapshot
-data first* checkbox in Deployments (above) and the safety copy taken before a data import.
+There are two preview surfaces, because a preview does two jobs — a **data** test copy of one install,
+and a **non-production environment** for a vertical you build.
 
-Authorization is the same key that manages apps (`dashboard:provision-app`), checked in-scope before
-any platform effect; the fork itself runs inside the app's own deployment, so
+**Per-app previews** (an install's **Previews** tab) are [test copies](/concepts/snapshots) of *that
+app's* data. **Create preview** forks the app's entire database into an independent copy with a
+retention choice (1/7/30 days, or keep until deleted); the list shows each copy's provenance, its own
+URL, and a live expiry countdown; expired copies are reaped by the platform's scheduled sweep. A
+preview is unmistakably *not* the live app: it receives no traffic, integrations are off, and deleting
+it is safe by construction — the platform refuses to hard-delete anything that isn't a copy. The same
+machinery backs the *Snapshot data first* checkbox in Deployments (above) and the safety copy taken
+before a data import. Authorization is the same key that manages apps (`dashboard:provision-app`),
+checked in-scope before any platform effect; the fork itself runs inside the app's own deployment, so
 [no app data crosses to the platform](/concepts/snapshots#where-the-data-goes-and-doesn-t).
+
+**Builder environments** (on the **Deployments** side, for a vertical you *push*) are the same
+primitive turned outward: a preview is a version bound to a scope with data, at its own URL, and it is
+how you run every non-production environment now that [there is only a `prod`
+channel](/concepts/deploying#the-one-channel-prod). From here a builder can, for a vertical they own
+(private **or** listed — publishing widens who may *install*, not who may preview their own code):
+
+- **Create a preview** of any pushed version — a fork of prod, or an `--empty` clean room for a
+  vertical with no prod scope yet. The [PR-preview CI](/guide/deploying#deploy-from-ci) creates and
+  updates these automatically; the list mirrors what the [`substrat preview`](/reference/cli#preview)
+  CLI shows.
+- **Pin a preview** (no expiry) and **attach a custom domain** to it — turning it into a long-lived
+  **test environment** at a stable address like `crm-test.ahero.se`. The domain binds to the scope
+  (Settings → Domains works on a preview scope too), and a merge-to-main job rebinds that scope to the
+  head of `main` so the environment always runs the latest code.
+
+The full workflow — sticky-per-PR + per-build URLs, the pinned test environment, canary rollout, and
+the release candidate — is [Environments & previews](/guide/environments-and-previews).
 
 ### Settings
 
