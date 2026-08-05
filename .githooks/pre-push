@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#
+# Pre-push gate: run the workspace typecheck before anything reaches the remote.
+#
+# Every CI failure this repo has hit from a "tests pass locally" push has been a
+# *typecheck* error — vitest does not typecheck, and `pnpm test` therefore misses
+# a missing interface method, a `noUncheckedIndexedAccess` violation, or a drifted
+# contract. `pnpm -r typecheck` is exactly what CI runs, so running it here turns a
+# red CI run into a local one.
+#
+# Wired via `git config core.hooksPath .githooks`, done automatically by the root
+# package.json `prepare` script on `pnpm install`. Skip a single push with
+# `git push --no-verify` when you knowingly need to (e.g. a WIP branch).
+#
+# NOTE (shared worktree): this typechecks the WORKING TREE, so uncommitted edits are
+# included. If a concurrent in-flight change fails, either stash-free-fix it or use
+# --no-verify for that push.
+
+set -euo pipefail
+
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "pre-push: pnpm not found on PATH — skipping typecheck (install pnpm to enable the gate)" >&2
+  exit 0
+fi
+
+echo "pre-push: pnpm -r typecheck …"
+if ! pnpm -r typecheck; then
+  echo "" >&2
+  echo "pre-push: typecheck FAILED — push aborted. Fix the errors above, or bypass with 'git push --no-verify'." >&2
+  exit 1
+fi
+echo "pre-push: typecheck clean ✓"
