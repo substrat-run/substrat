@@ -122,13 +122,15 @@ Usage:
   substrat hostnames unbind <hostname>        remove a binding (the surface's canonical
                                               flag moves only when you bind a new one)
   substrat preview create [dir] --tag <tag>   push this tree and run it against a FORK of
-                    [--source-scope <id>] [--ttl 72h|none] [--surface app] [--refresh]
+                    [--source-scope <id>] [--empty] [--ttl 72h|none] [--surface app] [--refresh]
                                               prod on its own --<tag> URL (private
-                                              verticals only). Re-running the same --tag
-                                              rebinds the new push onto the same fork and
-                                              renews its TTL; --refresh re-forks from prod.
-                                              --ttl is the GC backstop (default 72h; 'none'
-                                              pins the preview until deleted)
+                                              verticals only). --empty provisions a clean-room
+                                              scope instead of forking prod (a vertical's first
+                                              environment, before any prod scope exists).
+                                              Re-running the same --tag rebinds the new push
+                                              onto the same scope and renews its TTL; --refresh
+                                              re-forks from prod. --ttl is the GC backstop
+                                              (default 72h; 'none' pins the preview until deleted)
   substrat preview delete --tag <tag> [--slug <s>]  reap a preview (idempotent)
   substrat preview ls [--slug <s>]            list a vertical's active previews
 
@@ -610,7 +612,7 @@ async function cmdHostnames(): Promise<void> {
 async function cmdPreview(): Promise<void> {
   const sub = argv[1];
   const usage =
-    'usage: substrat preview create [dir] --tag <tag> [--source-scope <id>] [--ttl 72h|none] [--surface <s>] [--refresh]\n' +
+    'usage: substrat preview create [dir] --tag <tag> [--source-scope <id>] [--empty] [--ttl 72h|none] [--surface <s>] [--refresh]\n' +
     '       substrat preview delete --tag <tag> [--slug <slug>]\n' +
     '       substrat preview ls [dir] [--slug <slug>]';
   const isDelete = sub === 'delete' || sub === 'rm' || sub === 'down';
@@ -661,11 +663,13 @@ async function cmdPreview(): Promise<void> {
       surfaces: meta.surfaces,
       controlPlaneUrl, authHeader: header,
     });
+    const empty = argv.includes('--empty');
     const created = await createPreview({
       controlPlaneUrl, header,
       slug: pushed.verticalSlug ?? slug,
       tag,
       versionId: pushed.id,
+      ...(empty ? { empty: true } : {}),
       ...(flag('source-scope') ? { sourceScopeId: flag('source-scope')! } : {}),
       // `--ttl none` → null (pinned); omitted → undefined (72h default). Both differ from a number.
       ...((ttlHours) => (ttlHours !== undefined ? { ttlHours } : {}))(parseTtlHours(flag('ttl'))),
@@ -673,7 +677,9 @@ async function cmdPreview(): Promise<void> {
       refresh: argv.includes('--refresh'),
     });
     console.log(`✓ preview '${tag}' ${created.reused ? 'updated' : 'created'} → ${created.url}`);
-    console.log(`  scope ${created.scopeId} runs version ${created.versionId} against a fork of prod`);
+    console.log(
+      `  scope ${created.scopeId} runs version ${created.versionId} against ${empty ? 'an empty clean-room scope' : 'a fork of prod'}`,
+    );
     return;
   }
 

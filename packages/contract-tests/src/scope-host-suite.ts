@@ -1157,6 +1157,21 @@ export function scopeHostContractSuite(
         expect((await host.admin.getScopeRecord(staff, t1, s1))?.id).toBe(s1);
       });
 
+      it('deleteSnapshot removes a non-fork PREVIEW too — the clean-room case (#509 (b))', async () => {
+        // A clean-room preview is a `preview`-kind scope with NO source (forkedFrom null).
+        // It is still throwaway-by-construction, so the one sanctioned hard delete reaps it —
+        // the invariant widened from "only a fork" to "a fork or a preview".
+        const previewId = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: previewId, kind: 'preview' });
+        await host.admin.activateScope(staff, t1, previewId);
+        const rec = await host.admin.getScopeRecord(staff, t1, previewId);
+        expect(rec?.forkedFrom).toBeNull();
+        expect(rec?.kind).toBe('preview');
+
+        await host.deleteSnapshot(staff, t1, previewId);
+        expect(await host.admin.getScopeRecord(staff, t1, previewId)).toBeUndefined();
+      });
+
       it('the GC sweep reaps exactly the expired forks', async () => {
         const past = new Date(Date.now() - 60_000).toISOString();
         const future = new Date(Date.now() + 3_600_000).toISOString();
@@ -1181,6 +1196,24 @@ export function scopeHostContractSuite(
         // Clean up the survivors so later suite state stays predictable.
         await host.deleteSnapshot(staff, t1, unexpired);
         await host.deleteSnapshot(staff, t1, pinned);
+      });
+
+      it('the GC sweep reaps an expired non-fork preview (#509 (b))', async () => {
+        // A clean-room preview carries an expiry but no source, so the sweep must key off
+        // `kind === 'preview'`, not just `forkedFrom`, or it would leak forever.
+        const past = new Date(Date.now() - 60_000).toISOString();
+        const previewId = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: previewId, kind: 'preview', expiresAt: past });
+        await host.admin.activateScope(staff, t1, previewId);
+
+        const report = await runPlatformSweep(host, {
+          actor: staff,
+          fetch: connectorTestFetch,
+          sweepers: {},
+          drainRetries: false,
+        });
+        expect(report.snapshotsReaped).toBeGreaterThanOrEqual(1);
+        expect(await host.admin.getScopeRecord(staff, t1, previewId)).toBeUndefined();
       });
 
       it('gcSnapshots: false skips the phase', async () => {

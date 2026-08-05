@@ -478,14 +478,17 @@ export async function runPlatformSweep(
   }
 
   if (options.gcSnapshots !== false) {
-    // Reap expired forks (§3/§9). Enumerate every scope regardless of status — a fork
-    // is `active` in the directory — and compare ISO instants lexically, the same
-    // move the tuple checker's `live()` makes. `deleteSnapshot` re-checks fork-ness,
-    // so a mislabeled row fails closed there, never silently deletes.
+    // Reap expired previews (§3/§9). Two shapes qualify, both throwaway-by-construction:
+    // a FORK (`forkedFrom` set — a snapshot of another scope) and a clean-room PREVIEW
+    // (`kind === 'preview'` with no source — a source-less environment, #509 ask (b)).
+    // Enumerate every scope regardless of status — a preview is `active` in the directory —
+    // and compare ISO instants lexically, the same move the tuple checker's `live()` makes.
+    // `deleteSnapshot` re-checks this same predicate, so a mislabeled row fails closed there,
+    // never silently deletes.
     const now = new Date().toISOString();
     const scopes = await host.admin.listScopes(options.actor);
     const expired = scopes.filter(
-      (s) => s.forkedFrom !== null && s.expiresAt !== null && s.expiresAt <= now,
+      (s) => (s.forkedFrom !== null || s.kind === 'preview') && s.expiresAt !== null && s.expiresAt <= now,
     );
     const reap =
       options.deleteSnapshotFn ??

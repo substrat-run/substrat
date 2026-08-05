@@ -76,6 +76,16 @@ describe('preview client', () => {
     expect(calls[0]!.body).toEqual({ tag: 'pr-7', versionId: '01J', ttlHours: 72 });
   });
 
+  it('sends empty:true for a clean-room preview (#509 (b))', async () => {
+    const { calls } = stub(() => ({
+      status: 201,
+      body: { scopeId: 'S1', hostname: 'h--pr-1.x', url: 'https://h--pr-1.x', versionId: '01J', reused: false },
+    }));
+    await createPreview({ ...base, tag: 'pr-1', versionId: '01J', empty: true });
+    // No sourceScopeId when clean-room; `empty` rides as an explicit true.
+    expect(calls[0]!.body).toEqual({ tag: 'pr-1', versionId: '01J', empty: true });
+  });
+
   it('surfaces a server error body as the thrown message', async () => {
     stub(() => ({ status: 403, body: { error: 'previews are available for private (unlisted) verticals only' } }));
     await expect(createPreview({ ...base, tag: 'pr-1', versionId: '01J' })).rejects.toThrow(/private/);

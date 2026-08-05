@@ -1672,13 +1672,14 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   async deleteSnapshot(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void> {
-    // The refusal that keeps this narrow: only a FORK may be hard-deleted. Everything
-    // else keeps the platform's tombstone-only rule.
+    // The refusal that keeps this narrow: only a throwaway PREVIEW may be hard-deleted —
+    // a FORK (`forkedFrom` set) or a clean-room preview (`kind === 'preview'`, source-less,
+    // #509 ask (b)). A PRIMARY scope keeps the platform's tombstone-only rule (archive it).
     const rec = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!rec) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
-    if (!rec.forkedFrom) {
+    if (!rec.forkedFrom && rec.kind !== 'preview') {
       throw new Error(
-        `scope ${scopeId} is not a fork (forkedFrom is null) — only snapshots may be deleted; ` +
+        `scope ${scopeId} is not a fork or preview — only previews may be deleted; ` +
           `archive a primary scope instead`,
       );
     }
