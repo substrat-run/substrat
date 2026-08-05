@@ -351,6 +351,7 @@ export function App() {
             scopes={scopes}
             tenants={tenantMap}
             entitlements={entitlements}
+            hostnames={hostnames}
             onOpen={setOpenScope}
             onChanged={() => void load()}
             onToast={notify}
