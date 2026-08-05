@@ -284,3 +284,28 @@ describe('router kick — /internal/drain-scope', () => {
     expect(res.status).toBe(403);
   });
 });
+
+/**
+ * The email relay (#303) — the same platform-secret gate as the drain kick. This deployment
+ * binds no PLATFORM_SECRET, so the relay must fail closed: a hosted vertical cannot have mail
+ * sent for it on a deployment that never configured the shared secret, even presenting one. The
+ * grant check and the actual send are unit-tested (the `emailSender` flag in the contract-tests
+ * suite, the transport in adapter-email); here we prove the surface refuses an anonymous caller.
+ */
+describe('email relay — /internal/email/send', () => {
+  it('refuses when the platform secret is not configured (fails closed)', async () => {
+    const res = await SELF.fetch('https://cp.test/internal/email/send', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
+      body: JSON.stringify({
+        tenantId: ulid(),
+        scopeId: ulid(),
+        to: 'user@example.com',
+        subject: 'Reset your password',
+        html: '<p>reset</p>',
+        text: 'reset',
+      }),
+    });
+    expect(res.status).toBe(403);
+  });
+});

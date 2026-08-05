@@ -21,6 +21,7 @@ import {
   platformActorId,
   tenantId,
   scopeId,
+  emailRelayRequest,
   PROVISION_SIBLING_KIND,
   ARCHIVE_SCOPE_KIND,
   PROVISION_TENANT_KIND,
@@ -61,7 +62,9 @@ import {
   type PlatformActorAuth,
 } from '@substrat-run/control-plane-api';
 import { VerticalClient } from '@substrat-run/control-plane-api';
+import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, type OidcEnv } from '@substrat-run/oidc-rp';
+import { transportFor, senderFor } from './email.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader } from './staff-auth.js';
 import { d1StaffRoster } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
@@ -146,6 +149,22 @@ interface Env extends OidcEnv {
   CF_SAAS_SSL_METHOD?: string;
   PLATFORM_BASE_DOMAINS?: string;
   /**
+   * Cloudflare Email Service `send_email` binding + sender address (#303). The control
+   * plane is the ONE place that holds an outbound-mail credential: a hosted vertical cannot
+   * bind `send_email` (WfP dispatch scripts have no such binding, and the §4 sandbox refuses
+   * it), so a vertical granted `emailSender` POSTs to `/internal/email/send` and the CP sends
+   * on its behalf through this binding. Absent ⇒ the relay falls back to the drop-mock (dev).
+   */
+  EMAIL?: SendEmailBinding;
+  EMAIL_FROM?: string;
+  /**
+   * The control plane's own public origin (e.g. `https://console.substrat.net`) — injected
+   * into every pushed vertical as `CONTROL_PLANE_URL` so a vertical granted `emailSender` knows
+   * where to POST the email relay (#303). A checked-in `var`, not a secret: it is public and
+   * differs per environment. Absent ⇒ verticals get no relay URL and fall back to the drop-mock.
+   */
+  PLATFORM_CP_URL?: string;
+  /**
    * The WfP dispatch namespace holding pushed verticals — the control plane reaches one
    * to provision an instance of it (orchestration.md §5.4), the mirror of the router.
    */
@@ -173,7 +192,13 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
     // Inject the platform-owned secrets a vertical needs to verify inbound platform +
     // router calls, so a pushed vertical is provisionable + servable with no per-vertical
     // secret setup (wrangler can't set secrets on a dispatch-namespace script anyway).
-    injectSecrets: { PLATFORM_SECRET: env.PLATFORM_SECRET, ROUTER_SECRET: env.ROUTER_SECRET },
+    // CONTROL_PLANE_URL is the CP's own origin — the callback address a vertical POSTs to
+    // for the email relay (#303); the vertical never hard-codes it (dev vs prod differ).
+    injectSecrets: {
+      PLATFORM_SECRET: env.PLATFORM_SECRET,
+      ROUTER_SECRET: env.ROUTER_SECRET,
+      CONTROL_PLANE_URL: env.PLATFORM_CP_URL,
+    },
   });
 }
 
@@ -610,6 +635,49 @@ export default {
       // drain here is what keeps the subrequest alive long enough to actually settle the intents.
       const report = await drainOneScope(c.env, ids.data, sids.data);
       return c.json(report);
+    });
+
+    // The email relay (#303). A hosted vertical that holds the `emailSender` grant cannot send
+    // mail itself — a WfP dispatch script has no `send_email` binding and the §4 sandbox refuses
+    // one — so it POSTs the message here and the control plane, the one worker holding an outbound
+    // credential, sends it. Platform-secret gated: the vertical presents its injected
+    // PLATFORM_SECRET. That secret is shared across every dispatch script, so it only proves "a
+    // platform script is calling" — WHICH vertical is re-derived from THIS directory's record for
+    // the named scope, and the `emailSender` grant is checked against that vertical. So a script
+    // that holds the secret but lacks the grant is still refused, and the FROM address is always
+    // the platform's onboarded sender, never the caller's choice.
+    app.post('/internal/email/send', async (c) => {
+      try {
+        assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+      } catch (e) {
+        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        throw e;
+      }
+      const parsed = emailRelayRequest.safeParse(await c.req.json().catch(() => ({})));
+      if (!parsed.success) {
+        return c.json({ error: 'tenantId, scopeId (ULIDs) and {to, subject, html, text} are required' }, 400);
+      }
+      const { tenantId: t, scopeId: s, to, subject, html, text, fromName } = parsed.data;
+      const host = hostFor(c.env);
+      const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
+      if (!rec?.vertical) return c.json({ error: 'scope has no vertical bound' }, 404);
+      const registered = (await host.admin.listVerticals(SWEEP_ACTOR)).find((v) => v.slug === rec.vertical);
+      if (!registered?.emailSender) {
+        return c.json(
+          {
+            error: `vertical '${rec.vertical}' does not hold the email-sender capability — staff grants it in the console (setVerticalEmailSender)`,
+          },
+          403,
+        );
+      }
+      const result = await transportFor(c.env).send({
+        to,
+        from: senderFor(c.env, fromName),
+        subject,
+        html,
+        text,
+      });
+      return c.json({ sent: true, ...result });
     });
 
     // The audited control-plane API under /api (the console's baseUrl).

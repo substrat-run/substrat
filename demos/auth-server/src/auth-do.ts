@@ -6,6 +6,7 @@ import { introspectTables, introspectTable } from './introspect.js';
 import { schema } from './auth-schema.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.js';
 import { buildAuth } from './auth.js';
+import { PlatformRelayEmailTransport } from '@substrat-run/adapter-email';
 import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
 import type { ConfigEntry, InstanceMeta } from './do-contract.js';
@@ -25,7 +26,9 @@ import type { ConfigEntry, InstanceMeta } from './do-contract.js';
  */
 
 export interface AuthServerDoEnv {
-  /** The Cloudflare Email Service `send_email` binding (password-reset / verification mail). */
+  /** The Cloudflare Email Service `send_email` binding (password-reset / verification mail).
+   *  Present only in a STANDALONE deploy; a hosted dispatch instance has no such binding and
+   *  sends through the platform relay below instead. */
   EMAIL?: import('@substrat-run/adapter-email').SendEmailBinding;
   /** The sender address; its domain must be onboarded for sending. */
   EMAIL_FROM?: string;
@@ -35,6 +38,11 @@ export interface AuthServerDoEnv {
   ADMIN_EMAIL?: string;
   /** Bootstrap admin password (a secret). Seeds the first admin deterministically, no setup race. */
   ADMIN_PASSWORD?: string;
+  /** Injected into every dispatch script by the WfP uploader (#303, hosted mode): the shared
+   *  platform secret this instance presents to the email relay, and the control plane's origin
+   *  it POSTs to. Absent in a standalone deploy — there the `EMAIL` binding sends directly. */
+  PLATFORM_SECRET?: string;
+  CONTROL_PLANE_URL?: string;
 }
 
 export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
@@ -101,9 +109,42 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       trustedOrigins: [...new Set([baseURL, origin])],
       // EMAIL is a Cloudflare binding (infra, not a declared string key), so it's read from
       // env directly; the sender address is the manifest-declared EMAIL_FROM.
-      transport: transportFor(this.env),
+      transport: this.transport(),
       sender: senderFor(cfg.EMAIL_FROM),
     });
+  }
+
+  /**
+   * The instance's `InstanceMeta` (its tenant + scope), recorded by `provisionInstance` in
+   * hosted mode. Absent in a standalone deploy (nothing provisions it), which is exactly the
+   * signal used to choose the transport below.
+   */
+  private instanceMeta(): InstanceMeta | undefined {
+    const row = [...this.ctx.storage.sql.exec("SELECT value FROM config WHERE key = 'instance'")][0] as
+      | { value: string }
+      | undefined;
+    return row ? (JSON.parse(row.value) as InstanceMeta) : undefined;
+  }
+
+  /**
+   * Choose how this issuer sends mail (#303). HOSTED — a dispatch instance with the platform
+   * secret, the control-plane URL, and a recorded `(tenant, scope)` — sends through the
+   * `PlatformRelayEmailTransport`: it holds no `send_email` binding (the §4 sandbox refuses one),
+   * so the platform sends on its behalf, gated by the `emailSender` grant. STANDALONE — its own
+   * worker with an `EMAIL` binding — sends directly. Missing either way ⇒ the drop-mock, so a
+   * reset never crashes; the link is still observable in `wrangler tail` / the dev terminal.
+   */
+  private transport() {
+    const meta = this.instanceMeta();
+    if (this.env.PLATFORM_SECRET && this.env.CONTROL_PLANE_URL && meta) {
+      return new PlatformRelayEmailTransport({
+        controlPlaneUrl: this.env.CONTROL_PLANE_URL,
+        platformSecret: this.env.PLATFORM_SECRET,
+        tenantId: meta.tenantId,
+        scopeId: meta.scopeId,
+      });
+    }
+    return transportFor(this.env);
   }
 
   /**

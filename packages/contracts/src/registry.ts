@@ -94,6 +94,25 @@ export const vertical = z.object({
    */
   provisions: z.array(verticalSlug).optional(),
   /**
+   * The DECLARED email-sender intent (#303, the request half of the `emailSender` capability):
+   * this vertical wants to send transactional mail (reset/verification/invites), carried on push
+   * from the manifest's `sendsEmail`. Declaration is a request, never a grant — it feeds the
+   * console's review surface (declared-but-ungranted renders as *requested*, the same shape as
+   * a publish request or a provisioner request). Rides the install_spec bag: refreshed on every
+   * re-push, exactly because it grants nothing by itself.
+   */
+  sendsEmail: z.boolean().optional(),
+  /**
+   * Holds the EMAIL-SENDER capability (#303) — this vertical's scopes may POST to the control
+   * plane's `/internal/email/send` relay and have transactional mail sent on their behalf. A
+   * directory-backed staff grant, not deployment config: flipped by `setVerticalEmailSender`,
+   * audited, and read by the relay handler on every send. Like `tenantProvisioner`, never set at
+   * registration and NEVER touched by a re-push refresh — pushing new code must not be able to
+   * grant (or silently keep) outbound authority. The platform holds the actual Email Sending
+   * credential; the grant only says "the relay will send for this vertical".
+   */
+  emailSender: z.boolean().default(false),
+  /**
    * Holds the TENANT-PROVISIONER capability (#412, platform-intents.md) — this vertical's
    * scopes may enqueue `provision-tenant` / `set-entitlements` intents that the platform
    * executes (a manager console whose job is to add customer tenants). A directory-backed
@@ -138,7 +157,7 @@ export const verticalServingState = z.object({
 export type VerticalServingState = z.infer<typeof verticalServingState>;
 
 export const registerVerticalInput = vertical
-  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, provisions: true, surfaces: true, listed: true })
+  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, provisions: true, sendsEmail: true, surfaces: true, listed: true })
   .extend({
   // Optional on input — a staff/platform push omits it (⇒ platform-owned).
   ownerTenant: tenantId.nullable().default(null),

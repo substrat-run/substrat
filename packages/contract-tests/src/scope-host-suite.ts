@@ -1762,6 +1762,35 @@ export function scopeHostContractSuite(
       expect(repushed?.tenantProvisioner).toBe(true); // the grant survives the refresh
     });
 
+    it('grants the email-sender capability (setVerticalEmailSender) — a staff grant a re-push cannot touch (#303)', async () => {
+      const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
+      // The declared request rides the install spec: asking to send mail, never a grant.
+      await host.admin.registerVertical(staff, {
+        slug: 'mailer',
+        name: 'Mailer',
+        source: 'cli',
+        ownerTenant: t2,
+        sendsEmail: true,
+      });
+      const declared = await at('mailer');
+      expect(declared?.sendsEmail).toBe(true);
+      expect(declared?.emailSender).toBe(false); // declaring is asking, not having
+
+      await host.admin.setVerticalEmailSender(staff, 'mailer', true);
+      expect((await at('mailer'))?.emailSender).toBe(true);
+      await host.admin.setVerticalEmailSender(staff, 'mailer', true); // idempotent
+
+      // The GRANT invariant: a re-push refresh must not reset (or set) it — outbound
+      // authority is never acquired or kept by pushing new code.
+      await host.admin.registerVertical(staff, { slug: 'mailer', name: 'Mailer', source: 'cli', ownerTenant: t2, sendsEmail: true });
+      expect((await at('mailer'))?.emailSender).toBe(true);
+
+      await host.admin.setVerticalEmailSender(staff, 'mailer', false);
+      expect((await at('mailer'))?.emailSender).toBe(false);
+
+      await expect(host.admin.setVerticalEmailSender(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
+    });
+
     it('deletes a vertical — refused while a scope is bound, total once nothing is', async () => {
       // 'callout' still backs s1 (bound above): the refusal that stops a delete from
       // stranding a live scope's version pin and routing.

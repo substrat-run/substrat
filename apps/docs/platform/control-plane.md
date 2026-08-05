@@ -40,6 +40,19 @@ Beyond the base registry, a few capabilities have landed that are worth naming:
   checked against a positive allowlist (`ADMISSIBLE_BINDING_TYPES`) — anything not named is refused. It
   is this sandbox contract, not a staff read of an opaque digest, that lets a **private** vertical's
   version land admitted automatically (its blast radius is its own tenant).
+- **Platform-mediated egress: the email relay.** The sandbox refuses *egress-shaped* bindings on
+  purpose — `send_email`, `ai`, `browser`, and friends stay off the allowlist because reaching the
+  outside world is a platform concern, not a per-vertical one (and a Workers-for-Platforms dispatch
+  script cannot bind `send_email` anyway). So a vertical never sends mail directly. Instead it POSTs to
+  the control plane's `POST /internal/email/send` **relay**, and the control plane — the one worker that
+  holds an outbound-mail credential — sends on its behalf, but **only** if that vertical holds the
+  staff-granted `emailSender` capability. This is the general shape for giving a hosted vertical a
+  privileged capability without handing it the credential: a manifest *request* (`substrat.sendsEmail`),
+  a staff *grant* (`setVerticalEmailSender`, the twin of the tenant-provisioner grant), and a
+  platform-held relay that checks the grant on every call. Authentication reuses the `PLATFORM_SECRET`
+  the uploader already injects into every dispatch script; the relay re-derives *which* vertical is
+  calling from the named `(tenant, scope)` and checks the grant against that, so holding the shared
+  secret is not enough. The `from` address is always the platform's onboarded sender.
 
 ## Auth posture — fail closed
 

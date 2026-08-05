@@ -526,6 +526,8 @@ interface VerticalRow {
   installs_blocked: number;
   /** Tenant-provisioner capability (0/1, #412) — staff grant; never touched by a re-push. */
   tenant_provisioner: number;
+  /** Email-sender capability (0/1, #303) — staff grant; never touched by a re-push. */
+  email_sender: number;
   /** The stable serving script (#286): name, current version, DO-class/tag delta base. */
   serving_ref: string | null;
   serving_version_id: string | null;
@@ -832,6 +834,10 @@ export class SqliteScopeHost implements ScopeHost {
         -- provision-tenant / set-entitlements intents the platform executes. A staff
         -- grant (set_vertical_tenant_provisioner), never set on insert or re-push.
         tenant_provisioner INTEGER NOT NULL DEFAULT 0,
+        -- Email-sender capability (#303). 1 = this vertical's scopes may POST to the control
+        -- plane's /internal/email/send relay and have transactional mail sent for them. A staff
+        -- grant (set_vertical_email_sender), never set on insert or re-push.
+        email_sender INTEGER NOT NULL DEFAULT 0,
         -- The ONE stable serving script (#286): the name every new scope's data DO
         -- lives in, the version it currently runs, and the DO-class/migration-tag
         -- base the next in-place upload diffs against.
@@ -2844,6 +2850,7 @@ export class SqliteScopeHost implements ScopeHost {
         ...(r.publish_requested_at ? { publishRequestedAt: r.publish_requested_at } : {}),
         installsBlocked: !!r.installs_blocked,
         tenantProvisioner: !!r.tenant_provisioner,
+        emailSender: !!r.email_sender,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
@@ -3489,6 +3496,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (parsed.provides) installSpec.provides = parsed.provides;
         if (parsed.requires) installSpec.requires = parsed.requires;
         if (parsed.provisions) installSpec.provisions = parsed.provisions;
+        if (parsed.sendsEmail) installSpec.sendsEmail = parsed.sendsEmail;
         if (parsed.surfaces) installSpec.surfaces = parsed.surfaces;
         const installSpecJson = Object.keys(installSpec).length ? JSON.stringify(installSpec) : null;
         const existing = readVertical(parsed.slug);
@@ -3639,6 +3647,14 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?')
           .run(granted ? 1 : 0, slug);
         this.recordAdmin(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: existing.tenantProvisioner }, { tenantProvisioner: granted });
+      },
+      setVerticalEmailSender: async (actor, slug: string, granted: boolean) => {
+        const existing = readVertical(slug);
+        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        this.directory
+          .prepare('UPDATE verticals SET email_sender = ? WHERE slug = ?')
+          .run(granted ? 1 : 0, slug);
+        this.recordAdmin(actor, 'setVerticalEmailSender', { tenantId: null }, { emailSender: existing.emailSender }, { emailSender: granted });
       },
       deleteVertical: async (actor, slug: string) => {
         const existing = readVertical(slug);
@@ -5264,6 +5280,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'verticals', 'installs_blocked', 'installs_blocked INTEGER NOT NULL DEFAULT 0');
     // #412: the tenant-provisioner capability — a staff grant on the registry row.
     this.ensureColumn(this.directory, 'verticals', 'tenant_provisioner', 'tenant_provisioner INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumn(this.directory, 'verticals', 'email_sender', 'email_sender INTEGER NOT NULL DEFAULT 0');
     // #286: the stable serving script + what the next in-place upload diffs against.
     this.ensureColumn(this.directory, 'verticals', 'serving_ref', 'serving_ref TEXT');
     this.ensureColumn(this.directory, 'verticals', 'serving_version_id', 'serving_version_id TEXT');

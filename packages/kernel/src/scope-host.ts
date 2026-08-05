@@ -692,6 +692,18 @@ export interface HostAdmin {
   setVerticalTenantProvisioner(actor: PlatformActorId, slug: string, granted: boolean): Promise<void>;
 
   /**
+   * Grant (or revoke) the EMAIL-SENDER capability (#303) — whether this vertical's
+   * scopes may POST to the control plane's `/internal/email/send` relay and have
+   * transactional mail (password-reset, verification, invites) sent on their behalf.
+   * A directory-backed staff grant rather than deployment config: outbound is a
+   * platform concern (a hosted dispatch script cannot bind `send_email` and the §4
+   * sandbox refuses it), so the platform holds the Email Sending credential and this
+   * flag decides who the relay will send for. Read by the relay handler on every send;
+   * flipping it never touches running scopes. Staff-only, idempotent, audited.
+   */
+  setVerticalEmailSender(actor: PlatformActorId, slug: string, granted: boolean): Promise<void>;
+
+  /**
    * Delete a vertical from the registry — its row, its versions, its channels.
    *
    * **Refuses while any scope is still bound to it** (`scopes.vertical`), because a

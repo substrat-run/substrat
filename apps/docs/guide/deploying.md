@@ -165,6 +165,23 @@ renders when someone installs your vertical, no catalog edit needed:
   one.
 - `envSpec` / `surfaces` — the install form's config fields and your declared UI surfaces.
 
+The same block is also where you **request platform capabilities** — the things the sandbox
+deliberately won't let you bind for yourself:
+
+- `sendsEmail` — set it (`"sendsEmail": true`) if your vertical sends transactional mail
+  (password resets, verification, invites). You get **no** `send_email` binding: a dispatch
+  script can't hold one, and the sandbox refuses it. Instead the platform sends on your behalf
+  through a relay, and your code just uses the ordinary `EmailTransport` seam — the auth-server's
+  Better-Auth `sendResetPassword` callback is the reference. The declaration is a **request**;
+  it does nothing until a staff member grants the `emailSender` capability in the console.
+- `provisions` — the verticals your manager app creates tenants of (the tenant-provisioner
+  request), turned on the same way (`setVerticalTenantProvisioner`).
+
+A capability request is refreshed on every push and confers nothing by itself; the matching
+grant is a directory flag your push can never set or keep — so shipping code can never quietly
+acquire outbound authority. This is the wiring model: **declare the request, get it granted,
+call the platform seam — never bind the raw resource.**
+
 Entitlements are delivered to your vertical **with provisioning** and projected locally; your
 per-operation gate fails closed on anything the tenant doesn't hold. If a live install ever
 ends up missing one (granted later, or repaired), the control plane re-delivers through your

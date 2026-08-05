@@ -3,7 +3,9 @@ import {
   CloudflareEmailTransport,
   EmailError,
   MockEmailTransport,
+  PlatformRelayEmailTransport,
   type EmailMessage,
+  type PlatformRelayOptions,
   type SendEmailBinding,
 } from '../src/index.js';
 
@@ -115,5 +117,70 @@ describe('CloudflareEmailTransport', () => {
     const mail = new CloudflareEmailTransport(binding);
     await expect(mail.send(invite({ text: '' }))).rejects.toThrow(EmailError);
     expect(binding.calls).toHaveLength(0);
+  });
+});
+
+describe('the platform email relay transport (#303)', () => {
+  const relayInvite = (over: Partial<EmailMessage> = {}): EmailMessage => ({
+    to: 'user@example.com',
+    from: { email: 'no-reply@send.substrat.net', name: 'Substrat Auth' },
+    subject: 'Reset your password',
+    html: '<p>Reset: <a href="https://x/reset?token=abc">here</a></p>',
+    text: 'Reset: https://x/reset?token=abc',
+    ...over,
+  });
+
+  /** A `FetchLike` double that records the one call and returns a scripted response. */
+  function fakeFetch(res: { ok: boolean; status: number; body: unknown }) {
+    const calls: { url: string; init: { method: string; headers: Record<string, string>; body: string } }[] = [];
+    const fetchImpl = async (url: string, init: { method: string; headers: Record<string, string>; body: string }) => {
+      calls.push({ url, init });
+      return { ok: res.ok, status: res.status, json: async () => res.body };
+    };
+    return { calls, fetchImpl };
+  }
+
+  const opts = (fetchImpl: PlatformRelayOptions['fetchImpl']): PlatformRelayOptions => ({
+    controlPlaneUrl: 'https://console.substrat.net/',
+    platformSecret: 'plat-secret',
+    tenantId: '01TENANT',
+    scopeId: '01SCOPE',
+    fetchImpl,
+  });
+
+  it('POSTs {tenant, scope, message} to the relay with the platform-secret header', async () => {
+    const { calls, fetchImpl } = fakeFetch({ ok: true, status: 200, body: { sent: true, delivered: ['user@example.com'], queued: [], bounced: [] } });
+    const mail = new PlatformRelayEmailTransport(opts(fetchImpl));
+
+    const result = await mail.send(relayInvite());
+
+    expect(result).toEqual({ delivered: ['user@example.com'], queued: [], bounced: [] });
+    expect(calls).toHaveLength(1);
+    // Trailing slash on controlPlaneUrl is normalized, endpoint is /internal/email/send.
+    expect(calls[0].url).toBe('https://console.substrat.net/internal/email/send');
+    expect(calls[0].init.headers['x-substrat-platform']).toBe('plat-secret');
+    expect(JSON.parse(calls[0].init.body)).toEqual({
+      tenantId: '01TENANT',
+      scopeId: '01SCOPE',
+      to: 'user@example.com',
+      subject: 'Reset your password',
+      html: '<p>Reset: <a href="https://x/reset?token=abc">here</a></p>',
+      text: 'Reset: https://x/reset?token=abc',
+      fromName: 'Substrat Auth',
+    });
+  });
+
+  it('surfaces the relay refusal (e.g. an ungranted vertical) as an EmailError', async () => {
+    const { fetchImpl } = fakeFetch({ ok: false, status: 403, body: { error: "vertical 'auth-server' does not hold the email-sender capability" } });
+    const mail = new PlatformRelayEmailTransport(opts(fetchImpl));
+    await expect(mail.send(relayInvite())).rejects.toThrow(/relay refused \(403\).*email-sender capability/);
+  });
+
+  it('validates the message before calling the relay, and refuses multi-recipient sends', async () => {
+    const { calls, fetchImpl } = fakeFetch({ ok: true, status: 200, body: { sent: true } });
+    const mail = new PlatformRelayEmailTransport(opts(fetchImpl));
+    await expect(mail.send(relayInvite({ text: '' }))).rejects.toThrow(EmailError);
+    await expect(mail.send(relayInvite({ to: ['a@example.com', 'b@example.com'] }))).rejects.toThrow(/one recipient at a time/);
+    expect(calls).toHaveLength(0);
   });
 });
