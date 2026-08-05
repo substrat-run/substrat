@@ -34,7 +34,9 @@ export function AppObservability({ app }: { app: AppRow }) {
   // else's — that's what turns the empty state from "no traffic" into "not yours".
   const [owned, setOwned] = useState<boolean | null>(null);
 
-  const [service, setService] = useState<string | null>(null);
+  // The single version filter above the list drives both what the traffic list shows and
+  // which version's logs open below — `'all'` shows every serving version and no logs.
+  const [versionFilter, setVersionFilter] = useState<string>('all');
   const [level, setLevel] = useState(LEVELS[0]);
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
@@ -76,12 +78,21 @@ export function AppObservability({ app }: { app: AppRow }) {
     };
   }, [app.vertical_slug, hours, nonce]);
 
-  // Default the logs panel to the busiest version (rows arrive traffic-sorted); keep a
-  // stale selection only while it still exists in the new window.
+  // Drop a version filter that no longer exists once a new window's rows arrive (a version
+  // may not have served in a shorter range) — fall back to showing all.
   useEffect(() => {
     if (!rows) return;
-    setService((s) => (s && rows.some((r) => r.service === s) ? s : (rows[0]?.service ?? null)));
+    setVersionFilter((v) => (v === 'all' || rows.some((r) => r.version === v) ? v : 'all'));
   }, [rows]);
+
+  // Version is unique per row here (one vertical), so it maps 1:1 to a service id. The
+  // filtered list and the log target both fall out of the single `versionFilter`.
+  const serviceOf = useMemo(() => new Map((rows ?? []).map((r) => [r.version, r.service])), [rows]);
+  const service = versionFilter === 'all' ? null : serviceOf.get(versionFilter) ?? null;
+  const shownRows = useMemo(
+    () => (versionFilter === 'all' ? (rows ?? []) : (rows ?? []).filter((r) => r.version === versionFilter)),
+    [rows, versionFilter],
+  );
 
   useEffect(() => {
     if (!service) {
@@ -127,7 +138,6 @@ export function AppObservability({ app }: { app: AppRow }) {
     };
   }, [service, level, search, hours, nonce]);
 
-  const versionOf = useMemo(() => new Map((rows ?? []).map((r) => [r.service, r.version])), [rows]);
   const range = RANGES.find((r) => r.hours === hours) ?? RANGES[1];
 
   if (state === 'absent') {
@@ -150,12 +160,19 @@ export function AppObservability({ app }: { app: AppRow }) {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          Traffic for the serving version of <span style={{ fontFamily: 'var(--font-mono)' }}>{app.vertical_slug}</span> —
-          approximate, sampled at high volume
+          Traffic for <span style={{ fontFamily: 'var(--font-mono)' }}>{app.vertical_slug}</span> — approximate, sampled at
+          high volume
         </span>
         <div style={{ flex: 1 }} />
+        <Select
+          aria-label="Version"
+          options={['All versions', ...(rows ?? []).map((r) => r.version)]}
+          value={versionFilter === 'all' ? 'All versions' : versionFilter}
+          onChange={(e) => setVersionFilter(e.target.value === 'All versions' ? 'all' : e.target.value)}
+          style={{ width: 150, fontFamily: 'var(--font-mono)', fontSize: 12 }}
+        />
         <Select
           aria-label="Time range"
           options={RANGES.map((r) => r.label)}
@@ -183,12 +200,12 @@ export function AppObservability({ app }: { app: AppRow }) {
           columns="0.9fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr"
           header={['Version', 'Requests', 'Errors', 'Error rate', 'CPU P50', 'CPU P99']}
         >
-          {(rows ?? []).map((r, i) => (
+          {shownRows.map((r, i) => (
             <Row
               key={r.service}
               columns="0.9fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr"
-              last={i === (rows?.length ?? 0) - 1}
-              onClick={() => setService(r.service)}
+              last={i === shownRows.length - 1}
+              onClick={() => setVersionFilter(versionFilter === r.version ? 'all' : r.version)}
             >
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                 <MonoTag>{r.version}</MonoTag>
@@ -212,16 +229,7 @@ export function AppObservability({ app }: { app: AppRow }) {
         <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>
-            {(rows?.length ?? 0) > 1 && (
-              <Select
-                aria-label="Version"
-                options={(rows ?? []).map((r) => r.version)}
-                value={versionOf.get(service) ?? ''}
-                onChange={(e) => setService(rows?.find((r) => r.version === e.target.value)?.service ?? service)}
-                style={{ width: 110, fontFamily: 'var(--font-mono)', fontSize: 12 }}
-              />
-            )}
-            {(rows?.length ?? 0) <= 1 && <MonoTag>{versionOf.get(service) ?? '—'}</MonoTag>}
+            <MonoTag>{versionFilter === 'all' ? '—' : versionFilter}</MonoTag>
             <Select
               aria-label="Level"
               options={LEVELS}
