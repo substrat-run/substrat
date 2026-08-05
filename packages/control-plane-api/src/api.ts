@@ -1982,7 +1982,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/channels/:channel/history', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    const channel = channelName.parse(c.req.param('channel'));
+    const rawChannel = c.req.param('channel');
+    if (rawChannel !== 'prod') {
+      return c.json({ error: `channel '${rawChannel}' is retired — only 'prod' has history` }, 400);
+    }
+    const channel = channelName.parse(rawChannel);
     if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
       return c.json({ error: 'not found' }, 404);
     }
@@ -2078,7 +2082,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/verticals/:slug/channels/:channel/promote', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
-    const channel = channelName.parse(c.req.param('channel'));
+    // `prod` is the only channel (#509 retired dev/staging). A non-prod promote is refused
+    // with the honest alternative — a non-prod environment is a scope with data, a preview.
+    const rawChannel = c.req.param('channel');
+    if (rawChannel !== 'prod') {
+      return c.json(
+        {
+          error:
+            `channel '${rawChannel}' is retired — 'prod' is the only channel. To run a version ` +
+            `against non-prod data, create a preview: 'substrat preview create --tag <tag>'.`,
+        },
+        400,
+      );
+    }
+    const channel = channelName.parse(rawChannel);
     if (p.kind === 'builder') {
       // A builder promotes only verticals it owns — and prod only while the vertical
       // is PRIVATE (not listed). A private vertical's blast radius is the owning

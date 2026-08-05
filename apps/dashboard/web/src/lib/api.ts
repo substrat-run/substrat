@@ -789,7 +789,7 @@ export const api = {
     ),
   promoteDeployment: (
     slug: string,
-    channel: 'dev' | 'staging' | 'prod',
+    channel: 'prod',
     versionId: string,
     acknowledge?: { permissionChange?: boolean; migrationChange?: boolean },
   ) =>
@@ -802,7 +802,7 @@ export const api = {
   deleteDeployment: (slug: string) =>
     call<void>(`/deployments/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
   /** One channel's promotion timeline (newest first) — the rollback picker's data. */
-  channelHistory: (slug: string, channel: 'dev' | 'staging' | 'prod') =>
+  channelHistory: (slug: string, channel: 'prod') =>
     call<ChannelHistoryEntry[]>(
       `/deployments/${encodeURIComponent(slug)}/channels/${encodeURIComponent(channel)}/history`,
     ),

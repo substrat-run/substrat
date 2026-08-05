@@ -1,12 +1,13 @@
 /**
- * `substrat promote <slug> --channel dev|staging|prod --version <id>` — a builder
- * self-serves its channels: dev/staging always, and prod while the vertical is PRIVATE
- * (builder-plane.md §4-revised; a listed vertical's prod is a staff decision again —
- * the control plane refuses it). The slug is BARE — the control plane forms
- * `<tenantSlug>/<slug>` from the caller's tenant (§5), so a builder never types their
- * own prefix. Only admitted versions promote; a changed digest is refused without
- * acknowledgement (the two checkpoints), surfaced as a 4xx here — re-run with
- * `--ack-permissions` / `--ack-migrations` after reading the named diff.
+ * `substrat promote <slug> --version <id>` — a builder points its ONE channel (`prod`,
+ * the serving pointer) at a version. Prod is self-serve while the vertical is PRIVATE
+ * (builder-plane.md §4-revised; a listed vertical's prod is a staff decision again — the
+ * control plane refuses it). `dev`/`staging` were retired (#509): a non-prod environment
+ * is a scope with data — a preview (`substrat preview create`) — not a second pointer.
+ * The slug is BARE — the control plane forms `<tenantSlug>/<slug>` from the caller's tenant
+ * (§5), so a builder never types their own prefix. Only admitted versions promote; a changed
+ * digest is refused without acknowledgement (the two checkpoints), surfaced as a 4xx here —
+ * re-run with `--ack-permissions` / `--ack-migrations` after reading the named diff.
  */
 import { warnIfStale } from './version.js';
 import { parseJsonBody } from './http.js';

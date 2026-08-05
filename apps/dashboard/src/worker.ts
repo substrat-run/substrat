@@ -608,13 +608,13 @@ async function oidcProviderSlugsFor(
   return oidcIssuerProviderSlugs(local, remote);
 }
 
-// A builder self-serves every channel of a PRIVATE vertical — prod included, which is
-// what makes rollback (promote an older version) a dashboard action. Prod on a LISTED
-// vertical is refused in the handler: publishing widened the audience, so that gate is
-// staff again (marketplace-publish.md §2). `acknowledge` carries the digest-change
-// confirmations the registry demands when permissions/migrations differ.
+// A builder self-serves `prod` (the one serving channel — dev/staging retired, #509) of a
+// PRIVATE vertical, which is what makes rollback (promote an older version) a dashboard
+// action. Prod on a LISTED vertical is refused in the handler: publishing widened the
+// audience, so that gate is staff again (marketplace-publish.md §2). `acknowledge` carries
+// the digest-change confirmations the registry demands when permissions/migrations differ.
 const promoteBody = z.object({
-  channel: z.enum(['dev', 'staging', 'prod']),
+  channel: z.enum(['prod']),
   versionId: z.string().min(1),
   acknowledge: z
     .object({ permissionChange: z.boolean().optional(), migrationChange: z.boolean().optional() })
@@ -2313,7 +2313,7 @@ app.get('/api/deployments/:slug/channels/:channel/history', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
-  const channel = z.enum(['dev', 'staging', 'prod']).parse(c.req.param('channel'));
+  const channel = z.enum(['prod']).parse(c.req.param('channel'));
   const cp = controlPlaneFor(c.env, node.tenantId);
   if (cp) {
     assertOwned(await listDeploymentsFromCp(cp), slug);

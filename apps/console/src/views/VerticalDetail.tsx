@@ -13,7 +13,9 @@ import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
 import { statusLabel, statusTone } from '../lib/fleet';
 
-const CHANNELS: readonly ChannelName[] = ['dev', 'staging', 'prod'];
+// `prod` is the only channel — dev/staging were retired (#509). A non-prod environment is
+// a preview, not a second pointer at the same code.
+const CHANNELS: readonly ChannelName[] = ['prod'];
 const PAGE = 20;
 
 const admissionTone = (a: VerticalVersion['admission']): 'success' | 'danger' | 'warning' =>

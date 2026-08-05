@@ -3857,7 +3857,10 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       listChannels: async (actor, verticalSlug: string, page) => {
-        const where: string[] = ['vertical_slug = ?'];
+        // `prod` is the only live channel (#509 retired dev/staging). Filtering here keeps a
+        // legacy dev/staging row — inert data a pre-retirement push may have left — from
+        // reaching the now-`prod`-only `verticalChannel.parse` below and throwing.
+        const where: string[] = ['vertical_slug = ?', "channel = 'prod'"];
         const params: (string | number)[] = [verticalSlug];
         const tail = keysetTail(where, params, 'channel', page);
         const rows = this.directory

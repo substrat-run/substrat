@@ -1225,7 +1225,7 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
     await publish('helpdesk', '0.1.0', v1);
     await publish('helpdesk', '0.2.0', v2);
     await host.admin.admitVersion(staff, v2);
-    await host.admin.promoteVersion(staff, 'helpdesk', 'dev', v2);
+    await host.admin.promoteVersion(staff, 'helpdesk', 'prod', v2);
 
     const mine = await listDeploymentsFromHost(host, staff, acme);
     expect(mine.map((d) => d.slug)).toEqual(['helpdesk']); // not callout, not billing
@@ -1233,8 +1233,9 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
     expect(hd.displaySlug).toBe('helpdesk');
     // Newest-first: 0.2.0 (v2) before 0.1.0 (v1).
     expect(hd.versions.map((v) => v.id)).toEqual([v2, v1]);
-    // dev has no in-place serve, so servingVersionId is null (#321 is a prod concept).
-    expect(hd.channels).toContainEqual({ channel: 'dev', versionId: v2, servingVersionId: null });
+    // No in-place serve ran (host.admin.promoteVersion moves the pointer only), so
+    // servingVersionId stays null (#321 advances it only after a successful serve).
+    expect(hd.channels).toContainEqual({ channel: 'prod', versionId: v2, servingVersionId: null });
 
     // The other tenant sees only its own.
     expect((await listDeploymentsFromHost(host, staff, other)).map((d) => d.slug)).toEqual(['billing']);
@@ -1279,7 +1280,7 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
       deploymentRef: `meridian-${v3.toLowerCase()}`,
     });
     await host.admin.admitVersion(staff, v3);
-    await host.admin.promoteVersion(staff, 'meridian', 'dev', v3);
+    await host.admin.promoteVersion(staff, 'meridian', 'prod', v3);
 
     const p1 = await verticalDeploymentPageFromHost(host, staff, 'meridian', { limit: 2 });
     expect(p1.versions.map((v) => v.id)).toEqual([v3, v2]); // newest first
@@ -1287,8 +1288,8 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
     // 0.3.0 crossed a migration boundary (g → g2); 0.2.0 did not — its predecessor
     // (0.1.0) sits on the NEXT page, and the overfetch still saw it.
     expect(p1.versions.map((v) => v.schemaChange)).toEqual([true, false]);
-    // Channels ride every page complete (~3 of them, never paged).
-    expect(p1.channels).toContainEqual({ channel: 'dev', versionId: v3, servingVersionId: null });
+    // The single channel rides every page complete (never paged).
+    expect(p1.channels).toContainEqual({ channel: 'prod', versionId: v3, servingVersionId: null });
 
     const p2 = await verticalDeploymentPageFromHost(host, staff, 'meridian', { limit: 2, cursor: p1.nextCursor! });
     expect(p2.versions.map((v) => v.id)).toEqual([v1]);

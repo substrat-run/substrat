@@ -2347,10 +2347,12 @@ describe('control-plane API — builder authz', () => {
     expect(after.publishRequestedAt).toBeFalsy();
   });
 
-  it('lets the owner self-serve non-prod; prod of a LISTED vertical is a staff decision', async () => {
-    // dev/staging: the builder promotes its own admitted version.
-    expect((await acmeReq('/verticals/helpdesk/channels/dev/promote', 'POST', { versionId: v1 })).status).toBe(200);
-    expect((await acmeReq('/verticals/helpdesk/channels/staging/promote', 'POST', { versionId: v1 })).status).toBe(200);
+  it('retires dev/staging; prod of a LISTED vertical is a staff decision', async () => {
+    // dev/staging are retired (#509) — a non-prod promote is refused with the previews pointer.
+    const dev = await acmeReq('/verticals/helpdesk/channels/dev/promote', 'POST', { versionId: v1 });
+    expect(dev.status).toBe(400);
+    expect(((await dev.json()) as { error: string }).error).toMatch(/retired|preview/i);
+    expect((await acmeReq('/verticals/helpdesk/channels/staging/promote', 'POST', { versionId: v1 })).status).toBe(400);
     // prod: helpdesk was LISTED by the publish-flow test above, so its audience is
     // every tenant and prod promotion is staff-only again — even for the owner. (A
     // PRIVATE vertical's owner self-serves prod; the deploy-path test below covers it.)
@@ -2360,7 +2362,7 @@ describe('control-plane API — builder authz', () => {
     expect((await staffReq(`/verticals/${encodeURIComponent(`${acmeSlug}/helpdesk`)}/channels/prod/promote`, 'POST', { versionId: v1 })).status).toBe(200);
     // `other` promoting a bare `helpdesk` addresses ITS OWN (empty) `other-co/helpdesk`,
     // never acme's — acme's version id isn't in that namespace, so it cannot be promoted.
-    expect((await otherReq('/verticals/helpdesk/channels/dev/promote', 'POST', { versionId: v1 })).status).toBeGreaterThanOrEqual(400);
+    expect((await otherReq('/verticals/helpdesk/channels/prod/promote', 'POST', { versionId: v1 })).status).toBeGreaterThanOrEqual(400);
   });
 
   it('claims a slug through the deploy/push path too, each tenant in its own namespace', async () => {
@@ -3312,13 +3314,13 @@ describe('control-plane API — staff tenant-pin resolution (#417)', () => {
 
   it('promotes and reads channels by bare slug under a pin — the whole manage surface resolves', async () => {
     const p = req(pinned(mqkSlug));
-    expect((await p('/verticals/authhero-console/channels/dev/promote', 'POST', { versionId: v1 })).status).toBe(200);
+    expect((await p('/verticals/authhero-console/channels/prod/promote', 'POST', { versionId: v1 })).status).toBe(200);
     const channels = (await (await p('/verticals/authhero-console/channels')).json()).entries;
-    expect(channels).toMatchObject([{ channel: 'dev', versionId: v1 }]);
+    expect(channels).toMatchObject([{ channel: 'prod', versionId: v1 }]);
     // The pointer landed on the PREFIXED lineage — the unpinned full id reads the same rows.
     const direct = (await (await staffReq(`/verticals/${encodeURIComponent(full)}/channels`)).json()).entries;
-    expect(direct).toMatchObject([{ channel: 'dev', versionId: v1 }]);
-    const history = (await (await p('/verticals/authhero-console/channels/dev/history')).json()).entries;
+    expect(direct).toMatchObject([{ channel: 'prod', versionId: v1 }]);
+    const history = (await (await p('/verticals/authhero-console/channels/prod/history')).json()).entries;
     expect(history.length).toBe(1);
   });
 
