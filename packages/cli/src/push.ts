@@ -542,3 +542,50 @@ export async function nextVersion(
   if (best) return `${best[0]}.${best[1]}.${best[2] + 1}`;
   return seed && parseSemver(seed) ? seed : '0.0.1';
 }
+
+/**
+ * A preview's version LABEL — a semver PRERELEASE (`<base>-<tag>.<n>`), never a release
+ * coordinate. `parseSemver` is anchored `^\d+\.\d+\.\d+$`, so a prerelease is skipped when
+ * the registry max is computed (`nextVersion` above): a preview push is legible — it names
+ * the release it rehearses — yet FREE, unable to collide with or advance the coordinate the
+ * repo owns. Auto-bumping to a real coordinate is what put holes in our registry (issue #509,
+ * ask (e)). `<n>` disambiguates successive pushes to the same tag on the same base.
+ */
+export async function previewVersion(
+  controlPlaneUrl: string,
+  header: Record<string, string>,
+  slugs: readonly string[],
+  seed: string | undefined,
+  tag: string,
+): Promise<string> {
+  const base = controlPlaneUrl.replace(/\/$/, '');
+  const all: string[] = [];
+  for (const slug of slugs) {
+    const versions = await readAllEntries<{ version: string }>(
+      `${base}/verticals/${encodeURIComponent(slug)}/versions`,
+      async (pageUrl) => {
+        const r = await fetch(pageUrl, { headers: header });
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json() as Promise<{ entries: { version: string }[]; nextCursor: string | null }>;
+      },
+    ).catch(() => [] as { version: string }[]);
+    for (const v of versions) all.push(v.version);
+  }
+  // The release this preview rehearses: max stable coordinate + 1 (prereleases skipped).
+  let release: [number, number, number] | null = null;
+  for (const v of all) {
+    const t = parseSemver(v);
+    if (t && (!release || isNewer(t, release))) release = t;
+  }
+  const baseVer = release ? `${release[0]}.${release[1]}.${release[2] + 1}` : seed && parseSemver(seed) ? seed : '0.0.1';
+  // Climb `<n>` past any existing `<base>-<tag>.<n>` so a re-push never reuses a label.
+  const prefix = `${baseVer}-${tag}.`;
+  let maxN = 0;
+  for (const v of all) {
+    if (v.startsWith(prefix)) {
+      const n = Number(v.slice(prefix.length));
+      if (Number.isInteger(n) && n > maxN) maxN = n;
+    }
+  }
+  return `${prefix}${maxN + 1}`;
+}

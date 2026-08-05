@@ -58,10 +58,12 @@ function VersionRow({
 }) {
   const here = channelsFor(d, v.id);
   const admitted = v.admission === 'admitted';
-  // Every channel of a PRIVATE vertical is self-serve — prod included, which is also
-  // how rollback works (promote the older version). A listed vertical's prod is a
-  // staff decision again, so the button doesn't render.
-  const channels = d.listed ? (['dev', 'staging'] as const) : (['dev', 'staging', 'prod'] as const);
+  // Only offer a channel the platform actually SERVES. `prod` is the sole serving pointer
+  // (dev/staging are write-only — no reader consults them, issue #509 §2), so we never render
+  // a button that does nothing. A PRIVATE vertical's prod is self-serve — which is also how
+  // rollback works (promote the older version); a LISTED vertical's prod is a staff decision,
+  // so it has no self-serve promote at all (use a preview to exercise a version, ask (d)).
+  const channels = d.listed ? ([] as const) : (['prod'] as const);
   return (
     <Row columns="1.2fr 1fr 1.4fr 1.6fr" last={last}>
       <span style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>

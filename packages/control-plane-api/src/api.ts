@@ -366,7 +366,11 @@ const createPreviewBody = z.object({
     .regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/, 'tag must be a short DNS-safe label, e.g. pr-123'),
   versionId: z.string().min(1),
   sourceScopeId: scopeIdSchema.optional(),
-  ttlHours: z.number().int().positive().max(720).optional(),
+  // Hours until the GC sweep may reap the fork. Absent = the 72h default; an explicit
+  // `null` pins the fork until it is deliberately deleted — a long-lived preview
+  // environment (a `--tag dev` scope CI re-pushes to). The deadline is (re)applied on
+  // every create, reuse included, so activity keeps a preview alive (§9).
+  ttlHours: z.number().int().positive().max(720).nullable().optional(),
   surface: surfaceName.optional(),
   refresh: z.boolean().optional(),
 });
@@ -2661,10 +2665,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     tenantId: TenantId,
     slug: string,
     source: Scope,
-    opts: { tag: string; versionId: string; ttlHours?: number; surface?: string; refresh?: boolean },
+    opts: { tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean },
   ): Promise<{ scopeId: ScopeId; hostname: string; url: string; versionId: string; reused: boolean }> => {
     const actor = c.get('actor');
     const surface = opts.surface ?? 'app';
+    // The GC deadline for this create. `null` (explicit) pins the fork; absent defaults to
+    // 72h. Computed once so the reuse and fresh-fork paths agree — and, crucially, so reuse
+    // PUSHES THE DEADLINE FORWARD: without this a preview CI re-pushes to would be reaped 72h
+    // after its first creation no matter how alive it is (preview-and-snapshots.md §9).
+    const expiresAt =
+      opts.ttlHours === null ? null : new Date(Date.now() + (opts.ttlHours ?? 72) * 3_600_000).toISOString();
     // Residency (K-7/K-32): forking pins the copy's EXECUTION to the preview deployment.
     // Anything tighter than `global` cannot be honoured until Regional Services, so refuse
     // it here rather than record a residency claim with no mechanism (same gate as export).
@@ -2692,6 +2702,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     );
     if (existing && !opts.refresh) {
       await admin.bindScopeVersion(actor, tenantId, existing.id, opts.versionId);
+      // Renew (or clear) the fork's GC deadline so a reused preview does not silently die.
+      await admin.setScopeExpiresAt(actor, tenantId, existing.id, expiresAt);
       const hostname = await mintPreviewHostname(actor, source, existing.id, opts.tag, surface);
       return { scopeId: existing.id, hostname, url: `https://${hostname}`, versionId: opts.versionId, reused: true };
     }
@@ -2707,7 +2719,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tables = sourceClient ? await sourceClient.exportScope(source.id) : canonical.tables;
 
     const previewId = scopeIdSchema.parse(ulid());
-    const expiresAt = new Date(Date.now() + (opts.ttlHours ?? 72) * 3_600_000).toISOString();
     // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
     // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
     // reaps, never copied data with no record.
@@ -2721,7 +2732,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       jurisdiction: source.jurisdiction,
       forkedFrom: source.id,
       forkedAt: new Date().toISOString(),
-      expiresAt,
+      // Directory models "absent = pinned", so a pinned preview passes no horizon at all.
+      expiresAt: expiresAt ?? undefined,
     });
     // Load the fork into the PR version's deployment (materializes the preview scope DO
     // there; restore re-projects the vertical's roles from the dump's tuples).

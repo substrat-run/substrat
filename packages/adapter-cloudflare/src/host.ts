@@ -368,6 +368,7 @@ interface ControlPlaneStub {
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
   ): Promise<void>;
   setScopeServingRef(scopeId: string, servingRef: string | null): Promise<void>;
+  setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): Promise<void>;
@@ -2756,6 +2757,18 @@ export class CloudflareScopeHost implements ScopeHost {
           { tenantId, scopeId },
           { servingRef: scope.serving_ref ?? null },
           { servingRef },
+        );
+      },
+      setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        await this.cp.setScopeExpiresAt(scopeId, expiresAt);
+        await this.recordAdmin(
+          actor,
+          'setScopeExpiresAt',
+          { tenantId, scopeId },
+          { expiresAt: scope.expires_at ?? null },
+          { expiresAt },
         );
       },
       scopeMigrationBookmarks: async (actor, tenantId, scopeId) => {

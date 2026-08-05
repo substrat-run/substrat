@@ -1681,6 +1681,11 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?', servingRef, scopeId);
   }
 
+  /** Move a fork's GC deadline forward, or pin it (`null`) — preview-and-snapshots.md §9. */
+  setScopeExpiresAt(scopeId: string, expiresAt: string | null): void {
+    this.sql.exec('UPDATE scopes SET expires_at = ? WHERE scope_id = ?', expiresAt, scopeId);
+  }
+
   listVersions(verticalSlug: string, page?: ListPage): VersionRow[] {
     const where: string[] = ['vertical_slug = ?'];
     const params: (string | number)[] = [verticalSlug];
