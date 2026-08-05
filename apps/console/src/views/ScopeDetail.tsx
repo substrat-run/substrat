@@ -204,7 +204,14 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
             Suspended by a tenant-wide cascade — unsuspend the tenant to release it; per-scope unsuspend is not offered.
           </p>
         )}
-        {(eff === 'provisioning' || eff === 'archiving') && (
+        {eff === 'provisioning' && (
+          <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+            Still provisioning — it should settle into <code>active</code> on its own. If it
+            has stalled (a failed migration or a dispatch gap can strand a scope here), Archive
+            abandons it; once archived it can be reaped. Restore replays from the start.
+          </p>
+        )}
+        {eff === 'archiving' && (
           <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
             Transient state — actions available when it settles.
           </p>
