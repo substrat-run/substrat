@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,37 @@ import {
   RUNTIME_BASELINE,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta, previewVersion } from '../src/push.js';
+
+describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
+  const orig = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = orig;
+  });
+  const withVersions = (versions: string[]) => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ entries: versions.map((version) => ({ version })), nextCursor: null }), {
+        status: 200,
+      })) as typeof fetch;
+  };
+
+  it('labels as <max-release+1>-<tag>.<n>, ignoring prereleases and climbing n', async () => {
+    // 0.3.0 is the max RELEASE; the prereleases must not advance it (anchored parseSemver),
+    // but n must climb past the highest existing <base>-<tag>.<n> so a re-push never collides.
+    withVersions(['0.3.0', '0.3.1-pr-9.1', '0.3.1-pr-9.2', 'not-semver']);
+    expect(await previewVersion('http://cp', {}, ['acme/crm'], undefined, 'pr-9')).toBe('0.3.1-pr-9.3');
+  });
+
+  it('starts n at 1 for a fresh tag on the current base', async () => {
+    withVersions(['1.4.2', '1.4.3-pr-9.7']);
+    expect(await previewVersion('http://cp', {}, ['x'], undefined, 'dev')).toBe('1.4.3-dev.1');
+  });
+
+  it('falls back to the seed when the registry is empty', async () => {
+    withVersions([]);
+    expect(await previewVersion('http://cp', {}, ['x'], '2.0.0', 'dev')).toBe('2.0.0-dev.1');
+  });
+});
 
 const scratch = (pkg?: unknown): string => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-test-'));

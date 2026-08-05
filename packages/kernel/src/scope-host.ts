@@ -810,6 +810,20 @@ export interface HostAdmin {
   ): Promise<void>;
 
   /**
+   * Move a fork's GC deadline (preview-and-snapshots.md §9). The reap sweep deletes any
+   * fork whose `expiresAt` has passed, so a long-lived preview reused across many CI
+   * pushes must have its deadline pushed forward on each reuse — otherwise it dies 72h
+   * after its FIRST creation regardless of activity. `null` pins the fork until it is
+   * deliberately deleted (the "absent = pinned" the snapshot body already models). Audited.
+   */
+  setScopeExpiresAt(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    expiresAt: string | null,
+  ): Promise<void>;
+
+  /**
    * The PITR bookmarks a CO-LOCATED scope recorded before its migration passes
    * (#286) — the rewind points a backout offers. For a dispatch vertical the route
    * reads them through the vertical's `/internal/bookmarks` instead; this is the

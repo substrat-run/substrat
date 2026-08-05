@@ -15,6 +15,13 @@ describe('parseTtlHours', () => {
     expect(parseTtlHours('72h')).toBe(72);
     expect(parseTtlHours('3d')).toBe(72);
   });
+  it('reads none/pinned as null (pinned), distinct from undefined (default 72h)', () => {
+    expect(parseTtlHours('none')).toBeNull();
+    expect(parseTtlHours('pinned')).toBeNull();
+    expect(parseTtlHours('NONE')).toBeNull();
+    // null (pin) and undefined (default) are different intents — neither is the other.
+    expect(parseTtlHours('none')).not.toBeUndefined();
+  });
   it('rejects garbage rather than sending a nonsense TTL', () => {
     expect(() => parseTtlHours('soon')).toThrow(/invalid --ttl/);
   });

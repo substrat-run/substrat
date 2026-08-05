@@ -41,6 +41,7 @@ export const adminAction = z.enum([
   // routing is pointed at the script its data now lives in (provision / adopt-serving).
   'setVerticalServing',
   'setScopeServingRef',
+  'setScopeExpiresAt', // preview-and-snapshots.md §9 — push a fork's GC deadline forward on reuse, or pin it (null)
   'bindHostname', // K-26 — the hostname map
   'setHostnameStatus', // #31 step 2 — where the two human checkpoints fire
   'setHostnameIssuance', // #305 §4.7 — a Cloudflare-for-SaaS issuance step (create/poll) result

@@ -67,7 +67,7 @@ export async function createPreview(opts: {
   tag: string;
   versionId: string;
   sourceScopeId?: string;
-  ttlHours?: number;
+  ttlHours?: number | null;
   surface?: string;
   refresh?: boolean;
 }): Promise<PreviewCreated> {
@@ -78,7 +78,8 @@ export async function createPreview(opts: {
       tag: opts.tag,
       versionId: opts.versionId,
       ...(opts.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
-      ...(opts.ttlHours ? { ttlHours: opts.ttlHours } : {}),
+      // `null` (pinned) must reach the wire, so send whenever a value was given — not just truthy.
+      ...(opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}),
       ...(opts.surface ? { surface: opts.surface } : {}),
       ...(opts.refresh ? { refresh: true } : {}),
     }),
@@ -126,11 +127,17 @@ export function formatPreviews(rows: PreviewRow[]): string {
     .join('\n');
 }
 
-/** Parse a `--ttl` value like `72h`, `3d`, or a bare number of hours → hours. */
-export function parseTtlHours(raw: string | undefined): number | undefined {
+/**
+ * Parse a `--ttl` value like `72h`, `3d`, or a bare number of hours → hours. The literal
+ * `none`/`pinned` returns `null` — a preview kept alive until it is deliberately deleted
+ * (a long-lived `--tag dev` environment), distinct from `undefined` = the 72h default.
+ */
+export function parseTtlHours(raw: string | undefined): number | null | undefined {
   if (!raw) return undefined;
-  const m = /^(\d+)\s*([hd])?$/.exec(raw.trim());
-  if (!m) throw new Error(`invalid --ttl '${raw}' — use e.g. 72h or 3d`);
+  const t = raw.trim().toLowerCase();
+  if (t === 'none' || t === 'pinned') return null;
+  const m = /^(\d+)\s*([hd])?$/.exec(t);
+  if (!m) throw new Error(`invalid --ttl '${raw}' — use e.g. 72h, 3d, or none`);
   const n = Number(m[1]);
   return m[2] === 'd' ? n * 24 : n;
 }

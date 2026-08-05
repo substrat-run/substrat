@@ -820,6 +820,7 @@ describe('control-plane API', () => {
     expect(row.forkedFrom).toBe(prod);
     expect(row.verticalVersionId).toBe(v1);
     expect(row.expiresAt).toBeTruthy();
+    const firstExpiry = row.expiresAt;
 
     // List shows it under its tag.
     const list = (await (await dj('/verticals/prev-vert/previews', 'GET')).json()) as {
@@ -836,6 +837,26 @@ describe('control-plane API', () => {
     expect(a.scopeId).toBe(c.scopeId);
     expect(exports).toBe(1); // still one — the fork was reused
     expect(((await (await dj(`/tenants/${t1}/scopes/${c.scopeId}`, 'GET')).json()) as { verticalVersionId: string }).verticalVersionId).toBe(v2);
+
+    // Reuse must RENEW the GC deadline, not leave it at first-creation (#509 ask (a)) —
+    // otherwise a preview CI re-pushes to dies 72h after its first create. Passing an
+    // explicit short TTL moves the deadline strictly earlier than the default-72h original.
+    const renew = await dj('/verticals/prev-vert/previews', 'POST', { tag: 'pr-7', versionId: v2, ttlHours: 1 });
+    expect(renew.status).toBe(200);
+    const renewedExpiry = ((await (await dj(`/tenants/${t1}/scopes/${c.scopeId}`, 'GET')).json()) as { expiresAt: string }).expiresAt;
+    expect(renewedExpiry).toBeTruthy();
+    expect(new Date(renewedExpiry).getTime()).toBeLessThan(new Date(firstExpiry!).getTime());
+
+    // `ttlHours: null` on reuse PINS the fork — a long-lived preview environment.
+    const pin = await dj('/verticals/prev-vert/previews', 'POST', { tag: 'pr-7', versionId: v2, ttlHours: null });
+    expect(pin.status).toBe(200);
+    expect(((await (await dj(`/tenants/${t1}/scopes/${c.scopeId}`, 'GET')).json()) as { expiresAt: string | null }).expiresAt).toBeNull();
+
+    // A FRESH fork can be born pinned too (the provision path, not the reuse setter).
+    const pinned = await dj('/verticals/prev-vert/previews', 'POST', { tag: 'pr-pin', versionId: v1, ttlHours: null });
+    expect(pinned.status).toBe(201);
+    const pinnedId = ((await pinned.json()) as { scopeId: string }).scopeId;
+    expect(((await (await dj(`/tenants/${t1}/scopes/${pinnedId}`, 'GET')).json()) as { expiresAt: string | null }).expiresAt).toBeNull();
 
     // Delete reaps the fork (through the vertical) + its hostname + the row; a second
     // delete is an idempotent no-op success (the PR-close job never fails on a re-run).

@@ -3988,6 +3988,24 @@ export class SqliteScopeHost implements ScopeHost {
           { servingRef },
         );
       },
+      setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
+        const scope = this.directory
+          .prepare('SELECT tenant_id, expires_at FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string; expires_at: string | null } | undefined;
+        if (!scope || scope.tenant_id !== tenantId) {
+          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
+        this.directory
+          .prepare('UPDATE scopes SET expires_at = ? WHERE scope_id = ?')
+          .run(expiresAt, scopeId);
+        this.recordAdmin(
+          actor,
+          'setScopeExpiresAt',
+          { tenantId, scopeId },
+          { expiresAt: scope.expires_at },
+          { expiresAt },
+        );
+      },
       scopeMigrationBookmarks: async (actor, tenantId, scopeId) => {
         const scope = this.directory
           .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
