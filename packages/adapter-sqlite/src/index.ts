@@ -1335,6 +1335,11 @@ export class SqliteScopeHost implements ScopeHost {
            -- vertical has created the scope DO, and only activateScope says it has.
            -- serving_ref sub-selected (#286): a scope born while its vertical serves
            -- in place is born ON the serving script, so its routing points there.
+           -- EXCEPTION (#527): a PREVIEW binds a specific (usually not-yet-serving)
+           -- version and its data is restored into THAT version's per-version script;
+           -- inheriting serving_ref would route it to the prod serving script instead
+           -- (COALESCE(s.serving_ref, vv.deployment_ref)). A null slug matches no row,
+           -- so the sub-select is NULL and routing falls through to the bound version.
            VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?,
                    (SELECT serving_ref FROM verticals WHERE slug = ?), ?)`,
         )
@@ -1350,7 +1355,7 @@ export class SqliteScopeHost implements ScopeHost {
           record.forkedFrom,
           record.forkedAt,
           record.expiresAt,
-          record.vertical,
+          record.kind === 'preview' ? null : record.vertical,
           new Date().toISOString(),
         );
     }

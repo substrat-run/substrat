@@ -2719,6 +2719,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   ): Promise<{ scopeId: ScopeId; hostname: string; url: string; versionId: string; reused: boolean }> => {
     const actor = c.get('actor');
     const surface = opts.surface ?? 'app';
+    // #527 guard: a preview MUST serve the version it just bound. Routing resolves
+    // `COALESCE(scope.servingRef, version.deploymentRef)` (control-plane-do `readHostname`),
+    // so a preview that still carries an inherited `serving_ref` — or otherwise resolves away
+    // from this version's own dispatch script — would answer with OTHER code (the promoted
+    // prod build) while we report success. That is worse than a failure: it sends a reviewer
+    // to redo correct work. So refuse to return success for a URL that would serve other code.
+    const assertServesBoundVersion = async (previewId: ScopeId): Promise<void> => {
+      const bound = (await admin.listVersions(actor, slug)).find((v) => v.id === opts.versionId);
+      // A co-located / embedded vertical has no per-version dispatch script (deploymentRef
+      // null) and routes via the static fallback — nothing to compare, so nothing to guard.
+      if (!bound?.deploymentRef) return;
+      const rec = await admin.getScopeRecord(actor, tenantId, previewId);
+      const effectiveRef = rec?.servingRef ?? bound.deploymentRef;
+      if (effectiveRef !== bound.deploymentRef) {
+        throw new ControlPlaneError(
+          500,
+          `preview ${previewId} bound version ${opts.versionId} but would route to '${effectiveRef}' ` +
+            `instead of that version's dispatch script '${bound.deploymentRef}' — refusing to report ` +
+            `success for a preview URL that would serve other code (#527)`,
+        );
+      }
+    };
     // The GC deadline for this create. `null` (explicit) pins the preview; absent defaults to
     // 72h. Computed once so the reuse and fresh paths agree — and, crucially, so reuse
     // PUSHES THE DEADLINE FORWARD: without this a preview CI re-pushes to would be reaped 72h
@@ -2756,10 +2778,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       (s) => s.kind === 'preview' && s.slug === previewSlug(slug, opts.tag),
     );
     if (existing && !opts.refresh) {
+      // Heal a preview provisioned before #527: clear any inherited serving_ref so routing
+      // follows the bound version (its per-version script), not the prod serving script.
+      if (existing.servingRef) await admin.setScopeServingRef(actor, tenantId, existing.id, null);
       await admin.bindScopeVersion(actor, tenantId, existing.id, opts.versionId);
       // Renew (or clear) the preview's GC deadline so a reused preview does not silently die.
       await admin.setScopeExpiresAt(actor, tenantId, existing.id, expiresAt);
       const hostname = await bindPreviewHostname(actor, baseHostname, tenantId, existing.id, opts.tag, surface);
+      await assertServesBoundVersion(existing.id);
       return { scopeId: existing.id, hostname, url: `https://${hostname}`, versionId: opts.versionId, reused: true };
     }
 
@@ -2817,6 +2843,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // of not-yet-admitted code needs.
     await admin.bindScopeVersion(actor, tenantId, previewId, opts.versionId);
     const hostname = await bindPreviewHostname(actor, baseHostname, tenantId, previewId, opts.tag, surface);
+    await assertServesBoundVersion(previewId);
     return { scopeId: previewId, hostname, url: `https://${hostname}`, versionId: opts.versionId, reused: false };
   };
 
