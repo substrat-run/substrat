@@ -1,5 +1,60 @@
 # @substrat-run/contracts
 
+## 0.47.0
+
+### Minor Changes
+
+- a90dec0: Preview lifecycle fixes — the three self-contained repairs from #509 (issue #512, Tier 1),
+  turning previews into something you can actually run a workflow on. No design change to the
+  channel model; that stays for #515.
+
+  - **(a) A reused preview no longer silently dies.** `orchestratedPreview`'s reuse branch
+    rebound the new version but never touched `expiresAt`, so a `--tag dev` preview CI keeps
+    re-pushing to was reaped 72h after its _first_ creation regardless of activity. The GC
+    deadline is now recomputed on every create — reuse included — via a new narrow
+    `HostAdmin.setScopeExpiresAt` (mirroring `setScopeServingRef`; audited on both adapters).
+    And `ttlHours` accepts an explicit **`null` = pinned until deliberately deleted**, so a
+    long-lived preview environment is expressible at last. `substrat preview create --ttl none`
+    pins; re-running a tag renews its TTL.
+
+  - **(e) `preview create` stops claiming registry coordinates.** It auto-bumped via
+    `nextVersion`, so every PR preview burned a real patch number — the disease that left holes
+    in the registry. Previews now push a semver **prerelease** label (`<base>-<tag>.<n>`) via the
+    new `previewVersion`: legible (it names the release it rehearses) yet free — `parseSemver` is
+    anchored `^\d+\.\d+\.\d+$`, so a prerelease can neither collide with nor advance the coordinate
+    the repo owns. An explicit `--version` still wins.
+
+  - **(f) The console stops offering promote buttons that do nothing.** `dev`/`staging` are
+    write-only (no reader consults them — #509 §2), so the Verticals view now offers only `prod`
+    (self-serve for a private vertical, staff-gated for a listed one) and renders no dead channel
+    buttons. Read-only history/pills are untouched.
+
+- 3fcf34b: Give hosted verticals a sanctioned way to send transactional mail — the resolution of the
+  outbound-policy open question (#303). The sandbox deliberately keeps `send_email` off the §4
+  allowlist (and a Workers-for-Platforms dispatch script cannot bind it anyway), so a vertical
+  never sends directly: it POSTs to the control plane's new `POST /internal/email/send` **relay**,
+  which sends on its behalf — but only if that vertical holds the staff-granted `emailSender`
+  capability. The `from` address is always the platform's onboarded sender.
+
+  The capability mirrors `tenantProvisioner` exactly, as three parts:
+
+  - a manifest **request** — `package.json` `substrat.sendsEmail`, carried on push into the
+    registry as `sendsEmail`, refreshed on every push and granting nothing by itself;
+  - a registry **grant** — `emailSender`, a directory flag a push can never set or keep, flipped
+    by the new staff op `setVerticalEmailSender` (and the console's "Grant email sender" toggle);
+  - a platform-held **relay** — `PlatformRelayEmailTransport` (another `EmailTransport`
+    implementation) on the vertical side, and the control-plane endpoint on the other, which
+    re-derives _which_ vertical is calling from the named `(tenant, scope)` and checks the grant
+    against that. Holding the shared `PLATFORM_SECRET` (injected into every dispatch script, and
+    the relay's auth) is not enough. The control plane's own origin is injected into every vertical
+    as `CONTROL_PLANE_URL` so it knows where to POST.
+
+  `HostAdmin` gains `setVerticalEmailSender`; both adapters persist a nullable `email_sender`
+  directory column (a directory schema change, not a module migration). The auth-server demo
+  declares `sendsEmail` and uses the relay transport when hosted, so its Better-Auth
+  `sendResetPassword` flow finally delivers on a dispatch install. Everything is additive — every
+  existing manifest, registry row, and `HostAdmin` call site keeps compiling.
+
 ## 0.46.0
 
 ## 0.45.0
@@ -1319,7 +1374,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

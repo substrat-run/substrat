@@ -1,5 +1,121 @@
 # @substrat-run/control-plane-api
 
+## 0.47.0
+
+### Minor Changes
+
+- 6a7b4a8: Clean-room (source-less) previews — a vertical's FIRST environment can be a throwaway
+  (issue #509 ask (b), the other half of #514).
+
+  A preview forked prod, so a brand-new vertical with no prod scope was refused
+  (`no prod scope to fork — provision one first`, 409) — exactly when a throwaway environment
+  is most useful. `substrat preview create --tag … --empty` now provisions an **empty** scope
+  instead of forking: the module tables are migrated (co-located at provision; a dispatch
+  deployment materializes the empty DO and its `ensureMigrations` creates the schema on first
+  access), the version binds, and a hostname is minted.
+
+  - **Hostname:** with no source scope to derive a URL from, a clean-room preview follows the
+    platform tenant-app convention `<vertical>-<tenant>--<tag>.<base>` — the same scheme
+    provisioning mints (`callout-sesamy.global.substrat.run`).
+  - **GC:** a clean-room preview is a `preview` scope with no `forkedFrom`, so the reap sweep
+    and `deleteSnapshot` now key off **`kind === 'preview'` OR a fork**, not fork-ness alone —
+    the one sanctioned hard-delete invariant widened from "only a fork" to "a fork or a preview".
+    A primary scope is still tombstone-only (archive it). This is the one semantics change here.
+  - `empty` and a `sourceScopeId` are mutually exclusive (400) — the request is refused, never
+    silently guessed.
+
+  Contract-suite coverage (both adapters): `deleteSnapshot` reaps a non-fork preview, and the GC
+  sweep reaps an expired one. Control-plane API: a clean-room preview provisions an empty non-fork
+  scope with the tenant-app hostname and deletes like any preview.
+
+- a90dec0: Preview lifecycle fixes — the three self-contained repairs from #509 (issue #512, Tier 1),
+  turning previews into something you can actually run a workflow on. No design change to the
+  channel model; that stays for #515.
+
+  - **(a) A reused preview no longer silently dies.** `orchestratedPreview`'s reuse branch
+    rebound the new version but never touched `expiresAt`, so a `--tag dev` preview CI keeps
+    re-pushing to was reaped 72h after its _first_ creation regardless of activity. The GC
+    deadline is now recomputed on every create — reuse included — via a new narrow
+    `HostAdmin.setScopeExpiresAt` (mirroring `setScopeServingRef`; audited on both adapters).
+    And `ttlHours` accepts an explicit **`null` = pinned until deliberately deleted**, so a
+    long-lived preview environment is expressible at last. `substrat preview create --ttl none`
+    pins; re-running a tag renews its TTL.
+
+  - **(e) `preview create` stops claiming registry coordinates.** It auto-bumped via
+    `nextVersion`, so every PR preview burned a real patch number — the disease that left holes
+    in the registry. Previews now push a semver **prerelease** label (`<base>-<tag>.<n>`) via the
+    new `previewVersion`: legible (it names the release it rehearses) yet free — `parseSemver` is
+    anchored `^\d+\.\d+\.\d+$`, so a prerelease can neither collide with nor advance the coordinate
+    the repo owns. An explicit `--version` still wins.
+
+  - **(f) The console stops offering promote buttons that do nothing.** `dev`/`staging` are
+    write-only (no reader consults them — #509 §2), so the Verticals view now offers only `prod`
+    (self-serve for a private vertical, staff-gated for a listed one) and renders no dead channel
+    buttons. Read-only history/pills are untouched.
+
+- 0e48b8f: Previews survive publication — a listed vertical's builder keeps a working non-prod path
+  (#509 ask (d), issue #513, Tier 2).
+
+  Before this, the moment a vertical was published (`listed = true`) its builder had **no**
+  non-prod path at all: the `dev`/`staging` promote buttons served nothing (fixed in #512),
+  prod promote is staff-gated, and previews were refused outright (`403 — private verticals
+only`). Even relaxing that 403 wasn't enough, because `bindScopeVersion` hard-refuses a
+  non-admitted version, and a listed vertical's push lands **pending** — so the preview could
+  never bind the new code.
+
+  The fix draws the boundary where it belongs. **Admission gates code reaching an install.**
+  A preview is a fork of the builder's _own_ tenant scope at a non-canonical URL, serving no
+  install — the same own-tenant blast radius a private vertical already self-admits under. So:
+
+  - **`bindScopeVersion` admits a pending version onto a `preview` scope** (both adapters), and
+    keeps the refusal for every other scope kind. A serving scope still cannot bind unadmitted
+    code — the marketplace install gate is intact.
+  - **The preview gate no longer refuses listed verticals.** A builder is still confined to a
+    vertical it owns, and a first-party vertical (no owner tenant) still has no scope of its own
+    to fork.
+
+  The working non-prod path for a listed vertical is the CLI — `substrat preview create --tag …`
+  now forks the owner's prod scope and runs the pending PR code on it. (The dashboard has no
+  preview surface yet; a console affordance is future work.)
+
+  Contract-suite coverage (runs against both adapters) asserts a preview fork binds a pending
+  version while a serving scope still refuses it; the control-plane API test covers the listed
+  owner end-to-end plus the first-party refusal.
+
+- 3fcf34b: Give hosted verticals a sanctioned way to send transactional mail — the resolution of the
+  outbound-policy open question (#303). The sandbox deliberately keeps `send_email` off the §4
+  allowlist (and a Workers-for-Platforms dispatch script cannot bind it anyway), so a vertical
+  never sends directly: it POSTs to the control plane's new `POST /internal/email/send` **relay**,
+  which sends on its behalf — but only if that vertical holds the staff-granted `emailSender`
+  capability. The `from` address is always the platform's onboarded sender.
+
+  The capability mirrors `tenantProvisioner` exactly, as three parts:
+
+  - a manifest **request** — `package.json` `substrat.sendsEmail`, carried on push into the
+    registry as `sendsEmail`, refreshed on every push and granting nothing by itself;
+  - a registry **grant** — `emailSender`, a directory flag a push can never set or keep, flipped
+    by the new staff op `setVerticalEmailSender` (and the console's "Grant email sender" toggle);
+  - a platform-held **relay** — `PlatformRelayEmailTransport` (another `EmailTransport`
+    implementation) on the vertical side, and the control-plane endpoint on the other, which
+    re-derives _which_ vertical is calling from the named `(tenant, scope)` and checks the grant
+    against that. Holding the shared `PLATFORM_SECRET` (injected into every dispatch script, and
+    the relay's auth) is not enough. The control plane's own origin is injected into every vertical
+    as `CONTROL_PLANE_URL` so it knows where to POST.
+
+  `HostAdmin` gains `setVerticalEmailSender`; both adapters persist a nullable `email_sender`
+  directory column (a directory schema change, not a module migration). The auth-server demo
+  declares `sendsEmail` and uses the relay transport when hosted, so its Better-Auth
+  `sendResetPassword` flow finally delivers on a dispatch install. Everything is additive — every
+  existing manifest, registry row, and `HostAdmin` call site keeps compiling.
+
+### Patch Changes
+
+- Updated dependencies [6a7b4a8]
+- Updated dependencies [a90dec0]
+- Updated dependencies [3fcf34b]
+  - @substrat-run/kernel@0.47.0
+  - @substrat-run/contracts@0.47.0
+
 ## 0.46.0
 
 ### Minor Changes
