@@ -27,6 +27,19 @@ bundle may declare only its own durable stores (a positive binding allowlist —
 `CONTROL_PLANE`, no platform secret), it runs inside a Workers-for-Platforms isolate, and it is
 held to quotas. If the bundle satisfies the contract, nothing else is in question.
 
+**Reaching the outside world is not a binding — it is a granted capability.** The allowlist
+deliberately excludes egress-shaped bindings (`send_email`, `ai`, `browser`, …): a hosted vertical
+never talks to a third party by declaring a binding. When a vertical genuinely needs a platform
+capability — sending transactional email, provisioning tenants — it *declares a request* in its
+manifest (`substrat.sendsEmail`, `substrat.provisions`) and a **staff grant** turns it on
+(`setVerticalEmailSender`, `setVerticalTenantProvisioner`). The request is refreshed on every push
+and grants nothing by itself; the grant is a directory flag a push can never set or keep, so pushing
+new code can never acquire authority. At runtime the platform provides the capability behind a
+credential the vertical never holds — for email, a `POST /internal/email/send` relay on the control
+plane that sends on the vertical's behalf and checks the grant on every call. This is why "how a
+vertical gets a dependency" is: declare the request, get it granted, call the platform seam — never
+bind the raw resource.
+
 Who has to *vouch* for a version depends on who will be exposed to it (decision D-36):
 
 - **Private vertical** (you own it, it is not listed on the marketplace). The only tenant that

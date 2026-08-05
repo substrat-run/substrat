@@ -181,6 +181,10 @@ export interface PushOptions {
    *  verticals this manager provisions tenants of. A request the console reviews — the
    *  tenant-provisioner capability itself stays a staff-flipped registry flag. */
   provisions?: readonly unknown[];
+  /** Declared email-sender intent (#303), from package.json `substrat.sendsEmail`: this vertical
+   *  wants to send transactional mail. A request the console reviews — the `emailSender`
+   *  capability itself stays a staff-flipped registry flag. */
+  sendsEmail?: boolean;
   /** The surfaces the vertical serves (K-26), from package.json `substrat.surfaces` —
    *  labels only; buys the dashboard a hostname-binding picker + a push-time warning. */
   surfaces?: readonly unknown[];
@@ -355,6 +359,7 @@ export async function push(
     ...(opts.provides ? { provides: opts.provides } : {}),
     ...(opts.requires ? { requires: opts.requires } : {}),
     ...(opts.provisions ? { provisions: opts.provisions } : {}),
+    ...(opts.sendsEmail ? { sendsEmail: true } : {}),
     ...(opts.surfaces ? { surfaces: opts.surfaces } : {}),
     // The declared permission surface travels with the bundle (D-39/D-41): keys+descriptions,
     // role templates, entity-grant shapes. Required — its content hash is digests.permission.
@@ -432,6 +437,8 @@ export interface VerticalMeta {
   requires: readonly unknown[] | undefined;
   /** Declared provisioner intent (#455), from package.json `substrat.provisions`. */
   provisions: readonly unknown[] | undefined;
+  /** Declared email-sender intent (#303), from package.json `substrat.sendsEmail`. */
+  sendsEmail: boolean | undefined;
   /** Declared surfaces (K-26), from package.json `substrat.surfaces`: `[{ name, label }]`. */
   surfaces: readonly unknown[] | undefined;
 }
@@ -447,7 +454,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   let pkg: {
     name?: string;
     version?: string;
-    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; surfaces?: unknown[] };
+    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; sendsEmail?: boolean; surfaces?: unknown[] };
   } = {};
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg;
@@ -470,6 +477,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
     provides: s?.provides,
     requires: s?.requires,
     provisions: s?.provisions,
+    sendsEmail: s?.sendsEmail,
     surfaces: s?.surfaces,
   };
 }

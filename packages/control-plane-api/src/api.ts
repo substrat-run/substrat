@@ -1937,6 +1937,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ slug, tenantProvisioner: granted });
   });
 
+  // Grant/revoke the EMAIL-SENDER capability (#303) — whether this vertical's scopes may POST to
+  // the /internal/email/send relay and have transactional mail sent for them. Staff-only (not in
+  // BUILDER_ROUTES): outbound authority is a platform decision, not the owner's. The relay handler
+  // reads the flag on every send.
+  app.post('/verticals/:slug/email-sender', async (c) => {
+    const slug = c.req.param('slug');
+    const { granted } = z.object({ granted: z.boolean() }).parse(await c.req.json());
+    await admin.setVerticalEmailSender(c.get('actor'), slug, granted);
+    return c.json({ slug, emailSender: granted });
+  });
+
   // Delete a vertical + its versions and channels (staff-only, same confinement).
   // Refused below the seam while any scope is still bound — surfaces as a 4xx via
   // mapError, naming the count. Dispatch scripts become orphans for cleanup (#248).
@@ -2301,6 +2312,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // tenant-provisioner grant itself is never touched by a push. Refreshes on every
       // re-push like the rest of the install spec, exactly because it grants nothing.
       ...(manifest.provisions ? { provisions: manifest.provisions } : {}),
+      // The declared email-sender intent (#303) — a REQUEST the console reviews; the
+      // `emailSender` grant itself is never touched by a push. Refreshes on every re-push
+      // like the rest of the install spec, exactly because it grants nothing.
+      ...(manifest.sendsEmail ? { sendsEmail: true } : {}),
       // The declared surfaces (K-26) ride like envSpec: registry metadata for the
       // hostname-binding picker, never behavior. Not part of any admission digest.
       ...(manifest.surfaces ? { surfaces: manifest.surfaces } : {}),

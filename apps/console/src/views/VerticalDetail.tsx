@@ -275,6 +275,25 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onToast }: Ve
                   ? 'Approve provisioner'
                   : 'Grant provisioner'}
             </Button>
+            {/* The email-sender capability (#303) — grant = this vertical's scopes may send
+                transactional mail through the platform relay. Revoke is the safe direction;
+                a manifest-declared `sendsEmail` request reads the grant as the approval it is. */}
+            <Button
+              variant="secondary"
+              onClick={() =>
+                run(
+                  () => api.setEmailSender(vertical.slug, !vertical.emailSender),
+                  vertical.emailSender ? 'Email-sender capability revoked' : 'Email-sender capability granted',
+                  vertical.slug,
+                )
+              }
+            >
+              {vertical.emailSender
+                ? 'Revoke email sender'
+                : vertical.sendsEmail
+                  ? 'Approve email sender'
+                  : 'Grant email sender'}
+            </Button>
             <Button variant="danger" onClick={() => setDeleteInput('')}>
               Delete…
             </Button>
@@ -296,6 +315,16 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onToast }: Ve
                 {prov}
               </Tag>
             ))}
+          </div>
+        ) : null}
+
+        {/* Declared email-sender intent (#303): the manifest asks to send transactional mail,
+            shown against the grant state so approving is an informed read. */}
+        {vertical.sendsEmail ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, fontSize: 12.5 }}>
+            <Badge status={vertical.emailSender ? 'warning' : 'info'}>
+              {vertical.emailSender ? 'sends email' : 'requests to send email'}
+            </Badge>
           </div>
         ) : null}
 

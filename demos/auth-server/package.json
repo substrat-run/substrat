@@ -10,6 +10,7 @@
     "provides": [
       "oidc-issuer"
     ],
+    "sendsEmail": true,
     "envSpec": [
       {
         "key": "PUBLIC_ORIGIN",

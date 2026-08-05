@@ -350,6 +350,14 @@ export const deployManifest = z.object({
    *  tenant-provisioner capability stays a staff-flipped registry flag; this feeds the
    *  console's requested/granted review surface and bounds `provision-tenant` targets. */
   provisions: z.array(verticalSlug).optional(),
+  /** DECLARED email-sender intent (#303): this vertical wants to send transactional mail
+   *  (password-reset, verification, invites) — package.json `substrat.sendsEmail`. Outbound
+   *  is a platform concern (deploy.ts §4 keeps `send_email` OUT of the sandbox allowlist and
+   *  WfP dispatch scripts cannot bind it anyway), so a vertical NEVER sends directly: it POSTs
+   *  to the control plane's `/internal/email/send` relay, which sends on its behalf ONLY when
+   *  the staff-flipped `emailSender` grant is set. A request, never a grant — refreshed on
+   *  every re-push, feeds the console's requested/granted review surface. */
+  sendsEmail: z.boolean().optional(),
   /** The surfaces the vertical serves (package.json `substrat.surfaces`, K-26 multi-surface) —
    *  labels only, carried to the registry for the hostname-binding picker. Metadata, not code. */
   surfaces: z.array(declaredSurface).optional(),

@@ -8,6 +8,9 @@
  *   - CloudflareEmailTransport — Cloudflare Email Service (`send_email` binding).
  *     The default for platform transactional mail (invites, resets, receipts) on
  *     substrat.run: same platform, no new sub-processor, SPF/DKIM auto-configured.
+ *   - PlatformRelayEmailTransport — for a HOSTED VERTICAL, which cannot bind
+ *     `send_email` (#303): POSTs the message to the control plane's relay, which
+ *     sends on its behalf when the vertical holds the `emailSender` grant.
  *   - MockEmailTransport — in memory, for dev/CI/scenario tests.
  *
  * Host code, never module code: module code has no network (CLAUDE.md), so mail
@@ -30,4 +33,5 @@ export {
   addressEmail,
 } from './transport.js';
 export { CloudflareEmailTransport, type SendEmailBinding } from './cloudflare.js';
+export { PlatformRelayEmailTransport, type PlatformRelayOptions } from './relay.js';
 export { MockEmailTransport, type MockEmailOptions } from './mock.js';

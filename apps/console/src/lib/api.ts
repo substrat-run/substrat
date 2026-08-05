@@ -296,6 +296,13 @@ export function createApi(actor: string | null, baseUrl = '/api') {
         `/verticals/${encodeURIComponent(slug)}/tenant-provisioner`,
         { granted },
       ),
+    // Grant/revoke the email-sender capability (#303): whether this vertical's scopes may POST
+    // to the /internal/email/send relay and have transactional mail sent on their behalf.
+    setEmailSender: (slug: string, granted: boolean) =>
+      post<{ slug: string; emailSender: boolean }>(
+        `/verticals/${encodeURIComponent(slug)}/email-sender`,
+        { granted },
+      ),
     // Delete a vertical + its versions/channels. Refused (4xx) while any scope is bound.
     deleteVertical: (slug: string) =>
       call<{ slug: string; deleted: boolean }>(`/verticals/${encodeURIComponent(slug)}`, {

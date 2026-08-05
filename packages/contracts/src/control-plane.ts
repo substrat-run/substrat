@@ -34,6 +34,7 @@ export const adminAction = z.enum([
   'requestPublish', // marketplace-publish.md §5 — a builder requests listing (awaiting staff review)
   'setVerticalInstallsBlocked', // the staff kill-switch — block/unblock NEW installs of a vertical
   'setVerticalTenantProvisioner', // #412 — grant/revoke the tenant-provisioner capability (manager verticals)
+  'setVerticalEmailSender', // #303 — grant/revoke the email-sender capability (relay-sends transactional mail)
   'deleteVertical', // remove a vertical + its versions/channels; refused while any scope is bound
   'bindScopeVersion',
   'promoteVersion',
@@ -324,3 +325,25 @@ export const adminLogEntry = z.object({
   at: instant,
 });
 export type AdminLogEntry = z.infer<typeof adminLogEntry>;
+
+/**
+ * The body a hosted vertical POSTs to the control plane's `/internal/email/send` relay (#303).
+ * A vertical that holds the `emailSender` grant cannot bind `send_email` itself (WfP dispatch
+ * scripts have no such binding and the §4 sandbox refuses it), so it hands the message here and
+ * the platform sends it. `(tenantId, scopeId)` name the caller so the relay can resolve the
+ * scope's vertical and check the grant against THAT vertical — holding the shared PLATFORM_SECRET
+ * is not enough. The FROM address is the platform's onboarded sender, NEVER the vertical's choice;
+ * `fromName` is only the display name. Both `html` and `text` are required — the transport port
+ * enforces a text part so no provider can drop it.
+ */
+export const emailRelayRequest = z.object({
+  tenantId,
+  scopeId,
+  to: z.string().email(),
+  subject: z.string().min(1),
+  html: z.string().min(1),
+  text: z.string().min(1),
+  /** Optional display name for the FROM (e.g. "Substrat Auth"); the address stays platform-owned. */
+  fromName: z.string().min(1).optional(),
+});
+export type EmailRelayRequest = z.infer<typeof emailRelayRequest>;

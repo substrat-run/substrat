@@ -4,6 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@10.10.0",
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "dev": "SUBSTRAT_STACK=1 VITE_DEV_ACTOR=01JZ000000000000000000C0NS concurrently -k -n stack,console -c blue,magenta \"pnpm --filter @substrat-run/demo-callout dev\" \"pnpm --filter @substrat-run/console dev\"",
     "dev:connected": "SUBSTRAT_STACK=1 CONTROL_PLANE_URL=http://127.0.0.1:8788 CP_SKIP_SEED=1 concurrently -k -n control-plane,vertical,console -c yellow,blue,magenta \"pnpm --filter @substrat-run/control-plane-api dev\" \"pnpm --filter @substrat-run/demo-callout dev\" \"pnpm --filter @substrat-run/console dev\"",
     "build": "pnpm -r build",
