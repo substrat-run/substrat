@@ -53,10 +53,13 @@ test/scenario.test.ts  the scenario — including the denials
 server's SQLite host and the worker's `ScopeDO`), and `substrat push` reads the
 permission registry from it (package.json `substrat.permissions`). Roles or
 modules defined anywhere else will run locally and silently not deploy.
-`worker.ts` carries the platform's `/internal/*` management contract and **the
-auth seam** — the dev `x-principal` header is the only caller resolution until
-you wire real auth there; deploying with `ALLOW_DEV_HEADER` set is a
-cross-tenant hole with a UI.
+`worker.ts` **mounts** the platform's `/internal/*` management contract via
+`mountPlatformSurface` from `@substrat-run/vertical-host` (one call — the routes
+and the `{ error }` envelope are authored there, not here, so they can't drift or
+ship half-done). What `worker.ts` still owns is your app routes and **the auth
+seam** — the dev `x-principal` header is the only caller resolution until you wire
+real auth there; deploying with `ALLOW_DEV_HEADER` set is a cross-tenant hole with
+a UI.
 
 ## The rules (non-negotiable)
 

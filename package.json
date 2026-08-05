@@ -38,6 +38,9 @@
       "better-sqlite3",
       "esbuild",
       "workerd"
-    ]
+    ],
+    "overrides": {
+      "hono": "4.12.30"
+    }
   }
 }

@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "HR demo vertical (Meridian) — see spec/concept.md",
+  "description": "HR demo vertical (Meridian) \u2014 see spec/concept.md",
   "substrat": {
     "slug": "meridian",
     "name": "Meridian",
@@ -47,7 +47,7 @@
       {
         "key": "OIDC_ISSUER",
         "label": "OIDC issuer",
-        "description": "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
+        "description": "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, \u2026",
         "placeholder": "https://auth.example.com",
         "required": false,
         "secret": false,
@@ -91,6 +91,7 @@
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
     "better-sqlite3": "^12.0.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",

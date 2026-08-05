@@ -170,8 +170,31 @@ per-operation gate fails closed on anything the tenant doesn't hold. If a live i
 ends up missing one (granted later, or repaired), the control plane re-delivers through your
 `/internal/reconcile` route — part of the required `/internal` contract for hosted verticals
 (`/internal/provision`, `/internal/reconcile`, `/internal/configure`, and the
-snapshot/export family; Meridian's `worker.ts` in the monorepo is the reference
-implementation). A vertical without `/internal/reconcile` cannot be repaired in place.
+snapshot/export/restore family). A vertical without `/internal/reconcile` cannot be repaired
+in place.
+
+You do **not** hand-write those routes. The whole `/internal` surface — plus the `{ error }`
+response envelope the control plane relies on to read a failure — is authored once in
+[`@substrat-run/vertical-host`](/reference/vertical-host) and mounted in one call:
+
+```ts
+import { mountPlatformSurface } from '@substrat-run/vertical-host';
+
+mountPlatformSurface(app, {
+  platformSecret: (env) => env.PLATFORM_SECRET,
+  hostFor,                       // (env) => your CloudflareScopeHost
+  roles: ROLES,
+  ownerRoleKey: OWNER_ROLE_KEY,
+  onProvision,                   // your pending-owner / site-registry side effect
+  resolveOwner,                  // owner-of-record for a reconcile (omit ⇒ 501)
+  onConfigure,                   // per-instance config store (omit ⇒ 501)
+});
+```
+
+Mounting it is what satisfies the contract — the routes cannot drift out of sync or ship
+without the error envelope, because there is only one copy. `create-substrat` scaffolds this
+call for you; the demos (`demos/meridian`, `demos/manyfold`) are worked reference
+implementations.
 
 A push then:
 

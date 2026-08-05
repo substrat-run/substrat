@@ -144,6 +144,7 @@ function guideSidebar() {
         { text: '@substrat-run/kernel', link: '/reference/kernel' },
         { text: '@substrat-run/adapter-sqlite', link: '/reference/adapter-sqlite' },
         { text: '@substrat-run/adapter-cloudflare', link: '/reference/adapter-cloudflare' },
+        { text: '@substrat-run/vertical-host', link: '/reference/vertical-host' },
         { text: '@substrat-run/control-plane-api', link: '/reference/control-plane-api' },
         { text: '@substrat-run/contract-tests', link: '/reference/contract-tests' },
         { text: '@substrat-run/boundary-lint', link: '/reference/boundary-lint' },

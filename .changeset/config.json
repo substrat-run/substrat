@@ -9,7 +9,8 @@
       "@substrat-run/adapter-sqlite",
       "@substrat-run/adapter-cloudflare",
       "@substrat-run/contract-tests",
-      "@substrat-run/control-plane-api"
+      "@substrat-run/control-plane-api",
+      "@substrat-run/vertical-host"
     ]
   ],
   "linked": [],
