@@ -43,7 +43,9 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   window (`tables`, `tables/:table`, `query`, `export`, `health`), and `/fleet/migrations`.
 - **Verticals** — `/verticals` (+ `versions`, `versions/:id/admit`|`reject`, `channels`,
   `channels/:c/promote`, `deploy`, `instances`, `listing`, `publish-request`,
-  `install-block`): the registry, admission, promotion, and the deploy path.
+  `install-block`): the registry, admission, promotion, and the deploy path. A vertical has one
+  channel — `prod` ([dev/staging retired](/concepts/deploying#the-one-channel-prod)); `channels/:c/promote`
+  refuses a non-`prod` channel with a `400`.
 - **Hostnames** — `/hostnames` (+ `/status`, `/verify`): the K-26 hostname map and its
   Cloudflare-for-SaaS issuance/verification.
 - **Roles**, **admin-log**, and **observability** (`/observability/logs`, `/metrics`) —

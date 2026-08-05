@@ -4,6 +4,7 @@ import { type AppAuthChoice, type AppRow, type CatalogEntry, type EnvVarSpec } f
 import { ENV_OPTS, verticalMeta } from '../lib/demo';
 import { Ic } from '../lib/icons';
 import { slugify } from '../lib/format';
+import { navigate } from '../lib/router';
 import { Page } from '../components/layout';
 import { card, Pill } from '../components/ui';
 
@@ -178,7 +179,7 @@ function ChooseVertical({
       <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
         Every install is your own instance — your data, your domain, upgraded only when you choose.
         Building your own?{' '}
-        <a href="#/verticals">Import a repository or push from the CLI on Verticals →</a>
+        <a href="/verticals" onClick={(e) => { e.preventDefault(); navigate('/verticals'); }}>Import a repository or push from the CLI on Verticals →</a>
       </div>
     </Page>
   );

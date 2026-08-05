@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -8,6 +8,7 @@ import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
 import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, Pill, RowActions } from '../components/ui';
 import { IntegrationCard } from './Integrations';
+import { navigate } from '../lib/router';
 import { DnsRecords } from './Domains';
 import { AppObservability } from './AppObservability';
 
@@ -313,7 +314,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
                 Running <span style={{ fontFamily: 'var(--font-mono)' }}>{versionLabel}</span>
-                {updateAvailable && <> · <a href={`#/apps/${app.app_scope_id}/deployments`} style={{ color: 'var(--text-brand)' }}>update available →</a></>}
+                {updateAvailable && <> · <a href={`/apps/${app.app_scope_id}/deployments`} onClick={(e) => { e.preventDefault(); navigate(`/apps/${app.app_scope_id}/deployments`); }} style={{ color: 'var(--text-brand)' }}>update available →</a></>}
                 {' · '}the API reference rides the app&rsquo;s own session — sign in to the app first.
               </div>
             </>
@@ -497,7 +498,7 @@ function Deployments({ app }: { app: AppRow }) {
   const serveStalled = !!prod && prod.servingVersionId != null && prod.servingVersionId !== prod.versionId;
   const promotedVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.versionId) : undefined;
   const servingVersion = serveStalled ? dep.versions.find((v) => v.id === prod!.servingVersionId) : undefined;
-  const COLS = '1fr 1.2fr 1.6fr 1.4fr';
+  const COLS = '1fr 1fr 1.3fr 1.1fr 0.8fr';
 
   const doUpdate = async () => {
     setUpdating(true);
@@ -506,6 +507,32 @@ function Deployments({ app }: { app: AppRow }) {
       const r = await api.updateApp(app.app_scope_id, { snapshot: snapFirst });
       setNote(r.updated ? `Updated ${r.previousVersion ?? '—'} → ${r.version ?? ''}` : 'Already on the latest version.');
       setNonce((n) => n + 1); // refetch so Running + the table reflect the rebind
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  // Pin THIS scope to a specific version (#509 (c)) — the manual per-scope rollout: a
+  // canary, or catching one app up ahead of the rest. `update` always chases prod; this
+  // binds an exact version. A schema-crossing bind forks the data first (the rollback point).
+  const doBind = async (v: DeploymentVersion) => {
+    const snap = !!v.schemaChange;
+    const ok = window.confirm(
+      `Bind this app to ${v.version}?\n\n` +
+        (snap
+          ? 'This version changes the schema — a snapshot is taken first so the bind has a rollback point. '
+          : '') +
+        'The router will serve it for this app immediately.',
+    );
+    if (!ok) return;
+    setUpdating(true);
+    setNote(null);
+    try {
+      await api.bindAppVersion(app.app_scope_id, v.id, snap ? { snapshot: true } : undefined);
+      setNote(`Bound this app to ${v.version}.`);
+      setNonce((n) => n + 1);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     } finally {
@@ -555,7 +582,7 @@ function Deployments({ app }: { app: AppRow }) {
           <span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>
             <MonoTag>{newestAdmitted.version}</MonoTag> is admitted but not in <b>prod</b>
             {selfServe ? (
-              <> — <a href="#/verticals" style={{ color: 'var(--text-brand)' }}>promote it on Verticals →</a></>
+              <> — <a href="/verticals" onClick={(e) => { e.preventDefault(); navigate('/verticals'); }} style={{ color: 'var(--text-brand)' }}>promote it on Verticals →</a></>
             ) : (
               <> — the Substrat team promotes it</>
             )}
@@ -579,7 +606,7 @@ function Deployments({ app }: { app: AppRow }) {
             <b>prod</b> was promoted to <MonoTag>{promotedVersion?.version ?? prod!.versionId}</MonoTag> but its in-place
             serve failed — your app still runs <MonoTag>{servingVersion?.version ?? prod!.servingVersionId}</MonoTag>.
             {selfServe ? (
-              <> Re-promote on <a href="#/verticals" style={{ color: 'var(--text-brand)' }}>Verticals →</a> to retry the serve.</>
+              <> Re-promote on <a href="/verticals" onClick={(e) => { e.preventDefault(); navigate('/verticals'); }} style={{ color: 'var(--text-brand)' }}>Verticals →</a> to retry the serve.</>
             ) : (
               <> The Substrat team can re-promote it to retry.</>
             )}
@@ -606,7 +633,7 @@ function Deployments({ app }: { app: AppRow }) {
       })()}
       <HonestyBanner>
         {selfServe ? (
-          <>Read live from the registry. “Running” is the version the router serves for this app. To ship a newer one, promote it to <b>prod</b> on the <a href="#/verticals" style={{ color: 'inherit' }}>Verticals page</a>, then update here.</>
+          <>Read live from the registry. “Running” is the version the router serves for this app. To ship a newer one, promote it to <b>prod</b> on the <a href="/verticals" onClick={(e) => { e.preventDefault(); navigate('/verticals'); }} style={{ color: 'inherit' }}>Verticals page</a>, then update here.</>
         ) : (
           <>Read live from the registry. “Running” is the version the router serves for this app. The Substrat team promotes versions to prod; updating here moves this app to the current prod version.</>
         )}
@@ -616,7 +643,7 @@ function Deployments({ app }: { app: AppRow }) {
       ) : (
         <div style={{ ...card, overflow: 'hidden' }}>
           <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
-            <span>Version</span><span>Admission</span><span>Channels</span><span>Pushed</span>
+            <span>Version</span><span>Admission</span><span>Channels</span><span>Pushed</span><span style={{ textAlign: 'right' }}>Bind</span>
           </div>
           {dep.versions.map((v, i) => {
             const chans = channelsOf(v.id);
@@ -632,6 +659,13 @@ function Deployments({ app }: { app: AppRow }) {
                   {chans.length === 0 ? <span style={{ color: 'var(--text-tertiary)' }}>—</span> : chans.map((ch) => <Pill key={ch} kind={ch === 'prod' ? 'success' : 'neutral'}>{ch}</Pill>)}
                 </span>
                 <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{v.createdAt ? relativeTime(v.createdAt) : '—'}</span>
+                {/* Pin THIS scope to an exact version (#509 (c)) — a canary/rollback distinct from
+                    "Update to latest". Only an admitted version that isn't already running. */}
+                <span style={{ textAlign: 'right' }}>
+                  {v.admission === 'admitted' && v.id !== dep.boundVersionId ? (
+                    <Button variant="ghost" size="sm" disabled={updating} onClick={() => void doBind(v)}>Bind</Button>
+                  ) : null}
+                </span>
               </div>
             );
           })}
@@ -751,7 +785,7 @@ function Permissions({ app }: { app: AppRow }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <Eyebrow>If you update</Eyebrow>
               <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-                <MonoTag>{view.running.version}</MonoTag> → <MonoTag>{update.version}</MonoTag> — review before updating on the <a href="#/apps" style={{ color: 'var(--text-brand)' }}>Deployments tab</a>
+                <MonoTag>{view.running.version}</MonoTag> → <MonoTag>{update.version}</MonoTag> — review before updating on the <a href="/apps" onClick={(e) => { e.preventDefault(); navigate('/apps'); }} style={{ color: 'var(--text-brand)' }}>Deployments tab</a>
               </span>
             </div>
             {diff!.addedKeys.length > 0 && <DiffRow label="New permissions" kind="info">{diff!.addedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
@@ -849,7 +883,7 @@ function Permissions({ app }: { app: AppRow }) {
       )}
 
       <HonestyBanner>
-        The <b>declared</b> permission surface the vertical ships, read live from its running version. Approving a widened role happens when you update on the <a href="#/apps" style={{ color: 'inherit' }}>Deployments tab</a>, not here.
+        The <b>declared</b> permission surface the vertical ships, read live from its running version. Approving a widened role happens when you update on the <a href="/apps" onClick={(e) => { e.preventDefault(); navigate('/apps'); }} style={{ color: 'inherit' }}>Deployments tab</a>, not here.
       </HonestyBanner>
     </div>
   );

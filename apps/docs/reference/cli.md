@@ -27,9 +27,12 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 |---|---|
 | `substrat login` | Sign in via the browser (per-human), or store a CI service token with `--token`. |
 | `substrat whoami` | Print who you are and the workspaces you can build for. |
-| `substrat push [dir]` | Build the vertical and push a **pending** version — no flags needed from inside the project. |
-| `substrat promote <slug> --channel dev\|staging --version <id>` | Point a non-prod channel at a version. |
-| `substrat versions <slug>` | List a vertical's versions + which channels point where. |
+| `substrat push [dir]` | Build the vertical and push a version — **admitted** for a private vertical, **pending** for a listed one. No flags needed from inside the project. |
+| `substrat promote <slug> --version <id>` | Point **`prod`** (the only channel) at a version. `--channel` defaults to `prod`. |
+| `substrat versions <slug>` | List a vertical's versions + whether `prod` points at each. |
+| `substrat preview create [dir] --tag <t>` | Run a version against a fork of prod (or `--empty` clean room) at its own URL — the non-prod environment primitive. |
+| `substrat scope bind <scopeId> --version <id>` | Pin **one** scope to a version of the same vertical — the per-scope rollout primitive (canary, test env). |
+| `substrat scope domain <scopeId> --domain <d>` | Bind a custom domain to **any** owned scope (a prod app, a preview, a test env). |
 | `substrat publish <slug>` | Request a listing on the public marketplace (a staff operator reviews). |
 | `substrat unpublish <slug>` | Remove a vertical from the public marketplace (staff). |
 | `substrat scope pull <scopeId>` | Pull a scope's data to a local SQLite file — masked by default, `--full` is break-glass. |
@@ -107,23 +110,93 @@ for the wrong owner. A non-interactive push (CI) with no pin refuses instead of 
 ### `promote`
 
 ```bash
-substrat promote helpdesk --channel staging --version 01J…
+substrat promote helpdesk --version 01J… --ack-migrations
 ```
 
-Moves an **admitted** version onto a channel. You self-serve `dev` and `staging`; `prod` is
-refused — production promotion and admission stay a platform decision (model B).
+Points **`prod`** at an **admitted** version — a rebind of the live scope(s) to new code, same
+data. `prod` is the *only* channel, so `--channel` defaults to it; a promote to anything else is
+refused with a pointer at [`preview`](#preview). For a vertical you own privately this is
+self-serve, prod included; a **listed** vertical's prod promotion is a staff decision (the
+marketplace gate). A promote whose permission or migration digest differs from what is live is
+refused until you acknowledge the diff (`--ack-permissions` / `--ack-migrations`).
+
+For a non-production environment — test, canary, a PR preview — you do **not** promote a second
+channel; you run the version against a scope with data. See [`preview`](#preview),
+[`scope bind`](#scope-bind), and the [Environments & previews](/guide/environments-and-previews)
+guide.
 
 ### `versions`
 
 ```bash
 substrat versions helpdesk
 # VERSION  ADMISSION  CHANNELS      ID
-# 0.2.0    admitted   staging       01J…
-# 0.1.0    admitted   dev,prod      01J…
+# 0.2.0    admitted   prod          01J…
+# 0.1.0    admitted                 01J…
 ```
 
-Lists a vertical's versions (newest first), each one's admission state, and which channels
-point at it. The same view is in the dashboard's **Deployments** tab.
+Lists a vertical's versions (newest first), each one's admission state, and whether `prod` points
+at it. The same view is in the dashboard's **Deployments** tab.
+
+### `preview`
+
+```bash
+substrat preview create . --tag pr-42          # push this tree, fork prod, serve the pair
+substrat preview create . --tag test --ttl none --empty   # a pinned, source-less environment
+substrat preview ls
+substrat preview delete --tag pr-42            # reap it (idempotent)
+```
+
+Creates a **preview** — a scope with data bound to a version, at its own `--<tag>` hostname. This is
+the non-production environment primitive: `create` pushes the working tree, forks the vertical's prod
+scope (or provisions an `--empty` clean-room scope), binds the pushed version, and mints the URL.
+Re-running the same `--tag` **rebinds** onto the same fork (migrations roll forward on one copy) and
+**renews** its TTL; `--refresh` starts from a clean fork. `--ttl` defaults to `72h`; `--ttl none`
+**pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
+they never advance the release version your repo owns. Full workflow — sticky-per-PR + per-build URLs,
+a long-lived test environment, the release candidate — in
+[Environments & previews](/guide/environments-and-previews).
+
+### `scope bind`
+
+```bash
+substrat scope bind <scopeId> --version <versionId> [--snapshot]
+```
+
+Pins **one** scope to a version of the same vertical — the per-scope rollout primitive. A prod
+promote cascades every tenant scope; `scope bind` moves a single one, which is how you canary
+*tenant A first* or advance a long-lived [test environment](/guide/environments-and-previews#a-long-lived-test-environment)
+on each merge. `--snapshot` forks the scope's data before a migration-crossing bind (the rollback
+point). A pending (unadmitted) version is refused unless the scope is a preview.
+
+### `scope domain`
+
+```bash
+substrat scope domain <scopeId> --domain crm-test.ahero.se [--surface app]
+```
+
+Binds a **custom domain** to any scope you own — not just a prod app, but a preview or a long-lived
+test environment. The hostname resolves to the *scope*, and the router serves whatever version that
+scope is bound to, so a custom domain on a [pinned test preview](/guide/environments-and-previews#a-long-lived-test-environment)
+gives it a stable address like `crm-test.ahero.se`. It walks the same DNS-validation + certificate
+issuance as a prod domain (`verifying` → `active`); publish the CNAME/TXT it prints, then
+[`substrat hostnames verify <hostname>`](#hostnames) re-polls. A scope carrying a bound domain is
+protected from reaping while it resolves.
+
+### `hostnames`
+
+```bash
+substrat hostnames helpdesk                    # list an install's hostname bindings
+substrat hostnames bind helpdesk --surface app [--domain d] [--scope <id>]
+substrat hostnames verify crm-test.ahero.se    # re-poll a custom domain's DNS/cert issuance
+substrat hostnames unbind crm-test.ahero.se    # remove a binding
+```
+
+The install-addressed view of the hostname map. `hostnames bind` attaches a hostname to a named
+install (by vertical slug, `--scope` to disambiguate); `verify` and `unbind` are hostname-addressed
+and work for a hostname on **any** scope, including one attached with [`scope domain`](#scope-domain).
+A platform hostname (`--surface` with no `--domain`) is live immediately on the wildcard cert; a
+`--domain` custom hostname walks DNS validation. To attach a custom domain to a bare scope id (a
+preview, a test env), reach for [`scope domain`](#scope-domain) instead.
 
 ### `publish` / `unpublish`
 

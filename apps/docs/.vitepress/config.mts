@@ -78,6 +78,7 @@ function guideSidebar() {
         { text: 'Getting started', link: '/guide/getting-started' },
         { text: 'Running locally', link: '/guide/running-locally' },
         { text: 'Deploying a vertical', link: '/guide/deploying' },
+        { text: 'Environments & previews', link: '/guide/environments-and-previews' },
         { text: 'Building for AI agents', link: '/guide/ai-agents' },
       ],
     },

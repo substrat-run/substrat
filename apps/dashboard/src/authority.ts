@@ -725,6 +725,28 @@ export class TenantNarrowedControlPlane {
     return this.call<PreviewRecord[]>(`/verticals/${encodeURIComponent(verticalSlug)}/previews`);
   }
 
+  /**
+   * Create (or reuse, per `tag`) a preview of an already-pushed version — the builder
+   * surface behind the dashboard's Previews/Environments panel. The browser doesn't build,
+   * so it names an existing `versionId` rather than pushing a tree the way `substrat preview
+   * create` does; everything else is the same route. `ttlHours: null` PINS it (a long-lived
+   * test environment); `empty` provisions a clean-room scope when there is no prod to fork.
+   */
+  createPreview(
+    verticalSlug: string,
+    input: {
+      tag: string;
+      versionId: string;
+      ttlHours?: number | null;
+      empty?: boolean;
+      sourceScopeId?: ScopeId;
+      surface?: string;
+      refresh?: boolean;
+    },
+  ): Promise<{ scopeId: string; hostname: string; url: string; versionId: string; reused: boolean }> {
+    return this.post(`/verticals/${encodeURIComponent(verticalSlug)}/previews`, input);
+  }
+
   /** Reap one preview by tag. Idempotent on the CP: already-gone ⇒ `deleted: null`. */
   deletePreview(verticalSlug: string, tag: string): Promise<{ deleted: string | null }> {
     return this.call(`/verticals/${encodeURIComponent(verticalSlug)}/previews/${encodeURIComponent(tag)}`, {
