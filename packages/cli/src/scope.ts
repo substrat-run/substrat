@@ -314,6 +314,46 @@ export async function scopeStatus(opts: {
 }
 
 /**
+ * `substrat scope bind <scopeId> --version <id>` — pin ONE scope to a specific version of the
+ * SAME vertical (issue #509 ask (c)). This is the platform's most general rollout primitive
+ * reached directly: a canary ("tenant A gets 0.3.0 first") or a pinned tenant is just this call
+ * per scope, where a channel promote is a fleet-wide rebind. The route it hits already carries
+ * the fork-before-promote gate — `--snapshot` archives the pre-migration data first when the
+ * bind crosses a migration-digest boundary (a code-only rebind snapshots nothing), so a bad
+ * version leaves a rollback point. A pending version is refused unless the scope is a preview.
+ */
+export async function bindScopeVersion(opts: {
+  controlPlaneUrl: string;
+  header: Record<string, string>;
+  tenantId: string;
+  scopeId: string;
+  versionId: string;
+  snapshot?: boolean;
+}): Promise<void> {
+  const res = await fetch(
+    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
+      `/scopes/${encodeURIComponent(opts.scopeId)}/version`,
+    {
+      method: 'POST',
+      headers: { ...opts.header, 'content-type': 'application/json' },
+      body: JSON.stringify({ versionId: opts.versionId, snapshot: opts.snapshot || undefined }),
+    },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `bind refused: ${res.status} ${res.statusText}`);
+  }
+  const record = await readJson<{ verticalVersionId: string | null; vertical: string | null; servingRef?: string | null }>(
+    res,
+    res.url,
+  );
+  console.log(`✓ scope ${opts.scopeId} now runs version ${record.verticalVersionId} (${record.vertical ?? '—'}).`);
+  if (opts.snapshot) {
+    console.log('  a pre-migration snapshot was taken if this bind crossed a migration boundary — the rollback point.');
+  }
+}
+
+/**
  * `substrat scope rebind <scopeId> --to <slug>` — move ONE scope onto a DIFFERENT vertical
  * lineage's serving script (#389): the update-rebind behind retiring a platform-owned lineage
  * in favour of a tenant-owned one. Staff-only server-side. Refused when the two lineages'
