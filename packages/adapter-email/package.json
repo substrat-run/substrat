@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/adapter-email",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Substrat notification-transport adapter (D-18): one EmailTransport port, swappable implementations — Cloudflare Email Service (default) + in-memory mock. Host code, never module code.",
   "license": "AGPL-3.0-only",
