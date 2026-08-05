@@ -212,8 +212,9 @@ export const MOCK_AUDIT_ENTRIES: AuditEntry[] = [
   { id: '01J2Q8ZAUDIT000000000000A5', actor: 'service:control-plane', action: 'provisionScope', tenantId: '01J2Q8Z3V9K4W7X2M5N6P7TNT0', scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: 'protocol', before: null, after: { status: 'active' }, causedBy: null, at: ago(2 * 86400e3 + 3 * 60e3) },
 ];
 
+const svc = 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300';
 export const MOCK_OBSERVABILITY_LOGS: ObservabilityLogEvent[] = [
-  { timestamp: now - 4 * 60e3, level: 'error', message: 'TypeError: cannot read properties of undefined (reading "status") at /operations/close-ticket', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', outcome: 'exception' },
-  { timestamp: now - 11 * 60e3, level: 'log', message: '{"op":"createTicket","durationMs":34}', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', outcome: 'ok' },
-  { timestamp: now - 26 * 60e3, level: 'warn', message: 'retrying webhook delivery (attempt 2)', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', outcome: 'ok' },
+  { timestamp: now - 4 * 60e3, level: 'error', message: 'TypeError: cannot read properties of undefined (reading "status") at /operations/close-ticket', service: svc, outcome: 'exception', trigger: 'default.closeTicket', eventType: 'rpc', entrypoint: 'ScopeDO', requestId: 'YAU1U795U1IUWWRM', cpuTimeMs: 3.2, wallTimeMs: 5, raw: { $metadata: { trigger: 'default.closeTicket', level: 'error' }, $workers: { eventType: 'rpc', entrypoint: 'ScopeDO', outcome: 'exception', cpuTimeMs: 3.2 } } },
+  { timestamp: now - 11 * 60e3, level: 'log', message: '{"op":"createTicket","durationMs":34}', service: svc, outcome: 'ok', trigger: 'default.createTicket', eventType: 'rpc', entrypoint: 'ScopeDO', requestId: 'ZBV2V806V2JVXXSN', cpuTimeMs: 0.4, wallTimeMs: 34, raw: { $metadata: { trigger: 'default.createTicket', level: 'log' }, $workers: { eventType: 'rpc', entrypoint: 'ScopeDO', outcome: 'ok', cpuTimeMs: 0.4 } } },
+  { timestamp: now - 26 * 60e3, level: 'warn', message: 'retrying webhook delivery (attempt 2)', service: svc, outcome: 'ok', trigger: 'POST /internal/webhook', eventType: 'fetch', entrypoint: null, requestId: 'ACW3W917W3KWYYTO', cpuTimeMs: 1.1, wallTimeMs: 12, raw: { $metadata: { trigger: 'POST /internal/webhook', level: 'warn' }, $workers: { eventType: 'fetch', outcome: 'ok', cpuTimeMs: 1.1 } } },
 ];

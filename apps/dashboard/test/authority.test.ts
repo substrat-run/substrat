@@ -296,7 +296,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(logCall).toContain('limit=50');
   });
 
-  it('observabilityLogs surfaces the neutral field set ONLY — the backend `raw` payload never passes through', async () => {
+  it('observabilityLogs carries the enriched neutral fields and the `raw` event through (owned service ⇒ own telemetry)', async () => {
     const { cp } = routedHarness({
       ...registry,
       '/observability/logs': [
@@ -306,15 +306,35 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
           message: 'boom',
           service: 'acme-helpdesk-v1',
           outcome: 'exception',
-          // The plane's staff-facing events carry the provider event verbatim; a
-          // builder response must not inherit it by pass-through.
-          raw: { $metadata: { tenantId: 'someone-else' } },
+          trigger: 'default.closeTicket',
+          eventType: 'rpc',
+          entrypoint: 'ScopeDO',
+          requestId: 'YAU1U795U1IUWWRM',
+          cpuTimeMs: 3.2,
+          wallTimeMs: 5,
+          // `raw` is the provider event verbatim. The ownership gate above already
+          // proved this service is THIS tenant's, so the event is the tenant's own
+          // telemetry — passing it through powers the per-row drill-down, not a leak.
+          raw: { $metadata: { trigger: 'default.closeTicket' }, $workers: { outcome: 'exception' } },
         },
       ],
     });
     const events = await cp.observabilityLogs({ service: 'acme-helpdesk-v1' });
     expect(events).toEqual([
-      { timestamp: 1722700000000, level: 'error', message: 'boom', service: 'acme-helpdesk-v1', outcome: 'exception' },
+      {
+        timestamp: 1722700000000,
+        level: 'error',
+        message: 'boom',
+        service: 'acme-helpdesk-v1',
+        outcome: 'exception',
+        trigger: 'default.closeTicket',
+        eventType: 'rpc',
+        entrypoint: 'ScopeDO',
+        requestId: 'YAU1U795U1IUWWRM',
+        cpuTimeMs: 3.2,
+        wallTimeMs: 5,
+        raw: { $metadata: { trigger: 'default.closeTicket' }, $workers: { outcome: 'exception' } },
+      },
     ]);
   });
 

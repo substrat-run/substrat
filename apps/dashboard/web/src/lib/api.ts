@@ -559,6 +559,15 @@ export interface ObservabilityLogEvent {
   message: string | null;
   service: string | null;
   outcome: string | null;
+  /** Neutral enrichments carried through the observability seam (observability.ts). */
+  trigger: string | null;
+  eventType: string | null;
+  entrypoint: string | null;
+  requestId: string | null;
+  cpuTimeMs: number | null;
+  wallTimeMs: number | null;
+  /** The backend's full event — powers the per-row expand-to-JSON drill-down. */
+  raw?: unknown;
 }
 
 export const api = {
