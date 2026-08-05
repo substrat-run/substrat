@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
-import type { EntitlementGrant, MigrationProgress, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
+import type {
+  EntitlementGrant,
+  HostnameBinding,
+  MigrationProgress,
+  Scope,
+  ScopeId,
+  Tenant,
+  TenantId,
+} from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, Select, Tabs, Tag } from '../components';
 import {
   availableActions,
@@ -11,6 +19,7 @@ import {
   statusLabel,
   statusTone,
 } from '../lib/fleet';
+import { boundHostnames } from '../lib/portal';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
 
@@ -19,6 +28,9 @@ export interface ScopesProps {
   scopes: Scope[];
   tenants: Map<TenantId, Tenant>;
   entitlements: Map<TenantId, EntitlementGrant[]>;
+  /** The whole fleet's hostname bindings (loaded once by App) — joined per row to mark
+   *  the scopes that are actually serving, so a live install never reads like dead cruft. */
+  hostnames: HostnameBinding[];
   /** Open a scope's routed detail view (App owns the URL + which scope is open). */
   onOpen: (id: ScopeId) => void;
   onChanged: () => void;
@@ -181,7 +193,16 @@ const BULK_ACTIONS: {
 /** Options for the client-side page-size control. */
 const PAGE_SIZES = [25, 50, 100];
 
-export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, onToast }: ScopesProps) {
+export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, onChanged, onToast }: ScopesProps) {
+  // How many hostnames each scope binds — the fact that tells a live install apart from
+  // dead cruft, and the one the reap guard turns on. Counted once over the whole fleet's
+  // bindings so a row's "Serving" badge is a Map lookup, not a per-row filter. Any binding
+  // counts (matching the server guard), not just `active` ones.
+  const bindingCounts = useMemo(() => {
+    const m = new Map<ScopeId, number>();
+    for (const h of hostnames) m.set(h.scopeId, (m.get(h.scopeId) ?? 0) + 1);
+    return m;
+  }, [hostnames]);
   const [tab, setTab] = useState('all');
   // Null until it loads; stays null where the API predates /fleet/migrations —
   // the card simply does not render, nothing else degrades.
@@ -345,6 +366,10 @@ export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, 
   }
 
   const reapTargets = eligibleFor('reap');
+  // Reap refuses (409) while a scope still binds a hostname. Archived scopes usually
+  // don't, but an archived-yet-still-bound one is exactly the near-miss #500 is about —
+  // flag them so the operator unbinds (or uses Prune) instead of hitting a raw refusal.
+  const boundReapTargets = reapTargets.filter((s) => (bindingCounts.get(s.id) ?? 0) > 0);
 
   // "No active app" — a scope safe to prune: a snapshot fork (deleted, not reaped), or
   // one that is archived or stuck provisioning. Deliberately EXCLUDES a live `active`
@@ -638,6 +663,12 @@ export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, 
                       {rowEff === 'suspended-via-tenant' && (
                         <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>via tenant</span>
                       )}
+                      {/* Serving badge: this scope resolves ≥1 hostname, i.e. it is (or will
+                          be) live — the load-bearing fact when the row sits in a reap flow.
+                          It also means reap is guarded until the names are unbound (#500). */}
+                      {(bindingCounts.get(s.id) ?? 0) > 0 && (
+                        <Badge status="info">Serving · {bindingCounts.get(s.id)}</Badge>
+                      )}
                       {/* Migration failure is orthogonal to lifecycle status — shown beside it. */}
                       {s.migrationFailure && <Badge status="danger">Migration failed</Badge>}
                       <Badge status={statusTone(rowEff)}>{statusLabel(rowEff)}</Badge>
@@ -725,6 +756,18 @@ export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, 
             — every table, event, and migration record. It <strong>cannot be undone</strong>: unlike
             archive, there is no restore. Each directory row is kept as a tombstone.
           </p>
+          {/* Still-bound targets are refused by the reap guard, not wiped — call it out
+              here rather than let the operator watch them fail one by one. Prune is the
+              lever that unbinds first; plain reap does not. */}
+          {boundReapTargets.length > 0 && (
+            <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)', lineHeight: '18px' }}>
+              <strong>
+                {boundReapTargets.length} of these still serve a hostname
+              </strong>{' '}
+              and will be <strong>refused</strong> — a serving scope can't be reaped. Unbind
+              them first, or use <strong>Prune</strong> (it releases hostnames before reaping).
+            </p>
+          )}
           {/* The eligible subset — the selection may hold rows that are not
               archived (and so cannot be reaped); those are left untouched. */}
           <div
@@ -742,9 +785,17 @@ export function Scopes({ api, scopes, tenants, entitlements, onOpen, onChanged, 
               gap: 2,
             }}
           >
-            {reapTargets.map((s) => (
-              <span key={s.id}>{scopeHandle(s, tenants)}</span>
-            ))}
+            {reapTargets.map((s) => {
+              const bound = bindingCounts.get(s.id) ?? 0;
+              return (
+                <span key={s.id}>
+                  {scopeHandle(s, tenants)}
+                  {bound > 0 && (
+                    <span style={{ color: 'var(--status-warning-fg)' }}> · serving {bound}, will be refused</span>
+                  )}
+                </span>
+              );
+            })}
           </div>
           <Input
             label={`Type ${reapTargets.length} to arm this action`}

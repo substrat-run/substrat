@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, KeyValue } from '../components';
 import { availableActions, effectiveStatus, scopeHandle, statusLabel, statusTone } from '../lib/fleet';
-import { portalUrl } from '../lib/portal';
+import { boundHostnames, portalUrl } from '../lib/portal';
 import type { Api } from '../lib/api';
 
 export interface ScopeDetailProps {
@@ -24,6 +24,7 @@ export interface ScopeDetailProps {
 export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged, onToast }: ScopeDetailProps) {
   const [confirmReap, setConfirmReap] = useState(false);
   const [reapArmed, setReapArmed] = useState('');
+  const [confirmArchive, setConfirmArchive] = useState(false);
   // Role-projection health (#321): fetched lazily on select so the fleet list stays
   // one directory read while this detail still reveals the silent "active but zero
   // roles" condition. Null = not-yet/unavailable (degrades to nothing shown).
@@ -31,6 +32,10 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
 
   const eff = effectiveStatus(scope, tenants.get(scope.tenantId));
   const actions = availableActions(eff);
+  // The hostnames this scope resolves — the load-bearing fact for both destructive
+  // levers here. Archive takes them dark (an outage); reap is refused until they're
+  // released (#500/#501). A serving scope always has ≥1, which is what makes it live.
+  const bound = boundHostnames(scope, hostnames);
 
   // Probe the scope's role projection. Only an ACTIVE scope can exhibit the silent-deny
   // condition; skip the call otherwise.
@@ -93,8 +98,11 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
                 Suspend
               </Button>
             )}
+            {/* Archive is reversible (Restore replays), but archiving a serving scope is
+                an outage — it stops resolving. Confirm through a dialog that names the
+                hostnames going dark rather than taking a live app offline on one click. */}
             {actions.includes('archive') && (
-              <Button variant="secondary" onClick={() => run(() => api.archiveScope(scope.tenantId, scope.id), 'Scope archived', scope.slug)}>
+              <Button variant="secondary" onClick={() => setConfirmArchive(true)}>
                 Archive
               </Button>
             )}
@@ -117,6 +125,21 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
             { label: 'Scope ID', value: scope.id, mono: true },
             { label: 'Tenant', value: tenants.get(scope.tenantId)?.name ?? '—' },
             { label: 'Vertical', value: scope.vertical ?? '—', mono: true },
+            {
+              label: 'Hostnames',
+              value:
+                bound.length === 0 ? (
+                  '— none bound'
+                ) : (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <Badge status="info">Serving · {bound.length}</Badge>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {bound[0]!.hostname}
+                      {bound.length > 1 ? ` +${bound.length - 1}` : ''}
+                    </span>
+                  </span>
+                ),
+            },
             { label: 'Kind', value: scope.kind, mono: true },
             { label: 'Storage shape', value: `Shape ${scope.storageShape}` },
             // Fixed at provisioning (K-7) — displayed, never editable.
@@ -196,17 +219,25 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
         open={confirmReap}
         title={`Reap ${scopeHandle(scope, tenants)}?`}
         danger
-        confirmLabel="Reap storage"
+        confirmLabel={bound.length > 0 ? `Unbind ${bound.length} & reap` : 'Reap storage'}
         width={520}
         onConfirm={
           reapArmed === scope.slug
             ? () => {
                 setConfirmReap(false);
                 setReapArmed('');
+                // The reap guard refuses while any hostname is bound, so release them
+                // first — the same unbind→reap order the bulk Prune lever runs. With no
+                // bindings this loop is empty and it is a plain reap.
                 void run(
-                  () => api.reapScope(scope.tenantId, scope.id),
+                  async () => {
+                    for (const h of bound) await api.unbindHostname(h.hostname);
+                    await api.reapScope(scope.tenantId, scope.id);
+                  },
                   'Storage reaped',
-                  `${scope.slug} · Durable Object wiped, tombstone kept`,
+                  bound.length > 0
+                    ? `${scope.slug} · ${bound.length} hostname${bound.length === 1 ? '' : 's'} released, Durable Object wiped`
+                    : `${scope.slug} · Durable Object wiped, tombstone kept`,
                 );
               }
             : undefined
@@ -222,6 +253,35 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
             and migration record. It <strong>cannot be undone</strong>: unlike archive, there
             is no restore. The directory row is kept as a tombstone (audit trail + burned slug).
           </p>
+          {/* A serving scope can't be reaped while bound (#500/#501). Rather than let the
+              operator hit a raw 409, name the hostnames this will release first — taking
+              the app permanently offline — as part of the same armed action. */}
+          {bound.length > 0 && (
+            <div
+              style={{
+                border: '1px solid var(--status-warning-border, var(--border-subtle))',
+                borderRadius: 6,
+                padding: '8px 10px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+              }}
+            >
+              <span style={{ fontSize: 12.5, color: 'var(--status-warning-fg)', lineHeight: '18px' }}>
+                <strong>This scope is still serving.</strong> Reap is refused while a hostname
+                is bound, so confirming first unbinds {bound.length === 1 ? 'it' : `all ${bound.length}`} —
+                taking the app <strong>offline for good</strong> — then wipes storage.
+              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                {bound.map((h) => (
+                  <span key={h.hostname}>
+                    {h.hostname}
+                    {h.canonical ? ' · canonical' : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
             {scope.vertical ? `Vertical ${scope.vertical}` : 'No vertical bound'}
             {scope.archivedAt ? ` · archived ${scope.archivedAt.slice(0, 10)}` : ''}
@@ -233,6 +293,60 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
             value={reapArmed}
             onChange={(e) => setReapArmed(e.target.value)}
           />
+        </div>
+      </Dialog>
+
+      {/* Archive confirmation — archive is reversible (Restore replays migrations on next
+          access), but a serving scope stops resolving the moment it archives. Name the
+          hostnames going dark so "Archive" on a live install is a decision, not a reflex. */}
+      <Dialog
+        open={confirmArchive}
+        title={`Archive ${scopeHandle(scope, tenants)}?`}
+        confirmLabel={bound.length > 0 ? 'Take offline & archive' : 'Archive'}
+        width={520}
+        onConfirm={() => {
+          setConfirmArchive(false);
+          void run(() => api.archiveScope(scope.tenantId, scope.id), 'Scope archived', scope.slug);
+        }}
+        onCancel={() => setConfirmArchive(false)}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
+            Archiving suspends the scope and starts its auto-reap clock (§4.4). It is{' '}
+            <strong>reversible</strong> — Restore brings it back and replays migrations on next
+            access — but the app goes offline until then.
+          </p>
+          {bound.length > 0 ? (
+            <div
+              style={{
+                border: '1px solid var(--status-warning-border, var(--border-subtle))',
+                borderRadius: 6,
+                padding: '8px 10px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+              }}
+            >
+              <span style={{ fontSize: 12.5, color: 'var(--status-warning-fg)', lineHeight: '18px' }}>
+                <strong>
+                  {bound.length} hostname{bound.length === 1 ? ' goes' : 's go'} dark
+                </strong>{' '}
+                the moment this archives — the router stops resolving:
+              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                {bound.map((h) => (
+                  <span key={h.hostname}>
+                    {h.hostname}
+                    {h.canonical ? ' · canonical' : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              No hostnames bound — no live traffic is affected.
+            </span>
+          )}
         </div>
       </Dialog>
     </div>

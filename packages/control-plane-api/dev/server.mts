@@ -43,9 +43,14 @@ const staff = platformActorId.parse(ulid());
 const world = [
   { slug: 'acme', name: 'Acme Fastigheter', status: 'active', skus: ['workorder', 'invoicing'],
     scopes: [
-      { slug: 'brf-vasastan', kind: 'brf', name: 'Brf Vasastan', vertical: 'housing', status: 'active' },
+      // A live install with a canonical hostname — the "Serving" badge + a real portal link.
+      { slug: 'brf-vasastan', kind: 'brf', name: 'Brf Vasastan', vertical: 'housing', status: 'active',
+        hostname: 'brf-vasastan-acme.eu.substrat.run' },
       { slug: 'brf-sjostaden', kind: 'brf', name: 'Brf Sjöstaden', vertical: 'housing', status: 'active' },
-      { slug: 'brf-eken', kind: 'brf', name: 'Brf Eken', vertical: 'housing', status: 'archived' },
+      // Archived YET still bound — the #500 near-miss: it reads "Serving" while archived, and
+      // its reap is the guarded unbind-&-reap, not a silent wipe.
+      { slug: 'brf-eken', kind: 'brf', name: 'Brf Eken', vertical: 'housing', status: 'archived',
+        hostname: 'brf-eken-acme.eu.substrat.run' },
     ] },
   { slug: 'nordan', name: 'Nordan Bygg', status: 'active', skus: ['workorder'],
     scopes: [
@@ -78,6 +83,14 @@ for (const t of world) {
     await host.admin.activateScope(staff, tid, sid);
     if (s.status === 'suspended') await host.admin.suspendScope(staff, tid, sid);
     if (s.status === 'archived') await host.admin.archiveScope(staff, tid, sid);
+    // Bind a hostname AFTER any archive, so an archived-yet-bound scope exists to drive
+    // the reap guard's UI. `active` so it also renders a working portal link.
+    if ('hostname' in s && s.hostname) {
+      await host.admin.bindHostname(staff, {
+        hostname: s.hostname, tenantId: tid, scopeId: sid, surface: 'app', region: null, canonical: true,
+      });
+      await host.admin.setHostnameStatus(staff, s.hostname, 'active');
+    }
   }
   // Suspend the tenant last, so its scopes provision first.
   if (t.status === 'suspended') await host.admin.setTenantStatus(staff, tid, 'suspended');

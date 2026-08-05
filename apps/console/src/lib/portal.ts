@@ -53,6 +53,22 @@ export function portalUrl(
  * and back office, or RallyPoint's player app and manager console. §5.5 assumed one
  * hostname per scope, which is the assumption `surface` exists to correct.
  */
+/**
+ * Every hostname bound to this scope, in ANY status — canonical first, then by name.
+ *
+ * Unlike {@link portalUrl}, this does not filter to `active`: the reap guard
+ * (control-plane.md §4.4) refuses while *any* binding exists, since a `pending` or
+ * `failed` one still pins the scope and still routes once it settles. So this — not the
+ * active-only set — is the list the console must show before a reap, and the set an
+ * "unbind & reap" must release. A serving app always has ≥1 of these; that is the whole
+ * reason a live scope can never be silently wiped (#500/#501).
+ */
+export function boundHostnames(scope: Scope, bindings: HostnameBinding[]): HostnameBinding[] {
+  return bindings
+    .filter((b) => b.scopeId === scope.id)
+    .sort((a, b) => Number(b.canonical) - Number(a.canonical) || a.hostname.localeCompare(b.hostname));
+}
+
 export function portalUrls(
   scope: Scope,
   bindings: HostnameBinding[],
