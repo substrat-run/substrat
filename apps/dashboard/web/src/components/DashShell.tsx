@@ -38,7 +38,7 @@ function NavRow({ item, active, onNav }: { item: NavItem; active: boolean; onNav
   const [hover, setHover] = useState(false);
   return (
     <a
-      href={`#/${item.key}`}
+      href={`/${item.key}`}
       onClick={(e) => {
         e.preventDefault();
         onNav(item.key);
