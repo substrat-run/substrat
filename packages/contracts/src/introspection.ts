@@ -151,3 +151,47 @@ export const scopeBackup = z.object({
   tables: z.number().int().nonnegative(),
 });
 export type ScopeBackup = z.infer<typeof scopeBackup>;
+
+/**
+ * A COMPLETE dump of the DIRECTORY — the platform's own database (#40), not a tenant's.
+ *
+ * The same table shape as a `scopeDump`, and deliberately so: both are the logical
+ * row-dump of one SQLite database, so one reader, one writer, one wire shape. What
+ * differs is what is inside and what losing it costs. A scope database holds one
+ * customer's data and is protected by ~30-day DO point-in-time recovery; the directory
+ * holds tenants, scopes, hostnames, verticals, identities and the admin log — the
+ * mapping that makes every OTHER database addressable — and is unreconstructable from
+ * them. `control-plane.md` puts it plainly: losing it is losing the platform, not
+ * losing a cache.
+ *
+ * There is no (tenantId, scopeId) here because there is exactly ONE directory per
+ * deployment. `capturedAt` is therefore the whole address of a copy.
+ *
+ * PITR already covers corruption INSIDE the account, which is why this exists on a
+ * different axis: an off-DO copy is what survives a control-plane bug that deletes the
+ * Durable Object outright. It does NOT survive loss of the Cloudflare account itself
+ * while the store lives in that same account — see the honest scoping in
+ * control-plane.md §4.9.
+ */
+export const directoryDump = z.object({
+  /** ISO 8601 capture time — and, since there is only one directory, the copy's address. */
+  capturedAt: z.string().min(1),
+  tables: z.array(scopeDumpTable),
+});
+export type DirectoryDump = z.infer<typeof directoryDump>;
+
+/**
+ * One stored DIRECTORY backup, as the list surface reports it (#40) — metadata about a
+ * `directoryDump` the platform holds, never the dump itself. The scope-level analogue is
+ * `scopeBackup`; this one carries no tenant or scope because the directory is the thing
+ * that knows about tenants and scopes.
+ */
+export const directoryBackup = z.object({
+  /** ISO 8601 — the dump's own `capturedAt`, and this backup's address. */
+  capturedAt: z.string().min(1),
+  /** Serialized size in bytes — what tells a real copy from an empty one at a glance. */
+  size: z.number().int().nonnegative(),
+  /** Tables carried; zero means the copy is not restorable. */
+  tables: z.number().int().nonnegative(),
+});
+export type DirectoryBackup = z.infer<typeof directoryBackup>;

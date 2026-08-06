@@ -10,8 +10,15 @@
  * deleted by the very teardown these copies exist to survive.
  */
 
-import { scopeDump, type ScopeBackup, type ScopeDump } from '@substrat-run/contracts';
-import type { ScopeBackupStore } from './backups.js';
+import {
+  directoryDump,
+  scopeDump,
+  type DirectoryBackup,
+  type DirectoryDump,
+  type ScopeBackup,
+  type ScopeDump,
+} from '@substrat-run/contracts';
+import type { DirectoryBackupStore, ScopeBackupStore } from './backups.js';
 
 /** The minimal slice of a worker `R2Bucket` binding this store relies on. */
 interface R2BucketLike {
@@ -24,6 +31,7 @@ interface R2BucketLike {
     },
   ): Promise<unknown>;
   get(key: string): Promise<{ text(): Promise<string> } | null>;
+  delete(key: string): Promise<void>;
   list(options?: {
     prefix?: string;
     cursor?: string;
@@ -116,6 +124,93 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
       // Parsed through the contract on the way out: a corrupted or hand-edited object
       // fails HERE, loudly, rather than at the restore that trusted it.
       return scopeDump.parse(JSON.parse(await obj.text())) as ScopeDump;
+    },
+  };
+}
+
+/**
+ * Keys are `directory/<capturedAt>.json` — one flat prefix, because there is exactly one
+ * directory per deployment and `capturedAt` is a copy's whole address. Sharing a bucket
+ * with the scope backups above is safe by construction: `scopes/` and `directory/` cannot
+ * collide, and neither prefix is ever built by a caller.
+ */
+function directoryKey(capturedAt: string): string {
+  return `directory/${capturedAt}.json`;
+}
+
+const DIRECTORY_PREFIX = 'directory/';
+
+/**
+ * The Cloudflare R2 implementation of `DirectoryBackupStore` (#40).
+ *
+ * Deliberately a separate factory over the SAME binding shape rather than a mode flag on
+ * `createR2BackupStore`: the two stores answer different questions and only this one can
+ * delete. A deployment may point them at one bucket or two — the prefixes keep them apart
+ * either way, and pointing THIS one at a bucket in another account is the upgrade path
+ * from "survives losing the directory" to "survives losing the account".
+ */
+export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupStore {
+  const r2 = bucket as R2BucketLike;
+  return {
+    async put({ dump }) {
+      const body = JSON.stringify(dump);
+      // Byte length, not string length — the size is the stored object's.
+      const size = new TextEncoder().encode(body).length;
+      const backup: DirectoryBackup = {
+        capturedAt: dump.capturedAt,
+        size,
+        tables: dump.tables.length,
+      };
+      await r2.put(directoryKey(dump.capturedAt), body, {
+        httpMetadata: { contentType: 'application/json' },
+        // Mirrored into custom metadata so `list` answers without fetching every dump —
+        // a directory copy is megabytes, its listing is a table row.
+        customMetadata: {
+          capturedAt: backup.capturedAt,
+          tables: String(backup.tables),
+        },
+      });
+      return backup;
+    },
+
+    async list() {
+      const out: DirectoryBackup[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await r2.list({
+          prefix: DIRECTORY_PREFIX,
+          include: ['customMetadata'],
+          ...(cursor ? { cursor } : {}),
+        });
+        for (const o of page.objects) {
+          const meta = o.customMetadata ?? {};
+          // The key is the fallback address, as in the scope store: an object written
+          // before the metadata existed still lists rather than vanishing.
+          const capturedAt =
+            meta.capturedAt ?? o.key.slice(DIRECTORY_PREFIX.length).replace(/\.json$/, '');
+          out.push({
+            capturedAt,
+            size: o.size,
+            tables: meta.tables ? Number(meta.tables) : 0,
+          });
+        }
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+      // Newest first — ISO 8601 sorts lexicographically, which is why `capturedAt` is
+      // the key's last segment. The daily-cadence guard reads element 0.
+      return out.sort((a, b) => (a.capturedAt < b.capturedAt ? 1 : -1));
+    },
+
+    async get({ capturedAt }) {
+      const obj = await r2.get(directoryKey(capturedAt));
+      if (!obj) return null;
+      // Parsed through the contract on the way out, so a corrupted object fails HERE
+      // rather than half-way through the restore that trusted it.
+      return directoryDump.parse(JSON.parse(await obj.text())) as DirectoryDump;
+    },
+
+    async delete({ capturedAt }) {
+      await r2.delete(directoryKey(capturedAt));
     },
   };
 }

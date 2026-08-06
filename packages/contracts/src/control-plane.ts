@@ -90,6 +90,12 @@ export const adminAction = z.enum([
   // #383 — a module's system principal may hold a permission (for scheduled work),
   // so granting one is a named, audited mutation like every other grant.
   'grantToSystem',
+  // #40 — the directory's own disaster-recovery write: replace THE DIRECTORY (tenants,
+  // scopes, hostnames, verticals, identities) with a stored dump. Carries no tenant,
+  // because its blast radius is every tenant. The entry lands in the log it just
+  // replaced, which is exactly right: the restored log is the pre-restore history, and
+  // this row is the first thing after it — the seam is legible instead of silent.
+  'restoreDirectory',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

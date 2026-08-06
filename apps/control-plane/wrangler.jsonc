@@ -108,7 +108,21 @@
 	// Retention is indefinite for now; a lifecycle rule is #36's retention decision.
 	// Absent this binding, a reap that asks for a backup is refused 501 rather than
 	// silently wiping (the asymmetry is in ControlPlaneApiOptions.scopeBackups).
-	"r2_buckets": [{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups" }],
+	//
+	// DIRECTORY_BACKUPS (#40) is the platform's own copy — the directory DO, not a tenant's
+	// scope. A separate bucket rather than a prefix in the one above, because the two have
+	// opposite blast radii: the scope bucket holds customer data (and is subject to #36's
+	// retention and erasure decisions), while this one holds the platform's own map and is
+	// pruned to a 30-day window by the cron. Create:
+	//   wrangler r2 bucket create substrat-directory-backups
+	// SCOPE: this bucket lives in the platform's OWN Cloudflare account, so it survives a
+	// control-plane bug that deletes the directory DO — NOT loss of the account itself. The
+	// store seam is provider-neutral so an off-account target is a drop-in; see
+	// control-plane.md §4.9 for the honest statement of what is and is not covered.
+	"r2_buckets": [
+		{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups" },
+		{ "binding": "DIRECTORY_BACKUPS", "bucket_name": "substrat-directory-backups" }
+	],
 	// Serve the built console SPA (apps/console/dist) from the same origin as the
 	// API. run_worker_first sends every request to the Worker first (it owns
 	// /api/*); the catch-all delegates the rest to ASSETS with SPA fallback.
@@ -155,9 +169,15 @@
 					"database_id": "bcb791f3-f136-43de-b4e6-3739328cada3"
 				}
 			],
-			// Own backup bucket (#493) — a test reap must never write into, or read from,
-			// prod's copies. Create: wrangler r2 bucket create substrat-scope-backups-test
-			"r2_buckets": [{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups-test" }], // differs
+			// Own backup buckets (#493, #40) — a test reap must never write into, or read
+			// from, prod's copies, and a test directory restore must never be able to reach
+			// prod's map. Create:
+			//   wrangler r2 bucket create substrat-scope-backups-test
+			//   wrangler r2 bucket create substrat-directory-backups-test
+			"r2_buckets": [
+				{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups-test" },
+				{ "binding": "DIRECTORY_BACKUPS", "bucket_name": "substrat-directory-backups-test" }
+			], // differs
 			"assets": {
 				"directory": "../console/dist",
 				"binding": "ASSETS",

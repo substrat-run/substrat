@@ -1576,6 +1576,137 @@ describe('control-plane API', () => {
     });
   });
 
+  /**
+   * #40 — the directory's own backup/restore routes. The scope backups above protect one
+   * customer; these protect the map that makes every customer addressable, and unlike a
+   * scope the directory has no point-in-time recovery to fall back on.
+   *
+   * What these pin is the surface an operator meets in an emergency: what is held, how a
+   * copy is taken by hand, and the guard that stands between a legitimate recovery and a
+   * replayed restore that would roll a working platform backwards.
+   */
+  describe('directory backups (#40)', () => {
+    /** An in-memory `DirectoryBackupStore` over the one directory. */
+    function fakeDirectoryStore() {
+      const copies = new Map<string, DirectoryDump>();
+      return {
+        copies,
+        store: {
+          put: async ({ dump }: { dump: DirectoryDump }) => {
+            copies.set(dump.capturedAt, dump);
+            return {
+              capturedAt: dump.capturedAt,
+              size: JSON.stringify(dump).length,
+              tables: dump.tables.length,
+            };
+          },
+          list: async () =>
+            [...copies.values()]
+              .map((d) => ({
+                capturedAt: d.capturedAt,
+                size: JSON.stringify(d).length,
+                tables: d.tables.length,
+              }))
+              .sort((a, b) => (a.capturedAt < b.capturedAt ? 1 : -1)),
+          get: async ({ capturedAt }: { capturedAt: string }) => copies.get(capturedAt) ?? null,
+          delete: async ({ capturedAt }: { capturedAt: string }) => {
+            copies.delete(capturedAt);
+          },
+        },
+      };
+    }
+
+    it('takes a copy on demand, lists it, and serves the dump back as a restore source', async () => {
+      const { store, copies } = fakeDirectoryStore();
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        directoryBackups: store,
+      });
+
+      const taken = await api.request('/directory/backups', { method: 'POST', headers: auth });
+      expect(taken.status).toBe(201);
+      const meta = (await taken.json()) as { capturedAt: string; tables: number };
+      expect(meta.tables).toBeGreaterThan(0);
+      expect(copies.size).toBe(1);
+
+      const listed = await api.request('/directory/backups', { headers: auth });
+      expect(await listed.json()).toHaveLength(1);
+
+      // The dump itself — real directory tables, not a stub.
+      const dumped = await api.request(`/directory/backups/${meta.capturedAt}`, { headers: auth });
+      const dump = (await dumped.json()) as DirectoryDump;
+      expect(dump.tables.map((t) => t.name)).toContain('tenants');
+
+      // A copy that does not exist is a 404, not an empty dump that would restore an
+      // empty platform.
+      const missing = await api.request('/directory/backups/2020-01-01T00:00:00.000Z', { headers: auth });
+      expect(missing.status).toBe(404);
+    });
+
+    it('refuses a restore onto a directory that still has tenants, unless overwrite is explicit', async () => {
+      const { store } = fakeDirectoryStore();
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        directoryBackups: store,
+      });
+      const taken = await api.request('/directory/backups', { method: 'POST', headers: auth });
+      const { capturedAt } = (await taken.json()) as { capturedAt: string };
+
+      // A tenant that did not exist when the copy was taken — this is what a replayed
+      // restore would silently destroy, and it is created here rather than inherited so
+      // the guard is tested against a directory this test knows the shape of.
+      const later = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: later, slug: 'post-backup-co', name: 'Post Backup Co' });
+
+      // The dangerous case: a well-formed restore replayed against a control plane that
+      // has already recovered.
+      const refused = await api.request('/directory/restore', {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ capturedAt }),
+      });
+      expect(refused.status).toBe(409);
+      expect(await refused.text()).toContain('overwrite=true');
+
+      // Said out loud, it proceeds — and the platform is still readable afterwards.
+      const done = await api.request('/directory/restore', {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ capturedAt, overwrite: true }),
+      });
+      expect(done.status).toBe(200);
+      expect(await done.json()).toMatchObject({ capturedAt });
+      // A restore REPLACES: what was created after the copy is gone, and the platform
+      // still answers through the directory it just rewrote.
+      expect(await host.admin.getTenant(staff, later)).toBeUndefined();
+      const tenants = await api.request('/tenants', { headers: auth });
+      expect(tenants.status).toBe(200);
+
+      // Audited in the log it just replaced — the entry after a restored history is the
+      // restore itself, which is what makes the seam legible rather than silent.
+      const log = await host.admin.auditLog(staff, { action: 'restoreDirectory' });
+      expect(log).toHaveLength(1);
+      expect(log[0]!.after).toMatchObject({ capturedAt });
+    });
+
+    it('answers 501 with no store bound — loudly unconfigured, never an empty list', async () => {
+      const api = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+      for (const [path, method] of [
+        ['/directory/backups', 'GET'],
+        ['/directory/backups', 'POST'],
+        ['/directory/backups/2026-08-06T00:00:00.000Z', 'GET'],
+        ['/directory/restore', 'POST'],
+      ] as const) {
+        const res = await api.request(path, { method, headers: auth, ...(method === 'POST' ? { body: '{}' } : {}) });
+        // An empty list would read as "backups run, there just are none" — the exact
+        // false belief a DR surface must not be able to create.
+        expect(res.status).toBe(501);
+      }
+    });
+  });
+
   it('tenant reap: refuses a non-deleting tenant (409), then reaps every scope via the vertical and keeps the tombstone (§4.8)', async () => {
     const tR = tenantId.parse(ulid());
     await host.admin.createTenant(staff, { id: tR, slug: 'tenant-reap-co', name: 'Tenant Reap Co' });

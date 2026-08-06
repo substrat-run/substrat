@@ -813,6 +813,77 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- directory export/restore: the platform's own DR (#40) -----------------
+    //
+    // Everything above backs up ONE tenant's world. This pair backs up the map that
+    // makes every tenant addressable — and is the one part of the platform no
+    // per-scope recovery can rebuild. `control-plane.md`: losing it is losing the
+    // platform, not losing a cache.
+    //
+    // The point of running this in the CONTRACT suite, against a live host with real
+    // tenants and scopes, is that #40 asks for a REHEARSED restore. A backup story
+    // nobody has executed is a belief, not a guarantee — so this executes it: capture,
+    // diverge, restore, and then keep using the platform.
+
+    describe('directory export/restore (#40)', () => {
+      it('dumps the directory — tenants, scopes and the audit spine, with DDL and rows', async () => {
+        const dump = await host.admin.exportDirectory(staff);
+        expect(dump.capturedAt).toBeTruthy();
+
+        const byName = new Map(dump.tables.map((t) => [t.name, t]));
+        // The directory's own registries — the rows that make a scope addressable.
+        expect(byName.has('tenants')).toBe(true);
+        expect(byName.has('scopes')).toBe(true);
+        // And the audit spine: a directory restored without its history cannot say
+        // what the platform did before the restore.
+        expect(byName.has('_substrat_admin_log')).toBe(true);
+        // SQLite's own internals are not dumped (auto-managed, un-recreatable).
+        expect(dump.tables.some((t) => t.name.startsWith('sqlite_'))).toBe(false);
+
+        // Fidelity where it counts: the fixture's tenants are IN the copy.
+        const tenants = byName.get('tenants')!;
+        const idCol = tenants.columns.indexOf('tenant_id');
+        expect(idCol).toBeGreaterThanOrEqual(0);
+        const ids = tenants.rows.map((r) => r[idCol]);
+        expect(ids).toContain(t1);
+        expect(ids).toContain(t2);
+      });
+
+      it('restores: a directory diverged past the copy is rewound, and still serves', async () => {
+        const backup = await host.admin.exportDirectory(staff);
+
+        // Diverge past the copy — a tenant that did not exist when it was taken.
+        const ghost = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, {
+          id: ghost,
+          slug: `ghost-${ghost.toLowerCase()}`,
+          name: 'Ghost',
+        });
+        expect(await host.admin.getTenant(staff, ghost)).toBeDefined();
+
+        await host.admin.restoreDirectory(staff, backup);
+
+        // The divergence is gone — a restore REPLACES, it does not merge.
+        expect(await host.admin.getTenant(staff, ghost)).toBeUndefined();
+        // ...and everything the copy carried is back.
+        expect(await host.admin.getTenant(staff, t1)).toBeDefined();
+        const rec = await host.admin.getScopeRecord(staff, t1, s1);
+        expect(rec?.id).toBe(s1);
+
+        // The rehearsal's real question, and the one an assertion about row counts
+        // cannot answer: is the PLATFORM still working? Open the scope through the
+        // restored directory and invoke — this exercises the tenancy check, the scope
+        // lookup and the permission tuples the restore just rewrote.
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/write-marker', { v: 'after-directory-restore' });
+
+        // The restore is audited, in the log it just replaced: the entry after a
+        // restored history is the restore itself, so the seam is legible.
+        const log = await host.admin.auditLog(staff, { limit: 50 });
+        expect(log.some((e) => e.action === 'restoreDirectory')).toBe(true);
+      });
+    });
+
     // -- restore (§8's write half): load a dump into an EXISTING scope in place ---
 
     describe('scope restore — backup/backout (§8)', () => {
