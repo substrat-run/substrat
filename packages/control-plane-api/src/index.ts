@@ -88,3 +88,5 @@ export type {
 export type { ObservabilityReader, ServiceMetricsRow, RecentLogEvent } from './observability.js';
 export { createCfObservabilityReader } from './cf-observability.js';
 export type { CfObservabilityOptions } from './cf-observability.js';
+export type { ScopeBackup, ScopeBackupStore } from './backups.js';
+export { createR2BackupStore } from './r2-backups.js';

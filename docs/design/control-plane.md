@@ -217,6 +217,49 @@ Hostname provisioning (custom-hostnames API, DNS validation, cert lifecycle) is 
 this lifecycle, per §5.5 — it is control-plane work, and the `hostname → (tenant, scope,
 vertical)` map is directory data the router reads.
 
+#### A reap leaves a recoverable copy ([#493](https://github.com/substrat-run/substrat/issues/493))
+
+`reapScope` is the one lifecycle step with no undo: it frees the scope's Durable Object
+storage — Cloudflare never garbage-collects a DO, so an archived app's bytes persist
+forever otherwise — and the row survives only as a tombstone. Before #493 the copy that
+made that survivable was **the operator's job to remember**, taken from a different
+surface, which is a guarantee only for as long as nobody is in a hurry.
+
+So the copy moved into the route. `POST …/scopes/:s/reap` writes a **full-fidelity dump**
+to a platform-held store *before any byte is wiped*, and records its address on the
+reap's admin-log entry (`after.backupRef`, `null` when none was taken — "nobody backed
+this up" is a fact the witness states, not one an operator infers). The ordering is the
+whole guarantee: a store that throws aborts the reap with the scope intact, answered as a
+`502` that says so rather than a bare 500.
+
+Three decisions worth not re-litigating:
+
+- **A dump, not a snapshot fork.** The cheap move — fork the scope before reaping — fails
+  the case the flow exists for. `orchestratedSnapshot` provisions the fork *inside the
+  vertical's own deployment* and activates it, so its bytes live in the very deployment a
+  retirement is about to delete, and it counts as a live scope in `countScopesForVertical`
+  — re-blocking the `deleteVertical` the reap was clearing. A dump leaves the deployment,
+  and `POST …/restore` already loads one back, so export → store → restore is the round
+  trip that closes.
+- **Full fidelity, never masked.** The `GET …/export` route masks by default because it
+  hands bytes to a *caller* (§6's governed pull). A backup goes platform→platform and is
+  never handed out, so the masking default does not apply — and a masked dump restores a
+  structurally-valid but factually wrong scope. A backup that cannot restore is a false
+  promise, and the promise is the point.
+- **The tenant reap defaults the other way.** §4.8 is partly an Art. 17 erasure path, so
+  `POST /tenants/:t/reap` takes **no** backup unless staff explicitly ask: silently writing
+  a customer's data into a bucket the reap does not clear would defeat the request it was
+  made to satisfy. Retiring a tenant and erasing one are different acts, and the default
+  should be the safe one for each.
+
+Asking for a backup where the platform has **no** store configured is refused (`501`),
+never silently skipped — the console always asks, so a control plane deployed with the
+bucket unbound fails loudly instead of quietly dropping the guarantee. Retention of the
+stored copies is indefinite for now and belongs to
+[#36](https://github.com/substrat-run/substrat/issues/36)'s retention decision;
+jurisdiction-pinned scopes are refused outright until a per-jurisdiction store exists
+(K-32), because the reap must not wipe what the platform may not legally copy.
+
 ### 4.3 The entitlement store
 
 D-20 says entitlements gate module loading, and every manifest declares an

@@ -96,6 +96,19 @@
 			"database_id": "da63a4b0-3b45-474f-bce0-1cbe18080906"
 		}
 	],
+	// The platform's scope-BACKUP bucket (#493) — where a reap's recoverable copy goes.
+	// Reaping wipes a Durable Object's storage irreversibly, so the reap route writes a
+	// full-fidelity dump here FIRST and records its ref on the admin-log entry; a scope
+	// cannot be reaped from the console without one landing.
+	//   wrangler r2 bucket create substrat-scope-backups
+	// PLATFORM-held on purpose, never per-tenant: a tenant's own bucket would be deleted
+	// by the very teardown these copies exist to survive. Contents are FULL fidelity
+	// (unmasked) — a masked dump cannot restore — so this bucket is as sensitive as the
+	// scopes it backs: no public access, and it is deliberately NOT bound on any vertical.
+	// Retention is indefinite for now; a lifecycle rule is #36's retention decision.
+	// Absent this binding, a reap that asks for a backup is refused 501 rather than
+	// silently wiping (the asymmetry is in ControlPlaneApiOptions.scopeBackups).
+	"r2_buckets": [{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups" }],
 	// Serve the built console SPA (apps/console/dist) from the same origin as the
 	// API. run_worker_first sends every request to the Worker first (it owns
 	// /api/*); the catch-all delegates the rest to ASSETS with SPA fallback.
@@ -142,6 +155,9 @@
 					"database_id": "bcb791f3-f136-43de-b4e6-3739328cada3"
 				}
 			],
+			// Own backup bucket (#493) — a test reap must never write into, or read from,
+			// prod's copies. Create: wrangler r2 bucket create substrat-scope-backups-test
+			"r2_buckets": [{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups-test" }], // differs
 			"assets": {
 				"directory": "../console/dist",
 				"binding": "ASSETS",

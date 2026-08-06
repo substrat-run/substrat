@@ -41,6 +41,7 @@ import {
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
+  createR2BackupStore,
   createCustomHostnameProvisioner,
   reconcilePendingHostnames,
   isCustomHostname,
@@ -81,6 +82,13 @@ interface Env extends OidcEnv {
   AUTH_DB?: D1Database;
   /** The console SPA. Absent in the workerd test. */
   ASSETS?: Fetcher;
+  /**
+   * The platform's scope-backup bucket (#493) — where a reap's recoverable copy lands
+   * before any byte is wiped. Bound in wrangler.jsonc. Absent (the workerd test, a
+   * self-host) ⇒ a reap that explicitly asks for a backup is refused 501 rather than
+   * proceeding without one; a reap that does not ask still works.
+   */
+  SCOPE_BACKUPS?: R2Bucket;
   /** Shared secret a connected vertical presents (x-service-token) to register. */
   SERVICE_TOKEN?: string;
   /**
@@ -703,6 +711,10 @@ export default {
         fetchVerticalModules: fetchVerticalModulesFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),
         observability: observabilityFor(env),
+        // #493 — the recoverable copy a reap leaves behind. Undefined when the bucket
+        // is not bound, which is what makes an asked-for backup refuse rather than
+        // silently skip.
+        ...(env.SCOPE_BACKUPS ? { scopeBackups: createR2BackupStore(env.SCOPE_BACKUPS) } : {}),
         // #305 §4.7 — a custom-domain bind drives Cloudflare-for-SaaS issuance; a
         // platform mint under one of these base domains rides the wildcard.
         provisionHostname: provisionHostnameFor(env),

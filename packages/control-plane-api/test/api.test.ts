@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { assetHash, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeDumpTable } from '@substrat-run/contracts';
+import { assetHash, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -1307,6 +1307,273 @@ describe('control-plane API', () => {
     expect(deletes).toEqual([sR]);
     // The tombstone is still resolvable (200, not the fork-delete's 404).
     expect((await delegated.request(`/tenants/${tR}/scopes/${sR}`, { headers: auth })).status).toBe(200);
+  });
+
+  /**
+   * #493 — a reap wipes a scope's storage irreversibly, so the recoverable copy is a
+   * property of the ROUTE, not of the operator remembering. What these pin is the
+   * ordering (copy durable BEFORE any byte is wiped) and the refusals that keep it
+   * honest: an asked-for backup with nowhere to go must stop the reap, not skip the copy.
+   */
+  describe('backup before reap (#493)', () => {
+    /** An in-memory `ScopeBackupStore`, recording into a shared ordering log. */
+    function fakeStore(order: string[], opts: { fail?: boolean } = {}) {
+      const held = new Map<string, { backup: ScopeBackup; dump: ScopeDump }>();
+      const key = (t: string, s: string, at: string) => `${t}/${s}/${at}`;
+      return {
+        held,
+        store: {
+          put: async ({ vertical, dump }: { vertical: string | null; dump: ScopeDump }) => {
+            if (opts.fail) throw new Error('bucket unavailable');
+            const backup: ScopeBackup = {
+              tenantId: dump.tenantId,
+              scopeId: dump.scopeId,
+              vertical,
+              capturedAt: dump.capturedAt,
+              size: JSON.stringify(dump).length,
+              tables: dump.tables.length,
+            };
+            held.set(key(dump.tenantId, dump.scopeId, dump.capturedAt), { backup, dump });
+            order.push(`backup:${dump.scopeId}`);
+            return backup;
+          },
+          list: async ({ tenantId: t, scopeId: s }: { tenantId: string; scopeId: string }) =>
+            [...held.values()].filter((v) => v.backup.tenantId === t && v.backup.scopeId === s).map((v) => v.backup),
+          get: async (i: { tenantId: string; scopeId: string; capturedAt: string }) =>
+            held.get(key(i.tenantId, i.scopeId, i.capturedAt))?.dump ?? null,
+        },
+      };
+    }
+
+    /** A vertical holding one table of real rows, recording its wipe into the same log. */
+    function fakeVerticalFor(order: string[]) {
+      return {
+        exportScope: async (): Promise<ScopeDumpTable[]> => [
+          {
+            name: 'customers',
+            ddl: 'CREATE TABLE customers (id TEXT, email TEXT)',
+            columns: ['id', 'email'],
+            rows: [['c1', 'anna@example.com']],
+          },
+        ],
+        deleteScope: async (input: { scopeId: string }) => {
+          order.push(`wipe:${input.scopeId}`);
+        },
+      } as unknown as VerticalClient;
+    }
+
+    /** An archived, unbound scope — the one state a reap is legal from. */
+    async function archivedScope(slug: string) {
+      const t = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug, name: slug });
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'demo-vert' });
+      await host.admin.activateScope(staff, t, s);
+      await host.admin.archiveScope(staff, t, s);
+      return { t, s };
+    }
+
+    it('stores a full dump BEFORE the wipe, names it in the response and on the admin log, and serves it back', async () => {
+      const order: string[] = [];
+      const { store, held } = fakeStore(order);
+      const { t, s } = await archivedScope('backup-co');
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'demo-vert': fakeVerticalFor(order) },
+        scopeBackups: store,
+      });
+
+      const res = await api.request(`/tenants/${t}/scopes/${s}/reap`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ backup: true }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; backup: ScopeBackup };
+      expect(body.status).toBe('reaped');
+
+      // THE property: the copy was durable before the bytes went. A wipe-then-backup
+      // ordering would still produce a stored object — of an already-emptied scope.
+      expect(order).toEqual([`backup:${s}`, `wipe:${s}`]);
+
+      // Full fidelity, not the export route's masked default: a masked copy restores a
+      // structurally-valid but factually wrong scope, which is not a backup.
+      expect(body.backup).toMatchObject({ tenantId: t, scopeId: s, vertical: 'demo-vert', tables: 1 });
+      const stored = [...held.values()][0]!.dump;
+      expect(stored.tables.find((x) => x.name === 'customers')!.rows[0]).toEqual(['c1', 'anna@example.com']);
+
+      // The admin log answers "was there a copy, and where" from the reap entry itself.
+      const log = await host.admin.auditLog(staff, { tenantId: t, limit: 50 });
+      const entry = log.find((e) => e.action === 'reapScope')!;
+      expect((entry.after as { backupRef?: string }).backupRef).toBe(
+        `/tenants/${t}/scopes/${s}/backups/${body.backup.capturedAt}`,
+      );
+
+      // Readable AFTER the reap — the directory row survives as a tombstone, and the
+      // copy is what makes the wipe survivable rather than merely recorded.
+      const listed = await api.request(`/tenants/${t}/scopes/${s}/backups`, { headers: auth });
+      expect(await listed.json()).toHaveLength(1);
+      const fetched = await api.request(
+        `/tenants/${t}/scopes/${s}/backups/${body.backup.capturedAt}`,
+        { headers: auth },
+      );
+      expect(fetched.status).toBe(200);
+      expect((await fetched.json()) as ScopeDump).toMatchObject({ tenantId: t, scopeId: s });
+    });
+
+    it('refuses the reap when a backup is asked for and no store is configured — the scope survives', async () => {
+      const order: string[] = [];
+      const { t, s } = await archivedScope('no-store-co');
+      // No `scopeBackups`: the misconfigured-platform case. Silently reaping here is
+      // exactly the failure mode the explicit ask exists to prevent.
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'demo-vert': fakeVerticalFor(order) },
+      });
+
+      const res = await api.request(`/tenants/${t}/scopes/${s}/reap`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ backup: true }),
+      });
+      expect(res.status).toBe(501);
+      expect((await res.json()).error).toMatch(/no backup target configured/);
+      expect(order).toEqual([]); // the wipe never reached the vertical
+      expect((await host.admin.getScopeRecord(staff, t, s))!.status).toBe('archived');
+    });
+
+    it('aborts the reap when the store throws — a wipe never outruns a failed copy', async () => {
+      const order: string[] = [];
+      const { store } = fakeStore(order, { fail: true });
+      const { t, s } = await archivedScope('store-down-co');
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'demo-vert': fakeVerticalFor(order) },
+        scopeBackups: store,
+      });
+
+      const res = await api.request(`/tenants/${t}/scopes/${s}/reap`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ backup: true }),
+      });
+      // 502 with the store's own detail, not a bare 500: "the bucket is down" and "the
+      // reap broke" are different facts, and only one of them leaves data intact (#321).
+      expect(res.status).toBe(502);
+      const err = (await res.json()) as { error: string; detail: string };
+      expect(err.error).toMatch(/the scope was NOT reaped/);
+      expect(err.detail).toMatch(/bucket unavailable/);
+      expect(order).toEqual([]);
+      expect((await host.admin.getScopeRecord(staff, t, s))!.status).toBe('archived');
+    });
+
+    it('backup:false is the explicit unrecoverable wipe; omitting it reaps unbacked only where no store exists', async () => {
+      const order: string[] = [];
+      const { store, held } = fakeStore(order);
+      const { t, s } = await archivedScope('opt-out-co');
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'demo-vert': fakeVerticalFor(order) },
+        scopeBackups: store,
+      });
+
+      const res = await api.request(`/tenants/${t}/scopes/${s}/reap`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ backup: false }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ status: 'reaped', backup: null });
+      expect(order).toEqual([`wipe:${s}`]);
+      expect(held.size).toBe(0);
+
+      // And the pre-#493 caller — a bare POST with no body — still works where the
+      // platform has no store at all (self-host, embedded), rather than 501ing.
+      const bare = await archivedScope('legacy-caller-co');
+      const noStore = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'demo-vert': fakeVerticalFor(order) },
+      });
+      const legacy = await noStore.request(`/tenants/${bare.t}/scopes/${bare.s}/reap`, {
+        method: 'POST',
+        headers: auth,
+      });
+      expect(legacy.status).toBe(200);
+      expect(await legacy.json()).toMatchObject({ status: 'reaped', backup: null });
+    });
+
+    it('refuses to back up a jurisdiction-pinned scope rather than move its data to the global store (K-32)', async () => {
+      const order: string[] = [];
+      const { store } = fakeStore(order);
+      const t = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: 'eu-pinned-co', name: 'EU Pinned Co' });
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'demo-vert', jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t, s);
+      await host.admin.archiveScope(staff, t, s);
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'demo-vert': fakeVerticalFor(order) },
+        scopeBackups: store,
+      });
+
+      const res = await api.request(`/tenants/${t}/scopes/${s}/reap`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ backup: true }),
+      });
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toMatch(/pinned to 'eu'.*out of that jurisdiction/s);
+      // Refusing the BACKUP refuses the REAP: we do not wipe what we may not copy.
+      expect(order).toEqual([]);
+      expect((await host.admin.getScopeRecord(staff, t, s))!.status).toBe('archived');
+    });
+
+    it('tenant reap takes NO backup by default (§4.8 is an erasure path), and one per scope when asked', async () => {
+      const order: string[] = [];
+      const { store, held } = fakeStore(order);
+
+      // Default: erasure. Writing the customer's data to a bucket the reap does not
+      // clear would defeat the Art. 17 request the teardown may exist to satisfy.
+      const erase = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: erase, slug: 'erase-co', name: 'Erase Co' });
+      const sE = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: erase, scopeId: sE, vertical: 'demo-vert' });
+      await host.admin.activateScope(staff, erase, sE);
+      await host.admin.setTenantStatus(staff, erase, 'deleting');
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'demo-vert': fakeVerticalFor(order) },
+        scopeBackups: store,
+      });
+      const erased = await api.request(`/tenants/${erase}/reap`, { method: 'POST', headers: auth });
+      expect(erased.status).toBe(200);
+      expect(order).toEqual([`wipe:${sE}`]);
+      expect(held.size).toBe(0);
+
+      // Opt in: retiring a tenant, not erasing one.
+      const keep = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: keep, slug: 'retire-co', name: 'Retire Co' });
+      const sK = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: keep, scopeId: sK, vertical: 'demo-vert' });
+      await host.admin.activateScope(staff, keep, sK);
+      await host.admin.setTenantStatus(staff, keep, 'deleting');
+      const retired = await api.request(`/tenants/${keep}/reap`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ backup: true }),
+      });
+      expect(retired.status).toBe(200);
+      expect(order.slice(1)).toEqual([`backup:${sK}`, `wipe:${sK}`]);
+      expect(held.size).toBe(1);
+    });
   });
 
   it('tenant reap: refuses a non-deleting tenant (409), then reaps every scope via the vertical and keeps the tombstone (§4.8)', async () => {

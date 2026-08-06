@@ -66,6 +66,7 @@ import {
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import type { ObservabilityReader } from './observability.js';
+import type { ScopeBackup, ScopeBackupStore } from './backups.js';
 import {
   isCustomHostname,
   validateBindableHostname,
@@ -178,6 +179,21 @@ export interface ControlPlaneApiOptions {
    * means forgetting that costs a feature, never a leak.
    */
   observability?: ObservabilityReader;
+  /**
+   * Where a reap's recoverable copy is stored (#493) — host-injected like
+   * `observability`, so this package holds no bucket binding. When present, reaping a
+   * scope writes a full-fidelity dump here FIRST and records its ref on the admin-log
+   * entry; a store that throws aborts the reap, because a wipe with no copy is exactly
+   * what the seam exists to prevent.
+   *
+   * Absent ⇒ a reap that did not explicitly ask for a backup proceeds without one (the
+   * self-host / embedded / test shape, where there is no platform bucket), and one that
+   * DID ask is refused 501 rather than silently reaping. That asymmetry is deliberate:
+   * the console always asks, so a control plane deployed with the binding missing fails
+   * loudly instead of quietly dropping the guarantee — the lesson `PLATFORM_BASE_DOMAINS`
+   * taught when it silently went unset.
+   */
+  scopeBackups?: ScopeBackupStore;
   /**
    * Issues + polls Cloudflare-for-SaaS custom hostnames (#305, §4.7) — host-injected
    * like `deployVertical`, so this package holds no Cloudflare credential (D-34). When
@@ -353,6 +369,26 @@ const snapshotScopeBody = z.object({
   kind: z.string().min(1).optional(),
   expiresAt: z.string().datetime({ offset: true }).optional(),
 });
+
+// A reap request (#493). `backup` is deliberately TRI-STATE, not a defaulted boolean:
+//   true      — back up or refuse (the console always sends this, so a control plane
+//               deployed without a backup store fails loudly instead of quietly wiping)
+//   false     — the explicit "I accept an unrecoverable wipe"
+//   undefined — back up if a store is configured, proceed without one if not, which is
+//               what keeps every pre-#493 caller (and self-host) working unchanged
+const reapScopeBody = z.object({
+  backup: z.boolean().optional(),
+});
+
+/**
+ * How a stored backup is named in the admin log and to callers: the route that fetches
+ * it. Store-neutral by construction — the R2 key scheme stays private to the store — and
+ * an operator reading a reap entry gets an address they can actually GET, rather than a
+ * bucket path they would have to know the platform's internals to use.
+ */
+function backupRefOf(b: ScopeBackup): string {
+  return `/tenants/${b.tenantId}/scopes/${b.scopeId}/backups/${b.capturedAt}`;
+}
 
 // A per-PR preview request (preview-and-snapshots.md §2/§9 — the "run a new version
 // against a fork of prod" slice). `tag` is a short DNS-safe label (`pr-123`): it names
@@ -613,6 +649,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/tenants/:tenantId/reap', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const actor = c.get('actor');
+    const { backup: wantsBackup } = reapScopeBody.parse(await c.req.json().catch(() => ({})));
     const tenant = await admin.getTenant(actor, tenantId);
     if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
     if (tenant.status !== 'deleting') {
@@ -627,11 +664,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       for (const scope of await admin.listScopes(actor, { tenantId })) {
         if (scope.status === 'reaped') continue;
         if (scope.status !== 'archived') await admin.archiveScope(actor, tenantId, scope.id);
+        // A backup here is OPT-IN, the inverse of the per-scope reap's default (#493).
+        // A scope reap is operational cleanup, so leaving a copy is the safe default; a
+        // TENANT reap is the deletion of a customer, and §4.8 exists partly to serve an
+        // Art. 17 erasure — silently writing that customer's data to a bucket the reap
+        // does not clear would defeat the request it was made to satisfy. Staff who are
+        // retiring (not erasing) a tenant pass `backup: true` deliberately.
+        const backup = wantsBackup === true ? await backupScope(c, tenantId, scope) : null;
         const vertical = await verticalForScope(c, scope);
         if (vertical) await vertical.deleteScope({ scopeId: scope.id });
         // Tenant teardown reaps every scope and releases every name by design — force past
         // the bound-hostname guard (which fences the interactive per-scope reap route below).
-        await admin.reapScope(actor, tenantId, scope.id, { force: true });
+        await admin.reapScope(actor, tenantId, scope.id, {
+          force: true,
+          ...(backup ? { backupRef: backupRefOf(backup) } : {}),
+        });
       }
       await admin.reapTenant(actor, tenantId);
       return c.json(await admin.getTenant(actor, tenantId));
@@ -1340,6 +1387,91 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
+  // -- backups (#493) --------------------------------------------------------
+  // The recoverable copy a reap leaves behind. Delegation mirrors the export route
+  // exactly: `admin.exportScope` is the canonical call — it writes the K-24 access-log
+  // entry, and IS the bytes when the host is co-located — and a vertical-held scope's
+  // real tables overlay it. FULL fidelity, never masked: a masked dump cannot restore,
+  // and a backup that cannot restore is a false promise (see `backups.ts`).
+  const backupScope = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    tenantId: TenantId,
+    scope: Scope,
+  ): Promise<ScopeBackup> => {
+    const store = options.scopeBackups;
+    if (!store) {
+      throw new ControlPlaneError(
+        501,
+        'no backup target configured — this control plane cannot store a scope backup ' +
+          '(bind one, or reap with backup=false to accept an unrecoverable wipe)',
+      );
+    }
+    // Residency (K-7/K-32): the platform bucket is global, so writing a jurisdiction-
+    // pinned scope's bytes into it would move them out of the region the scope was
+    // promised. Refuse rather than back up to the wrong place — and, because the reap
+    // aborts with it, rather than wipe a scope we cannot legally copy.
+    if (scope.jurisdiction !== 'global') {
+      throw new ControlPlaneError(
+        409,
+        `scope ${scope.id} is pinned to '${scope.jurisdiction}' — the platform backup ` +
+          `store is global, so a backup would move its data out of that jurisdiction ` +
+          `(K-32); refused until a per-jurisdiction store exists`,
+      );
+    }
+    const dump = await admin.exportScope(c.get('actor'), tenantId, scope.id);
+    const vertical = await verticalForScope(c, scope);
+    const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
+    return store.put({ vertical: scope.vertical, dump: { ...dump, tables } });
+  };
+
+  // The copies held for one scope — metadata only, so listing a reaped scope's backups
+  // is cheap and hands out no bytes. Readable AFTER the reap (that is the point): the
+  // directory row survives as a tombstone, and this is what tells the operator a
+  // recoverable copy exists and when it was taken.
+  app.get('/tenants/:tenantId/scopes/:scopeId/backups', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    if (!options.scopeBackups) return c.json({ error: 'no backup target configured' }, 501);
+    // Reads the directory, not the store, for the tenant cross-check: the store is keyed
+    // by (tenant, scope) but nothing there proves the caller's tenant owns the scope.
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    return c.json(await options.scopeBackups.list({ tenantId, scopeId }));
+  });
+
+  // One backup's DUMP — the restore source. Staff-only like the export it came from
+  // (not in BUILDER_ROUTES), and full-fidelity, so it is the same governed-pull posture:
+  // K-3 cross-checked above, and `POST …/restore` is where it goes back.
+  app.get('/tenants/:tenantId/scopes/:scopeId/backups/:capturedAt', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const capturedAt = c.req.param('capturedAt');
+    if (!options.scopeBackups) return c.json({ error: 'no backup target configured' }, 501);
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const dump = await options.scopeBackups.get({ tenantId, scopeId, capturedAt });
+    if (!dump) return c.json({ error: `no backup for scope ${scopeId} at ${capturedAt}` }, 404);
+    return c.json(dump);
+  });
+
+  // Take a backup WITHOUT reaping — the standalone copy (a pre-migration checkpoint, an
+  // export-to-keep). The reap route below takes its own; this is the same act made
+  // available on its own, so "back up" is not something only a destructive path can do.
+  app.post('/tenants/:tenantId/scopes/:scopeId/backups', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    try {
+      return c.json(await backupScope(c, tenantId, scope), 201);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
   // Reap an ARCHIVED primary scope (control-plane.md §4.4): free its DO storage —
   // Cloudflare never garbage-collects a Durable Object, so a deleted app's bytes persist
   // forever otherwise — while keeping the directory row as a tombstone. A POST verb, not
@@ -1353,6 +1485,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const actor = c.get('actor');
+    // Body is optional so the bare `POST …/reap` every existing caller sends still
+    // parses; `backup` tri-states on purpose (see the ordering comment below).
+    const { backup: wantsBackup } = reapScopeBody.parse(await c.req.json().catch(() => ({})));
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     if (scope.status !== 'archived') {
@@ -1377,11 +1512,43 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         409,
       );
     }
+    // The recoverable copy, BEFORE any byte is wiped (#493). Ordering is the whole
+    // guarantee: `backupScope` has to have resolved — durably stored — before
+    // `deleteScope` runs, so a store that throws (or is missing when one was asked for)
+    // aborts the reap with the scope intact. `backup: false` is the explicit "I accept an
+    // unrecoverable wipe"; omitting it backs up when a store is configured and proceeds
+    // without one when the platform has none.
+    //
+    // Its own try/catch, OUTSIDE the reap's: a backup failure and a reap failure are
+    // different facts to an operator, and collapsing a dead bucket into the generic 500
+    // would read as "the reap broke" when the scope is in fact untouched (#321's lesson).
+    let backup: ScopeBackup | null = null;
+    if (!(wantsBackup === false || (wantsBackup === undefined && !options.scopeBackups))) {
+      try {
+        backup = await backupScope(c, tenantId, scope);
+      } catch (e) {
+        if (e instanceof ControlPlaneError) {
+          return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        }
+        return c.json(
+          {
+            error:
+              'backup failed — the scope was NOT reaped and its data is intact; ' +
+              'retry, or reap with backup=false to accept an unrecoverable wipe',
+            detail: e instanceof Error ? e.message : String(e),
+          },
+          502,
+        );
+      }
+    }
     try {
       const vertical = await verticalForScope(c, scope);
       if (vertical) await vertical.deleteScope({ scopeId });
-      await admin.reapScope(actor, tenantId, scopeId);
-      return c.json(await admin.getScopeRecord(actor, tenantId, scopeId));
+      await admin.reapScope(actor, tenantId, scopeId, {
+        ...(backup ? { backupRef: backupRefOf(backup) } : {}),
+      });
+      const reaped = await admin.getScopeRecord(actor, tenantId, scopeId);
+      return c.json({ ...reaped, backup });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);
