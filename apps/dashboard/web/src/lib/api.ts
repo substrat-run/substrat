@@ -191,6 +191,22 @@ export interface DeploymentVersion {
   createdAt: string;
 }
 
+/** One static file a version ships (#340), as the platform holds it: the served path, the
+ *  bytes' size and MIME type, and the content address the runtime's asset store dedups on. */
+export interface AssetEntry {
+  path: string;
+  hash: string;
+  size: number;
+  contentType: string;
+}
+/** One version's static files + how the runtime routes paths against them (#340). */
+export interface DeployAssets {
+  files: AssetEntry[];
+  htmlHandling?: string;
+  notFoundHandling?: string;
+  runWorkerFirst?: boolean | string[];
+}
+
 /** One declared permission key (D-39, #336): the key, its description, and the module(s)
  *  that declare it — the machine-readable §1 of PERMISSIONS.md. */
 export interface PermissionRegistryEntry {
@@ -676,6 +692,12 @@ export const api = {
    *  the version THIS scope actually runs (`boundVersionId`). `cursor` walks older versions. */
   appDeployments: (scopeId: string, opts?: PageOpts) =>
     call<AppDeployments>(`/apps/${encodeURIComponent(scopeId)}/deployments${pageQs(opts)}`),
+  /** The static files ONE version ships (#340), from its retained deploy manifest —
+   *  `assets: null` when it retained none or shipped no static files. */
+  appVersionAssets: (scopeId: string, versionId: string) =>
+    call<{ assets: DeployAssets | null }>(
+      `/apps/${encodeURIComponent(scopeId)}/deployments/${encodeURIComponent(versionId)}/assets`,
+    ).then((r) => r.assets),
   /** The declared permission surface (D-39, #336) of the version this app runs, plus the
    *  update target's, for the Permissions tab's table + update diff. */
   appPermissions: (scopeId: string) => call<AppPermissionsView>(`/apps/${encodeURIComponent(scopeId)}/permissions`),

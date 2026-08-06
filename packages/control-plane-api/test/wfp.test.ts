@@ -204,6 +204,116 @@ describe('createWfpUploader — upload failure', () => {
   });
 });
 
+/**
+ * Static assets (#340). Assets are not a binding — they ride their own three-step upload
+ * session before the script PUT, which then names only the completion token. What is worth
+ * pinning: the session runs at all (and only when there is something to upload), the bytes
+ * go up base64 keyed by hash and typed with what they'll be SERVED as, and the promote case
+ * — a re-serve carrying no bytes — either rides dedup or refuses loudly.
+ */
+describe('createWfpUploader — static assets (#340)', () => {
+  const html = new TextEncoder().encode('<!doctype html>');
+  const withAssets = (files: VerticalBundle['assets']): VerticalBundle => ({ ...bundle, assets: files });
+
+  /** Drive an upload against a scripted sequence of CF responses; return every request made. */
+  async function driveUpload(
+    b: VerticalBundle,
+    responses: (url: string) => Response,
+  ): Promise<{ url: string; init: { body?: FormData | string; headers?: Record<string, string> } }[]> {
+    const calls: { url: string; init: { body?: FormData | string; headers?: Record<string, string> } }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown, init: { body?: FormData | string; headers?: Record<string, string> }) => {
+        calls.push({ url: String(url), init });
+        return responses(String(url));
+      }),
+    );
+    const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
+    await upload('callout-01k', b);
+    return calls;
+  }
+
+  const sessionWith = (buckets: string[][]) =>
+    new Response(JSON.stringify({ result: { jwt: 'session-jwt', buckets } }), { status: 200 });
+
+  it('runs session → bucket upload → script PUT, and names the completion jwt', async () => {
+    const calls = await driveUpload(
+      withAssets({
+        notFoundHandling: 'single-page-application',
+        runWorkerFirst: ['/api/*'],
+        files: [{ path: '/index.html', hash: 'a'.repeat(32), size: html.byteLength, contentType: 'text/html', content: html }],
+      }),
+      (url) =>
+        url.includes('assets-upload-session')
+          ? sessionWith([['a'.repeat(32)]])
+          : url.includes('/workers/assets/upload')
+            ? new Response(JSON.stringify({ result: { jwt: 'completion-jwt' } }), { status: 200 })
+            : new Response('{}', { status: 200 }),
+    );
+
+    // 1. the session carries the path → {hash,size} manifest…
+    expect(calls[0]!.url).toContain('/scripts/callout-01k/assets-upload-session');
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
+      manifest: { '/index.html': { hash: 'a'.repeat(32), size: html.byteLength } },
+    });
+    // 2. …the bucket goes up base64, keyed by hash, authorised with the SESSION jwt, and
+    //    typed with what the file will be served as (CF replays that Content-Type).
+    expect(calls[1]!.url).toContain('/workers/assets/upload?base64=true');
+    expect(calls[1]!.init.headers).toMatchObject({ authorization: 'Bearer session-jwt' });
+    const part = (calls[1]!.init.body as FormData).get('a'.repeat(32)) as File;
+    expect(part.type).toBe('text/html');
+    expect(await part.text()).toBe(Buffer.from('<!doctype html>').toString('base64'));
+    // 3. …and the script PUT names the COMPLETION token plus the routing config.
+    const meta = JSON.parse(await ((calls[2]!.init.body as FormData).get('metadata') as File).text());
+    expect(meta.assets).toEqual({
+      jwt: 'completion-jwt',
+      config: { not_found_handling: 'single-page-application', run_worker_first: ['/api/*'] },
+    });
+  });
+
+  it('empty buckets means every byte is already stored — the session jwt completes it', async () => {
+    // This is the promote path (#286): a re-serve declares the retained manifest and carries
+    // no bytes, and content-addressed dedup is what makes that work.
+    const calls = await driveUpload(
+      withAssets({ files: [{ path: '/index.html', hash: 'b'.repeat(32), size: 15, contentType: 'text/html' }] }),
+      (url) => (url.includes('assets-upload-session') ? sessionWith([]) : new Response('{}', { status: 200 })),
+    );
+    expect(calls).toHaveLength(2); // session, then the script PUT — no bucket upload
+    const meta = JSON.parse(await ((calls[1]!.init.body as FormData).get('metadata') as File).text());
+    expect(meta.assets.jwt).toBe('session-jwt');
+  });
+
+  it('REFUSES a re-serve whose bytes the runtime no longer holds, naming the remedy', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown) =>
+        String(url).includes('assets-upload-session') ? sessionWith([['c'.repeat(32)]]) : new Response('{}', { status: 200 }),
+      ),
+    );
+    const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
+    // A version deployed with an incomplete asset set would look successful and serve a
+    // half-broken page; the refusal is the point.
+    await expect(
+      upload('callout-01k', withAssets({ files: [{ path: '/app.js', hash: 'c'.repeat(32), size: 9, contentType: 'text/javascript' }] })),
+    ).rejects.toThrow(/push the version again/);
+  });
+
+  it('a bundle with no assets runs no session and sends no assets block', async () => {
+    const calls = await driveUpload(bundle, () => new Response('{}', { status: 200 }));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain('/scripts/callout-01k');
+    const meta = JSON.parse(await ((calls[0]!.init.body as FormData).get('metadata') as File).text());
+    expect(meta.assets).toBeUndefined();
+  });
+
+  it('carries the upstream status when the session itself fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('bad manifest', { status: 400 })));
+    const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
+    const e = await upload('callout-01k', withAssets({ files: [{ path: '/a.js', hash: 'd'.repeat(32), size: 1, contentType: 'text/javascript', content: new Uint8Array([1]) }] })).catch((err) => err);
+    expect(upstreamStatusOf(e)).toBe(400);
+  });
+});
+
 describe('clip', () => {
   it('returns a within-cap body unchanged', () => {
     expect(clip('short', 100)).toBe('short');

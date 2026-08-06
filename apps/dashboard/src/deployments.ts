@@ -1,5 +1,5 @@
-import type { PermissionRegistry, PlatformActorId, TenantId } from '@substrat-run/contracts';
-import { LIST_PAGE_MAX, deployManifest } from '@substrat-run/contracts';
+import type { DeployAssets, PermissionRegistry, PlatformActorId, TenantId } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, deployManifest, storedDeployManifest } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import type { TenantNarrowedControlPlane } from './authority.js';
 
@@ -249,6 +249,23 @@ export async function versionRegistryFromHost(
   const json = await host.admin.versionManifest(actor, slug, versionId);
   if (!json) return null;
   return deployManifest.parse(JSON.parse(json)).registry ?? null;
+}
+
+/**
+ * The static files (#340) one version ships, from the local host — the same read as
+ * `versionRegistry` above, out of the same retained manifest, parsed with the LENIENT stored
+ * schema so a version pushed before the permission registry was required stays readable.
+ * `null` for a version that retained no manifest or shipped no static files.
+ */
+export async function versionAssetsFromHost(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  slug: string,
+  versionId: string,
+): Promise<DeployAssets | null> {
+  const json = await host.admin.versionManifest(actor, slug, versionId);
+  if (!json) return null;
+  return storedDeployManifest.parse(JSON.parse(json)).assets ?? null;
 }
 
 /**

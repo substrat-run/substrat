@@ -34,7 +34,7 @@ import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@s
 import { dashboardModule, type DashboardAppRow } from './module.js';
 import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
-import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, verticalDeploymentPageFromCp, verticalDeploymentPageFromHost, versionRegistryFromHost, assertOwned } from './deployments.js';
+import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, verticalDeploymentPageFromCp, verticalDeploymentPageFromHost, versionRegistryFromHost, versionAssetsFromHost, assertOwned } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -1434,6 +1434,35 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
     listed: ownRecord ? !!ownRecord.listed : deployment.listed,
     boundVersionId,
   });
+});
+
+/**
+ * The static files ONE version ships (#340) — the Assets panel under the Deployments tab.
+ * The manifest is already persisted per version (it is what a promote re-attaches assets
+ * from), so this is a pure read of a fact the platform holds: path, size, content type, and
+ * the content address the runtime dedups on.
+ *
+ * Same authorization as every app-scoped read: the app is resolved from the tenant-scoped
+ * `list-apps`, so a foreign scope id 404s. `assets: null` covers both "pushed before assets
+ * existed / retained no manifest" and "this version ships no static files" — the panel needs
+ * only to render an empty state, and distinguishing them would be a distinction without a
+ * consequence.
+ */
+app.get('/api/apps/:scopeId/deployments/:versionId/assets', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const slug = appRow.vertical_slug;
+  const versionId = c.req.param('versionId');
+  const assets = cp
+    ? await cp.versionAssets(slug, versionId)
+    : await versionAssetsFromHost(host, STAFF, slug, versionId);
+  return c.json({ assets });
 });
 
 /**

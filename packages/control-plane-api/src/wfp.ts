@@ -1,5 +1,5 @@
 import { DeployUploadError, nextMigrationTag } from './deploy.js';
-import type { DeployVerticalFn, FetchVerticalModulesFn, VerticalBundle } from './deploy.js';
+import type { AssetUpload, DeployVerticalFn, FetchVerticalModulesFn, VerticalBundle } from './deploy.js';
 
 /**
  * Bound a (potentially large, untrusted) upstream error body before it rides inside a
@@ -37,6 +37,125 @@ export interface WfpUploaderOptions {
   injectSecrets?: Record<string, string | undefined>;
 }
 
+/** Bytes → base64, web-standard only (chunked so a large file does not blow the
+ *  `String.fromCharCode` argument limit). The asset upload endpoint takes base64 bodies. */
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/** The Cloudflare `assets.config` block, from our substrate-vocabulary routing fields. */
+function assetConfigOf(assets: NonNullable<VerticalBundle['assets']>): Record<string, unknown> {
+  return {
+    ...(assets.htmlHandling ? { html_handling: assets.htmlHandling } : {}),
+    ...(assets.notFoundHandling ? { not_found_handling: assets.notFoundHandling } : {}),
+    ...(assets.runWorkerFirst !== undefined ? { run_worker_first: assets.runWorkerFirst } : {}),
+  };
+}
+
+/**
+ * Run Cloudflare's three-step **assets upload session** for a dispatch-namespace script and
+ * return the completion JWT the script PUT declares (#340). Static assets are not a binding:
+ * they go up their own path, and the script upload only ever names the token this produces.
+ *
+ * 1. POST the manifest (`path → { hash, size }`) to the script's `assets-upload-session`.
+ *    Cloudflare answers with a session JWT and the BUCKETS of hashes it does not already
+ *    hold — content-addressed storage, deduped namespace-wide, so an unchanged SPA re-deploy
+ *    usually comes back with nothing to upload at all.
+ * 2. POST each bucket's files, base64, one part per hash, each carrying the Content-Type the
+ *    file will be SERVED with. The response to the last bucket carries the completion JWT.
+ * 3. (caller) name that JWT in the script metadata's `assets` block.
+ *
+ * Empty buckets ⇒ every file was already stored and the SESSION jwt is itself the completion
+ * token. That is the case a promote depends on: re-serving an archived version onto the
+ * stable script re-runs this with the retained manifest and no bytes. When the runtime has in
+ * fact dropped content we were not given, this refuses loudly — a script deployed with an
+ * incomplete asset set would serve a half-broken page and look like a successful deploy.
+ */
+async function uploadAssets(
+  opts: Pick<WfpUploaderOptions, 'accountId' | 'namespace' | 'apiToken'>,
+  scriptName: string,
+  files: AssetUpload[],
+): Promise<string> {
+  const manifest: Record<string, { hash: string; size: number }> = {};
+  const byHash = new Map<string, AssetUpload>();
+  for (const f of files) {
+    manifest[f.path] = { hash: f.hash, size: f.size };
+    byHash.set(f.hash, f);
+  }
+
+  const sessionUrl =
+    `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
+    `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(scriptName)}/assets-upload-session`;
+  const session = await fetch(sessionUrl, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${opts.apiToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ manifest }),
+  });
+  if (!session.ok) {
+    const body = await session.text().catch(() => '');
+    throw new DeployUploadError(
+      session.status,
+      `WfP asset session failed (${session.status}) for '${scriptName}': ${clip(body)}`,
+    );
+  }
+  const parsed = (await session.json().catch(() => ({}))) as {
+    result?: { jwt?: string; buckets?: string[][] };
+  };
+  const sessionJwt = parsed.result?.jwt;
+  if (!sessionJwt) {
+    throw new DeployUploadError(502, `WfP asset session for '${scriptName}' returned no jwt`);
+  }
+  const buckets = (parsed.result?.buckets ?? []).filter((b) => b.length > 0);
+  if (buckets.length === 0) return sessionJwt; // nothing missing — the session token completes it
+
+  let completion: string | undefined;
+  for (const bucket of buckets) {
+    const form = new FormData();
+    for (const hash of bucket) {
+      const file = byHash.get(hash);
+      if (!file?.content) {
+        // The runtime wants bytes this upload does not carry. Only a re-serve can be here
+        // (a push always carries every byte), so name the remedy rather than the mechanism.
+        throw new DeployUploadError(
+          502,
+          `the runtime no longer holds asset '${file?.path ?? hash}' for '${scriptName}' and this ` +
+            `re-deploy carries no bytes for it — push the version again to restore its static files`,
+        );
+      }
+      // The part's Content-Type is what the file is SERVED as later, so it must be the
+      // asset's own type, not the base64 envelope's.
+      form.set(hash, new Blob([toBase64(file.content)], { type: file.contentType }), hash);
+    }
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/assets/upload?base64=true`,
+      { method: 'POST', headers: { authorization: `Bearer ${sessionJwt}` }, body: form },
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new DeployUploadError(
+        res.status,
+        `WfP asset upload failed (${res.status}) for '${scriptName}': ${clip(body)}`,
+      );
+    }
+    const done = (await res.json().catch(() => ({}))) as { result?: { jwt?: string } };
+    // Only the FINAL bucket's response carries the completion token; earlier ones answer
+    // with an empty result. Keep the last one seen rather than assuming which it was.
+    if (done.result?.jwt) completion = done.result.jwt;
+  }
+  if (!completion) {
+    throw new DeployUploadError(
+      502,
+      `WfP asset upload for '${scriptName}' finished without a completion jwt`,
+    );
+  }
+  return completion;
+}
+
 export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
   const injected = Object.entries(opts.injectSecrets ?? {})
     .filter(([, text]) => text)
@@ -61,6 +180,14 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       : // Every Substrat scope DO is SQLite-backed (new_sqlite_classes, not new_classes).
         { new_tag: 'v1', new_sqlite_classes: bundle.doClasses };
 
+    // #340: static files go up FIRST, on their own path — the script PUT then names only
+    // the completion token. A bundle with no assets runs no session at all, so nothing
+    // about an assets-free vertical's upload changes.
+    const assetsJwt =
+      bundle.assets && bundle.assets.files.length > 0
+        ? await uploadAssets(opts, deploymentRef, bundle.assets.files)
+        : undefined;
+
     const metadata = {
       main_module: bundle.entry,
       compatibility_date: bundle.compatibilityDate,
@@ -80,6 +207,13 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       // pushed script's console output and exceptions are simply not recorded, and the
       // builder's only debugging tool is asking staff to redeploy with it on.
       observability: { enabled: true },
+      // The static files uploaded above, plus how the runtime routes paths against them
+      // (#340). Assets are versioned WITH the code: an upload carrying this block replaces
+      // the script's asset set atomically, and one without it (a version that ships no
+      // static files) leaves the script serving none — which is the honest outcome, since
+      // keeping the outgoing version's assets beside incoming code is exactly the skew
+      // native assets exist to prevent.
+      ...(assetsJwt ? { assets: { jwt: assetsJwt, config: assetConfigOf(bundle.assets!) } } : {}),
     };
 
     const form = new FormData();

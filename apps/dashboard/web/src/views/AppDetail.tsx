@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview } from '../lib/api';
+import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -426,6 +426,10 @@ function Deployments({ app }: { app: AppRow }) {
   const [updating, setUpdating] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // Which version's static-asset panel is open (#340) — one at a time, fetched on open
+  // rather than with the versions list: an asset manifest is per version and most rows
+  // are never expanded.
+  const [openAssets, setOpenAssets] = useState<string | null>(null);
   // Fork-before-promote (default ON): snapshot the app's data before a migration-
   // crossing update, so a bad upgrade has a rollback point. A code-only update
   // snapshots nothing — the platform compares migration digests, not the checkbox.
@@ -648,7 +652,8 @@ function Deployments({ app }: { app: AppRow }) {
           {dep.versions.map((v, i) => {
             const chans = channelsOf(v.id);
             return (
-              <div key={v.id} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 40, padding: '8px 16px', fontSize: 13, borderBottom: i === dep.versions.length - 1 ? 'none' : '1px solid var(--border-subtle)', background: v.id === dep.boundVersionId ? 'var(--surface-brand-subtle)' : 'transparent' }}>
+              <div key={v.id} style={{ borderBottom: i === dep.versions.length - 1 ? 'none' : '1px solid var(--border-subtle)', background: v.id === dep.boundVersionId ? 'var(--surface-brand-subtle)' : 'transparent' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 40, padding: '8px 16px', fontSize: 13 }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{v.version}</span>
                   {v.id === dep.boundVersionId && <Pill kind="success">running</Pill>}
@@ -661,11 +666,17 @@ function Deployments({ app }: { app: AppRow }) {
                 <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{v.createdAt ? relativeTime(v.createdAt) : '—'}</span>
                 {/* Pin THIS scope to an exact version (#509 (c)) — a canary/rollback distinct from
                     "Update to latest". Only an admitted version that isn't already running. */}
-                <span style={{ textAlign: 'right' }}>
+                <span style={{ textAlign: 'right', display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                  {/* The static files this version ships (#340) — read from its retained manifest. */}
+                  <Button variant="ghost" size="sm" onClick={() => setOpenAssets(openAssets === v.id ? null : v.id)}>
+                    {openAssets === v.id ? 'Hide assets' : 'Assets'}
+                  </Button>
                   {v.admission === 'admitted' && v.id !== dep.boundVersionId ? (
                     <Button variant="ghost" size="sm" disabled={updating} onClick={() => void doBind(v)}>Bind</Button>
                   ) : null}
                 </span>
+              </div>
+              {openAssets === v.id && <VersionAssets scopeId={app.app_scope_id} versionId={v.id} />}
               </div>
             );
           })}
@@ -678,6 +689,81 @@ function Deployments({ app }: { app: AppRow }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Bytes as a short human size — asset lists are read for scale, not for exact counts. */
+function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * The static files ONE version ships (#340) — served from the edge, versioned with the
+ * code. Read from the version's retained deploy manifest, which is the same fact a promote
+ * re-attaches the files from, so this panel cannot drift from what is actually served.
+ *
+ * A version that shipped no static files (or predates them) renders the empty state rather
+ * than an error: "no manifest retained" and "no assets" are the same non-event to a reader.
+ */
+function VersionAssets({ scopeId, versionId }: { scopeId: string; versionId: string }) {
+  const [assets, setAssets] = useState<DeployAssets | null | undefined>(undefined);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api
+      .appVersionAssets(scopeId, versionId)
+      .then((a) => live && setAssets(a))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [scopeId, versionId]);
+
+  const pad = { padding: '10px 16px 14px', fontSize: 12.5 };
+  if (err) return <div style={{ ...pad, color: 'var(--status-danger-fg)' }}>Couldn’t load assets — {err}</div>;
+  if (assets === undefined) return <div style={{ ...pad, color: 'var(--text-tertiary)' }}>Loading assets…</div>;
+  if (!assets || assets.files.length === 0) {
+    return (
+      <div style={{ ...pad, color: 'var(--text-tertiary)' }}>
+        This version ships no static assets — its worker serves every response.
+      </div>
+    );
+  }
+  const total = assets.files.reduce((n, f) => n + f.size, 0);
+  const routing = [
+    assets.notFoundHandling ? `not-found: ${assets.notFoundHandling}` : null,
+    assets.htmlHandling ? `html: ${assets.htmlHandling}` : null,
+    assets.runWorkerFirst === undefined
+      ? null
+      : `worker first: ${Array.isArray(assets.runWorkerFirst) ? assets.runWorkerFirst.join(', ') : String(assets.runWorkerFirst)}`,
+  ].filter(Boolean);
+
+  return (
+    <div style={pad}>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8, color: 'var(--text-tertiary)' }}>
+        <span>
+          {assets.files.length} file{assets.files.length === 1 ? '' : 's'} · {fileSize(total)}
+        </span>
+        {routing.map((r) => (
+          <MonoTag key={r as string}>{r as string}</MonoTag>
+        ))}
+      </div>
+      <Table
+        columns={
+          [
+            { key: 'path', header: 'Path', render: (f: AssetEntry) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{f.path}</span> },
+            { key: 'contentType', header: 'Type', render: (f: AssetEntry) => <span style={{ color: 'var(--text-tertiary)' }}>{f.contentType}</span> },
+            { key: 'size', header: 'Size', render: (f: AssetEntry) => fileSize(f.size) },
+            // The content address, which is also the runtime's dedup key — an unchanged
+            // file keeps its hash across pushes, which is how a redeploy uploads nothing.
+            { key: 'hash', header: 'Content hash', render: (f: AssetEntry) => <MonoTag>{f.hash.slice(0, 12)}</MonoTag> },
+          ] as TableColumn<AssetEntry>[]
+        }
+        rows={assets.files}
+      />
     </div>
   );
 }

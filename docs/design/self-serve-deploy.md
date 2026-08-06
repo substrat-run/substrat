@@ -189,6 +189,47 @@ a PITR rewind the worst case is an orphaned object (harmless, GC-able via the st
 never a row silently re-pointed at different content. Bucket deletion at tenant reap is the same
 tracked follow-up as tenant stores — the ledger row is the teardown list.
 
+**Static assets (#340) are admitted, and they are not a binding.** A vertical's built SPA is
+declared as `runtimeNeeds.assets` — a *directory*, plus how the runtime should route paths
+against it — and the platform uploads those bytes to the runtime's own asset store
+(Cloudflare's `assets-upload-session`, a top-level upload path, not an entry in the script's
+binding set). The allowlist above therefore cannot express a verdict on them either way, so
+the decision is written down here instead:
+
+> **Decision (D-44): static assets are an additive allow, because they carry no reach — but
+> their content-address is verified, because it is shared.**
+>
+> The bytes are inert and public: no code runs from them, they hold no credential, they name
+> no other tenant's resource, and they are served by the runtime's edge without invoking the
+> worker at all. There is nothing in a `.js` file the browser downloads that the vertical
+> could not equally have inlined into its own bundle — which is exactly what every demo did
+> while this path did not exist, at ~+33 % bundle size against the script-size limit.
+>
+> What is *not* inert is the **hash**. The asset store is content-addressed and deduped
+> across the whole dispatch namespace, so a push that stored bytes under a content-address
+> they do not have could decide what a *different* vertical's identical-hash asset serves.
+> The control plane therefore re-derives every hash from the received bytes (`assetHash` in
+> `@substrat-run/contracts` — Cloudflare's own recipe, `sha256(base64(content) + extension)`)
+> and refuses a mismatch, along with a declared size the bytes do not have, an asset named in
+> the manifest but not uploaded, and an uploaded part named in no manifest. **What is trusted
+> is the bytes; what is verified is the key.**
+>
+> Two things stay refused. An `assets.binding` (programmatic `env.ASSETS.fetch(…)` from
+> worker code) is a real binding, is not on the allowlist, and is rejected at push time rather
+> than silently dropped — a worker shipped with an undefined `env.ASSETS` looks deployed and
+> 500s on first request. And assets are **versioned with the code**: an upload carrying an
+> asset set replaces the script's atomically, and a version shipping none serves none. Keeping
+> the outgoing version's files beside incoming code is precisely the skew that made the R2
+> side-channel alternative unacceptable.
+
+Assets travel in the same multipart body as the modules under an `asset:<served path>` part
+namespace, so an asset called `worker.js` can never enter the module pipeline. The manifest
+(path → hash, size, content type) is retained with the rest of the deploy manifest, which is
+what lets a **promote** (#286) re-attach a version's files onto the stable serving script from
+content addresses alone — the archive script gives back the modules, the asset store gives back
+the assets. If the runtime has dropped bytes a re-serve cannot supply, the serve refuses and
+says to push again, rather than quietly serving a half-broken page.
+
 If an uploaded bundle's declared bindings exceed this contract, the deploy endpoint refuses it
 before it ever reaches the namespace. That refusal — not code inspection — is the primary
 structural defense in model B.

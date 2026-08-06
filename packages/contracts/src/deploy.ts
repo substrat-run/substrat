@@ -131,6 +131,52 @@ export function blobStoreBindingName(binding: string, tenantId: string): string 
 }
 
 /**
+ * How the runtime routes a request between the vertical's STATIC files and its worker
+ * (#340) — the substrate-vocabulary form of Cloudflare's `assets.config`. Every field is
+ * optional with a runtime default, so a vertical that only wants "serve my SPA" declares
+ * a directory and nothing else.
+ *
+ * The two that matter for a Substrat vertical, and why:
+ * - `notFoundHandling: 'single-page-application'` — a deep client route (`/jobs/123`) is
+ *   not a file, and must resolve to `index.html` rather than 404. This is the inline
+ *   `serveAsset` fallback, expressed as configuration.
+ * - `runWorkerFirst` — SPA fallback would otherwise swallow the vertical's OWN routes,
+ *   which are not files either. Listing `/api/*` + `/internal/*` keeps the worker in
+ *   front of exactly the paths it owns while everything else is served from the edge
+ *   without invoking it. `true` runs the worker in front of every request (asset serving
+ *   still happens behind it) — correct only for a vertical that inspects every path.
+ */
+export const assetRouting = z.object({
+  /** Trailing-slash/`.html` normalisation. Cloudflare's default is `auto-trailing-slash`. */
+  htmlHandling: z
+    .enum(['auto-trailing-slash', 'force-trailing-slash', 'drop-trailing-slash', 'none'])
+    .optional(),
+  /** What a path matching no asset gets. `none` (default) falls through to the worker. */
+  notFoundHandling: z.enum(['none', '404-page', 'single-page-application']).optional(),
+  /** Routes the worker handles BEFORE asset matching — `true` for all, or a glob list. */
+  runWorkerFirst: z.union([z.boolean(), z.array(z.string().min(1)).min(1)]).optional(),
+});
+export type AssetRouting = z.infer<typeof assetRouting>;
+
+/**
+ * The vertical's STATIC files, as a NEED (#340): a directory of built bytes the platform
+ * uploads to the runtime's own asset store, served from the edge without invoking the
+ * worker. Native assets are not a binding — they are a top-level upload path — so this is
+ * a `runtimeNeeds` need and never rides the §4 binding allowlist (see
+ * {@link ADMISSIBLE_BINDING_TYPES}); the platform's own hash verification is what makes
+ * accepting builder-supplied bytes safe (self-serve-deploy.md §4.1).
+ *
+ * Replaces the inline-into-the-worker workaround every demo carried while WfP dispatch had
+ * no asset path: base64 in the bundle costs ~+33 % against the script-size limit, is
+ * re-parsed on every cold start, and invokes the worker for every image.
+ */
+export const assetsNeed = assetRouting.extend({
+  /** Directory of built files, relative to the vertical root (e.g. `app/dist`). */
+  directory: z.string().min(1),
+});
+export type AssetsNeed = z.infer<typeof assetsNeed>;
+
+/**
  * What a vertical needs from the runtime, in substrate vocabulary (package.json
  * `substrat.runtimeNeeds`). A vertical authored with this section never writes deploy
  * config for a specific substrate — the CLI derives that at push time (D-38: builders
@@ -154,6 +200,9 @@ export const runtimeNeeds = z.object({
   /** Per-tenant blob stores for attachment bytes (#473). Same non-binding rule as
    *  `tenantStores`: one bucket per tenant, minted in the tenant lifecycle. */
   blobStores: z.array(blobStoreNeed).default([]),
+  /** Static files served from the edge (#340). Absent ⇒ the vertical serves no static
+   *  files (or still inlines them into the bundle), and nothing about its push changes. */
+  assets: assetsNeed.optional(),
 });
 export type RuntimeNeeds = z.infer<typeof runtimeNeeds>;
 
@@ -172,6 +221,14 @@ export type RuntimeNeeds = z.infer<typeof runtimeNeeds>;
  * - anything managed/egress-shaped (`ai`, `browser`, `vectorize`, `hyperdrive`, `send_email`,
  *   `mtls_certificate`) — the outside world is a connector concern, and outbound policy is an
  *   open question (§6 / #303); least-privilege means these are refused until decided.
+ *
+ * NOT on this list because it is not a binding at all: **native static assets** (#340). They
+ * are a top-level upload path (`assets: { jwt, config }` in the script metadata), so they can
+ * neither be allowed nor refused here. They are admitted by a separate, narrower rule written
+ * down in self-serve-deploy.md §4.1: the bytes are inert and public — no code, no authority,
+ * no cross-tenant reach — but their content-address is a namespace-wide dedup key, so the
+ * platform RE-DERIVES every hash from the uploaded bytes ({@link assetHash}) and refuses a
+ * mismatch. What is trusted is the bytes; what is verified is the key.
  *
  * Caveat on `d1`: admissible as an own relational store (e.g. a Better-Auth `AUTH_DB`), but
  * the check does not yet PROVE the declared `database_id` is the vertical's own rather than
@@ -317,6 +374,104 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
   return { permissions, roles, entityGrants };
 }
 
+/**
+ * One static file in the shipped manifest (#340). The trio Cloudflare's asset store keys
+ * on — content-addressed `hash`, `size` — plus the `contentType` the platform attaches at
+ * upload and the runtime serves back.
+ *
+ * `hash` is the platform's DEDUP KEY, and the reason it is re-derived at the trust boundary
+ * rather than trusted: the asset store dedups by hash across the whole dispatch namespace,
+ * so bytes accepted under a hash they do not have would let one push decide what a DIFFERENT
+ * vertical's identical-hash asset serves. The bytes themselves are inert and public; the
+ * *key* is not. The control plane recomputes every hash from the uploaded bytes and refuses
+ * a mismatch (self-serve-deploy.md §4.1).
+ *
+ * The recipe is Cloudflare's, and must stay byte-identical on both ends or nothing dedups:
+ * `sha256(base64(content) + extension)`, first 32 hex chars ({@link assetHash}).
+ */
+export const assetEntry = z.object({
+  /** Served path, always leading-slash, `/`-separated (e.g. `/assets/app-4f2.js`). */
+  path: z.string().regex(/^\/(?!\/)[^\s]*$/),
+  /** `sha256(base64(content) + extension)`, first 32 hex — Cloudflare's manifest key. */
+  hash: z.string().regex(/^[0-9a-f]{32}$/),
+  size: z.number().int().nonnegative(),
+  /** The MIME type the runtime serves this file as (attached at upload time). */
+  contentType: z.string().min(1),
+});
+export type AssetEntry = z.infer<typeof assetEntry>;
+
+/**
+ * The multipart part-name prefix static files ride under in a push (#340) —
+ * `asset:/index.html`. Here, with the manifest schema, for the reason this file exists:
+ * both ends must speak the same shape. The prefix is what separates the two kinds of part
+ * in one body — anything unprefixed is a worker module — so an asset called `worker.js`
+ * can never be uploaded as code, and a served path is never constrained to be a legal
+ * module name.
+ */
+export const ASSET_PART_PREFIX = 'asset:';
+
+// Web-standard globals, present in Node ≥ 18, Workers and browsers alike. Declared locally
+// rather than pulled in through DOM lib types — the same rule the kernel's secret-box follows:
+// `contracts` depends on no platform's type surface.
+declare const btoa: (input: string) => string;
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
+declare const crypto: {
+  subtle: { digest(algorithm: 'SHA-256', data: Uint8Array): Promise<ArrayBuffer> };
+};
+
+/** Bytes → base64, web-standard only (`btoa` over a binary string, chunked so a large file
+ *  does not blow the argument limit of `String.fromCharCode`). No `Buffer`: this runs in the
+ *  CLI (node), in the control plane (workerd), and in the browser. */
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/**
+ * The content-address of one static file — **Cloudflare's recipe, not ours**:
+ * `sha256(base64(content) + extension)` (extension without the dot), first 32 hex chars.
+ * It is reproduced here rather than imported because both ends must compute it identically:
+ * the CLI to build the manifest it ships, the control plane to VERIFY that manifest against
+ * the bytes before either reaches the asset store (see {@link assetEntry}). A divergence
+ * would not merely fail — it would silently defeat dedup, or store bytes under a key that
+ * is not theirs.
+ *
+ * Web Crypto (`globalThis.crypto.subtle`), so the one implementation runs unchanged in node,
+ * workerd, and the browser.
+ */
+export async function assetHash(content: Uint8Array, path: string): Promise<string> {
+  const base = path.split('/').pop() ?? '';
+  const dot = base.lastIndexOf('.');
+  const extension = dot > 0 ? base.slice(dot + 1) : '';
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(toBase64(content) + extension),
+  );
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 32);
+}
+
+/**
+ * The static-file half of a push (#340): the routing config, plus the full file manifest.
+ *
+ * The manifest is retained (it rides `manifest_json` like the rest of the deploy manifest)
+ * for a load-bearing reason: a promote re-uploads a version onto the STABLE serving script
+ * from its archive (#286), and an asset upload session is driven by the manifest, not by
+ * bytes — content already in the namespace's asset store is skipped, so the retained
+ * manifest is what lets a promote re-attach the same assets without the builder re-pushing.
+ * It is also what the dashboard renders as the per-version asset list.
+ */
+export const deployAssets = assetRouting.extend({
+  files: z.array(assetEntry),
+});
+export type DeployAssets = z.infer<typeof deployAssets>;
+
 /** The JSON part a `substrat push` sends alongside the module files. */
 export const deployManifest = z.object({
   version: z.string().min(1),
@@ -336,6 +491,10 @@ export const deployManifest = z.object({
   /** Per-tenant blob stores (#473) — same carry-for-provisioning rule as `tenantStores`:
    *  never a static binding; the platform mints one bucket per tenant and injects it. */
   blobStores: z.array(blobStoreNeed).default([]),
+  /** The vertical's static files (#340): routing config + the full path/hash/size/type
+   *  manifest. Never a binding — native assets are a top-level upload path, so they do not
+   *  ride the §4 allowlist. Optional ⇒ a vertical that ships none is unaffected. */
+  assets: deployAssets.optional(),
   /** The vertical's declared env-spec (from its package.json `substrat.envSpec`), stored on
    *  the registry so a host/console renders a config form for it. Optional + validated here. */
   envSpec: z.array(envVarSpec).optional(),

@@ -1,15 +1,20 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, basename } from 'node:path';
+import { join, basename, extname, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import {
+  ASSET_PART_PREFIX,
+  assetHash,
+  assetsNeed,
   buildPermissionRegistry,
   deployManifest,
   runtimeNeeds,
   RUNTIME_BASELINE,
+  type AssetEntry,
+  type AssetsNeed,
   type DeclaredBinding,
   type PermissionRegistry,
   type PermissionsInput,
@@ -106,6 +111,100 @@ export async function permissionDigest(registry: PermissionRegistry): Promise<st
   return sha256(Buffer.from(stableStringify(registry)));
 }
 
+/**
+ * The MIME type a static file is SERVED as (#340). Cloudflare attaches the `Content-Type` of
+ * each uploaded part and replays it on every request, so this table is the vertical's served
+ * content types — not a guess the runtime re-derives. Unknown extensions fall back to
+ * `application/octet-stream`, which browsers download rather than mis-execute.
+ */
+const ASSET_CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
+  '.webmanifest': 'application/manifest+json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.wasm': 'application/wasm',
+  '.pdf': 'application/pdf',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+};
+
+export function assetContentType(path: string): string {
+  return ASSET_CONTENT_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream';
+}
+
+/** Every regular file under `dir`, recursively, as absolute paths (sorted for determinism). */
+function walkFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir).sort()) {
+    const full = join(dir, name);
+    // `statSync` (not lstat) so a symlinked build output is followed like any other file;
+    // a symlink loop surfaces as an ELOOP from the walk rather than silently expanding.
+    const st = statSync(full);
+    if (st.isDirectory()) out.push(...walkFiles(full));
+    else if (st.isFile()) out.push(full);
+  }
+  return out;
+}
+
+/** A collected static file: its manifest row and the bytes that ride the upload. */
+export interface CollectedAsset {
+  entry: AssetEntry;
+  content: Buffer;
+}
+
+/**
+ * Read the vertical's built static files and content-address them (#340) — the substrate
+ * side of Cloudflare's asset manifest. Runs AFTER the build (the directory is build output),
+ * on the builder's own machine, so reading it is not a trust boundary; the control plane
+ * re-derives every hash from the bytes it receives regardless.
+ *
+ * Paths are `/`-rooted and `/`-separated on every OS: the manifest key is a URL path, not a
+ * filesystem path, and a Windows push must produce the same manifest as a Linux one or the
+ * two would not dedup against each other.
+ */
+export async function collectAssets(root: string, need: AssetsNeed): Promise<CollectedAsset[]> {
+  const dir = join(root, need.directory);
+  if (!existsSync(dir)) {
+    throw new Error(
+      `substrat.runtimeNeeds.assets.directory points at "${need.directory}", which does not exist under ${root}. ` +
+        `It is BUILD output — make sure runtimeNeeds.build (or the wrangler build command) produces it.`,
+    );
+  }
+  const files = walkFiles(dir);
+  const collected: CollectedAsset[] = [];
+  for (const file of files) {
+    const path = '/' + relative(dir, file).split('\\').join('/');
+    const content = readFileSync(file);
+    collected.push({
+      entry: {
+        path,
+        hash: await assetHash(new Uint8Array(content), path),
+        size: content.length,
+        contentType: assetContentType(path),
+      },
+      content,
+    });
+  }
+  return collected;
+}
+
 /** A tiny JSONC reader: strip // and block comments, then JSON.parse. */
 function readJsonc(path: string): Record<string, unknown> {
   const raw = readFileSync(path, 'utf8')
@@ -120,6 +219,12 @@ function readJsonc(path: string): Record<string, unknown> {
  * `--config`) and the manifest extraction below — one object, so what we bundle and what
  * we declare cannot drift. The compatibility date is the platform's RUNTIME_BASELINE;
  * a builder states needs, not substrate config.
+ *
+ * `assets` is deliberately NOT emitted here (#340) even though `runtimeNeeds.assets` exists:
+ * wrangler's job in a push is to bundle the worker, and the static files are read straight
+ * from the declared directory by `collectAssets` afterwards. Handing wrangler an assets block
+ * it would only re-walk buys nothing and puts a second, differently-implemented manifest on
+ * the path to the same upload.
  */
 export function wranglerConfigFor(needs: RuntimeNeeds): Record<string, unknown> {
   return {
@@ -139,6 +244,39 @@ export function wranglerConfigFor(needs: RuntimeNeeds): Record<string, unknown> 
         }
       : {}),
   };
+}
+
+/**
+ * The static-assets need for this push (#340), from EITHER vocabulary: `runtimeNeeds.assets`
+ * (D-38, the substrate form) or a hand-authored wrangler.jsonc `assets` block, whose keys are
+ * Cloudflare's snake_case. One function so both paths land on the same parsed shape and the
+ * manifest cannot depend on which config style the vertical uses.
+ *
+ * An `assets.binding` (programmatic `env.ASSETS.fetch(...)` from worker code) is REFUSED
+ * rather than dropped: it is a real binding, it is not on the §4 allowlist, and silently
+ * ignoring it would ship a worker whose `env.ASSETS` is undefined at runtime — a deploy that
+ * looks successful and 500s on first request. Serving files needs no binding.
+ */
+export function readAssetsNeed(
+  cfg: Record<string, unknown>,
+  needs: RuntimeNeeds | undefined,
+): AssetsNeed | undefined {
+  if (needs) return needs.assets;
+  const raw = cfg.assets as Record<string, unknown> | undefined;
+  if (!raw) return undefined;
+  if (raw.binding) {
+    throw new Error(
+      `wrangler.jsonc declares assets.binding "${String(raw.binding)}" — a hosted vertical serves its ` +
+        `static files from the edge and cannot bind them for programmatic reads (self-serve-deploy.md §4.1). ` +
+        `Drop the binding; \`directory\` alone is what serves the files.`,
+    );
+  }
+  return assetsNeed.parse({
+    directory: raw.directory,
+    ...(raw.html_handling !== undefined ? { htmlHandling: raw.html_handling } : {}),
+    ...(raw.not_found_handling !== undefined ? { notFoundHandling: raw.not_found_handling } : {}),
+    ...(raw.run_worker_first !== undefined ? { runWorkerFirst: raw.run_worker_first } : {}),
+  });
 }
 
 /** The vertical's `substrat.runtimeNeeds` block, parsed — or undefined for the wrangler.jsonc path. */
@@ -309,6 +447,18 @@ export async function push(
   const modules = files.map((f) => ({ name: f, content: readFileSync(join(out, f)) }));
   const concat = Buffer.concat(modules.map((m) => m.content));
 
+  // Static files (#340), read from the build output the vertical declared. Collected AFTER
+  // the wrangler build above, because the directory is that build's product. A vertical
+  // declaring none collects nothing and its push is byte-for-byte what it was before.
+  const assetsNeeded = readAssetsNeed(cfg, needs);
+  const assets = assetsNeeded ? await collectAssets(opts.dir, assetsNeeded) : [];
+  if (assetsNeeded) {
+    const bytes = assets.reduce((n, a) => n + a.entry.size, 0);
+    console.log(
+      `collected ${assets.length} static asset(s) from ${assetsNeeded.directory} (${(bytes / 1_048_576).toFixed(1)} MB)`,
+    );
+  }
+
   // The declared permission surface (D-39/D-41), DERIVED from the vertical's typed
   // `definePermissions(...)` entry — shipped in the manifest and hashed into digests.permission
   // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
@@ -348,6 +498,20 @@ export async function push(
     // r2_bucket binding: the platform mints one bucket per tenant, so there is no id to
     // declare. Carried here for admission + the tenant lifecycle.
     ...(needs?.blobStores?.length ? { blobStores: needs.blobStores } : {}),
+    // Static files (#340): the routing config plus the full content-addressed manifest.
+    // Sent even when the directory came out EMPTY — an empty `files` list is a vertical
+    // that declared assets and built none, which the control plane should see as such
+    // rather than as a vertical that declared nothing.
+    ...(assetsNeeded
+      ? {
+          assets: {
+            ...(assetsNeeded.htmlHandling ? { htmlHandling: assetsNeeded.htmlHandling } : {}),
+            ...(assetsNeeded.notFoundHandling ? { notFoundHandling: assetsNeeded.notFoundHandling } : {}),
+            ...(assetsNeeded.runWorkerFirst !== undefined ? { runWorkerFirst: assetsNeeded.runWorkerFirst } : {}),
+            files: assets.map((a) => a.entry),
+          },
+        }
+      : {}),
     // The vertical's declared config surface, carried to the registry (control-plane-side
     // validated) so the platform renders a settings form for it. Not part of any admission
     // digest — it's metadata, not code.
@@ -380,9 +544,20 @@ export async function push(
   for (const m of modules) {
     form.set(m.name, new Blob([m.content], { type: 'application/javascript+module' }), m.name);
   }
+  // Static files ride the SAME multipart body under a distinct part namespace (#340). The
+  // `asset:` prefix is what keeps the two kinds apart at the far end: a module part is
+  // whatever is not prefixed, so an asset named `worker.js` cannot be mistaken for one —
+  // and the served path (which may contain any URL character) never has to be legal as a
+  // module name.
+  for (const a of assets) {
+    const part = `${ASSET_PART_PREFIX}${a.entry.path}`;
+    form.set(part, new Blob([a.content], { type: a.entry.contentType }), part);
+  }
 
   const url = `${opts.controlPlaneUrl}/verticals/${encodeURIComponent(opts.slug)}/deploy`;
-  console.log(`uploading ${entry} (+${modules.length - 1} modules) → ${url}`);
+  console.log(
+    `uploading ${entry} (+${modules.length - 1} modules${assets.length ? `, ${assets.length} assets` : ''}) → ${url}`,
+  );
   const res = await fetch(url, {
     method: 'POST',
     headers: opts.authHeader,

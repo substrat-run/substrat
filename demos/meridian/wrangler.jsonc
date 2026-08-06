@@ -5,13 +5,35 @@
 	// Better Auth (end-user sign-in) needs Node built-ins on workerd.
 	"compatibility_flags": ["nodejs_compat"],
 	"workers_dev": false,
-	// Build the SPA and inline it into the worker BEFORE bundling. Wrangler runs this on
-	// every `wrangler dev` / `--dry-run` — including the `--dry-run` a `substrat push`
-	// performs — so a push always ships the current UI with no extra step. A sandbox-clean
-	// vertical has no ASSETS binding (WfP static assets are a separate upload path), so the
-	// SPA rides along as ordinary worker modules (src/assets.generated.ts).
+	// Build the SPA before bundling. Wrangler runs this on every `wrangler dev` /
+	// `--dry-run` — including the `--dry-run` a `substrat push` performs — so a push always
+	// ships the current UI with no extra step. The second step copies the self-hosted
+	// /api/docs renderer in beside it (it is not part of the SPA's import graph).
 	"build": {
-		"command": "pnpm --dir app build && node scripts/gen-assets.mjs"
+		"command": "pnpm --dir app build && node scripts/copy-docs-renderer.mjs"
+	},
+	// Static files, served from the edge (#340). NOT a binding — native assets are a
+	// top-level upload path, which is why they pass the §4 sandbox contract without riding
+	// its binding allowlist (self-serve-deploy.md §4.1, D-44). The SPA used to be base64-
+	// inlined into this worker's bundle; it now goes up Cloudflare's asset upload session
+	// and is served without invoking the worker at all.
+	//
+	// The two routing fields are load-bearing together:
+	//   - `single-page-application` sends any non-file path to index.html, so a deep client
+	//     route (/employees/123) resolves instead of 404ing.
+	//   - which would ALSO swallow this worker's own routes — they are not files either —
+	//     so every prefix the worker owns is listed as worker-first. Anything added to the
+	//     worker under a new prefix must be added here too, or the SPA will answer it.
+	//
+	// One behavioural difference from the hand-rolled `serveAsset` this replaces: a missing
+	// path that LOOKS like a file (/logo.png) used to 404, because that catch-all sniffed
+	// for an extension. The runtime's SPA mode has no such special case — every unmatched
+	// path gets index.html. That is the standard semantics on every SPA host, and the
+	// extension sniff was our approximation of it, so it goes rather than being rebuilt.
+	"assets": {
+		"directory": "./app/dist",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/api/*", "/internal/*", "/openapi.json"]
 	},
 	// A SANDBOX-CLEAN, control-plane-less vertical (scope-local-permissions.md Phase 3):
 	// its ONLY bindings are its own SCOPE DO class and AUTH_DB. No CONTROL_PLANE binding,
