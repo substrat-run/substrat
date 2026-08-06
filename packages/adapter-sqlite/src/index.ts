@@ -2962,6 +2962,10 @@ export class SqliteScopeHost implements ScopeHost {
       scopeId: ScopeId,
       from: ScopeStatus[],
       to: ScopeStatus,
+      // Extra `after` fields for transitions that carry more than the new status —
+      // reap's `backupRef` (#493) is the first. Kept out of `before` deliberately: it
+      // describes what the transition DID, not the state it left.
+      afterExtra?: Record<string, unknown>,
     ) => {
       const row = this.directory
         .prepare('SELECT tenant_id, status, vertical FROM scopes WHERE scope_id = ?')
@@ -2998,7 +3002,7 @@ export class SqliteScopeHost implements ScopeHost {
         action,
         { tenantId, scopeId, vertical: row.vertical },
         { status: row.status },
-        { status: to },
+        { status: to, ...afterExtra },
       );
     };
 
@@ -4523,7 +4527,11 @@ export class SqliteScopeHost implements ScopeHost {
           this.scopesById.delete(scopeId);
         }
         rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
-        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped');
+        // The recoverable copy the caller stored first (#493), named in the audit entry so
+        // the trail answers "was there a backup" without correlating two timestamps.
+        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped', {
+          backupRef: opts?.backupRef ?? null,
+        });
       },
       reapTenant: async (actor: PlatformActorId, tenantId: TenantId) => {
         // The terminal tenant reap (§4.8), the tenant analogue of reapScope. The

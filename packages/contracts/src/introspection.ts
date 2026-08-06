@@ -123,3 +123,31 @@ export const scopeDump = z.object({
   tables: z.array(scopeDumpTable),
 });
 export type ScopeDump = z.infer<typeof scopeDump>;
+
+/**
+ * One stored scope BACKUP, as the list/reap surfaces report it (#493) — metadata about a
+ * `scopeDump` the platform holds, never the dump itself, so listing a scope's copies is
+ * cheap and hands out no bytes.
+ *
+ * A backup is what makes the terminal reap survivable: reaping wipes a scope's Durable
+ * Object storage irreversibly, so the control plane stores a full-fidelity dump first and
+ * records this shape's address on the admin-log entry. Deliberately NOT a snapshot fork —
+ * a fork lives inside the vertical's own deployment, so it neither survives that
+ * vertical's retirement nor stops counting as a live scope against it.
+ *
+ * Addressed by (tenantId, scopeId, capturedAt): the store's own key scheme stays private
+ * to the store, so no caller builds a path into another tenant's copies.
+ */
+export const scopeBackup = z.object({
+  tenantId: z.string().min(1),
+  scopeId: z.string().min(1),
+  /** The vertical the scope was bound to when the copy was taken, when it had one. */
+  vertical: z.string().nullable(),
+  /** ISO 8601 — the dump's own `capturedAt`, and this backup's address. */
+  capturedAt: z.string().min(1),
+  /** Serialized size in bytes — what tells a real copy from an empty one at a glance. */
+  size: z.number().int().nonnegative(),
+  /** Tables carried; zero means the copy is not restorable. */
+  tables: z.number().int().nonnegative(),
+});
+export type ScopeBackup = z.infer<typeof scopeBackup>;

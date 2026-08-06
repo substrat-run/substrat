@@ -2023,6 +2023,10 @@ export class CloudflareScopeHost implements ScopeHost {
       scopeId: ScopeId,
       from: ScopeStatus[],
       to: ScopeStatus,
+      // Extra `after` fields for transitions that carry more than the new status —
+      // reap's `backupRef` (#493) is the first. Kept out of `before` deliberately: it
+      // describes what the transition DID, not the state it left.
+      afterExtra?: Record<string, unknown>,
     ) => {
       const before = await this.cp.transitionScope(tenantId, scopeId, from, to, action);
       // The audit target carries the scope's vertical (control-plane.md §4.4:
@@ -2034,7 +2038,7 @@ export class CloudflareScopeHost implements ScopeHost {
         action,
         { tenantId, scopeId, vertical: before.vertical },
         { status: before.status },
-        { status: to },
+        { status: to, ...afterExtra },
       );
     };
 
@@ -3084,7 +3088,11 @@ export class CloudflareScopeHost implements ScopeHost {
           );
         }
         await this.scopeStub(scopeId).destroyStorage();
-        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped');
+        // The recoverable copy the caller stored first (#493), named in the audit entry so
+        // the trail answers "was there a backup" without correlating two timestamps.
+        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped', {
+          backupRef: opts?.backupRef ?? null,
+        });
       },
       grantEntitlement: async (actor, tenantId, entitlementKey, plan?) => {
         const input = entitlementGrantInput.parse(plan ?? {});

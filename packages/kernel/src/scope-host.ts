@@ -1154,12 +1154,20 @@ export interface HostAdmin {
    * always does, so the wipe cannot land on one that is still online; unbind it first.
    * `force` is the deliberate-teardown bypass (tenant reap §4.8, retention sweeps §4.4),
    * where releasing every name is the point; interactive per-scope reap never sets it.
+   *
+   * `backupRef` names the recoverable copy the caller stored before calling (#493) and is
+   * carried into the admin-log entry. The reap itself neither takes nor verifies the
+   * backup: taking it needs the scope's BYTES, which for a hosted scope live in the
+   * vertical's own deployment and are only reachable above this seam — the same reason
+   * the byte-wipe is orchestrated by the caller. What this parameter buys is that the
+   * audit trail answers "was there a copy, and where" from the reap entry itself, instead
+   * of an operator correlating two timestamps. Absent ⇒ no copy was taken.
    */
   reapScope(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    opts?: { force?: boolean },
+    opts?: { force?: boolean; backupRef?: string },
   ): Promise<void>;
 
   // -- entitlements (control-plane.md §4.3) ----------------------------------

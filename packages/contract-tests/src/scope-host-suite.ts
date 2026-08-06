@@ -2750,6 +2750,28 @@ export function scopeHostContractSuite(
         (r) => r.action === 'reapScope' && r.scopeId === s,
       );
       expect(reapEntry?.actor).toBe(staff);
+      // …and records that NO recoverable copy was taken (#493). Explicitly null rather
+      // than absent: "nobody backed this up" is a fact the compliance witness must state,
+      // not one an operator infers from a missing field.
+      expect((reapEntry?.after as { backupRef?: string | null }).backupRef).toBeNull();
+    });
+
+    it('reapScope carries the caller’s backup ref into the audit entry (#493)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t3, scopeId: s, slug: 'reap-backed-up', jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t3, s);
+      await host.admin.archiveScope(staff, t3, s);
+      // The copy itself is taken ABOVE this seam — a hosted scope's bytes live in the
+      // vertical's deployment — so what the host owes is that the ref reaches the log.
+      const ref = `/tenants/${t3}/scopes/${s}/backups/2026-08-06T10:00:00.000Z`;
+      await host.admin.reapScope(staff, t3, s, { backupRef: ref });
+
+      const entry = (await host.admin.auditLog(staff, { tenantId: t3 })).find(
+        (r) => r.action === 'reapScope' && r.scopeId === s,
+      );
+      expect((entry?.after as { backupRef?: string }).backupRef).toBe(ref);
+      // The transition itself is unaffected by carrying the ref.
+      expect((await host.admin.getScopeRecord(staff, t3, s))!.status).toBe('reaped');
     });
 
     it('a reaped scope releases its slug for reuse; reap is terminal (§4.4)', async () => {

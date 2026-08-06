@@ -347,9 +347,14 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, 
     setBulkBusy(true);
     let ok = 0;
     let failed = 0;
+    // Backups that landed alongside a reap (#493) — counted so the toast can say the
+    // copies exist. A reap that reports fewer backups than scopes is the signal worth
+    // seeing, which is why this is a count and not a boolean.
+    let backedUp = 0;
     for (const s of targets) {
       try {
-        await apiForAction[action](s.tenantId, s.id);
+        const res = await apiForAction[action](s.tenantId, s.id);
+        if (action === 'reap' && (res as { backup?: unknown } | null)?.backup) backedUp++;
         ok++;
       } catch {
         failed++;
@@ -358,9 +363,15 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, 
     setBulkBusy(false);
     clearSelection();
     onChanged();
+    const detail = [
+      failed > 0 ? `${failed} failed` : null,
+      action === 'reap' && ok > 0 ? `${backedUp} of ${ok} backed up` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
     onToast(
       `${ok} scope${ok === 1 ? '' : 's'} ${label}`,
-      failed > 0 ? `${failed} failed` : undefined,
+      detail || undefined,
       failed > 0 ? 'danger' : 'success',
     );
   }
@@ -755,6 +766,16 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, 
             </strong>{' '}
             — every table, event, and migration record. It <strong>cannot be undone</strong>: unlike
             archive, there is no restore. Each directory row is kept as a tombstone.
+          </p>
+          {/* #493 — the copy is taken by the control plane BEFORE any byte is wiped, and a
+              store that refuses aborts the reap. Said here because it is the difference
+              between "irreversible" and "unrecoverable", and the operator is deciding
+              exactly that. */}
+          <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: '18px' }}>
+            A <strong>full backup is taken first</strong> and kept in the platform's backup
+            store — the reap is refused if it cannot be written. The scope's data stays
+            recoverable from that copy (Restore), even though the scope itself does not
+            come back.
           </p>
           {/* Still-bound targets are refused by the reap guard, not wiped — call it out
               here rather than let the operator watch them fail one by one. Prune is the
