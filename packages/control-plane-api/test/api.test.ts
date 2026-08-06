@@ -870,6 +870,106 @@ describe('control-plane API', () => {
     expect((await (await dj('/verticals/prev-vert/previews/pr-7', 'DELETE')).json() as { deleted: string | null }).deleted).toBeNull();
   });
 
+  it('re-forks after a create died mid-fork, instead of adopting the empty leftover', async () => {
+    // The regression this pins: a create that fails AFTER the directory row (K-31 two-phase)
+    // leaves a `provisioning` preview whose DO never received the dump. The generated CI
+    // workflow retries `preview create` on a transient — and the retry used to match that row
+    // by (kind, slug) alone and take the REUSE branch, which rebinds the version and the
+    // hostname but never copies data. The PR then went green on a preview with an empty
+    // database. Observed live on egeryds/crm-eff PR #21: attempt 1 → `400: internal error`,
+    // attempt 2 → `✓ preview 'pr-21' updated … against a fork of prod`, zero rows in it.
+    const tR = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tR, slug: 'retry-co', name: 'Retry Co' });
+    await host.admin.registerVertical(staff, {
+      slug: 'retry-vert', name: 'Retry Vert', source: 'cli', ownerTenant: tR,
+    });
+    const pub = async (version: string): Promise<string> => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: 'retry-vert', version,
+        manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: 'g',
+        deploymentRef: null,
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const v1 = await pub('1.0.0');
+    const v2 = await pub('1.0.1');
+
+    const prod = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tR, scopeId: prod, vertical: 'retry-vert' });
+    await host.admin.activateScope(staff, tR, prod);
+    await host.admin.bindScopeVersion(staff, tR, prod, v1);
+    await host.admin.bindHostname(staff, {
+      hostname: 'retry-acme.global.substrat.run',
+      tenantId: tR, scopeId: prod, surface: 'app', region: null, canonical: true,
+    });
+
+    let exports = 0;
+    const restores: string[] = [];
+    const deletes: string[] = [];
+    const fakeVertical = {
+      exportScope: async (): Promise<ScopeDumpTable[]> => {
+        exports += 1;
+        return [{ name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: [['a']] }];
+      },
+      // The transient: the FIRST restore blows up, every later one lands.
+      restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
+        if (restores.length === 0) {
+          restores.push(sid);
+          throw new Error('vertical refused restore: Internal Server Error');
+        }
+        restores.push(sid);
+        return { tables: tables.length };
+      },
+      deleteScope: async (input: { scopeId: string }) => {
+        deletes.push(input.scopeId);
+      },
+    } as unknown as VerticalClient;
+    const dapp = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'retry-vert': fakeVertical },
+      platformBaseDomains: ['global.substrat.run'],
+    });
+    const dj = (path: string, method: string, body?: unknown) =>
+      dapp.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    // Attempt 1 dies in the data copy, leaving the half-built row behind.
+    const failed = await dj('/verticals/retry-vert/previews', 'POST', { tag: 'pr-9', versionId: v1 });
+    expect(failed.ok).toBe(false);
+    const stranded = ((await (await dj(`/scopes?tenantId=${tR}&vertical=retry-vert`, 'GET')).json()) as {
+      entries: { id: string; kind: string; status: string }[];
+    }).entries.find((s) => s.kind === 'preview');
+    expect(stranded?.status).toBe('provisioning');
+
+    // Attempt 2 — what CI's retry does. It must FORK AGAIN, not adopt: a fresh scope id, a
+    // second export, and a restore that actually carried the dump.
+    const ok = await dj('/verticals/retry-vert/previews', 'POST', { tag: 'pr-9', versionId: v2 });
+    expect(ok.status).toBe(201);
+    const p = (await ok.json()) as { scopeId: string; hostname: string; reused: boolean };
+    expect(p.reused).toBe(false);
+    expect(p.scopeId).not.toBe(stranded!.id);
+    expect(exports).toBe(2);
+    expect(restores).toEqual([stranded!.id, p.scopeId]);
+
+    // The leftover is gone — reaped through the vertical (bytes) and out of the directory
+    // (row + its `--pr-9` hostname), which is what frees the tag for the fresh fork.
+    expect(deletes).toEqual([stranded!.id]);
+    expect((await dapp.request(`/tenants/${tR}/scopes/${stranded!.id}`, { headers: auth })).status).toBe(404);
+    expect(p.hostname).toBe('retry-acme--pr-9.global.substrat.run');
+    const hosts = ((await (await dj(`/hostnames?scopeId=${p.scopeId}`, 'GET')).json()) as {
+      entries: { hostname: string }[];
+    }).entries;
+    expect(hosts.map((h) => h.hostname)).toEqual(['retry-acme--pr-9.global.substrat.run']);
+
+    // And the healthy preview is live: status active, forked from prod, bound to v2.
+    const row = (await (await dj(`/tenants/${tR}/scopes/${p.scopeId}`, 'GET')).json()) as {
+      status: string; kind: string; forkedFrom: string; verticalVersionId: string;
+    };
+    expect(row).toMatchObject({ status: 'active', kind: 'preview', forkedFrom: prod, verticalVersionId: v2 });
+  });
+
   it('lets a LISTED vertical owner preview a PENDING version into their own scope (#509 (d))', async () => {
     // Publishing widens who may INSTALL, not who may preview their own code. A listed
     // vertical's owner still forks their own prod scope and runs their (not-yet-admitted)
