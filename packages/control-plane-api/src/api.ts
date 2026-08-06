@@ -2701,16 +2701,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       return src.hostname;
     }
-    const base = platformBaseDomains[0];
-    if (!base) {
+    if (platformBaseDomains.length === 0) {
       throw new ControlPlaneError(
         409,
         `no platform base domain configured — a clean-room preview has no source URL to derive from`,
       );
     }
+    // Mint under `<label>.<jurisdiction>.<baseDomain>`, exactly as provisioning does
+    // (provision.ts `bindDefaultHostname` → `egeryds.global.substrat.run`). A clean-room
+    // preview scope is provisioned `global` by construction (see the caller), and the
+    // wildcard DNS/cert lives on `*.global.substrat.run` — NOT the certless apex
+    // `*.substrat.run`. `platformBaseDomains` lists every platform suffix for custom-hostname
+    // detection (`substrat.run`, `global.substrat.run`, …); the registrable base is the
+    // shortest, the one all jurisdiction domains are subdomains of. Taking `[0]` grabbed the
+    // bare apex and stranded clean-room previews on a hostname that never resolves.
+    const baseDomain = [...platformBaseDomains].sort((a, b) => a.length - b.length)[0]!;
+    const jurisdiction = 'global';
     const tenant = await admin.getTenant(actor, tenantId);
     const handle = tenant?.slug ?? tenantId;
-    return `${slug.split('/').at(-1)}-${handle}.${base}`;
+    return `${slug.split('/').at(-1)}-${handle}.${jurisdiction}.${baseDomain}`;
   };
 
   const orchestratedPreview = async (
