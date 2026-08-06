@@ -217,6 +217,49 @@ Hostname provisioning (custom-hostnames API, DNS validation, cert lifecycle) is 
 this lifecycle, per §5.5 — it is control-plane work, and the `hostname → (tenant, scope,
 vertical)` map is directory data the router reads.
 
+#### A reap leaves a recoverable copy ([#493](https://github.com/substrat-run/substrat/issues/493))
+
+`reapScope` is the one lifecycle step with no undo: it frees the scope's Durable Object
+storage — Cloudflare never garbage-collects a DO, so an archived app's bytes persist
+forever otherwise — and the row survives only as a tombstone. Before #493 the copy that
+made that survivable was **the operator's job to remember**, taken from a different
+surface, which is a guarantee only for as long as nobody is in a hurry.
+
+So the copy moved into the route. `POST …/scopes/:s/reap` writes a **full-fidelity dump**
+to a platform-held store *before any byte is wiped*, and records its address on the
+reap's admin-log entry (`after.backupRef`, `null` when none was taken — "nobody backed
+this up" is a fact the witness states, not one an operator infers). The ordering is the
+whole guarantee: a store that throws aborts the reap with the scope intact, answered as a
+`502` that says so rather than a bare 500.
+
+Three decisions worth not re-litigating:
+
+- **A dump, not a snapshot fork.** The cheap move — fork the scope before reaping — fails
+  the case the flow exists for. `orchestratedSnapshot` provisions the fork *inside the
+  vertical's own deployment* and activates it, so its bytes live in the very deployment a
+  retirement is about to delete, and it counts as a live scope in `countScopesForVertical`
+  — re-blocking the `deleteVertical` the reap was clearing. A dump leaves the deployment,
+  and `POST …/restore` already loads one back, so export → store → restore is the round
+  trip that closes.
+- **Full fidelity, never masked.** The `GET …/export` route masks by default because it
+  hands bytes to a *caller* (§6's governed pull). A backup goes platform→platform and is
+  never handed out, so the masking default does not apply — and a masked dump restores a
+  structurally-valid but factually wrong scope. A backup that cannot restore is a false
+  promise, and the promise is the point.
+- **The tenant reap defaults the other way.** §4.8 is partly an Art. 17 erasure path, so
+  `POST /tenants/:t/reap` takes **no** backup unless staff explicitly ask: silently writing
+  a customer's data into a bucket the reap does not clear would defeat the request it was
+  made to satisfy. Retiring a tenant and erasing one are different acts, and the default
+  should be the safe one for each.
+
+Asking for a backup where the platform has **no** store configured is refused (`501`),
+never silently skipped — the console always asks, so a control plane deployed with the
+bucket unbound fails loudly instead of quietly dropping the guarantee. Retention of the
+stored copies is indefinite for now and belongs to
+[#36](https://github.com/substrat-run/substrat/issues/36)'s retention decision;
+jurisdiction-pinned scopes are refused outright until a per-jurisdiction store exists
+(K-32), because the reap must not wipe what the platform may not legally copy.
+
 ### 4.3 The entitlement store
 
 D-20 says entitlements gate module loading, and every manifest declares an
@@ -690,6 +733,87 @@ partial export that does not announce itself as partial is the failure worth avo
 prunes only what has drained, and the backup buckets have no lifecycle rule. Deleting from an
 append-only audit log is a policy decision (§4.4 says it is kept whole), so it is tracked
 rather than assumed.
+
+### 4.9 Directory backup and restore ([#40](https://github.com/substrat-run/substrat/issues/40))
+
+Everything above protects one tenant's world. This protects the map that makes every tenant
+addressable — and §7 already named the stake without resolving it: *the directory becomes a
+real database, with its own migrations and backup story… losing it is losing the platform, not
+losing a cache.*
+
+**Three jobs, and only one of them wants a scheduled backup.** The scope-level ones are
+already answered, better, by mechanisms that are not this:
+
+| Job | Instrument | Status |
+|---|---|---|
+| Operational rollback of one scope | DO SQLite PITR (~30 days, continuous) + `rewindScope` | Built. **Strictly better than a daily copy — scheduled per-scope backups are deliberately not built.** |
+| Survive a reap | The copy the reap takes first (§4.4, [#493](https://github.com/substrat-run/substrat/issues/493)) | Built |
+| Portability / escrow / DSAR | On-demand `exportScope`, a few times a year | Separate ([#36](https://github.com/substrat-run/substrat/issues/36)) |
+| **Losing the directory itself** | **This** | **Built** |
+
+PITR protects against corruption *inside* a database. It cannot answer for the directory,
+because the directory is a single Durable Object: a control-plane bug that deletes it outright
+leaves nothing to point PITR at, and no scope knows its own tenancy, hostname or bound version
+well enough to rebuild the map from below.
+
+**The mechanism.** `exportDirectory` is a logical row-dump of the whole directory — tenants,
+scopes, hostnames, verticals, entitlements, identities, *and the audit spine* (a directory
+restored without its history cannot say what the platform did before the restore). The
+platform-sweep cron calls `backupDirectoryIfDue` last in each pass, after the phases that
+mutate the directory, so a copy is of a settled directory rather than one mid-sweep.
+
+- **Cadence: one copy a day.** Enforced by reading the newest stored copy, not by a second
+  trigger — so the quarter-hourly cron takes one per day, a missed tick is caught up on the
+  next pass (late, never never), and the schedule needs no durable state of its own.
+- **Retention: 30 copies**, matching the DO PITR horizon so the two defences expire together
+  instead of leaving a window covered by neither. Pruned only *after* a successful capture: a
+  failed backup must never be the thing that deletes the last good copy.
+- **RPO ≤ 24h, RTO ≤ 1h** for a directory loss. The RPO is the cadence. The RTO is the
+  runbook below, which is minutes of work plus deploy time; it is stated as an hour because it
+  includes noticing.
+
+**What this does and does not cover.** The bucket lives in the platform's own Cloudflare
+account, so it survives *losing the directory* — a bug, a bad migration, a deleted DO — but
+**not losing the account** (billing suspension, account compromise). That is an honest limit,
+not an oversight: the `DirectoryBackupStore` seam is provider-neutral precisely so an
+off-account target is a drop-in when that risk is worth paying for.
+
+**Restore is a REPLACE, not a merge.** The dump's contents become the directory, and anything
+created since the copy was taken is gone — a merge would silently interleave two histories of
+the same tenant. The dangerous case is therefore not a slip of the fingers but a *replayed*
+restore against a control plane that already recovered, so `POST /directory/restore` refuses a
+directory that still holds tenants unless the body says `overwrite: true`. An empty directory —
+the actual disaster — needs no such ceremony.
+
+**Runbook.** Rehearsed in the contract suite against both adapters (capture → diverge →
+restore → keep serving), which is what turns this from a claim into a procedure:
+
+1. `GET /api/directory/backups` — what is held, newest first. This is also the answer to *is
+   the backup actually running?*, and the reason the routes 501 rather than answering an empty
+   list when no store is bound: "nothing held" and "nobody is looking" must not read alike.
+2. `GET /api/directory/backups/:capturedAt` — pull the dump to disk if you want it off-platform.
+3. `POST /api/directory/restore` with `{ capturedAt, overwrite }`. The directory is replaced,
+   the schema is re-asserted forward (a copy taken before a directory migration is carried to
+   the running code's shape, never rolled back to the old one), and the restore is audited as
+   `restoreDirectory` in the log it just replaced.
+4. **Then re-check what the directory does not hold.** A restored directory brings back the map;
+   it does not bring back what was never in it, and a recovery that stops at step 3 is only
+   partly done:
+   - **The staff roster is in D1** (`AUTH_DB`, `staff_actor` — §4.4/#42), deliberately outside
+     the directory DO. A directory restore does not restore who may sign in; that database has
+     its own backup story (Time Travel), and recovering into a *new* deployment means pointing
+     at it or re-seeding it.
+   - **Worker secrets are not data.** `PLATFORM_SECRET`, the OIDC client config, `CF_API_TOKEN`,
+     `SESSION_SECRET` — none live in the directory, so a recovery into a fresh worker re-puts
+     them (`scripts/secrets.mjs`). A restored directory in front of a worker missing
+     `PLATFORM_SECRET` looks healthy and provisions nothing.
+   - **Sealed rows need their key.** Anything a deployment stored through a `SecretBox` (the
+     `_substrat_connection_secrets` shape) restores as ciphertext, readable only with the same
+     key that sealed it — so key rotation and directory restore have to be reasoned about
+     together, or you recover rows you cannot open.
+   - **Scope data is untouched by all of this.** It lives in the verticals' own Durable Objects,
+     which is exactly why restoring *the map* is a different and much smaller act than restoring
+     the world.
 
 ## 5. Billing: meter, do not bill
 

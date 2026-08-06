@@ -3,6 +3,7 @@ import type {
   AdminAction,
   AdminLogEntry,
   ChannelName,
+  DirectoryBackup,
   EntitlementGrant,
   EntitlementGrantInput,
   HostnameBinding,
@@ -11,6 +12,7 @@ import type {
   Page,
   PromotionAcknowledgement,
   Scope,
+  ScopeBackup,
   ScopeId,
   ScopeStatus,
   Tenant,
@@ -208,7 +210,32 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // archived → reaped (§4.4): irreversibly wipe the scope's DO storage, keeping the
     // directory row as a tombstone. Staff-only server-side; the console arms it behind a
     // type-to-confirm dialog because, unlike archive, there is no restore.
-    reapScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/reap`),
+    //
+    // `backup: true` is sent ALWAYS, never omitted (#493): the control plane treats an
+    // explicit ask as "back up or refuse", so a console reap can never quietly wipe a
+    // scope because the backup bucket went unbound. The returned `backup` names the copy
+    // that landed — the operator's proof it exists, and the address to restore from.
+    reapScope: (t: TenantId, s: ScopeId, opts: { backup?: boolean } = { backup: true }) =>
+      post<Scope & { backup: ScopeBackup | null }>(`/tenants/${t}/scopes/${s}/reap`, opts),
+    /** The copies held for a scope, newest first — readable after the reap (the tombstone survives). */
+    listScopeBackups: (t: TenantId, s: ScopeId) =>
+      call<ScopeBackup[]>(`/tenants/${t}/scopes/${s}/backups`),
+    /** Take a copy without reaping — a pre-migration checkpoint, or an export to keep. */
+    backupScope: (t: TenantId, s: ScopeId) => post<ScopeBackup>(`/tenants/${t}/scopes/${s}/backups`),
+
+    // The PLATFORM's own copies (#40) — the directory, not a tenant's scope. Read and
+    // take-now only: `POST /directory/restore` is deliberately NOT on this client. A
+    // one-click replace-the-whole-directory control is well past what a type-to-confirm
+    // dialog can guard (its blast radius is every tenant at once), and the scenario it
+    // exists for is one where the directory is GONE — a recovery path that assumes a
+    // healthy console is a recovery path that is not there when it is needed. Restore is
+    // a deliberate API call from the runbook (control-plane.md §4.9).
+    //
+    // A 501 here is meaningful, not an error to swallow: it means no backup store is
+    // bound, i.e. this control plane keeps NO platform copy. The view renders that as
+    // the alarm it is.
+    listDirectoryBackups: () => call<DirectoryBackup[]>('/directory/backups'),
+    backupDirectory: () => post<DirectoryBackup>('/directory/backups'),
     // Hard-delete a SNAPSHOT fork (forkedFrom set): wipes its storage, hostnames, and the
     // row (unlike reap, which keeps a tombstone). Refused (409) on a non-fork primary scope.
     deleteScope: (t: TenantId, s: ScopeId) =>

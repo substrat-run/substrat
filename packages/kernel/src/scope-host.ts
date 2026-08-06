@@ -48,6 +48,7 @@ import type {
   RegisterVerticalInput,
   VerticalServingState,
   RouteTarget,
+  DirectoryDump,
   PrincipalId,
   ResolvedIdentity,
   RoleAssignment,
@@ -1105,6 +1106,39 @@ export interface HostAdmin {
    */
   exportScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeDump>;
 
+  // -- directory disaster recovery (control-plane.md §4.9, #40) ---------------
+  // Every method above reads or writes ONE tenant's world. These two are the only
+  // pair whose subject is the platform's own database — the mapping that makes all
+  // the others addressable, and the one thing no per-scope recovery can rebuild.
+
+  /**
+   * A COMPLETE dump of the directory itself: tenants, scopes, hostnames, verticals,
+   * entitlements, identities, and the audit spine. The platform-level analogue of
+   * `exportScope`, and audited the same way (K-24 access log) — it exfiltrates every
+   * tenant at once, so it is the single most privileged read a host offers.
+   *
+   * Deliberately NOT a substitute for per-scope PITR, which is better at what it does
+   * (~30 days, continuous, per scope). This answers the different question: the
+   * directory is one Durable Object, and if it is deleted or corrupted outright there
+   * is nothing to point PITR at. See `restoreDirectory` for the write half.
+   */
+  exportDirectory(actor: PlatformActorId): Promise<DirectoryDump>;
+
+  /**
+   * Replace the directory with a dump — break-glass, and the only write in `HostAdmin`
+   * whose blast radius is every tenant at once.
+   *
+   * It is a REPLACE, not a merge: the dump's contents become the directory, and
+   * anything created since the copy was taken is gone. That is the honest semantic for
+   * a recovery (a merge would silently interleave two histories of the same tenant),
+   * and it is why the route in front of this refuses a directory that still has
+   * tenants unless the caller explicitly says to overwrite.
+   *
+   * Audited as `restoreDirectory` in the admin log that the restore itself just
+   * replaced — so the first entry after a restored history is the restore.
+   */
+  restoreDirectory(actor: PlatformActorId, dump: DirectoryDump): Promise<void>;
+
   // -- scope lifecycle (control-plane.md §4.2) -------------------------------
   // The §3.3 transitions that existed only on paper. Each fails closed on an
   // illegal transition, is audited, and (for suspend/archive) makes getScope
@@ -1154,12 +1188,20 @@ export interface HostAdmin {
    * always does, so the wipe cannot land on one that is still online; unbind it first.
    * `force` is the deliberate-teardown bypass (tenant reap §4.8, retention sweeps §4.4),
    * where releasing every name is the point; interactive per-scope reap never sets it.
+   *
+   * `backupRef` names the recoverable copy the caller stored before calling (#493) and is
+   * carried into the admin-log entry. The reap itself neither takes nor verifies the
+   * backup: taking it needs the scope's BYTES, which for a hosted scope live in the
+   * vertical's own deployment and are only reachable above this seam — the same reason
+   * the byte-wipe is orchestrated by the caller. What this parameter buys is that the
+   * audit trail answers "was there a copy, and where" from the reap entry itself, instead
+   * of an operator correlating two timestamps. Absent ⇒ no copy was taken.
    */
   reapScope(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    opts?: { force?: boolean },
+    opts?: { force?: boolean; backupRef?: string },
   ): Promise<void>;
 
   // -- entitlements (control-plane.md §4.3) ----------------------------------

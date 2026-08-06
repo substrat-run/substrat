@@ -88,3 +88,15 @@ export type {
 export type { ObservabilityReader, ServiceMetricsRow, RecentLogEvent } from './observability.js';
 export { createCfObservabilityReader } from './cf-observability.js';
 export type { CfObservabilityOptions } from './cf-observability.js';
+export type {
+  ScopeBackup,
+  ScopeBackupStore,
+  DirectoryBackup,
+  DirectoryBackupStore,
+} from './backups.js';
+export { createR2BackupStore, createR2DirectoryBackupStore } from './r2-backups.js';
+// #40 — the scheduled directory copy. Exported as a function the CP worker's cron calls,
+// not as a route with a timer behind it: this package stays library-only, exactly as the
+// platform-request drain does (the recurrence has to come from a deployment, #444).
+export { backupDirectoryIfDue } from './directory-backup.js';
+export type { DirectoryBackupOptions, DirectoryBackupResult } from './directory-backup.js';

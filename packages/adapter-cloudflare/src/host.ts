@@ -76,6 +76,7 @@ import {
   type RoleAssignment,
   type RoleDefinition,
   type Scope,
+  type DirectoryDump,
   type ScopeDump,
   type ScopeDumpTable,
   type ScopeId,
@@ -489,6 +490,9 @@ interface ControlPlaneStub {
   pruneAccessLog(limit: number): Promise<number>;
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
+  // #40 — the directory's own backup/restore pair.
+  exportDump(): Promise<ScopeDumpTable[]>;
+  importDump(tables: ScopeDumpTable[]): Promise<void>;
 }
 
 interface AdminEntry {
@@ -2023,6 +2027,10 @@ export class CloudflareScopeHost implements ScopeHost {
       scopeId: ScopeId,
       from: ScopeStatus[],
       to: ScopeStatus,
+      // Extra `after` fields for transitions that carry more than the new status —
+      // reap's `backupRef` (#493) is the first. Kept out of `before` deliberately: it
+      // describes what the transition DID, not the state it left.
+      afterExtra?: Record<string, unknown>,
     ) => {
       const before = await this.cp.transitionScope(tenantId, scopeId, from, to, action);
       // The audit target carries the scope's vertical (control-plane.md §4.4:
@@ -2034,7 +2042,7 @@ export class CloudflareScopeHost implements ScopeHost {
         action,
         { tenantId, scopeId, vertical: before.vertical },
         { status: before.status },
-        { status: to },
+        { status: to, ...afterExtra },
       );
     };
 
@@ -3031,6 +3039,30 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
         return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables };
       },
+      exportDirectory: async (actor): Promise<DirectoryDump> => {
+        // No K-3 cross-check to make: there is one directory, and it is the thing that
+        // WOULD answer such a check. The access-log entry carries no tenant for the same
+        // reason (K-23) — this read's subject is every tenant at once.
+        const tables = await this.cp.exportDump();
+        await this.recordAccess(actor, 'exportDirectory', {}, null, tables.length);
+        return { capturedAt: new Date().toISOString(), tables };
+      },
+      restoreDirectory: async (actor, dump: DirectoryDump): Promise<void> => {
+        // The before-state is read BEFORE the replace, because after it the old counts
+        // are gone — and "restored over 12 tenants" is the fact an operator reviewing
+        // this entry needs. The admin entry is written AFTER: the restore replaces the
+        // admin log too, so an entry written first would be overwritten by the very act
+        // it records, leaving the platform's most consequential write invisible.
+        const before = (await this.cp.listTenants({ limit: 1000 })).length;
+        await this.cp.importDump(dump.tables);
+        await this.recordAdmin(
+          actor,
+          'restoreDirectory',
+          { tenantId: null },
+          { tenants: before },
+          { capturedAt: dump.capturedAt, tables: dump.tables.length },
+        );
+      },
       activateScope: async (actor, tenantId, scopeId) => {
         // Idempotent on `active`, unaudited because nothing changed. Provisioning is
         // a two-phase creation that the reconciliation sweep re-runs (K-31), so a
@@ -3084,7 +3116,11 @@ export class CloudflareScopeHost implements ScopeHost {
           );
         }
         await this.scopeStub(scopeId).destroyStorage();
-        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped');
+        // The recoverable copy the caller stored first (#493), named in the audit entry so
+        // the trail answers "was there a backup" without correlating two timestamps.
+        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped', {
+          backupRef: opts?.backupRef ?? null,
+        });
       },
       grantEntitlement: async (actor, tenantId, entitlementKey, plan?) => {
         const input = entitlementGrantInput.parse(plan ?? {});

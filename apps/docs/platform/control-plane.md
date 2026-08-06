@@ -54,6 +54,53 @@ Beyond the base registry, a few capabilities have landed that are worth naming:
   calling from the named `(tenant, scope)` and checks the grant against that, so holding the shared
   secret is not enough. The `from` address is always the platform's onboarded sender.
 
+## Backup and recovery
+
+Four different failures, four different instruments — and the useful thing is knowing which
+one covers what, because only one of them is a backup in the usual sense.
+
+| What is lost | What covers it |
+|---|---|
+| A scope's data, wrongly changed | **Durable Object point-in-time recovery** — ~30 days, continuous, per scope. A destructive rewind of the live app. |
+| A scope, reaped | **The copy the reap takes first.** A reap wipes DO storage irreversibly, so the control plane stores a full-fidelity dump *before any byte goes* and records its address on the admin-log entry. |
+| A scope, wanted elsewhere | **`scope pull` / snapshots** — a non-destructive copy that leaves the live app alone (see [Snapshots](/concepts/snapshots)). |
+| **The directory itself** | **The scheduled directory backup**, below. |
+
+That last row is the one the others cannot cover. The directory is a single Durable Object —
+lose it and no scope can be *found*, even though every scope's data is sitting there intact.
+PITR does not help, because PITR rewinds a database that still exists; nothing to point it at
+is a different failure. And no scope can rebuild the map from below: a scope does not know its
+own tenancy, hostname, or bound version.
+
+So the control plane backs itself up. The scheduled sweep dumps the whole directory — tenants,
+scopes, hostnames, verticals, entitlements, identities, *and* the audit log — to an object
+store outside the DO, **once a day, keeping 30 copies**. The cadence is derived by reading the
+newest stored copy rather than from a separate timer, so a missed run is caught up on the next
+pass rather than skipped, and the retention window is pruned only *after* a new copy lands —
+a failed backup can never be the thing that deletes the last good one.
+
+**RPO ≤ 24h, RTO ≤ 1h** for a directory loss, and the restore has been rehearsed rather than
+merely designed: the round trip runs in the [contract test suite](/reference/contract-tests)
+against both the Cloudflare and SQLite adapters — capture, diverge, restore, then keep serving
+through the directory that was just rewritten.
+
+**Restoring replaces.** The dump's contents *become* the directory; anything created since the
+copy was taken is gone. A merge would silently interleave two histories of the same tenant, so
+replace is the honest semantic — and the restore refuses a directory that still holds tenants
+unless the request explicitly says to overwrite. That guard exists for the realistic hazard: a
+restore replayed against a control plane that has already recovered.
+
+**What it does not cover.** The backup bucket lives in the platform's own account, so this
+survives losing the *directory* — a bug, a bad migration, a deleted DO — but not losing the
+*account*. The store is a provider-neutral seam so an off-account target is a drop-in, but as
+shipped that is the honest boundary. A restore also does not bring back what was never in the
+directory: the staff roster (its own D1 database), worker secrets, or the key that any sealed
+credential was sealed with.
+
+**Self-hosting note.** On the SQLite adapter there is no DO point-in-time recovery to fall back
+on, so `exportDirectory`/`restoreDirectory` are not a second line of defence there — they are
+the only one. Both adapters implement the same pair, and the same contract tests prove it.
+
 ## Auth posture — fail closed
 
 Secure by default: a real `wrangler deploy` sets no dev-actor escape hatch, so every request

@@ -99,6 +99,7 @@ import {
   type RoleAssignment,
   type RoleDefinition,
   type Scope,
+  type DirectoryDump,
   type ScopeDump,
   type ScopeDumpTable,
   type ScopeId,
@@ -692,6 +693,28 @@ export class SqliteScopeHost implements ScopeHost {
     mkdirSync(this.dir, { recursive: true });
     this.directory = new Database(join(this.dir, '_directory.sqlite'));
     this.directory.pragma('journal_mode = WAL');
+    this.applyDirectorySchema();
+    this.loadRoles();
+    this.checker =
+      options.checker ??
+      createTupleChecker({
+        directory: this.directory,
+        scopeDb: (scopeId) => this.scopesById.get(scopeId)?.db,
+        getRole: (tenantId, key) => this.roles.get(`${tenantId}/${key}`),
+      });
+    this.admin = this.buildAdmin();
+  }
+
+  /**
+   * The directory schema, applied on every open — and again after a restore (#40).
+   *
+   * Extracted from the constructor so the two callers cannot drift: a dump taken before
+   * a directory migration carries the OLD shape, so replaying it verbatim would roll the
+   * schema backwards and the next read of a newer column would fail with a bare `no such
+   * column`. Every statement is IF NOT EXISTS and `ensureDirectoryColumns` probes before
+   * it alters, so this only ever adds back what a copy did not carry.
+   */
+  private applyDirectorySchema(): void {
     this.directory.exec(`
       -- The tenant registry (control-plane.md §4.1). Before this a tenant was an
       -- FK string on scope rows; now it is a real record with a lifecycle status.
@@ -1066,15 +1089,6 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
-    this.loadRoles();
-    this.checker =
-      options.checker ??
-      createTupleChecker({
-        directory: this.directory,
-        scopeDb: (scopeId) => this.scopesById.get(scopeId)?.db,
-        getRole: (tenantId, key) => this.roles.get(`${tenantId}/${key}`),
-      });
-    this.admin = this.buildAdmin();
   }
 
   registerExecutor(
@@ -2962,6 +2976,10 @@ export class SqliteScopeHost implements ScopeHost {
       scopeId: ScopeId,
       from: ScopeStatus[],
       to: ScopeStatus,
+      // Extra `after` fields for transitions that carry more than the new status —
+      // reap's `backupRef` (#493) is the first. Kept out of `before` deliberately: it
+      // describes what the transition DID, not the state it left.
+      afterExtra?: Record<string, unknown>,
     ) => {
       const row = this.directory
         .prepare('SELECT tenant_id, status, vertical FROM scopes WHERE scope_id = ?')
@@ -2998,7 +3016,7 @@ export class SqliteScopeHost implements ScopeHost {
         action,
         { tenantId, scopeId, vertical: row.vertical },
         { status: row.status },
-        { status: to },
+        { status: to, ...afterExtra },
       );
     };
 
@@ -4454,6 +4472,74 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
         return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables };
       },
+      // -- directory disaster recovery (#40) ----------------------------------
+      // The self-hosted half of the same story. A self-host has no DO point-in-time
+      // recovery to fall back on, so for that deployment shape this pair is not the
+      // second line of defence — it is the only one.
+      exportDirectory: async (actor): Promise<DirectoryDump> => {
+        // The directory database, dumped by exactly the same rules as a scope file
+        // above: real tables only, DDL from `sqlite_master`, positional rows with
+        // blobs kept as bytes.
+        const defs = this.directory
+          .prepare(
+            `SELECT name, sql FROM sqlite_master
+              WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+              ORDER BY name`,
+          )
+          .all() as { name: string; sql: string }[];
+        const tables: ScopeDumpTable[] = defs.map(({ name, sql }) => {
+          const stmt = this.directory.prepare(`SELECT * FROM "${name}"`).raw(true);
+          const rows = stmt.all() as unknown[][];
+          const columns = stmt.columns().map((c) => c.name);
+          return { name, ddl: sql, columns, rows };
+        });
+        // No tenant on the entry (K-23): this read's subject is every tenant at once.
+        this.recordAccess(actor, 'exportDirectory', {}, null, tables.length);
+        return { capturedAt: new Date().toISOString(), tables };
+      },
+      restoreDirectory: async (actor, dump: DirectoryDump): Promise<void> => {
+        // Counted before the replace — afterwards the old directory is gone, and
+        // "restored over N tenants" is the fact the audit entry exists to carry.
+        const before = (
+          this.directory.prepare('SELECT COUNT(*) AS n FROM tenants').get() as { n: number }
+        ).n;
+        // One transaction, foreign keys deferred to commit: the dump is ordered by
+        // table NAME (which says nothing about references — `scopes` points at
+        // `tenants`), and the DROPs themselves delete rows a populated child would
+        // still be referencing. better-sqlite3 runs the function synchronously inside
+        // BEGIN/COMMIT, and rolls back if it throws.
+        this.directory.pragma('defer_foreign_keys = ON');
+        this.directory.transaction(() => {
+          const existing = this.directory
+            .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+            .all() as { name: string }[];
+          for (const { name } of existing) this.directory.exec(`DROP TABLE IF EXISTS "${name}"`);
+          for (const t of dump.tables) this.directory.exec(t.ddl);
+          for (const t of dump.tables) {
+            if (t.rows.length === 0) continue;
+            const cols = t.columns.map((c) => `"${c}"`).join(', ');
+            const placeholders = t.columns.map(() => '?').join(', ');
+            const insert = this.directory.prepare(
+              `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`,
+            );
+            for (const row of t.rows) insert.run(...(row as unknown[]));
+          }
+        })();
+        // Carry a copy taken before a directory migration forward to the running
+        // code's shape — the same assertion a cold start makes.
+        this.applyDirectorySchema();
+        // Roles are held in memory (`loadRoles`), so a restore that only rewrote the
+        // table would leave every permission check reading the PRE-restore roles until
+        // the process restarted — the exact silent-divergence a recovery must not have.
+        this.loadRoles();
+        this.recordAdmin(
+          actor,
+          'restoreDirectory',
+          { tenantId: null },
+          { tenants: before },
+          { capturedAt: dump.capturedAt, tables: dump.tables.length },
+        );
+      },
       activateScope: async (actor, tenantId, scopeId) => {
         // Idempotent on `active`, unaudited because nothing changed. Provisioning is
         // a two-phase creation that the reconciliation sweep re-runs (K-31), so a
@@ -4523,7 +4609,11 @@ export class SqliteScopeHost implements ScopeHost {
           this.scopesById.delete(scopeId);
         }
         rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
-        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped');
+        // The recoverable copy the caller stored first (#493), named in the audit entry so
+        // the trail answers "was there a backup" without correlating two timestamps.
+        await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped', {
+          backupRef: opts?.backupRef ?? null,
+        });
       },
       reapTenant: async (actor: PlatformActorId, tenantId: TenantId) => {
         // The terminal tenant reap (§4.8), the tenant analogue of reapScope. The

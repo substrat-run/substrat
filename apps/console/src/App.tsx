@@ -379,7 +379,7 @@ export function App() {
       {view === 'observability' && <Observability api={api} />}
       {view === 'admin-log' && <AdminLog api={api} tenants={tenantMap} />}
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}
-      {view === 'settings' && <Settings />}
+      {view === 'settings' && <Settings api={api} onToast={notify} />}
 
       {toast && (
         <div style={{ position: 'fixed', right: 24, bottom: 24, zIndex: 50 }}>
