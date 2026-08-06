@@ -510,13 +510,15 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
-   * Recent log events for ONE owned service. Ownership is checked BEFORE the plane is
-   * asked — an unowned ref must never reach the staff-wide log query, and the answer
-   * for one is `[]`, indistinguishable from a service with no logs (existence hiding,
+   * Recent log events for owned services — one, or a vertical's whole set (the tab's
+   * "all versions", which the plane answers as one merged newest-first stream).
+   * Ownership is checked BEFORE the plane is asked: unowned refs are dropped here, so
+   * they never reach the staff-wide log query, and a request for nothing but unowned
+   * refs answers `[]`, indistinguishable from services with no logs (existence hiding,
    * the same property `listVerticals` narrowing gives the registry).
    */
   async observabilityLogs(input: {
-    service: string;
+    services: string[];
     level?: string;
     search?: string;
     hours?: number;
@@ -538,8 +540,10 @@ export class TenantNarrowedControlPlane {
     }>
   > {
     const owned = await this.ownedServiceRefs();
-    if (!owned.has(input.service)) return [];
-    const q = new URLSearchParams({ service: input.service });
+    const services = input.services.filter((s) => owned.has(s));
+    if (services.length === 0) return [];
+    const q = new URLSearchParams();
+    for (const s of services) q.append('service', s);
     if (input.level) q.set('level', input.level);
     if (input.search) q.set('search', input.search);
     if (input.hours) q.set('hours', String(input.hours));

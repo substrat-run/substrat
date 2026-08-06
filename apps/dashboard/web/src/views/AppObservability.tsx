@@ -16,6 +16,8 @@ const RANGES = [
   { label: 'Last 3 days', hours: 72 },
 ] as const;
 const LEVELS = ['All levels', 'error', 'warn', 'info', 'log', 'debug'];
+/** The plane refuses more services than this in one log query (one backend query each). */
+const MAX_LOG_SERVICES = 20;
 
 /**
  * The per-app Observability tab (design/observability.md §5, view 2; issue #471):
@@ -35,7 +37,7 @@ export function AppObservability({ app }: { app: AppRow }) {
   const [owned, setOwned] = useState<boolean | null>(null);
 
   // The single version filter above the list drives both what the traffic list shows and
-  // which version's logs open below — `'all'` shows every serving version and no logs.
+  // whose logs open below — `'all'` shows every serving version and their logs merged.
   const [versionFilter, setVersionFilter] = useState<string>('all');
   const [level, setLevel] = useState(LEVELS[0]);
   const [query, setQuery] = useState('');
@@ -93,9 +95,18 @@ export function AppObservability({ app }: { app: AppRow }) {
     () => (versionFilter === 'all' ? (rows ?? []) : (rows ?? []).filter((r) => r.version === versionFilter)),
     [rows, versionFilter],
   );
+  // Whose logs the panel shows: the one selected version, or — under "all versions" —
+  // every version that served, merged into one stream by the worker. A version chip per
+  // line is what keeps the merged view readable. Capped at the plane's per-query limit,
+  // and rows arrive busiest-first, so the cut falls on the quietest versions — the header
+  // says so rather than passing a silently-short stream off as everything.
+  const services = useMemo(() => shownRows.slice(0, MAX_LOG_SERVICES).map((r) => r.service), [shownRows]);
+  const versionOf = useMemo(() => Object.fromEntries(shownRows.map((r) => [r.service, r.version])), [shownRows]);
+  // `services` is a fresh array each render — key the fetch on its contents, not identity.
+  const servicesKey = services.join(',');
 
   useEffect(() => {
-    if (!service) {
+    if (!servicesKey) {
       setLogs(null);
       return;
     }
@@ -107,12 +118,12 @@ export function AppObservability({ app }: { app: AppRow }) {
         const events = DEV_MOCK
           ? MOCK_OBSERVABILITY_LOGS.filter(
               (l) =>
-                l.service === service &&
+                services.includes(l.service ?? '') &&
                 (level === LEVELS[0] || l.level === level) &&
                 (!search || (l.message ?? '').includes(search)),
             )
           : await api.observabilityLogs({
-              service,
+              services,
               level: level === LEVELS[0] ? undefined : level,
               search: search || undefined,
               hours,
@@ -136,7 +147,8 @@ export function AppObservability({ app }: { app: AppRow }) {
     return () => {
       live = false;
     };
-  }, [service, level, search, hours, nonce]);
+    // Keyed on `servicesKey`, not `services`: the array is rebuilt every render.
+  }, [servicesKey, level, search, hours, nonce]);
 
   const range = RANGES.find((r) => r.hours === hours) ?? RANGES[1];
 
@@ -225,11 +237,15 @@ export function AppObservability({ app }: { app: AppRow }) {
         </GridTable>
       )}
 
-      {service && (
+      {services.length > 0 && (
         <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>
-            <MonoTag>{versionFilter === 'all' ? '—' : versionFilter}</MonoTag>
+            <MonoTag>
+              {versionFilter === 'all'
+                ? `all versions (${services.length}${shownRows.length > services.length ? ` of ${shownRows.length}, busiest` : ''})`
+                : versionFilter}
+            </MonoTag>
             <Select
               aria-label="Level"
               options={LEVELS}
@@ -267,7 +283,7 @@ export function AppObservability({ app }: { app: AppRow }) {
               No log events match in this window.
             </div>
           ) : (
-            <LogList events={logs} />
+            <LogList events={logs} versionOf={versionFilter === 'all' ? versionOf : undefined} />
           )}
         </div>
       )}

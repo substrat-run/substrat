@@ -12,7 +12,18 @@ const fmtMs = (ms: number) => (ms >= 100 ? `${Math.round(ms)} ms` : `${ms.toFixe
  * to the full JSON — the drill-down Cloudflare's own console gives, without pinning this
  * UI to any provider's field names.
  */
-export function LogList({ events, maxHeight = 420 }: { events: ObservabilityLogEvent[]; maxHeight?: number }) {
+export function LogList({
+  events,
+  maxHeight = 420,
+  versionOf,
+}: {
+  events: ObservabilityLogEvent[];
+  maxHeight?: number;
+  /** service → version label. Pass it when the stream merges several services (the
+   *  per-app tab's "all versions") — without it a merged list can't be read back to
+   *  the version that logged the line. Absent ⇒ a single-service list, no chip. */
+  versionOf?: Record<string, string>;
+}) {
   const [open, setOpen] = useState<ReadonlySet<number>>(() => new Set());
   const toggle = (i: number) =>
     setOpen((prev) => {
@@ -52,6 +63,14 @@ export function LogList({ events, maxHeight = 420 }: { events: ObservabilityLogE
               <span style={{ color: 'var(--text-tertiary)', whiteSpace: 'nowrap', flexShrink: 0 }}>
                 {fmtTime(l.timestamp)}
               </span>
+              {versionOf && (
+                <span
+                  style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', flexShrink: 0, width: 56, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  title={l.service ?? undefined}
+                >
+                  {(l.service ? versionOf[l.service] : undefined) ?? '—'}
+                </span>
+              )}
               <span
                 style={{
                   width: 40,
