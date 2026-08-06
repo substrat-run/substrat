@@ -25,7 +25,14 @@ import type { ScopeDumpTable } from '@substrat-run/contracts';
 
 // Free-text/PII column names. `name` is included on purpose: entity names
 // (customers, properties, contacts) are customer data even when they look benign.
-const PII_COLUMN = /(^|_)(email|e?mail_address|phone|mobile|tel|address|street|city|postal|zip|ssn|personnummer|name|first_name|last_name|full_name|contact|note|notes|comment|comments|message|subject|body|description)($|_)/i;
+//
+// `external_id` earns its place from the platform's OWN schema (#36): an identity link's
+// `externalId` is the provider's subject, which in practice is very often the person's
+// email address — so a tenant export that swept only the obvious columns would hand out
+// the one field most likely to name a human. It is the deliberately lossy direction of
+// the trade: an opaque third-party id (a document ref, an upstream order number) gets
+// masked too, which costs a masked pull some fidelity and costs a leak nothing.
+const PII_COLUMN = /(^|_)(email|e?mail_address|phone|mobile|tel|address|street|city|postal|zip|ssn|personnummer|name|first_name|last_name|full_name|contact|external_id|note|notes|comment|comments|message|subject|body|description)($|_)/i;
 
 // Columns that carry JSON documents worth sweeping by key rather than blanking.
 const JSON_COLUMN = /(^|_)(payload|detail|details|data|before|after)($|_)/i;
@@ -72,4 +79,22 @@ export function maskDump(tables: ScopeDumpTable[]): ScopeDumpTable[] {
     );
     return { ...t, rows };
   });
+}
+
+/**
+ * The same heuristic applied to plain JSON records — the directory half of a tenant
+ * export (#36).
+ *
+ * A tenant export carries two kinds of thing: scope databases (table-shaped, masked by
+ * `maskDump` above) and directory records (object-shaped — a tenant's display name, an
+ * org's name, an identity link's external id, which is usually an email). Both halves
+ * must be masked by the SAME rule, or the default-masked promise is only half true and
+ * the leak is in the half nobody looked at.
+ *
+ * So this reuses `maskJsonValue` rather than growing a second heuristic: one PII column
+ * list, one recursive sweep, two entry points. Ids and timestamps pass through — the
+ * sweep targets free text, and ids are what keep an export intelligible.
+ */
+export function maskRecords<T>(records: readonly T[]): T[] {
+  return records.map((r) => maskJsonValue(r, false) as T);
 }
