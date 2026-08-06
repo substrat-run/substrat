@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { createHmac } from 'node:crypto';
 import {
   PREVIEW_COMMENT_MARKER,
+  buildPreviewTag,
+  buildPreviewTagPrefix,
   parsePullRequestWebhook,
   previewCommentBody,
   previewReapedBody,
@@ -66,16 +68,48 @@ describe('pull_request event parsing', () => {
 });
 
 describe('the sticky-comment contract', () => {
+  const sticky = 'https://app--pr-7.global.substrat.run';
+  const build = 'https://app--pr-7-991.global.substrat.run';
+
   it('platform comment bodies carry the marker the CI step also writes', () => {
-    expect(previewCommentBody('https://app--pr-7.global.substrat.run').startsWith(PREVIEW_COMMENT_MARKER)).toBe(true);
+    expect(previewCommentBody({ sticky }).startsWith(PREVIEW_COMMENT_MARKER)).toBe(true);
     expect(previewReapedBody().startsWith(PREVIEW_COMMENT_MARKER)).toBe(true);
     // The generated workflow's comment step upserts by the SAME marker — if this
     // drifts, platform and CI each post their own comment on every PR.
-    expect(deployWorkflowYaml('main', 'hr-portal', 'https://console.substrat.net/api')).toContain(PREVIEW_COMMENT_MARKER);
+    expect(deployWorkflowYaml({ branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.substrat.net/api' })).toContain(
+      PREVIEW_COMMENT_MARKER,
+    );
   });
 
-  it('tags follow the CI convention', () => {
+  it('names the per-build URL alongside the sticky one, and only when there is one', () => {
+    // The sticky URL moves under the reader (every push rebinds it), so a comment that
+    // named only it could never de-reference "the bug on the preview" to a fixed build.
+    const withBuild = previewCommentBody({ sticky, build });
+    expect(withBuild).toContain(sticky);
+    expect(withBuild).toContain(build);
+    // Per-build previews are opt-in, so the line must vanish rather than render empty.
+    for (const absent of [undefined, null, '']) {
+      const body = previewCommentBody({ sticky, build: absent });
+      expect(body).toContain(sticky);
+      expect(body).not.toContain('This build');
+    }
+  });
+
+  it('keeps every comment body apostrophe-free — the workflow renders them into a quoted printf', () => {
+    // A single apostrophe in this prose closes the workflow's single-quoted printf and
+    // takes the whole preview job red on what reads as a copy-edit.
+    for (const body of [previewCommentBody({ sticky }), previewCommentBody({ sticky, build }), previewReapedBody()]) {
+      expect(body).not.toContain("'");
+    }
+  });
+
+  it('tags follow the CI convention, and the two numbering spaces never collide', () => {
     expect(previewTag(42)).toBe('pr-42');
+    expect(buildPreviewTag(42, 991)).toBe('pr-42-991');
+    // PR 12's sticky tag must NOT look like a per-build tag of PR 1 — otherwise closing
+    // PR 1 would reap PR 12's preview.
+    expect(previewTag(12).startsWith(buildPreviewTagPrefix(1))).toBe(false);
+    expect(buildPreviewTag(1, 2).startsWith(buildPreviewTagPrefix(1))).toBe(true);
   });
 });
 

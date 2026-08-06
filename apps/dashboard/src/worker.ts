@@ -39,7 +39,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
 import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi, upsertPrComment } from './github.js';
-import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
+import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
 import { b64url, b64urlToBytes } from './b64.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
@@ -233,7 +233,10 @@ export class GithubRepoLinkDO extends DurableObject<Env> {
         if (row?.url && cfg) {
           // Done either way: `needsPermissions` needs a human re-approve of the App —
           // looping on it cannot fix it, and the CI comment step remains the fallback.
-          await upsertPrComment(cfg, poll.installationId, link.repo, prNumber, PREVIEW_COMMENT_MARKER, previewCommentBody(row.url));
+          await upsertPrComment(
+            cfg, poll.installationId, link.repo, prNumber, PREVIEW_COMMENT_MARKER,
+            previewCommentBody({ sticky: row.url, build: latestBuildPreviewUrl(previews, prNumber) }),
+          );
           await this.ctx.storage.delete(key);
           continue;
         }
@@ -246,7 +249,7 @@ export class GithubRepoLinkDO extends DurableObject<Env> {
     if (remaining > 0) await this.ctx.storage.setAlarm(Date.now() + PR_POLL_INTERVAL_MS);
   }
 
-  /** Close ⇒ delete the CP fork; the comment flips to "reaped" only if one existed. */
+  /** Close ⇒ delete the CP forks; the comment flips to "reaped" only if one existed. */
   private async reap(link: RepoLink, prNumber: number, installationId: string): Promise<void> {
     const cp = controlPlaneFor(this.env, link.tenantId);
     if (!cp) return;
@@ -257,11 +260,36 @@ export class GithubRepoLinkDO extends DurableObject<Env> {
       // The GC sweep (expiresAt) is the backstop for a reap the CP refused.
       return;
     }
+    // The per-build forks carry run ids the workflow never told us, so they are found by
+    // tag prefix rather than named. Best-effort: each one also has a short TTL, so a failure
+    // here costs a day of an idle hibernating DO, not a leak.
+    const prefix = buildPreviewTagPrefix(prNumber);
+    for (const p of await cp.listPreviews(link.slug).catch(() => [] as PreviewRecord[])) {
+      if (p.tag?.startsWith(prefix)) await cp.deletePreview(link.slug, p.tag).catch(() => {});
+    }
     const cfg = githubConfig(this.env);
     if (deleted && cfg) {
       await upsertPrComment(cfg, installationId, link.repo, prNumber, PREVIEW_COMMENT_MARKER, previewReapedBody()).catch(() => {});
     }
   }
+}
+
+/**
+ * The newest **per-build** preview URL for a PR, or `null` when the repo did not opt into
+ * them (`SUBSTRAT_PER_BUILD_PREVIEW`). The sticky `pr-<n>` preview moves under the reader —
+ * every push rebinds it — so the comment also names an immutable URL for the build that
+ * produced it, which is what lets "the bug on the PR preview" de-reference to a fixed
+ * artifact. The tag carries the run id, unknown here, so the newest matching scope wins:
+ * scope ids are ULIDs, hence lexicographically ordered by creation time.
+ */
+function latestBuildPreviewUrl(previews: PreviewRecord[], prNumber: number): string | null {
+  const prefix = buildPreviewTagPrefix(prNumber);
+  let best: PreviewRecord | null = null;
+  for (const p of previews) {
+    if (!p.url || !p.tag?.startsWith(prefix)) continue;
+    if (!best || p.scopeId > best.scopeId) best = p;
+  }
+  return best?.url ?? null;
 }
 
 /** The repo's link DO — id'd by lowercased `owner/name`, GitHub's unique handle. */
@@ -2683,7 +2711,7 @@ app.post('/api/github/setup-ci', async (c) => {
     repoFullName: body.repo,
     branch: body.branch,
     workflowPath,
-    workflowContent: deployWorkflowYaml(body.branch, slug, cpUrl),
+    workflowContent: deployWorkflowYaml({ branch: body.branch, slug, cpUrl }),
     secretName: 'SUBSTRAT_SERVICE_TOKEN',
     secretValue: token,
     seal: sealForGithub,
@@ -2740,7 +2768,7 @@ app.get('/api/github/workflow-preview', async (c) => {
   const slug = slugify(repo.split('/').pop() ?? 'app');
   return c.json({
     workflowPath: '.github/workflows/substrat-deploy.yml',
-    workflow: deployWorkflowYaml(branch, slug, c.env.CP_PUBLIC_URL ?? 'https://console.substrat.net/api'),
+    workflow: deployWorkflowYaml({ branch, slug, cpUrl: c.env.CP_PUBLIC_URL ?? 'https://console.substrat.net/api' }),
   });
 });
 

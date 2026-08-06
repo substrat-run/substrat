@@ -83,8 +83,13 @@ separator (so a preview tag can't be confused with a tenant handle):
 |---|---|---|
 | `callout-sesamy.global.substrat.run` | prod scope | prod-channel version |
 | `callout-sesamy--v3.global…` | fork of prod (snapshot @ fork time) | version 3 |
-| `callout-sesamy--staging.global…` | fork / dedicated staging scope | staging-channel version |
+| `callout-sesamy--test.global…` | a pinned fork, rebound on every merge | whatever `main` last built |
+| `callout-sesamy--pr-42-9917.global…` | a fresh clean room per CI build | version bound once, never rebound |
 | `callout-sesamy--v1-archive.global…` | retained fork from the v1 era | version 1 (frozen) |
+
+(The middle two are the environment rows: a *sticky* URL whose binding moves, and an *immutable*
+per-build one whose binding never does. There is no `--staging` row — the staging channel was
+retired in #515; a staging environment is a scope with data, which is to say a preview.)
 
 The four cardinalities are independent:
 
@@ -256,6 +261,17 @@ over verticals, but reads/writes domain data across the boundary only through §
    `provisionInstance` — infrastructure, not domain; no per-vertical opt-in.
 5. Cross-version preview: the dump transits the control plane between deployments — encrypted in
    flight, never at rest? Its own residency review under §6.
+6.5. ~~Should the documented workflow ship as a generated CI file?~~ **Decided: yes** (#509
+   open question 3). The recipe is a *generator*, not prose — `deployWorkflowYaml` in
+   `@substrat-run/contracts`, written by `substrat init --ci github` and by the dashboard's
+   one-click setup, with the PR sticky-comment bodies rendered from that same module so the
+   CI-written and platform-written comments are byte-identical. What forced it: the first
+   hand-written workflow pushed `--version 0.1.<run number>` on every run, claiming a real
+   registry coordinate each time. The version-label discipline is load-bearing and completely
+   undiscoverable from `--help`, so it has to be generated rather than written up. The PR
+   preview stays sticky per tag (rebound on every push); an opt-in per-build preview is a fresh
+   clean room bound once, so every build is addressable at an immutable URL even though the PR
+   URL moves under the reader.
 6. ~~Needs a decision-log number in [master-plan.md](../master-plan.md).~~ **Done: D-43**
    (per-PR previews). The broader snapshot/fork machinery this doc describes is tracked by
    D-36/D-37 and the §9 "what this makes the build" list, most of which has shipped.

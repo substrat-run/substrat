@@ -25,6 +25,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 
 | Command | What it does |
 |---|---|
+| `substrat init --ci github` | Write `.github/workflows/substrat-deploy.yml` — the deploy + preview workflow, generated rather than re-derived. |
 | `substrat login` | Sign in via the browser (per-human), or store a CI service token with `--token`. |
 | `substrat whoami` | Print who you are and the workspaces you can build for. |
 | `substrat push [dir]` | Build the vertical and push a version — **admitted** for a private vertical, **pending** for a listed one. No flags needed from inside the project. |
@@ -39,6 +40,42 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 
 Options on any command: `--cp <url>` (control-plane API base), `--token <tok>` (a service
 credential), `--tenant <id-or-slug>` (which workspace to act for).
+
+### `init`
+
+```bash
+substrat init --ci github                        # → .github/workflows/substrat-deploy.yml
+substrat init --ci github --release changesets   # the repo owns its version
+substrat init --ci github ./apps/helpdesk --branch main --force
+```
+
+Writes the deploy workflow: a merge to the deploy branch releases, a PR gets its
+[preview](#preview) with the URL commented back, and closing the PR reaps it. It is the same
+file the dashboard's [one-click CI setup](/guide/deploying#deploy-from-ci) commits — one
+generator, so the two paths cannot drift — and it is for the case the one-click path does not
+cover: you own your CI, or you want the release-train shape.
+
+`--release` picks what a merge means:
+
+| Mode | A merge to the deploy branch |
+|---|---|
+| `trunk` *(default)* | **releases.** The push carries no `--version`, so the registry patch-bumps and `--promote prod` points prod at it in the same run. |
+| `changesets` | **releases only when `package.json` version moved.** The repo owns the version, so the merge that lands a changeset just moves the test env; prod moves when the version PR lands. |
+
+Two behaviours are opt-in through **repository variables**, so enabling them never means
+regenerating the file:
+
+| Variable | Effect |
+|---|---|
+| `SUBSTRAT_TEST_SCOPE_ID` | Every merge rebinds that scope to the just-built version — the [long-lived test environment](/guide/environments-and-previews#a-long-lived-test-environment). |
+| `SUBSTRAT_PER_BUILD_PREVIEW` | Set to `1` and each PR push also mints a frozen [per-build URL](/guide/environments-and-previews#sticky-per-pr-and-per-build-urls) alongside the sticky one. |
+
+The command is **offline** — it never authenticates and never calls the control plane — so it
+works in a fresh repo before the vertical exists. The slug comes from `package.json`, the
+branch from `.git/HEAD`; `--slug` / `--branch` override, `--out` relocates the file, and an
+existing file is never replaced without `--force`. You still add the
+[push token](/guide/deploying#deploy-from-ci) as the `SUBSTRAT_SERVICE_TOKEN` Actions secret
+yourself; the command prints the steps.
 
 ### `login`
 

@@ -1,32 +1,28 @@
 /**
- * GitHub App webhook boundary — the pure half (signature check, event parse,
- * comment bodies). The App delivers ONE webhook stream for every installation;
- * the worker route verifies + parses here, then hands the event to the repo's
- * `GithubRepoLinkDO` (worker.ts), which owns the stateful part: waiting for the
- * PR's CI to land its preview, posting the URL on the PR, reaping on close.
+ * GitHub App webhook boundary — the pure half (signature check, event parse).
+ * The App delivers ONE webhook stream for every installation; the worker route
+ * verifies + parses here, then hands the event to the repo's `GithubRepoLinkDO`
+ * (worker.ts), which owns the stateful part: waiting for the PR's CI to land its
+ * preview, posting the URLs on the PR, reaping on close.
+ *
+ * The comment bodies and preview tag conventions this file used to own now live in
+ * `@substrat-run/contracts` (`ci.ts`) — the generated workflow writes the same
+ * comment from the CI side, and one generator for both is the only way they cannot
+ * drift. Re-exported here so the worker's imports stay in one place.
  *
  * Kept free of Cloudflare imports so it compiles (and tests) under the node
  * tsconfig — the same split as github.ts.
  */
 import { z } from '@substrat-run/contracts';
 
-/**
- * The sticky-comment marker. MUST match the one the generated deploy workflow's
- * comment step writes (github.ts `deployWorkflowYaml`): both writers upsert the
- * comment that starts with this marker, so platform and CI never double-post.
- */
-export const PREVIEW_COMMENT_MARKER = '<!-- substrat-preview -->';
-
-/** The preview tag a PR maps to — the CI convention (`--tag pr-<number>`). */
-export const previewTag = (prNumber: number): string => `pr-${prNumber}`;
-
-/** The sticky comment while the preview is live. Mirrors the CI step's wording. */
-export const previewCommentBody = (url: string): string =>
-  `${PREVIEW_COMMENT_MARKER}\n🔎 **Substrat preview:** ${url}\n\n_Runs this PR's code against a fork of prod. Reaped when the PR closes._`;
-
-/** The sticky comment after the PR closed and the preview fork was deleted. */
-export const previewReapedBody = (): string =>
-  `${PREVIEW_COMMENT_MARKER}\n🔎 **Substrat preview:** reaped — this PR is closed and the preview fork was deleted.`;
+export {
+  PREVIEW_COMMENT_MARKER,
+  previewTag,
+  buildPreviewTag,
+  buildPreviewTagPrefix,
+  previewCommentBody,
+  previewReapedBody,
+} from '@substrat-run/contracts';
 
 /**
  * Verify GitHub's `X-Hub-Signature-256` header against the RAW request body.

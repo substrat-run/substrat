@@ -410,6 +410,22 @@ dependencies (your lockfile picks the package manager) and runs
 or updating a PR creates its [preview](#preview-a-pull-request-—-substrat-preview) and comments the URL; closing
 the PR reaps it. A manual copy-paste path shows the same file if you'd rather commit it yourself.
 
+If you never connect the GitHub App — you own your CI, you are not on GitHub-hosted runners, or
+you want the release-train shape instead of merge-deploys-prod — generate the same file locally:
+
+```bash
+substrat init --ci github                        # merge to the deploy branch releases
+substrat init --ci github --release changesets   # only a package.json version move releases
+```
+
+Both paths render from one generator, so the committed workflow and the generated one cannot
+drift. Two extras are opt-in through repository *variables* rather than a regenerated file:
+`SUBSTRAT_TEST_SCOPE_ID` makes every merge rebind a
+[long-lived test environment](/guide/environments-and-previews#a-long-lived-test-environment), and
+`SUBSTRAT_PER_BUILD_PREVIEW` adds a frozen
+[per-build URL](/guide/environments-and-previews#sticky-per-pr-and-per-build-urls) to each PR
+comment alongside the sticky one. See [`substrat init`](/reference/cli#init).
+
 One thing to know while the first run is in flight: **a vertical registers on its first
 successful push**. Until then there is no version row in the dashboard to hang an error off —
 if nothing appears, the place to look is the repository's Actions tab, not the Deployments view.

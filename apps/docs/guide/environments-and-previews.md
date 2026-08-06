@@ -111,9 +111,16 @@ substrat preview create . --tag pr-$PR                  # sticky: reused, renews
 substrat preview create . --tag pr-$PR-$RUN --empty --ttl 24h   # per-build: fresh, short-lived
 ```
 
-The dashboard's [one-click CI setup](/guide/deploying#deploy-from-ci) generates a workflow that wires
-the sticky URL and comments it on the PR; the per-build line is opt-in for when a frozen artifact per
-build is worth the extra scope.
+You do not have to write that yourself — [`substrat init --ci github`](/reference/cli#init) and the
+dashboard's [one-click CI setup](/guide/deploying#deploy-from-ci) generate the same workflow, which
+creates the sticky preview on every PR push and comments the URL back. The per-build call is **opt-in**,
+because a frozen scope per build is a real cost: set the repository variable `SUBSTRAT_PER_BUILD_PREVIEW`
+to `1` and the same workflow adds it, with the PR comment then naming **both** URLs — the one that
+follows the PR and the one frozen to this build.
+
+The per-build preview is deliberately `--empty` rather than a fork: it is thrown away within a day, so
+copying prod data into it on every push would be pure cost. If you need a frozen copy *with* data,
+that is a snapshot of the sticky preview, not a per-build one.
 
 ## A long-lived test environment
 
@@ -181,10 +188,15 @@ onto the primitives above:
 
 | Moment | Version label | What runs | Where |
 |---|---|---|---|
-| **PR opened / pushed** | `<pkg>-pr.<n>.<run>` | `preview create --tag pr-<n>` | sticky `…--pr-<n>`, a fork of prod |
-| **Merge to `main`** (changeset lands; version does **not** move) | `<pkg>-test.<run>` | `scope bind <testScope> --version …` | `crm-test.ahero.se`, the long-lived test env |
-| **Version PR** ("chore(release): version packages") | `<next>-rc.<run>` | `preview create --tag rc` | `…--rc`, the release candidate on forked prod data — while rejecting it is still free |
-| **Version PR merges** (version moves) | `<pkg>` exactly | `push --promote prod` | prod |
+| **PR opened / pushed** | `<next>-pr-<n>.<k>` | `preview create --tag pr-<n>` | sticky `…--pr-<n>`, a fork of prod |
+| **Merge to `main`** (changeset lands; version does **not** move) | `<pkg>-test.<run>` | `push`, then `scope bind <testScope>` | `crm-test.ahero.se`, the long-lived test env |
+| **Version PR** ("chore(release): version packages") | `<next>-pr-<n>.<k>` | nothing special — it is a PR, so it gets a PR preview | that preview **is** the release candidate: the code that is about to become prod, on a fork of prod data, while rejecting it is still free |
+| **Version PR merges** (version moves) | `<pkg>` exactly | `push --version <pkg> --promote prod` | prod |
+
+Note what row 3 does *not* need: a release-candidate channel, an `rc` tag, or any new noun. A
+version PR is a pull request, so the ordinary PR preview already runs the release candidate against
+forked prod data. The one thing that differs between it and the prod push is the version *label* — the
+code is the same tree.
 
 Two disciplines make this safe, and both are already true — this workflow just names them:
 
@@ -197,9 +209,19 @@ Two disciplines make this safe, and both are already true — this workflow just
   typed at the same instant as the deploy.
 
 ::: tip Don't hand-roll it
-The dashboard's [one-click CI setup](/guide/deploying#deploy-from-ci) generates the merge-to-main +
-PR-preview workflow for you — the label discipline and the two-`preview`-per-push recipe are not
-something you should have to re-derive per vertical.
+Generate it:
+
+```bash
+substrat init --ci github --release changesets
+```
+
+[`substrat init`](/reference/cli#init) and the dashboard's
+[one-click CI setup](/guide/deploying#deploy-from-ci) render the **same** workflow from the same
+generator — merge-to-main release, the test-env rebind, and the PR previews with their comment. The
+label discipline and the two-`preview`-per-push recipe are not something you should have to re-derive
+per vertical, and the reason this command exists is that the first workflow we shipped got the label
+part wrong: it pushed `--version 0.1.<run number>` on every run, claiming a real registry coordinate
+each time and punching holes in the version sequence.
 :::
 
 ## See also
