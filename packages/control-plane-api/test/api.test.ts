@@ -2638,7 +2638,22 @@ describe('control-plane API — observability proxy', () => {
       headers: asStaff,
     });
     expect(res.status).toBe(200);
-    expect(seen.logs.at(-1)).toEqual({ service: 'my-worker', level: 'error', hours: 1, limit: 50 });
+    expect(seen.logs.at(-1)).toEqual({ services: ['my-worker'], level: 'error', hours: 1, limit: 50 });
+  });
+
+  it('accepts a repeated service param — one query over a whole set of deployed units', async () => {
+    const app = appWith(reader);
+    const res = await app.request('/observability/logs?service=my-worker&service=my-worker-v2', { headers: asStaff });
+    expect(res.status).toBe(200);
+    expect(seen.logs.at(-1)).toEqual({ services: ['my-worker', 'my-worker-v2'], hours: 1, limit: 100 });
+
+    // No service at all is the fleet view — narrowing absent, not empty.
+    await app.request('/observability/logs', { headers: asStaff });
+    expect(seen.logs.at(-1)).toEqual({ hours: 1, limit: 100 });
+
+    // Bounded like every input: each extra service is another backend query.
+    const many = Array.from({ length: 21 }, (_, i) => `service=w${i}`).join('&');
+    expect((await app.request(`/observability/logs?${many}`, { headers: asStaff })).status).toBe(400);
   });
 
   it('passes the message search term to the reader as a contract field, bounded like every input', async () => {
@@ -2646,7 +2661,7 @@ describe('control-plane API — observability proxy', () => {
     await app.request(`/observability/logs?service=my-worker&search=${encodeURIComponent('TypeError: undefined')}`, {
       headers: asStaff,
     });
-    expect(seen.logs.at(-1)).toEqual({ service: 'my-worker', search: 'TypeError: undefined', hours: 1, limit: 100 });
+    expect(seen.logs.at(-1)).toEqual({ services: ['my-worker'], search: 'TypeError: undefined', hours: 1, limit: 100 });
     expect(
       (await app.request(`/observability/logs?service=my-worker&search=${'x'.repeat(201)}`, { headers: asStaff })).status,
     ).toBe(400);

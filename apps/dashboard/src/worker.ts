@@ -2314,8 +2314,10 @@ app.get('/api/observability/logs', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const cp = controlPlaneFor(c.env, node.tenantId);
   if (!cp) throw new HTTPException(501, { message: 'observability requires the shared control plane' });
-  const service = c.req.query('service');
-  if (!service) throw new HTTPException(400, { message: 'service is required' });
+  // `service` repeats — one per deployed version when the tab shows all of them.
+  // Unowned refs are dropped by the authority, so this stays a request, not a claim.
+  const services = (c.req.queries('service') ?? []).filter((s) => s.length > 0);
+  if (services.length === 0) throw new HTTPException(400, { message: 'service is required' });
   const hours = Number(c.req.query('hours') ?? '1');
   const limit = Number(c.req.query('limit') ?? '100');
   const level = c.req.query('level') || undefined;
@@ -2323,7 +2325,7 @@ app.get('/api/observability/logs', async (c) => {
   return c.json(
     await cpObservability(() =>
       cp.observabilityLogs({
-        service,
+        services,
         level,
         search,
         hours: Number.isFinite(hours) ? hours : 1,

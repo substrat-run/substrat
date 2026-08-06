@@ -56,13 +56,18 @@ export interface ObservabilityReader {
   /** Per-service invocation metrics for the trailing window (fleet + builder views). */
   serviceMetrics(input: { hours: number }): Promise<ServiceMetricsRow[]>;
   /**
-   * Recent log events, optionally narrowed to one service and/or level.
+   * Recent log events, optionally narrowed to a set of services and/or a level.
+   * `services` is a set because a caller's unit of interest is rarely one deployed
+   * unit — the builder view's "all versions" is every service a vertical serves from,
+   * and asking for them together is what makes one merged stream possible. Absent or
+   * empty means "no service narrowing" (the fleet view); several means the backend
+   * returns their events merged newest-first, capped at `limit` overall.
    * `search` is a case-sensitive substring match on the event message — a contract
    * capability, so each backend maps it to its own query language (never a
    * provider-shaped filter passed through the seam).
    */
   recentLogs(input: {
-    service?: string;
+    services?: string[];
     level?: string;
     search?: string;
     hours: number;

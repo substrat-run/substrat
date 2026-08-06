@@ -784,8 +784,11 @@ export const api = {
     call<ObservabilityRow[]>(
       `/observability/metrics?hours=${hours}${vertical ? `&vertical=${encodeURIComponent(vertical)}` : ''}`,
     ),
-  observabilityLogs: (q: { service: string; level?: string; search?: string; hours?: number; limit?: number }) => {
-    const p = new URLSearchParams({ service: q.service });
+  // `services` is a set: one version, or every version the tab is showing — the
+  // worker asks the plane for them together and answers one merged stream.
+  observabilityLogs: (q: { services: string[]; level?: string; search?: string; hours?: number; limit?: number }) => {
+    const p = new URLSearchParams();
+    for (const s of q.services) p.append('service', s);
     if (q.level) p.set('level', q.level);
     if (q.search) p.set('search', q.search);
     if (q.hours) p.set('hours', String(q.hours));

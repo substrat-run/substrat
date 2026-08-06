@@ -92,6 +92,13 @@ view over them unfiltered; the dashboard renders the builder view with the query
 narrowing lives in the proxy, same posture as `TenantNarrowedControlPlane` — never in the
 client, never in the token.
 
+The log read narrows to a **set** of services, not one: a builder's unit of interest is a
+vertical, which serves from several deployed units at once (the stable serving script plus
+per-version archives), so the dashboard's "all versions" asks for them together and the
+seam answers one stream merged newest-first, capped at `limit` overall. Unowned refs are
+dropped by the narrowing before the plane is asked, so a mixed set is a request, never a
+claim — asking for someone else's service alongside your own simply omits it.
+
 **4.2 Stamp the tenant dimension at the router — write now, read later.** The one fact
 Cloudflare structurally cannot record is which *tenant* a request belonged to. The router
 computes it on every request at hostname-resolve time, so the router writes one Analytics

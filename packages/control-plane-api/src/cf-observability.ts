@@ -101,69 +101,91 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         .sort((a, b) => b.requests - a.requests);
     },
 
-    async recentLogs({ service, level, search, hours, limit }) {
-      const to = Date.now();
-      const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
-      // `$metadata.service` is the script name in Workers Logs events — the field
-      // Cloudflare's own query examples filter on.
-      if (service) {
-        filters.push({ key: '$metadata.service', operation: 'eq', type: 'string', value: service });
+    async recentLogs({ services, level, search, hours, limit }) {
+      // One query per service, merged newest-first: the telemetry API's filters are
+      // single-valued equality, and an OR across script names is not a filter this
+      // API offers. The queries are independent, so they run concurrently and the
+      // merge (not the backend) enforces the overall `limit`.
+      if (services && services.length > 1) {
+        const pages = await Promise.all(services.map((s) => queryEvents(s, level, search, hours, limit)));
+        return pages
+          .flat()
+          .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
+          .slice(0, limit);
       }
-      if (level) {
-        filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
-      }
-      if (search) {
-        filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
-      }
-      const res = await authed(
-        `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
-        {
-          queryId: 'substrat-recent-logs',
-          view: 'events',
-          timeframe: { from: to - hours * 3_600_000, to },
-          parameters: { datasets: ['cloudflare-workers'], filters, limit },
-          limit,
-        },
-      );
-      const json = (await res.json()) as {
-        success?: boolean;
-        errors?: Array<{ message?: string }>;
-        result?: { events?: { events?: unknown[] } | unknown[] };
-      };
-      if (!res.ok || json.success === false) {
-        const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
-        throw new Error(`Cloudflare telemetry query failed: ${message}`);
-      }
-      // The events view has nested the list one level deeper across API revisions —
-      // accept both rather than pinning to whichever shape was current at writing.
-      const outer = json.result?.events;
-      const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<
-        Record<string, unknown>
-      >;
-      const str = (v: unknown) => (typeof v === 'string' ? v : null);
-      const num = (v: unknown) => (typeof v === 'number' ? v : null);
-      return events.map((e) => {
-        const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
-        const workers = (e['$workers'] ?? {}) as Record<string, unknown>;
-        return {
-          timestamp: num(e['timestamp']),
-          level: str(metadata['level']),
-          message: str(metadata['message']),
-          service: str(metadata['service']) ?? str(workers['scriptName']),
-          outcome: str(workers['outcome']),
-          // `$metadata.trigger` reads like `<entrypoint>.<method>` (e.g. `default.importDump`);
-          // fall back to the `$workers.event` sub-shape (`rpcMethod`) when it is absent.
-          trigger:
-            str(metadata['trigger']) ??
-            str((workers['event'] as Record<string, unknown> | undefined)?.['rpcMethod']),
-          eventType: str(workers['eventType']),
-          entrypoint: str(workers['entrypoint']),
-          requestId: str(metadata['requestId']) ?? str(workers['requestId']),
-          cpuTimeMs: num(workers['cpuTimeMs']),
-          wallTimeMs: num(workers['wallTimeMs']),
-          raw: e,
-        };
-      });
+      return queryEvents(services?.[0], level, search, hours, limit);
     },
   };
+
+  /** One telemetry query — narrowed to a single service, or to none (the fleet view). */
+  async function queryEvents(
+    service: string | undefined,
+    level: string | undefined,
+    search: string | undefined,
+    hours: number,
+    limit: number,
+  ) {
+    const to = Date.now();
+    const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
+    // `$metadata.service` is the script name in Workers Logs events — the field
+    // Cloudflare's own query examples filter on.
+    if (service) {
+      filters.push({ key: '$metadata.service', operation: 'eq', type: 'string', value: service });
+    }
+    if (level) {
+      filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
+    }
+    if (search) {
+      filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
+    }
+    const res = await authed(
+      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
+      {
+        queryId: 'substrat-recent-logs',
+        view: 'events',
+        timeframe: { from: to - hours * 3_600_000, to },
+        parameters: { datasets: ['cloudflare-workers'], filters, limit },
+        limit,
+      },
+    );
+    const json = (await res.json()) as {
+      success?: boolean;
+      errors?: Array<{ message?: string }>;
+      result?: { events?: { events?: unknown[] } | unknown[] };
+    };
+    if (!res.ok || json.success === false) {
+      const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
+      throw new Error(`Cloudflare telemetry query failed: ${message}`);
+    }
+    // The events view has nested the list one level deeper across API revisions —
+    // accept both rather than pinning to whichever shape was current at writing.
+    const outer = json.result?.events;
+    const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<
+      Record<string, unknown>
+    >;
+    const str = (v: unknown) => (typeof v === 'string' ? v : null);
+    const num = (v: unknown) => (typeof v === 'number' ? v : null);
+    return events.map((e) => {
+      const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
+      const workers = (e['$workers'] ?? {}) as Record<string, unknown>;
+      return {
+        timestamp: num(e['timestamp']),
+        level: str(metadata['level']),
+        message: str(metadata['message']),
+        service: str(metadata['service']) ?? str(workers['scriptName']),
+        outcome: str(workers['outcome']),
+        // `$metadata.trigger` reads like `<entrypoint>.<method>` (e.g. `default.importDump`);
+        // fall back to the `$workers.event` sub-shape (`rpcMethod`) when it is absent.
+        trigger:
+          str(metadata['trigger']) ??
+          str((workers['event'] as Record<string, unknown> | undefined)?.['rpcMethod']),
+        eventType: str(workers['eventType']),
+        entrypoint: str(workers['entrypoint']),
+        requestId: str(metadata['requestId']) ?? str(workers['requestId']),
+        cpuTimeMs: num(workers['cpuTimeMs']),
+        wallTimeMs: num(workers['wallTimeMs']),
+        raw: e,
+      };
+    });
+  }
 }

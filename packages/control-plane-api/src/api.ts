@@ -2398,16 +2398,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!options.observability) {
       return c.json({ error: 'observability is not configured on this control plane' }, 501);
     }
+    // `service` repeats: one deployed unit per param, so a caller can ask for a
+    // vertical's whole set (the dashboard's "all versions") in one query and get one
+    // merged stream back. Capped because each extra service is another backend query.
+    const services = (c.req.queries('service') ?? []).filter((s) => s.length > 0);
     const input = z
       .object({
-        service: z.string().min(1).max(200).optional(),
+        services: z.array(z.string().min(1).max(200)).max(20).optional(),
         level: z.enum(['log', 'info', 'warn', 'error', 'debug']).optional(),
         search: z.string().min(1).max(200).optional(),
         hours: z.coerce.number().int().min(1).max(72).default(1),
         limit: z.coerce.number().int().min(1).max(500).default(100),
       })
       .parse({
-        service: c.req.query('service') || undefined,
+        services: services.length ? services : undefined,
         level: c.req.query('level') || undefined,
         search: c.req.query('search') || undefined,
         hours: c.req.query('hours'),

@@ -290,14 +290,24 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
 
   it('observabilityLogs answers [] for an unowned service WITHOUT asking the plane', async () => {
     const { cp, calls } = routedHarness(registry);
-    expect(await cp.observabilityLogs({ service: 'rival-crm-v9' })).toEqual([]);
+    expect(await cp.observabilityLogs({ services: ['rival-crm-v9'] })).toEqual([]);
     // The ownership check runs first — the staff-wide log query was never issued.
     expect(calls.some((u) => u.includes('/observability/logs'))).toBe(false);
   });
 
+  it('observabilityLogs drops unowned refs from a multi-service ask, keeping the owned ones', async () => {
+    const { cp, calls } = routedHarness({ ...registry, '/observability/logs': [] });
+    // The "all versions" ask: a rival ref mixed in must not reach the staff-wide query,
+    // and must not poison the owned half of the request either.
+    await cp.observabilityLogs({ services: ['acme-helpdesk-v1', 'rival-crm-v9'] });
+    const logCall = calls.find((u) => u.includes('/observability/logs'))!;
+    expect(logCall).toContain('service=acme-helpdesk-v1');
+    expect(logCall).not.toContain('rival');
+  });
+
   it('observabilityLogs queries an owned service with the narrowing params', async () => {
     const { cp, calls } = routedHarness({ ...registry, '/observability/logs': [] });
-    await cp.observabilityLogs({ service: 'acme-helpdesk-v1', level: 'error', search: 'TypeError', hours: 24, limit: 50 });
+    await cp.observabilityLogs({ services: ['acme-helpdesk-v1'], level: 'error', search: 'TypeError', hours: 24, limit: 50 });
     const logCall = calls.find((u) => u.includes('/observability/logs'));
     expect(logCall).toContain('service=acme-helpdesk-v1');
     expect(logCall).toContain('level=error');
@@ -329,7 +339,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
         },
       ],
     });
-    const events = await cp.observabilityLogs({ service: 'acme-helpdesk-v1' });
+    const events = await cp.observabilityLogs({ services: ['acme-helpdesk-v1'] });
     expect(events).toEqual([
       {
         timestamp: 1722700000000,
