@@ -1105,9 +1105,13 @@ describe('control-plane API', () => {
       id: vId, verticalSlug: 'cleanroom', version: '1.0.0',
       manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
     });
-    // private (owned, unlisted) → self-admits, so the version binds.
+    // private (owned, unlisted) → self-admits, so the version binds. Configure the platform
+    // suffixes the SAME way production does — the bare apex FIRST, then the jurisdiction
+    // domain — since that ordering is exactly what stranded clean-room previews: taking
+    // `platformBaseDomains[0]` minted on the certless `*.substrat.run` instead of the
+    // wildcard-backed `*.global.substrat.run`. A single-entry list masked the bug.
     const capp = createControlPlaneApi({
-      host, authenticate: UNSAFE_devPlatformActorAuth(), platformBaseDomains: ['global.substrat.run'],
+      host, authenticate: UNSAFE_devPlatformActorAuth(), platformBaseDomains: ['substrat.run', 'global.substrat.run'],
     });
     const cj = (p: string, method: string, body?: unknown) =>
       capp.request(p, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -1119,6 +1123,8 @@ describe('control-plane API', () => {
     expect(res.status).toBe(201);
     const created = (await res.json()) as { scopeId: string; hostname: string; reused: boolean };
     expect(created.reused).toBe(false);
+    // The jurisdiction segment MUST be present — this is the regression guard: the wildcard
+    // DNS/cert lives on `*.global.substrat.run`, so a hostname without `.global.` never resolves.
     expect(created.hostname).toBe(`cleanroom-${tSlug}--pr-1.global.substrat.run`);
 
     const row = (await (await cj(`/tenants/${t1}/scopes/${created.scopeId}`, 'GET')).json()) as {
