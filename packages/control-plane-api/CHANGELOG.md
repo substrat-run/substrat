@@ -1,5 +1,95 @@
 # @substrat-run/control-plane-api
 
+## 0.49.0
+
+### Minor Changes
+
+- 00ff102: feat(observability): one merged log stream across a vertical's versions
+
+  The log read seam narrows to a **set** of services (`services: string[]`) instead of one:
+  a builder's unit of interest is a vertical, which serves from several deployed units at
+  once (the stable serving script plus per-version archives). `GET /observability/logs`
+  accepts a repeated `service` param (capped at 20 — one backend query each) and answers the
+  services' events merged newest-first, capped at `limit` overall. A single `service` param
+  behaves exactly as before, and no `service` at all is still the fleet view.
+
+  Consumer-side: the dashboard's per-app Observability tab now shows logs under "All
+  versions" — every version that served, merged, with a version chip per line — where it
+  previously showed nothing until one version was picked. Unowned refs are still dropped by
+  the tenant narrowing before the plane is asked, so a mixed set is a request, never a claim.
+
+- f11a961: feat(deploy): native static assets for dispatched verticals (#340)
+
+  A vertical can now declare `runtimeNeeds.assets` — a directory of built files plus how the
+  runtime should route paths against it — and the platform uploads those files to Cloudflare's
+  own asset store through the three-step `assets-upload-session`. They are served from the edge
+  without invoking the worker, and versioned atomically with the code.
+
+  This replaces inlining the whole SPA into the worker bundle as base64, a workaround justified
+  by "WfP dispatch has no static-assets path" that has been stale since Workers for Platforms
+  grew that endpoint. The cost it removes is concrete: ~+33 % encoding overhead counted against
+  the script-size limit (Meridian's and Manyfold's inlined SPAs are ~3.9 MB of generated source
+  each), the whole UI re-parsed on every cold start, and a worker invocation for every image.
+
+  Assets are **not a binding** — they are a top-level upload path — so they can neither be
+  allowed nor refused by the §4 binding allowlist. D-44 records the separate decision: the bytes
+  are admitted because they carry no reach (inert, public, no code and no credential), while
+  their **content-address is verified** — the asset store dedups by hash across the whole
+  dispatch namespace, so the control plane re-derives every hash from the received bytes and
+  refuses a mismatch rather than letting one push decide what another vertical's identical-hash
+  asset serves. An `assets.binding` (programmatic `env.ASSETS`) is refused at push time rather
+  than dropped silently, since a worker shipped with an undefined `env.ASSETS` looks deployed
+  and 500s on first request.
+
+  The file manifest is retained with the rest of the deploy manifest, which is what lets a
+  **promote** re-attach a version's assets onto the stable serving script from content addresses
+  alone — the archive script gives back the modules (#286), dedup gives back the assets. A
+  re-serve that finds the runtime has dropped bytes it cannot supply refuses and says to push
+  again, instead of serving a half-broken page.
+
+  The dashboard gains a per-version Assets panel (path, type, size, content hash) over the
+  manifest it already persisted.
+
+### Patch Changes
+
+- 5ad59c5: fix(previews): mint clean-room preview hostnames under the jurisdiction base
+
+  A clean-room (empty, source-less) preview — the shape behind a long-lived test
+  environment — derived its `--<tag>` URL from `platformBaseDomains[0]`, which in
+  production is the bare apex `substrat.run`. The wildcard DNS/cert lives on
+  `*.global.substrat.run`, so the minted hostname
+  (`crm-eff-<tenant>--test.substrat.run`) resolved to NXDOMAIN and the environment was
+  unreachable. Mint under `<label>.<jurisdiction>.<baseDomain>` instead — exactly as
+  provisioning does — so the URL lands on the wildcard. The regression was masked by a
+  test configured with a single, already-jurisdiction-qualified base; the test now uses
+  the production shape (bare apex first) and asserts the `.global.` segment is present.
+
+- 9c7987b: fix(previews): a retried `preview create` re-forks, instead of adopting the empty leftover
+
+  A preview only holds data once its two-phase create finished: the directory row lands first
+  as `provisioning` (K-31), the fork's export→restore runs against the PR version's
+  deployment, and `activateScope` is the **last** step. A create that died in the data copy
+  therefore leaves a `provisioning` row over an empty DO.
+
+  `orchestratedPreview` matched an existing preview on `(kind, slug)` alone, so the next
+  create adopted that row and took the **reuse** branch — which rebinds the version, renews
+  the TTL and binds the hostname, but never copies data. The preview came back
+  `reused: true`, CI printed `✓ preview '<tag>' updated … against a fork of prod`, and the
+  reviewer got a URL onto an empty database. The generated CI workflow retries
+  `preview create` on a transient, so this was the _common_ path, not a corner: attempt 1
+  forks and dies, attempt 2 adopts its corpse and goes green.
+
+  Reuse now requires `status === 'active'`. A half-built leftover is reaped (DO bytes in its
+  own deployment, then the directory row and its `--<tag>` hostname) and the create falls
+  through to a fresh fork — which is what the retry was asking for. `refresh: true` takes the
+  same path, fixing a second bug on the way: its fresh scope used to collide with the old
+  row's still-bound hostname (`hostname '…' is already bound to another scope`).
+
+- Updated dependencies [a13c8fb]
+- Updated dependencies [f11a961]
+  - @substrat-run/contracts@0.49.0
+  - @substrat-run/kernel@0.49.0
+
 ## 0.48.1
 
 ### Patch Changes
