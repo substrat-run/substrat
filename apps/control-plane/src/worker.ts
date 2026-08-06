@@ -42,6 +42,8 @@ import {
   createWfpModulesFetcher,
   createCfObservabilityReader,
   createR2BackupStore,
+  createR2DirectoryBackupStore,
+  backupDirectoryIfDue,
   createCustomHostnameProvisioner,
   reconcilePendingHostnames,
   isCustomHostname,
@@ -89,6 +91,13 @@ interface Env extends OidcEnv {
    * proceeding without one; a reap that does not ask still works.
    */
   SCOPE_BACKUPS?: R2Bucket;
+  /**
+   * The platform's DIRECTORY-backup bucket (#40) — where the daily copy of the control
+   * plane's own database lands. Bound in wrangler.jsonc. Absent (the workerd test, a
+   * self-host) ⇒ the cron's backup phase is skipped and the directory backup routes
+   * answer 501, which is the loud version of "this deployment keeps no platform copy".
+   */
+  DIRECTORY_BACKUPS?: R2Bucket;
   /** Shared secret a connected vertical presents (x-service-token) to register. */
   SERVICE_TOKEN?: string;
   /**
@@ -593,6 +602,30 @@ export default {
         console.log('hostname-reconcile', hostnameReport);
       }
     }
+
+    // #40 — the platform's own disaster recovery. LAST in the pass, deliberately: the
+    // phases above mutate the directory (reaps, hostname transitions, intent settling),
+    // so a copy taken after them is a copy of a settled directory rather than of one
+    // mid-sweep. The cadence guard lives in `backupDirectoryIfDue` and reads the newest
+    // stored copy, so a quarter-hourly cron takes one a day and a missed tick means the
+    // next pass takes it late instead of never.
+    //
+    // A failure here is logged, not thrown: it must not sink the sweep (the drain and
+    // reap phases above are what keep the fleet moving), but it must be LOUD, because a
+    // backup that has been quietly failing is worse than no backup — it is a false
+    // belief. `GET /api/directory/backups` is where that belief gets checked.
+    if (env.DIRECTORY_BACKUPS) {
+      try {
+        const backup = await backupDirectoryIfDue({
+          admin: host.admin,
+          store: createR2DirectoryBackupStore(env.DIRECTORY_BACKUPS),
+          actor: SWEEP_ACTOR,
+        });
+        if (backup.taken || backup.pruned) console.log('directory-backup', backup);
+      } catch (err) {
+        console.error('directory-backup failed', err instanceof Error ? err.message : String(err));
+      }
+    }
   },
 
   fetch(request: Request, env: Env): Response | Promise<Response> {
@@ -715,6 +748,12 @@ export default {
         // is not bound, which is what makes an asked-for backup refuse rather than
         // silently skip.
         ...(env.SCOPE_BACKUPS ? { scopeBackups: createR2BackupStore(env.SCOPE_BACKUPS) } : {}),
+        // #40 — the platform's own copy. Same absent-means-501 posture as the scope
+        // store above: a control plane running with no directory backup should say so
+        // when asked, not answer an empty list that reads like "nothing to restore".
+        ...(env.DIRECTORY_BACKUPS
+          ? { directoryBackups: createR2DirectoryBackupStore(env.DIRECTORY_BACKUPS) }
+          : {}),
         // #305 §4.7 — a custom-domain bind drives Cloudflare-for-SaaS issuance; a
         // platform mint under one of these base domains rides the wildcard.
         provisionHostname: provisionHostnameFor(env),

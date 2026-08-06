@@ -4,6 +4,7 @@ import type {
   AdminLogEntry,
   ListPage,
   RoleDefinition,
+  ScopeDumpTable,
   ScopeStatus,
   Tenant,
   TenantStatus,
@@ -778,6 +779,75 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS orgs_tenant_slug ON orgs (tenant_id, slug)',
     );
+  }
+
+  // -- disaster recovery (#40) -----------------------------------------------
+
+  /**
+   * A COMPLETE dump of the directory — the read half of the platform's own backup
+   * (control-plane.md §4.9). Structurally identical to `ScopeDO.exportDump`, and for
+   * the same reasons: no `.backup()` on DO SQLite, so this is the logical row-dump,
+   * consistent because a DO is single-threaded (no concurrent writer to tear it).
+   *
+   * The whole database, including `_substrat_admin_log` and `_substrat_access_log`: a
+   * directory restored without its audit spine is a platform that cannot say what it
+   * did before the restore, which is the opposite of what a recovery is for.
+   */
+  exportDump(): ScopeDumpTable[] {
+    const defs = this.sql
+      .exec(
+        `SELECT name, sql FROM sqlite_master
+          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+          ORDER BY name`,
+      )
+      .toArray() as unknown as { name: string; sql: string }[];
+    return defs.map(({ name, sql }) => {
+      const cursor = this.sql.exec(`SELECT * FROM "${name}"`);
+      const columns = cursor.columnNames;
+      const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
+      return { name, ddl: sql, columns, rows };
+    });
+  }
+
+  /**
+   * Replace the directory with a dump — the break-glass write half (#40).
+   *
+   * Drop-then-replay in one transaction, exactly as `ScopeDO.importDump` does it, with
+   * `defer_foreign_keys` for the same two hazards: the dump is ordered by table NAME
+   * (which says nothing about foreign keys — `scopes` references `tenants`), and the
+   * DROPs themselves perform an implicit DELETE that a populated child table would
+   * refuse. Deferral holds every check to commit, by which point the old rows are gone
+   * and the new ones are all in.
+   *
+   * Then the schema is re-asserted, and that is not belt-and-braces: a copy taken
+   * before a directory migration carries the OLD shape, so replaying it verbatim would
+   * silently roll the platform's schema backwards and the first read of a newer column
+   * would fail with a bare `no such column`. `DIRECTORY_DDL` is all IF NOT EXISTS and
+   * `ensureDirectoryColumns` is attempt-and-tolerate, so together they carry a restored
+   * older directory forward to the running code's shape — the same contract a cold
+   * start gets.
+   */
+  async importDump(tables: ScopeDumpTable[]): Promise<void> {
+    await this.ctx.storage.transaction(async () => {
+      this.sql.exec('PRAGMA defer_foreign_keys = ON');
+      const existing = this.sql
+        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+        .toArray() as unknown as { name: string }[];
+      for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+      for (const t of tables) this.sql.exec(t.ddl);
+      for (const t of tables) {
+        if (t.rows.length === 0) continue;
+        const cols = t.columns.map((c) => `"${c}"`).join(', ');
+        const placeholders = t.columns.map(() => '?').join(', ');
+        const insert = `INSERT INTO "${t.name}" (${cols}) VALUES (${placeholders})`;
+        for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
+      }
+    });
+    // Outside the transaction, like the constructor's own path: these are idempotent
+    // schema assertions, and an ALTER that has to be tolerated (duplicate column) must
+    // not take the restore's data down with it.
+    for (const stmt of splitSqlStatements(DIRECTORY_DDL)) this.sql.exec(stmt);
+    this.ensureDirectoryColumns();
   }
 
   // -- tenant registry (control-plane.md §4.1) --------------------------------

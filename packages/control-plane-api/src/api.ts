@@ -66,7 +66,13 @@ import {
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import type { ObservabilityReader } from './observability.js';
-import type { ScopeBackup, ScopeBackupStore } from './backups.js';
+import type {
+  DirectoryBackup,
+  DirectoryBackupStore,
+  ScopeBackup,
+  ScopeBackupStore,
+} from './backups.js';
+import { backupDirectoryIfDue } from './directory-backup.js';
 import {
   isCustomHostname,
   validateBindableHostname,
@@ -194,6 +200,17 @@ export interface ControlPlaneApiOptions {
    * taught when it silently went unset.
    */
   scopeBackups?: ScopeBackupStore;
+  /**
+   * Where the platform's OWN copies live (#40) — the directory, not a tenant's scope.
+   * Host-injected on the same posture as `scopeBackups`, and pointable at the same
+   * bucket (the key prefixes keep the two apart) or at a different one.
+   *
+   * Absent ⇒ the directory backup routes answer 501 and the cron's backup phase is
+   * skipped. Loud, never silent: a control plane running with no directory copy is a
+   * platform one bug away from unrecoverable, and that must be visible rather than
+   * inferred from an absence of backups nobody looked for.
+   */
+  directoryBackups?: DirectoryBackupStore;
   /**
    * Issues + polls Cloudflare-for-SaaS custom hostnames (#305, §4.7) — host-injected
    * like `deployVertical`, so this package holds no Cloudflare credential (D-34). When
@@ -378,6 +395,14 @@ const snapshotScopeBody = z.object({
 //               what keeps every pre-#493 caller (and self-host) working unchanged
 const reapScopeBody = z.object({
   backup: z.boolean().optional(),
+});
+
+// A directory-restore request (#40). `capturedAt` addresses the copy — there is one
+// directory, so that is its whole address. `overwrite` is the guard against the
+// dangerous case: replaying a restore onto a control plane that already recovered.
+const restoreDirectoryBody = z.object({
+  capturedAt: z.string().min(1),
+  overwrite: z.boolean().optional(),
 });
 
 /**
@@ -1470,6 +1495,79 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       throw e;
     }
+  });
+
+  // -- directory backups (#40) -----------------------------------------------
+  // The platform's own disaster recovery, on the same store posture as the scope
+  // backups above and deliberately on a different axis from them: a scope has ~30-day
+  // point-in-time recovery, the directory has one Durable Object and no second copy of
+  // the mapping that makes every scope addressable. These routes are the manual arms of
+  // the cron phase (`backupDirectoryIfDue`) — take one now, see what is held, and the
+  // break-glass restore. Staff-only: none is in BUILDER_ROUTES, and none is per-tenant,
+  // because the subject of all three is every tenant at once.
+
+  // What copies exist, newest first — metadata only, so this is cheap and hands out no
+  // bytes. This is also the answer to "is the backup actually running?", which is the
+  // question an unrehearsed backup story never has a way to ask.
+  app.get('/directory/backups', async (c) => {
+    if (!options.directoryBackups) return c.json({ error: 'no directory backup target configured' }, 501);
+    return c.json(await options.directoryBackups.list());
+  });
+
+  // Take one NOW, cadence ignored — the pre-migration checkpoint an operator takes by
+  // hand before touching the directory, and the way a fresh deployment gets its first
+  // copy without waiting a day for the cron.
+  app.post('/directory/backups', async (c) => {
+    if (!options.directoryBackups) return c.json({ error: 'no directory backup target configured' }, 501);
+    const result = await backupDirectoryIfDue({
+      admin,
+      store: options.directoryBackups,
+      actor: c.get('actor'),
+      force: true,
+    });
+    return c.json(result.taken as DirectoryBackup, 201);
+  });
+
+  // One copy's DUMP — the restore source, and the off-platform escape hatch: an operator
+  // who wants the directory on their own disk GETs this. The most privileged read the
+  // control plane offers (every tenant, every hostname, every identity), so staff-only
+  // and audited by `exportDirectory` underneath.
+  app.get('/directory/backups/:capturedAt', async (c) => {
+    if (!options.directoryBackups) return c.json({ error: 'no directory backup target configured' }, 501);
+    const capturedAt = c.req.param('capturedAt');
+    const dump = await options.directoryBackups.get({ capturedAt });
+    if (!dump) return c.json({ error: `no directory backup at ${capturedAt}` }, 404);
+    return c.json(dump);
+  });
+
+  // Break-glass: REPLACE the directory with a stored copy.
+  //
+  // Guarded by an explicit `overwrite` rather than a confirmation string, because the
+  // dangerous case is not a slip of the fingers — it is a well-formed retry against a
+  // control plane that has already recovered, which would silently roll the platform
+  // back to the copy's moment and lose every tenant created since. So a directory that
+  // still holds tenants refuses (409) unless the caller says, in the body, that
+  // replacing them is the intent. An EMPTY directory — the actual disaster, a fresh DO
+  // with nothing in it — needs no such ceremony.
+  app.post('/directory/restore', async (c) => {
+    if (!options.directoryBackups) return c.json({ error: 'no directory backup target configured' }, 501);
+    const body = restoreDirectoryBody.parse(await c.req.json().catch(() => ({})));
+    const dump = await options.directoryBackups.get({ capturedAt: body.capturedAt });
+    if (!dump) return c.json({ error: `no directory backup at ${body.capturedAt}` }, 404);
+    const actor = c.get('actor');
+    const live = await admin.listTenants(actor, { limit: 1 });
+    if (live.length > 0 && !body.overwrite) {
+      return c.json(
+        {
+          error:
+            'the directory is not empty — a restore REPLACES it, so anything created ' +
+            'since this copy was taken would be lost; pass overwrite=true to confirm',
+        },
+        409,
+      );
+    }
+    await admin.restoreDirectory(actor, dump);
+    return c.json({ capturedAt: dump.capturedAt, tables: dump.tables.length });
   });
 
   // Reap an ARCHIVED primary scope (control-plane.md §4.4): free its DO storage —

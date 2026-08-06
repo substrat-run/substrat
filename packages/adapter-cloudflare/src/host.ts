@@ -76,6 +76,7 @@ import {
   type RoleAssignment,
   type RoleDefinition,
   type Scope,
+  type DirectoryDump,
   type ScopeDump,
   type ScopeDumpTable,
   type ScopeId,
@@ -489,6 +490,9 @@ interface ControlPlaneStub {
   pruneAccessLog(limit: number): Promise<number>;
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
+  // #40 — the directory's own backup/restore pair.
+  exportDump(): Promise<ScopeDumpTable[]>;
+  importDump(tables: ScopeDumpTable[]): Promise<void>;
 }
 
 interface AdminEntry {
@@ -3034,6 +3038,30 @@ export class CloudflareScopeHost implements ScopeHost {
         const tables = await this.scopeStub(scopeId).exportDump();
         await this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
         return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables };
+      },
+      exportDirectory: async (actor): Promise<DirectoryDump> => {
+        // No K-3 cross-check to make: there is one directory, and it is the thing that
+        // WOULD answer such a check. The access-log entry carries no tenant for the same
+        // reason (K-23) — this read's subject is every tenant at once.
+        const tables = await this.cp.exportDump();
+        await this.recordAccess(actor, 'exportDirectory', {}, null, tables.length);
+        return { capturedAt: new Date().toISOString(), tables };
+      },
+      restoreDirectory: async (actor, dump: DirectoryDump): Promise<void> => {
+        // The before-state is read BEFORE the replace, because after it the old counts
+        // are gone — and "restored over 12 tenants" is the fact an operator reviewing
+        // this entry needs. The admin entry is written AFTER: the restore replaces the
+        // admin log too, so an entry written first would be overwritten by the very act
+        // it records, leaving the platform's most consequential write invisible.
+        const before = (await this.cp.listTenants({ limit: 1000 })).length;
+        await this.cp.importDump(dump.tables);
+        await this.recordAdmin(
+          actor,
+          'restoreDirectory',
+          { tenantId: null },
+          { tenants: before },
+          { capturedAt: dump.capturedAt, tables: dump.tables.length },
+        );
       },
       activateScope: async (actor, tenantId, scopeId) => {
         // Idempotent on `active`, unaudited because nothing changed. Provisioning is
