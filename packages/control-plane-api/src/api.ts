@@ -2643,6 +2643,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    *  create (provision + reuse-match) and delete (reap-match) run through here, so they agree. */
   const previewSlug = (slug: string, tag: string): string => `${slug.split('/').at(-1)}--${tag}`;
 
+  /** Reap one preview: wipe the DO in its own deployment, then drop the directory row and
+   *  its hostnames. Storage-before-row, the same ordering the DELETE route uses — a crash
+   *  between the two converges on retry. Shared by that route and by the create path, which
+   *  reaps a HALF-BUILT leftover before re-forking (see `orchestratedPreview`). */
+  const reapPreview = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    preview: Scope,
+  ): Promise<void> => {
+    const vertical = await verticalForScope(c, preview);
+    if (vertical) await vertical.deleteScope({ scopeId: preview.id });
+    await options.host.deleteSnapshot(c.get('actor'), preview.tenantId, preview.id);
+  };
+
   /** Given a base hostname `<label>.<domain>`, mint (or find) the preview's `--<tag>`
    *  hostname `<label>--<tag>.<domain>` bound to `previewId`. Non-canonical, so it never
    *  demotes the prod surface. Shared by the fork and clean-room paths. */
@@ -2781,7 +2794,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const existing = (await admin.listScopes(actor, { tenantId, vertical: slug })).find(
       (s) => s.kind === 'preview' && s.slug === previewSlug(slug, opts.tag),
     );
-    if (existing && !opts.refresh) {
+    // A preview only HAS data once its two-phase create finished: the directory row lands
+    // first as `provisioning` (K-31), the fork's export→restore runs, and `activateScope`
+    // is the last step. So a row still at `provisioning` is a create that DIED mid-fork —
+    // its DO is empty. Reuse must never adopt one: reuse only rebinds the version and the
+    // hostname, it never copies data, so adopting a half-built row hands back a
+    // permanently EMPTY preview and reports `reused: true` — success for a URL that shows
+    // a reviewer no data at all. That is exactly what a CI retry does (the generated
+    // workflow retries `preview create` on a transient), so the failure mode is the
+    // COMMON one, not a corner: attempt 1 forks and dies, attempt 2 adopts its corpse and
+    // goes green. Instead, reap the leftover and fall through to a fresh fork below —
+    // which is what the retry was asking for. Same for an explicit `refresh`, whose fresh
+    // scope would otherwise collide with the old row's still-bound `--<tag>` hostname.
+    const stale = existing !== undefined && (opts.refresh || existing.status !== 'active');
+    if (existing && !stale) {
       // Heal a preview provisioned before #527: clear any inherited serving_ref so routing
       // follows the bound version (its per-version script), not the prod serving script.
       if (existing.servingRef) await admin.setScopeServingRef(actor, tenantId, existing.id, null);
@@ -2792,6 +2818,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await assertServesBoundVersion(existing.id);
       return { scopeId: existing.id, hostname, url: `https://${hostname}`, versionId: opts.versionId, reused: true };
     }
+    // Free the tag: the slug is unique per tenant and the `--<tag>` hostname is still bound
+    // to the old row, so the fresh fork below cannot be provisioned until this one is gone.
+    if (existing && stale) await reapPreview(c, existing);
 
     const previewId = scopeIdSchema.parse(ulid());
     if (source) {
@@ -2956,9 +2985,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // Storage-before-row, the same ordering as the fork hard-delete: wipe the DO in the
       // PR version's deployment, then deleteSnapshot (fork-only re-check, hostnames + row,
       // audit). A crash between the two converges on retry.
-      const vertical = await verticalForScope(c, preview);
-      if (vertical) await vertical.deleteScope({ scopeId: preview.id });
-      await options.host.deleteSnapshot(actor, tenantId, preview.id);
+      await reapPreview(c, preview);
       return c.json({ deleted: preview.id });
     } catch (e) {
       if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
