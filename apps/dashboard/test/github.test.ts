@@ -239,13 +239,16 @@ describe('GitHub App client', () => {
       expect(wf.sha).toBe('abc123');
     });
 
+    const wf = (release?: 'trunk' | 'changesets') =>
+      deployWorkflowYaml({ branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.example/api', ...(release ? { release } : {}) });
+
     it('generates a workflow that installs dependencies before the push', () => {
-      const yaml = deployWorkflowYaml('main', 'hr-portal', 'https://console.example/api');
+      const yaml = wf();
       // `substrat push` runs the repo's own build (wrangler custom build), so the
       // repo's devDependencies must be on disk before the push step — regression
       // guard: the first generated workflow had no install step at all.
       const install = yaml.indexOf('pnpm install --frozen-lockfile');
-      const push = yaml.indexOf('npx @substrat-run/cli push . --slug hr-portal --version 0.1.${{ github.run_number }}');
+      const push = yaml.indexOf('npx @substrat-run/cli push . --slug hr-portal --promote prod');
       expect(install).toBeGreaterThan(-1);
       expect(push).toBeGreaterThan(install);
       // Every common lockfile has a branch; bare repos fall back to npm install.
@@ -259,8 +262,40 @@ describe('GitHub App client', () => {
       expect(yaml).toContain("if: github.event_name == 'push'");
     });
 
+    it('never hard-codes a fabricated version coordinate', () => {
+      // Regression on #509 ask (e): the first generated workflow pushed
+      // `--version 0.1.${{ github.run_number }}`, which claimed a real registry patch
+      // coordinate on every run and punched holes in the version sequence. Trunk mode now
+      // lets the registry bump; every non-release push must carry a PRERELEASE label,
+      // which `nextVersion`'s anchored parse skips.
+      for (const yaml of [wf('trunk'), wf('changesets')]) {
+        expect(yaml).not.toContain('--version 0.1.${{ github.run_number }}');
+        expect(yaml).toContain('--version "$BASE-test.${{ github.run_number }}"');
+      }
+    });
+
+    it('releases on every merge in trunk mode, and only on a version move in changesets mode', () => {
+      expect(wf('trunk')).toContain('push . --slug hr-portal --promote prod');
+      const cs = wf('changesets');
+      // The repo owns the version, so the merge that lands a changeset must not release —
+      // only the merge that moves package.json does.
+      expect(cs).toContain('push . --slug hr-portal --version "$CUR" --promote prod');
+      expect(cs).toContain('if [ "$CUR" = "$PREV" ]; then');
+      expect(cs).toContain('git show HEAD^:package.json');
+      // …which needs more than a shallow clone of one commit to diff against.
+      expect(cs).toContain('fetch-depth: 2');
+    });
+
+    it('rebinds a long-lived test scope on every merge, when the repo declares one', () => {
+      const yaml = wf();
+      // "Tracks main" stays a CI step rather than a platform setting (#509 §3) — gated on a
+      // repo variable so one generated file serves projects with and without a test env.
+      expect(yaml).toContain("if: vars.SUBSTRAT_TEST_SCOPE_ID != ''");
+      expect(yaml).toContain('scope bind ${{ vars.SUBSTRAT_TEST_SCOPE_ID }} --version "$VID" --snapshot');
+    });
+
     it('generates PR-preview jobs that create on open/sync and reap on close', () => {
-      const yaml = deployWorkflowYaml('main', 'hr-portal', 'https://console.example/api');
+      const yaml = wf();
       // The PR trigger drives both the create and the cleanup jobs.
       expect(yaml).toContain('pull_request:');
       expect(yaml).toContain('types: [opened, synchronize, reopened, closed]');
@@ -281,14 +316,33 @@ describe('GitHub App client', () => {
       // One run per PR at a time, and the create job can comment the URL back.
       expect(yaml).toContain('concurrency: substrat-preview-${{ github.event.number }}');
       expect(yaml).toContain('pull-requests: write');
-      // Regression: the comment body is a single-quoted printf, so any apostrophe in the
-      // prose (e.g. "PR's") closes the quote and bash dies with a syntax error — the whole
-      // preview job goes red on a copy-edit. Keep the body apostrophe-free.
-      const body = yaml.split("BODY=$(printf '")[1]?.split("' \"$URL\")")[0] ?? '';
-      expect(body).not.toContain("'");
-      // And a failed preview push must fail the step (pipefail) rather than let a masked
+      // A failed preview push must fail the step (pipefail) rather than let a masked
       // non-zero exit fall through to a comment pointing at a garbage URL.
       expect(yaml).toContain('set -euo pipefail');
+    });
+
+    it('offers an opt-in per-build preview that is fresh, frozen and short-lived', () => {
+      const yaml = wf();
+      expect(yaml).toContain("if: vars.SUBSTRAT_PER_BUILD_PREVIEW != ''");
+      // Fresh scope per build (never rebound ⇒ the URL is immutable), clean-room rather
+      // than a fork of prod, and short-TTL because the sticky preview is the one that lives.
+      expect(yaml).toContain('--tag pr-${{ github.event.number }}-${{ github.run_id }} --empty --ttl 24h');
+    });
+
+    it('comments both URLs through the same generator the platform posts with', () => {
+      const yaml = wf();
+      // Two printf formats — with and without the per-build line — both rendered from
+      // previewCommentBody(), so a CI-written and a platform-written comment cannot
+      // describe the same PR differently.
+      expect(yaml).toContain('BODY=$(printf \'');
+      expect(yaml).toContain('"$URL" "$BUILD")');
+      expect(yaml).toContain('"$URL")');
+      // Regression: the bodies ride single-quoted printf format strings, so any apostrophe
+      // in the prose (e.g. "PR's") closes the quote and bash dies with a syntax error — the
+      // whole preview job goes red on a copy-edit.
+      for (const chunk of yaml.split("BODY=$(printf '").slice(1)) {
+        expect(chunk.split("'")[0]).not.toContain("'");
+      }
     });
 
     it('surfaces missing App write-permissions as needsPermissions, before any write', async () => {

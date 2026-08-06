@@ -238,114 +238,21 @@ export async function setupRepoCi(
 }
 
 /**
- * The workflow one-click setup commits — kept host-side (never the SPA) and shared
- * with the manual copy-paste path (`GET /api/github/workflow-preview`), so the
- * committed file and the manual instructions can never drift from what the platform
- * expects. The install step is load-bearing: `substrat push` runs the repo's own
- * build (wrangler custom build), which needs the repo's devDependencies on disk —
- * the lockfile picks the package manager, via corepack for pnpm/yarn.
+ * The workflow one-click setup commits. The generator itself lives in
+ * `@substrat-run/contracts` (`ci.ts`) because there are three writers of this one file —
+ * this path, `substrat init --ci github`, and the manual copy-paste path
+ * (`GET /api/github/workflow-preview`) — and a builder must get the same workflow
+ * whichever they use. Re-exported so the worker keeps importing it from here.
  *
- * `--promote prod` makes merging the deploy: a private vertical's push lands admitted
- * and its prod channel is self-serve, so the same run points prod at the new version.
- * Rollback is the dashboard's go-live history. The step fails loudly in exactly two
- * cases — the vertical got LISTED (prod is a staff decision again), or the version
- * changes the permission/migration surface (promote from the dashboard, which shows
- * the diff to acknowledge).
+ * The dashboard commits the `trunk` release mode: a private vertical's push lands
+ * admitted and its prod channel is self-serve, so merging IS the deploy. Rollback is the
+ * dashboard's go-live history. The release step fails loudly in exactly two cases — the
+ * vertical got LISTED (prod is a staff decision again), or the version changes the
+ * permission/migration surface (promote from the dashboard, which shows the diff to
+ * acknowledge). A builder who wants the release-train shape instead runs
+ * `substrat init --ci github --release changesets`.
  */
-export function deployWorkflowYaml(branch: string, slug: string, cpUrl: string): string {
-  // The install block repeats across jobs (a committed file is self-contained — no
-  // reusable-workflow indirection to read). corepack picks the package manager from the
-  // lockfile; the repo's devDependencies must be on disk because `substrat push`/`preview`
-  // runs the repo's own wrangler build.
-  const setup = `      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          # 22+: corepack resolves the latest pnpm for lockfile-only repos, and pnpm 11
-          # needs Node >= 22.13 (node:sqlite).
-          node-version: 22
-      - name: Install dependencies
-        env:
-          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
-        run: |
-          if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile
-          elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile
-          elif [ -f package-lock.json ]; then npm ci
-          else npm install
-          fi`;
-  return `name: Deploy to Substrat
-on:
-  push:
-    branches: [${branch}]
-  # Per-PR previews (preview-and-snapshots.md §2/§9): open/update a PR → a preview instance
-  # running the PR's code against a FORK of prod on its own URL; close the PR → it's reaped
-  # (a TTL is the GC backstop for an abandoned one).
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
-jobs:
-  deploy:
-    # Merge/push to ${branch} deploys prod. A private vertical's push lands admitted and its
-    # prod channel is self-serve, so the same run points prod at the new version.
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-${setup}
-      - run: npx @substrat-run/cli push . --slug ${slug} --version 0.1.\${{ github.run_number }} --promote prod
-        env:
-          SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
-          SUBSTRAT_CP_URL: ${cpUrl}
-
-  preview:
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
-    runs-on: ubuntu-latest
-    # Never overlap two runs for the same PR — a rapid re-push waits for the first.
-    concurrency: substrat-preview-\${{ github.event.number }}
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-${setup}
-      - name: Create/update preview
-        env:
-          SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
-          SUBSTRAT_CP_URL: ${cpUrl}
-        run: |
-          set -euo pipefail
-          npx @substrat-run/cli preview create . --slug ${slug} --tag pr-\${{ github.event.number }} | tee preview.out
-          # Take the URL from the CLI's success line (the ✓ marker) only — the push it runs
-          # first also prints an https:// *deploy endpoint* we must never mistake for a preview.
-          grep -F '✓ preview' preview.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > preview.url || true
-      - name: Comment the preview URL
-        env:
-          GH_TOKEN: \${{ github.token }}
-        run: |
-          URL=$(cat preview.url)
-          [ -z "$URL" ] && exit 0
-          BODY=$(printf '<!-- substrat-preview -->\\n🔎 **Substrat preview:** %s\\n\\n_Runs the code in this PR against a fork of prod. Reaped when the PR closes._' "$URL")
-          REPO=\${{ github.repository }}
-          PR=\${{ github.event.number }}
-          ID=$(gh api "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.body | startswith("<!-- substrat-preview -->")) | .id' | head -1)
-          if [ -n "$ID" ]; then
-            gh api -X PATCH "repos/$REPO/issues/comments/$ID" -f body="$BODY" >/dev/null
-          else
-            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$BODY" >/dev/null
-          fi
-
-  preview_cleanup:
-    # Reap only — no repo build needed, so skip checkout/install and just run the CLI.
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
-    runs-on: ubuntu-latest
-    concurrency: substrat-preview-\${{ github.event.number }}
-    steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Reap preview
-        env:
-          SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
-          SUBSTRAT_CP_URL: ${cpUrl}
-        run: npx @substrat-run/cli preview delete --slug ${slug} --tag pr-\${{ github.event.number }}
-`;
-}
+export { deployWorkflowYaml } from '@substrat-run/contracts';
 
 /**
  * Create-or-update the sticky preview comment on a PR (the platform half of the

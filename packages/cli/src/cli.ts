@@ -29,6 +29,7 @@ import { cliVersion, warnIfDistStale } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, rebindScopeVertical, bindScopeVersion, scopeStatus } from './scope.js';
 import { printInstalls } from './installs.js';
 import { createPreview, deletePreview, listPreviews, formatPreviews, parseTtlHours } from './preview.js';
+import { writeCiWorkflow, detectDefaultBranch, nextStepsMessage } from './init.js';
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
@@ -45,6 +46,28 @@ const argv = process.argv.slice(2);
 function flag(name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : undefined;
+}
+
+/**
+ * The nth positional argument after the command word, skipping flags AND their values.
+ *
+ * Commands whose optional `[dir]` sits at a fixed index can read `argv[n]` directly, but
+ * `init --ci github [dir]` cannot: the directory follows a flag that takes a value, so a
+ * fixed index lands on `--ci` and silently falls back to `.` — which means writing the
+ * generated file into whatever repo you happened to be standing in. `boolean` names the
+ * flags that take no value, so their successor is still a positional.
+ */
+function positional(n: number, booleanFlags: readonly string[] = []): string | undefined {
+  const found: string[] = [];
+  for (let i = 1; i < argv.length; i++) {
+    const tok = argv[i]!;
+    if (tok.startsWith('--')) {
+      if (!booleanFlags.includes(tok.slice(2))) i++; // skip this flag's value
+      continue;
+    }
+    found.push(tok);
+  }
+  return found[n];
 }
 
 /** Prompt on the TTY for a plain (non-secret) value. */
@@ -140,6 +163,13 @@ Usage:
                                               (default 72h; 'none' pins the preview until deleted)
   substrat preview delete --tag <tag> [--slug <s>]  reap a preview (idempotent)
   substrat preview ls [--slug <s>]            list a vertical's active previews
+  substrat init --ci github [dir]             write .github/workflows/substrat-deploy.yml —
+                    [--branch <b>] [--release trunk|changesets] [--out <path>] [--force]
+                                              the same workflow the dashboard's one-click CI
+                                              setup commits: merge deploys prod, a PR gets a
+                                              preview + its URL commented, closing it reaps.
+                                              --release changesets when the repo owns its
+                                              version (only a version move releases)
 
 'substrat push' defaults everything from the vertical's package.json — run it from inside the
 directory with no flags. Override any of: --slug, --name, --version. The slug/name come from a
@@ -745,6 +775,51 @@ async function cmdPreview(): Promise<void> {
   console.log(formatPreviews(await listPreviews({ controlPlaneUrl, header, slug })));
 }
 
+/**
+ * `substrat init --ci github` — generate the repo's deploy workflow.
+ *
+ * Deliberately OFFLINE: it never authenticates and never calls the control plane, so it
+ * works in a fresh repo before the vertical exists and before a token is minted. The one
+ * value it cannot derive — the control-plane URL — falls back to the stored config, then to
+ * the public default.
+ */
+async function cmdInit(): Promise<void> {
+  const ci = flag('ci');
+  if (ci !== 'github') {
+    console.error(
+      'usage: substrat init --ci github [dir] [--slug <slug>] [--branch <branch>]\n' +
+        '                                [--release trunk|changesets] [--out <path>] [--force]\n' +
+        (ci ? `\n'--ci ${ci}' is not supported — GitHub Actions is the only generator today.` : ''),
+    );
+    process.exit(1);
+  }
+  // `[dir]` is the repo root; the vertical's package.json is read from it for the slug.
+  // It trails `--ci github`, so it must be found by skipping flag values — not by index.
+  const dir = positional(0, ['force']) ?? '.';
+  const slug = flag('slug') ?? readVerticalMeta(dir).slug;
+  if (!slug) {
+    console.error('no --slug given and none in package.json — add `"substrat": { "slug": "…" }` or pass --slug');
+    process.exit(1);
+  }
+  const releaseFlag = flag('release') ?? 'trunk';
+  if (releaseFlag !== 'trunk' && releaseFlag !== 'changesets') {
+    console.error(`--release must be 'trunk' or 'changesets' (got '${releaseFlag}')`);
+    process.exit(1);
+  }
+  const branch = flag('branch') ?? detectDefaultBranch(dir);
+  const cpUrl = (flag('cp') ?? loadConfig().controlPlaneUrl ?? 'https://console.substrat.net/api').replace(/\/$/, '');
+
+  const { file, overwritten } = writeCiWorkflow({
+    dir, slug, branch, cpUrl,
+    release: releaseFlag,
+    force: argv.includes('--force'),
+    ...(flag('out') ? { path: flag('out')! } : {}),
+  });
+  console.log(`✓ ${overwritten ? 'replaced' : 'wrote'} ${file}`);
+  console.log(`  ${slug} · deploys on push to '${branch}' · control plane ${cpUrl}`);
+  process.stdout.write(nextStepsMessage(slug, releaseFlag));
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -786,6 +861,8 @@ async function main(): Promise<void> {
       return cmdHostnames();
     case 'preview':
       return cmdPreview();
+    case 'init':
+      return cmdInit();
     case 'version':
     case '--version':
     case '-v':
