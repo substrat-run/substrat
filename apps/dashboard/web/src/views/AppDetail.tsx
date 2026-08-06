@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow } from '../lib/api';
+import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview } from '../lib/api';
 import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -1063,6 +1063,358 @@ function AuditDetail({ entry, onClose }: { entry: AuditEntry; onClose: () => voi
 }
 
 /**
+ * Test environment (auto-follow main): a pinned, clean-room preview scope at your own
+ * domain. Because it carries no `forkedFrom`, the prod-promote cascade advances it to
+ * every newly promoted version (proven by api.test.ts "auto-follows prod across a
+ * promote") — and since a merge to main promotes prod, the environment tracks main with
+ * no per-push step. This is the persistent, addressable sibling of the ephemeral data-fork
+ * Previews below: it runs the SAME code as production against its own isolated, empty data.
+ *
+ * Owner-only: the deployment-previews routes are narrowed to a vertical THIS team owns, so
+ * for an installed-only app (or a host with no shared control plane) the panel renders
+ * nothing and the snapshot Previews stand alone.
+ */
+/** Dev-preview sample: one pinned, prod-following test env + a pending custom domain. */
+const MOCK_TEST_ENV: VerticalPreview[] = [
+  {
+    scopeId: '01J2Q8Z3V9K4W7X2M5N6P7ENV1',
+    tag: 'test',
+    versionId: '01J2Q8Z3V9K4W7X2M5N6P7V300',
+    forkedFrom: null,
+    expiresAt: null,
+    hostname: 'helpdesk-acme--test.global.substrat.run',
+    url: 'https://helpdesk-acme--test.global.substrat.run',
+  },
+];
+const MOCK_TEST_ENV_HOSTS: AppHostnamesView = {
+  defaultHostname: 'helpdesk-acme--test.global.substrat.run',
+  surfaces: [{ name: 'app', label: 'App' }],
+  bindings: [
+    {
+      hostname: 'crm-test.ahero.se',
+      surface: 'app',
+      status: 'verifying',
+      statusNote: null,
+      canonical: true,
+      createdAt: '2026-08-05T10:00:00Z',
+      validationRecords: [{ type: 'hostname', name: 'crm-test.ahero.se', value: 'cname.substrat.run', status: 'pending' }],
+    },
+  ],
+};
+
+function TestEnvironment({ app }: { app: AppRow }) {
+  const [dep, setDep] = useState<Deployment | null>(null);
+  const [envs, setEnvs] = useState<VerticalPreview[] | null>(null);
+  const [hostView, setHostView] = useState<AppHostnamesView | null>(null);
+  const [unavailable, setUnavailable] = useState(false); // 501 → no shared control plane
+  const [nonce, setNonce] = useState(0);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [domain, setDomain] = useState('');
+  const [checking, setChecking] = useState<string | null>(null);
+  const [openRecords, setOpenRecords] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // The single environment this panel manages: the pinned preview tagged `test`, else the
+  // first pinned one. Ephemeral (expiring) previews belong to the snapshot Previews below.
+  const env = useMemo(
+    () =>
+      (envs ?? [])
+        .filter((p) => p.expiresAt === null && p.tag)
+        .sort((a, b) => (a.tag === 'test' ? -1 : b.tag === 'test' ? 1 : 0))[0] ?? null,
+    [envs],
+  );
+
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setDep(MOCK_DEPLOYMENTS[0] ?? null);
+      setEnvs(MOCK_TEST_ENV);
+      return;
+    }
+    let live = true;
+    api
+      .appDeployments(app.app_scope_id)
+      .then((d) => live && setDep(d))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+
+  const slug = dep?.slug ?? null;
+  useEffect(() => {
+    if (DEV_MOCK || !slug) return;
+    let live = true;
+    api
+      .listPreviews(slug)
+      .then((p) => {
+        if (!live) return;
+        setEnvs(p);
+        setUnavailable(false);
+      })
+      .catch((e) => {
+        if (!live) return;
+        // 501 = no shared control plane (embedded / self-host): the surface isn't available.
+        if (e instanceof ApiError && e.status === 501) setUnavailable(true);
+        else setNote(e instanceof Error ? e.message : String(e));
+        setEnvs([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [slug, nonce]);
+
+  // The env's custom-domain bindings — status + the DNS records still to publish.
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setHostView(env ? MOCK_TEST_ENV_HOSTS : null);
+      return;
+    }
+    if (!env) {
+      setHostView(null);
+      return;
+    }
+    let live = true;
+    api
+      .appHostnames(env.scopeId)
+      .then((v) => live && setHostView(v))
+      .catch(() => live && setHostView(null));
+    return () => {
+      live = false;
+    };
+  }, [env?.scopeId, nonce]);
+
+  // Not this team's vertical, or no shared plane → nothing to manage; leave the snapshot
+  // Previews to render alone. Still loading the deployment is the same: render nothing yet.
+  if (unavailable || (dep && dep.owned === false) || !dep) return null;
+
+  const prodVersionId = dep.channels?.find((c) => c.channel === 'prod')?.versionId ?? null;
+  const seedVersion = prodVersionId ?? dep.versions.find((v) => v.admission === 'admitted')?.id ?? null;
+  const runningVer = env ? dep.versions.find((v) => v.id === env.versionId)?.version ?? null : null;
+  const customDomains = (hostView?.bindings ?? []).filter((h) => h.hostname !== hostView?.defaultHostname);
+  const statusKind = (s: string) => (s === 'active' ? 'success' : s === 'failed' ? 'danger' : 'info');
+
+  const create = async () => {
+    if (!seedVersion) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      // Clean-room + pinned: the shape that rides prod. Seeded at the current prod version,
+      // it then follows every promote automatically.
+      await api.createPreview(dep.slug, { tag: 'test', versionId: seedVersion, empty: true, ttlHours: null });
+      setNote('Test environment created — it now tracks production. Attach a custom domain below.');
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const attach = async () => {
+    if (!env?.tag || !domain.trim()) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const bound = await api.addPreviewDomain(dep.slug, env.tag, {
+        domain: domain.trim().toLowerCase(),
+        surface: 'app',
+        canonical: true,
+      });
+      setNote(
+        bound.status === 'active'
+          ? `${bound.hostname} is live.`
+          : bound.status === 'failed'
+            ? `${bound.hostname} was recorded, but issuance failed — ${bound.statusNote ?? 'unknown error'}`
+            : `${bound.hostname} recorded — publish the DNS records below, then it goes live once validation completes.`,
+      );
+      setDomain('');
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkAgain = async (hostname: string) => {
+    setChecking(hostname);
+    setNote(null);
+    try {
+      await api.verifyDomain(hostname);
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(null);
+    }
+  };
+
+  const removeDomain = async (hostname: string) => {
+    if (!env) return;
+    setBusy(true);
+    try {
+      await api.removeAppHostname(env.scopeId, hostname);
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const destroy = async () => {
+    if (!env?.tag) return;
+    setBusy(true);
+    setConfirmDelete(false);
+    try {
+      await api.deletePreview(dep.slug, env.tag);
+      setNote('Test environment deleted.');
+      setNonce((n) => n + 1);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Eyebrow>Test environment</Eyebrow>
+          {env && <Pill kind="success">tracks production</Pill>}
+          <div style={{ flex: 1 }} />
+          {env && (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmDelete(true)} style={{ color: 'var(--status-danger-fg)' }}>
+              Delete
+            </Button>
+          )}
+        </div>
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          Runs your app’s <strong>production code</strong> — which tracks <span style={{ fontFamily: 'var(--font-mono)' }}>main</span> — against its own isolated,
+          empty data, at your own domain. Every deploy to production flows to it automatically; there’s nothing to click per release.
+        </div>
+
+        {!env ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <Button disabled={busy || !seedVersion || DEV_MOCK} onClick={create}>
+              {busy ? 'Creating…' : 'Create test environment'}
+            </Button>
+            {!seedVersion && (
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Promote a version to production first — the environment tracks it.</span>
+            )}
+            {DEV_MOCK && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Available against a live control plane.</span>}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 13 }}>
+              {env.url ? (
+                <a href={env.url} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  {env.hostname}
+                  <Ic name="external" size={11} />
+                </a>
+              ) : (
+                <span style={{ color: 'var(--text-tertiary)' }}>provisioning…</span>
+              )}
+              {env.url && <CopyButton text={env.url} size={12} />}
+              {runningVer && (
+                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                  Running <MonoTag>{runningVer}</MonoTag>
+                </span>
+              )}
+            </div>
+            <HonestyBanner>
+              A new environment starts empty — the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install.
+              It runs the same code as production but never receives production traffic or data.
+            </HonestyBanner>
+
+            {customDomains.length > 0 && (
+              <div style={{ ...card, overflow: 'hidden' }}>
+                {customDomains.map((h) => {
+                  const hasRecords = h.validationRecords.length > 0 && h.status !== 'active';
+                  const chk = checking === h.hostname;
+                  return (
+                    <div key={h.hostname} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', fontSize: 13, flexWrap: 'wrap' }}>
+                        {h.status === 'active' ? (
+                          <a href={`https://${h.hostname}`} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                            {h.hostname}
+                            <Ic name="external" size={11} />
+                          </a>
+                        ) : (
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-secondary)' }}>{h.hostname}</span>
+                        )}
+                        <Pill kind={statusKind(h.status)}>{h.status.charAt(0).toUpperCase() + h.status.slice(1)}</Pill>
+                        {h.status !== 'active' && (
+                          <span
+                            onClick={chk ? undefined : () => void checkAgain(h.hostname)}
+                            style={{ fontSize: 12, color: 'var(--text-brand)', cursor: chk ? 'default' : 'pointer', opacity: chk ? 0.5 : 1 }}
+                          >
+                            {chk ? 'Checking…' : 'Check again'}
+                          </span>
+                        )}
+                        <div style={{ flex: 1 }} />
+                        {hasRecords && (
+                          <button
+                            type="button"
+                            aria-label={`Show DNS records for ${h.hostname}`}
+                            onClick={() => setOpenRecords((o) => (o === h.hostname ? null : h.hostname))}
+                            style={{ ...iconBtn, transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
+                          >
+                            <Ic name="chevronDown" size={16} />
+                          </button>
+                        )}
+                        <button type="button" aria-label={`Remove ${h.hostname}`} onClick={() => void removeDomain(h.hostname)} style={iconBtn}>
+                          <Ic name="trash" size={14} />
+                        </button>
+                      </div>
+                      {h.status === 'failed' && h.statusNote && (
+                        <div style={{ margin: '0 14px 12px', background: 'var(--status-danger-bg)', borderRadius: 6, padding: '10px 14px', fontSize: 12.5, color: 'var(--status-danger-fg)', lineHeight: 1.6 }}>
+                          {h.statusNote}
+                        </div>
+                      )}
+                      {openRecords === h.hostname && hasRecords && (
+                        <div style={{ margin: '0 14px 14px' }}>
+                          <DnsRecords records={h.validationRecords} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="crm-test.ahero.se" style={{ minWidth: 220 }} />
+              <Button size="sm" disabled={busy || !domain.trim()} onClick={attach}>
+                Add domain
+              </Button>
+              <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>Lands pending — publish the DNS records it returns, then it goes live.</span>
+            </div>
+          </div>
+        )}
+        {note && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{note}</div>}
+      </div>
+
+      <Dialog
+        open={confirmDelete}
+        title="Delete test environment?"
+        danger
+        confirmLabel={busy ? 'Deleting…' : 'Delete environment'}
+        confirmDisabled={busy}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={destroy}
+      >
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          Removes the environment and all of its data, and releases its domain. Production is untouched.
+        </div>
+      </Dialog>
+    </>
+  );
+}
+
+/**
  * The Previews tab (preview-and-snapshots.md §3): create a preview — a full copy of
  * the app's data to try things on — watch its expiry, delete it. A preview is
  * unmistakably NOT the live app — it never receives traffic, integrations are off,
@@ -1127,11 +1479,14 @@ function Previews({ app }: { app: AppRow }) {
     }
   };
 
-  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load previews — {err}</div>;
-  if (!snaps) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading previews…</div>;
-
   const COLS = '1.2fr 2fr 1fr 1.2fr 1fr';
-  return (
+  // The persistent, prod-following test environment renders first (owner-only, self-hiding);
+  // the ephemeral data-fork Previews follow, even while they load or fail to load.
+  const snapshotSection = err ? (
+    <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load previews — {err}</div>
+  ) : !snaps ? (
+    <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading previews…</div>
+  ) : (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ ...card, padding: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <Eyebrow>Previews</Eyebrow>
@@ -1179,6 +1534,13 @@ function Previews({ app }: { app: AppRow }) {
           ))}
         </div>
       )}
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <TestEnvironment app={app} />
+      {snapshotSection}
     </div>
   );
 }

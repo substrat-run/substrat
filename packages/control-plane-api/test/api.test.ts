@@ -2707,6 +2707,10 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     app = createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
+      // A clean-room environment derives its `--<tag>` hostname from the tenant-app
+      // convention, which needs a platform base domain (the follow-on-promote test below
+      // creates one). Harmless to the legacy-scope tests, which mint no previews.
+      platformBaseDomains: ['global.substrat.run'],
       deployVertical: async (ref) => {
         if (ref === failServeRef) throw new Error('WfP upload failed (500): namespace unreachable');
         ensure(ref); // registering a script creates its (empty) storage namespace
@@ -2877,6 +2881,47 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     // ...but the serving truth is surfaced alongside it: the scopes still run v1. This is
     // what stops `versions` reporting v2 as deployed when it is not.
     expect(prod.servingVersionId).toBe(v1.id);
+  });
+
+  // The dashboard's "test environment" (auto-follow main): a pinned clean-room preview with a
+  // custom domain. It must track prod without any per-push action — the load-bearing claim the
+  // Environments UI is built on. Because a clean-room scope carries NO `forkedFrom`, the
+  // adopt-on-promote cascade advances it to each newly promoted version exactly like a real
+  // install; a FORK, being a point-in-time copy, is deliberately left pinned by a promote.
+  it('auto-follows prod across a promote for a clean-room env, but leaves a fork pinned', async () => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'follow-co', name: 'follow-co' });
+    const v1res = await (await push('follow-co', manifest({ version: '0.1.0' }))).json();
+    const slug = v1res.verticalSlug as string;
+    const v1 = v1res.id as string;
+    expect((await promote(slug, v1)).status).toBe(200); // serving := v1, a stable script exists
+
+    // A real install scope with data — the fork's source (and proof the env is isolated from it).
+    const prod = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: prod, vertical: slug });
+    await host.admin.activateScope(staff, t, prod);
+    await host.admin.bindScopeVersion(staff, t, prod, v1);
+    ensure(stableDeploymentRefFor(slug)).set(prod, [customers]); // lives on the serving script
+
+    // The clean-room environment the UI creates: empty, pinned until deleted (ttlHours null).
+    const envRes = await app.request(`/verticals/${encodeURIComponent(slug)}/previews`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ tag: 'test', versionId: v1, empty: true, ttlHours: null }),
+    });
+    expect(envRes.status).toBe(201);
+    const env = (await envRes.json()) as { scopeId: string };
+    // Born on v1 — the version it was pinned to at creation.
+    expect((await host.admin.getScopeRecord(staff, t, env.scopeId))?.verticalVersionId).toBe(v1);
+
+    // Ship main: push v2, promote to prod.
+    const v2 = (await (await push('follow-co', manifest({ version: '0.2.0' }))).json()).id as string;
+    expect((await promote(slug, v2)).status).toBe(200);
+
+    // The guarantee: the clean-room env advanced to v2 with no per-push action (auto-follow main),
+    // exactly like the real install alongside it.
+    expect((await host.admin.getScopeRecord(staff, t, env.scopeId))?.verticalVersionId).toBe(v2);
+    expect((await host.admin.getScopeRecord(staff, t, prod))?.verticalVersionId).toBe(v2);
   });
 
   // #389 — the cross-lineage rebind: retire one lineage's install onto another, data carried.
