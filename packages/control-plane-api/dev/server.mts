@@ -17,6 +17,7 @@ import { Hono } from 'hono';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import type { DirectoryDump } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   createWfpUploader,
@@ -24,6 +25,7 @@ import {
   sessionPlatformAuth,
   staffAllowlist,
   UNSAFE_devPlatformActorAuth,
+  type DirectoryBackupStore,
   type PlatformActorAuth,
 } from '../src/index.js';
 import {
@@ -176,7 +178,24 @@ const deployVertical =
         apiToken: cfToken,
       })
     : undefined;
-const cpApp = createControlPlaneApi({ host, authenticate, deployVertical });
+// An in-memory directory-backup store (#40), so the console's Recovery tab is drivable
+// locally. Deliberately not persisted: dev restarts with an empty store, which is also the
+// state worth seeing — "no copy has been taken yet" is what a freshly deployed control
+// plane shows before its first sweep.
+const directoryCopies = new Map<string, DirectoryDump>();
+const directoryBackups: DirectoryBackupStore = {
+  put: async ({ dump }) => {
+    directoryCopies.set(dump.capturedAt, dump);
+    return { capturedAt: dump.capturedAt, size: JSON.stringify(dump).length, tables: dump.tables.length };
+  },
+  list: async () =>
+    [...directoryCopies.values()]
+      .map((d) => ({ capturedAt: d.capturedAt, size: JSON.stringify(d).length, tables: d.tables.length }))
+      .sort((a, b) => (a.capturedAt < b.capturedAt ? 1 : -1)),
+  get: async ({ capturedAt }) => directoryCopies.get(capturedAt) ?? null,
+  delete: async ({ capturedAt }) => void directoryCopies.delete(capturedAt),
+};
+const cpApp = createControlPlaneApi({ host, authenticate, deployVertical, directoryBackups });
 const app = new Hono();
 if (staffAuth) app.on(['GET', 'POST'], '/auth/*', (c) => staffAuth!.handler(c.req.raw));
 app.route('/', cpApp);

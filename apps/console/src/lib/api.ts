@@ -3,6 +3,7 @@ import type {
   AdminAction,
   AdminLogEntry,
   ChannelName,
+  DirectoryBackup,
   EntitlementGrant,
   EntitlementGrantInput,
   HostnameBinding,
@@ -221,6 +222,20 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       call<ScopeBackup[]>(`/tenants/${t}/scopes/${s}/backups`),
     /** Take a copy without reaping — a pre-migration checkpoint, or an export to keep. */
     backupScope: (t: TenantId, s: ScopeId) => post<ScopeBackup>(`/tenants/${t}/scopes/${s}/backups`),
+
+    // The PLATFORM's own copies (#40) — the directory, not a tenant's scope. Read and
+    // take-now only: `POST /directory/restore` is deliberately NOT on this client. A
+    // one-click replace-the-whole-directory control is well past what a type-to-confirm
+    // dialog can guard (its blast radius is every tenant at once), and the scenario it
+    // exists for is one where the directory is GONE — a recovery path that assumes a
+    // healthy console is a recovery path that is not there when it is needed. Restore is
+    // a deliberate API call from the runbook (control-plane.md §4.9).
+    //
+    // A 501 here is meaningful, not an error to swallow: it means no backup store is
+    // bound, i.e. this control plane keeps NO platform copy. The view renders that as
+    // the alarm it is.
+    listDirectoryBackups: () => call<DirectoryBackup[]>('/directory/backups'),
+    backupDirectory: () => post<DirectoryBackup>('/directory/backups'),
     // Hard-delete a SNAPSHOT fork (forkedFrom set): wipes its storage, hostnames, and the
     // row (unlike reap, which keeps a tombstone). Refused (409) on a non-fork primary scope.
     deleteScope: (t: TenantId, s: ScopeId) =>
