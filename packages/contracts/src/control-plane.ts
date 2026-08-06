@@ -8,6 +8,14 @@ import {
   scopeId,
   tenantId,
 } from './ids.js';
+// #36's tenant export speaks the platform's own vocabulary rather than restating it, so
+// it composes the schemas that already define these shapes. One-way imports only —
+// none of these modules imports this one, so no cycle.
+import { org, scope, tenant } from './tenancy.js';
+import { tenantRole } from './permission.js';
+import { hostnameBinding } from './routing.js';
+import { connection } from './connections.js';
+import { scopeDump } from './introspection.js';
 
 // The control plane — the shared layer across N per-vertical deployments (D-30,
 // control-plane.md). This file carries the audit contract that every effecting
@@ -348,3 +356,75 @@ export const emailRelayRequest = z.object({
   fromName: z.string().min(1).optional(),
 });
 export type EmailRelayRequest = z.infer<typeof emailRelayRequest>;
+
+/**
+ * A whole tenant, exported (#36) — GDPR Art. 20 portability, and the escrow handover.
+ *
+ * Deliberately a DIFFERENT shape from `directoryDump` (#40), because they answer
+ * different questions and one format cannot serve both honestly:
+ *
+ * - A **directory dump** is for RECOVERY. It is raw tables for one deployment's whole
+ *   directory, complete and byte-faithful so it can be replayed back into a control
+ *   plane. It is unreadable to a customer and useless as an answer to "give me my data".
+ * - A **tenant export** is for PORTABILITY. It is one tenant's slice, in the platform's
+ *   own documented vocabulary (`tenant`, `scope`, `org`, `role`, …) rather than in
+ *   SQLite's, so the receiving party can read it without knowing the schema — plus each
+ *   scope's data as a `scopeDump`, which is the one part that IS raw, because that is
+ *   what makes it reloadable.
+ *
+ * It is assembled from the SANCTIONED reads (`listScopes`, `listOrgs`, `listRoles`,
+ * `listEntitlements`, `listIdentityLinks`, `exportScope`, …), never from a back door
+ * into the directory database — control-plane.md §7 forbids the control plane acquiring
+ * one, and an export that quietly opened it would be exactly that.
+ *
+ * `masked` says which fidelity this file is. Masked is the default (the same posture as
+ * `scope pull`), so a full-fidelity export is a deliberate, audited act — and an Art. 20
+ * fulfilment is deliberate by definition.
+ */
+export const tenantExport = z.object({
+  tenantId,
+  /** ISO 8601 — when the export was assembled. */
+  capturedAt: z.string().min(1),
+  /** False only for a `?full=true` break-glass export; true means PII was redacted. */
+  masked: z.boolean(),
+  /** The tenant record itself. */
+  tenant,
+  /** Every scope, including archived and reaped ones — the tombstones are part of the history. */
+  scopes: z.array(scope),
+  orgs: z.array(org),
+  /** Org membership across every org, revoked rows included (K-21 tombstones are the record). */
+  members: z.array(orgMembership),
+  roles: z.array(tenantRole),
+  entitlements: z.array(entitlementGrant),
+  /** External login links (D-16) — which identity provider subject maps to which principal. */
+  identityLinks: z.array(identityLink),
+  hostnames: z.array(hostnameBinding),
+  /**
+   * Inventory, NOT contents: the per-tenant relational and blob stores this tenant has.
+   * Their bytes are not in this file, and saying so explicitly is the point — an export
+   * that silently omitted them would misrepresent itself as complete.
+   */
+  stores: z.array(
+    z.object({
+      kind: z.enum(['relational', 'blob']),
+      vertical: z.string(),
+      binding: z.string(),
+      ref: z.string(),
+      createdAt: z.string(),
+    }),
+  ),
+  /** Third-party connections as metadata only — a sealed credential is never exported. */
+  connections: z.array(connection),
+  /**
+   * The tenant's admin-log entries — present only in a FULL export.
+   *
+   * Excluded from the masked default on purpose: this is the platform's record of what
+   * STAFF did, not data the customer provided, so it is not Art. 20 material, and it
+   * carries staff actor ids and internal action vocabulary. It is exactly what an escrow
+   * or a dispute needs, so break-glass keeps it reachable — and audited.
+   */
+  adminLog: z.array(adminLogEntry).nullable(),
+  /** Each scope's database, as the same `scopeDump` a fork or a pull produces. */
+  data: z.array(scopeDump),
+});
+export type TenantExport = z.infer<typeof tenantExport>;

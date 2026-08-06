@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { assetHash, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeDumpTable } from '@substrat-run/contracts';
+import { assetHash, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeDumpTable } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -1233,6 +1233,224 @@ describe('control-plane API', () => {
     const res = await req(`/tenants/${t1}/scopes/${sJ}/export`);
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: string }).error).toMatch(/jurisdiction/);
+  });
+
+  /**
+   * #36 — the WHOLE tenant, exported: GDPR Art. 20 portability and the escrow handover.
+   *
+   * The properties worth pinning are the ones that make it an honest artifact rather
+   * than a JSON blob: it carries the tenant's own vocabulary (not raw tables), it masks
+   * both halves by the same rule, it does not silently drop what it cannot carry, and
+   * the scope data it does carry can actually be loaded back.
+   */
+  describe('tenant export (#36)', () => {
+    /** A tenant with the full spread: orgs, members, roles, entitlements, identities. */
+    async function populatedTenant(slug: string) {
+      const t = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug, name: `${slug} AB` });
+      const org = orgId.parse(ulid());
+      await host.admin.createOrg(staff, { id: org, tenantId: t, slug: 'main', name: 'Main Office' });
+      const principal = principalId.parse(ulid());
+      await host.admin.addMember(staff, t, principal, org);
+      await host.admin.defineRole(staff, t, {
+        key: 'site-manager',
+        permissions: [permissionKey.parse('workorder:read')],
+        source: 'vertical',
+      });
+      await host.admin.grantEntitlement(staff, t, 'workorder');
+      // A pool must declare its topology before anything may link into it (K-23), and a
+      // tenant-bound one is the shape a hosted vertical actually runs.
+      const provider = `oidc:https://auth.${slug}.example.com`;
+      await host.admin.registerIdentityPool(staff, {
+        provider,
+        topology: 'tenant-bound',
+        tenantId: t,
+      });
+      await host.admin.linkIdentity(staff, {
+        provider,
+        externalId: 'anna@example.com',
+        principal,
+        tenantId: t,
+      });
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'demo-vert', slug: 'hq' });
+      await host.admin.activateScope(staff, t, s);
+      return { t, s, org, principal };
+    }
+
+    /** A vertical holding real rows, so the scope-data half is not an empty placeholder. */
+    const rows = [['c1', 'anna@example.com', 'Anna Ek', 7]];
+    const verticalWithData = {
+      exportScope: async (): Promise<ScopeDumpTable[]> => [
+        {
+          name: 'customers',
+          ddl: 'CREATE TABLE customers (id TEXT, email TEXT, name TEXT, visits INTEGER)',
+          columns: ['id', 'email', 'name', 'visits'],
+          rows,
+        },
+      ],
+    } as unknown as VerticalClient;
+
+    it('carries the tenant in the platform\'s own vocabulary, masked by default', async () => {
+      const { t } = await populatedTenant('export-co');
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'demo-vert': verticalWithData },
+      });
+
+      const res = await api.request(`/tenants/${t}/export`, { headers: auth });
+      expect(res.status).toBe(200);
+      const out = (await res.json()) as {
+        masked: boolean;
+        tenant: { name: string; slug: string };
+        scopes: unknown[];
+        orgs: { name: string }[];
+        members: unknown[];
+        roles: { key: string }[];
+        entitlements: { entitlementKey: string }[];
+        identityLinks: { externalId: string; provider: string }[];
+        adminLog: unknown[] | null;
+        data: { tables: { name: string; rows: unknown[][] }[] }[];
+      };
+
+      // Every part of the tenant is present, as records rather than as SQLite tables —
+      // a reader who does not know the schema can still read this file.
+      expect(out.masked).toBe(true);
+      expect(out.scopes).toHaveLength(1);
+      expect(out.orgs).toHaveLength(1);
+      expect(out.members).toHaveLength(1);
+      expect(out.roles.map((r) => r.key)).toContain('site-manager');
+      expect(out.entitlements.map((e) => e.entitlementKey)).toContain('workorder');
+      expect(out.identityLinks).toHaveLength(1);
+
+      // Masking covers BOTH halves by the same rule. The directory half: the tenant's
+      // display name and the identity link's external id (which is an email here).
+      expect(out.tenant.name).toBe('[masked]');
+      expect(out.orgs[0]!.name).toBe('[masked]');
+      expect(out.identityLinks[0]!.externalId).toBe('[masked]');
+      // ...while the ids that make the file intelligible survive.
+      expect(out.tenant.slug).toBe('export-co');
+      expect(out.identityLinks[0]!.provider).toBe('oidc:https://auth.export-co.example.com');
+      // And the scope-data half, by the same sweep the per-scope pull uses.
+      expect(out.data[0]!.tables.find((x) => x.name === 'customers')!.rows[0]).toEqual([
+        'c1',
+        '[masked]',
+        '[masked]',
+        7,
+      ]);
+
+      // The admin log is the platform's record of STAFF action, not the customer's
+      // data — absent unless asked for.
+      expect(out.adminLog).toBeNull();
+    });
+
+    it('?full=true is the break-glass: real values, and the audit history', async () => {
+      const { t } = await populatedTenant('escrow-co');
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'demo-vert': verticalWithData },
+      });
+
+      const res = await api.request(`/tenants/${t}/export?full=true`, { headers: auth });
+      const out = (await res.json()) as {
+        masked: boolean;
+        tenant: { name: string };
+        identityLinks: { externalId: string }[];
+        adminLog: { action: string }[] | null;
+        data: { tables: { name: string; rows: unknown[][] }[] }[];
+      };
+      expect(out.masked).toBe(false);
+      expect(out.tenant.name).toBe('escrow-co AB');
+      expect(out.identityLinks[0]!.externalId).toBe('anna@example.com');
+      expect(out.data[0]!.tables.find((x) => x.name === 'customers')!.rows).toEqual(rows);
+      // The history an escrow or a dispute needs — this tenant's entries only.
+      expect(out.adminLog).not.toBeNull();
+      expect(out.adminLog!.map((e) => e.action)).toContain('createTenant');
+    });
+
+    it('keeps a reaped scope\'s record but carries no data for it', async () => {
+      const { t, s } = await populatedTenant('reaped-export-co');
+      // A second scope that gets reaped: its storage is gone, its row is a tombstone.
+      const sGone = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: sGone, slug: 'old' });
+      await host.admin.activateScope(staff, t, sGone);
+      await host.admin.archiveScope(staff, t, sGone);
+      await host.admin.reapScope(staff, t, sGone);
+
+      const api = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+      const out = (await (await api.request(`/tenants/${t}/export`, { headers: auth })).json()) as {
+        scopes: { id: string; status: string }[];
+        data: { scopeId: string }[];
+      };
+      // The tombstone is part of the tenant's history, so the RECORD is exported...
+      expect(out.scopes.map((x) => x.id).sort()).toEqual([s, sGone].sort());
+      expect(out.scopes.find((x) => x.id === sGone)!.status).toBe('reaped');
+      // ...but there is no storage left to read, so no data claims to be its data.
+      expect(out.data.map((d) => d.scopeId)).toEqual([s]);
+    });
+
+    it('names the stores it does NOT contain, rather than looking complete', async () => {
+      const { t } = await populatedTenant('stores-co');
+      // On the host, not `admin`: minting a store is a provisioning act (#301).
+      await host.provisionTenantStore(staff, { tenantId: t, vertical: 'demo-vert', binding: 'DB' });
+      const api = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+      const out = (await (await api.request(`/tenants/${t}/export`, { headers: auth })).json()) as {
+        stores: { kind: string; binding: string; ref: string }[];
+      };
+      // Inventory, not contents: the bytes live in D1/R2 and are not in this file. An
+      // export that omitted the ledger entirely would read as "this is everything".
+      expect(out.stores).toEqual([
+        expect.objectContaining({ kind: 'relational', binding: 'DB', vertical: 'demo-vert' }),
+      ]);
+    });
+
+    it('refuses the whole export when ANY scope is jurisdiction-pinned (K-32)', async () => {
+      const { t } = await populatedTenant('eu-export-co');
+      const sEu = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: sEu, jurisdiction: 'eu' });
+      await host.admin.activateScope(staff, t, sEu);
+
+      const api = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+      const res = await api.request(`/tenants/${t}/export`, { headers: auth });
+      // Refused as a UNIT: a partial export that does not announce itself as partial is
+      // worse than a refusal, because it looks like the whole tenant.
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toMatch(/jurisdiction|eu/);
+    });
+
+    it('404s an unknown tenant', async () => {
+      const res = await req(`/tenants/${tenantId.parse(ulid())}/export`);
+      expect(res.status).toBe(404);
+    });
+
+    it('round-trips: a full export\'s scope data loads back into a fresh scope', async () => {
+      // #36's acceptance criterion, cashed in: the portability claim is only worth
+      // something if the file can be read back. The directory half maps onto documented
+      // admin calls; the scope half is a `scopeDump`, so it reloads verbatim.
+      const { t, s } = await populatedTenant('roundtrip-co');
+      const stub = await host.getScope(principalId.parse(ulid()), t, s).catch(() => null);
+      void stub; // the scope's own tables are the adapter's; the dump is what matters here
+
+      const api = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+      const out = (await (await api.request(`/tenants/${t}/export?full=true`, { headers: auth })).json()) as {
+        data: { scopeId: string; tenantId: string; capturedAt: string; tables: ScopeDumpTable[] }[];
+      };
+      const dump = out.data.find((d) => d.scopeId === s)!;
+
+      const copy = scopeId.parse(ulid());
+      await host.importScope(staff, { tenantId: t, scopeId: copy, vertical: 'demo-vert' }, dump);
+
+      // The copy holds what the export said it held — same tables, same row counts.
+      const src = (await host.admin.listScopeTables(staff, t, s))
+        .map((x) => `${x.name}:${x.rowCount}`)
+        .sort();
+      const dst = (await host.admin.listScopeTables(staff, t, copy))
+        .map((x) => `${x.name}:${x.rowCount}`)
+        .sort();
+      expect(dst).toEqual(src);
+    });
   });
 
   it('walks the lifecycle and maps an illegal transition to 409', async () => {

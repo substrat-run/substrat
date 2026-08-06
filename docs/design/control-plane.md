@@ -639,9 +639,57 @@ tenant reads like a missing one at the gate but is still visible as a tombstone 
    scope-reap seam (archive-if-needed → wipe each scope's DO in its vertical deployment →
    `reapScope`), so the control plane's orchestrated per-scope wipe applies here for free.
 
-**Not tenant export.** GDPR Art. 20 portability (a full-tenant dump across scopes + directory
-rows) is a separate piece; the per-scope `exportScope` seam it builds on already exists (§5.4's
-admin-query RPC, `GET …/scopes/:s/export`).
+**Not tenant export** — that is the next section, and deliberately a separate act: deleting a
+tenant and handing a tenant its data are different requests, arriving from different people,
+and the second must not be a side effect of the first.
+
+### 4.9 Tenant export ([#36](https://github.com/substrat-run/substrat/issues/36))
+
+GDPR Art. 20 portability, and the escrow handover: `GET /tenants/:t/export` returns one
+tenant, whole, in one file.
+
+**Composed only from the sanctioned reads.** `listScopes`, `listOrgs`, `listMembers`,
+`listRoles`, `listEntitlements`, `listIdentityLinks`, `listHostnames`, the store ledgers,
+`listConnections`, and `exportScope` per scope. That is a constraint, not an implementation
+note: §7 says the control plane must not acquire a back door into scope databases, and an
+export that reached past the audited surface would *be* that back door — with lint blind to
+it. Because every part is already K-24 access-logged, the trail is a property of the parts
+rather than something this route has to remember.
+
+**A different shape from a directory dump ([#40](https://github.com/substrat-run/substrat/issues/40)),
+on purpose.** A directory dump is raw
+tables for *recovery* — complete, byte-faithful, replayable, and unreadable to a customer. A
+tenant export is one tenant's slice in the platform's own documented vocabulary (`tenant`,
+`scope`, `org`, `role`, `entitlement`, `identityLink`), so the receiving party can read it
+without knowing our schema. Only the per-scope `data` is raw, because that half has to be
+loadable — and the round trip (export → `importScope` → same tables, same row counts) is a
+test, not a claim.
+
+Four rules the format follows, each of them a way of not lying about what the file is:
+
+- **Masked by default; `?full=true` is the break-glass.** Same posture as `scope pull`, and
+  both halves go through one heuristic — the directory records and the scope tables. An
+  Art. 20 fulfilment is a deliberate, audited `full` export, which is the right shape for a
+  request that is deliberate by definition.
+- **Tombstones are exported; their data is not.** An archived or reaped scope's *record* is
+  part of the tenant's history, so it appears in `scopes`; a reaped scope has no storage left
+  to read, so nothing in `data` claims to be its data.
+- **Stores are inventoried, not contained.** Per-tenant D1/R2 stores appear as a ledger
+  (kind, vertical, binding, ref). Their bytes are not in the file, and saying so is the point:
+  an export that silently omitted them would read as "this is everything".
+- **The admin log is `full`-only.** It records what *staff* did — not data the customer
+  provided, and it carries staff actor ids and internal action vocabulary. Not Art. 20
+  material, but exactly what an escrow or a dispute needs, so break-glass reaches it.
+
+**Jurisdiction is checked across the whole tenant, and refuses as a unit.** One pinned scope
+taints the file (K-7/K-32: an export lands on a machine outside the platform's control), so
+the route refuses rather than exporting the global scopes and quietly omitting the rest — a
+partial export that does not announce itself as partial is the failure worth avoiding.
+
+**Still open here:** retention. The admin log is append-only with no sweeper, the access log
+prunes only what has drained, and the backup buckets have no lifecycle rule. Deleting from an
+append-only audit log is a policy decision (§4.4 says it is kept whole), so it is tracked
+rather than assumed.
 
 ## 5. Billing: meter, do not bill
 

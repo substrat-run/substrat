@@ -34,7 +34,9 @@ import type {
   Page,
   PlatformActorId,
   Scope,
+  ScopeDump,
   ScopeId,
+  TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
@@ -46,7 +48,7 @@ import { ControlPlaneError } from './client.js';
 import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { mapError } from './errors.js';
-import { maskDump } from './mask.js';
+import { maskDump, maskRecords } from './mask.js';
 import {
   assertSandboxContract,
   deployManifest,
@@ -1425,6 +1427,131 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const vertical = await verticalForScope(c, scope);
       const tables = vertical ? await vertical.exportScope(scopeId) : dump.tables;
       return c.json({ ...dump, tables: full ? tables : maskDump(tables), masked: !full });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) {
+        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      }
+      throw e;
+    }
+  });
+
+  // -- tenant export (#36) ----------------------------------------------------
+  //
+  // GDPR Art. 20 portability, and the escrow handover: one tenant, whole, in one file.
+  //
+  // Composed ENTIRELY from the sanctioned reads above — `listScopes`, `listOrgs`,
+  // `listMembers`, `listRoles`, `listEntitlements`, `listIdentityLinks`,
+  // `listHostnames`, the store ledgers, `listConnections`, `exportScope`. That is the
+  // constraint the design puts on this route, not an implementation preference:
+  // control-plane.md §7 says the control plane must not acquire a back door into scope
+  // databases, and the only sanctioned path is the audited admin surface. An export
+  // that reached past it would BE the back door — and every read here is already
+  // K-24 access-logged, so the trail is a property of the parts.
+  //
+  // It is deliberately NOT the same shape as a directory dump (#40): that one is raw
+  // tables for recovery, this one is the platform's documented vocabulary for a reader
+  // who does not know the schema. Only the per-scope `data` is raw, because that is the
+  // half that has to be reloadable.
+  app.get('/tenants/:tenantId/export', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const actor = c.get('actor');
+    const tenant = await admin.getTenant(actor, tenantId);
+    if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
+
+    // Every scope, tombstones included: an archived or reaped scope is part of the
+    // tenant's history, and an export that quietly dropped them would misrepresent what
+    // the tenant was. Their DATA is a different question, handled below.
+    const scopes = await admin.listScopes(actor, { tenantId });
+
+    // Residency (K-7/K-32), checked across the WHOLE tenant before anything is read: an
+    // export lands on a machine outside the platform's control, so one pinned scope
+    // taints the file. Refused as a unit rather than silently exporting the global
+    // scopes and omitting the pinned ones — a partial export that does not say it is
+    // partial is the failure mode worth avoiding.
+    const pinned = scopes.filter((s) => s.jurisdiction !== 'global');
+    if (pinned.length > 0) {
+      return c.json(
+        {
+          error:
+            `tenant ${tenantId} has ${pinned.length} scope(s) pinned to a jurisdiction ` +
+            `(${[...new Set(pinned.map((s) => s.jurisdiction))].join(', ')}) — an export would ` +
+            `move that data out of the region it was promised; refused (K-32). Export the ` +
+            `global scopes individually, or wait for a per-jurisdiction path.`,
+        },
+        403,
+      );
+    }
+
+    const full = c.req.query('full') === 'true';
+    try {
+      const orgs = await admin.listOrgs(actor, tenantId);
+      // Revoked memberships included: K-21 makes a removal a tombstone precisely because
+      // "was a member until March" is the fact an audit asks for.
+      const members = (
+        await Promise.all(
+          orgs.map((o) => admin.listMembers(actor, tenantId, o.id, { includeRevoked: true })),
+        )
+      ).flat();
+      const [roles, entitlements, identityLinks, hostnames, stores, blobStores, connections] =
+        await Promise.all([
+          admin.listRoles(actor, { tenantId }),
+          admin.listEntitlements(actor, tenantId),
+          admin.listIdentityLinks(actor, tenantId),
+          admin.listHostnames(actor, { tenantId }),
+          admin.listTenantStores(actor, { tenantId }),
+          admin.listBlobStores(actor, { tenantId }),
+          admin.listConnections(actor, { tenantId }),
+        ]);
+
+      // Scope DATA, from the same delegation the per-scope export route uses: the
+      // canonical `exportScope` writes the audit entry and is the bytes when co-located;
+      // a vertical-held scope's real tables overlay it. A reaped scope has no storage
+      // left to read, so it is skipped here while its RECORD stays above — the tombstone
+      // is honest, an error would not be.
+      const live = scopes.filter((s) => s.status !== 'reaped');
+      const data: ScopeDump[] = [];
+      for (const scope of live) {
+        const dump = await admin.exportScope(actor, tenantId, scope.id);
+        const vertical = await verticalForScope(c, scope);
+        const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
+        data.push({ ...dump, tables: full ? tables : maskDump(tables) });
+      }
+
+      // The admin log is FULL-only (#36): it records what STAFF did, so it is not the
+      // customer's Art. 20 data, and it carries staff actor ids and internal action
+      // names. An escrow or a dispute needs it, which is why break-glass reaches it
+      // rather than nothing reaching it.
+      const adminLog = full ? await admin.auditLog(actor, { tenantId }) : null;
+
+      const body: TenantExport = {
+        tenantId,
+        capturedAt: new Date().toISOString(),
+        masked: !full,
+        tenant: full ? tenant : maskRecords([tenant])[0]!,
+        scopes: full ? scopes : maskRecords(scopes),
+        orgs: full ? orgs : maskRecords(orgs),
+        members: full ? members : maskRecords(members),
+        // Roles, entitlements and hostnames are configuration rather than personal data,
+        // so they read the same in both fidelities — but they still go through the sweep,
+        // because deciding per-collection what "cannot contain PII" means is exactly the
+        // assumption that ages badly. One rule, applied everywhere.
+        roles: full ? roles : maskRecords(roles),
+        entitlements: full ? entitlements : maskRecords(entitlements),
+        // Identity links are the sharpest item here: `externalId` is usually an email.
+        identityLinks: full ? identityLinks : maskRecords(identityLinks),
+        hostnames: full ? hostnames : maskRecords(hostnames),
+        stores: [...stores, ...blobStores].map((s) => ({
+          kind: s.kind,
+          vertical: s.vertical,
+          binding: s.binding,
+          ref: s.ref,
+          createdAt: s.createdAt,
+        })),
+        connections: full ? connections : maskRecords(connections),
+        adminLog,
+        data,
+      };
+      return c.json(body);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);
