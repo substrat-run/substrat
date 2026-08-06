@@ -92,7 +92,10 @@ data pinned to a jurisdiction.
 
 - **Not backup/PITR.** Durable Object storage already has ~30-day point-in-time recovery —
   a destructive rewind of the live app. A snapshot is the opposite: a non-destructive copy
-  that leaves the live app alone. Recovery rewinds; snapshots preview.
+  that leaves the live app alone. Recovery rewinds; snapshots preview. What backs up *the
+  platform's own directory* — the one thing PITR cannot cover, since it is a single Durable
+  Object with nothing underneath to rebuild it from — is
+  [the control plane's scheduled directory backup](/platform/control-plane#backup-and-recovery).
 - **Not a sync.** The copy diverges the moment it's taken, and never merges back.
 - **Not a second production.** A copy receives no traffic, runs no integrations or scheduled
   work, and expires. It contains real data, so the same access rules apply — but nothing you
