@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeDumpTable } from '@substrat-run/contracts';
+import { assetHash, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeDumpTable } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -2013,6 +2013,99 @@ describe('control-plane API — deploy', () => {
     expect(deployed.at(-1)!.bundle.compatibilityFlags).toEqual(['nodejs_compat']);
   });
 
+  /**
+   * Static assets (#340). The bytes are inert and public, so they are accepted; their
+   * content-address is a dedup key shared by the whole dispatch namespace, so it is
+   * verified. Everything below is that one distinction, exercised.
+   */
+  describe('static assets', () => {
+    const bytes = (s: string) => new TextEncoder().encode(s);
+    /** A form carrying modules AND `asset:`-prefixed parts, with honest hashes by default. */
+    async function formWithAssets(
+      files: { path: string; body: string; contentType?: string }[],
+      over: Record<string, unknown> = {},
+      corrupt?: (rows: { path: string; hash: string; size: number; contentType: string }[]) => void,
+    ): Promise<FormData> {
+      const rows = [];
+      for (const f of files) {
+        rows.push({
+          path: f.path,
+          hash: await assetHash(bytes(f.body), f.path),
+          size: bytes(f.body).byteLength,
+          contentType: f.contentType ?? 'text/html; charset=utf-8',
+        });
+      }
+      corrupt?.(rows);
+      const fd = form(manifest({ assets: { ...over, files: rows } }));
+      for (const f of files) {
+        const part = `asset:${f.path}`;
+        fd.set(part, new Blob([f.body], { type: f.contentType ?? 'text/html; charset=utf-8' }), part);
+      }
+      return fd;
+    }
+
+    it('splits asset parts from module parts and forwards the verified bytes', async () => {
+      const res = await push(
+        'assetdemo',
+        await formWithAssets(
+          [
+            { path: '/index.html', body: '<!doctype html>' },
+            { path: '/assets/app.js', body: 'console.log(1)', contentType: 'text/javascript' },
+          ],
+          { notFoundHandling: 'single-page-application', runWorkerFirst: ['/api/*'] },
+        ),
+      );
+      expect(res.status).toBe(201);
+      const bundle = deployed.at(-1)!.bundle as unknown as {
+        modules: unknown[];
+        assets: { notFoundHandling: string; runWorkerFirst: string[]; files: { path: string; content?: Uint8Array }[] };
+      };
+      // The worker module is still exactly one — an asset part never enters the code path.
+      expect(bundle.modules).toHaveLength(1);
+      expect(bundle.assets.files.map((f) => f.path).sort()).toEqual(['/assets/app.js', '/index.html']);
+      expect(bundle.assets.notFoundHandling).toBe('single-page-application');
+      expect(bundle.assets.runWorkerFirst).toEqual(['/api/*']);
+      const index = bundle.assets.files.find((f) => f.path === '/index.html')!;
+      expect(new TextDecoder().decode(index.content!)).toBe('<!doctype html>');
+    });
+
+    it('REFUSES bytes that do not match their declared hash — the dedup key is namespace-wide', async () => {
+      // The attack this closes: store content under a hash it does not have, and a DIFFERENT
+      // vertical whose asset legitimately hashes there could serve these bytes instead.
+      const fd = await formWithAssets([{ path: '/index.html', body: '<!doctype html>' }], {}, (rows) => {
+        rows[0]!.hash = 'f'.repeat(32);
+      });
+      const res = await push('poisondemo', fd);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/does not match its declared content hash/);
+    });
+
+    it('refuses a declared size the bytes do not have', async () => {
+      const fd = await formWithAssets([{ path: '/index.html', body: 'abc' }], {}, (rows) => {
+        rows[0]!.size = 999;
+      });
+      expect((await push('sizedemo', fd)).status).toBe(400);
+    });
+
+    it('refuses a manifest entry with no uploaded part, and a part in no manifest', async () => {
+      const missing = form(
+        manifest({ assets: { files: [{ path: '/gone.html', hash: 'a'.repeat(32), size: 1, contentType: 'text/html' }] } }),
+      );
+      expect((await push('missingdemo', missing)).status).toBe(400);
+
+      const extra = await formWithAssets([{ path: '/index.html', body: 'x' }]);
+      extra.set('asset:/stowaway.js', new Blob(['x'], { type: 'text/javascript' }), 'asset:/stowaway.js');
+      const res = await push('extrademo', extra);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/absent from the manifest/);
+    });
+
+    it('a vertical that declares no assets forwards no assets block', async () => {
+      expect((await push('plaindemo', form(manifest()))).status).toBe(201);
+      expect((deployed.at(-1)!.bundle as { assets?: unknown }).assets).toBeUndefined();
+    });
+  });
+
   it('carries a pushed vertical’s declared envSpec into the registry', async () => {
     const envSpec = [
       { key: 'API_TOKEN', description: 'Upstream API credential', secret: true, required: true },
@@ -2805,6 +2898,8 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
   // was never written its bytes resolves EMPTY — the whole hazard #321 is about.
   let scripts: Map<string, Map<string, ScopeDumpTable[]>>;
   let failServeRef: string | null; // when set, an upload to THIS ref throws (a flaky serve)
+  // Every upload this suite performs, so a test can assert what a PROMOTE re-sent (#340).
+  const uploads: { ref: string; assets?: { files: { path: string; hash: string; content?: Uint8Array }[] } }[] = [];
 
   const ensure = (ref: string) => {
     let s = scripts.get(ref);
@@ -2832,8 +2927,9 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
       // convention, which needs a platform base domain (the follow-on-promote test below
       // creates one). Harmless to the legacy-scope tests, which mint no previews.
       platformBaseDomains: ['global.substrat.run'],
-      deployVertical: async (ref) => {
+      deployVertical: async (ref, bundle) => {
         if (ref === failServeRef) throw new Error('WfP upload failed (500): namespace unreachable');
+        uploads.push({ ref, assets: bundle.assets as never });
         ensure(ref); // registering a script creates its (empty) storage namespace
       },
       fetchVerticalModules: async () => [
@@ -2919,6 +3015,40 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect(scripts.get(deploymentRefFor(slug, v2))?.has(sc)).toBeFalsy();
     // v1's script is left intact (data-first: the adopt copies, it does not move).
     expect(scripts.get(deploymentRefFor(slug, v1))?.get(sc)).toEqual([customers]);
+  });
+
+  it('a promote re-attaches the version’s static assets from the retained manifest (#340)', async () => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'asset-co', name: 'asset-co' });
+    const body = '<!doctype html>';
+    const files = [
+      {
+        path: '/index.html',
+        hash: await assetHash(new TextEncoder().encode(body), '/index.html'),
+        size: body.length,
+        contentType: 'text/html; charset=utf-8',
+      },
+    ];
+    const fd = new FormData();
+    fd.set(
+      'manifest',
+      JSON.stringify(manifest({ assets: { notFoundHandling: 'single-page-application', files } })),
+    );
+    fd.set('tenant', 'asset-co');
+    fd.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
+    fd.set('asset:/index.html', new Blob([body], { type: 'text/html; charset=utf-8' }), 'asset:/index.html');
+    const pushed = await (await app.request('/verticals/crm/deploy', { method: 'POST', headers: auth, body: fd })).json();
+
+    const before = uploads.length;
+    expect((await promote(pushed.verticalSlug, pushed.id)).status).toBe(200);
+
+    // The serving upload carries the SAME content addresses the push did — read back from
+    // the retained manifest, with no bytes. That is what lets the runtime's namespace-wide
+    // dedup re-attach the files instead of the promote silently serving a code-only script.
+    const serve = uploads.slice(before).find((u) => u.ref === stableDeploymentRefFor(pushed.verticalSlug));
+    expect(serve?.assets?.files.map((f) => f.path)).toEqual(['/index.html']);
+    expect(serve!.assets!.files[0]!.hash).toBe(files[0]!.hash);
+    expect(serve!.assets!.files[0]!.content).toBeUndefined();
   });
 
   it('a failed in-place serve strands nothing — the retry adopts the still-intact data', async () => {

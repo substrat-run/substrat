@@ -1,5 +1,6 @@
 import type {
   AdminLogEntry,
+  DeployAssets,
   ListPage,
   Page,
   PermissionRegistry,
@@ -417,6 +418,23 @@ export class TenantNarrowedControlPlane {
         `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/registry`,
       );
       return res?.registry ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The static files (#340) one version ships — path, size, content type, content address —
+   * out of the same retained manifest the registry read above uses. `null` for a version that
+   * retained no manifest or shipped no static files; `null` on any non-200, so the caller
+   * treats "unknown" and "none" the same, exactly like `versionRegistry`.
+   */
+  async versionAssets(verticalSlug: string, versionId: string): Promise<DeployAssets | null> {
+    try {
+      const res = await this.call<{ assets: DeployAssets | null }>(
+        `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/assets`,
+      );
+      return res?.assets ?? null;
     } catch {
       return null;
     }

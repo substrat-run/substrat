@@ -1,5 +1,5 @@
 import { ADMISSIBLE_BINDING_TYPES } from '@substrat-run/contracts';
-import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
+import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /**
  * The deploy seam (self-serve-deploy.md). A `substrat push` uploads a *built* worker
@@ -28,6 +28,24 @@ import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 export { deployManifest, storedDeployManifest } from '@substrat-run/contracts';
 export type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
+/**
+ * One static file on its way to the runtime's asset store (#340). `content` is present on a
+ * PUSH (the builder just uploaded the bytes) and absent on a RE-serve — a promote re-uploads
+ * a version from its archive script (#286) and has only the retained manifest, which is
+ * enough whenever the runtime still holds the content-addressed bytes. An uploader that
+ * finds it needs bytes it was not given must say so; it must never quietly serve a version
+ * with some of its assets missing.
+ */
+export interface AssetUpload {
+  path: string;
+  hash: string;
+  /** Byte length — part of the upload-session manifest, so it must be known even when the
+   *  bytes themselves are not (a re-serve reads it back from the retained manifest). */
+  size: number;
+  contentType: string;
+  content?: Uint8Array;
+}
+
 /** A built vertical, ready to upload. `modules` are the bundled ESM parts. */
 export interface VerticalBundle {
   entry: string;
@@ -39,6 +57,9 @@ export interface VerticalBundle {
   /** DO classes to migrate as SQLite (`new_sqlite_classes`). */
   doClasses: string[];
   bindings: DeclaredBinding[];
+  /** Static files served from the edge, with the routing config that decides how paths
+   *  resolve against them (#340). Absent ⇒ the script serves no static assets. */
+  assets?: AssetRouting & { files: AssetUpload[] };
 }
 
 /**

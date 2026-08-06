@@ -29,7 +29,6 @@ import { EMPLOYEE_SELF, MODULES, ROLES } from './provision.js';
 import { MERIDIAN_ENV } from './manifest.js';
 import { API, API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
-import { serveAsset } from './assets.js';
 import type { CompanyNode } from './auth-adapters.js';
 import {
   IdentityDO,
@@ -147,7 +146,7 @@ const authChoice = z.object({
    *  cookie is set (vertical-auth); applies under either mode. */
   cookieDomain: z.string().min(1).optional(),
 });
-export const AUTH_CONFIG_KEY = 'substrat:auth';
+const AUTH_CONFIG_KEY = 'substrat:auth';
 
 /**
  * The scope's auth wiring, in one DO hop: delivered config + the tenant's session secret.
@@ -456,9 +455,11 @@ app.get('/api/docs', async (c) => {
   return c.html(DOCS_HTML);
 });
 
-// Serve the inlined SPA for everything that isn't an /api or /internal route. MUST come
-// after all those routes so Hono handles /api/auth/* etc. first; the catch-all then serves
-// the bundled SPA (src/assets.ts), returning index.html for unknown client routes.
-app.all('*', (c) => serveAsset(new URL(c.req.url)));
+// No SPA catch-all: the built app is served by the runtime's own asset layer (#340,
+// wrangler.jsonc `assets`) — from the edge, without invoking this worker. The worker sees
+// only what `run_worker_first` routes to it (/api/*, /internal/*, /openapi.json); every
+// other path is a static file, or index.html via the single-page-application fallback.
+// A request that reaches here is therefore a worker-first prefix with no matching route.
+app.all('*', (c) => c.json({ error: 'not found' }, 404));
 
 export default app;

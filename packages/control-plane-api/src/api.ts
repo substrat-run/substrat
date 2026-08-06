@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
   adminAction,
+  ASSET_PART_PREFIX,
+  assetHash,
   channelName,
   createTenantInput,
   entitlementGrantInput,
@@ -54,7 +56,7 @@ import {
   nextMigrationTag,
   upstreamStatusOf,
 } from './deploy.js';
-import type { DeployVerticalFn, FetchVerticalModulesFn } from './deploy.js';
+import type { AssetUpload, DeployVerticalFn, FetchVerticalModulesFn } from './deploy.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 import {
   blobStoreBindings,
@@ -1887,6 +1889,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ registry });
   });
 
+  // The static files (#340) one version ships: path, size, content type, content address —
+  // read straight out of the retained manifest, which is where they were persisted for the
+  // promote path anyway. Owner-narrowed exactly like the registry route above. `assets` is
+  // null for a version that retained no manifest (pushed pre-#286) or shipped no static
+  // files; the two are distinguishable by the caller only as "nothing to show", which is
+  // all the dashboard panel needs to render an empty state.
+  app.get('/verticals/:slug/versions/:id/assets', async (c) => {
+    const p = c.get('principal');
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
+    const assets = json ? (storedDeployManifest.parse(JSON.parse(json)).assets ?? null) : null;
+    return c.json({ assets });
+  });
+
   app.post('/verticals/:slug/versions/:id/admit', async (c) => {
     const slug = c.req.param('slug');
     const id = c.req.param('id');
@@ -2054,6 +2073,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         modules,
         doClasses: manifest.doClasses,
         bindings: [...manifest.bindings, ...storeBindings],
+        // #340: the version's static files travel with it onto the serving script — from
+        // the RETAINED manifest, with no bytes. An asset upload session is driven by
+        // content addresses, and the runtime's asset store is namespace-wide and deduped,
+        // so re-declaring the same hashes re-attaches the same files. This is why the
+        // manifest is retained rather than the bytes: the archive script gives back the
+        // modules (#286), and the asset store gives back the assets.
+        ...(manifest.assets ? { assets: manifest.assets } : {}),
       },
       serving
         ? { priorDoClasses: serving.doClasses, priorMigrationTag: serving.migrationTag }
@@ -2267,19 +2293,84 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     }
 
+    // Two kinds of part in one body (#340): worker MODULES (unprefixed) and static ASSETS
+    // (`asset:<served path>`). Splitting on the prefix — rather than on content type or on
+    // whether the manifest happens to name it — is what keeps an uploaded file from being
+    // able to enter the wrong pipeline.
     const modules: { name: string; content: Uint8Array; contentType: string }[] = [];
+    const assetParts = new Map<string, File>();
     for (const [name, value] of form.entries()) {
       if (name === 'manifest') continue;
-      if (value instanceof File) {
-        modules.push({
-          name,
-          content: new Uint8Array(await value.arrayBuffer()),
-          contentType: value.type || 'application/javascript+module',
-        });
+      if (!(value instanceof File)) continue;
+      if (name.startsWith(ASSET_PART_PREFIX)) {
+        assetParts.set(name.slice(ASSET_PART_PREFIX.length), value);
+        continue;
       }
+      modules.push({
+        name,
+        content: new Uint8Array(await value.arrayBuffer()),
+        contentType: value.type || 'application/javascript+module',
+      });
     }
     if (!modules.some((m) => m.name === manifest.entry)) {
       return c.json({ error: `entry module '${manifest.entry}' is not among the uploaded files` }, 400);
+    }
+
+    // The static-asset half of the §4 sandbox contract (self-serve-deploy.md §4.1). The
+    // bytes are inert — no code, no authority — so they are ACCEPTED; the content-address
+    // is not, so it is VERIFIED. The runtime's asset store dedups by hash across the whole
+    // dispatch namespace, which means bytes stored under a hash they do not have would let
+    // one push decide what another vertical's identical-hash asset serves. Re-deriving the
+    // hash here (from the received bytes, with the same `assetHash` the CLI used) is what
+    // makes that structurally impossible — and it is the only inspection of the bytes we do.
+    const assets: AssetUpload[] = [];
+    for (const file of manifest.assets?.files ?? []) {
+      const part = assetParts.get(file.path);
+      if (!part) {
+        return c.json(
+          { error: `asset '${file.path}' is named in the manifest but was not uploaded` },
+          400,
+        );
+      }
+      const content = new Uint8Array(await part.arrayBuffer());
+      if (content.byteLength !== file.size) {
+        return c.json(
+          { error: `asset '${file.path}' declares ${file.size} bytes but ${content.byteLength} arrived` },
+          400,
+        );
+      }
+      const actual = await assetHash(content, file.path);
+      if (actual !== file.hash) {
+        return c.json(
+          {
+            error:
+              `asset '${file.path}' does not match its declared content hash ` +
+              `(declared ${file.hash}, computed ${actual}) — the hash is the runtime's shared dedup key, ` +
+              `so a mismatch is refused rather than stored`,
+          },
+          400,
+        );
+      }
+      assets.push({
+        path: file.path,
+        hash: file.hash,
+        size: file.size,
+        contentType: file.contentType,
+        content,
+      });
+      assetParts.delete(file.path);
+    }
+    if (assetParts.size > 0) {
+      // An unlisted asset part would be uploaded by nothing and served by nothing; saying so
+      // beats silently dropping it, because the builder's page would 404 with no explanation.
+      const extra = [...assetParts.keys()].slice(0, 5).join(', ');
+      return c.json(
+        {
+          error:
+            `${assetParts.size} uploaded asset part(s) are absent from the manifest (${extra}${assetParts.size > 5 ? ', …' : ''})`,
+        },
+        400,
+      );
     }
 
     // Mint the version id first: the deploymentRef (the dispatch script name) is keyed
@@ -2294,6 +2385,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         modules,
         doClasses: manifest.doClasses,
         bindings: manifest.bindings,
+        // #340: the verified bytes go up with the bundle. The manifest's routing config
+        // rides along untouched — it decides what the RUNTIME does with paths, and carries
+        // no reach, so there is nothing in it for the sandbox contract to refuse.
+        ...(manifest.assets ? { assets: { ...manifest.assets, files: assets } } : {}),
       });
     } catch (e) {
       // The upload to the runtime failed. Surface the detail (the builder is

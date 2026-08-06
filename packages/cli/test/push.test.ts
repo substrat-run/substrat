@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import {
   buildPermissionRegistry,
   definePermissions,
@@ -9,7 +10,7 @@ import {
   RUNTIME_BASELINE,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta, previewVersion } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta, previewVersion, collectAssets, readAssetsNeed } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -278,5 +279,104 @@ describe('resolveWranglerConfig — the push preflight', () => {
     expect(() => resolveWranglerConfig(dir)).toThrow(/substrat\.runtimeNeeds/);
     expect(() => resolveWranglerConfig(dir)).toThrow(/"entry": "src\/worker\.ts"/);
     expect(() => resolveWranglerConfig(dir)).not.toThrow(/ENOENT/);
+  });
+});
+
+/**
+ * Static assets (#340). Two things are worth pinning here, and only two: the manifest is
+ * Cloudflare's recipe (a divergence dedups against nothing, and stores bytes under a key
+ * that is not theirs), and the two config vocabularies — `runtimeNeeds.assets` and a
+ * hand-authored wrangler `assets` block — land on ONE parsed shape.
+ */
+describe('collectAssets — the content-addressed manifest (#340)', () => {
+  const withAssets = (files: Record<string, string>): string => {
+    const dir = scratch({ name: 'x' });
+    for (const [rel, body] of Object.entries(files)) {
+      const full = join(dir, 'dist', rel);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, body);
+    }
+    return dir;
+  };
+
+  it('hashes with Cloudflare’s own recipe: sha256(base64(content) + extension), 32 hex', async () => {
+    const dir = withAssets({ 'index.html': '<!doctype html>' });
+    const [asset] = await collectAssets(dir, { directory: 'dist' });
+    // Computed independently here with node crypto — the SAME expression Cloudflare's
+    // direct-upload docs specify. If contracts' assetHash ever drifts from this, dedup
+    // silently stops matching every asset the runtime already holds.
+    const expected = createHash('sha256')
+      .update(Buffer.from('<!doctype html>').toString('base64') + 'html')
+      .digest('hex')
+      .slice(0, 32);
+    expect(asset!.entry.hash).toBe(expected);
+    expect(asset!.entry.hash).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('keys by URL path (leading slash, / separators) and types by extension', async () => {
+    const dir = withAssets({ 'index.html': 'x', 'assets/app.js': 'y', 'img/logo.png': 'z' });
+    const collected = await collectAssets(dir, { directory: 'dist' });
+    const byPath = Object.fromEntries(collected.map((a) => [a.entry.path, a.entry]));
+    expect(Object.keys(byPath).sort()).toEqual(['/assets/app.js', '/img/logo.png', '/index.html']);
+    expect(byPath['/index.html']!.contentType).toBe('text/html; charset=utf-8');
+    expect(byPath['/assets/app.js']!.contentType).toBe('text/javascript; charset=utf-8');
+    expect(byPath['/img/logo.png']!.contentType).toBe('image/png');
+    expect(byPath['/index.html']!.size).toBe(1);
+  });
+
+  it('an unknown extension downloads rather than mis-executes', async () => {
+    const dir = withAssets({ 'data.bin': 'q' });
+    const [asset] = await collectAssets(dir, { directory: 'dist' });
+    expect(asset!.entry.contentType).toBe('application/octet-stream');
+  });
+
+  it('a missing directory refuses by naming it as BUILD output, not as ENOENT', async () => {
+    const dir = scratch({ name: 'x' });
+    await expect(collectAssets(dir, { directory: 'app/dist' })).rejects.toThrow(/BUILD output/);
+  });
+});
+
+describe('readAssetsNeed — one shape from either vocabulary (#340)', () => {
+  it('reads runtimeNeeds.assets as-is', () => {
+    const needs = runtimeNeeds.parse({
+      entry: 'src/worker.ts',
+      assets: { directory: 'app/dist', notFoundHandling: 'single-page-application' },
+    });
+    expect(readAssetsNeed({}, needs)).toEqual({
+      directory: 'app/dist',
+      notFoundHandling: 'single-page-application',
+    });
+  });
+
+  it('maps a wrangler.jsonc assets block’s snake_case onto the same shape', () => {
+    expect(
+      readAssetsNeed(
+        {
+          assets: {
+            directory: './app/dist',
+            not_found_handling: 'single-page-application',
+            run_worker_first: ['/api/*', '/internal/*'],
+            html_handling: 'auto-trailing-slash',
+          },
+        },
+        undefined,
+      ),
+    ).toEqual({
+      directory: './app/dist',
+      notFoundHandling: 'single-page-application',
+      runWorkerFirst: ['/api/*', '/internal/*'],
+      htmlHandling: 'auto-trailing-slash',
+    });
+  });
+
+  it('REFUSES an assets binding rather than shipping a worker whose env.ASSETS is undefined', () => {
+    expect(() => readAssetsNeed({ assets: { directory: 'dist', binding: 'ASSETS' } }, undefined)).toThrow(
+      /cannot bind them/,
+    );
+  });
+
+  it('a vertical declaring no assets is undefined on both paths', () => {
+    expect(readAssetsNeed({}, undefined)).toBeUndefined();
+    expect(readAssetsNeed({}, runtimeNeeds.parse({ entry: 'src/worker.ts' }))).toBeUndefined();
   });
 });
