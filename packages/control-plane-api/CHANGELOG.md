@@ -1,5 +1,13 @@
 # @substrat-run/control-plane-api
 
+## 0.52.0
+
+### Patch Changes
+
+- Updated dependencies [0e45268]
+  - @substrat-run/contracts@0.52.0
+  - @substrat-run/kernel@0.52.0
+
 ## 0.51.0
 
 ### Minor Changes
