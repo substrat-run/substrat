@@ -9,8 +9,8 @@
     "test": "vitest run",
     "build:console": "pnpm --filter @substrat-run/console build",
     "dev": "wrangler dev --var ALLOW_DEV_ACTOR:true",
-    "cf:deploy": "node ../../tools/preflight-migrations.mjs && pnpm run build:console && wrangler deploy",
-    "cf:deploy:test": "node ../../tools/preflight-migrations.mjs --env test && pnpm run build:console && wrangler deploy --env test",
+    "cf:deploy": "node ../../tools/preflight-migrations.mjs && pnpm run build:console && wrangler deploy --x-provision=false",
+    "cf:deploy:test": "node ../../tools/preflight-migrations.mjs --env test && pnpm run build:console && wrangler deploy --env test --x-provision=false",
     "dry-run": "pnpm run build:console && wrangler deploy --dry-run --outdir dist-worker"
   },
   "dependencies": {
