@@ -844,4 +844,112 @@ describe('runPlatformSweep — reap deleting tenants (§4.8)', () => {
     expect(report.tenantsReaped).toBe(1);
     expect(report.errors).toEqual([{ kind: 'reap-tenant', id: a.id, error: 'directory offline' }]);
   });
+  // -- the access-log drain (K-24, control-plane.md §4.4) ---------------------
+  // What matters here is the ORDER: ship, confirm, stamp, prune. Anything that
+  // stamps before a confirmed shipment turns one failed upload into permanently
+  // deleted evidence, so these hold the driver to that sequence.
+
+  /** A host whose access log is a list, with the three admin calls the drain uses. */
+  function drainHost(rows: { id: string; drained: boolean }[]) {
+    const calls: string[] = [];
+    const admin = {
+      listScopes: async () => [],
+      listConnections: async () => [],
+      accessLog: async (_a: unknown, filter?: { drained?: boolean; limit?: number }) => {
+        calls.push('read');
+        const match = rows.filter((r) => filter?.drained === undefined || r.drained === filter.drained);
+        return match.slice(0, filter?.limit ?? match.length).map((r) => ({ id: r.id, at: r.id }));
+      },
+      markAccessLogDrained: async (_a: unknown, upToId: string) => {
+        calls.push('stamp');
+        const hit = rows.filter((r) => !r.drained && r.id <= upToId);
+        for (const r of hit) r.drained = true;
+        return hit.length;
+      },
+      pruneAccessLog: async (_a: unknown, limit: number) => {
+        calls.push('prune');
+        const doomed = rows.filter((r) => r.drained).slice(0, limit);
+        for (const d of doomed) rows.splice(rows.indexOf(d), 1);
+        return doomed.length;
+      },
+    };
+    return { host: { admin, drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }) } as unknown as ScopeHost, calls };
+  }
+
+  it('skips the phase entirely when no sink is configured', async () => {
+    const { host, calls } = drainHost([{ id: genId(), drained: false }]);
+    const report = await runPlatformSweep(host, { actor: ACTOR, fetch: FETCH, sweepers: {} });
+    // Null, not zeros: "this deployment ships nothing and its log grows by design"
+    // is a different fact from "shipped, nothing was waiting".
+    expect(report.accessLog).toBeNull();
+    expect(calls).toEqual([]); // nothing read, and above all nothing pruned
+  });
+
+  it('ships, stamps, then prunes — in that order', async () => {
+    const rows = [
+      { id: genId(), drained: false },
+      { id: genId(), drained: false },
+    ];
+    const { host, calls } = drainHost(rows);
+    const shipped: unknown[][] = [];
+    const report = await runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      accessLogSink: {
+        ship: async (entries) => {
+          // The stamp must not have happened yet — the sink is what makes it legal.
+          expect(calls).toEqual(['read']);
+          shipped.push(entries);
+          return { ref: 'access-log/batch.ndjson' };
+        },
+      },
+    });
+
+    expect(calls).toEqual(['read', 'stamp', 'prune']);
+    expect(shipped[0]).toHaveLength(2);
+    expect(report.accessLog).toEqual({ shipped: 2, marked: 2, pruned: 2, ref: 'access-log/batch.ndjson' });
+    expect(rows).toHaveLength(0);
+  });
+
+  it('stamps and prunes NOTHING when the sink fails', async () => {
+    const rows = [{ id: genId(), drained: false }];
+    const { host, calls } = drainHost(rows);
+    const report = await runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      accessLogSink: {
+        ship: async () => {
+          throw new Error('R2 unreachable');
+        },
+      },
+    });
+
+    // A failed upload leaves the rows exactly where they were. The window does not
+    // close this pass — which is the correct outcome, and it is visible.
+    expect(calls).toEqual(['read']);
+    expect(rows).toEqual([{ id: rows[0]!.id, drained: false }]);
+    expect(report.accessLog).toEqual({ shipped: 0, marked: 0, pruned: 0, ref: null });
+    expect(report.errors).toEqual([
+      { kind: 'access-log', id: 'access-log', error: 'R2 unreachable' },
+    ]);
+  });
+
+  it('prunes rows a previous pass stamped, even when nothing new ships', async () => {
+    // Self-healing: a tick that shipped and stamped but died before pruning leaves
+    // drained rows behind, and they are exactly as eligible on the next pass.
+    const rows = [{ id: genId(), drained: true }];
+    const { host, calls } = drainHost(rows);
+    const report = await runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      accessLogSink: { ship: async () => ({ ref: 'unused' }) },
+    });
+
+    expect(calls).toEqual(['read', 'prune']); // nothing undrained to ship
+    expect(report.accessLog).toMatchObject({ shipped: 0, marked: 0, pruned: 1, ref: null });
+    expect(rows).toHaveLength(0);
+  });
 });

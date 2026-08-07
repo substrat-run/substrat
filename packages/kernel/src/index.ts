@@ -66,6 +66,8 @@ export {
 } from './platform-call.js';
 export { runPlatformSweep, startPlatformSweeper } from './platform-sweep.js';
 export type {
+  AccessLogSink,
+  AccessLogSweepReport,
   ConnectorSweeper,
   MigrationSweepReport,
   PlatformSweepOptions,

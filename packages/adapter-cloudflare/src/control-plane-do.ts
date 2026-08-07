@@ -2551,18 +2551,41 @@ export class ControlPlaneDO extends DurableObject {
     actor?: string;
     tenantId?: string;
     method?: string;
+    drained?: boolean;
   } & ListPage): AccessLogRow[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (query.actor) { where.push('actor = ?'); params.push(query.actor); }
     if (query.tenantId) { where.push('tenant_id = ?'); params.push(query.tenantId); }
     if (query.method) { where.push('method = ?'); params.push(query.method); }
+    if (query.drained !== undefined) {
+      where.push(query.drained ? 'drained_at IS NOT NULL' : 'drained_at IS NULL');
+    }
     // Cursor + order mirror auditLog: the id is a ULID, so it IS the cursor.
     const tail = keysetTail(where, params, 'id', query);
     let sql = 'SELECT * FROM _substrat_access_log';
     if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
     sql += tail;
     return this.sql.exec(sql, ...params).toArray() as unknown as AccessLogRow[];
+  }
+
+  /**
+   * Stamp `drained_at` on undrained rows up to `upToId`. The `IS NULL` guard makes a
+   * retried shipment idempotent — it re-stamps nothing and returns 0 (K-24).
+   */
+  markAccessLogDrained(upToId: string, drainedAt: string): number {
+    const doomed = (
+      this.sql
+        .exec(
+          'SELECT id FROM _substrat_access_log WHERE id <= ? AND drained_at IS NULL',
+          upToId,
+        )
+        .toArray() as unknown as { id: string }[]
+    ).map((r) => r.id);
+    for (const id of doomed) {
+      this.sql.exec('UPDATE _substrat_access_log SET drained_at = ? WHERE id = ?', drainedAt, id);
+    }
+    return doomed.length;
   }
 
   /** ONLY drained rows. Age alone is not a licence to delete evidence (K-24). */

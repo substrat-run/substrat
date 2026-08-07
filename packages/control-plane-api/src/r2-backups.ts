@@ -18,6 +18,7 @@ import {
   type ScopeBackup,
   type ScopeDump,
 } from '@substrat-run/contracts';
+import type { AccessLogSink } from '@substrat-run/kernel';
 import type { DirectoryBackupStore, ScopeBackupStore } from './backups.js';
 
 /** The minimal slice of a worker `R2Bucket` binding this store relies on. */
@@ -211,6 +212,66 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
 
     async delete({ capturedAt }) {
       await r2.delete(directoryKey(capturedAt));
+    },
+  };
+}
+
+/**
+ * Keys are `access-log/<firstId>-<lastId>.ndjson` — the batch's own id range, which is
+ * also its time range (a ULID sorts chronologically). That makes the object self-
+ * describing: "which file holds the row I am looking for" is answered by the key alone,
+ * without a manifest, and re-shipping an identical batch overwrites in place rather than
+ * accumulating duplicates. Shares the bucket with `scopes/` and `directory/` — three
+ * prefixes that cannot collide, none of them built by a caller.
+ */
+function accessLogKey(firstId: string, lastId: string): string {
+  return `access-log/${firstId}-${lastId}.ndjson`;
+}
+
+/**
+ * The R2 implementation of the `AccessLogSink` seam (K-24, control-plane.md §4.4) — the
+ * Tier 2 that makes the access log's retention window closable.
+ *
+ * **NDJSON, not JSON.** One row per line, appended-shaped: an operator greps it, a SIEM
+ * ingests it line-by-line, and a truncated object still parses up to its last newline.
+ * A single JSON array would have to be whole to be readable at all, which is the wrong
+ * failure mode for evidence.
+ *
+ * **Vendor-neutral by construction**, which was the point (#36): this writes a documented
+ * line format to an object store, so Splunk, Datadog, Drata and a human with `jq` all
+ * consume the same file. A vendor-specific push connector would have coupled the platform's
+ * retention policy to one company's roadmap.
+ */
+export function createR2AccessLogSink(bucket: unknown): AccessLogSink {
+  const r2 = bucket as R2BucketLike;
+  return {
+    async ship(entries) {
+      const first = entries[0];
+      const last = entries[entries.length - 1];
+      if (!first || !last) {
+        // The sweep does not call `ship` with an empty batch; if some other caller does,
+        // returning a ref to an object that was never written would be a lie.
+        throw new Error('access-log sink: refusing to ship an empty batch');
+      }
+      const key = accessLogKey(first.id, last.id);
+      const body = `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
+      await r2.put(key, body, {
+        // `application/x-ndjson` so a browser or a fetch-based consumer streams it as
+        // lines rather than trying to parse the whole object as one document.
+        httpMetadata: { contentType: 'application/x-ndjson' },
+        customMetadata: {
+          firstId: first.id,
+          lastId: last.id,
+          rows: String(entries.length),
+          // The wall-clock span, mirrored so a listing can answer "what covers March"
+          // without fetching a single object.
+          from: first.at,
+          to: last.at,
+        },
+      });
+      // Resolving here IS the durability claim the sweep relies on before it stamps
+      // `drainedAt`: R2's `put` resolves after the write is committed.
+      return { ref: key };
     },
   };
 }

@@ -496,7 +496,9 @@ interface ControlPlaneStub {
     actor?: string;
     tenantId?: string;
     method?: string;
+    drained?: boolean;
   } & ListPage): Promise<AccessLogRow[]>;
+  markAccessLogDrained(upToId: string, drainedAt: string): Promise<number>;
   pruneAccessLog(limit: number): Promise<number>;
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
@@ -3472,6 +3474,7 @@ export class CloudflareScopeHost implements ScopeHost {
           actor: filter?.actor,
           tenantId: filter?.tenantId,
           method: filter?.method,
+          drained: filter?.drained,
           limit: filter?.limit,
           cursor: filter?.cursor,
           order: filter?.order,
@@ -3492,6 +3495,21 @@ export class CloudflareScopeHost implements ScopeHost {
             at: r.at,
           }),
         );
+      },
+      markAccessLogDrained: async (actor, upToId: string, drainedAt: string): Promise<number> => {
+        const drained = await this.cp.markAccessLogDrained(upToId, drainedAt);
+        if (drained > 0) {
+          // The payload is the APPLIED state, so it belongs in `after` (contracts'
+          // adminLogEntry: before = prior state, after = the applied payload).
+          await this.recordAdmin(
+            actor,
+            'drainAccessLog',
+            { tenantId: null },
+            null,
+            { drained, upToId, drainedAt },
+          );
+        }
+        return drained;
       },
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
         const pruned = await this.cp.pruneAccessLog(limit);

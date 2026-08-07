@@ -1,5 +1,6 @@
 import { instant } from '@substrat-run/contracts';
 import type {
+  AccessLogEntry,
   ConnectionId,
   MigrationProgress,
   MigrationStraggler,
@@ -29,6 +30,33 @@ declare const clearTimeout: (handle: unknown) => void;
 export interface ConnectorSweeper {
   (host: ScopeHost, connectionId: ConnectionId, opts: { fetch: FetchLike }): Promise<unknown>;
 }
+
+/**
+ * Where drained access-log rows go — Tier 2 (K-24), the durable place a row lives
+ * once it has left the directory.
+ *
+ * INJECTED for the same reason `ConnectorSweeper` is: the kernel names the seam and
+ * knows nothing about the target. The control plane binds an R2 implementation
+ * (`createR2AccessLogSink`); a self-host may bind a file, an object store, or nothing
+ * at all — and nothing at all is a supported answer, it just means the log is never
+ * pruned.
+ *
+ * `ship` MUST be durable before it resolves. Everything downstream — the `drainedAt`
+ * stamp, and the prune the stamp licenses — treats a resolved `ship` as proof the
+ * evidence survives outside the directory. A sink that buffers and returns early turns
+ * a retention policy back into data loss.
+ */
+export interface AccessLogSink {
+  /**
+   * Ship one batch and return an opaque reference to where it landed (an object key,
+   * a URL — the sweep only records it). The reference is what makes the admin-log row
+   * actionable: "these rows left, and here is where they are".
+   */
+  ship(entries: AccessLogEntry[]): Promise<{ ref: string }>;
+}
+
+/** How many access rows one pass ships, and one pass prunes, by default. */
+const ACCESS_LOG_BATCH = 500;
 
 export interface PlatformSweepOptions {
   /** The platform actor the enumeration reads run as (`listScopes`/`listConnections`). */
@@ -91,6 +119,20 @@ export interface PlatformSweepOptions {
    * CP-less), then the in-process reap for the directory transition + audit.
    */
   reapScopeFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
+  /**
+   * Also drain the staff access log to Tier 2 and prune what it drained (K-24,
+   * control-plane.md §4.4). UNSET (the default) skips the phase entirely, exactly like
+   * `reapArchivedAfterDays`: a deployment that has named no durable target must not have
+   * its evidence deleted on a schedule, and "no sink configured" is a supported posture
+   * (the log then grows unbounded — stated, not silent).
+   *
+   * Bounded per pass by `accessLogBatch`, not run to exhaustion: a sweep tick has a
+   * budget, and an unbounded first pass over a year of rows is how a cron becomes an
+   * incident. The window closes over several ticks instead of one.
+   */
+  accessLogSink?: AccessLogSink;
+  /** Rows shipped (and pruned) per pass. Default 500. */
+  accessLogBatch?: number;
   /**
    * Also reap tenants past their grace window (control-plane.md §4.8): any tenant in
    * `deleting` whose `deletingAt` is older than this many days has every scope reaped
@@ -216,12 +258,39 @@ export interface PlatformSweepReport {
    * due" — the same distinction `migrations` draws.
    */
   schedules: ScheduleSweepReport | null;
+  /**
+   * The access-log drain's report (K-24), or null when no sink was configured. Null vs
+   * zeros is the same distinction `migrations` draws: null is "this deployment ships
+   * nothing and its log grows by design", zeros is "shipped, nothing was waiting".
+   */
+  accessLog: AccessLogSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
-    kind: 'drain' | 'sweep' | 'gc' | 'reap' | 'reap-tenant' | 'migrate' | 'platform-request' | 'schedule';
+    kind:
+      | 'drain'
+      | 'sweep'
+      | 'gc'
+      | 'reap'
+      | 'reap-tenant'
+      | 'migrate'
+      | 'platform-request'
+      | 'schedule'
+      | 'access-log';
     id: string;
     error: string;
   }[];
+}
+
+/** One pass of the access-log drain (K-24, control-plane.md §4.4). */
+export interface AccessLogSweepReport {
+  /** Rows handed to the sink and confirmed durable. */
+  shipped: number;
+  /** Rows stamped `drainedAt` as a result. Below `shipped` only on a re-run. */
+  marked: number;
+  /** Drained rows deleted from the directory this pass. */
+  pruned: number;
+  /** Where the batch landed, as the sink reported it. Null when nothing shipped. */
+  ref: string | null;
 }
 
 /** Platform-intent drain counts, summed across scopes in one pass. */
@@ -293,6 +362,7 @@ export async function runPlatformSweep(
     platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0 },
     migrations: null,
     schedules: null,
+    accessLog: null,
     errors: [],
   };
 
@@ -600,7 +670,69 @@ export async function runPlatformSweep(
     }
   });
 
+  // -- drain the staff access log to Tier 2, then prune it (K-24, §4.4) --------
+  // LAST, deliberately: every phase above reads the directory through the audited
+  // seam, so each one writes access rows. Running the drain last means a pass ships
+  // its own evidence rather than leaving it for the next tick.
+  if (options.accessLogSink) {
+    report.accessLog = { shipped: 0, marked: 0, pruned: 0, ref: null };
+    try {
+      await sweepAccessLog(host, options, options.accessLogSink, report.accessLog);
+    } catch (err) {
+      // One bad pass never sinks the sweep, and never prunes: a throw anywhere in
+      // ship→stamp→prune leaves the rows exactly where they were.
+      report.errors.push({ kind: 'access-log', id: 'access-log', error: message(err) });
+    }
+  }
+
   return report;
+}
+
+/**
+ * One ship→stamp→prune cycle over the access log. Split out because the ORDER is the
+ * whole safety property and deserves to be readable in one screen:
+ *
+ *   1. read the oldest undrained rows (bounded — a tick has a budget);
+ *   2. ship them, and let the sink confirm durability before returning;
+ *   3. only then stamp `drainedAt`, which is what licenses deletion;
+ *   4. prune drained rows.
+ *
+ * Reversing 2 and 3 would let one failed upload delete evidence permanently. Step 4
+ * prunes independently of what this pass shipped — rows stamped by an earlier tick
+ * whose prune was interrupted are exactly as eligible, so the cycle self-heals.
+ *
+ * The log never reaches empty, and should not: the read in step 1 is itself a staff
+ * read and records one row (K-24 — reading the record of who looked is a read). That
+ * row drains on the next tick. A permanently-one-row-behind log is the honest shape of
+ * an audit trail that audits its own draining.
+ */
+async function sweepAccessLog(
+  host: ScopeHost,
+  options: PlatformSweepOptions,
+  sink: AccessLogSink,
+  out: AccessLogSweepReport,
+): Promise<void> {
+  const batch = options.accessLogBatch ?? ACCESS_LOG_BATCH;
+  const pending = await host.admin.accessLog(options.actor, {
+    drained: false,
+    order: 'asc', // oldest first — the window closes from the back
+    limit: batch,
+  });
+  if (pending.length > 0) {
+    const { ref } = await sink.ship(pending);
+    out.shipped = pending.length;
+    out.ref = ref;
+    // The batch's last id IS the watermark: ULID order is chronological and the log is
+    // append-only, so rows written during the shipment sort strictly after it and are
+    // left for the next tick rather than being stamped unshipped.
+    const upToId = pending[pending.length - 1]!.id;
+    out.marked = await host.admin.markAccessLogDrained(
+      options.actor,
+      upToId,
+      instant.parse(new Date().toISOString()),
+    );
+  }
+  out.pruned = await host.admin.pruneAccessLog(options.actor, batch);
 }
 
 /** A running sweeper; `stop()` prevents the next pass and cancels the pending timer. */

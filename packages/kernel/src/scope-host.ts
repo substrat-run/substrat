@@ -1467,12 +1467,33 @@ export interface HostAdmin {
   accessLog(actor: PlatformActorId, filter?: AccessLogFilter): Promise<AccessLogEntry[]>;
 
   /**
+   * Stamp `drainedAt` on every not-yet-drained access row up to and including
+   * `upToId`, marking them shipped to Tier 2. Returns how many rows moved.
+   *
+   * **Called only AFTER the sink confirms the write.** The stamp is what licenses
+   * `pruneAccessLog` to delete a row, so stamping first and shipping second would
+   * turn one failed upload into permanently deleted evidence. Ship, confirm, stamp,
+   * prune — in that order (`sweepAccessLog`).
+   *
+   * `upToId` rather than a list of ids because the id is a ULID and the log is
+   * append-only: "everything up to here" is exactly the batch that was read, and
+   * rows written during the shipment sort strictly after it. The `drainedAt IS NULL`
+   * guard makes a re-run idempotent — a retried pass re-stamps nothing and returns 0.
+   */
+  markAccessLogDrained(
+    actor: PlatformActorId,
+    upToId: string,
+    drainedAt: string,
+  ): Promise<number>;
+
+  /**
    * Prune access-log rows already shipped to Tier 2, oldest first, up to `limit`.
    *
    * **Only drained rows.** Pruning on age alone would destroy evidence while calling
    * itself a retention policy — the failure K-21 rejected for tuples, one layer up.
-   * Nothing drains yet, so today this prunes nothing and the log grows: a stated
-   * limitation, not a policy, and the reason `drainedAt` ships before the sink.
+   * A deployment that configures no sink drains nothing, so this prunes nothing and
+   * the window stays unbounded — still a stated limitation rather than a policy, but
+   * now one the operator opts out of rather than one the platform imposes.
    */
   pruneAccessLog(actor: PlatformActorId, limit: number): Promise<number>;
 }
@@ -1684,6 +1705,15 @@ export interface AccessLogFilter extends ListPage {
   actor?: PlatformActorId;
   tenantId?: TenantId;
   method?: string;
+  /**
+   * Narrow by drain state: `false` selects rows not yet shipped to Tier 2, `true`
+   * those already shipped. Omitted reads both.
+   *
+   * This exists for the drain itself — "the oldest rows that have not left yet" is
+   * the only query it needs, and expressing it here keeps the sweep on the audited
+   * `accessLog` seam rather than giving it a private read path into the table.
+   */
+  drained?: boolean;
 }
 
 export interface AuditLogFilter {
