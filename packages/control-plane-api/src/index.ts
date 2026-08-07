@@ -97,7 +97,11 @@ export type {
   DirectoryBackup,
   DirectoryBackupStore,
 } from './backups.js';
-export { createR2BackupStore, createR2DirectoryBackupStore } from './r2-backups.js';
+export {
+  createR2AccessLogSink,
+  createR2BackupStore,
+  createR2DirectoryBackupStore,
+} from './r2-backups.js';
 // #40 — the scheduled directory copy. Exported as a function the CP worker's cron calls,
 // not as a route with a timer behind it: this package stays library-only, exactly as the
 // platform-request drain does (the recurrence has to come from a deployment, #444).

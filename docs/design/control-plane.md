@@ -472,9 +472,47 @@ The precedent is the outbox, which carries `drained_at` for exactly this reason 
 meters note it is written nowhere yet — the column exists ahead of the sink, which is
 the point).
 
-**Until the Tier-2 sink exists, the window *is* the retention.** That is a stated
-limitation of this design, not a policy anyone chose, and it is the thing to fix first
-if a compliance commitment needs longer.
+#### The sink, and the cycle that closes the window
+
+Tier 2 is an **`AccessLogSink`** (kernel) — a seam, not a vendor. The control plane binds
+an R2 implementation that writes **NDJSON**, one row per line, to
+`access-log/<firstId>-<lastId>.ndjson` in the platform's own backup bucket. The key is the
+batch's id range, which is also its time range (a ULID sorts chronologically), so *"which
+object holds March"* is answered without a manifest, and re-shipping a batch overwrites in
+place rather than accumulating duplicates.
+
+NDJSON rather than a JSON array because a truncated object still parses up to its last
+newline, and because a line format is what Splunk, Datadog, a compliance-automation
+platform and a human with `jq` all already consume. That was the argument in #36 against a
+vendor-specific push connector: it would have coupled the platform's retention policy to
+one company's roadmap.
+
+The platform sweep runs one cycle per pass, and **the order is the whole safety property**:
+
+1. read the oldest undrained rows (bounded per pass — a cron tick has a budget);
+2. **ship** them, and let the sink confirm durability before it resolves;
+3. only **then** stamp `drained_at`, which is what licenses deletion;
+4. **prune** drained rows.
+
+Reversing 2 and 3 turns one failed upload into permanently deleted evidence. A throw
+anywhere leaves every row exactly where it was, and the next tick retries — the shipment is
+idempotent by key, and the stamp is idempotent by its `IS NULL` guard. Step 4 prunes
+independently of what this pass shipped, so a tick that died between stamp and prune
+self-heals rather than stranding rows.
+
+The egress is itself audited: `drainAccessLog` in the admin log records how many rows left
+and where they landed. *Which* rows a pruned range covered is answerable from the permanent
+log, not only from the object store.
+
+**A deployment that binds no sink drains nothing, prunes nothing, and its window stays
+unbounded.** That remains a stated limitation — but it is now one an operator opts out of
+by not configuring a target, rather than one the platform imposes on everyone. It is the
+same opt-in posture as the two retention windows in §4.4/§4.8: the platform never deletes
+evidence on a schedule a human did not choose.
+
+Note what this does **not** do. The **admin log is never swept** — it is the compliance
+witness, and no drain, prune or sink applies to it. The two logs have different retention
+because they are different things, which is the whole reason they are two tables.
 
 **Volume is not the pressure.** These are staff reads — a handful of operators, thousands
 of rows a day rather than millions, which a singleton DO absorbs comfortably. The

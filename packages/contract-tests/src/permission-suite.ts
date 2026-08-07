@@ -592,11 +592,56 @@ export function permissionContractSuite(
       await host.admin.listTenants(filler);
       const before = (await host.admin.accessLog(staff, { actor: filler })).length;
       expect(before).toBeGreaterThan(0);
-      // Nothing drains yet, so nothing may be pruned. Expiring on age alone would
-      // destroy evidence while calling itself retention — the failure K-21
-      // rejected for tuples, one layer up.
+      // Nothing has been shipped anywhere, so nothing may be pruned. Expiring on age
+      // alone would destroy evidence while calling itself retention — the failure
+      // K-21 rejected for tuples, one layer up.
       expect(await host.admin.pruneAccessLog(staff, 100)).toBe(0);
       expect((await host.admin.accessLog(staff, { actor: filler })).length).toBe(before);
+    });
+
+    it('drains to Tier 2, then prunes exactly what drained (K-24)', async () => {
+      const filler = platformActorId.parse(ulid());
+      await host.admin.listTenants(filler);
+
+      // The drain's only query: the oldest rows that have not left yet.
+      const pending = await host.admin.accessLog(staff, {
+        drained: false,
+        order: 'asc',
+        limit: 500,
+      });
+      expect(pending.length).toBeGreaterThan(0);
+      expect(pending.every((r) => r.drainedAt === null)).toBe(true);
+
+      // The batch's last id is the watermark — ULID order is chronological, so rows
+      // written while a shipment is in flight sort after it and are left for the
+      // next pass rather than being stamped unshipped.
+      const upToId = pending[pending.length - 1]!.id;
+      const marked = await host.admin.markAccessLogDrained(
+        staff,
+        upToId,
+        new Date().toISOString(),
+      );
+      expect(marked).toBe(pending.length);
+
+      // Idempotent: a retried shipment re-stamps nothing, so the admin log never
+      // records an egress that already happened.
+      expect(
+        await host.admin.markAccessLogDrained(staff, upToId, new Date().toISOString()),
+      ).toBe(0);
+
+      const drained = await host.admin.accessLog(staff, { drained: true, limit: 500 });
+      expect(drained.length).toBe(marked);
+      expect(drained.every((r) => r.drainedAt !== null)).toBe(true);
+
+      // The egress is itself evidence: an operator asking "which rows left, and when"
+      // is answered by the mutation log, not by the object store.
+      const egress = await host.admin.auditLog(staff, { action: 'drainAccessLog' });
+      expect(egress.length).toBeGreaterThanOrEqual(1);
+      expect(egress[egress.length - 1]!.after).toMatchObject({ drained: marked, upToId });
+
+      // Only NOW are they deletable, and only they.
+      expect(await host.admin.pruneAccessLog(staff, 500)).toBe(marked);
+      expect((await host.admin.accessLog(staff, { drained: true, limit: 500 })).length).toBe(0);
     });
 
     // -- control-plane audit trail (control-plane.md §4.4) --------------------

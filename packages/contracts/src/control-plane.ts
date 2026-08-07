@@ -56,6 +56,11 @@ export const adminAction = z.enum([
   'setHostnameStatus', // #31 step 2 — where the two human checkpoints fire
   'setHostnameIssuance', // #305 §4.7 — a Cloudflare-for-SaaS issuance step (create/poll) result
   'unbindHostname', // the inverse of bindHostname — a hard delete; the history is this log
+  // K-24 — shipping access rows to Tier 2 is a data EGRESS, so it is evidence in its own
+  // right: the admin log is where "these rows left the platform, at this time, to this
+  // object" is recorded. It is also what licenses the prune below — nothing may be deleted
+  // that this action did not first place somewhere durable.
+  'drainAccessLog',
   'pruneAccessLog', // K-24 — deleting drained access rows is itself a mutation // K-23 — a provider declares its topology before it may link
   'createTenant', // §4.1
   // §4.1/§4.8 — before/after carry the transitioned status. Starting the delete grace

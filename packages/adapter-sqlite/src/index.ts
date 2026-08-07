@@ -1047,8 +1047,10 @@ export class SqliteScopeHost implements ScopeHost {
       --
       -- drained_at marks a row shipped to Tier 2. ONLY drained rows may be
       -- pruned: expiring on age alone would destroy evidence while calling
-      -- itself retention. Until that sink exists nothing drains, so nothing
-      -- prunes and the window is unbounded — a stated limitation, not a policy.
+      -- itself retention. The sweep's ship→stamp→prune cycle is what closes the
+      -- window (kernel sweepAccessLog); a deployment that configures no sink
+      -- drains nothing and the window stays unbounded — still stated, but now
+      -- something the operator opts out of rather than something imposed.
       CREATE TABLE IF NOT EXISTS _substrat_access_log (
         id           TEXT PRIMARY KEY,
         actor        TEXT NOT NULL,
@@ -5215,6 +5217,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (filter?.actor) { where.push('actor = ?'); params.push(filter.actor); }
         if (filter?.tenantId) { where.push('tenant_id = ?'); params.push(filter.tenantId); }
         if (filter?.method) { where.push('method = ?'); params.push(filter.method); }
+        if (filter?.drained !== undefined) {
+          where.push(filter.drained ? 'drained_at IS NOT NULL' : 'drained_at IS NULL');
+        }
         // Cursor + order mirror auditLog: the id is a ULID, so it IS the cursor.
         const tail = keysetTail(where, params, 'id', filter);
         let sql = 'SELECT * FROM _substrat_access_log';
@@ -5237,6 +5242,29 @@ export class SqliteScopeHost implements ScopeHost {
             at: r.at,
           }),
         );
+      },
+      markAccessLogDrained: async (actor, upToId: string, drainedAt: string): Promise<number> => {
+        // `drained_at IS NULL` makes the stamp idempotent: a retried pass that ships
+        // the same batch twice re-stamps nothing and reports 0, so the admin log does
+        // not grow a row claiming an egress that already happened.
+        const info = this.directory
+          .prepare(
+            `UPDATE _substrat_access_log SET drained_at = ?
+             WHERE id <= ? AND drained_at IS NULL`,
+          )
+          .run(drainedAt, upToId);
+        if (info.changes > 0) {
+          // The payload is the APPLIED state, so it belongs in `after` (contracts'
+          // adminLogEntry: before = prior state, after = the applied payload).
+          this.recordAdmin(
+            actor,
+            'drainAccessLog',
+            { tenantId: null },
+            null,
+            { drained: info.changes, upToId, drainedAt },
+          );
+        }
+        return info.changes;
       },
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
         // ONLY drained rows. Age alone is not a licence to delete evidence.

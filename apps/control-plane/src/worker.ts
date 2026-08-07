@@ -42,6 +42,7 @@ import {
   createWfpModulesFetcher,
   createCfObservabilityReader,
   createCfDoNamespaceReader,
+  createR2AccessLogSink,
   createR2BackupStore,
   createR2DirectoryBackupStore,
   backupDirectoryIfDue,
@@ -589,12 +590,22 @@ export default {
       // execute each with platform authority, and settle back. The same `drainOneScope` the router
       // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
       drainPlatformRequestsFn: (t, s) => drainOneScope(env, t, s),
+      // K-24 §4.4 — ship the staff access log to Tier 2, then prune what was shipped.
+      // Rides the DIRECTORY backup bucket rather than a binding of its own: this is the
+      // platform's own record (no tenant owns it), the `access-log/` prefix cannot collide
+      // with `directory/`, and a fourth bucket would be one more thing to provision for no
+      // isolation gained. Absent binding ⇒ the kernel skips the phase and the log grows —
+      // the same opt-in posture as the two retention windows above.
+      ...(env.DIRECTORY_BACKUPS
+        ? { accessLogSink: createR2AccessLogSink(env.DIRECTORY_BACKUPS) }
+        : {}),
     });
     // Log whenever the pass DID something — reaps, errors, or any platform-intent
     // activity (drained/failed/still-pending). The last one matters most (#444): a
     // scope with intents stuck `pending` should leave a trace on every pass, so a
     // drain that silently never converges is visible in the tail instead of invisible.
     const pr = report.platformRequestTotals;
+    const al = report.accessLog;
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -602,13 +613,17 @@ export default {
       report.errors.length > 0 ||
       pr.drained > 0 ||
       pr.failed > 0 ||
-      pr.pending > 0
+      pr.pending > 0 ||
+      (al !== null && (al.shipped > 0 || al.pruned > 0))
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
         archivedScopesReaped: report.archivedScopesReaped,
         tenantsReaped: report.tenantsReaped,
         platformRequests: pr,
+        // An egress leaves a trace in the tail as well as the admin log: `ref` is the
+        // object the rows landed in, so a question about a pruned row has an address.
+        ...(al ? { accessLog: al } : {}),
         errors: report.errors,
       });
     }

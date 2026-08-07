@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { ScopeDump } from '@substrat-run/contracts';
-import { createR2BackupStore } from '../src/r2-backups.js';
+import { platformActorId, type AccessLogEntry, type ScopeDump } from '@substrat-run/contracts';
+import { createR2AccessLogSink, createR2BackupStore } from '../src/r2-backups.js';
 
 /**
  * The R2 half of the scope-backup seam (#493). Driven against a fake bucket rather than
@@ -139,5 +139,86 @@ describe('r2 scope-backup store (#493)', () => {
     await expect(
       store.get({ tenantId: 'ten1', scopeId: 'sc1', capturedAt: '2026-01-02T00:00:00.000Z' }),
     ).rejects.toThrow();
+  });
+});
+
+/**
+ * The R2 half of the access-log sink (K-24, control-plane.md §4.4) — the Tier 2 that
+ * makes the log's retention window closable. What is worth pinning is the line format
+ * (a truncated object must still parse up to its last newline), the self-describing key,
+ * and the refusal to claim a write that never happened.
+ */
+describe('r2 access-log sink (K-24)', () => {
+  // Hand-built ULIDs: 26 chars of Crockford base32 (no I/L/O/U), ordered by their tail
+  // so the batch below is chronological the way a real drain's read would be.
+  const ulidLike = (tail: string): string => `01J${'0'.repeat(23 - tail.length)}${tail}`;
+  const actor = platformActorId.parse(ulidLike('ACTR'));
+
+  const entry = (id: string, at: string): AccessLogEntry => ({
+    id,
+    actor,
+    method: 'listTenants',
+    tenantId: null,
+    scopeId: null,
+    params: null,
+    resultCount: 3,
+    drainedAt: null,
+    at,
+  });
+
+  it('writes one JSON object per line, keyed by the batch it holds', async () => {
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2AccessLogSink(bucket);
+
+    const batch = [
+      entry(ulidLike('1'), '2026-08-01T00:00:00.000Z'),
+      entry(ulidLike('2'), '2026-08-01T00:05:00.000Z'),
+    ];
+    const { ref } = await sink.ship(batch);
+
+    // The key is the batch's own id range — which is also its time range, since a ULID
+    // sorts chronologically. "Which file holds this row" needs no manifest.
+    expect(ref).toBe(`access-log/${ulidLike('1')}-${ulidLike('2')}.ndjson`);
+
+    const stored = objects.get(ref)!;
+    // Trailing newline included: every line is complete, so a truncated object still
+    // parses up to its last one. A single JSON array would have to be whole to read.
+    expect(stored.body.endsWith('\n')).toBe(true);
+    const lines = stored.body.trimEnd().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines.map((l) => JSON.parse(l) as AccessLogEntry)).toEqual(batch);
+
+    // The span is mirrored into metadata so a listing answers "what covers August"
+    // without fetching a single object.
+    expect(stored.customMetadata).toMatchObject({
+      firstId: batch[0]!.id,
+      lastId: batch[1]!.id,
+      rows: '2',
+      from: '2026-08-01T00:00:00.000Z',
+      to: '2026-08-01T00:05:00.000Z',
+    });
+  });
+
+  it('re-shipping the same batch overwrites in place rather than duplicating', async () => {
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2AccessLogSink(bucket);
+    const batch = [entry(ulidLike('1'), '2026-08-01T00:00:00.000Z')];
+
+    const first = await sink.ship(batch);
+    const second = await sink.ship(batch);
+
+    // Idempotent by key: a retried pass (the sweep stamps only AFTER ship resolves, so
+    // a crash in between means the next tick ships the same rows) leaves one object.
+    expect(second.ref).toBe(first.ref);
+    expect([...objects.keys()]).toHaveLength(1);
+  });
+
+  it('refuses an empty batch instead of returning a ref to nothing', async () => {
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2AccessLogSink(bucket);
+    // The stamp that licenses deletion is taken on the strength of this ref. Returning
+    // one for an object that was never written would be the lie that loses evidence.
+    await expect(sink.ship([])).rejects.toThrow(/empty batch/);
+    expect([...objects.keys()]).toHaveLength(0);
   });
 });
