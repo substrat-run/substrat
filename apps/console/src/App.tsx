@@ -6,6 +6,7 @@ import { ConsoleShell } from './ConsoleShell';
 import type { ViewKey } from './ConsoleShell';
 import type { BreadcrumbItem } from './components';
 import { createApi, walkAll } from './lib/api';
+import type { PlatformRuntime } from './lib/cf-links';
 import { getSession, signIn, signOut, type StaffSession } from './lib/auth';
 import { AdminLog } from './views/AdminLog';
 import { Domains } from './views/Domains';
@@ -129,6 +130,10 @@ export function App() {
   const [scopes, setScopes] = useState<Scope[]>([]);
   const [entitlements, setEntitlements] = useState<Map<TenantId, EntitlementGrant[]>>(new Map());
   const [hostnames, setHostnames] = useState<HostnameBinding[]>([]);
+  // Where this platform's scripts and stores live, so the detail views can link into the
+  // Cloudflare dashboard. Deployment-wide and immutable, so it is fetched once here rather
+  // than per view; null (unconfigured, or the read failed) simply means no links.
+  const [runtime, setRuntime] = useState<PlatformRuntime | null>(null);
 
   // Dev mode authenticates with the actor header; session mode with the cookie.
   const api = useMemo(() => createApi(devMode ? actor : null), [actor]);
@@ -210,6 +215,25 @@ export function App() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Fetched alongside the directory, but never with it: a control plane with no runtime
+  // configured is a normal deployment, so a failure here must not surface as a console-wide
+  // error — it costs links, nothing else.
+  useEffect(() => {
+    if (!authed) return;
+    let cancelled = false;
+    api
+      .platformRuntime()
+      .then((r) => {
+        if (!cancelled) setRuntime(r);
+      })
+      .catch(() => {
+        if (!cancelled) setRuntime(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, authed]);
 
   const tenantMap = useMemo(() => new Map(tenants.map((t) => [t.id, t])), [tenants]);
   const notify = useCallback(
@@ -314,6 +338,7 @@ export function App() {
             scopes={scopes.filter((s) => s.tenantId === tenantDetail.id)}
             entitlements={entitlements.get(tenantDetail.id) ?? []}
             hostnames={hostnames}
+            runtime={runtime}
             provisionedByName={
               tenantDetail.provisionedByTenant ? tenantMap.get(tenantDetail.provisionedByTenant)?.name : undefined
             }
@@ -341,6 +366,7 @@ export function App() {
             scope={scopeDetail}
             tenants={tenantMap}
             hostnames={hostnames}
+            runtime={runtime}
             onBack={() => setOpenScope(undefined)}
             onChanged={() => void load()}
             onToast={notify}

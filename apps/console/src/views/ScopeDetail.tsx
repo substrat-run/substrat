@@ -3,16 +3,62 @@ import type { HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/con
 import { Badge, Button, Card, Dialog, Input, KeyValue } from '../components';
 import { availableActions, effectiveStatus, scopeHandle, statusLabel, statusTone } from '../lib/fleet';
 import { boundHostnames, portalUrl } from '../lib/portal';
-import type { Api } from '../lib/api';
+import {
+  d1DatabaseUrl,
+  dispatchScriptUrl,
+  doNamespaceUrl,
+  durableObjectsUrl,
+  r2BucketUrl,
+  scopeDoName,
+  storesForScope,
+  type DoNamespace,
+  type PlatformRuntime,
+  type TenantStores,
+} from '../lib/cf-links';
+import { walkAll, type Api } from '../lib/api';
 
 export interface ScopeDetailProps {
   api: Api;
   scope: Scope;
   tenants: Map<TenantId, Tenant>;
   hostnames: HostnameBinding[];
+  /** Where this platform runs — turns the refs below into dashboard links. Null = none. */
+  runtime: PlatformRuntime | null;
   onBack: () => void;
   onChanged: () => void;
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
+}
+
+/** A ref with a dashboard link when we can build one, and the bare ref when we cannot —
+ *  the ONE rendering rule for every Cloudflare identifier on this page. Clipped to its
+ *  column (a deterministic bucket name runs long) with the full value on hover: the ref
+ *  is here to be FOLLOWED, and the link already carries it in full. */
+function RefLink({ href, children }: { href: string | null; children: string }) {
+  const mono = {
+    fontFamily: 'var(--font-mono)',
+    fontSize: 12,
+    display: 'block',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  } as const;
+  if (!href)
+    return (
+      <span title={children} style={mono}>
+        {children}
+      </span>
+    );
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      title={children}
+      style={{ ...mono, color: 'var(--brand-700)' }}
+    >
+      {children} ↗
+    </a>
+  );
 }
 
 /**
@@ -21,7 +67,7 @@ export interface ScopeDetailProps {
  * where a scope is acted on. Reap is the one irreversible lever, so it opens a
  * type-the-slug gate rather than acting on click.
  */
-export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged, onToast }: ScopeDetailProps) {
+export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, onChanged, onToast }: ScopeDetailProps) {
   const [confirmReap, setConfirmReap] = useState(false);
   const [reapArmed, setReapArmed] = useState('');
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -29,6 +75,16 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
   // one directory read while this detail still reveals the silent "active but zero
   // roles" condition. Null = not-yet/unavailable (degrades to nothing shown).
   const [health, setHealth] = useState<{ roleProjectionEmpty: boolean; roleCount: number | null } | null>(null);
+  // The script this scope's DO actually lives in. `servingRef` when it has adopted the
+  // stable serving script (#286); otherwise the BOUND version's own script — the same
+  // ladder introspection walks, because a scope's storage is in the deployment it was
+  // provisioned on, never in whatever prod points at now.
+  const [boundRef, setBoundRef] = useState<string | null>(null);
+  // The tenant's per-tenant stores (#301/#473), narrowed below to this scope's vertical.
+  const [stores, setStores] = useState<TenantStores | null>(null);
+  // The DO namespaces defined in that script, scope-class first. Null = not resolved (no
+  // lookup configured, the read failed, or no script yet) — the link falls back to the list.
+  const [doNamespaces, setDoNamespaces] = useState<DoNamespace[] | null>(null);
 
   const eff = effectiveStatus(scope, tenants.get(scope.tenantId));
   const actions = availableActions(eff);
@@ -55,6 +111,55 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
       cancelled = true;
     };
   }, [api, scope, eff]);
+
+  // The Cloudflare coordinates: the serving script (looked up only when the scope has not
+  // adopted one) and the tenant's stores. Both are best-effort — this card is navigation
+  // aid, so a failed read costs a link and never an error banner.
+  useEffect(() => {
+    let cancelled = false;
+    setBoundRef(scope.servingRef ?? null);
+    if (!scope.servingRef && scope.vertical && scope.verticalVersionId) {
+      const vertical = scope.vertical;
+      const versionId = scope.verticalVersionId;
+      void walkAll((p) => api.listVersions(vertical, p))
+        .then((versions) => {
+          const ref = versions.find((v) => v.id === versionId)?.deploymentRef ?? null;
+          if (!cancelled) setBoundRef(ref);
+        })
+        .catch(() => {});
+    }
+    setStores(null);
+    api
+      .tenantStores(scope.tenantId)
+      .then((s) => {
+        if (!cancelled) setStores(s);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [api, scope]);
+
+  // Resolve the namespace only once the script is known — it is what the lookup keys on.
+  useEffect(() => {
+    setDoNamespaces(null);
+    if (!boundRef) return;
+    let cancelled = false;
+    api
+      .doNamespaces(boundRef)
+      .then((ns) => {
+        if (!cancelled) setDoNamespaces(ns);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [api, boundRef]);
+
+  const scopeStores = storesForScope(stores, scope.vertical);
+  // The scope class comes first from the API, so the head is the namespace holding this
+  // scope's data. Nothing resolved ⇒ null ⇒ the DO link falls back to the list.
+  const scopeNamespace = doNamespaces?.[0] ?? null;
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     try {
@@ -217,6 +322,65 @@ export function ScopeDetail({ api, scope, tenants, hostnames, onBack, onChanged,
           </p>
         )}
       </Card>
+
+      {/* Where this scope physically lives. Every value here is a ref the console already
+          knew; what it adds is the door — the script page carries the bindings and logs,
+          the store links land on the exact database or bucket. Rendered whenever there is
+          a ref to show, with or without links: on a control plane with no runtime
+          configured (self-host) the same identifiers are still worth having in one place. */}
+      {(boundRef || scopeStores.tenantStores.length > 0 || scopeStores.blobStores.length > 0) && (
+        <Card
+          title="Cloudflare"
+          description={
+            runtime
+              ? `Account ${runtime.accountId} · dispatch namespace ${runtime.dispatchNamespace}`
+              : 'No platform runtime configured — identifiers only, no dashboard links.'
+          }
+        >
+          <KeyValue
+            columns={2}
+            items={[
+              {
+                label: 'Serving script',
+                value: boundRef ? (
+                  <RefLink href={dispatchScriptUrl(runtime, boundRef)}>{boundRef}</RefLink>
+                ) : (
+                  '— no script resolved'
+                ),
+              },
+              {
+                // There is no per-object page in the dashboard — a Durable Object is
+                // addressed by a namespace (class × script) and found by NAME inside it.
+                // So the value is the name, which is the scope id verbatim
+                // (`SCOPE.idFromName(scopeId)`), and the link is the closest page that
+                // exists: the namespace holding it, or the list when it cannot be resolved.
+                label: scopeNamespace ? `Durable Object · ${scopeNamespace.className}` : 'Durable Object name',
+                value: (
+                  <RefLink
+                    href={doNamespaceUrl(runtime, scopeNamespace?.id) ?? durableObjectsUrl(runtime)}
+                  >
+                    {scopeDoName(scope.id)}
+                  </RefLink>
+                ),
+              },
+              ...scopeStores.tenantStores.map((s) => ({
+                label: `D1 · ${s.binding}`,
+                value: <RefLink href={d1DatabaseUrl(runtime, s.ref)}>{s.ref}</RefLink>,
+              })),
+              ...scopeStores.blobStores.map((s) => ({
+                label: `R2 · ${s.binding}`,
+                value: <RefLink href={r2BucketUrl(runtime, s.ref)}>{s.ref}</RefLink>,
+              })),
+            ]}
+          />
+          <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: '18px' }}>
+            The scope's own tables live in that Durable Object, not in D1 — the databases
+            above are the tenant-wide stores this scope's vertical declared (#301/#473), shared
+            by every scope of this tenant running it. Neither is browsable from the dashboard:
+            the scope's rows are reachable only through the admin-query surface (§5.4).
+          </p>
+        </Card>
+      )}
 
       {/* Reap confirmation — the type-to-arm gate (TenantDetail suspend precedent). Reap
           is the one scope action with no restore: it wipes the DO storage for good. The
