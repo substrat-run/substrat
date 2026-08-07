@@ -6,12 +6,13 @@ import {
   platformActorId,
   principalId,
   scopeId,
+  slug,
   tenantId,
 } from './ids.js';
 // #36's tenant export speaks the platform's own vocabulary rather than restating it, so
 // it composes the schemas that already define these shapes. One-way imports only —
 // none of these modules imports this one, so no cycle.
-import { org, scope, tenant } from './tenancy.js';
+import { org, scope, tenant, tenantStatus } from './tenancy.js';
 import { tenantRole } from './permission.js';
 import { hostnameBinding } from './routing.js';
 import { connection } from './connections.js';
@@ -434,3 +435,111 @@ export const tenantExport = z.object({
   data: z.array(scopeDump),
 });
 export type TenantExport = z.infer<typeof tenantExport>;
+
+/**
+ * The meters (#38; control-plane.md §5) — and the shape is as narrow as it is on
+ * purpose, because only two of §9's four are computable at all.
+ *
+ * **Meter 1** (base fee: per tenant + per active scope) is a `COUNT` over the directory.
+ * **Meter 2** (per-engine licensing) is a `GROUP BY` over the entitlement store, whose
+ * flags *are* the SKUs. Both are free, both come from the directory database, and
+ * neither needs a data pipeline. **Meters 3 and 4 are absent by construction**, not by
+ * omission: the outbox is per-scope-database with no cross-tenant fan-in, reads emit
+ * nothing, and the cross-tenant order flow does not exist. A field here would be a
+ * number we cannot compute — "a meter you cannot compute is not a pricing decision, it
+ * is a data-pipeline project" (§5).
+ *
+ * Two rules decide every number below, and they are the reason this is a server-side
+ * aggregate rather than arithmetic over `listScopes`:
+ *
+ * 1. **Billable means EFFECTIVE, not stored.** Suspending a tenant does not touch its
+ *    scopes' rows, but `getScope` fails closed for all of them (§4.1) — so a scope
+ *    stored `active` under a non-active tenant is serving nobody and is counted
+ *    suspended here, exactly as the console's `effectiveStatus` counts it. A meter that
+ *    read stored status would bill a tenant-wide outage.
+ * 2. **Expiry is evaluated at `readAt`.** An expired grant is gate-dead (#33), so it is
+ *    not billable — but it stays visible as `expired` rather than vanishing, because a
+ *    lapsed trial is a renewal, not an absence.
+ */
+export const meterScopeCounts = z.object({
+  /** Every scope row, tombstones included — the denominator, not a billable number. */
+  total: z.number().int().nonnegative(),
+  /** Effective-active: the row is `active` AND its tenant is. The billable count. */
+  active: z.number().int().nonnegative(),
+  /** Own suspension plus tenant cascade — the two are one outage from where a meter sits. */
+  suspended: z.number().int().nonnegative(),
+  provisioning: z.number().int().nonnegative(),
+  /** `archiving` + `archived`: reversible, not serving, not billable. */
+  archived: z.number().int().nonnegative(),
+  /** Terminal tombstones — storage is gone. Kept visible so `total` reconciles. */
+  reaped: z.number().int().nonnegative(),
+});
+export type MeterScopeCounts = z.infer<typeof meterScopeCounts>;
+
+/** Meter 1, per tenant: the scopes under it, and how many SKUs it holds. */
+export const tenantMeterRow = z.object({
+  tenantId,
+  slug,
+  status: tenantStatus,
+  /** `status === 'active'` — a suspended or deleting tenant serves nobody, so it bills for nothing. */
+  billable: z.boolean(),
+  scopes: meterScopeCounts,
+  /** Grants live at `readAt`, and grants that have lapsed — see the expiry rule above. */
+  entitlements: z.object({
+    live: z.number().int().nonnegative(),
+    expired: z.number().int().nonnegative(),
+  }),
+});
+export type TenantMeterRow = z.infer<typeof tenantMeterRow>;
+
+/**
+ * Meter 2, one row per (SKU, tier): entitlement flags are the SKUs (§9), and `plan` is
+ * what makes a tier data instead of operator convention (#33). Grouped rather than
+ * summed so "how many tenants are on `pro` of this engine" is a read, not a re-derivation.
+ *
+ * Counts BILLABLE holders only — an active tenant with a live grant. A grant held by a
+ * suspended tenant is not revenue, and counting it here would make the meter disagree
+ * with the base fee beside it.
+ */
+export const entitlementMeterRow = z.object({
+  entitlementKey: z.string().min(1),
+  /** Null = an ungrouped key (today's plain on/off flag). */
+  plan: z.string().min(1).nullable(),
+  /** Active tenants holding this key live at `readAt`. */
+  tenants: z.number().int().nonnegative(),
+  /** Active tenants whose grant for this key has lapsed — renewals, not revenue. */
+  expired: z.number().int().nonnegative(),
+});
+export type EntitlementMeterRow = z.infer<typeof entitlementMeterRow>;
+
+/**
+ * One reading of meters 1 and 2 — fleet-wide, or narrowed to a single tenant.
+ *
+ * A reading is a fact about an INSTANT, not a running total: nothing is stored, nothing
+ * accumulates, and re-reading recomputes. That is deliberate — a stored meter is a
+ * billing system's ledger, and D-30 says meter, do not bill. `readAt` is what makes the
+ * number quotable ("42 active scopes at 09:00") without pretending it is invoiced.
+ */
+export const meterReading = z.object({
+  /** When the directory was read; every expiry comparison above is against this. */
+  readAt: instant,
+  /** Meter 1's tenant half, over the tenants in scope of this reading. */
+  tenants: z.object({
+    total: z.number().int().nonnegative(),
+    /** The billable count — the per-tenant base fee's multiplier. */
+    active: z.number().int().nonnegative(),
+    suspended: z.number().int().nonnegative(),
+    deleting: z.number().int().nonnegative(),
+    reaped: z.number().int().nonnegative(),
+  }),
+  /** Meter 1's scope half, summed over those tenants. */
+  scopes: meterScopeCounts,
+  /** Meter 2, ordered by key then plan. Empty when nothing is entitled. */
+  entitlements: z.array(entitlementMeterRow),
+  /**
+   * The per-tenant breakdown the totals are summed from — one row per tenant in scope
+   * of the reading (exactly one when narrowed by `tenantId`). Ordered by tenant id.
+   */
+  perTenant: z.array(tenantMeterRow),
+});
+export type MeterReading = z.infer<typeof meterReading>;

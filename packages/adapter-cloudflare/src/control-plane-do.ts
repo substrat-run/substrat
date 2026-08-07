@@ -2091,6 +2091,41 @@ export class ControlPlaneDO extends DurableObject {
       .toArray() as unknown as EntitlementRow[];
   }
 
+  /**
+   * The rows §5's meters are folded from (#38) — tenants, their scopes' statuses, and
+   * the entitlement store, optionally narrowed to one tenant.
+   *
+   * Three projections, not three tables: only the columns the fold reads cross the RPC
+   * boundary, so metering the fleet does not copy every scope record into the caller.
+   * The arithmetic itself is `foldMeterReading` in the kernel — the billable rule is one
+   * definition shared with the SQLite adapter, never a second `GROUP BY` in a second
+   * dialect.
+   */
+  meterRows(tenantId?: string): {
+    tenants: { tenant_id: string; slug: string; status: string }[];
+    scopes: { tenant_id: string; status: string }[];
+    entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
+  } {
+    const where = tenantId ? ' WHERE tenant_id = ?' : '';
+    const args = tenantId ? [tenantId] : [];
+    return {
+      tenants: this.sql
+        .exec(`SELECT tenant_id, slug, status FROM tenants${where}`, ...args)
+        .toArray() as unknown as { tenant_id: string; slug: string; status: string }[],
+      scopes: this.sql
+        .exec(`SELECT tenant_id, status FROM scopes${where}`, ...args)
+        .toArray() as unknown as { tenant_id: string; status: string }[],
+      entitlements: this.sql
+        .exec(`SELECT tenant_id, entitlement_key, plan, expires_at FROM _substrat_entitlements${where}`, ...args)
+        .toArray() as unknown as {
+        tenant_id: string;
+        entitlement_key: string;
+        plan: string | null;
+        expires_at: string | null;
+      }[],
+    };
+  }
+
   // -- identity pools (K-23) --------------------------------------------------
 
   readPool(provider: string): { provider: string; topology: string; tenant_id: string | null } | undefined {

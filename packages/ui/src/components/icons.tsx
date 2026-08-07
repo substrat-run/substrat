@@ -12,6 +12,7 @@ export type SubIconName =
   | 'plus'
   | 'moon'
   | 'pulse'
+  | 'gauge'
   | 'sliders';
 
 export interface SubIconProps {
@@ -55,6 +56,8 @@ export const SubIcons: Record<SubIconName, string> = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   pulse: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
+  // Lucide `gauge` — a dial with a needle. The meters view: a reading, not a stream.
+  gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
   sliders:
     '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
 };

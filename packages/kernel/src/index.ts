@@ -82,3 +82,10 @@ export {
   scopeMigrationState,
 } from './migration-progress.js';
 export type { ScopeMigrationState } from './migration-progress.js';
+export { foldMeterReading } from './meters.js';
+export type {
+  MeterEntitlementInput,
+  MeterInput,
+  MeterScopeInput,
+  MeterTenantInput,
+} from './meters.js';

@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react';
-import type { EntitlementGrant, EntitlementGrantInput, HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, Select, Table, Tag } from '../components';
+import type {
+  EntitlementGrant,
+  EntitlementGrantInput,
+  HostnameBinding,
+  MeterReading,
+  Scope,
+  Tenant,
+  TenantId,
+} from '@substrat-run/contracts';
+import { Badge, Button, Card, Dialog, Input, Select, Stat, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { effectiveStatus, statusLabel, statusTone, tenantTone } from '../lib/fleet';
 import { portalUrl } from '../lib/portal';
@@ -136,6 +144,25 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, run
       cancelled = true;
     };
   }, [api, tenant.id]);
+
+  // This tenant's slice of §5's meters (#38). Read from the platform rather than counted
+  // from the `scopes` prop on this page: the billable rule (effective status, expiry at
+  // the reading's instant) has one definition, and a tenant page that quietly applied a
+  // second one would disagree with the Meters view about the same tenant.
+  const [meter, setMeter] = useState<MeterReading | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setMeter(null);
+    api
+      .readMeters(tenant.id)
+      .then((m) => {
+        if (!cancelled) setMeter(m);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [api, tenant.id, entitlements, scopes]);
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     try {
@@ -296,6 +323,40 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, run
           <strong>Reaped.</strong> This tenant's data was permanently destroyed. The row and audit log are kept as a
           tombstone and the slug stays burned — there is no restore.
         </div>
+      )}
+
+      {meter?.perTenant[0] && (
+        <Card
+          title="Metered"
+          description="What this tenant contributes to §5's two computable meters. Nothing here is billed — the platform meters and does not invoice."
+          footer={`read at ${new Date(meter.readAt).toLocaleString()} · meters 3 and 4 are uncomputable by construction`}
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            <Stat
+              label="Active scopes"
+              value={meter.perTenant[0].scopes.active}
+              meta={
+                meter.perTenant[0].billable
+                  ? `of ${meter.perTenant[0].scopes.total} · billable`
+                  : `of ${meter.perTenant[0].scopes.total} · none billable while ${meter.perTenant[0].status}`
+              }
+            />
+            <Stat
+              label="SKUs held"
+              value={meter.perTenant[0].entitlements.live}
+              meta={
+                meter.perTenant[0].entitlements.expired > 0
+                  ? `${meter.perTenant[0].entitlements.expired} lapsed — renewable, not billed`
+                  : 'none lapsed'
+              }
+            />
+            <Stat
+              label="Base fee unit"
+              value={meter.perTenant[0].billable ? '1 tenant' : '—'}
+              meta={meter.perTenant[0].billable ? 'plus each active scope' : 'a non-active tenant serves nobody'}
+            />
+          </div>
+        </Card>
       )}
 
       <Card

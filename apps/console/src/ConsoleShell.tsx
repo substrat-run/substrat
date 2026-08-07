@@ -2,7 +2,16 @@ import type { ReactNode } from 'react';
 import { Breadcrumbs, IconButton, SideNav, SubIcon, SubIcons } from './components';
 import type { BreadcrumbItem } from './components';
 
-export type ViewKey = 'tenants' | 'scopes' | 'domains' | 'verticals' | 'observability' | 'admin-log' | 'permissions' | 'settings';
+export type ViewKey =
+  | 'tenants'
+  | 'scopes'
+  | 'domains'
+  | 'verticals'
+  | 'observability'
+  | 'meters'
+  | 'admin-log'
+  | 'permissions'
+  | 'settings';
 
 /**
  * The nav items with nothing behind them, rendered dead on purpose.
@@ -80,6 +89,7 @@ export function ConsoleShell({
               { value: 'domains', label: 'Domains', icon: <SubIcon d={SubIcons.globe} />, count: hostnameCount },
               { value: 'verticals', label: 'Verticals', icon: <SubIcon d={SubIcons.box} /> },
               { value: 'observability', label: 'Observability', icon: <SubIcon d={SubIcons.pulse} /> },
+              { value: 'meters', label: 'Meters', icon: <SubIcon d={SubIcons.gauge} /> },
               { value: 'admin-log', label: 'Admin log', icon: <SubIcon d={SubIcons.scroll} /> },
               { value: 'permissions', label: 'Permissions', icon: <SubIcon d={SubIcons.cog} /> },
             ],

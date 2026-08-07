@@ -15,6 +15,7 @@ import {
   entitlementGrant,
   entitlementGrantInput,
   eventId,
+  meterReading,
   platformRequestInput,
   platformRequestId,
   platformRequest,
@@ -77,6 +78,7 @@ import {
   type EntitlementGrantInput,
   type EntitlementView,
   type EntityRef,
+  type MeterReading,
   type CreateOrgInput,
   type IdentityLink,
   type IdentityPool,
@@ -123,6 +125,7 @@ import {
   assertAllowed,
   assertReadOnlyQuery,
   attachmentBlobKey,
+  foldMeterReading,
   resolveScopeRecord,
   ulid,
   type AccessLogFilter,
@@ -4766,6 +4769,50 @@ export class SqliteScopeHost implements ScopeHost {
         );
         this.recordAccess(actor, 'listEntitlements', { tenantId }, null, grants.length);
         return grants;
+      },
+      readMeters: async (actor, filter?: { tenantId?: TenantId }): Promise<MeterReading> => {
+        // Three narrow reads, one fold (`foldMeterReading`) — the billable rule is the
+        // kernel's, not this adapter's, so the Cloudflare directory cannot drift into
+        // quoting a different number for the same fleet.
+        const only = filter?.tenantId;
+        const where = only ? ' WHERE tenant_id = ?' : '';
+        const args = only ? [only] : [];
+        const reading = foldMeterReading({
+          readAt: instant.parse(new Date().toISOString()),
+          tenants: (
+            this.directory.prepare(`SELECT tenant_id, slug, status FROM tenants${where}`).all(...args) as {
+              tenant_id: string;
+              slug: string;
+              status: string;
+            }[]
+          ).map((r) => ({ tenantId: r.tenant_id as TenantId, slug: r.slug, status: r.status as TenantStatus })),
+          scopes: (
+            this.directory.prepare(`SELECT tenant_id, status FROM scopes${where}`).all(...args) as {
+              tenant_id: string;
+              status: string;
+            }[]
+          ).map((r) => ({ tenantId: r.tenant_id as TenantId, status: r.status as ScopeStatus })),
+          entitlements: (
+            this.directory
+              .prepare(`SELECT tenant_id, entitlement_key, plan, expires_at FROM _substrat_entitlements${where}`)
+              .all(...args) as {
+              tenant_id: string;
+              entitlement_key: string;
+              plan: string | null;
+              expires_at: string | null;
+            }[]
+          ).map((r) => ({
+            tenantId: r.tenant_id as TenantId,
+            entitlementKey: r.entitlement_key,
+            plan: r.plan,
+            expiresAt: r.expires_at,
+          })),
+        });
+        // The count that matters for K-24 is how many TENANTS this reading covered —
+        // "read the meter for one tenant" and "metered the whole fleet" are different
+        // acts, and the totals alone would not tell them apart.
+        this.recordAccess(actor, 'readMeters', { tenantId: only ?? null }, filter ?? null, reading.perTenant.length);
+        return meterReading.parse(reading);
       },
       registerIdentityPool: async (actor: PlatformActorId, input: IdentityPool) => {
         const parsed = identityPool.parse(input);
