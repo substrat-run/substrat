@@ -319,7 +319,7 @@ function resolveVerticalFor(
     }
     const prod = (await host.admin.listChannels(actor, slug)).find((c) => c.channel === 'prod');
     if (!prod) return undefined;
-    const version = (await host.admin.listVersions(actor, slug)).find((v) => v.id === prod.versionId);
+    const version = await host.admin.getVersion(actor, prod.versionId, slug);
     if (!version?.deploymentRef) return undefined;
     const fetcher = dispatch.get(version.deploymentRef);
     return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret });
@@ -355,7 +355,7 @@ function resolveVerticalVersionFor(
   if (!dispatch || !secret) return undefined;
   return async (slug, versionId, actor) => {
     const host = hostFor(env);
-    const version = (await host.admin.listVersions(actor, slug)).find((v) => v.id === versionId);
+    const version = await host.admin.getVersion(actor, versionId, slug);
     if (!version?.deploymentRef) return undefined;
     const fetcher = dispatch.get(version.deploymentRef);
     return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret });

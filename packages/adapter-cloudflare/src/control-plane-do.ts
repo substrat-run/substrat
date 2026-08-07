@@ -1616,13 +1616,14 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   listHostnames(
-    filter: { tenantId?: string; scopeId?: string; status?: string } & ListPage,
+    filter: { tenantId?: string; scopeId?: string; status?: string; verticalSlug?: string } & ListPage,
   ): HostnameRow[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (filter.tenantId) { where.push('tenant_id = ?'); params.push(filter.tenantId); }
     if (filter.scopeId) { where.push('scope_id = ?'); params.push(filter.scopeId); }
     if (filter.status) { where.push('status = ?'); params.push(filter.status); }
+    if (filter.verticalSlug) { where.push('vertical_slug = ?'); params.push(filter.verticalSlug); }
     const tail = keysetTail(where, params, 'hostname', filter);
     let sql = 'SELECT * FROM hostnames';
     if (where.length) sql += ` WHERE ${where.join(' AND ')}`;

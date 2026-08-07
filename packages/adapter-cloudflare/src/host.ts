@@ -101,6 +101,7 @@ import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
   foldMeterReading,
+  parseValidationRecords,
   resolveScopeRecord,
   ulid,
   type AccessLogFilter,
@@ -345,7 +346,7 @@ interface ControlPlaneStub {
   ): Promise<void>;
   deleteHostname(hostname: string): Promise<void>;
   listHostnames(
-    filter: { tenantId?: string; scopeId?: string; status?: string } & ListPage,
+    filter: { tenantId?: string; scopeId?: string; status?: string; verticalSlug?: string } & ListPage,
   ): Promise<HostnameRow[]>;
   readVertical(slug: string): Promise<VerticalRow | undefined>;
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
@@ -1945,7 +1946,7 @@ export class CloudflareScopeHost implements ScopeHost {
         canonical: r.canonical === 1,
         createdAt: r.created_at,
         customHostnameId: r.custom_hostname_id,
-        validationRecords: r.validation_records ? JSON.parse(r.validation_records) : [],
+        validationRecords: parseValidationRecords(r.validation_records),
       });
 
     const mapVertical = (r: VerticalRow): Vertical =>
@@ -2371,6 +2372,7 @@ export class CloudflareScopeHost implements ScopeHost {
           tenantId: filter?.tenantId,
           scopeId: filter?.scopeId,
           status: filter?.status,
+          verticalSlug: filter?.verticalSlug,
           limit: filter?.limit,
           cursor: filter?.cursor,
           order: filter?.order,
@@ -2472,6 +2474,13 @@ export class CloudflareScopeHost implements ScopeHost {
         const rows = await this.cp.listVersions(verticalSlug, page);
         await this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
         return rows.map(mapVersion);
+      },
+      getVersion: async (actor, versionId: string, verticalSlug?: string) => {
+        const row = await this.cp.readVersion(versionId);
+        // A version of another vertical reads as absent when the caller named one.
+        const hit = row && (verticalSlug === undefined || row.vertical_slug === verticalSlug) ? row : undefined;
+        await this.recordAccess(actor, 'getVersion', {}, { versionId, verticalSlug }, hit ? 1 : 0);
+        return hit ? mapVersion(hit) : undefined;
       },
       setVerticalListed: async (actor, slug: string, listed: boolean) => {
         const existing = await this.cp.readVertical(slug);

@@ -126,6 +126,7 @@ import {
   assertReadOnlyQuery,
   attachmentBlobKey,
   foldMeterReading,
+  parseValidationRecords,
   resolveScopeRecord,
   ulid,
   type AccessLogFilter,
@@ -480,7 +481,7 @@ const mapHostname = (r: HostnameRow): HostnameBinding =>
     canonical: r.canonical === 1,
     createdAt: r.created_at,
     customHostnameId: r.custom_hostname_id,
-    validationRecords: r.validation_records ? JSON.parse(r.validation_records) : [],
+    validationRecords: parseValidationRecords(r.validation_records),
   });
 
 /**
@@ -3465,6 +3466,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (filter?.tenantId) { where.push('tenant_id = ?'); params.push(filter.tenantId); }
         if (filter?.scopeId) { where.push('scope_id = ?'); params.push(filter.scopeId); }
         if (filter?.status) { where.push('status = ?'); params.push(filter.status); }
+        if (filter?.verticalSlug) { where.push('vertical_slug = ?'); params.push(filter.verticalSlug); }
         const tail = keysetTail(where, params, 'hostname', filter);
         let sql = 'SELECT * FROM hostnames';
         if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
@@ -3630,6 +3632,13 @@ export class SqliteScopeHost implements ScopeHost {
           .all(...params) as VersionRow[];
         this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
         return rows.map(mapVersion);
+      },
+      getVersion: async (actor, versionId: string, verticalSlug?: string) => {
+        const v = readVersion(versionId);
+        // A version of another vertical reads as absent when the caller named one.
+        const hit = v && (verticalSlug === undefined || v.verticalSlug === verticalSlug) ? v : undefined;
+        this.recordAccess(actor, 'getVersion', {}, { versionId, verticalSlug }, hit ? 1 : 0);
+        return hit;
       },
       setVerticalListed: async (actor, slug: string, listed: boolean) => {
         const existing = readVertical(slug);

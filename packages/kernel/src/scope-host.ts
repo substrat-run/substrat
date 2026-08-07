@@ -645,6 +645,26 @@ export interface HostAdmin {
   ): Promise<VerticalVersion[]>;
 
   /**
+   * One version by id — the read almost every caller actually wanted.
+   *
+   * Before this existed, "the version with this id" was spelled as an unpaginated
+   * `listVersions(slug)` followed by `.find()`: every version a vertical had ever
+   * published, each carrying its stored manifest, pulled across the adapter boundary to
+   * keep one. That cost grows once per push and lands on the paths least able to afford
+   * it — the deploy handler's own read-back, and the router's per-request resolution of
+   * which script serves a scope.
+   *
+   * `verticalSlug` preserves what the old `.find()`-inside-a-slug's-list spelling gave
+   * for free: pass it and a version belonging to a DIFFERENT vertical reads as absent
+   * rather than being returned across the lineage boundary. Fail closed, like `getScope`.
+   */
+  getVersion(
+    actor: PlatformActorId,
+    versionId: string,
+    verticalSlug?: string,
+  ): Promise<VerticalVersion | undefined>;
+
+  /**
    * Admit a pending version — the gates passed. Idempotent on an already-admitted one,
    * EXCEPT an auto-admitted one (`AUTO_ADMISSION_NOTE`), which it upgrades to a manual
    * vouch by clearing the note — the recorded human decision `setVerticalListed` requires.
@@ -912,10 +932,23 @@ export interface HostAdmin {
    * so a cleanup pass can re-run over a partial failure.
    */
   unbindHostname(actor: PlatformActorId, hostname: string): Promise<void>;
-  /** Ordered by hostname; the cursor is a hostname. */
+  /**
+   * Ordered by hostname; the cursor is a hostname.
+   *
+   * `verticalSlug` narrows to the bindings of one vertical. It exists because the
+   * alternative callers reached for was reading the WHOLE fleet's bindings and
+   * filtering in JS — which makes an unrelated tenant's hostname row part of the
+   * blast radius of a question about your own, and grows without bound as the fleet
+   * does. A caller that wants one vertical's hostnames asks for them.
+   */
   listHostnames(
     actor: PlatformActorId,
-    filter?: { tenantId?: TenantId; scopeId?: ScopeId; status?: HostnameStatus } & ListPage,
+    filter?: {
+      tenantId?: TenantId;
+      scopeId?: ScopeId;
+      status?: HostnameStatus;
+      verticalSlug?: string;
+    } & ListPage,
   ): Promise<HostnameBinding[]>;
 
   /**
@@ -1633,6 +1666,37 @@ export interface BlobStoreRecord {
  */
 export function attachmentBlobKey(scopeId: string, attachmentId: string): string {
   return `scope/${scopeId}/att/${attachmentId}`;
+}
+
+/**
+ * Read a hostname row's stored `validation_records` — the DNS records Cloudflare
+ * returned while a custom hostname was being issued.
+ *
+ * Tolerant on purpose, and the tolerance is the point. This column is the only part
+ * of a hostname row that is not written by this platform: it is whatever the issuance
+ * API handed back, stored verbatim. A bare `JSON.parse` here made one unparseable blob
+ * anywhere in the fleet into a `SyntaxError` — which is not a `ZodError`, so the
+ * control-plane's error mapper did not recognise it and answered a blank 500. That took
+ * out every `listHostnames` that crossed the bad row, including the one on the deploy
+ * path, so a cert-validation detail for one domain could stop unrelated verticals from
+ * shipping.
+ *
+ * Cert-validation records are display data — the console renders them so an operator can
+ * copy a CNAME. Nothing routes on them. So an unreadable blob degrades to "no records to
+ * show" for that one hostname, and every other row in the page still maps. Both adapters
+ * call this so neither can be the lenient one.
+ */
+export function parseValidationRecords(raw: string | null | undefined): DnsRecord[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as DnsRecord[]) : [];
+  } catch {
+    // Malformed beyond reading. The row still describes a real binding; only its
+    // copy-this-CNAME hint is lost, and `substrat hostnames verify` re-polls issuance
+    // and rewrites the column with whatever the API says now.
+    return [];
+  }
 }
 
 /** Input to `ScopeAttachments.upload` (#473). Bytes ride here — NOT through
