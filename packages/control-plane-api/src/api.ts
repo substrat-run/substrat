@@ -759,6 +759,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(await admin.listEntitlements(c.get('actor'), tenantId));
   });
 
+  // -- the meters (§5, #38) --------------------------------------------------
+  // Meters 1 and 2, read fleet-wide or narrowed with `?tenantId=`. Meters 3 and 4 have
+  // no route because they have no number: the outbox is per-scope-database with no
+  // cross-tenant fan-in and reads emit nothing, so anything served here would be
+  // invented. Staff-only (absent from BUILDER_ROUTES) — a fleet-wide revenue aggregate
+  // is the platform's own book, not a builder's view of their installs.
+  //
+  // GET, and nothing is stored: D-30 is meter, do not bill, so a reading is recomputed
+  // per call and stamped with the instant it was taken.
+  app.get('/meters', async (c) => {
+    const raw = c.req.query('tenantId');
+    const tenantId = raw ? tenantIdSchema.parse(raw) : undefined;
+    return c.json(await admin.readMeters(c.get('actor'), tenantId ? { tenantId } : undefined));
+  });
+
   // -- per-tenant stores (#301, #473) ----------------------------------------
   // The two ledgers as INVENTORY — what `listTenantStores`/`listBlobStores` were always
   // meant to answer for a staff surface: which database and which bucket hold this

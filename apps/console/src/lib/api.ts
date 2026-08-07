@@ -8,6 +8,7 @@ import type {
   EntitlementGrantInput,
   HostnameBinding,
   HostnameStatus,
+  MeterReading,
   MigrationProgress,
   Page,
   PromotionAcknowledgement,
@@ -190,6 +191,13 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       }),
     revokeEntitlement: (id: TenantId, key: string) =>
       call<EntitlementGrant[]>(`/tenants/${id}/entitlements/${key}`, { method: 'DELETE' }),
+
+    // §5's meters 1 and 2 (#38) — tenants + effective-active scopes, and the entitlement
+    // store grouped by SKU and tier. Computed platform-side because the billable rule
+    // (a scope is billable only if its tenant is active; expiry decided at `readAt`)
+    // belongs to one definition, not to whichever surface renders it. Omit `tenantId`
+    // for the fleet reading.
+    readMeters: (tenantId?: TenantId) => call<MeterReading>(`/meters${query({ tenantId })}`),
 
     listScopes: (filter?: { tenantId?: TenantId; status?: ScopeStatus[]; vertical?: string } & PageQuery) =>
       call<Page<Scope>>(`/scopes${query({ ...filter })}`),

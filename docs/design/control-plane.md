@@ -28,7 +28,10 @@ more setting `active` by hand). A PLATFORM hostname under a base domain we contr
 rides the wildcard and skips issuance. Registrable-suffix (PSL) isolation is enforced at
 bind (`@substrat-run/psl`), so a custom domain that is a bare public suffix is refused.
 The `verifying` state and the `custom_hostname_id` / `validation_records` columns are
-the issuance record. Also still unbuilt: §5's meters; **capability-grant enumeration** — a grant is a tuple in the
+the issuance record. §5's two computable meters are now read and rendered
+([#38](https://github.com/substrat-run/substrat/issues/38)); the other two remain
+uncomputable by construction, which §5 now states as a decision rather than a gap.
+Also still unbuilt: **capability-grant enumeration** — a grant is a tuple in the
 scope's own database, so listing them needs §5.4's admin-query RPC, unlike roles which are
 directory-local (this is the sharpest remaining consequence of §7's "no back door into scope
 DBs"); and **four-eyes approval**, which §6 says the action list should settle — the action
@@ -853,6 +856,39 @@ project.** §9's four meters are a commercial design, correctly made in advance;
 them sit downstream of infrastructure still on the roadmap. Build the two that fall out of
 work you are doing anyway, show the numbers, and let the first invoice wait until someone is
 actually paying — at which point the pricing conversation will have facts in it.
+
+### 5.1 What the meter counts ([#38](https://github.com/substrat-run/substrat/issues/38))
+
+Meters 1 and 2 are one directory read — `HostAdmin.readMeters(actor, { tenantId? })`,
+served at `GET /meters[?tenantId=]` (staff-only) and rendered in the console's **Meters**
+view, plus a per-tenant card on the tenant page. Nothing is stored: a reading is
+recomputed per call and stamped `readAt`, because a persisted running total is the first
+half of the billing ledger D-30 declined to build.
+
+Two rules turn row counts into *commercial* numbers, and both live in one place
+(`foldMeterReading` in the kernel, fed by each adapter's three projections) rather than in
+whichever surface renders them:
+
+- **Billable means effective, not stored.** Suspending a tenant does not touch its scopes'
+  rows, but `getScope` fails closed for all of them (§4.1) — so a scope stored `active`
+  under a non-active tenant counts as suspended, exactly as the console's `effectiveStatus`
+  has always counted it. A meter over stored status would invoice a tenant-wide outage.
+  The same rule makes meter 2 agree with meter 1: a SKU held by a suspended tenant is still
+  *held* (suspension revokes nothing) but is not revenue, so it is absent from the billable
+  count while the tenant's own row still shows the grant.
+- **Expiry is decided at `readAt`.** An expired grant is gate-dead (#33), so it bills
+  nothing — but it is reported as `expired` rather than omitted, because a lapsed trial is
+  a renewal, not an absence.
+
+Meter 2 groups by `(entitlementKey, plan)`: the flags *are* the SKUs (§9) and `plan` is
+what makes a tier data instead of operator convention, so "how many tenants are on `pro`
+of this engine" is a read rather than a re-derivation.
+
+**Meters 3 and 4 have no route, no field, and no placeholder**, and the console says so
+where an operator would go looking for the number. That is the point of writing it here:
+their absence is a property of the architecture (per-scope outbox with no cross-tenant
+fan-in; reads emit nothing; no cross-tenant order flow), not a slice that was skipped. If
+a Tier-2 sink ever lands, meter 3 becomes a new question — not a resumption of this one.
 
 ## 6. Auth: the sequencing
 

@@ -10,6 +10,7 @@ import type { PlatformRuntime } from './lib/cf-links';
 import { getSession, signIn, signOut, type StaffSession } from './lib/auth';
 import { AdminLog } from './views/AdminLog';
 import { Domains } from './views/Domains';
+import { Meters } from './views/Meters';
 import { Observability } from './views/Observability';
 import { Login } from './views/Login';
 import { Permissions } from './views/Permissions';
@@ -53,7 +54,17 @@ interface Toast {
   status: 'success' | 'danger';
 }
 
-const VIEWS: ViewKey[] = ['tenants', 'scopes', 'domains', 'verticals', 'observability', 'admin-log', 'permissions', 'settings'];
+const VIEWS: ViewKey[] = [
+  'tenants',
+  'scopes',
+  'domains',
+  'verticals',
+  'observability',
+  'meters',
+  'admin-log',
+  'permissions',
+  'settings',
+];
 
 /**
  * Navigation lives in the URL path — `/scopes`, `/verticals`, and one drilled-in
@@ -403,6 +414,17 @@ export function App() {
         />
       )}
       {view === 'observability' && <Observability api={api} />}
+      {view === 'meters' && (
+        <Meters
+          api={api}
+          tenants={tenantMap}
+          onOpenTenant={(id) => {
+            setView('tenants');
+            setOpenTenant(id);
+          }}
+          onToast={notify}
+        />
+      )}
       {view === 'admin-log' && <AdminLog api={api} tenants={tenantMap} />}
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}
       {view === 'settings' && <Settings api={api} onToast={notify} />}

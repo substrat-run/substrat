@@ -3169,6 +3169,77 @@ export function scopeHostContractSuite(
       );
     });
 
+    // -- §5's meters (#38) ----------------------------------------------------
+
+    it('meters tenants, effective-active scopes and SKUs, and stops billing a suspended tenant (#38)', async () => {
+      const mt = tenantId.parse(ulid());
+      const [live, gone] = [scopeId.parse(ulid()), scopeId.parse(ulid())];
+      await host.admin.createTenant(staff, { id: mt, slug: 'metered-co', name: 'Metered Co' });
+      for (const s of [live, gone]) {
+        await host.provisionScope(staff, { tenantId: mt, scopeId: s });
+        await host.admin.activateScope(staff, mt, s);
+      }
+      await host.admin.archiveScope(staff, mt, gone);
+      await host.admin.grantEntitlement(staff, mt, 'billed', { plan: 'pro' });
+      // A lapsed grant is gate-dead but still a renewal — it must read as expired, and
+      // must NOT quietly inflate the billable count beside it.
+      await host.admin.grantEntitlement(staff, mt, 'aux-sku', {
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+
+      const one = await host.admin.readMeters(staff, { tenantId: mt });
+      expect(one.tenants).toEqual({ total: 1, active: 1, suspended: 0, deleting: 0, reaped: 0 });
+      expect(one.scopes).toMatchObject({ total: 2, active: 1, archived: 1, suspended: 0 });
+      expect(one.entitlements).toEqual([
+        { entitlementKey: 'aux-sku', plan: null, tenants: 0, expired: 1 },
+        { entitlementKey: 'billed', plan: 'pro', tenants: 1, expired: 0 },
+      ]);
+      expect(one.perTenant).toHaveLength(1);
+      expect(one.perTenant[0]).toMatchObject({
+        tenantId: mt,
+        slug: 'metered-co',
+        billable: true,
+        entitlements: { live: 1, expired: 1 },
+      });
+      // The reading is stamped, and every expiry above was compared against that stamp.
+      expect(Date.parse(one.readAt)).not.toBeNaN();
+
+      // Suspending the TENANT leaves both scope rows exactly as they were — and bills
+      // for neither. This is the whole reason the meter is an aggregate and not a
+      // COUNT over stored status: a tenant-wide outage must not invoice as uptime.
+      await host.admin.setTenantStatus(staff, mt, 'suspended');
+      const out = await host.admin.readMeters(staff, { tenantId: mt });
+      expect(out.tenants).toMatchObject({ total: 1, active: 0, suspended: 1 });
+      expect(out.scopes).toMatchObject({ total: 2, active: 0, suspended: 1, archived: 1 });
+      expect(out.perTenant[0]!.billable).toBe(false);
+      // Still held (the row is untouched), but not revenue — so meter 2 is empty.
+      expect(out.perTenant[0]!.entitlements).toEqual({ live: 1, expired: 1 });
+      expect(out.entitlements).toEqual([]);
+      // The stored rows really are unchanged — the disagreement is the meter's, not a mutation.
+      expect((await host.admin.getScopeRecord(staff, mt, live))!.status).toBe('active');
+
+      await host.admin.setTenantStatus(staff, mt, 'active');
+      const fleet = await host.admin.readMeters(staff);
+      expect(fleet.perTenant.length).toBeGreaterThan(1); // the other fixtures' tenants
+      expect(fleet.perTenant.find((r) => r.tenantId === mt)).toMatchObject({ billable: true });
+      // Fleet totals are the per-tenant rows summed — nothing is counted twice, and
+      // nothing counted against a tenant that is not in the reading.
+      expect(fleet.scopes.total).toBe(fleet.perTenant.reduce((n, r) => n + r.scopes.total, 0));
+      expect(fleet.tenants.total).toBe(fleet.perTenant.length);
+      // Ordered by tenant id, like every other directory read.
+      expect(fleet.perTenant.map((r) => r.tenantId)).toEqual([...fleet.perTenant.map((r) => r.tenantId)].sort());
+
+      // K-24: a read is attributable, and the count says how much was metered — one
+      // tenant or the whole fleet. That difference is exactly what the log is for.
+      const reads = await host.admin.accessLog(staff, { method: 'readMeters' });
+      expect(reads.length).toBeGreaterThanOrEqual(2);
+      expect(reads.some((r) => r.tenantId === mt && r.resultCount === 1)).toBe(true);
+      expect(reads.some((r) => r.tenantId === null && r.resultCount === fleet.perTenant.length)).toBe(true);
+
+      await host.admin.revokeEntitlement(staff, mt, 'billed');
+      await host.admin.revokeEntitlement(staff, mt, 'aux-sku');
+    });
+
     it('leaves bare (module-less) operations ungated', async () => {
       // test/read-counter was registered via defineOperation, no manifest — it
       // must resolve regardless of entitlements.

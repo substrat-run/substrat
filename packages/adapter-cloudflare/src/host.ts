@@ -25,6 +25,8 @@ import {
   systemGrant,
   entitlementGrant,
   entitlementGrantInput,
+  instant,
+  meterReading,
   subjectRef,
   createConnectionInput,
   moduleManifest,
@@ -56,6 +58,7 @@ import {
   type IdentityLink,
   type IdentityPool,
   type ListPage,
+  type MeterReading,
   type ProjectedIdentityLink,
   type Node,
   type Org,
@@ -97,6 +100,7 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
+  foldMeterReading,
   resolveScopeRecord,
   ulid,
   type AccessLogFilter,
@@ -407,6 +411,12 @@ interface ControlPlaneStub {
   revokeEntitlement(tenantId: string, key: string): Promise<EntitlementRow | null>;
   tenantHoldsEntitlement(tenantId: string, key: string): Promise<boolean>;
   listEntitlements(tenantId: string): Promise<EntitlementRow[]>;
+  /** The three projections §5's meters fold from (#38); narrowed when a tenant is given. */
+  meterRows(tenantId?: string): Promise<{
+    tenants: { tenant_id: string; slug: string; status: string }[];
+    scopes: { tenant_id: string; status: string }[];
+    entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
+  }>;
   insertConnection(row: {
     id: string;
     tenantId: string;
@@ -3178,6 +3188,38 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         await this.recordAccess(actor, 'listEntitlements', { tenantId }, null, grants.length);
         return grants;
+      },
+      readMeters: async (actor, filter?: { tenantId?: TenantId }): Promise<MeterReading> => {
+        const only = filter?.tenantId;
+        const rows = await this.cp.meterRows(only);
+        const reading = foldMeterReading({
+          readAt: instant.parse(new Date().toISOString()),
+          tenants: rows.tenants.map((r) => ({
+            tenantId: r.tenant_id as TenantId,
+            slug: r.slug,
+            status: r.status as TenantStatus,
+          })),
+          scopes: rows.scopes.map((r) => ({
+            tenantId: r.tenant_id as TenantId,
+            status: r.status as ScopeStatus,
+          })),
+          entitlements: rows.entitlements.map((r) => ({
+            tenantId: r.tenant_id as TenantId,
+            entitlementKey: r.entitlement_key,
+            plan: r.plan,
+            expiresAt: r.expires_at,
+          })),
+        });
+        // Tenants covered, not totals: "read one tenant's meter" and "metered the whole
+        // fleet" are different acts, and K-24 exists to tell them apart.
+        await this.recordAccess(
+          actor,
+          'readMeters',
+          { tenantId: only ?? null },
+          filter ?? null,
+          reading.perTenant.length,
+        );
+        return meterReading.parse(reading);
       },
       registerIdentityPool: async (actor, input: IdentityPool) => {
         const parsed = identityPool.parse(input);

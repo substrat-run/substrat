@@ -179,6 +179,33 @@ describe('control-plane API', () => {
     await json(`/tenants/${t1}/entitlements/workorder`, 'DELETE');
   });
 
+  // -- the meters (§5, #38) --------------------------------------------------
+
+  it('serves meters 1 and 2, fleet-wide and narrowed by tenant', async () => {
+    await json(`/tenants/${t1}/entitlements/workorder`, 'PUT', { plan: 'pro' });
+
+    const fleet = await (await req('/meters')).json();
+    expect(fleet.readAt).toEqual(expect.any(String));
+    expect(fleet.tenants).toMatchObject({ total: 1, active: 1 });
+    expect(fleet.entitlements).toEqual([{ entitlementKey: 'workorder', plan: 'pro', tenants: 1, expired: 0 }]);
+    expect(fleet.perTenant).toHaveLength(1);
+    expect(fleet.perTenant[0]).toMatchObject({ tenantId: t1, slug: 'acme-co', billable: true });
+
+    // `?tenantId=` narrows the tenant set; every other number follows from it.
+    const one = await (await req(`/meters?tenantId=${t1}`)).json();
+    expect(one.perTenant).toHaveLength(1);
+    expect(one.tenants.total).toBe(1);
+    // A tenant that does not exist is not an error — it is an empty reading. There is
+    // nothing to 404 on: the meter answers about a SET, and the set is empty.
+    const none = await req(`/meters?tenantId=${tenantId.parse(ulid())}`);
+    expect(none.status).toBe(200);
+    expect((await none.json()).perTenant).toEqual([]);
+    // A malformed id is still a bad request, refused at the Zod boundary.
+    expect((await req('/meters?tenantId=not-a-ulid')).status).toBe(400);
+
+    await json(`/tenants/${t1}/entitlements/workorder`, 'DELETE');
+  });
+
   // -- identity mirror (builder-plane.md §4) --------------------------------
 
   it('mirrors an identity link in and out — the builder-plane whoami feed', async () => {

@@ -9,7 +9,7 @@ import type {
   Tenant,
   TenantId,
 } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, Select, Tabs, Tag } from '../components';
+import { Badge, Button, Card, Dialog, Input, Select, Stat, Tabs, Tag } from '../components';
 import {
   availableActions,
   effectiveStatus,
@@ -35,36 +35,6 @@ export interface ScopesProps {
   onOpen: (id: ScopeId) => void;
   onChanged: () => void;
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
-}
-
-function Stat({ label, value, meta }: { label: string; value: string | number; meta: string }) {
-  return (
-    <div
-      style={{
-        background: 'var(--surface-card)',
-        border: '1px solid var(--border-default)',
-        borderRadius: 8,
-        boxShadow: 'var(--shadow-xs)',
-        padding: 14,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 11,
-          fontWeight: 500,
-          letterSpacing: '0.06em',
-          textTransform: 'uppercase',
-          color: 'var(--text-tertiary)',
-        }}
-      >
-        {label}
-      </div>
-      <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)', margin: '4px 0 2px' }}>
-        {value}
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{meta}</div>
-    </div>
-  );
 }
 
 /**

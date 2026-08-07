@@ -23,6 +23,7 @@ import type {
   EntitlementGrant,
   EntitlementGrantInput,
   EntitlementView,
+  MeterReading,
   EntityRef,
   IdentityLink,
   IdentityPool,
@@ -1237,6 +1238,27 @@ export interface HostAdmin {
    * renewed rather than looking never-granted.
    */
   listEntitlements(actor: PlatformActorId, tenantId: TenantId): Promise<EntitlementGrant[]>;
+  /**
+   * Meters 1 and 2 as one reading (#38; control-plane.md §5) — tenants and active
+   * scopes, plus the entitlement store grouped by SKU and tier. Fleet-wide, or
+   * narrowed to one tenant with `{ tenantId }`.
+   *
+   * An AGGREGATE, not a list, and that is the whole point: both numbers are already
+   * derivable by walking `listScopes` + `listEntitlements` per tenant, but doing it
+   * that way is N+1 round trips against the directory and — worse — re-derives the
+   * billable rule in every caller. Two rules live here instead, once (see
+   * `meterReading`): a scope is billable only if its TENANT is active too (a cascade
+   * suspension is an outage, not revenue), and expiry is evaluated at the reading's
+   * instant so a lapsed grant reads as lapsed rather than as never-granted.
+   *
+   * Computes nothing that needs a data pipeline. Meters 3 and 4 are absent because
+   * they are uncomputable by construction, not because this is a first slice — the
+   * per-scope outbox has no cross-tenant fan-in, and reads emit nothing at all.
+   *
+   * Nothing is stored: a reading is recomputed per call. D-30 is meter, do not bill,
+   * and a persisted running total is the first half of a billing ledger.
+   */
+  readMeters(actor: PlatformActorId, filter?: { tenantId?: TenantId }): Promise<MeterReading>;
 
   // -- identity (D-16; control-plane.md §6) ----------------------------------
   // The neutral seam an auth adapter maps into. An external identity
