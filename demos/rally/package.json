@@ -22,14 +22,14 @@
     "@substrat-run/engine-invoicing": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@hono/node-server": "^1.13.0",
-    "better-sqlite3": "^12.0.0",
+    "better-sqlite3": "^13.0.3",
     "hono": "^4.6.0",
     "zod": "^4.4.3",
     "@substrat-run/engine-invites": "workspace:^",
     "better-auth": "^1.6.23"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
+    "@types/better-sqlite3": "^9.6.0",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",

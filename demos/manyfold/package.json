@@ -51,14 +51,14 @@
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "better-sqlite3": "^13.0.2",
+    "better-sqlite3": "^13.0.3",
     "hono": "^4.12.32",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260731.1",
     "@scalar/api-reference": "^1.64.0",
-    "@types/better-sqlite3": "^7.6.13",
+    "@types/better-sqlite3": "^9.6.0",
     "concurrently": "^10.0.4",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",

@@ -99,12 +99,12 @@ function packageJson(name) {
         '@substrat-run/engine-invoicing': ENGINES,
         hono: '^4.6.0',
         '@hono/node-server': '^1.13.0',
-        'better-sqlite3': '^12.0.0',
+        'better-sqlite3': '^13.0.3',
       },
       devDependencies: {
         '@substrat-run/boundary-lint': BOUNDARY_LINT,
         '@cloudflare/workers-types': '^4.20250109.0',
-        '@types/better-sqlite3': '^7.6.0',
+        '@types/better-sqlite3': '^9.6.0',
         '@types/node': '^22.0.0',
         concurrently: '^9.0.0',
         tsx: '^4.19.0',
@@ -112,7 +112,8 @@ function packageJson(name) {
         vitest: '^3.0.0',
       },
       // Do NOT add `zod` here — import `z` from `@substrat-run/contracts` (AGENTS.md, rule 10).
-      pnpm: { onlyBuiltDependencies: ['better-sqlite3'] },
+      // better-sqlite3 >=13 ships prebuilt binaries for every supported platform and
+      // declares no install script, so it needs no build allowlist entry.
     },
     null,
     2,

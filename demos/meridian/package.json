@@ -90,7 +90,7 @@
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "better-sqlite3": "^12.0.0",
+    "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",
     "zod": "^4.4.3"
@@ -98,8 +98,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250109.0",
     "@scalar/api-reference": "^1.63.0",
-    "@types/better-sqlite3": "^7.6.0",
-    "better-sqlite3": "^12.0.0",
+    "@types/better-sqlite3": "^9.6.0",
+    "better-sqlite3": "^13.0.3",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
