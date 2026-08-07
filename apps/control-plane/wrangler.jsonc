@@ -119,6 +119,14 @@
 	// control-plane bug that deletes the directory DO — NOT loss of the account itself. The
 	// store seam is provider-neutral so an off-account target is a drop-in; see
 	// control-plane.md §4.9 for the honest statement of what is and is not covered.
+	//
+	// Both buckets are created by hand (the commands above), never by a deploy: the deploy
+	// scripts pass `--x-provision=false` because wrangler's auto-provisioning is ON by
+	// default and probes `GET /r2/buckets/<name>` before every upload. That probe makes an
+	// R2 permission a *deploy* requirement, and the CI token deliberately has none — a
+	// bucket holding unmasked customer dumps is not something a green build should be able
+	// to conjure. Without the flag a deploy dies on `Authentication error [code: 10000]`
+	// from that probe, whether or not the bucket exists.
 	"r2_buckets": [
 		{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups" },
 		{ "binding": "DIRECTORY_BACKUPS", "bucket_name": "substrat-directory-backups" }
