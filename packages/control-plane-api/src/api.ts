@@ -1163,9 +1163,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // brought — the crossing is then no riskier than an ordinary version bind. Anything
     // else (differing digests, or a scope with no bound version to compare) needs the
     // operator's explicit acknowledgement.
-    const targetV = (await admin.listVersions(actor, target)).find((v) => v.id === serving.versionId);
+    const targetV = await admin.getVersion(actor, serving.versionId, target);
     const currentV = scope.verticalVersionId
-      ? (await admin.listVersions(actor, scope.vertical)).find((v) => v.id === scope.verticalVersionId)
+      ? await admin.getVersion(actor, scope.verticalVersionId, scope.vertical)
       : undefined;
     const digestsMatch = Boolean(
       currentV && targetV && currentV.migrationDigest === targetV.migrationDigest,
@@ -2069,9 +2069,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // Delegated path: the digest compare lives here (the in-process path does
         // it below the seam). Snapshot only a migration-crossing bind.
         if (scope.vertical && scope.verticalVersionId) {
-          const versions = await admin.listVersions(actor, scope.vertical);
-          const current = versions.find((v) => v.id === scope.verticalVersionId);
-          const incoming = versions.find((v) => v.id === versionId);
+          const [current, incoming] = await Promise.all([
+            admin.getVersion(actor, scope.verticalVersionId, scope.vertical),
+            admin.getVersion(actor, versionId, scope.vertical),
+          ]);
           if (current && incoming && current.migrationDigest !== incoming.migrationDigest) {
             await orchestratedSnapshot(c, tenantId, scope, {});
           }
@@ -2312,7 +2313,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     input.verticalSlug = slug;
     await admin.publishVersion(c.get('actor'), input);
-    const version = (await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === input.id);
+    const version = await admin.getVersion(c.get('actor'), input.id, slug);
     return c.json(version, 201);
   });
 
@@ -2354,7 +2355,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const slug = c.req.param('slug');
     const id = c.req.param('id');
     await admin.admitVersion(c.get('actor'), id);
-    return c.json((await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id));
+    return c.json(await admin.getVersion(c.get('actor'), id, slug));
   });
 
   app.post('/verticals/:slug/versions/:id/reject', async (c) => {
@@ -2362,7 +2363,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const id = c.req.param('id');
     const { note } = rejectVersionBody.parse(await c.req.json());
     await admin.rejectVersion(c.get('actor'), id, note);
-    return c.json((await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id));
+    return c.json(await admin.getVersion(c.get('actor'), id, slug));
   });
 
   // A builder REQUESTS publication of a vertical it owns (marketplace-publish.md §5) — any owner
@@ -2476,7 +2477,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     versionId: string,
   ): Promise<void> => {
     if (!options.deployVertical || !options.fetchVerticalModules) return; // not configured: pre-#286 behavior
-    const version = (await admin.listVersions(actor, slug)).find((v) => v.id === versionId);
+    const version = await admin.getVersion(actor, versionId, slug);
     if (!version?.deploymentRef) {
       throw new ControlPlaneError(502, `version ${versionId} has no archive script to serve from`);
     }
@@ -2904,16 +2905,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const warnings: string[] = [];
     if (manifest.surfaces?.length) {
       const declared = new Set(manifest.surfaces.map((s) => s.name));
-      const bound = await admin.listHostnames(c.get('actor'), {});
+      // Narrowed to THIS vertical's bindings in the query. It used to read every
+      // hostname on the platform and filter in JS, which made an advisory warning about
+      // one push depend on every other tenant's routing rows parsing cleanly — a
+      // malformed cert-validation blob on an unrelated domain took the whole deploy down
+      // with a blank 500, after the version had already been published.
+      const bound = await admin.listHostnames(c.get('actor'), { verticalSlug: slug });
       for (const h of bound) {
-        if (h.verticalSlug === slug && !declared.has(h.surface)) {
+        if (!declared.has(h.surface)) {
           warnings.push(
             `hostname '${h.hostname}' is bound to surface '${h.surface}', which this version no longer declares`,
           );
         }
       }
     }
-    const version = (await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id);
+    const version = await admin.getVersion(c.get('actor'), id, slug);
     return c.json({ ...version, ...(warnings.length ? { warnings } : {}) }, 201);
   });
 
@@ -3312,7 +3318,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // prod build) while we report success. That is worse than a failure: it sends a reviewer
     // to redo correct work. So refuse to return success for a URL that would serve other code.
     const assertServesBoundVersion = async (previewId: ScopeId): Promise<void> => {
-      const bound = (await admin.listVersions(actor, slug)).find((v) => v.id === opts.versionId);
+      const bound = await admin.getVersion(actor, opts.versionId, slug);
       // A co-located / embedded vertical has no per-version dispatch script (deploymentRef
       // null) and routes via the static fallback — nothing to compare, so nothing to guard.
       if (!bound?.deploymentRef) return;

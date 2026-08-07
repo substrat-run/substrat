@@ -2229,6 +2229,24 @@ export function scopeHostContractSuite(
       ).toBe(vid);
     });
 
+    it('getVersion reads ONE version by id, and fails closed across a lineage', async () => {
+      // The read that replaced "list every version this vertical ever pushed, then
+      // .find() one". Correctness first: same row, same shape as the list gives.
+      const vid = await publishPrivate('egeryds/crm', '0.9.0');
+      const one = await host.admin.getVersion(staff, vid);
+      expect(one?.id).toBe(vid);
+      expect(one).toEqual((await host.admin.listVersions(staff, 'egeryds/crm')).find((v) => v.id === vid));
+
+      // Narrowed, it keeps what the old `.find()`-inside-one-slug's-list gave for free:
+      // a version of ANOTHER vertical is absent, not returned across the boundary. Without
+      // this, the slug in the URL stops constraining which version a route can hand back.
+      expect((await host.admin.getVersion(staff, vid, 'egeryds/crm'))?.id).toBe(vid);
+      expect(await host.admin.getVersion(staff, vid, 'callout')).toBeUndefined();
+
+      // An id nobody published is absent, not a throw — callers branch on undefined.
+      expect(await host.admin.getVersion(staff, ulid())).toBeUndefined();
+    });
+
     it('a platform vertical still lands pending — auto-admission is scoped to private ownership', async () => {
       // 'callout' is platform-owned (ownerTenant null): the 9.9.9 push in the test
       // above landed pending. The distinction is the whole design: self-admission
@@ -2410,6 +2428,36 @@ export function scopeHostContractSuite(
         scopeId: sc,
         verticalSlug: 't-acme/crm',
       });
+    });
+
+    it('listHostnames narrows to ONE vertical, in the query', async () => {
+      // The deploy path's surface-drift warning needs this vertical's bindings. It used
+      // to read the WHOLE fleet's rows and filter in JS, which made a push's advisory
+      // check depend on every other tenant's routing row being readable — one malformed
+      // row anywhere took down deploys for everyone. Narrowing belongs in the query, so
+      // the rows that answer the question are the only rows that can break it.
+      const other = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: other, vertical: 'callout', jurisdiction: 'eu' });
+      await host.admin.bindHostname(staff, {
+        hostname: 'callout-narrow.global.example.com',
+        tenantId: t1,
+        scopeId: other,
+        surface: 'app',
+        region: null,
+        canonical: true,
+      });
+
+      const mine = await host.admin.listHostnames(staff, { verticalSlug: 't-acme/crm' });
+      expect(mine.length).toBeGreaterThan(0);
+      expect(mine.every((h) => h.verticalSlug === 't-acme/crm')).toBe(true);
+      expect(mine.map((h) => h.hostname)).not.toContain('callout-narrow.global.example.com');
+
+      // Composes with the other filters rather than replacing them, and an unknown slug
+      // is an empty list — never "no filter, here is everything".
+      expect(await host.admin.listHostnames(staff, { verticalSlug: 'no-such-vertical' })).toEqual([]);
+      expect(
+        await host.admin.listHostnames(staff, { verticalSlug: 't-acme/crm', scopeId: other }),
+      ).toEqual([]);
     });
 
     it('routes two surfaces of ONE scope to different hostnames', async () => {

@@ -41,7 +41,7 @@ export type {
   TenantStoreProvisionInput,
   TenantStoreRecord,
 } from './scope-host.js';
-export { attachmentBlobKey, backoffAt, resolveRetryPolicy } from './scope-host.js';
+export { attachmentBlobKey, backoffAt, parseValidationRecords, resolveRetryPolicy } from './scope-host.js';
 export { unconfiguredSecretBox, webCryptoSecretBox } from './secret-box.js';
 export type { SealedSecret, SecretBox } from './secret-box.js';
 export { resolveScopeRecord } from './scope-record.js';
