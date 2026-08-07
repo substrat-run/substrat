@@ -1,5 +1,177 @@
 # @substrat-run/control-plane-api
 
+## 0.50.0
+
+### Minor Changes
+
+- fa85dd8: feat(lifecycle): a reap leaves a recoverable copy behind (#493)
+
+  `reapScope` is the one lifecycle step with no undo — it frees a scope's Durable Object
+  storage, which Cloudflare never garbage-collects on its own — and the copy that made it
+  survivable was the operator's job to remember, from a different surface. It is now a
+  property of the route: `POST …/scopes/:s/reap` writes a **full-fidelity dump** to a
+  platform-held backup store _before any byte is wiped_, and records its address on the
+  reap's admin-log entry. A store that throws aborts the reap with the scope intact,
+  answered as a `502` that says the data is untouched rather than a bare 500.
+
+  A **dump, not a snapshot fork**, deliberately: `orchestratedSnapshot` provisions the fork
+  inside the vertical's own deployment and activates it, so a fork's bytes live in the very
+  deployment a retirement is about to delete, and it counts as a live scope in
+  `countScopesForVertical` — re-blocking the `deleteVertical` the reap was clearing. A dump
+  leaves the deployment, and `POST …/restore` already loads one back.
+
+  Full fidelity, never masked. `GET …/export` masks by default because it hands bytes to a
+  _caller_; a backup goes platform→platform and is never handed out, and a masked dump
+  restores a structurally-valid but factually wrong scope.
+
+  New seam `ScopeBackupStore` (host-injected, provider-neutral like `ObservabilityReader`)
+  with `createR2BackupStore` for Cloudflare R2, plus `GET/POST …/scopes/:s/backups` and
+  `GET …/scopes/:s/backups/:capturedAt`. `reapScope`'s options gain `backupRef`, carried
+  into the audit entry (`after.backupRef`, explicitly `null` when no copy was taken).
+  `ScopeBackup` joins `scopeDump` in contracts.
+
+  Defaults are per-act, not global: a **scope** reap backs up unless told otherwise, while a
+  **tenant** reap (§4.8, partly an Art. 17 erasure path) takes no copy unless staff ask —
+  silently writing an erased customer's data to a bucket would defeat the request. Asking
+  for a backup where no store is configured is refused `501`, never silently skipped, so a
+  control plane deployed with the bucket unbound fails loudly; a caller that does not ask
+  still reaps unbacked where no store exists (self-host, embedded). Jurisdiction-pinned
+  scopes are refused until a per-jurisdiction store exists (K-32) — the reap must not wipe
+  what the platform may not legally copy.
+
+- 0061325: chore(deps): one better-sqlite3, and it is 13.0.3
+
+  The workspace had drifted onto three copies — `^13.0.3` in adapter-sqlite, `^13.0.2` in
+  manyfold, `^12.0.0` in ten other packages — which is how `pnpm install` started failing.
+
+  v13 changed its packaging: it **dropped its install script** and now ships prebuilt binaries
+  for all eight platform targets inside the tarball, declaring `"gypfile": false`. It still
+  ships a `binding.gyp`, and pnpm applies npm's legacy rule — _binding.gyp present + no install
+  script ⇒ `node-gyp rebuild`_ — ignoring that opt-out. With `better-sqlite3` on the
+  `onlyBuiltDependencies` allowlist, pnpm ran that phantom build and died wherever `node-gyp`
+  isn't installed. CI images ship one, which is why it only bit locally.
+
+  So the allowlist entry is now the bug rather than the fix: nothing in the tree needs
+  compiling. Dropping `better-sqlite3` from `onlyBuiltDependencies` is the whole repair — the
+  prebuilt binary is already on disk and `lib/binding.js` finds it.
+
+  Two things had to move for that to be true everywhere:
+
+  - **`overrides: { "better-sqlite3": "13.0.3" }`** — better-auth declares a `^12.0.0` peer, so
+    pnpm was quietly resolving a _second_, duplicate v12 copy alongside ours. That copy needs a
+    real build, and once better-sqlite3 left the allowlist it would have arrived with no binary
+    at all on a fresh clone. The override collapses the tree to one version; a matching
+    `peerDependencyRules.allowedVersions` records that v13 is deliberate, not unnoticed. All six
+    better-auth packages pass on it.
+  - **`create-substrat`** no longer scaffolds `onlyBuiltDependencies: ['better-sqlite3']`, which
+    would have handed every new project the same failure.
+
+  `@types/better-sqlite3` goes `^7.6.x` → `^9.6.0` to match. Requires Node >= 22, which CI
+  (22 and 24) already satisfies.
+
+- 5063d1c: feat(platform): the directory backs itself up, and the restore is rehearsed (#40)
+
+  Every database the platform holds was protected except the one whose loss is
+  unrecoverable. A scope has ~30-day Durable Object point-in-time recovery — continuous,
+  per-scope, and strictly better than any daily copy, which is why scheduled per-scope
+  backups are deliberately _not_ built here. The **directory** is the case PITR cannot
+  answer: it is a single DO, so a bug that deletes it outright leaves nothing to rewind, and
+  no scope knows its own tenancy, hostname or bound version well enough to rebuild the map
+  from below. `control-plane.md` had already named the stake — _losing it is losing the
+  platform, not losing a cache_ — without resolving it.
+
+  New pair on `HostAdmin`, implemented by **both** adapters: `exportDirectory` (a
+  full-fidelity row-dump of tenants, scopes, hostnames, verticals, entitlements, identities
+  _and the audit spine_ — a directory restored without its history cannot say what the
+  platform did before the restore) and `restoreDirectory`. The export is audited in the K-24
+  access log with no tenant, because its subject is every tenant at once; the restore is a
+  new `restoreDirectory` admin action, written _after_ the replace so the entry survives it
+  — the first row after a restored history is the restore.
+
+  `DirectoryBackupStore` is a sibling seam to `ScopeBackupStore` rather than a widening of
+  it: a scope copy is taken at a moment and addressed by its scope, a directory copy is taken
+  on a schedule and pruned to a window. `createR2DirectoryBackupStore` keys under
+  `directory/`, so it can share the scope bucket or have its own. Bound as
+  `DIRECTORY_BACKUPS` on the control-plane worker.
+
+  `backupDirectoryIfDue` runs **last** in the platform sweep, after the phases that mutate
+  the directory, so a copy is of a settled directory. The cadence is enforced by reading the
+  newest stored copy rather than by a second trigger: the quarter-hourly cron takes **one
+  copy a day**, a missed tick is caught up on the next pass (late, never never), and the
+  schedule needs no durable state of its own. **Retention is 30**, matching the PITR horizon
+  so the two defences expire together — and pruned only _after_ a successful capture, so a
+  failed backup can never be the thing that deletes the last good copy.
+
+  Routes (staff-only, none per-tenant): `GET/POST /directory/backups`,
+  `GET /directory/backups/:capturedAt`, `POST /directory/restore`. All four answer `501`
+  where no store is bound rather than an empty list — "nothing held" and "nobody is looking"
+  must not read alike. A restore **replaces**, so it refuses a directory that still holds
+  tenants unless the body says `overwrite: true`: the dangerous case is not a slip of the
+  fingers but a replayed restore against a control plane that already recovered.
+
+  `#40` asked for a _rehearsed_ restore, so the round trip runs in the contract suite against
+  both adapters — capture, diverge, restore, then open a scope and invoke through the
+  directory it just rewrote. `control-plane.md` §4.9 records RPO ≤ 24h / RTO ≤ 1h, the
+  runbook, and the honest limit: the bucket lives in the platform's own Cloudflare account,
+  so this survives losing the _directory_, not losing the _account_. The seam is
+  provider-neutral so an off-account target is a drop-in when that is worth paying for.
+
+- d7d8fa9: feat(control-plane): export a whole tenant — Art. 20 portability, and the escrow handover (#36)
+
+  `GET /tenants/:t/export` returns one tenant, whole, in one file: the tenant record, its
+  scopes, orgs and memberships, roles, entitlements, identity links, hostnames, the store
+  ledger, connections — and each scope's database.
+
+  **Composed only from the sanctioned reads** (`listScopes`, `listOrgs`, `listMembers`,
+  `listRoles`, `listEntitlements`, `listIdentityLinks`, `listHostnames`, the store ledgers,
+  `listConnections`, `exportScope`), which is a constraint rather than an implementation
+  note: control-plane.md §7 says the control plane must not acquire a back door into scope
+  databases, and an export that reached past the audited surface would _be_ that back door.
+  Because every part is already K-24 access-logged, so is the whole. No adapter changes —
+  both adapters get it because they already implement the seam.
+
+  **A different shape from #40's directory dump, deliberately.** That one is raw tables for
+  _recovery_: complete, replayable, unreadable to a customer. This one is one tenant's slice
+  in the platform's own documented vocabulary, so the receiving party can read it without
+  knowing our schema. Only the per-scope `data` is raw, because that half has to be loadable
+  — and the round trip (export → `importScope` → same tables, same row counts) is a test
+  rather than a claim, which is #36's own acceptance criterion.
+
+  Four rules, each of them a way of not lying about what the file is:
+
+  - **Masked by default; `?full=true` is the break-glass** — the same posture as `scope
+pull`, with one heuristic sweeping _both_ halves. Driving this surfaced a real gap: an
+    identity link's `externalId` is usually the person's email, and the shared PII heuristic
+    did not match it. `external_id` is now in the column list, which also masks opaque
+    third-party ids in a masked pull — the lossy direction of a trade that costs fidelity
+    nothing and a leak everything.
+  - **Tombstones are exported; their data is not.** An archived or reaped scope's record is
+    part of the tenant's history; a reaped scope has no storage left, so nothing in `data`
+    claims to be its data.
+  - **Stores are inventoried, not contained** — per-tenant D1/R2 stores appear as a ledger.
+    Their bytes are not in the file, and an export that omitted them would read as complete.
+  - **The admin log is `full`-only** — it records what _staff_ did, so it is not Art. 20
+    material, but it is what an escrow or a dispute needs.
+
+  **Jurisdiction refuses as a unit**: one pinned scope taints the file (K-7/K-32), so the
+  route refuses rather than exporting the global scopes and quietly omitting the rest.
+
+  New `tenantExport` contract, composed from the existing schemas rather than restating
+  them. `maskRecords` joins `maskDump` so object-shaped records get the same sweep as
+  table-shaped ones.
+
+  Not in this change: retention. The admin log is append-only with no sweeper and the backup
+  buckets have no lifecycle rule — deleting from an audit log §4.4 says is kept whole is a
+  policy decision, tracked rather than assumed.
+
+### Patch Changes
+
+- Updated dependencies [fa85dd8]
+- Updated dependencies [5063d1c]
+- Updated dependencies [d7d8fa9]
+  - @substrat-run/contracts@0.50.0
+  - @substrat-run/kernel@0.50.0
+
 ## 0.49.0
 
 ### Minor Changes
