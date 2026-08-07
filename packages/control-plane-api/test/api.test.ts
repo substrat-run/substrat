@@ -4251,3 +4251,113 @@ describe('control-plane API — staff tenant-pin resolution (#417)', () => {
     expect(unknown.map((v: { id: string }) => v.id)).toEqual([calloutV]);
   });
 });
+
+/**
+ * Where this platform runs, and what holds a tenant's bytes — the two reads the console
+ * turns into Cloudflare dashboard links. Both are pure inventory: no credential crosses
+ * the seam, and neither route can mint, move, or drop anything.
+ */
+describe('control-plane API — runtime descriptor + store inventory', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  const builderTenant = tenantId.parse(ulid());
+  const BUILDER_HEADER = 'x-test-builder';
+
+  const RUNTIME = {
+    provider: 'cloudflare' as const,
+    accountId: '8cbb7553aaaaaaaaaaaaaaaaaaaaaaaa',
+    dispatchNamespace: 'substrat-verticals',
+  };
+
+  const appWith = (platformRuntime?: typeof RUNTIME) =>
+    createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      authenticateBuilder: (r: Request) =>
+        r.headers.get(BUILDER_HEADER)
+          ? { actor: platformActorId.parse(ulid()), tenantId: builderTenant, tenantSlug: 'builder-co' }
+          : null,
+      platformRuntime,
+    });
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-runtime-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.createTenant(staff, { id: builderTenant, slug: 'builder-co', name: 'Builder Co' });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('answers the runtime descriptor when configured', async () => {
+    const res = await appWith(RUNTIME).request('/platform/runtime', { headers: asStaff });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(RUNTIME);
+  });
+
+  it('answers null — not an error — when no runtime is configured (the self-host shape)', async () => {
+    // The console degrades to plain identifiers on null. A 501 here would render as a
+    // console-wide failure for a deployment that is working exactly as intended.
+    const res = await appWith(undefined).request('/platform/runtime', { headers: asStaff });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toBeNull();
+  });
+
+  it('lists a tenant’s minted stores with the provider refs the dashboard addresses', async () => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'stores-co', name: 'Stores Co' });
+    const d1 = await host.provisionTenantStore(staff, { tenantId: t, vertical: 'crm', binding: 'AUTH_DB' });
+    const r2 = await host.provisionBlobStore(staff, { tenantId: t, vertical: 'crm', binding: 'FILES' });
+
+    const res = await appWith(RUNTIME).request(`/tenants/${t}/stores`, { headers: asStaff });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.tenantStores).toMatchObject([{ vertical: 'crm', binding: 'AUTH_DB', kind: 'relational', ref: d1.ref }]);
+    expect(body.blobStores).toMatchObject([{ vertical: 'crm', binding: 'FILES', kind: 'blob', ref: r2.ref }]);
+  });
+
+  it('answers empty ledgers for a tenant whose verticals declare no stores', async () => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'plain-co', name: 'Plain Co' });
+    const res = await appWith(RUNTIME).request(`/tenants/${t}/stores`, { headers: asStaff });
+    expect(await res.json()).toEqual({ tenantStores: [], blobStores: [] });
+  });
+
+  it('is staff-only — a builder reaches neither (default-deny allowlist)', async () => {
+    const app = appWith(RUNTIME);
+    const asBuilder = { [BUILDER_HEADER]: '1', 'content-type': 'application/json' };
+    expect((await app.request('/platform/runtime', { headers: asBuilder })).status).toBe(403);
+    expect((await app.request(`/tenants/${builderTenant}/stores`, { headers: asBuilder })).status).toBe(403);
+  });
+
+  it('resolves a script’s Durable Object namespaces, scope class first and script-narrowed', async () => {
+    const app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      platformRuntime: RUNTIME,
+      doNamespaces: {
+        list: async () => [
+          { id: 'ns-identity', className: 'IdentityDO', script: 'crm-serving', name: null, useSqlite: true },
+          { id: 'ns-scope', className: 'ScopeDO', script: 'crm-serving', name: null, useSqlite: true },
+          { id: 'ns-other', className: 'ScopeDO', script: 'other-serving', name: null, useSqlite: true },
+        ],
+      },
+    });
+    const res = await app.request('/platform/do-namespaces?script=crm-serving', { headers: asStaff });
+    expect(res.status).toBe(200);
+    // Narrowed SERVER-side: the account-wide listing never crosses to the browser.
+    expect((await res.json()).map((r: { id: string }) => r.id)).toEqual(['ns-scope', 'ns-identity']);
+
+    // The script is required — a bare lookup would mean "send me the account".
+    expect((await app.request('/platform/do-namespaces', { headers: asStaff })).status).toBe(400);
+  });
+
+  it('501s the namespace lookup when unconfigured — "cannot look" is not "none exist"', async () => {
+    const res = await appWith(RUNTIME).request('/platform/do-namespaces?script=crm-serving', { headers: asStaff });
+    expect(res.status).toBe(501);
+  });
+});

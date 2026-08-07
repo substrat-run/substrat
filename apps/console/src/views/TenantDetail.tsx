@@ -1,10 +1,44 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { EntitlementGrant, EntitlementGrantInput, HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, Select, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { effectiveStatus, statusLabel, statusTone, tenantTone } from '../lib/fleet';
 import { portalUrl } from '../lib/portal';
+import { d1DatabaseUrl, r2BucketUrl, type PlatformRuntime, type TenantStores } from '../lib/cf-links';
 import type { Api } from '../lib/api';
+
+/** One row of the store inventory below — the two ledgers flattened into the one
+ *  question staff actually ask: what holds this tenant's bytes, and where is it? */
+interface StoreRow {
+  kind: 'D1' | 'R2';
+  binding: string;
+  vertical: string;
+  ref: string;
+  href: string | null;
+  createdAt: string;
+}
+
+function storeRows(stores: TenantStores | null, runtime: PlatformRuntime | null): StoreRow[] {
+  if (!stores) return [];
+  return [
+    ...stores.tenantStores.map((s) => ({
+      kind: 'D1' as const,
+      binding: s.binding,
+      vertical: s.vertical,
+      ref: s.ref,
+      href: d1DatabaseUrl(runtime, s.ref),
+      createdAt: s.createdAt,
+    })),
+    ...stores.blobStores.map((s) => ({
+      kind: 'R2' as const,
+      binding: s.binding,
+      vertical: s.vertical,
+      ref: s.ref,
+      href: r2BucketUrl(runtime, s.ref),
+      createdAt: s.createdAt,
+    })),
+  ];
+}
 
 /**
  * The console-maintained SKU list. The platform has NO entitlement-key catalogue
@@ -15,12 +49,55 @@ import type { Api } from '../lib/api';
  */
 const KNOWN_SKUS = ['workorder', 'invoicing', 'protocol', 'shop'];
 
+/** The ref is the row's whole point, so it carries the link — and stays readable as a
+ *  plain id when there is no runtime to link into (self-host, or an unconfigured CP). */
+const storeColumns: TableColumn<StoreRow>[] = [
+  { header: 'Kind', render: (r) => <Tag mono>{r.kind}</Tag>, width: 72 },
+  { header: 'Binding', render: (r) => r.binding, mono: true },
+  { header: 'Vertical', render: (r) => r.vertical, mono: true, muted: true },
+  {
+    header: 'Ref',
+    // A D1 id is short; a deterministic bucket name is not, and an unbounded ref pushes
+    // the rest of the row off the card. Clipped with the full value on hover — the ref is
+    // for following, and the link already carries it.
+    render: (r) => {
+      const clip = {
+        display: 'inline-block',
+        maxWidth: 340,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        verticalAlign: 'bottom',
+      } as const;
+      return r.href ? (
+        <a
+          href={r.href}
+          target="_blank"
+          rel="noreferrer"
+          title={r.ref}
+          style={{ ...clip, color: 'var(--brand-700)' }}
+        >
+          {r.ref} ↗
+        </a>
+      ) : (
+        <span title={r.ref} style={clip}>
+          {r.ref}
+        </span>
+      );
+    },
+    mono: true,
+  },
+  { header: 'Minted', render: (r) => r.createdAt.slice(0, 10), mono: true, muted: true },
+];
+
 export interface TenantDetailProps {
   api: Api;
   tenant: Tenant;
   scopes: Scope[];
   entitlements: EntitlementGrant[];
   hostnames: HostnameBinding[];
+  /** Where this platform runs — turns store refs into dashboard links. Null = none. */
+  runtime: PlatformRuntime | null;
   /** Display name of the tenant that provisioned this one (#412), if any. */
   provisionedByName?: string;
   /** Open another tenant's detail (used by the provenance link to the parent). */
@@ -30,7 +107,7 @@ export interface TenantDetailProps {
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
 }
 
-export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, provisionedByName, onOpen, onBack, onChanged, onToast }: TenantDetailProps) {
+export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, runtime, provisionedByName, onOpen, onBack, onChanged, onToast }: TenantDetailProps) {
   const [confirmSuspend, setConfirmSuspend] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmReap, setConfirmReap] = useState(false);
@@ -41,6 +118,24 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, pro
   const [expiry, setExpiry] = useState('');
   const [quota, setQuota] = useState('');
   const [plan, setPlan] = useState('');
+  // The platform-minted stores backing this tenant (#301/#473). Read on open rather than
+  // with the directory: it is one tenant's inventory, and a control plane that mints no
+  // stores (self-host, pure adapter) simply answers empty. A failed read is silent — the
+  // card is an operator aid, not a lifecycle lever.
+  const [stores, setStores] = useState<TenantStores | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setStores(null);
+    api
+      .tenantStores(tenant.id)
+      .then((s) => {
+        if (!cancelled) setStores(s);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [api, tenant.id]);
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     try {
@@ -254,6 +349,31 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, pro
             })}
           </div>
         )}
+      </Card>
+
+      {/* The tenant's platform-minted stores. Provisioning mints these per (tenant,
+          vertical, binding) and they are invisible everywhere else in the console — an
+          operator chasing "which database is this tenant's" had only the ledger, which no
+          surface exposed. Read-only by construction: nothing here mints or drops a store. */}
+      <Card
+        title="Stores"
+        description="Per-tenant databases and buckets, minted at provisioning from what each vertical declared."
+        padding={0}
+        footer={
+          runtime
+            ? `Account ${runtime.accountId} — refs link to the Cloudflare dashboard.`
+            : 'No platform runtime configured — refs shown without dashboard links.'
+        }
+      >
+        <Table
+          columns={storeColumns}
+          rows={storeRows(stores, runtime)}
+          emptyText={
+            stores === null
+              ? 'Loading…'
+              : 'No stores minted — this tenant’s verticals declare none (scope data lives in Durable Objects).'
+          }
+        />
       </Card>
 
       {/* The blast-radius confirmation. Suspending a tenant is a one-click outage

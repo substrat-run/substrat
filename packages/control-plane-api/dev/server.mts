@@ -123,6 +123,20 @@ if (firstTenant) {
     permissions: ['workorder:read', 'workorder:close'],
     source: '@substrat-run/engine-workorder',
   });
+  // Per-tenant stores (#301/#473), so the tenant's Stores card and a scope's Cloudflare
+  // card render with real ledger shape — the inventory an operator follows to the right
+  // database. Minted directly here because provisioning them for real needs a pushed
+  // vertical that DECLARES them, which the fake fleet has no bundle for.
+  await host.provisionTenantStore(staff, {
+    tenantId: firstTenant.id,
+    vertical: 'housing',
+    binding: 'AUTH_DB',
+  });
+  await host.provisionBlobStore(staff, {
+    tenantId: firstTenant.id,
+    vertical: 'housing',
+    binding: 'FILES',
+  });
 }
 
 const port = Number(process.env.PORT ?? 8788);
@@ -195,7 +209,22 @@ const directoryBackups: DirectoryBackupStore = {
   get: async ({ capturedAt }) => directoryCopies.get(capturedAt) ?? null,
   delete: async ({ capturedAt }) => void directoryCopies.delete(capturedAt),
 };
-const cpApp = createControlPlaneApi({ host, authenticate, deployVertical, directoryBackups });
+// Where the console's refs resolve, so its Cloudflare links are drivable locally. A real
+// account when one is in the env (the same var the WfP uploader reads); otherwise a
+// placeholder, because the fake fleet above has fake refs anyway — the point locally is
+// that the links RENDER and carry the right ids, not that they resolve.
+const platformRuntime = {
+  provider: 'cloudflare' as const,
+  accountId: cfAccount ?? 'dev-account',
+  dispatchNamespace: process.env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
+};
+const cpApp = createControlPlaneApi({
+  host,
+  authenticate,
+  deployVertical,
+  directoryBackups,
+  platformRuntime,
+});
 const app = new Hono();
 if (staffAuth) app.on(['GET', 'POST'], '/auth/*', (c) => staffAuth!.handler(c.req.raw));
 app.route('/', cpApp);

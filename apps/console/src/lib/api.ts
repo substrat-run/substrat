@@ -24,6 +24,7 @@ import type {
   VerticalSource,
   VerticalVersion,
 } from '@substrat-run/contracts';
+import type { DoNamespace, PlatformRuntime, TenantStores } from './cf-links';
 
 /**
  * Client for the control-plane API (packages/control-plane-api).
@@ -162,6 +163,24 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // Reap a deleting tenant NOW (§4.8) — skips the grace window: every scope reaped,
     // PII/config directory rows cleared, the tenant row kept as a `reaped` tombstone.
     reapTenant: (id: TenantId) => post<Tenant>(`/tenants/${id}/reap`),
+
+    // Where the platform's compute and stores live — the account + dispatch namespace the
+    // refs this console renders resolve in, so a scope's script or a tenant's database can
+    // be a LINK into the Cloudflare dashboard rather than an id to search for. Answers
+    // null on a control plane with no runtime configured (self-host): the views then show
+    // the same identifiers, unlinked.
+    platformRuntime: () => call<PlatformRuntime | null>('/platform/runtime'),
+
+    // The Durable Object namespaces one script defines, scope-class first — the ids the
+    // dashboard addresses a namespace by. 501s when the control plane has no lookup
+    // configured, which callers treat as "link to the list instead".
+    doNamespaces: (script: string) =>
+      call<DoNamespace[]>(`/platform/do-namespaces${query({ script })}`),
+
+    // The per-tenant store ledgers as inventory (#301 D1, #473 R2): which database and
+    // which bucket hold this tenant's bytes. Read-only — stores are minted by
+    // provisioning, never from here.
+    tenantStores: (id: TenantId) => call<TenantStores>(`/tenants/${id}/stores`),
 
     listEntitlements: (id: TenantId) => call<EntitlementGrant[]>(`/tenants/${id}/entitlements`),
     grantEntitlement: (id: TenantId, key: string, plan?: EntitlementGrantInput) =>

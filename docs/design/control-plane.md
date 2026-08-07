@@ -359,6 +359,22 @@ Thin, over the above. In build order:
 6. Fleet view: per-vertical deployment versions, migration status, scopes-behind counts —
    the §5.4 "fleet questions never fan out" surface, answered from the directory index.
 
+**Links into the substrate, not just identifiers.** The console has always rendered the refs
+that identify a scope's runtime — `servingRef`, a version's `deploymentRef`, the scope id its
+Durable Object is named after — but never said *where* they resolve, which left staff pasting
+ids into the provider's search box. `GET /platform/runtime` answers the one thing the browser
+cannot derive (account + dispatch namespace; **no credential**, and `null` on a control plane
+that has none); `GET /tenants/:t/stores` exposes the #301/#473 ledgers as inventory — the D1
+database id and R2 bucket name behind each tenant; and `GET /platform/do-namespaces?script=…`
+resolves a script's Durable Object namespaces to the ids the dashboard addresses them by,
+through a host-injected reader (nothing in the platform record carries that id), narrowed
+server-side so an account-wide listing never crosses to a browser. From those, tenant detail
+and scope detail build dashboard links. Two properties keep it honest: every link is built
+from coordinates we actually hold (anything missing renders as the plain id, never a guessed
+URL), and a Durable Object gets its *name* plus a link to its **namespace** rather than a
+fabricated per-object link — there is no such page, and the name (`idFromName(scopeId)`) is
+the handle a human can carry.
+
 **The permission diff is the sleeper feature** — and it split in two once built.
 
 The **build-time half shipped first, without the console and without a kernel change**:

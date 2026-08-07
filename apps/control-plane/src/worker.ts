@@ -41,6 +41,7 @@ import {
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
+  createCfDoNamespaceReader,
   createR2BackupStore,
   createR2DirectoryBackupStore,
   backupDirectoryIfDue,
@@ -63,6 +64,8 @@ import {
   type DeployVerticalFn,
   type CustomHostnameProvisioner,
   type PlatformActorAuth,
+  type PlatformRuntime,
+  type DoNamespaceReader,
 } from '@substrat-run/control-plane-api';
 import { VerticalClient } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
@@ -241,6 +244,33 @@ function provisionHostnameFor(env: Env): CustomHostnameProvisioner | undefined {
     // opts into the two-record flow. Anything but an explicit `txt` means `http`.
     sslMethod: env.CF_SAAS_SSL_METHOD === 'txt' ? 'txt' : 'http',
   });
+}
+
+/**
+ * The coordinates the console turns into Cloudflare dashboard links: the account every
+ * script/database/bucket belongs to, and the namespace a `servingRef` or `deploymentRef`
+ * names a script in. Needs no token — unlike every other Cloudflare seam here, nothing is
+ * called; the descriptor is handed to the browser, so it deliberately reads only
+ * `CF_ACCOUNT_ID` and never `CF_API_TOKEN`. Absent account ⇒ undefined ⇒ no links.
+ */
+function platformRuntimeFor(env: Env): PlatformRuntime | undefined {
+  if (!env.CF_ACCOUNT_ID) return undefined;
+  return {
+    provider: 'cloudflare',
+    accountId: env.CF_ACCOUNT_ID,
+    dispatchNamespace: env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
+  };
+}
+
+/**
+ * Resolves a script's Durable Object namespaces to their dashboard ids, so the console can
+ * link a scope to the exact namespace its DO lives in rather than the account-wide list.
+ * Same credential slot as the WfP uploader (Workers scripts read); absent ⇒ the route 501s
+ * and the console keeps the list-level link.
+ */
+function doNamespacesFor(env: Env): DoNamespaceReader | undefined {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
+  return createCfDoNamespaceReader({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN });
 }
 
 /** Reads a pushed script's modules back from the namespace (#286) — the archive
@@ -744,6 +774,12 @@ export default {
         fetchVerticalModules: fetchVerticalModulesFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),
         observability: observabilityFor(env),
+        // Where the refs the console shows actually resolve, so staff get a link into the
+        // Cloudflare dashboard instead of an id to hunt for. Account id + namespace only —
+        // no credential — and absent when the account is not configured, which is the
+        // self-host shape (the console then renders plain identifiers).
+        platformRuntime: platformRuntimeFor(env),
+        doNamespaces: doNamespacesFor(env),
         // #493 — the recoverable copy a reap leaves behind. Undefined when the bucket
         // is not bound, which is what makes an asked-for backup refuse rather than
         // silently skip.

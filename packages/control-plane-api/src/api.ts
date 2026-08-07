@@ -68,6 +68,8 @@ import {
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import type { ObservabilityReader } from './observability.js';
+import type { PlatformRuntime } from './platform-runtime.js';
+import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
 import type {
   DirectoryBackup,
   DirectoryBackupStore,
@@ -187,6 +189,24 @@ export interface ControlPlaneApiOptions {
    * means forgetting that costs a feature, never a leak.
    */
   observability?: ObservabilityReader;
+  /**
+   * Where this platform's compute actually runs — the coordinates a staff surface needs
+   * to hand an operator a link INTO the provider's own console (the right script, the
+   * right database, the right bucket), rather than a bare id they have to hunt for.
+   *
+   * Host-injected like `observability`, and deliberately NOT a credential: it is the
+   * account/namespace the deployment already advertises in every dispatch URL. Absent ⇒
+   * the route answers `null` and the console renders identifiers with no links, which is
+   * exactly the self-host / pure-adapter shape (no provider console to point at).
+   */
+  platformRuntime?: PlatformRuntime;
+  /**
+   * Resolves a script's Durable Object namespaces to the ids the provider's dashboard
+   * addresses them by (`do-namespaces.ts`) — what turns "your DO is named `<scopeId>`,
+   * somewhere in this list" into a link to the right namespace. Host-injected, credential
+   * on the host side. Absent ⇒ the route 501s and the console keeps its list-level link.
+   */
+  doNamespaces?: DoNamespaceReader;
   /**
    * Where a reap's recoverable copy is stored (#493) — host-injected like
    * `observability`, so this package holds no bucket binding. When present, reaping a
@@ -737,6 +757,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     await admin.revokeEntitlement(c.get('actor'), tenantId, c.req.param('key'));
     return c.json(await admin.listEntitlements(c.get('actor'), tenantId));
+  });
+
+  // -- per-tenant stores (#301, #473) ----------------------------------------
+  // The two ledgers as INVENTORY — what `listTenantStores`/`listBlobStores` were always
+  // meant to answer for a staff surface: which database and which bucket hold this
+  // tenant's bytes, by the provider's own id. Read-only by construction (there is no
+  // route that mints a store; provisioning does that), and staff-only — not in
+  // BUILDER_ROUTES, because a builder asking "which D1 backs my install" is a different,
+  // owner-narrowed question than staff asking "where does this tenant live".
+  app.get('/tenants/:tenantId/stores', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const actor = c.get('actor');
+    const [tenantStores, blobStores] = await Promise.all([
+      admin.listTenantStores(actor, { tenantId }),
+      admin.listBlobStores(actor, { tenantId }),
+    ]);
+    return c.json({ tenantStores, blobStores });
   });
 
   // -- identity mirror (builder-plane.md §4) ---------------------------------
@@ -2863,6 +2900,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const version = (await admin.listVersions(c.get('actor'), slug)).find((v) => v.id === id);
     return c.json({ ...version, ...(warnings.length ? { warnings } : {}) }, 201);
+  });
+
+  // -- where this platform runs (ops ergonomics) -----------------------------
+  // The console renders refs it already has — `servingRef`, a store's `ref`, a version's
+  // `deploymentRef` — and this is the one thing it cannot derive: which account and which
+  // dispatch namespace those resolve in. Answering `null` (not 501) is deliberate: an
+  // unconfigured runtime is the ordinary self-host shape, and the console degrades to
+  // plain identifiers rather than treating it as a failure. No credential crosses here.
+  app.get('/platform/runtime', (c) => c.json(options.platformRuntime ?? null));
+
+  // Which Durable Object namespaces one script defines — the id the dashboard addresses a
+  // namespace by, which nothing else in the platform record carries. Narrowed to the asked-
+  // for script SERVER-side: the account-wide listing is one row per pushed script and has no
+  // business crossing to a browser. 501 (not an empty list) when no reader is configured,
+  // because "no namespaces in that script" and "I cannot look" are different answers.
+  app.get('/platform/do-namespaces', async (c) => {
+    if (!options.doNamespaces) {
+      return c.json({ error: 'durable-object namespace lookup is not configured on this control plane' }, 501);
+    }
+    const { script } = z.object({ script: z.string().min(1).max(200) }).parse({ script: c.req.query('script') });
+    return c.json(namespacesForScript(await options.doNamespaces.list(), script));
   });
 
   // -- observability (design/observability.md §4.1) --------------------------
