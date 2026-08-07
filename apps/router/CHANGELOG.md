@@ -1,5 +1,12 @@
 # @substrat-run/router
 
+## 0.1.37
+
+### Patch Changes
+
+- @substrat-run/contracts@0.51.0
+- @substrat-run/adapter-cloudflare@0.51.0
+
 ## 0.1.36
 
 ### Patch Changes
