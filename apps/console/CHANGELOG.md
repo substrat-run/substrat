@@ -1,5 +1,13 @@
 # @substrat-run/console
 
+## 0.9.6
+
+### Patch Changes
+
+- Updated dependencies [0e45268]
+  - @substrat-run/contracts@0.52.0
+  - @substrat-run/kernel@0.52.0
+
 ## 0.9.5
 
 ### Patch Changes
