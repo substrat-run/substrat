@@ -1066,6 +1066,75 @@ describe('control-plane API', () => {
     expect(row.status).toBe('active');
   });
 
+  it('a persistent restore fault lands a durable ops-failure row keyed to the stranded preview (#559 (3))', async () => {
+    // The previews route answers a ControlPlaneError itself — it never reaches onError's
+    // recorder — so the durable row must land at the restore site, carrying the preview's
+    // scopeId. That key is what lets the console say "restore failed (CF reference …)"
+    // on the stranded `provisioning` row instead of showing it inert until the GC sweep.
+    const tF = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tF, slug: 'fault-co', name: 'Fault Co' });
+    await host.admin.registerVertical(staff, {
+      slug: 'fault-vert', name: 'Fault Vert', source: 'cli', ownerTenant: tF,
+    });
+    const vId = ulid();
+    await host.admin.publishVersion(staff, {
+      id: vId, verticalSlug: 'fault-vert', version: '1.0.0',
+      manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+    });
+    await host.admin.admitVersion(staff, vId);
+
+    const prod = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tF, scopeId: prod, vertical: 'fault-vert' });
+    await host.admin.activateScope(staff, tF, prod);
+    await host.admin.bindScopeVersion(staff, tF, prod, vId);
+    await host.admin.bindHostname(staff, {
+      hostname: 'fault-acme.global.substrat.run',
+      tenantId: tF, scopeId: prod, surface: 'app', region: null, canonical: true,
+    });
+
+    const fakeVertical = {
+      exportScope: async (): Promise<ScopeDumpTable[]> => [
+        { name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: [['a']] },
+      ],
+      restoreScope: async () => {
+        throw new ControlPlaneError(502, 'internal error; reference = 9tsvbrr50lrn5b6qeieuk2kh');
+      },
+      deleteScope: async () => {},
+    } as unknown as VerticalClient;
+    const dapp = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'fault-vert': fakeVertical },
+      platformBaseDomains: ['global.substrat.run'],
+      provisionRetryDelaysMs: [1],
+    });
+
+    const res = await dapp.request('/verticals/fault-vert/previews', {
+      method: 'POST', headers: auth, body: JSON.stringify({ tag: 'pr-2', versionId: vId }),
+    });
+    // Honest status through the whole chain (#561), message intact.
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain('reference = 9tsvbrr50lrn5b6qeieuk2kh');
+
+    const stranded = ((await (await dapp.request(`/scopes?tenantId=${tF}&vertical=fault-vert`, { headers: auth })).json()) as {
+      entries: { id: string; kind: string; status: string }[];
+    }).entries.find((s) => s.kind === 'preview');
+    expect(stranded?.status).toBe('provisioning');
+
+    // The recorder is fire-and-forget — let its write settle before reading.
+    await new Promise((r) => setTimeout(r, 20));
+    const failures = await host.admin.listOpsFailures(staff, { vertical: 'fault-vert' });
+    const recorded = failures.find((f) => f.scopeId === stranded!.id);
+    expect(recorded).toMatchObject({
+      operation: 'preview.create',
+      stage: 'restore',
+      tenantId: tF,
+      vertical: 'fault-vert',
+      status: 502,
+      reference: '9tsvbrr50lrn5b6qeieuk2kh',
+    });
+  });
+
   it('lets a LISTED vertical owner preview a PENDING version into their own scope (#509 (d))', async () => {
     // Publishing widens who may INSTALL, not who may preview their own code. A listed
     // vertical's owner still forks their own prod scope and runs their (not-yet-admitted)

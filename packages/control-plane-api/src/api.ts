@@ -3552,6 +3552,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (existing && stale) await reapPreview(c, existing);
 
     const previewId = scopeIdSchema.parse(ulid());
+    // The founding #559 case lands its durable row HERE, not in onError: the previews
+    // route answers a ControlPlaneError directly (its own catch, never the app-level
+    // recorder), and only this frame knows the preview's scopeId — the key that lets
+    // the console explain the stranded `provisioning` row this throw leaves behind.
+    const restoreOrRecord = async (fn: () => Promise<unknown>): Promise<void> => {
+      try {
+        await retryTransient(fn);
+      } catch (e) {
+        if (e instanceof ControlPlaneError && e.status >= 500 && e.status !== 501) {
+          recordFailure({
+            actor,
+            operation: 'preview.create',
+            stage: 'restore',
+            tenantId,
+            scopeId: previewId,
+            vertical: slug,
+            status: e.status,
+            message: e.message,
+          });
+        }
+        throw e;
+      }
+    };
     if (source) {
       // A fresh fork. Export from where the prod data lives TODAY. The canonical
       // `admin.exportScope` first — it writes the K-24 audit entry (and the co-located
@@ -3582,7 +3605,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // there; restore re-projects the vertical's roles from the dump's tuples). A one-shot
       // DO storage blip heals on the in-request retry WITHOUT burning a CI attempt (which
       // pushes a fresh version per try) — #559 (2).
-      await retryTransient(() => target.restoreScope(tenantId, previewId, tables));
+      await restoreOrRecord(() => target.restoreScope(tenantId, previewId, tables));
     } else {
       // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
       // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
@@ -3599,7 +3622,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         jurisdiction: 'global',
         expiresAt: expiresAt ?? undefined,
       });
-      if (target) await retryTransient(() => target.restoreScope(tenantId, previewId, []));
+      if (target) await restoreOrRecord(() => target.restoreScope(tenantId, previewId, []));
     }
     await admin.activateScope(actor, tenantId, previewId);
     // Bind the PR version. A private vertical's push self-admitted, so this is accepted; a
