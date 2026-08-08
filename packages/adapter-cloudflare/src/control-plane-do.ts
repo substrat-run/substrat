@@ -1,8 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
+import { OPS_FAILURE_RETENTION_DAYS } from '@substrat-run/kernel';
 import { splitSqlStatements } from './scope-do.js';
 import type {
   AdminLogEntry,
   ListPage,
+  OpsFailureEntry,
   RoleDefinition,
   ScopeDumpTable,
   ScopeStatus,
@@ -222,6 +224,35 @@ interface AdminLogRow {
   after: string | null;
   caused_by: string | null;
   at: string;
+}
+
+/** One ops-failure row, fully stamped by the coordinator (`id`/`at` included). */
+export interface OpsFailureRow {
+  id: string;
+  actor: string;
+  operation: string;
+  stage: string | null;
+  tenant_id: string | null;
+  scope_id: string | null;
+  vertical: string | null;
+  status: number | null;
+  message: string;
+  reference: string | null;
+  at: string;
+}
+
+/** The ops-failures filter, flattened for the RPC hop (#559). */
+export interface OpsFailureQuery {
+  tenantId?: string;
+  scopeId?: string;
+  vertical?: string;
+  operation?: string;
+  reference?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  order?: 'asc' | 'desc';
 }
 
 /** The audit filter, flattened for the RPC hop (`action` always an array or absent). */
@@ -607,6 +638,28 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS _substrat_admin_log_actor ON _substrat_admin_log (actor, id);
   CREATE INDEX IF NOT EXISTS _substrat_admin_log_action ON _substrat_admin_log (action, id);
   CREATE INDEX IF NOT EXISTS _substrat_admin_log_at ON _substrat_admin_log (at);
+  -- Operational failures (#559) - what the platform could NOT do, and why. NOT the
+  -- admin log (that is the never-swept compliance witness of successful mutations)
+  -- but retention-bounded telemetry, pruned on write after OPS_FAILURE_RETENTION_DAYS.
+  -- reference holds the upstream provider's trace handle (Cloudflare's
+  -- "internal error - reference <id>") so a CI error line resolves to a row here.
+  CREATE TABLE IF NOT EXISTS _substrat_ops_failures (
+    id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    stage TEXT,
+    tenant_id TEXT,
+    scope_id TEXT,
+    vertical TEXT,
+    status INTEGER,
+    message TEXT NOT NULL,
+    reference TEXT,
+    at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_ops_failures_vertical ON _substrat_ops_failures (vertical, id);
+  CREATE INDEX IF NOT EXISTS _substrat_ops_failures_tenant ON _substrat_ops_failures (tenant_id, id);
+  CREATE INDEX IF NOT EXISTS _substrat_ops_failures_reference ON _substrat_ops_failures (reference);
+  CREATE INDEX IF NOT EXISTS _substrat_ops_failures_at ON _substrat_ops_failures (at);
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
 `;
 
@@ -2786,5 +2839,91 @@ export class ControlPlaneDO extends DurableObject {
           at: r.at,
         }) as AdminLogEntry,
     );
+  }
+
+  recordOpsFailure(row: OpsFailureRow): void {
+    this.sql.exec(
+      `INSERT INTO _substrat_ops_failures
+         (id, actor, operation, stage, tenant_id, scope_id, vertical, status, message, reference, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      row.id,
+      row.actor,
+      row.operation,
+      row.stage,
+      row.tenant_id,
+      row.scope_id,
+      row.vertical,
+      row.status,
+      row.message,
+      row.reference,
+      row.at,
+    );
+    // Prune-on-write (#559): the retention lives HERE, not in a cron — every insert
+    // pays for its own housekeeping, so the table stays bounded even on a deployment
+    // whose scheduled pass is broken (the exact circumstance this table records).
+    const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
+    this.sql.exec('DELETE FROM _substrat_ops_failures WHERE at < ?', horizon);
+  }
+
+  listOpsFailures(query: OpsFailureQuery): OpsFailureEntry[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (query.tenantId) {
+      where.push('tenant_id = ?');
+      params.push(query.tenantId);
+    }
+    if (query.scopeId) {
+      where.push('scope_id = ?');
+      params.push(query.scopeId);
+    }
+    if (query.vertical) {
+      where.push('vertical = ?');
+      params.push(query.vertical);
+    }
+    if (query.operation) {
+      where.push('operation = ?');
+      params.push(query.operation);
+    }
+    if (query.reference) {
+      where.push('reference = ?');
+      params.push(query.reference);
+    }
+    if (query.since) {
+      where.push('at >= ?');
+      params.push(query.since);
+    }
+    if (query.until) {
+      where.push('at < ?');
+      params.push(query.until);
+    }
+    // Default DESC, unlike the audit log: an operator asks "what broke lately".
+    const order = (query.order ?? 'desc') === 'desc' ? 'DESC' : 'ASC';
+    if (query.cursor) {
+      // ULID order is chronological, so the entry id IS the cursor.
+      where.push(order === 'DESC' ? 'id < ?' : 'id > ?');
+      params.push(query.cursor);
+    }
+    let sql =
+      'SELECT * FROM _substrat_ops_failures' +
+      (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY id ${order}`;
+    if (query.limit !== undefined) {
+      sql += ' LIMIT ?';
+      params.push(query.limit);
+    }
+    const rows = this.sql.exec(sql, ...params).toArray() as unknown as OpsFailureRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      actor: r.actor,
+      operation: r.operation,
+      stage: r.stage,
+      tenantId: r.tenant_id,
+      scopeId: r.scope_id,
+      vertical: r.vertical,
+      status: r.status,
+      message: r.message,
+      reference: r.reference,
+      at: r.at,
+    })) as OpsFailureEntry[];
   }
 }

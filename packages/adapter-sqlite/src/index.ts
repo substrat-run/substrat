@@ -4,6 +4,7 @@ import Database from 'better-sqlite3';
 import {
   accessLogEntry,
   adminLogEntry,
+  opsFailureEntry,
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
   attachmentRecord,
@@ -65,6 +66,7 @@ import {
   type ScheduleSpec,
   type SystemGrant,
   type AdminLogEntry,
+  type OpsFailureEntry,
   type CapabilityGrant,
   type CreateTenantInput,
   type DomainEvent,
@@ -131,9 +133,12 @@ import {
   parseValidationRecords,
   resolveScopeRecord,
   ulid,
+  OPS_FAILURE_RETENTION_DAYS,
   type AccessLogFilter,
   type AttachmentUploadInput,
   type AuditLogFilter,
+  type OpsFailureFilter,
+  type OpsFailureInput,
   type BlobStoreProvisionInput,
   type BlobStoreRecord,
   type OpenedAttachment,
@@ -607,6 +612,20 @@ interface AdminLogRow {
   before: string | null;
   after: string | null;
   caused_by: string | null;
+  at: string;
+}
+
+interface OpsFailureRow {
+  id: string;
+  actor: string;
+  operation: string;
+  stage: string | null;
+  tenant_id: string | null;
+  scope_id: string | null;
+  vertical: string | null;
+  status: number | null;
+  message: string;
+  reference: string | null;
   at: string;
 }
 
@@ -1119,6 +1138,27 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS _substrat_admin_log_actor ON _substrat_admin_log (actor, id);
       CREATE INDEX IF NOT EXISTS _substrat_admin_log_action ON _substrat_admin_log (action, id);
       CREATE INDEX IF NOT EXISTS _substrat_admin_log_at ON _substrat_admin_log (at);
+      -- Operational failures (#559): what the platform could NOT do. Unlike the
+      -- never-swept admin log above, this is retention-bounded telemetry, pruned
+      -- on write (OPS_FAILURE_RETENTION_DAYS). reference carries the upstream
+      -- provider's trace handle so a CI error line resolves to a row here.
+      CREATE TABLE IF NOT EXISTS _substrat_ops_failures (
+        id TEXT PRIMARY KEY,
+        actor TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        stage TEXT,
+        tenant_id TEXT,
+        scope_id TEXT,
+        vertical TEXT,
+        status INTEGER,
+        message TEXT NOT NULL,
+        reference TEXT,
+        at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS _substrat_ops_failures_vertical ON _substrat_ops_failures (vertical, id);
+      CREATE INDEX IF NOT EXISTS _substrat_ops_failures_tenant ON _substrat_ops_failures (tenant_id, id);
+      CREATE INDEX IF NOT EXISTS _substrat_ops_failures_reference ON _substrat_ops_failures (reference);
+      CREATE INDEX IF NOT EXISTS _substrat_ops_failures_at ON _substrat_ops_failures (at);
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
@@ -5517,6 +5557,106 @@ export class SqliteScopeHost implements ScopeHost {
             before: r.before === null ? null : JSON.parse(r.before),
             after: r.after === null ? null : JSON.parse(r.after),
             causedBy: r.caused_by,
+            at: r.at,
+          }),
+        );
+      },
+      recordOpsFailure: async (entry: OpsFailureInput): Promise<void> => {
+        this.directory
+          .prepare(
+            `INSERT INTO _substrat_ops_failures
+               (id, actor, operation, stage, tenant_id, scope_id, vertical, status, message, reference, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            ulid(),
+            entry.actor,
+            entry.operation,
+            entry.stage ?? null,
+            entry.tenantId ?? null,
+            entry.scopeId ?? null,
+            entry.vertical ?? null,
+            entry.status ?? null,
+            // Bounded here, not trusted from the catch site: one runaway upstream
+            // body must not become a runaway directory row (#559).
+            entry.message.slice(0, 2000),
+            entry.reference ?? null,
+            new Date().toISOString(),
+          );
+        // Prune-on-write (#559): retention lives here, not in a cron — every insert
+        // pays for its own housekeeping, so the table stays bounded even where no
+        // scheduled pass runs (this adapter has none).
+        const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
+        this.directory.prepare('DELETE FROM _substrat_ops_failures WHERE at < ?').run(horizon);
+      },
+      listOpsFailures: async (actor, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]> => {
+        const where: string[] = [];
+        const params: (string | number)[] = [];
+        if (filter?.tenantId) {
+          where.push('tenant_id = ?');
+          params.push(filter.tenantId);
+        }
+        if (filter?.scopeId) {
+          where.push('scope_id = ?');
+          params.push(filter.scopeId);
+        }
+        if (filter?.vertical) {
+          where.push('vertical = ?');
+          params.push(filter.vertical);
+        }
+        if (filter?.operation) {
+          where.push('operation = ?');
+          params.push(filter.operation);
+        }
+        if (filter?.reference) {
+          where.push('reference = ?');
+          params.push(filter.reference);
+        }
+        if (filter?.since) {
+          where.push('at >= ?');
+          params.push(filter.since);
+        }
+        if (filter?.until) {
+          where.push('at < ?');
+          params.push(filter.until);
+        }
+        // Default DESC, unlike the audit log: an operator asks "what broke lately".
+        const order = (filter?.order ?? 'desc') === 'desc' ? 'DESC' : 'ASC';
+        if (filter?.cursor) {
+          // ULID order is chronological, so the entry id IS the cursor.
+          where.push(order === 'DESC' ? 'id < ?' : 'id > ?');
+          params.push(filter.cursor);
+        }
+        let sql =
+          'SELECT * FROM _substrat_ops_failures' +
+          (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+          ` ORDER BY id ${order}`;
+        if (filter?.limit !== undefined) {
+          sql += ' LIMIT ?';
+          params.push(filter.limit);
+        }
+        const rows = this.directory.prepare(sql).all(...params) as OpsFailureRow[];
+        // Rows can name tenants and scopes, so reading them is recorded like the
+        // audit trail's own reads (K-24).
+        this.recordAccess(
+          actor,
+          'listOpsFailures',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter,
+          rows.length,
+        );
+        return rows.map((r) =>
+          opsFailureEntry.parse({
+            id: r.id,
+            actor: r.actor,
+            operation: r.operation,
+            stage: r.stage,
+            tenantId: r.tenant_id,
+            scopeId: r.scope_id,
+            vertical: r.vertical,
+            status: r.status,
+            message: r.message,
+            reference: r.reference,
             at: r.at,
           }),
         );

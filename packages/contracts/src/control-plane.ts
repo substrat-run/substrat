@@ -335,6 +335,39 @@ export const orgMembership = z.object({
 export type OrgMembership = z.infer<typeof orgMembership>;
 
 /**
+ * One recorded operational failure (#559) — the durable answer to "what broke, when,
+ * and whose fault was it" that the 2026-08-08 preview-restore incident had nowhere
+ * to live. Deliberately NOT the admin log: the audit spine answers "who changed
+ * what", and a failure changed nothing — so this is a separate, RETENTION-BOUNDED
+ * record (the admin log is the never-swept compliance witness; this is operational
+ * telemetry, pruned after `OPS_FAILURE_RETENTION_DAYS` in the adapters).
+ *
+ * `reference` is the upstream provider's own trace handle when the message carried
+ * one (Cloudflare's `internal error; reference = <id>`) — extracted into its own
+ * column because it is the one identifier a support ticket needs and the one a
+ * CI log hands the operator to search by.
+ */
+export const opsFailureEntry = z.object({
+  id: z.string().min(1), // ULID, stamped platform-side; sortable = chronological
+  /** Who initiated the failed operation — recorded, never the authz gate. */
+  actor: platformActorId,
+  /** Semantic where routes know it (`deploy.upload`), `METHOD /route/:path` otherwise. */
+  operation: z.string().min(1),
+  /** The step inside the operation that failed, when the route can name one. */
+  stage: z.string().nullable(),
+  tenantId: tenantId.nullable(),
+  scopeId: scopeId.nullable(),
+  vertical: z.string().nullable(),
+  /** The HTTP status the failure was answered with (or carried from upstream). */
+  status: z.number().int().nullable(),
+  message: z.string(),
+  /** The upstream provider's trace reference, when the message carried one. */
+  reference: z.string().nullable(),
+  at: instant,
+});
+export type OpsFailureEntry = z.infer<typeof opsFailureEntry>;
+
+/**
  * An append-only admin audit row (control-plane.md §4.4). Every field except
  * `before`/`after` is stamped platform-side — never supplied by the caller —
  * for the same reason the kernel is trusted at all (K-4): a surface that can act
