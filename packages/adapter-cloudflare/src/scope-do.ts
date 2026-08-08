@@ -1533,6 +1533,37 @@ export function defineScopeDO(
       this.applied.clear();
     }
 
+    /**
+     * Redact one data subject's payloads from the spine (#37) — the Tier-1 half of an
+     * erasure, which is an ordinary UPDATE because Tier 1 is mutable. The crypto half
+     * (destroying the key that seals platform-retained copies) is the directory's.
+     *
+     * The payload goes; the envelope stays — id, type, entity, occurredAt and the
+     * pseudonymous subject id. That is master-plan §5.3 held exactly: "pseudonymous keys
+     * and transaction facts remain". A timeline still shows that something happened, to
+     * what, and when; it no longer shows who, or what was said about them.
+     *
+     * This is the one sanctioned write that mutates the outbox. It is kernel code, not
+     * module code, and an erasure request is precisely the case the append-only rule has
+     * to yield to — the alternative is telling a data subject that the spine's convenience
+     * outranks their Article 17 right.
+     */
+    async redactSubject(subjectId: string): Promise<number> {
+      const doomed = (
+        this.sql
+          .exec(
+            `SELECT id FROM _substrat_outbox
+              WHERE subject_id = ? AND pii_class != 'none' AND payload IS NOT NULL`,
+            subjectId,
+          )
+          .toArray() as unknown as { id: string }[]
+      ).map((r) => r.id);
+      for (const id of doomed) {
+        this.sql.exec('UPDATE _substrat_outbox SET payload = NULL WHERE id = ?', id);
+      }
+      return doomed.length;
+    }
+
     // -- event dispatch (port of dispatch) ------------------------------------
 
     private async dispatch(tenantId: TenantId, scopeId: ScopeId): Promise<void> {

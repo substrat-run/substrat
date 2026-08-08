@@ -21,6 +21,7 @@ import {
   readScopeTableInput,
   registerVerticalInput,
   scopeDump,
+  dataSubjectId as dataSubjectIdSchema,
   scopeId as scopeIdSchema,
   scopeStatus,
   storageShape,
@@ -49,6 +50,7 @@ import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { mapError } from './errors.js';
 import { maskDump, maskRecords } from './mask.js';
+import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
   assertSandboxContract,
   deployManifest,
@@ -934,6 +936,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // installed app lags prod. So we prefer bound-version resolution, then fall back to
   // prod-channel/static (a scope with no bound version), then to reading this host's own
   // scope DB directly (a co-located host, or the contract tests — data is right here).
+  /**
+   * The per-subject key operations bound to one scope and one actor (#37) — what
+   * `sealDump`/`openDump` need and nothing more.
+   *
+   * Narrowed on purpose: the seal path gets exactly two capabilities, so a future edit
+   * cannot quietly widen a backup routine into a general admin caller. Every call lands in
+   * the access log under the acting staff member, because reading or minting the keys that
+   * protect a subject's data is itself a thing an incident asks about.
+   */
+  const sealerFor = (
+    c: { get: (k: 'actor') => PlatformActorId },
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): SubjectSealer => ({
+    seal: (items) => admin.sealSubjectPayloads(c.get('actor'), tenantId, scopeId, items),
+    open: (items) => admin.openSubjectPayloads(c.get('actor'), tenantId, scopeId, items),
+  });
+
   const verticalForScope = async (
     c: { get: (k: 'actor') => PlatformActorId },
     scope: { tenantId?: TenantId; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
@@ -1500,7 +1520,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const dump = await admin.exportScope(c.get('actor'), tenantId, scope.id);
     const vertical = await verticalForScope(c, scope);
     const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
-    return store.put({ vertical: scope.vertical, dump: { ...dump, tables } });
+    // Seal classified payloads per subject on the way in (#37). This copy is full-fidelity
+    // and the platform keeps it, which is precisely why an erasure could never reach it: a
+    // redaction fixes the live scope and does nothing to the object already in R2. Sealed
+    // here, destroying one subject's key reaches backwards into every copy already taken.
+    // Restores open it again (`restoreFromBackup`) — except for subjects shredded in the
+    // meantime, which is the mechanism working rather than the copy being damaged.
+    const sealed = await sealDump(tables, sealerFor(c, tenantId, scope.id));
+    return store.put({ vertical: scope.vertical, dump: { ...dump, tables: sealed } });
   };
 
   // The copies held for one scope — metadata only, so listing a reaped scope's backups
@@ -1530,7 +1557,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     const dump = await options.scopeBackups.get({ tenantId, scopeId, capturedAt });
     if (!dump) return c.json({ error: `no backup for scope ${scopeId} at ${capturedAt}` }, 404);
-    return c.json(dump);
+    // Unseal on the way out (#37). The bytes in the store stay sealed — this is the
+    // authorized read opening them with the keys the platform holds. A subject shredded
+    // since the copy was taken opens to a null payload, which is exactly the erasure
+    // working: the ciphertext never left the object, and nothing turns it back into a
+    // person. A dump taken before sealing existed passes through untouched.
+    const opened = await openDump(dump.tables, sealerFor(c, tenantId, scopeId));
+    return c.json({ ...dump, tables: opened });
   });
 
   // Take a backup WITHOUT reaping — the standalone copy (a pre-migration checkpoint, an
@@ -1549,6 +1582,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       throw e;
     }
+  });
+
+  // -- subject erasure (#37) --------------------------------------------------
+  // Erase one data subject from one scope: redact the spine payloads keyed to them, then
+  // destroy the key that seals every platform-retained copy of those payloads.
+  //
+  // Staff-only, and NOT in BUILDER_ROUTES. That placement is the shared-responsibility line
+  // drawn where hosting-and-certification.md §3 already draws it — "we provide extraction,
+  // they define scope". A builder forwards the request; the platform executes it and hands
+  // back a receipt they can answer their data subject with. Making it self-service would
+  // hand a vertical the ability to destroy evidence about a person on its own authority,
+  // which is a different decision than this one and belongs in its own issue.
+  //
+  // Idempotent by construction: a re-run redacts nothing (the payloads are already null),
+  // reports `keyDestroyed: false` (the key is already gone) and still returns
+  // `tombstoned: true`. Safe to retry, which matters because the audited half and the
+  // cryptographic half are two writes.
+  app.post('/tenants/:tenantId/scopes/:scopeId/subjects/:subjectId/shred', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    // A ULID, like every other subject id the spine carries — parsed rather than trusted,
+    // so a wildcard or an injection attempt is a 400 and never reaches the UPDATE.
+    const subjectId = dataSubjectIdSchema.parse(c.req.param('subjectId'));
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    return c.json(await admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
   });
 
   // -- directory backups (#40) -----------------------------------------------
@@ -1899,10 +1958,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'restore refused: the backup has no tables — not a scope dump' }, 422);
     }
     try {
-      await host.restoreScope(actor, tenantId, scopeId, dump);
+      // Belt and braces for #37: a caller who fetched the object bytes by some other route
+      // may POST a still-sealed dump, and a scope restored full of ciphertext is a silent
+      // data-loss bug. `openDump` skips cells that are not sealed, so a plaintext dump —
+      // the normal case, since the GET above already opened it — costs one pass and
+      // changes nothing.
+      //
+      // Opened against the dump's OWN provenance, not the destination. Subject keys are
+      // keyed by (scope, subject), so a copy of scope A landing in scope B — a backout onto
+      // a different scope, a world loaded sideways — must be opened with A's keys. Using
+      // the destination's would find no key, null every payload, and call it a restore.
+      const origin = { tenantId: tenantIdSchema.parse(dump.tenantId), scopeId: scopeIdSchema.parse(dump.scopeId) };
+      const tables = await openDump(dump.tables, sealerFor(c, origin.tenantId, origin.scopeId));
+      const landing = { ...dump, tables };
+      await host.restoreScope(actor, tenantId, scopeId, landing);
       const vertical = await verticalForScope(c, scope);
-      if (vertical) await vertical.restoreScope(tenantId, scopeId, dump.tables);
-      return c.json({ restored: scopeId, tables: dump.tables.length });
+      if (vertical) await vertical.restoreScope(tenantId, scopeId, tables);
+      return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);

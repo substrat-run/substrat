@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { connectorCalls, connectorTestFetch, resetConnectorCalls } from './connector-fixture.js';
 import {
   connectionId,
+  dataSubjectId,
   moduleManifest,
   orgId,
   AUTO_ADMISSION_NOTE,
@@ -723,6 +724,164 @@ export function scopeHostContractSuite(
 
       it('fails closed on a mismatched (tenantId, scopeId) pair (K-3)', async () => {
         await expect(host.admin.exportScope(staff, t2, s1)).rejects.toThrow();
+      });
+    });
+
+    // -- subject erasure (#37, master-plan §5.3) ------------------------------
+    //
+    // `piiClass` has been enforced at the type level since the contracts package existed —
+    // an event carrying PII cannot be declared without a `subjectId`, because
+    // "crypto-shredding must be able to key the erasure". These are that erasure, and
+    // every adapter owes all of it.
+    //
+    // The mechanism splits the way the STORES split. Tier 1 is mutable, so erasing there
+    // is redaction: the payload goes, the envelope stays. A platform-retained COPY is not
+    // mutable — that is what a backup IS — so erasing there is cryptographic: the copy was
+    // sealed per-subject on the way out, and destroying that key reaches backwards into
+    // every copy already taken. Both halves are asserted here; what a dump looks like
+    // after each is `sealDump`/`openDump`'s job (control-plane-api).
+
+    describe('subject erasure (#37)', () => {
+      /** Every outbox row for one subject, read through the module's own projection. */
+      const spineFor = async (subject: string) => {
+        const stub = await host.getScope(alice, t1, s1);
+        const rows = (await stub.invoke('test/read-outbox', undefined)) as {
+          id: string;
+          subject_id: string | null;
+          pii_class: string;
+          payload: string | null;
+        }[];
+        return rows.filter((r) => r.subject_id === subject);
+      };
+
+      it('redacts the payload and KEEPS the envelope — and only for the named subject', async () => {
+        const alicia = dataSubjectId.parse(ulid());
+        const bruno = dataSubjectId.parse(ulid());
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/emit-event', { subject: alicia, secret: 'alicia-was-here' });
+        await stub.invoke('test/emit-event', { subject: bruno, secret: 'bruno-was-here' });
+
+        const before = await spineFor(alicia);
+        expect(before).toHaveLength(1);
+        expect(before[0]!.payload).toContain('alicia-was-here');
+
+        const receipt = await host.admin.shredSubject(staff, t1, s1, alicia);
+        expect(receipt.subjectId).toBe(alicia);
+        expect(receipt.eventsRedacted).toBe(1);
+        expect(receipt.tombstoned).toBe(true);
+
+        // The payload is gone. The ENVELOPE is not: master-plan §5.3 keeps the
+        // pseudonymous key and the transaction fact, so a timeline still shows that
+        // something happened, to what, and when — it no longer shows what was said.
+        const after = await spineFor(alicia);
+        expect(after).toHaveLength(1);
+        expect(after[0]!.payload).toBeNull();
+        expect(after[0]!.id).toBe(before[0]!.id);
+        expect(after[0]!.pii_class).toBe('pseudonymous');
+        expect(after[0]!.subject_id).toBe(alicia);
+
+        // The other subject is untouched — an erasure that over-reaches is its own bug.
+        const others = await spineFor(bruno);
+        expect(others[0]!.payload).toContain('bruno-was-here');
+      });
+
+      it('is idempotent — a re-run erases nothing and still reports the tombstone', async () => {
+        const subject = dataSubjectId.parse(ulid());
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/emit-event', { subject, secret: 'once' });
+
+        const first = await host.admin.shredSubject(staff, t1, s1, subject);
+        expect(first.eventsRedacted).toBe(1);
+        // A retry after a crash must converge rather than double-count or throw: the
+        // payloads are already null and the key is already destroyed.
+        const second = await host.admin.shredSubject(staff, t1, s1, subject);
+        expect(second.eventsRedacted).toBe(0);
+        expect(second.keyDestroyed).toBe(false);
+        expect(second.tombstoned).toBe(true);
+      });
+
+      it('seals and opens a payload under the subject who owns it', async () => {
+        const subject = dataSubjectId.parse(ulid());
+        const sealed = await host.admin.sealSubjectPayloads(staff, t1, s1, [
+          { subjectId: subject, plaintext: '{"note":"only for them"}' },
+        ]);
+        expect(sealed[0]).not.toBeNull();
+        // Sealed means sealed: the plaintext is not sitting in the envelope.
+        expect(sealed[0]!.ciphertext).not.toContain('only for them');
+
+        const opened = await host.admin.openSubjectPayloads(staff, t1, s1, [
+          { subjectId: subject, sealed: sealed[0]! },
+        ]);
+        expect(opened[0]).toBe('{"note":"only for them"}');
+      });
+
+      it('after a shred: what was sealed no longer opens, and nothing may be re-sealed', async () => {
+        const subject = dataSubjectId.parse(ulid());
+        const [sealed] = await host.admin.sealSubjectPayloads(staff, t1, s1, [
+          { subjectId: subject, plaintext: 'in the backup' },
+        ]);
+
+        await host.admin.shredSubject(staff, t1, s1, subject);
+
+        // THE property. The ciphertext is untouched — it is still sitting in whatever copy
+        // it was written to — and it is now permanently unreadable. This is the only
+        // mechanism that reaches into an immutable store, which is why it exists.
+        const opened = await host.admin.openSubjectPayloads(staff, t1, s1, [
+          { subjectId: subject, sealed: sealed! },
+        ]);
+        expect(opened[0]).toBeNull();
+
+        // And the tombstone holds: a LATER export must not mint this subject a fresh
+        // working key. Without this, the next backup would quietly undo the erasure.
+        const resealed = await host.admin.sealSubjectPayloads(staff, t1, s1, [
+          { subjectId: subject, plaintext: 'in the backup' },
+        ]);
+        expect(resealed[0]).toBeNull();
+      });
+
+      it('leaves a different subject in the same scope fully readable', async () => {
+        const shredded = dataSubjectId.parse(ulid());
+        const spared = dataSubjectId.parse(ulid());
+        const [a, b] = await host.admin.sealSubjectPayloads(staff, t1, s1, [
+          { subjectId: shredded, plaintext: 'theirs' },
+          { subjectId: spared, plaintext: 'not theirs' },
+        ]);
+        await host.admin.shredSubject(staff, t1, s1, shredded);
+
+        const opened = await host.admin.openSubjectPayloads(staff, t1, s1, [
+          { subjectId: shredded, sealed: a! },
+          { subjectId: spared, sealed: b! },
+        ]);
+        // Per-subject keys, not a per-scope one: erasing a person must not cost the
+        // backup its ability to restore everyone else.
+        expect(opened[0]).toBeNull();
+        expect(opened[1]).toBe('not theirs');
+      });
+
+      it('fails closed on a mismatched (tenantId, scopeId) pair (K-3)', async () => {
+        const subject = dataSubjectId.parse(ulid());
+        // Naming another tenant's scope must not reach its keys — or erase in it.
+        await expect(host.admin.shredSubject(staff, t2, s1, subject)).rejects.toThrow();
+        await expect(
+          host.admin.sealSubjectPayloads(staff, t2, s1, [{ subjectId: subject, plaintext: 'x' }]),
+        ).rejects.toThrow();
+      });
+
+      it('records the erasure in BOTH logs — mutation and evidence-destruction', async () => {
+        const subject = dataSubjectId.parse(ulid());
+        await host.admin.shredSubject(staff, t1, s1, subject);
+
+        // The admin log because it is a mutation, carrying the receipt as `after`: an
+        // erasure that leaves no proof it ran cannot answer a DSAR.
+        const audit = await host.admin.auditLog(staff, { tenantId: t1 });
+        const entry = audit.filter((e) => e.action === 'shredSubject').at(-1);
+        expect(entry).toBeDefined();
+        expect(JSON.stringify(entry!.after)).toContain(subject);
+
+        // The access log because it DESTROYS evidence — "who asked for this to
+        // disappear" is itself part of the record.
+        const access = await host.admin.accessLog(staff, { tenantId: t1, method: 'shredSubject' });
+        expect(access.length).toBeGreaterThan(0);
       });
     });
 
