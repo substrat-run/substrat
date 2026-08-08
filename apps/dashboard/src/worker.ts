@@ -2417,6 +2417,29 @@ app.get('/api/deployments/:slug/channels/:channel/history', async (c) => {
 });
 
 /**
+ * One vertical's operational-failure history (#559 step 5) — why MY deploy / preview /
+ * provision failed, from the durable record, so a red CI run is explainable from the
+ * dashboard without staff involvement. Owned-slug-checked like history above. Embedded
+ * mode reads the local host's record; connected mode the shared plane's (tenant-pinned
+ * in the authority seam). Newest first; one page is the story, not an archive walk.
+ */
+app.get('/api/deployments/:slug/failures', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (cp) {
+    assertOwned(await listDeploymentsFromCp(cp), slug);
+    return c.json(await cp.listOpsFailures({ vertical: slug, limit: 50 }));
+  }
+  assertOwned(await listDeploymentsFromHost(host, STAFF, node.tenantId), slug);
+  return c.json(
+    await host.admin.listOpsFailures(STAFF, { tenantId: node.tenantId, vertical: slug, limit: 50 }),
+  );
+});
+
+/**
  * Remove one of MY verticals from the registry (versions + channels included). Owned-slug
  * -checked like promote; a LISTED vertical is refused — publishing widened the audience,
  * so retiring it is a staff decision. Below the seam the plane refuses while any scope

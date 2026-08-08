@@ -328,6 +328,22 @@ export interface ChannelHistoryEntry {
   at: string;
 }
 
+/**
+ * One recorded operational failure of MY vertical (#559): what the platform could not
+ * do — a rejected deploy bundle, a preview restore that hit a platform fault — with
+ * the upstream `reference = <id>` when one exists (a Cloudflare support handle).
+ */
+export interface DeployFailureRow {
+  id: string;
+  operation: string;
+  stage: string | null;
+  scopeId: string | null;
+  status: number | null;
+  message: string;
+  reference: string | null;
+  at: string;
+}
+
 /** The result of updating an app to its vertical's prod version. */
 export interface UpdateResult {
   updated: boolean;
@@ -855,6 +871,10 @@ export const api = {
     call<ChannelHistoryEntry[]>(
       `/deployments/${encodeURIComponent(slug)}/channels/${encodeURIComponent(channel)}/history`,
     ),
+  /** This vertical's recorded deploy/preview/provision failures, newest first (#559) —
+   *  why a red CI run was red, from the durable record, without staff involvement. */
+  listFailures: (slug: string) =>
+    call<DeployFailureRow[]>(`/deployments/${encodeURIComponent(slug)}/failures`),
 
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),

@@ -621,6 +621,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'POST', re: /\/verticals\/[^/]+\/previews$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/previews$/ },
     { method: 'DELETE', re: /\/verticals\/[^/]+\/previews\/[^/]+$/ },
+    // The builder's slice of the ops-failure record (#559 step 5): why did MY deploy /
+    // preview / provision fail. Tenant-narrowed in the handler (the forced-filter
+    // pattern, like GET /scopes); the allowlist alone is not authz.
+    { method: 'GET', re: /\/ops-failures$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -3785,13 +3789,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   // The recorded operational failures (#559) — the console's failures view, and the
-  // "what does this `reference = <id>` belong to" lookup. Staff-only by omission from
-  // BUILDER_ROUTES (a builder-scoped slice is step 5's concern, deliberately not
-  // pre-opened here). Newest first by default, unlike /admin-log: an operator asks
-  // "what broke lately".
+  // "what does this `reference = <id>` belong to" lookup. Newest first by default,
+  // unlike /admin-log: an operator asks "what broke lately". A builder reads only its
+  // OWN tenant's rows — the filter is forced, not trusted from the query (step 5: a
+  // red CI run is explainable from the dashboard without staff involvement).
   app.get('/ops-failures', async (c) => {
+    const p = c.get('principal');
     const filter = opsFailuresQuery.parse({
-      tenantId: c.req.query('tenantId'),
+      tenantId: p.kind === 'builder' ? p.tenantId : c.req.query('tenantId'),
       scopeId: c.req.query('scopeId'),
       vertical: c.req.query('vertical'),
       operation: c.req.query('operation'),

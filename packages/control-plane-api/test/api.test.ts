@@ -3252,9 +3252,6 @@ describe('control-plane API — builder authz', () => {
     // tenant-narrowed — their confinement is covered by their own describes below.)
     expect((await acmeReq('/tenants')).status).toBe(403);
     expect((await acmeReq('/admin-log')).status).toBe(403);
-    // Ops failures can name other tenants' scopes — staff-only until step 5's
-    // deliberately tenant-narrowed slice (#559).
-    expect((await acmeReq('/ops-failures')).status).toBe(403);
     expect((await acmeReq('/roles')).status).toBe(403);
     // Provisioning an instance is a scope action, not vertical management → 403.
     expect(
@@ -3289,6 +3286,31 @@ describe('control-plane API — builder authz', () => {
     expect((await acmeReq(`/tenants/${other}/scopes/${sOther}`)).status).toBe(404);
     expect((await acmeReq(`/tenants/${acme}/scopes/${sAcme}/health`)).status).toBe(200);
     expect((await acmeReq(`/tenants/${other}/scopes/${sOther}/health`)).status).toBe(404);
+  });
+
+  it('narrows the ops-failure read to the builder’s own tenant (#559 step 5)', async () => {
+    // One row per tenant; the builder's read is FORCED to its own — asking for the
+    // other tenant's rows still answers only yours, and rows with no tenant at all
+    // (platform-level failures) stay out of a builder's slice.
+    await host.admin.recordOpsFailure({
+      actor: staff, operation: 'deploy.upload', stage: 'wfp-upload',
+      tenantId: acme, scopeId: null, vertical: `${acmeSlug}/helpdesk`,
+      status: 422, message: 'deploy rejected: module top-level throw', reference: null,
+    });
+    await host.admin.recordOpsFailure({
+      actor: staff, operation: 'preview.create', stage: 'restore',
+      tenantId: other, scopeId: null, vertical: `${otherSlug}/helpdesk`,
+      status: 502, message: 'internal error; reference = aaaabbbbccccddddeeeeffff', reference: 'aaaabbbbccccddddeeeeffff',
+    });
+
+    const mine = ((await (await acmeReq(`/ops-failures?tenantId=${other}`)).json()) as {
+      entries: Array<{ tenantId: string; operation: string }>;
+    }).entries;
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ tenantId: acme, operation: 'deploy.upload' });
+    // Staff still read across tenants (the console's fleet view).
+    const all = ((await (await staffReq('/ops-failures')).json()) as { entries: unknown[] }).entries;
+    expect(all.length).toBeGreaterThanOrEqual(2);
   });
 
   it('claims a bare slug under the tenant prefix, stamping the owner', async () => {
