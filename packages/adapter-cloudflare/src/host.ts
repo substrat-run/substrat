@@ -82,6 +82,8 @@ import {
   type DirectoryDump,
   type ScopeDump,
   type ScopeDumpTable,
+  subjectShredReceipt,
+  type SubjectShredReceipt,
   type ScopeId,
   platformRequest,
   type PlatformRequest,
@@ -119,6 +121,8 @@ import {
   backoffAt,
   resolveRetryPolicy,
   unconfiguredSecretBox,
+  createSubjectKeys,
+  type SubjectKeys,
   type ConnectorContext,
   type ConnectorHandler,
   type ConnectorOptions,
@@ -501,6 +505,25 @@ interface ControlPlaneStub {
   } & ListPage): Promise<AccessLogRow[]>;
   markAccessLogDrained(upToId: string, drainedAt: string): Promise<number>;
   pruneAccessLog(limit: number): Promise<number>;
+  // #37 — the per-subject key store. Storage only; the crypto is the kernel's.
+  readSubjectKey(
+    scopeId: string,
+    subjectId: string,
+  ): Promise<{ keyId: string | null; wrappedDek: string | null; shreddedAt: string | null } | undefined>;
+  insertSubjectKey(input: {
+    scopeId: string;
+    subjectId: string;
+    tenantId: string;
+    keyId: string;
+    wrappedDek: string;
+    createdAt: string;
+  }): Promise<void>;
+  tombstoneSubjectKey(input: {
+    scopeId: string;
+    subjectId: string;
+    tenantId: string;
+    at: string;
+  }): Promise<{ existed: boolean }>;
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
   // #40 — the directory's own backup/restore pair.
@@ -674,6 +697,8 @@ interface ScopeStubRpc {
   importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
+  /** Null the spine payloads keyed to one data subject (#37); returns how many moved. */
+  redactSubject(subjectId: string): Promise<number>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
@@ -3143,6 +3168,54 @@ export class CloudflareScopeHost implements ScopeHost {
           backupRef: opts?.backupRef ?? null,
         });
       },
+      // -- subject erasure (#37) ----------------------------------------------
+      sealSubjectPayloads: async (actor, tenantId, scopeId, items) => {
+        await this.assertScope(tenantId, scopeId);
+        const sealed = await this.subjectKeysFor(tenantId, scopeId).sealMany(items);
+        await this.recordAccess(
+          actor,
+          'sealSubjectPayloads',
+          { tenantId, scopeId },
+          { subjects: new Set(items.map((i) => i.subjectId)).size },
+          sealed.filter((s) => s !== null).length,
+        );
+        return sealed;
+      },
+      openSubjectPayloads: async (actor, tenantId, scopeId, items) => {
+        await this.assertScope(tenantId, scopeId);
+        const opened = await this.subjectKeysFor(tenantId, scopeId).openMany(items);
+        await this.recordAccess(
+          actor,
+          'openSubjectPayloads',
+          { tenantId, scopeId },
+          { subjects: new Set(items.map((i) => i.subjectId)).size },
+          opened.filter((o) => o !== null).length,
+        );
+        return opened;
+      },
+      shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
+        await this.assertScope(tenantId, scopeId);
+        // Redact the live spine FIRST, destroy the key LAST. Both halves are idempotent and
+        // a crash between them converges on retry, so the order is decided by which
+        // half-done state harms the person: dying after the redaction leaves ciphertext in
+        // a backup that no key opens; destroying the key first would leave their PII in the
+        // live database while the audit log already claims they were erased.
+        const eventsRedacted = await this.scopeStub(scopeId).redactSubject(subjectId);
+        const at = new Date().toISOString();
+        const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
+        const receipt = subjectShredReceipt.parse({
+          subjectId,
+          eventsRedacted,
+          keyDestroyed: existed,
+          tombstoned: true,
+        });
+        // BOTH logs, deliberately: the admin log because this is a mutation, the access log
+        // because it destroys evidence. An erasure is the one action where "who asked for
+        // this to disappear" is itself part of the record.
+        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        await this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId }, eventsRedacted);
+        return receipt;
+      },
       grantEntitlement: async (actor, tenantId, entitlementKey, plan?) => {
         const input = entitlementGrantInput.parse(plan ?? {});
         const result = await this.cp.grantEntitlement(tenantId, entitlementKey, input, actor);
@@ -3563,6 +3636,31 @@ export class CloudflareScopeHost implements ScopeHost {
    * Record a staff read (K-24). `params` is a bounded summary, capped so one query
    * cannot write an unbounded row.
    */
+  /**
+   * K-3's cross-check on its own: the (tenant, scope) pair must exist and agree before a
+   * subject-key operation touches anything. Without it a caller could reach another
+   * tenant's keys by naming their scope id.
+   */
+  private async assertScope(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+    if (!rec) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+  }
+
+  /**
+   * This scope's per-subject keys (#37). The crypto lives in the kernel
+   * (`createSubjectKeys`); the adapter supplies only the three row operations, which here
+   * are RPCs into the control-plane DO that holds the directory.
+   */
+  private subjectKeysFor(tenantId: TenantId, scopeId: ScopeId): SubjectKeys {
+    return createSubjectKeys(this.secretBox, {
+      read: (subjectId) => this.cp.readSubjectKey(scopeId, subjectId),
+      insert: (subjectId, row) =>
+        this.cp.insertSubjectKey({ scopeId, subjectId, tenantId, ...row }),
+      tombstone: (subjectId, at) =>
+        this.cp.tombstoneSubjectKey({ scopeId, subjectId, tenantId, at }),
+    });
+  }
+
   private async recordAccess(
     actor: PlatformActorId,
     method: string,

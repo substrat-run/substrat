@@ -44,6 +44,8 @@ export type {
 export { attachmentBlobKey, backoffAt, parseValidationRecords, resolveRetryPolicy } from './scope-host.js';
 export { unconfiguredSecretBox, webCryptoSecretBox } from './secret-box.js';
 export type { SealedSecret, SecretBox } from './secret-box.js';
+export { createSubjectKeys } from './subject-keys.js';
+export type { SubjectKeyRecords, SubjectKeyRow, SubjectKeys } from './subject-keys.js';
 export { resolveScopeRecord } from './scope-record.js';
 export type { ResolvedScopeRecord } from './scope-record.js';
 export {

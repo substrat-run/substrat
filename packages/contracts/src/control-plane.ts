@@ -110,8 +110,36 @@ export const adminAction = z.enum([
   // replaced, which is exactly right: the restored log is the pre-restore history, and
   // this row is the first thing after it — the seam is legible instead of silent.
   'restoreDirectory',
+  // #37 — erase one data subject. Both a mutation AND a destruction of evidence, which is
+  // exactly why it is named here: the spine payloads keyed to that subject are redacted and
+  // the subject's encryption key is destroyed, so every platform-retained copy sealed under
+  // it becomes unreadable. The `after` carries the receipt (how many events, whether a key
+  // existed) — an erasure that records no proof it happened is not a fulfilled DSAR.
+  'shredSubject',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
+
+/**
+ * What a `shredSubject` did (#37) — the receipt a DSAR response is written from.
+ *
+ * Deliberately counts rather than ids: naming the events erased about a person would
+ * rebuild, in the append-only admin log, a pointer to exactly what was supposed to
+ * disappear. The counts are what proves the erasure ran; the `subjectId` (a ULID, already
+ * pseudonymous) is what ties it to the request.
+ */
+export const subjectShredReceipt = z.object({
+  subjectId: z.string().min(1),
+  /** Spine rows whose payload this call redacted. Zero on a re-run — the first one did it. */
+  eventsRedacted: z.number().int().nonnegative(),
+  /**
+   * Whether a subject key existed to destroy. False means nothing platform-retained was ever
+   * sealed for this subject — either it was never exported, or a prior shred already ran.
+   */
+  keyDestroyed: z.boolean(),
+  /** True once the subject is tombstoned: no future seal may mint a key under this id. */
+  tombstoned: z.boolean(),
+});
+export type SubjectShredReceipt = z.infer<typeof subjectShredReceipt>;
 
 /**
  * One entitlement grant, widened from a bare SKU flag to express a plan (#33):

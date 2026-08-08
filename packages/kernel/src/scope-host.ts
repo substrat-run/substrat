@@ -58,6 +58,7 @@ import type {
   ReadScopeTableInput,
   Scope,
   ScopeDump,
+  SubjectShredReceipt,
   ScopeQueryResult,
   ScopeId,
   ScopeStatus,
@@ -76,6 +77,7 @@ import type {
   VerticalVersion,
   TenantStatus,
 } from '@substrat-run/contracts';
+import type { SealedSecret } from './secret-box.js';
 
 /**
  * The scope-host contract — the adapter seam (§5.1 of the design doc).
@@ -1237,6 +1239,87 @@ export interface HostAdmin {
     scopeId: ScopeId,
     opts?: { force?: boolean; backupRef?: string },
   ): Promise<void>;
+
+  // -- subject erasure (#37, master-plan §5.3) --------------------------------
+  // `piiClass` has been enforced at the type level since the contracts package existed —
+  // an event that carries PII cannot be declared without a `subjectId`, on the stated
+  // grounds that "crypto-shredding must be able to key the erasure". These three methods
+  // are that erasure. They divide the problem the way the STORES divide:
+  //
+  //   Tier 1 is mutable, so erasing there is redaction — an UPDATE that nulls the payload
+  //   and keeps the envelope (the pseudonymous key and the fact that something happened
+  //   at a time, which §5.3 keeps deliberately).
+  //
+  //   A platform-retained COPY is not mutable — a backup we cannot rewrite is the whole
+  //   point of having it — so erasing there is cryptographic: the copy was sealed under a
+  //   per-subject key at the moment it left, and destroying that key is what reaches
+  //   backwards into every copy already taken.
+  //
+  // The keys live in the DIRECTORY, never in the scope database whose rows they protect.
+  // That separation IS the guarantee (master-plan.md:316 — "GDPR erasure claims are only
+  // as credible as the key store's independence"): a key restored by the same dump that
+  // restores its ciphertext would quietly un-do every erasure a restore rolled past.
+
+  /**
+   * Seal payloads for the subjects that own them, on the way OUT to a platform-retained
+   * copy. Batched — one call per dump, not one per row — and positional: result `i`
+   * corresponds to `items[i]`.
+   *
+   * A `null` result means REFUSED, not failed: the subject is tombstoned by a prior shred,
+   * and minting a fresh key for them would resurrect readability the erasure was supposed
+   * to end. The caller writes `null` into the copy, which is the same shape a live
+   * redaction leaves — so a restored backup and a live scope agree about what is gone.
+   *
+   * Keys are minted on first use, so a subject who has never been exported has no key and
+   * costs nothing. Access-logged (K-24) like every directory read that touches subject data.
+   */
+  sealSubjectPayloads(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    items: readonly { subjectId: string; plaintext: string }[],
+  ): Promise<(SealedSecret | null)[]>;
+
+  /**
+   * The inverse, on the way back IN from a platform-retained copy. Positional like `seal`.
+   *
+   * `null` means the key is gone — the subject was shredded between the copy being taken
+   * and this restore — and the caller restores a null payload. This is where the erasure
+   * actually bites: the bytes were always there in the backup, and after the shred nothing
+   * can turn them back into a person.
+   */
+  openSubjectPayloads(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    items: readonly { subjectId: string; sealed: SealedSecret }[],
+  ): Promise<(string | null)[]>;
+
+  /**
+   * Erase one data subject from a scope: redact the spine payloads keyed to them, then
+   * destroy their key and tombstone the id.
+   *
+   * **That order is load-bearing.** Both halves are idempotent and a crash between them
+   * self-heals on retry, so the tiebreak is which half-done state harms the person: a run
+   * that died after redacting leaves ciphertext in a backup nobody can read without the
+   * key; one that died after destroying the key first would leave their PII sitting in the
+   * live operational database while the audit log claims they were erased. Redact what is
+   * reachable, then destroy what makes the unreachable unreadable.
+   *
+   * Audited as `shredSubject` with the receipt as `after`, and access-logged: this both
+   * mutates and destroys evidence, so it is the rare action that belongs in both logs.
+   *
+   * What it does NOT reach is written down rather than implied — vertical-owned PII in a
+   * vertical's own table, copies already handed to a customer, and the PITR window (see
+   * kernel-design.md's answer to open question 17). A mechanism whose limits are
+   * undocumented gets oversold by someone who was not in the room.
+   */
+  shredSubject(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    subjectId: string,
+  ): Promise<SubjectShredReceipt>;
 
   // -- entitlements (control-plane.md §4.3) ----------------------------------
   // What finally makes `manifest.entitlementKey` mean something (D-20). An

@@ -67,13 +67,19 @@ declare const TextDecoder: new () => { decode(input: Uint8Array): string };
 declare const btoa: (input: string) => string;
 declare const atob: (input: string) => string;
 
-const toBase64 = (bytes: Uint8Array): string => {
+/**
+ * Exported for `subject-keys.ts`, which has to move raw key BYTES through a string-shaped
+ * `SecretBox` (a DEK is 32 bytes; `seal` takes text). Deliberately not a general-purpose
+ * utility export — nothing else should need to reach below this file's abstraction.
+ */
+export const toBase64 = (bytes: Uint8Array): string => {
   let s = '';
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s);
 };
 
-const fromBase64 = (b64: string): Uint8Array => {
+/** The inverse; see `toBase64` above for why it is exported. */
+export const fromBase64 = (b64: string): Uint8Array => {
   const s = atob(b64);
   const out = new Uint8Array(s.length);
   for (let i = 0; i < s.length; i += 1) out[i] = s.charCodeAt(i);

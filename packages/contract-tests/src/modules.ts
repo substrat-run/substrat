@@ -242,14 +242,17 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
     stash.value = input;
   }) as OperationHandler<never, unknown>,
   'test/read-stash': (() => stash.value!) as OperationHandler<never, unknown>,
-  'test/emit-event': ((ctx, input: { subject?: string } | undefined) => {
+  // `secret` exists for the erasure suite (#37): a payload whose CONTENT differs per
+  // subject is what lets a test tell "this subject's payload survived" from "some payload
+  // survived" — the distinction an erasure either honours or quietly fails.
+  'test/emit-event': ((ctx, input: { subject?: string; secret?: string } | undefined) => {
     ctx.emit({
       type: 'test.happened',
       schemaVersion: 1,
       entity: { entityType: 'test-thing', entityId: 'x1' },
       piiClass: input?.subject ? 'pseudonymous' : 'none',
       ...(input?.subject ? { subjectId: dataSubjectId.parse(input.subject) } : {}),
-      payload: { hello: 'world' },
+      payload: { hello: 'world', ...(input?.secret ? { secret: input.secret } : {}) },
     });
   }) as OperationHandler<never, unknown>,
   'test/emit-unclassified-pii': ((ctx) => {

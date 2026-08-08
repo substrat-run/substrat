@@ -565,6 +565,23 @@ const DIRECTORY_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_access_log_actor ON _substrat_access_log (actor, id);
   CREATE INDEX IF NOT EXISTS _substrat_access_log_tenant ON _substrat_access_log (tenant_id, id);
+  -- Per-subject encryption keys (#37). In the DIRECTORY, never in the scope DO whose rows
+  -- they protect: these keys seal PII inside platform-retained COPIES of a scope, so a key
+  -- kept beside its ciphertext would be restored by the same dump that restores the
+  -- ciphertext, and every erasure a restore rolled past would silently reverse itself.
+  -- wrapped_dek is sealed by the host SecretBox, so the directory holds no raw key either.
+  -- A shred clears the key and stamps shredded_at, KEEPING the row as the tombstone that
+  -- stops a later export from minting the same subject a working key again.
+  CREATE TABLE IF NOT EXISTS _substrat_subject_keys (
+    scope_id     TEXT NOT NULL,
+    subject_id   TEXT NOT NULL,
+    tenant_id    TEXT NOT NULL,
+    key_id       TEXT,
+    wrapped_dek  TEXT,
+    created_at   TEXT NOT NULL,
+    shredded_at  TEXT,
+    PRIMARY KEY (scope_id, subject_id)
+  );
   CREATE TABLE IF NOT EXISTS _substrat_admin_log (
     id TEXT PRIMARY KEY,
     actor TEXT NOT NULL,
@@ -2603,6 +2620,94 @@ export class ControlPlaneDO extends DurableObject {
       this.sql.exec('DELETE FROM _substrat_access_log WHERE id = ?', id);
     }
     return doomed.length;
+  }
+
+  // -- per-subject keys (#37) -------------------------------------------------
+  // The three row operations `createSubjectKeys` needs. The crypto is the kernel's; what
+  // lives here is storage, which is the only part that differs between adapters.
+
+  readSubjectKey(
+    scopeId: string,
+    subjectId: string,
+  ): { keyId: string | null; wrappedDek: string | null; shreddedAt: string | null } | undefined {
+    const row = (
+      this.sql
+        .exec(
+          'SELECT key_id, wrapped_dek, shredded_at FROM _substrat_subject_keys WHERE scope_id = ? AND subject_id = ?',
+          scopeId,
+          subjectId,
+        )
+        .toArray() as unknown as {
+        key_id: string | null;
+        wrapped_dek: string | null;
+        shredded_at: string | null;
+      }[]
+    )[0];
+    return row
+      ? { keyId: row.key_id, wrappedDek: row.wrapped_dek, shreddedAt: row.shredded_at }
+      : undefined;
+  }
+
+  /**
+   * `OR IGNORE`, not `OR REPLACE`: two exports of the same subject can race to mint, and
+   * the loser must not overwrite the winner — a replaced key orphans everything the first
+   * one already sealed.
+   */
+  insertSubjectKey(input: {
+    scopeId: string;
+    subjectId: string;
+    tenantId: string;
+    keyId: string;
+    wrappedDek: string;
+    createdAt: string;
+  }): void {
+    this.sql.exec(
+      `INSERT OR IGNORE INTO _substrat_subject_keys
+         (scope_id, subject_id, tenant_id, key_id, wrapped_dek, created_at, shredded_at)
+       VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      input.scopeId,
+      input.subjectId,
+      input.tenantId,
+      input.keyId,
+      input.wrappedDek,
+      input.createdAt,
+    );
+  }
+
+  /**
+   * Clear the key, keep the row, stamp the time. Upserted rather than updated so that
+   * shredding a subject who was never exported still leaves the tombstone — otherwise a
+   * LATER export mints them a fresh key and the erasure quietly undoes itself.
+   */
+  tombstoneSubjectKey(input: {
+    scopeId: string;
+    subjectId: string;
+    tenantId: string;
+    at: string;
+  }): { existed: boolean } {
+    const existing = (
+      this.sql
+        .exec(
+          'SELECT wrapped_dek FROM _substrat_subject_keys WHERE scope_id = ? AND subject_id = ?',
+          input.scopeId,
+          input.subjectId,
+        )
+        .toArray() as unknown as { wrapped_dek: string | null }[]
+    )[0];
+    this.sql.exec(
+      `INSERT INTO _substrat_subject_keys
+         (scope_id, subject_id, tenant_id, key_id, wrapped_dek, created_at, shredded_at)
+       VALUES (?, ?, ?, NULL, NULL, ?, ?)
+       ON CONFLICT (scope_id, subject_id)
+         DO UPDATE SET key_id = NULL, wrapped_dek = NULL, shredded_at = ?`,
+      input.scopeId,
+      input.subjectId,
+      input.tenantId,
+      input.at,
+      input.at,
+      input.at,
+    );
+    return { existed: existing?.wrapped_dek != null };
   }
 
   recordAdmin(entry: AdminEntryInput): void {

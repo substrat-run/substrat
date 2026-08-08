@@ -105,6 +105,8 @@ import {
   type ScopeDump,
   type ScopeDumpTable,
   type ScopeId,
+  subjectShredReceipt,
+  type SubjectShredReceipt,
   type ScopeQueryResult,
   type ScopeStatus,
   type ScopeTable,
@@ -147,6 +149,8 @@ import {
   backoffAt,
   resolveRetryPolicy,
   unconfiguredSecretBox,
+  createSubjectKeys,
+  type SubjectKeys,
   type ConnectorContext,
   type ConnectorHandler,
   type ConnectorOptions,
@@ -1068,6 +1072,29 @@ export class SqliteScopeHost implements ScopeHost {
       );
       CREATE INDEX IF NOT EXISTS _substrat_access_log_actor ON _substrat_access_log (actor, id);
       CREATE INDEX IF NOT EXISTS _substrat_access_log_tenant ON _substrat_access_log (tenant_id, id);
+      -- Per-subject encryption keys (#37). In the DIRECTORY on purpose: these keys seal
+      -- PII inside platform-retained copies of SCOPE databases, so keeping them in the
+      -- scope DB would mean every backup carried both halves and a restore silently
+      -- reversed every erasure it rolled past. master-plan.md:316 — "GDPR erasure claims
+      -- are only as credible as the key store's independence".
+      --
+      -- The DEK is never stored raw: wrapped_dek is sealed by the host SecretBox, so a
+      -- directory dump carries wrapped keys and the master key is somewhere else again.
+      --
+      -- A shred CLEARS wrapped_dek and stamps shredded_at, keeping the row. The row IS the
+      -- tombstone: without it a later seal would mint a fresh key for the same subject and
+      -- quietly restore readability the erasure was supposed to end. A key store that
+      -- forgets who was erased can only erase them once.
+      CREATE TABLE IF NOT EXISTS _substrat_subject_keys (
+        scope_id     TEXT NOT NULL,
+        subject_id   TEXT NOT NULL,
+        tenant_id    TEXT NOT NULL,
+        key_id       TEXT,
+        wrapped_dek  TEXT,
+        created_at   TEXT NOT NULL,
+        shredded_at  TEXT,
+        PRIMARY KEY (scope_id, subject_id)
+      );
       CREATE TABLE IF NOT EXISTS _substrat_admin_log (
         id TEXT PRIMARY KEY,
         actor TEXT NOT NULL,
@@ -2762,6 +2789,75 @@ export class SqliteScopeHost implements ScopeHost {
         resultCount,
         new Date().toISOString(),
       );
+  }
+
+  /**
+   * K-3's cross-check on its own: the (tenant, scope) pair must exist and agree before a
+   * subject-key operation touches anything. `scopeDbFor` already does this for calls that
+   * need the scope FILE; sealing and opening need only the directory, and skipping the
+   * check there would let a caller reach another tenant's keys by naming their scope id.
+   */
+  private assertScope(tenantId: TenantId, scopeId: ScopeId): void {
+    const rec = this.directory
+      .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { tenant_id: string } | undefined;
+    if (!rec || rec.tenant_id !== tenantId) {
+      throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    }
+  }
+
+  /**
+   * This scope's per-subject keys (#37). The crypto lives in the kernel
+   * (`createSubjectKeys`); what the adapter supplies is the three row operations against
+   * its own directory table, which is the only part that differs between adapters.
+   */
+  private subjectKeysFor(tenantId: TenantId, scopeId: ScopeId): SubjectKeys {
+    return createSubjectKeys(this.secretBox, {
+      read: (subjectId) => {
+        const row = this.directory
+          .prepare(
+            'SELECT key_id, wrapped_dek, shredded_at FROM _substrat_subject_keys WHERE scope_id = ? AND subject_id = ?',
+          )
+          .get(scopeId, subjectId) as
+          | { key_id: string | null; wrapped_dek: string | null; shredded_at: string | null }
+          | undefined;
+        return row
+          ? { keyId: row.key_id, wrappedDek: row.wrapped_dek, shreddedAt: row.shredded_at }
+          : undefined;
+      },
+      insert: (subjectId, row) => {
+        // `OR IGNORE` rather than `OR REPLACE`: two concurrent exports of the same subject
+        // both mint, and the loser must not overwrite the winner's key — a replaced key
+        // orphans everything the first one already sealed.
+        this.directory
+          .prepare(
+            `INSERT OR IGNORE INTO _substrat_subject_keys
+               (scope_id, subject_id, tenant_id, key_id, wrapped_dek, created_at, shredded_at)
+             VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+          )
+          .run(scopeId, subjectId, tenantId, row.keyId, row.wrappedDek, row.createdAt);
+      },
+      tombstone: (subjectId, at) => {
+        // The row survives with its key cleared. Upserted rather than updated, so shredding
+        // a subject who was never exported still leaves the tombstone that stops a LATER
+        // export from minting them a fresh key.
+        const existing = this.directory
+          .prepare(
+            'SELECT wrapped_dek FROM _substrat_subject_keys WHERE scope_id = ? AND subject_id = ?',
+          )
+          .get(scopeId, subjectId) as { wrapped_dek: string | null } | undefined;
+        this.directory
+          .prepare(
+            `INSERT INTO _substrat_subject_keys
+               (scope_id, subject_id, tenant_id, key_id, wrapped_dek, created_at, shredded_at)
+             VALUES (?, ?, ?, NULL, NULL, ?, ?)
+             ON CONFLICT (scope_id, subject_id)
+               DO UPDATE SET key_id = NULL, wrapped_dek = NULL, shredded_at = ?`,
+          )
+          .run(scopeId, subjectId, tenantId, at, at, at);
+        return { existed: existing?.wrapped_dek != null };
+      },
+    });
   }
 
   /** Load a connection or fail loudly — update/revoke must not silently no-op. */
@@ -4628,6 +4724,70 @@ export class SqliteScopeHost implements ScopeHost {
         await transitionScope(actor, 'reapScope', tenantId, scopeId, ['archived'], 'reaped', {
           backupRef: opts?.backupRef ?? null,
         });
+      },
+      // -- subject erasure (#37) ----------------------------------------------
+      sealSubjectPayloads: async (actor, tenantId, scopeId, items) => {
+        // K-3: the (tenant, scope) pair is cross-checked before any key is touched, the
+        // same gate every introspection read passes.
+        this.assertScope(tenantId, scopeId);
+        const sealed = await this.subjectKeysFor(tenantId, scopeId).sealMany(items);
+        // The count that matters for an incident is how many payloads left SEALED versus
+        // how many were refused — a run that refused everything means a shredded subject's
+        // data was about to be copied again.
+        this.recordAccess(
+          actor,
+          'sealSubjectPayloads',
+          { tenantId, scopeId },
+          { subjects: new Set(items.map((i) => i.subjectId)).size },
+          sealed.filter((s) => s !== null).length,
+        );
+        return sealed;
+      },
+      openSubjectPayloads: async (actor, tenantId, scopeId, items) => {
+        this.assertScope(tenantId, scopeId);
+        const opened = await this.subjectKeysFor(tenantId, scopeId).openMany(items);
+        this.recordAccess(
+          actor,
+          'openSubjectPayloads',
+          { tenantId, scopeId },
+          { subjects: new Set(items.map((i) => i.subjectId)).size },
+          opened.filter((o) => o !== null).length,
+        );
+        return opened;
+      },
+      shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
+        this.assertScope(tenantId, scopeId);
+        // Redact the live spine FIRST. Both halves are idempotent and a crash between them
+        // converges on retry, so the order is decided by which half-done state harms the
+        // person: dying after this leaves ciphertext in a backup that no key opens; dying
+        // after destroying the key first would leave their PII in the operational database
+        // while the audit log says they were erased.
+        //
+        // The payload goes, the envelope stays — id, type, entity, occurredAt and the
+        // (pseudonymous) subject id. That is §5.3's line held exactly: "pseudonymous keys
+        // and transaction facts remain". A consumer's timeline still shows that something
+        // happened, to what, and when; it no longer shows who or what was said.
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const redacted = db
+          .prepare(
+            `UPDATE _substrat_outbox SET payload = NULL
+              WHERE subject_id = ? AND pii_class != 'none' AND payload IS NOT NULL`,
+          )
+          .run(subjectId);
+        const at = new Date().toISOString();
+        const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
+        const receipt = subjectShredReceipt.parse({
+          subjectId,
+          eventsRedacted: redacted.changes,
+          keyDestroyed: existed,
+          tombstoned: true,
+        });
+        // BOTH logs, which is unusual and deliberate: the admin log because this is a
+        // mutation, the access log because it destroys evidence. An erasure is the one
+        // action where "who asked for this to disappear" is itself the record.
+        this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId }, redacted.changes);
+        return receipt;
       },
       reapTenant: async (actor: PlatformActorId, tenantId: TenantId) => {
         // The terminal tenant reap (§4.8), the tenant analogue of reapScope. The
