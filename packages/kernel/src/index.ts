@@ -24,6 +24,8 @@ export type {
   OpenedAttachment,
   OperationContext,
   OperationHandler,
+  OpsFailureFilter,
+  OpsFailureInput,
   ProvisionScopeInput,
   RoleFilter,
   ScheduleRegistration,
@@ -41,7 +43,13 @@ export type {
   TenantStoreProvisionInput,
   TenantStoreRecord,
 } from './scope-host.js';
-export { attachmentBlobKey, backoffAt, parseValidationRecords, resolveRetryPolicy } from './scope-host.js';
+export {
+  attachmentBlobKey,
+  backoffAt,
+  parseValidationRecords,
+  resolveRetryPolicy,
+  OPS_FAILURE_RETENTION_DAYS,
+} from './scope-host.js';
 export { unconfiguredSecretBox, webCryptoSecretBox } from './secret-box.js';
 export type { SealedSecret, SecretBox } from './secret-box.js';
 export { createSubjectKeys } from './subject-keys.js';

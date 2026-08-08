@@ -1,6 +1,7 @@
 import {
   accessLogEntry,
   adminLogEntry,
+  opsFailureEntry,
   attachmentRecord,
   type AttachmentRecord,
   type BlobStoreHandle,
@@ -49,6 +50,7 @@ import {
   type CreateConnectionInput,
   type AccessLogEntry,
   type AdminLogEntry,
+  type OpsFailureEntry,
   type CapabilityGrant,
   type CreateOrgInput,
   type CreateTenantInput,
@@ -108,6 +110,8 @@ import {
   ulid,
   type AccessLogFilter,
   type AuditLogFilter,
+  type OpsFailureFilter,
+  type OpsFailureInput,
   type BlobStoreProvisionInput,
   type BlobStoreRecord,
   type ScopeAttachments,
@@ -150,6 +154,8 @@ import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.
 import type {
   AccessLogRow,
   AuditLogQuery,
+  OpsFailureQuery,
+  OpsFailureRow,
   ChannelHistoryRow,
   ChannelRow,
   ConnectionDoRow,
@@ -526,6 +532,8 @@ interface ControlPlaneStub {
   }): Promise<{ existed: boolean }>;
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
+  recordOpsFailure(row: OpsFailureRow): Promise<void>;
+  listOpsFailures(query: OpsFailureQuery): Promise<OpsFailureEntry[]>;
   // #40 — the directory's own backup/restore pair.
   exportDump(): Promise<ScopeDumpTable[]>;
   importDump(tables: ScopeDumpTable[]): Promise<void>;
@@ -3629,6 +3637,47 @@ export class CloudflareScopeHost implements ScopeHost {
           rows.length,
         );
         return rows.map((r) => adminLogEntry.parse(r));
+      },
+      recordOpsFailure: async (entry: OpsFailureInput): Promise<void> => {
+        await this.cp.recordOpsFailure({
+          id: ulid(),
+          actor: entry.actor,
+          operation: entry.operation,
+          stage: entry.stage ?? null,
+          tenant_id: entry.tenantId ?? null,
+          scope_id: entry.scopeId ?? null,
+          vertical: entry.vertical ?? null,
+          status: entry.status ?? null,
+          // Bounded here, not trusted from the catch site: one runaway upstream body
+          // must not become a runaway directory row (#559).
+          message: entry.message.slice(0, 2000),
+          reference: entry.reference ?? null,
+          at: new Date().toISOString(),
+        });
+      },
+      listOpsFailures: async (actor, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]> => {
+        const rows = await this.cp.listOpsFailures({
+          tenantId: filter?.tenantId,
+          scopeId: filter?.scopeId,
+          vertical: filter?.vertical,
+          operation: filter?.operation,
+          reference: filter?.reference,
+          since: filter?.since,
+          until: filter?.until,
+          limit: filter?.limit,
+          cursor: filter?.cursor,
+          order: filter?.order,
+        });
+        // Rows can name tenants and scopes, so reading them is recorded like the
+        // audit trail's own reads (K-24).
+        await this.recordAccess(
+          actor,
+          'listOpsFailures',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter,
+          rows.length,
+        );
+        return rows.map((r) => opsFailureEntry.parse(r));
       },
     };
   }

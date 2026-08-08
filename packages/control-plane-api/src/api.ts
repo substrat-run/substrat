@@ -40,7 +40,7 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import type { ScopeHost } from '@substrat-run/kernel';
+import type { OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
@@ -491,6 +491,23 @@ const auditLogQuery = z.object({
   ...listPageQuery.shape,
 });
 
+const opsFailuresQuery = z.object({
+  tenantId: tenantIdSchema.optional(),
+  scopeId: scopeIdSchema.optional(),
+  vertical: z.string().optional(),
+  operation: z.string().optional(),
+  // Exact match — the lookup a CI log's `reference = <id>` line lands on.
+  reference: z.string().optional(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+  // Bounded by default exactly as /admin-log, and for the same reason.
+  ...listPageQuery.shape,
+});
+
+/** The upstream provider's trace handle, when a failure message carries one —
+ *  Cloudflare's `internal error; reference = <id>` shape (#559). */
+const UPSTREAM_REFERENCE = /\breference\s*=\s*([a-z0-9]+)/i;
+
 /**
  * The audited HTTP surface over `HostAdmin` (control-plane.md §4.5).
  *
@@ -613,6 +630,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await next();
   });
 
+  // Fire-and-forget ops-failure write (#559): a recorder that throws must never
+  // mask the failure it is recording, so every path through this swallows its own
+  // errors. The upstream reference is extracted here — one place — so a caller
+  // that only has the message still lands a searchable row.
+  const recordFailure = (entry: OpsFailureInput): void => {
+    void admin
+      .recordOpsFailure({
+        ...entry,
+        reference: entry.reference ?? UPSTREAM_REFERENCE.exec(entry.message)?.[1] ?? null,
+      })
+      .catch(() => undefined);
+  };
+
   // One error boundary for every route: adapters throw plain Errors, and each
   // one is a fail-closed refusal that must reach the caller as a status, not a
   // stack trace.
@@ -621,6 +651,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'invalid request', issues: err.issues }, 400);
     }
     const { status, body } = mapError(err);
+    // A 5xx is the PLATFORM failing — an unmapped throw, or a downstream vertical's
+    // own 5xx passing through (a DO storage fault during a preview restore is the
+    // founding case, #559) — so it lands a durable ops-failure row the console can
+    // list and a `reference = <id>` search can find. 501 stays out: an honest
+    // not-implemented is a capability statement, not a failure. 4xx stay out too:
+    // they are refusals the caller can already read. Actor is unset only when the
+    // throw happened before authentication — nothing worth recording refuses there.
+    const actor = c.get('actor');
+    if (status >= 500 && status !== 501 && actor) {
+      recordFailure({
+        actor,
+        operation: `${c.req.method} ${c.req.routePath}`,
+        vertical: c.req.param('slug') ? decodeURIComponent(c.req.param('slug')!) : null,
+        tenantId: (c.req.param('tenantId') as OpsFailureInput['tenantId']) ?? null,
+        scopeId: (c.req.param('scopeId') as OpsFailureInput['scopeId']) ?? null,
+        status,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     // A 500 is, by definition, a throw whose message `mapError` did not recognise — so the
     // client gets a GENERIC body that discloses nothing, and until now nothing recorded WHAT
     // threw either. That left every unmapped failure (e.g. a raw SQLite constraint from a
@@ -2260,6 +2309,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // must act on, and indistinguishable from "the vertical is broken" once it
       // has been flattened.
       if (e instanceof ControlPlaneError) {
+        // The retry above already rode out the transient window, so a 5xx here is a
+        // provision the platform could not complete — record it (#559). Refusals
+        // (4xx, and 501 = not implemented) stay unrecorded: the caller can read them.
+        if (e.status >= 500 && e.status !== 501) {
+          recordFailure({
+            actor: c.get('actor'),
+            operation: 'install.provision',
+            vertical: slug,
+            tenantId: input.tenantId,
+            status: e.status,
+            message: e.message,
+          });
+        }
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       }
       throw e;
@@ -2921,7 +2983,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const detail = e instanceof Error ? e.message : String(e);
       const upstream = upstreamStatusOf(e);
       console.error('deploy.upload.failed', { slug, deploymentRef, detail, upstream });
-      return upstream !== undefined && upstream >= 400 && upstream < 500
+      const rejected = upstream !== undefined && upstream >= 400 && upstream < 500;
+      // Both outcomes land an ops-failure row (#559): the 502 is the platform's to
+      // explain, and the 422 is what the builder-facing failure view (step 5) will
+      // list — a red push should be explainable from a durable record either way.
+      recordFailure({
+        actor: c.get('actor'),
+        operation: 'deploy.upload',
+        stage: 'wfp-upload',
+        vertical: slug,
+        tenantId: ownerTenant ?? null,
+        status: rejected ? 422 : 502,
+        message: detail,
+      });
+      return rejected
         ? c.json({ error: 'deploy rejected', detail }, 422)
         : c.json({ error: 'deploy upload failed', detail }, 502);
     }
@@ -3674,6 +3749,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const entries = await admin.auditLog(c.get('actor'), filter as Parameters<typeof admin.auditLog>[1]);
     // The cursor IS the last entry's id (ULID order is chronological), so the
     // page carries its own continuation and the console never assembles one.
+    return c.json(pageOf(entries, filter.limit, (e) => e.id));
+  });
+
+  // The recorded operational failures (#559) — the console's failures view, and the
+  // "what does this `reference = <id>` belong to" lookup. Staff-only by omission from
+  // BUILDER_ROUTES (a builder-scoped slice is step 5's concern, deliberately not
+  // pre-opened here). Newest first by default, unlike /admin-log: an operator asks
+  // "what broke lately".
+  app.get('/ops-failures', async (c) => {
+    const filter = opsFailuresQuery.parse({
+      tenantId: c.req.query('tenantId'),
+      scopeId: c.req.query('scopeId'),
+      vertical: c.req.query('vertical'),
+      operation: c.req.query('operation'),
+      reference: c.req.query('reference'),
+      since: c.req.query('since'),
+      until: c.req.query('until'),
+      limit: c.req.query('limit'),
+      cursor: c.req.query('cursor'),
+      order: c.req.query('order'),
+    });
+    const entries = await admin.listOpsFailures(
+      c.get('actor'),
+      filter as Parameters<typeof admin.listOpsFailures>[1],
+    );
     return c.json(pageOf(entries, filter.limit, (e) => e.id));
   });
 

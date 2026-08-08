@@ -2931,6 +2931,51 @@ describe('control-plane API — deploy', () => {
     expect((await res.json()).error).toBe('deploy upload failed');
   });
 
+  it('lands a failed upload as a durable ops-failure row, reference extracted and searchable (#559)', async () => {
+    const boom = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      deployVertical: async () => {
+        // The founding shape: Cloudflare's redacted fault, reference and all.
+        throw new DeployUploadError(500, 'WfP upload failed (500): internal error; reference = deadbeef123ref');
+      },
+    });
+    const res = await boom.request('/verticals/opsfail/deploy', { method: 'POST', headers: auth, body: form(manifest()) });
+    expect(res.status).toBe(502);
+
+    // The lookup a CI log's `reference = <id>` line lands on — extracted transport-side,
+    // so the caller never had to pass it separately.
+    const found = await (await boom.request('/ops-failures?reference=deadbeef123ref', { headers: auth })).json();
+    expect(found.entries.length).toBe(1);
+    expect(found.entries[0].operation).toBe('deploy.upload');
+    expect(found.entries[0].stage).toBe('wfp-upload');
+    expect(found.entries[0].vertical).toBe('opsfail');
+    expect(found.entries[0].status).toBe(502);
+    expect(found.entries[0].message).toMatch(/internal error/);
+
+    // The vertical-scoped read the console's failures strip uses, newest first.
+    const byVertical = await (await boom.request('/ops-failures?vertical=opsfail', { headers: auth })).json();
+    expect(byVertical.entries.length).toBeGreaterThanOrEqual(1);
+    expect(byVertical.entries[0].reference).toBe('deadbeef123ref');
+  });
+
+  it('records a bad-bundle 422 too — the builder-facing failure view lists those (#559)', async () => {
+    const boom = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      deployVertical: async () => {
+        throw new DeployUploadError(400, 'WfP upload failed (400): Uncaught Error: top-level throw');
+      },
+    });
+    const res = await boom.request('/verticals/opsfail422/deploy', { method: 'POST', headers: auth, body: form(manifest()) });
+    expect(res.status).toBe(422);
+    const rows = await (await boom.request('/ops-failures?vertical=opsfail422', { headers: auth })).json();
+    expect(rows.entries.length).toBe(1);
+    expect(rows.entries[0].status).toBe(422);
+    // No upstream reference in the message ⇒ the column stays null, never a bogus match.
+    expect(rows.entries[0].reference).toBeNull();
+  });
+
   it("forwards a vertical's own D1 binding (with its database id) to the uploader", async () => {
     const res = await push(
       'd1demo',
@@ -3069,6 +3114,9 @@ describe('control-plane API — builder authz', () => {
     // tenant-narrowed — their confinement is covered by their own describes below.)
     expect((await acmeReq('/tenants')).status).toBe(403);
     expect((await acmeReq('/admin-log')).status).toBe(403);
+    // Ops failures can name other tenants' scopes — staff-only until step 5's
+    // deliberately tenant-narrowed slice (#559).
+    expect((await acmeReq('/ops-failures')).status).toBe(403);
     expect((await acmeReq('/roles')).status).toBe(403);
     // Provisioning an instance is a scope action, not vertical management → 403.
     expect(

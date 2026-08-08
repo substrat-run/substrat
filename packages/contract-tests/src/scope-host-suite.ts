@@ -1463,6 +1463,66 @@ export function scopeHostContractSuite(
     });
 
     // -- the integrations hub: connections (#101) -----------------------------
+    // -- operational failures (#559): the durable record of what the platform could NOT do --
+
+    describe('operational failures (#559)', () => {
+      it('records a failure and finds it again — by reference, by vertical, newest first', async () => {
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'deploy.upload',
+          stage: 'wfp-upload',
+          tenantId: t1,
+          vertical: 'acme/crm',
+          status: 502,
+          message: 'WfP upload failed (500): internal error; reference = testref123abc',
+          reference: 'testref123abc',
+        });
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'POST /verticals/:slug/previews',
+          vertical: 'acme/crm',
+          status: 502,
+          message: 'internal error; reference = otherref456',
+          reference: 'otherref456',
+        });
+
+        // Newest first by default — an operator asks "what broke lately", and the
+        // adapter's ULIDs are monotonic, so creation order IS id order.
+        const recent = await host.admin.listOpsFailures(staff, { vertical: 'acme/crm' });
+        expect(recent.length).toBe(2);
+        expect(recent[0]!.operation).toBe('POST /verticals/:slug/previews');
+
+        // The lookup a CI log's `reference = <id>` line lands on.
+        const byRef = await host.admin.listOpsFailures(staff, { reference: 'testref123abc' });
+        expect(byRef.length).toBe(1);
+        expect(byRef[0]!.stage).toBe('wfp-upload');
+        expect(byRef[0]!.tenantId).toBe(t1);
+        expect(byRef[0]!.status).toBe(502);
+
+        // Cursor pages exactly like the audit log: the entry id IS the cursor.
+        const page1 = await host.admin.listOpsFailures(staff, { vertical: 'acme/crm', limit: 1 });
+        const page2 = await host.admin.listOpsFailures(staff, {
+          vertical: 'acme/crm',
+          limit: 1,
+          cursor: page1[0]!.id,
+        });
+        expect(page1.length).toBe(1);
+        expect(page2.length).toBe(1);
+        expect(page2[0]!.id).not.toBe(page1[0]!.id);
+      });
+
+      it('bounds the recorded message — a runaway upstream body never becomes a runaway row', async () => {
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'contract.bound-check',
+          message: 'x'.repeat(10_000),
+        });
+        const rows = await host.admin.listOpsFailures(staff, { operation: 'contract.bound-check' });
+        expect(rows.length).toBe(1);
+        expect(rows[0]!.message.length).toBeLessThanOrEqual(2000);
+      });
+    });
+
     //
     // The store exists so a vertical's connector can reach a tenant's provider
     // without any module ever holding a credential. So the properties that

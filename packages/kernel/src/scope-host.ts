@@ -11,6 +11,7 @@ import type {
   AccessLogEntry,
   BindHostnameInput,
   AdminLogEntry,
+  OpsFailureEntry,
   CapabilityGrant,
   CreateTenantInput,
   Decision,
@@ -1576,6 +1577,28 @@ export interface HostAdmin {
   auditLog(actor: PlatformActorId, filter?: AuditLogFilter): Promise<AdminLogEntry[]>;
 
   /**
+   * Record one operational failure (#559) — a deploy, restore, or provision that the
+   * PLATFORM could not complete. Deliberately not `recordAdmin`: the audit spine
+   * answers "who changed what", and a failure changed nothing. The row gives the
+   * upstream trace reference (Cloudflare's `internal error; reference = <id>`) a
+   * durable, queryable home; before this its only record was a vertical script's
+   * short-retention observability logs.
+   *
+   * MUST NOT throw in normal operation: the adapters bound the row's size and prune
+   * old rows on write, and the transport calls this from failure paths — a recorder
+   * that fails must never mask the failure it was recording (callers still guard).
+   */
+  recordOpsFailure(entry: OpsFailureInput): Promise<void>;
+
+  /**
+   * The recorded operational failures, newest first by default — the console's
+   * failures view and the "what does this `reference = <id>` belong to" lookup.
+   * Retention-bounded (unlike the never-swept admin log), so an empty read means
+   * "nothing recent", never "nothing ever".
+   */
+  listOpsFailures(actor: PlatformActorId, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]>;
+
+  /**
    * The staff access log (K-24) — who READ the directory, when, and how much came
    * back. Reading it is itself recorded: who examined the record of who looked is
    * the question an incident asks second.
@@ -1861,6 +1884,50 @@ export interface AccessLogFilter extends ListPage {
    * `accessLog` seam rather than giving it a private read path into the table.
    */
   drained?: boolean;
+}
+
+/**
+ * How long a recorded operational failure is kept (#559). Telemetry, not evidence:
+ * unlike the never-swept admin log, the ops-failures table self-prunes on write in
+ * every adapter, so it can never grow without bound and needs no cron wiring or
+ * operator decision. 90 days comfortably outlives any incident follow-up (a
+ * Cloudflare ticket round-trip) while keeping directory storage flat.
+ */
+export const OPS_FAILURE_RETENTION_DAYS = 90;
+
+/**
+ * What a failure path hands `recordOpsFailure`. `id`/`at` are stamped by the
+ * adapter (ULID + now), everything else by the transport at the catch site.
+ */
+export interface OpsFailureInput {
+  actor: PlatformActorId;
+  /** Semantic where the route knows it (`deploy.upload`), `METHOD /route/:path` otherwise. */
+  operation: string;
+  stage?: string | null;
+  tenantId?: TenantId | null;
+  scopeId?: ScopeId | null;
+  vertical?: string | null;
+  /** The HTTP status the failure was answered with (or carried from upstream). */
+  status?: number | null;
+  message: string;
+  /** The upstream provider's trace reference, when the message carried one. */
+  reference?: string | null;
+}
+
+/** Filter for `listOpsFailures` — cursor/order/limit exactly as `AuditLogFilter`. */
+export interface OpsFailureFilter {
+  tenantId?: TenantId;
+  scopeId?: ScopeId;
+  vertical?: string;
+  operation?: string;
+  /** Exact match — the lookup a CI log's `reference = <id>` line lands on. */
+  reference?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  /** Default 'desc' — an operator asks "what broke lately", not "what broke first". */
+  order?: 'asc' | 'desc';
 }
 
 export interface AuditLogFilter {
