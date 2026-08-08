@@ -36,9 +36,25 @@ export interface AuthResult {
   display?: string;
 }
 
+/**
+ * Who the caller IS, before any club has an opinion — the half of auth that
+ * `resolve` cannot answer for a non-member. Accepting an invitation needs it:
+ * the recipient has no principal in the venue's tenant yet, but they do have a
+ * session, and the session's email is what the engine re-hashes as proof.
+ */
+export interface CallerIdentity {
+  provider: string;
+  externalId: string;
+  /** Verified by the provider — never taken from a request body on this path. */
+  email: string;
+  name?: string;
+}
+
 export interface AuthAdapter {
   id: string;
   resolve(headers: Headers, venue: Venue): Promise<AuthResult | null>;
+  /** Optional: identify the caller without requiring membership anywhere. */
+  identify?(headers: Headers): Promise<CallerIdentity | null>;
 }
 
 /**
@@ -67,6 +83,17 @@ export function betterAuthAdapter(auth: SessionAuth, host: ScopeHost): AuthAdapt
         display: user.name ?? user.email ?? 'spelare',
       };
     },
+    async identify(headers) {
+      const session = await auth.api.getSession({ headers });
+      const user = session?.user;
+      if (!user?.email) return null;
+      return {
+        provider: 'better-auth',
+        externalId: user.id,
+        email: user.email,
+        ...(user.name ? { name: user.name } : {}),
+      };
+    },
   };
 }
 
@@ -86,6 +113,14 @@ export function devHeaderAdapter(): AuthAdapter {
       const parsed = principalId.safeParse(raw);
       return parsed.success ? { principal: parsed.data, via: 'dev-header' } : null;
     },
+    // The same bypass, for the identity half: `x-identifier` names an email and
+    // is believed. It cannot be LINKED (no `dev-header` identity pool exists),
+    // so it only works alongside `x-principal` — which is the dev posture anyway.
+    async identify(headers) {
+      const raw = headers.get('x-identifier');
+      if (!raw) return null;
+      return { provider: 'dev-header', externalId: raw, email: raw };
+    },
   };
 }
 
@@ -97,6 +132,18 @@ export async function resolvePrincipal(
 ): Promise<AuthResult | null> {
   for (const a of adapters) {
     const r = await a.resolve(headers, venue);
+    if (r) return r;
+  }
+  return null;
+}
+
+/** Same contract as `resolvePrincipal`, for who-are-you rather than who-here. */
+export async function identifyCaller(
+  adapters: AuthAdapter[],
+  headers: Headers,
+): Promise<CallerIdentity | null> {
+  for (const a of adapters) {
+    const r = await a.identify?.(headers);
     if (r) return r;
   }
   return null;

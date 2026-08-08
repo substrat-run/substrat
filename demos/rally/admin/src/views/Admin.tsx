@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
+  getVenue,
+  inviteLink,
   newPartyRef,
+  type ClubInvitation,
   type Court,
   type Member,
   type Occupancy,
@@ -23,6 +26,7 @@ export default function Admin({
   const [venue, setVenue] = useState<VenueSnapshot | null>(null);
   const [courts, setCourts] = useState<Court[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
+  const [invites, setInvites] = useState<ClubInvitation[]>([]);
   const [err, setErr] = useState('');
 
   const reload = useCallback(async () => {
@@ -35,6 +39,11 @@ export default function Admin({
         setMembers(await api.members());
       } catch {
         setMembers([]);
+      }
+      try {
+        setInvites(await api.invites());
+      } catch {
+        setInvites([]);
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -217,6 +226,58 @@ export default function Admin({
           <NewMember
             onCreate={(name) => guard(() => api.addMember({ partyRef: newPartyRef(), name }))}
           />
+        </div>
+      )}
+
+      {view === 'members' && (
+        <div className="card">
+          <h2>Inbjudningar</h2>
+          <p className="hint" style={{ marginTop: -4, marginBottom: 10 }}>
+            Att bjuda in är vägen in i klubben: inbjudan ger ingenting förrän spelaren själv
+            accepterar den i spelarappen. Ingen e-post skickas i demot — kopiera länken och skicka
+            den själv.
+          </p>
+          <NewInvite
+            onCreate={(name, identifier) => guard(() => api.invitePlayer({ name, identifier }))}
+          />
+          {invites.length > 0 && (
+            <table style={{ marginTop: 12 }}>
+              <thead>
+                <tr>
+                  <th>Namn</th>
+                  <th>Status</th>
+                  <th>Går ut</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {invites.map((i) => (
+                  <tr key={i.id}>
+                    <td style={{ fontWeight: 700, color: 'var(--ink)' }}>{i.name ?? '—'}</td>
+                    <td className="mono">{INVITE_STATE_SV[i.state] ?? i.state}</td>
+                    <td className="mono hint">{i.expires_at.slice(0, 10)}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      {i.state === 'invited' && (
+                        <>
+                          <button
+                            className="btn"
+                            onClick={() =>
+                              void navigator.clipboard.writeText(inviteLink(getVenue(), i.id))
+                            }
+                          >
+                            Kopiera länk
+                          </button>{' '}
+                          <button className="btn" onClick={() => guard(() => api.revokeInvite(i.id))}>
+                            Återkalla
+                          </button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
 
@@ -579,6 +640,40 @@ function NewCourt({ onCreate }: { onCreate: (n: string, d: string) => void }) {
       <input type="text" value={durations} onChange={(e) => setDurations(e.target.value)} />
       <button className="btn lime" disabled={!name} onClick={() => { onCreate(name, durations); setName(''); }}>
         Lägg till bana
+      </button>
+    </div>
+  );
+}
+
+const INVITE_STATE_SV: Record<string, string> = {
+  invited: 'väntar',
+  accepted: 'accepterad',
+  revoked: 'återkallad',
+  expired: 'utgången',
+};
+
+function NewInvite({ onCreate }: { onCreate: (name: string, identifier: string) => void }) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  return (
+    <div style={{ display: 'flex', gap: 8 }}>
+      <input type="text" placeholder="Namn" value={name} onChange={(e) => setName(e.target.value)} />
+      <input
+        type="email"
+        placeholder="E-post"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+      <button
+        className="btn lime"
+        disabled={!name || !email}
+        onClick={() => {
+          onCreate(name, email);
+          setName('');
+          setEmail('');
+        }}
+      >
+        Bjud in spelare
       </button>
     </div>
   );

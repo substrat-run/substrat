@@ -1,6 +1,7 @@
 import { RALLY_PLATFORM_ACTOR } from './seed.js';
 import {
   devHeaderAdapter,
+  identifyCaller,
   resolvePrincipal,
   type AuthAdapter,
   type Venue,
@@ -8,7 +9,7 @@ import {
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
-import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import type { RallyWorld } from './seed.js';
 
@@ -48,16 +49,20 @@ export function createRallyApp(
    * Solna and Nacka; Ravi's is scoped to Solna; nobody at RallyPoint reaches
    * Göteborg at all.
    */
-  const VENUES: Record<string, { label: string; tenantId: typeof world.t1; scopeId: typeof world.s1 }> =
-    {
-      solna: { label: 'RallyPoint Solna', tenantId: world.t1, scopeId: world.s1 },
-      nacka: { label: 'RallyPoint Nacka', tenantId: world.t1, scopeId: world.s1b },
-      goteborg: { label: 'Padelcenter Göteborg', tenantId: world.t2, scopeId: world.s2 },
-    };
+  const VENUES: Record<
+    string,
+    { label: string; tenantId: typeof world.t1; scopeId: typeof world.s1; orgId: typeof world.org1 }
+  > = {
+    // The org is the CLUB's player org — one per tenant, shared by its venues:
+    // membership is club-wide, the member's wallet row is per venue.
+    solna: { label: 'RallyPoint Solna', tenantId: world.t1, scopeId: world.s1, orgId: world.org1 },
+    nacka: { label: 'RallyPoint Nacka', tenantId: world.t1, scopeId: world.s1b, orgId: world.org1 },
+    goteborg: { label: 'Padelcenter Göteborg', tenantId: world.t2, scopeId: world.s2, orgId: world.org2 },
+  };
 
   const app = new Hono();
 
-  function venueOf(c: Context): Venue {
+  function venueOf(c: Context): Venue & { orgId: typeof world.org1 } {
     const key = c.req.header('x-venue') ?? 'solna';
     const venue = VENUES[key];
     if (!venue) throw new PermissionDenied(`unknown venue: ${key}`);
@@ -192,6 +197,79 @@ export function createRallyApp(
   app.post('/api/members', async (c) =>
     c.json(await (await stub(c)).invoke('rally/create-member', await body(c))),
   );
+
+  // -- invitations (#35 / #564) ------------------------------------------------
+  // The org is the venue's, never the body's: which club you are inviting into
+  // is decided by where you are standing, not by what the request claims.
+  app.get('/api/invites', async (c) =>
+    c.json(await (await stub(c)).invoke('rally/list-invites', { orgId: venueOf(c).orgId })),
+  );
+  app.post('/api/invites', async (c) =>
+    c.json(
+      await (await stub(c)).invoke('rally/invite-player', {
+        ...(await body(c)),
+        orgId: venueOf(c).orgId,
+      }),
+    ),
+  );
+  app.post('/api/invites/:id/revoke', async (c) =>
+    c.json(
+      await (await stub(c)).invoke('rally/revoke-invite', { invitationId: c.req.param('id') }),
+    ),
+  );
+
+  /**
+   * Accept an invitation — the one route whose caller is, by definition, not yet
+   * a member, so it cannot go through `authOf`. The invitation is the authority
+   * (the engine re-hashes the identifier and compares); this route's job is to
+   * answer WHO is accepting:
+   *
+   *  - A real session: the identifier is the session's VERIFIED email — never
+   *    the body — and a caller with no principal in this tenant gets one minted
+   *    and linked on success. That is the honest bootstrap: signing up made
+   *    them a person, accepting is what makes them a member.
+   *  - The dev header: `x-principal` names the acceptor and the body may name
+   *    the email. An impersonation bypass by design, mounted only when opted
+   *    in — and a dev identity is never linked (no such identity pool exists).
+   */
+  app.post('/api/invites/accept', async (c) => {
+    const venue = venueOf(c);
+    const input = await body(c);
+    const headers = c.req.raw.headers;
+    const who = await identifyCaller(adapters, headers);
+    const existing = await resolvePrincipal(adapters, headers, venue);
+
+    const fromBody = typeof input.identifier === 'string' ? input.identifier : undefined;
+    const identifier =
+      who && who.provider !== 'dev-header'
+        ? who.email
+        : (who?.email ?? (existing?.via === 'dev-header' ? fromBody : undefined));
+    if (!identifier) throw new PermissionDenied('not authenticated');
+    // A dev identity cannot be linked, so without x-principal there would be a
+    // membership no one can ever authenticate as. Refuse rather than strand it.
+    if (!existing && (!who || who.provider === 'dev-header')) {
+      throw new PermissionDenied('not authenticated');
+    }
+
+    const principal = existing?.principal ?? principalId.parse(ulid());
+    const scope = await host.getScope(principal, venue.tenantId, venue.scopeId);
+    const accepted = await scope.invoke('invites/accept', {
+      invitationId: input.invitationId,
+      identifier,
+    });
+    // Bind the login to the principal the acceptance just authorized — only
+    // after success, so a refused acceptance leaves no dangling identity link.
+    if (!existing && who && who.provider !== 'dev-header') {
+      await host.admin.linkIdentity(RALLY_PLATFORM_ACTOR, {
+        provider: who.provider,
+        externalId: who.externalId,
+        principal,
+        tenantId: venue.tenantId,
+        scopeId: venue.scopeId,
+      });
+    }
+    return c.json(accepted);
+  });
 
   // -- the calendar & booking -------------------------------------------------
   app.get('/api/availability', async (c) =>

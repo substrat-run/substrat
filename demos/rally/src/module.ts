@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { sendInvite } from '@substrat-run/engine-invites';
+import { listInvites, revokeInvite, sendInvite, type Invitation } from '@substrat-run/engine-invites';
 import {
   dataSubjectId,
   orgId as orgIdSchema,
@@ -1893,11 +1893,14 @@ const timelineOp: OperationHandler<
  * adds a column upstream.
  */
 const invitePlayerOp: OperationHandler<
-  { orgId: string; identifier: string; name: string; partyRef: string },
+  { orgId: string; identifier: string; name: string; partyRef?: string },
   { invitationId: string }
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.manageMembers));
-  const partyRef = dataSubjectId.parse(input.partyRef);
+  // Optional since the admin screen landed: the desk invites a NEW person by
+  // email and name, and a new person has no global player ref yet. A caller
+  // that knows the ref (the same human from another club) still passes it.
+  const partyRef = dataSubjectId.parse(input.partyRef ?? ulid());
   const { id } = await sendInvite(ctx, {
     orgId: orgIdSchema.parse(input.orgId),
     identifier: input.identifier,
@@ -1911,6 +1914,44 @@ const invitePlayerOp: OperationHandler<
     [id, partyRef, input.name],
   );
   return { invitationId: id };
+};
+
+/**
+ * The club's invitations, with the name the club filed them under.
+ *
+ * The engine's list is deliberately nameless — identifiers are hashed and never
+ * returned — which is right for the engine and useless for a desk screen. The
+ * name comes from RallyPoint's OWN side table, keyed by invitation id: the club
+ * showing itself what it already knows, not the engine leaking anything.
+ */
+const listInvitesOp: OperationHandler<
+  { orgId: string },
+  (Invitation & { name: string | null })[]
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(RALLY_PERM.manageMembers));
+  const invitations = listInvites(ctx, orgIdSchema.parse(input.orgId));
+  const names = new Map(
+    ctx.sql
+      .query<{ invitation_id: string; name: string }>(
+        'SELECT invitation_id, name FROM rally_invited_player',
+      )
+      .map((r) => [r.invitation_id, r.name]),
+  );
+  return invitations.map((i) => ({ ...i, name: names.get(i.id) ?? null }));
+};
+
+/**
+ * Withdraw an invitation. Same vocabulary as inviting: this is desk work, so it
+ * checks `rally:manage-members` — the club's word — not the engine's key.
+ * Idempotent and silent on settled invitations, like the function it composes.
+ */
+const revokeInviteOp: OperationHandler<{ invitationId: string }, { ok: true }> = async (
+  ctx,
+  input,
+) => {
+  assertAllowed(await ctx.check(RALLY_PERM.manageMembers));
+  revokeInvite(ctx, z.string().min(1).parse(input.invitationId));
+  return { ok: true };
 };
 
 /**
@@ -1958,6 +1999,8 @@ export const rallyModule: ModuleRegistration = {
     'rally/upsert-pack': upsertPackOp as never,
     'rally/upsert-plan': upsertPlanOp as never,
     'rally/invite-player': invitePlayerOp as never,
+    'rally/list-invites': listInvitesOp as never,
+    'rally/revoke-invite': revokeInviteOp as never,
     'rally/wallet': walletOp as never,
     'rally/buy-credits': buyCreditsOp as never,
     'rally/subscribe': subscribeOp as never,
