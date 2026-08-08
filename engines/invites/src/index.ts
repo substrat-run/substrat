@@ -55,6 +55,19 @@ export const invitesManifest = moduleManifest.parse({
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
   attachmentTargets: [],
   entitlementKey: 'invites',
+  ui: {
+    routes: [
+      { path: 'invitations', screen: './ui/InvitationList', permission: 'invites:read' },
+    ],
+    nav: [
+      { label: 'invites.nav', icon: 'user-plus', to: 'invitations', permission: 'invites:read' },
+    ],
+    entityViews: [{ entityType: 'invitation', view: './ui/InvitationCard' }],
+    // No accept route, deliberately. Accepting checks no permission — the
+    // invitation itself is the authority (membership.md §6) — so an accept
+    // screen belongs in the host app's unauthenticated routing, outside the
+    // permission-keyed shell.
+  },
 });
 
 export const invitesMigrations = [

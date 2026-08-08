@@ -136,11 +136,14 @@ so the remover needs no external subject) is a DELETE — the identity map is cu
 is the admin log — so a re-invite can re-link a fresh principal. Both kernel additions ship with
 contract/adapter tests.
 
-## 8. Still a follow-up: email delivery
+## 8. Email delivery — landed after this doc
 
-There is no email connector for the dashboard, so an invite returns a **shareable link** the
-inviter passes along (shown in the invite dialog with a copy button). A transactional-email
-connector is the follow-up; the token + accept flow already sit behind it.
+Written when an invite returned only a **shareable link** the inviter passed along. That
+follow-up has since shipped (#511): `packages/adapter-email` is the notification-transport
+port (Cloudflare Email Service binding, mock fallback so a missing binding never fails an
+invite), and the dashboard sends the invite email in the request path
+(`apps/dashboard/src/email.ts` — the only place the plaintext address exists; `invites.sent`
+still carries a hash). The copy-link affordance remains as the fallback.
 
 ## 9. Out of scope for this line of work
 
