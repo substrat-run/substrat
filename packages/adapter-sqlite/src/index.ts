@@ -5445,7 +5445,10 @@ export class SqliteScopeHost implements ScopeHost {
           )
           .run(limit);
         if (info.changes > 0) {
-          this.recordAdmin(actor, 'pruneAccessLog', { tenantId: null }, { pruned: info.changes }, null);
+          // The payload is the APPLIED state, so it belongs in `after` (contracts'
+          // adminLogEntry: before = prior state, after = the applied payload) — the
+          // same shape as drainAccessLog's row above (#557).
+          this.recordAdmin(actor, 'pruneAccessLog', { tenantId: null }, null, { pruned: info.changes });
         }
         return info.changes;
       },

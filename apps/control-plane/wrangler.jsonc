@@ -105,15 +105,19 @@
 	// by the very teardown these copies exist to survive. Contents are FULL fidelity
 	// (unmasked) — a masked dump cannot restore — so this bucket is as sensitive as the
 	// scopes it backs: no public access, and it is deliberately NOT bound on any vertical.
-	// Retention is indefinite for now; a lifecycle rule is #36's retention decision.
+	// Retention (#557): opt-in, enforced by the sweep rather than an R2 lifecycle rule so
+	// the policy is visible in the repo —  wrangler secret put SCOPE_BACKUP_RETENTION_DAYS
+	// (scopes/ reap copies) and ACCESS_LOG_RETENTION_DAYS (the access-log/ batches in the
+	// directory bucket below). Unset ⇒ every copy kept forever: the platform never deletes
+	// evidence on a schedule a human did not choose.
 	// Absent this binding, a reap that asks for a backup is refused 501 rather than
 	// silently wiping (the asymmetry is in ControlPlaneApiOptions.scopeBackups).
 	//
 	// DIRECTORY_BACKUPS (#40) is the platform's own copy — the directory DO, not a tenant's
 	// scope. A separate bucket rather than a prefix in the one above, because the two have
-	// opposite blast radii: the scope bucket holds customer data (and is subject to #36's
-	// retention and erasure decisions), while this one holds the platform's own map and is
-	// pruned to a 30-day window by the cron. Create:
+	// opposite blast radii: the scope bucket holds customer data (retention #557, erasure
+	// #37), while this one holds the platform's own map and is pruned to a 30-day window
+	// by the cron. Create:
 	//   wrangler r2 bucket create substrat-directory-backups
 	// SCOPE: this bucket lives in the platform's OWN Cloudflare account, so it survives a
 	// control-plane bug that deletes the directory DO — NOT loss of the account itself. The

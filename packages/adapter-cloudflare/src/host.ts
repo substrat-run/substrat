@@ -3596,7 +3596,10 @@ export class CloudflareScopeHost implements ScopeHost {
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
         const pruned = await this.cp.pruneAccessLog(limit);
         if (pruned > 0) {
-          await this.recordAdmin(actor, 'pruneAccessLog', { tenantId: null }, { pruned }, null);
+          // The payload is the APPLIED state, so it belongs in `after` (contracts'
+          // adminLogEntry: before = prior state, after = the applied payload) — the
+          // same shape as drainAccessLog's row above (#557).
+          await this.recordAdmin(actor, 'pruneAccessLog', { tenantId: null }, null, { pruned });
         }
         return pruned;
       },
