@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 
 export type SubIconName =
+  | 'alert'
   | 'layers'
   | 'scroll'
   | 'users'
@@ -41,6 +42,9 @@ export function SubIcon({ d, size = 16, style }: SubIconProps) {
 
 /** Lucide icon paths (https://lucide.dev), 1.5px stroke. */
 export const SubIcons: Record<SubIconName, string> = {
+  // Lucide `triangle-alert` — the operational-failures surface (#559).
+  alert:
+    '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   layers:
     '<path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/>',
   scroll:

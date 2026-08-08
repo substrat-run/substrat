@@ -11,6 +11,7 @@ export type ViewKey =
   | 'meters'
   | 'admin-log'
   | 'permissions'
+  | 'failures'
   | 'settings';
 
 /**
@@ -93,6 +94,12 @@ export function ConsoleShell({
               { value: 'admin-log', label: 'Admin log', icon: <SubIcon d={SubIcons.scroll} /> },
               { value: 'permissions', label: 'Permissions', icon: <SubIcon d={SubIcons.cog} /> },
             ],
+          },
+          {
+            // What the platform could NOT do (#559) — a separate stratum from Fleet's
+            // state-of-the-world, so a red day is one click, not a filter recipe.
+            title: 'Operations',
+            items: [{ value: 'failures', label: 'Failures', icon: <SubIcon d={SubIcons.alert} /> }],
           },
           {
             title: 'Console',
