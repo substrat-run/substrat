@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview } from './api';
+import type { AppHostnamesView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -182,6 +182,30 @@ export const MOCK_PREVIEWS: VerticalPreview[] = [
     expiresAt: new Date(now + 2 * 86400e3).toISOString(),
     hostname: 'acme-hr--pr-42.global.substrat.run',
     url: 'https://acme-hr--pr-42.global.substrat.run',
+  },
+];
+
+/** Deploy-failures sample (#559): a platform fault during a preview restore + a rejected bundle. */
+export const MOCK_FAILURES: DeployFailureRow[] = [
+  {
+    id: '01J2Q8Z3V9K4W7X2M5N6P7FL01',
+    operation: 'preview.create',
+    stage: 'restore',
+    scopeId: '01J2Q8Z3V9K4W7X2M5N6P7PV02',
+    status: 502,
+    message: 'internal error; reference = 242sg7l0st8ldln5uqu8ei58',
+    reference: '242sg7l0st8ldln5uqu8ei58',
+    at: ago(3 * 3600e3),
+  },
+  {
+    id: '01J2Q8Z3V9K4W7X2M5N6P7FL02',
+    operation: 'deploy.upload',
+    stage: 'wfp-upload',
+    scopeId: null,
+    status: 422,
+    message: 'deploy rejected: Uncaught Error at module top level (CF 10021)',
+    reference: null,
+    at: ago(2 * 86400e3),
   },
 ];
 

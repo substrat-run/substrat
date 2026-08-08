@@ -5,6 +5,7 @@ import {
   connectGithub,
   ApiError,
   type ChannelHistoryEntry,
+  type DeployFailureRow,
   type Deployment,
   type DeploymentVersion,
   type GitReposResult,
@@ -12,7 +13,7 @@ import {
   type WorkflowPreview,
 } from '../lib/api';
 import { Ic } from '../lib/icons';
-import { DEV_MOCK, MOCK_PREVIEWS } from '../lib/mock';
+import { DEV_MOCK, MOCK_FAILURES, MOCK_PREVIEWS } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
 import { card, CopyButton, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 
@@ -470,6 +471,76 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
   );
 }
 
+/**
+ * The vertical's recorded deploy/preview/provision failures (#559) — why a red CI run
+ * was red, from the platform's durable record, without asking staff. A `reference` is
+ * Cloudflare's redacted-fault handle: it means the failure was the platform's (not the
+ * pushed code), and the handle is what a support ticket needs. Empty = nothing recent —
+ * the panel renders nothing rather than an empty table.
+ */
+function FailuresPanel({ d }: { d: Deployment }) {
+  const [rows, setRows] = useState<DeployFailureRow[] | null>(DEV_MOCK ? MOCK_FAILURES : null);
+
+  useEffect(() => {
+    if (DEV_MOCK) return;
+    let live = true;
+    api
+      .listFailures(d.slug)
+      .then((r) => live && setRows(r))
+      // Tolerated to nothing: a worker or plane predating the route costs the panel, not the page.
+      .catch(() => live && setRows(null));
+    return () => {
+      live = false;
+    };
+  }, [d.slug]);
+
+  if (!rows || rows.length === 0) return null;
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Recent failures</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          What the platform could not do, newest first. A <code>reference</code> is a Cloudflare
+          support handle — the failure was platform-side, not your code.
+        </p>
+      </div>
+      <GridTable columns="1.1fr 1.3fr 0.5fr 2fr 1.2fr" header={['When', 'Operation', 'Status', 'Detail', 'Reference']}>
+        {rows.map((f, i) => (
+          <Row key={f.id} columns="1.1fr 1.3fr 0.5fr 2fr 1.2fr" last={i === rows.length - 1}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{new Date(f.at).toLocaleString()}</span>
+            <span>
+              <MonoTag>{f.operation}</MonoTag>
+              {f.stage && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}> · {f.stage}</span>}
+            </span>
+            <span>
+              <Pill kind={f.status !== null && f.status >= 500 ? 'danger' : 'warning'}>{f.status ?? '—'}</Pill>
+            </span>
+            <span
+              title={f.message}
+              style={{ fontSize: 12.5, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              {f.message}
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+              {f.reference ? (
+                <>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {f.reference}
+                  </span>
+                  <CopyButton text={f.reference} size={12} />
+                </>
+              ) : (
+                <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+              )}
+            </span>
+          </Row>
+        ))}
+      </GridTable>
+    </div>
+  );
+}
+
 export function VerticalDetail({
   d,
   busy,
@@ -553,6 +624,7 @@ export function VerticalDetail({
             </div>
             <ProdHistory d={d} busy={busy} onPromote={onPromote} />
             <PreviewsPanel d={d} busy={busy} />
+            <FailuresPanel d={d} />
           </>
         )}
       </div>
