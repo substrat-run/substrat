@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { platformActorId, type AccessLogEntry, type ScopeDump } from '@substrat-run/contracts';
-import { createR2AccessLogSink, createR2BackupStore } from '../src/r2-backups.js';
+import {
+  createR2AccessLogSink,
+  createR2BackupStore,
+  pruneAccessLogBatches,
+  pruneScopeBackups,
+} from '../src/r2-backups.js';
 
 /**
  * The R2 half of the scope-backup seam (#493). Driven against a fake bucket rather than
@@ -31,6 +36,9 @@ function fakeBucket(pageSize = 100) {
       get: async (key: string) => {
         const o = objects.get(key);
         return o ? { text: async () => o.body } : null;
+      },
+      delete: async (key: string) => {
+        objects.delete(key);
       },
       list: async (opts?: { prefix?: string; cursor?: string; include?: string[] }) => {
         const all = [...objects.values()]
@@ -220,5 +228,90 @@ describe('r2 access-log sink (K-24)', () => {
     // one for an object that was never written would be the lie that loses evidence.
     await expect(sink.ship([])).rejects.toThrow(/empty batch/);
     expect([...objects.keys()]).toHaveLength(0);
+  });
+});
+
+/**
+ * The stored-copy lifecycle rule (#557). What is worth pinning: the cutoff is exact and
+ * age comes from the copy's own address (so metadata-less objects still age out), each
+ * prune stays inside its own prefix, and anything undatable is KEPT — deleting what
+ * cannot be dated is not retention.
+ */
+describe('stored-copy retention (#557)', () => {
+  const NOW = () => new Date('2026-08-08T00:00:00.000Z');
+
+  it('drops scope copies older than the window and keeps the rest', async () => {
+    const { bucket, objects } = fakeBucket(2); // page size 2: the walk must paginate
+    const store = createR2BackupStore(bucket);
+    for (const at of [
+      '2026-05-01T00:00:00.000Z', // stale
+      '2026-07-08T23:59:59.000Z', // stale by a second at a 30-day window
+      '2026-07-09T00:00:01.000Z', // fresh by a second
+      '2026-08-07T00:00:00.000Z', // fresh
+    ]) {
+      await store.put({ vertical: 'demo-vert', dump: dumpAt(at) });
+    }
+    await store.put({ vertical: 'demo-vert', dump: dumpAt('2026-01-01T00:00:00.000Z', 'ten2', 'sc9') });
+
+    expect(await pruneScopeBackups(bucket, { olderThanDays: 30, now: NOW })).toBe(3);
+    // Age is per copy, across every tenant and scope — ten2's January copy went too.
+    expect(await store.list({ tenantId: 'ten1', scopeId: 'sc1' })).toHaveLength(2);
+    expect(await store.list({ tenantId: 'ten2', scopeId: 'sc9' })).toHaveLength(0);
+    expect([...objects.keys()].every((k) => k.startsWith('scopes/'))).toBe(true);
+  });
+
+  it('keeps a scope copy it cannot date, and never reaches outside scopes/', async () => {
+    const { bucket, objects } = fakeBucket();
+    // A hand-renamed object: no metadata, no parsable capturedAt in the key.
+    await bucket.put('scopes/ten1/sc1/latest-manual-copy.json', '{}');
+    // An ancient object in a sibling prefix — the OTHER rule's business, never this one's.
+    await bucket.put('access-log/old.ndjson', '{}\n');
+    expect(await pruneScopeBackups(bucket, { olderThanDays: 0, now: NOW })).toBe(0);
+    expect(objects.size).toBe(2);
+  });
+
+  // The ULID alphabet (Crockford base32), used to mint ids whose timestamp is known.
+  const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const ulidAt = (iso: string, tail: string): string => {
+    let ms = new Date(iso).getTime();
+    let time = '';
+    for (let i = 0; i < 10; i++) {
+      time = ALPHABET[ms % 32] + time;
+      ms = Math.floor(ms / 32);
+    }
+    return `${time}${'0'.repeat(16 - tail.length)}${tail}`;
+  };
+  const actor = platformActorId.parse(ulidAt('2026-01-01T00:00:00.000Z', 'ACTR'));
+  const entryAt = (iso: string, tail: string): AccessLogEntry => ({
+    id: ulidAt(iso, tail),
+    actor,
+    method: 'listTenants',
+    tenantId: null,
+    scopeId: null,
+    params: null,
+    resultCount: 1,
+    drainedAt: null,
+    at: iso,
+  });
+
+  it('drops shipped batches whose newest row aged out, dating by metadata or by the key itself', async () => {
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2AccessLogSink(bucket);
+    // Stale by its `to` metadata; and a batch STRADDLING the cutoff, kept because its
+    // newest row is still in-window — a batch is never dropped while it holds live rows.
+    await sink.ship([entryAt('2025-01-01T00:00:00.000Z', 'A1'), entryAt('2025-01-02T00:00:00.000Z', 'A2')]);
+    await sink.ship([entryAt('2026-06-01T00:00:00.000Z', 'B1'), entryAt('2026-08-01T00:00:00.000Z', 'B2')]);
+    // No metadata (a re-uploaded object) — its age is decoded from the key's own lastId.
+    const first = ulidAt('2025-03-01T00:00:00.000Z', 'C1');
+    const last = ulidAt('2025-03-02T00:00:00.000Z', 'C2');
+    await bucket.put(`access-log/${first}-${last}.ndjson`, '{}\n');
+    // Undatable: no metadata and no ULID pair in the name. Kept.
+    await bucket.put('access-log/manual-export.ndjson', '{}\n');
+
+    expect(await pruneAccessLogBatches(bucket, { olderThanDays: 365, now: NOW })).toBe(2);
+    const kept = [...objects.keys()];
+    expect(kept).toContain('access-log/manual-export.ndjson');
+    expect(kept.some((k) => k.includes('B1'))).toBe(true);
+    expect(kept.some((k) => k.includes('A1') || k.includes('C1'))).toBe(false);
   });
 });

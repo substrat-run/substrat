@@ -642,6 +642,14 @@ export function permissionContractSuite(
       // Only NOW are they deletable, and only they.
       expect(await host.admin.pruneAccessLog(staff, 500)).toBe(marked);
       expect((await host.admin.accessLog(staff, { drained: true, limit: 500 })).length).toBe(0);
+
+      // The prune is evidence too, and its payload is the APPLIED state — `after`,
+      // like drainAccessLog's row, per adminLogEntry's contract (before = prior state,
+      // after = the applied payload). Pinned because it shipped inverted once (#557).
+      const prunes = await host.admin.auditLog(staff, { action: 'pruneAccessLog' });
+      expect(prunes.length).toBeGreaterThanOrEqual(1);
+      expect(prunes[prunes.length - 1]!.before).toBeNull();
+      expect(prunes[prunes.length - 1]!.after).toMatchObject({ pruned: marked });
     });
 
     // -- control-plane audit trail (control-plane.md §4.4) --------------------

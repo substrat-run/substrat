@@ -101,6 +101,8 @@ export {
   createR2AccessLogSink,
   createR2BackupStore,
   createR2DirectoryBackupStore,
+  pruneAccessLogBatches,
+  pruneScopeBackups,
 } from './r2-backups.js';
 // #40 — the scheduled directory copy. Exported as a function the CP worker's cron calls,
 // not as a route with a timer behind it: this package stays library-only, exactly as the

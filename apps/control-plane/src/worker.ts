@@ -46,6 +46,8 @@ import {
   createR2BackupStore,
   createR2DirectoryBackupStore,
   backupDirectoryIfDue,
+  pruneAccessLogBatches,
+  pruneScopeBackups,
   createCustomHostnameProvisioner,
   reconcilePendingHostnames,
   isCustomHostname,
@@ -130,6 +132,24 @@ interface Env extends OidcEnv {
    * "reap now" is unaffected. Parsed as an integer number of days.
    */
   TENANT_RETENTION_DAYS?: string;
+  /**
+   * Days a reap's stored copy (`scopes/…` in SCOPE_BACKUPS, #493) is kept before the
+   * sweep drops it (#557). UNSET keeps every copy forever — the platform never deletes
+   * evidence on a schedule a human did not choose, so a deployment opts in by naming a
+   * window, exactly like the two reap windows above. Dropping a copy is dropping the
+   * ONLY recoverable form of a reaped scope's data, so choose it as deliberately as the
+   * reap window itself. Parsed as an integer number of days.
+   */
+  SCOPE_BACKUP_RETENTION_DAYS?: string;
+  /**
+   * Days a shipped access-log batch (`access-log/…` in DIRECTORY_BACKUPS, #553) is kept
+   * before the sweep drops it (#557). This is the record's Tier 2 lifetime — the in-DO
+   * window already closed when the batch shipped — so this chooses how far back "which
+   * rows left, and when" is answerable from the object store; the admin log's own
+   * drain/prune rows are never touched. UNSET keeps every batch forever, same opt-in
+   * posture as above. Parsed as an integer number of days.
+   */
+  ACCESS_LOG_RETENTION_DAYS?: string;
   /**
    * Shared secret presented to a vertical when provisioning an instance (K-31).
    * Must match that vertical's own `PLATFORM_SECRET`. Unset means instance creation
@@ -670,6 +690,34 @@ export default {
       } catch (err) {
         console.error('directory-backup failed', err instanceof Error ? err.message : String(err));
       }
+    }
+
+    // #557 — the stored-copy lifecycle rule, the retention leg #36 left unmade. Both
+    // windows are opt-in (unset ⇒ every copy kept forever), the same posture as the two
+    // reap windows: the platform never deletes evidence on a schedule a human did not
+    // choose. `directory/` copies are not here — their 30-copy window has lived in
+    // `backupDirectoryIfDue` since #40. Contained like the backup above: a failed prune
+    // must not sink the sweep, but it must be loud, because a lifecycle rule that has
+    // been quietly failing is a cost leak wearing a policy's name.
+    try {
+      const scopeBackupDays = parseRetentionDays(env.SCOPE_BACKUP_RETENTION_DAYS);
+      const accessLogDays = parseRetentionDays(env.ACCESS_LOG_RETENTION_DAYS);
+      const scopeCopies =
+        scopeBackupDays !== undefined && env.SCOPE_BACKUPS
+          ? await pruneScopeBackups(env.SCOPE_BACKUPS, { olderThanDays: scopeBackupDays })
+          : 0;
+      const accessLogBatches =
+        accessLogDays !== undefined && env.DIRECTORY_BACKUPS
+          ? await pruneAccessLogBatches(env.DIRECTORY_BACKUPS, { olderThanDays: accessLogDays })
+          : 0;
+      if (scopeCopies || accessLogBatches) {
+        console.log('stored-copy-retention', { scopeCopies, accessLogBatches });
+      }
+    } catch (err) {
+      console.error(
+        'stored-copy-retention failed',
+        err instanceof Error ? err.message : String(err),
+      );
     }
   },
 

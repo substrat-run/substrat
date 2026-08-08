@@ -275,3 +275,130 @@ export function createR2AccessLogSink(bucket: unknown): AccessLogSink {
     },
   };
 }
+
+/**
+ * The stored-copy lifecycle rule (#557) — the retention leg #36 left unmade.
+ *
+ * Every prune here is **operator-chosen**: these functions run only when a deployment
+ * has named a window (the CP worker's `SCOPE_BACKUP_RETENTION_DAYS` /
+ * `ACCESS_LOG_RETENTION_DAYS`), never on a default. That is the #553 posture — the
+ * platform never deletes evidence on a schedule a human did not choose — applied to the
+ * copies themselves. Enforced in code rather than by an R2 bucket lifecycle rule so the
+ * policy is visible in the repo, testable against the fake bucket, and identical on any
+ * future non-R2 store.
+ *
+ * Both prunes are age-based and **conservative by construction**: an object whose age
+ * cannot be determined is kept, and a batch is deleted only when its NEWEST row is out
+ * of the window — never one that still holds in-window rows. The walk collects stale
+ * keys first and deletes after, so deletion never races the pagination cursor.
+ */
+interface PruneOptions {
+  /**
+   * Copies strictly older than this many days are dropped. `0` is honored (drop
+   * everything on the next pass) — an operator can ask for it, as with the reap windows.
+   */
+  olderThanDays: number;
+  /** Injected clock, for tests. */
+  now?: () => Date;
+}
+
+/** Walk one prefix completely, returning every object's key + custom metadata. */
+async function listAll(
+  r2: R2BucketLike,
+  prefix: string,
+): Promise<{ key: string; customMetadata?: Record<string, string> }[]> {
+  const out: { key: string; customMetadata?: Record<string, string> }[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await r2.list({
+      prefix,
+      include: ['customMetadata'],
+      ...(cursor ? { cursor } : {}),
+    });
+    out.push(...page.objects);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return out;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Drop `scopes/…` reap copies (#493) older than the window. A copy's age is its
+ * `capturedAt` — the key's last segment, same as the store's own fallback address — so a
+ * hand-uploaded object without metadata still ages out rather than living forever by
+ * omission. An unparsable timestamp keeps the copy: deleting what cannot be dated is not
+ * retention.
+ *
+ * Note the interaction with #37 (erasure): per-subject payloads inside these dumps are
+ * sealed under per-subject DEKs, so an old copy's PII exposure is bounded by key
+ * destruction already — this rule is the cost/hygiene bound, not the privacy one.
+ */
+export async function pruneScopeBackups(bucket: unknown, options: PruneOptions): Promise<number> {
+  const r2 = bucket as R2BucketLike;
+  const cutoff = (options.now?.() ?? new Date()).getTime() - options.olderThanDays * DAY_MS;
+  let pruned = 0;
+  for (const o of await listAll(r2, 'scopes/')) {
+    const capturedAt =
+      o.customMetadata?.capturedAt ?? o.key.slice(o.key.lastIndexOf('/') + 1).replace(/\.json$/, '');
+    const at = new Date(capturedAt).getTime();
+    if (Number.isNaN(at) || at >= cutoff) continue;
+    await r2.delete(o.key);
+    pruned += 1;
+  }
+  return pruned;
+}
+
+/** Crockford base32, the ULID alphabet — no I, L, O, U. */
+const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+/** A ULID's timestamp: its first 10 chars, base32-decoded to epoch ms. Null when malformed. */
+function ulidTimeMs(id: string): number | null {
+  if (id.length !== 26) return null;
+  let ms = 0;
+  for (const ch of id.slice(0, 10)) {
+    const v = ULID_ALPHABET.indexOf(ch.toUpperCase());
+    if (v < 0) return null;
+    ms = ms * 32 + v;
+  }
+  return ms;
+}
+
+/**
+ * Drop `access-log/…` NDJSON batches (#553) whose NEWEST row is older than the window.
+ * Age comes from the mirrored `to` metadata, falling back to the key's own `lastId` (a
+ * ULID carries its timestamp), so a batch is datable from either half of what `ship`
+ * wrote. Undatable ⇒ kept, as above.
+ *
+ * The rows themselves already left the directory DO — `pruneAccessLog` deleted them only
+ * after this object durably existed — so this window is where the record's Tier 2
+ * lifetime finally ends, and choosing it is choosing how far back "which rows left, and
+ * when" can be answered from the object store. The admin log's own `drainAccessLog` /
+ * `pruneAccessLog` rows are never touched: the egress stays witnessed after its payload
+ * expires.
+ */
+export async function pruneAccessLogBatches(
+  bucket: unknown,
+  options: PruneOptions,
+): Promise<number> {
+  const r2 = bucket as R2BucketLike;
+  const cutoff = (options.now?.() ?? new Date()).getTime() - options.olderThanDays * DAY_MS;
+  let pruned = 0;
+  for (const o of await listAll(r2, 'access-log/')) {
+    let newest: number | null = null;
+    if (o.customMetadata?.to) {
+      const at = new Date(o.customMetadata.to).getTime();
+      newest = Number.isNaN(at) ? null : at;
+    }
+    if (newest === null) {
+      // `access-log/<firstId>-<lastId>.ndjson` — the lastId is chars 27…52 of the name.
+      const name = o.key.slice('access-log/'.length).replace(/\.ndjson$/, '');
+      const lastId = name.length === 53 && name[26] === '-' ? name.slice(27) : null;
+      newest = lastId ? ulidTimeMs(lastId) : null;
+    }
+    if (newest === null || newest >= cutoff) continue;
+    await r2.delete(o.key);
+    pruned += 1;
+  }
+  return pruned;
+}

@@ -258,9 +258,16 @@ Three decisions worth not re-litigating:
 Asking for a backup where the platform has **no** store configured is refused (`501`),
 never silently skipped — the console always asks, so a control plane deployed with the
 bucket unbound fails loudly instead of quietly dropping the guarantee. Retention of the
-stored copies is indefinite for now and belongs to
-[#36](https://github.com/substrat-run/substrat/issues/36)'s retention decision;
-jurisdiction-pinned scopes are refused outright until a per-jurisdiction store exists
+stored copies is an **operator-chosen window**
+([#557](https://github.com/substrat-run/substrat/issues/557), the leg
+[#36](https://github.com/substrat-run/substrat/issues/36) left unmade):
+`SCOPE_BACKUP_RETENTION_DAYS` names how many days the sweep keeps a copy, and unset —
+the default — keeps every copy forever, the same opt-in posture as the reap windows.
+Dropping a copy is dropping the *only* recoverable form of a reaped scope's data, so the
+window is a deliberate choice, never a shipped TTL. (Erasure does not wait for it: #37
+seals per-subject payloads under per-subject DEKs, so an old copy's PII exposure is
+bounded by key destruction — this window is the cost/hygiene bound, not the privacy one.)
+Jurisdiction-pinned scopes are refused outright until a per-jurisdiction store exists
 (K-32), because the reap must not wipe what the platform may not legally copy.
 
 ### 4.3 The entitlement store
@@ -501,8 +508,17 @@ independently of what this pass shipped, so a tick that died between stamp and p
 self-heals rather than stranding rows.
 
 The egress is itself audited: `drainAccessLog` in the admin log records how many rows left
-and where they landed. *Which* rows a pruned range covered is answerable from the permanent
-log, not only from the object store.
+and where they landed, and `pruneAccessLog` records how many were then deleted — both with
+the applied payload in `after`, per `adminLogEntry`'s contract. *Which* rows a pruned range
+covered is answerable from the permanent log, not only from the object store.
+
+**Tier 2 has its own end** ([#557](https://github.com/substrat-run/substrat/issues/557)).
+The shipped batches would otherwise be kept forever; `ACCESS_LOG_RETENTION_DAYS` names how
+many days the sweep keeps one, dated by its newest row (a batch straddling the cutoff is
+kept whole — never dropped while it holds in-window rows). Unset, the default, keeps every
+batch: an operator opts into deletion by naming the window, the same posture as every
+retention knob here. The admin log's own drain/prune rows are never touched, so the egress
+stays witnessed after its payload expires.
 
 **A deployment that binds no sink drains nothing, prunes nothing, and its window stays
 unbounded.** That remains a stated limitation — but it is now one an operator opts out of
@@ -786,10 +802,11 @@ taints the file (K-7/K-32: an export lands on a machine outside the platform's c
 the route refuses rather than exporting the global scopes and quietly omitting the rest — a
 partial export that does not announce itself as partial is the failure worth avoiding.
 
-**Still open here:** retention. The admin log is append-only with no sweeper, the access log
-prunes only what has drained, and the backup buckets have no lifecycle rule. Deleting from an
-append-only audit log is a policy decision (§4.4 says it is kept whole), so it is tracked
-rather than assumed.
+**Retention is settled** ([#557](https://github.com/substrat-run/substrat/issues/557)): the
+admin log is append-only with no sweeper — kept whole, §4.4's decision — the access log
+prunes only what has drained, and the stored copies (`scopes/` reap copies, `access-log/`
+batches) live under operator-chosen windows, unset by default. Every deletion schedule on
+the platform is one a human named.
 
 ### 4.9 Directory backup and restore ([#40](https://github.com/substrat-run/substrat/issues/40))
 
