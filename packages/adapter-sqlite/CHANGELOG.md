@@ -1,5 +1,128 @@
 # @substrat-run/adapter-sqlite
 
+## 0.54.0
+
+### Minor Changes
+
+- b387919: feat(platform): operational failures get a durable, queryable record (#559 step 3)
+
+  A failed deploy, install, or preview restore left no durable trace — the admin log
+  audits successful mutations only (by design: it answers "who changed what", and a
+  failure changed nothing), so the 2026-08-08 preview-restore incident was diagnosable
+  solely from a vertical script's short-retention observability logs.
+
+  `HostAdmin` gains `recordOpsFailure` / `listOpsFailures` over a new
+  `_substrat_ops_failures` directory table (both adapters, contract-tested): actor,
+  operation, stage, tenant/scope/vertical, answered status, bounded message, and the
+  upstream provider's trace reference (Cloudflare's `internal error; reference = <id>`)
+  extracted into its own searchable column. Retention-bounded telemetry, not evidence:
+  rows self-prune on write after `OPS_FAILURE_RETENTION_DAYS` (90), so the table needs
+  no cron and can never grow without bound.
+
+  The control-plane transport records from three places — the error boundary (any
+  answered 5xx except 501, including a downstream vertical's 502 passthrough), the
+  deploy-upload catch (both the 502 platform-failure and the 422 bad-bundle, for the
+  coming builder-facing view), and the install-provision catch after its retry is
+  exhausted — and serves `GET /ops-failures` (staff-only, paged, filterable by
+  vertical/tenant/operation/reference, newest first).
+
+- fa81319: feat(platform): a data subject can finally be erased, and the backups cannot un-erase them (#37)
+
+  `piiClass: none|pseudonymous|direct` has been enforced at the type level since the contracts
+  package existed: an event that could carry PII cannot be declared without a `subjectId`, and
+  the Zod message says why — _"crypto-shredding must be able to key the erasure"_. The
+  classification was total by construction. The erasure it keys did not exist anywhere in
+  `packages/`. `demos/hr` seeds real-shaped national IDs against a comment promising a
+  mechanism nobody had built.
+
+  **The mechanism divides the way the stores divide, not the way the data does.**
+
+  _Tier 1 is mutable, so erasing there is redaction._ `shredSubject` nulls the payload of
+  every classified spine row keyed to the subject and keeps the envelope — id, type, entity,
+  `occurredAt`, and the pseudonymous `subjectId`. That is master-plan §5.3 held exactly:
+  _"pseudonymous keys and transaction facts remain"_. A timeline still shows that something
+  happened, to what, and when. It no longer shows who, or what was said. No cryptography is
+  involved and none is wanted: sealing a live payload would break the raw-SQL timeline
+  projections CLAUDE.md explicitly blesses.
+
+  _A platform-retained copy is not mutable, so erasing there is cryptographic._ A reap backup
+  is full-fidelity on purpose — _"a backup that cannot restore is a false promise"_ — which is
+  precisely why `UPDATE … SET payload = NULL` can never reach one. Each subject's payloads are
+  now sealed under their own key on the way into a stored copy (`sealDump`, the sibling of
+  `maskDump` and the opposite discipline: lossless and keyed rather than lossy and heuristic).
+  Destroying that one key reaches backwards into every copy already taken, and leaves every
+  other subject in the same copy restorable.
+
+  **Where the keys live is the guarantee, not an implementation detail.** Per-subject DEKs sit
+  in the **directory**, wrapped by the host `SecretBox`, never in the scope database whose rows
+  they protect — master-plan.md:316, _"GDPR erasure claims are only as credible as the key
+  store's independence"_. A key restored by the same dump that restores its ciphertext would
+  silently reverse every erasure the restore rolled past.
+
+  **The tombstone is what makes it an erasure rather than a delay.** A shred keeps the key row
+  with the key cleared, and the sealer refuses tombstoned subjects. Without that, the next
+  backup mints a fresh key and quietly undoes the erasure — a key store that forgets who was
+  erased can erase them exactly once.
+
+  **Order inside the action is fixed: redact the live spine first, destroy the key last.** Both
+  halves are idempotent and a crash between them converges on retry, so the tiebreak is which
+  half-done state harms the person — a run that died after redacting leaves ciphertext nobody
+  can open; destroying the key first would leave their PII in the live database while the audit
+  log already claimed they were erased.
+
+  New on `HostAdmin`, implemented by **both** adapters with the crypto factored into the kernel
+  (`createSubjectKeys`) so an adapter supplies three row operations and no cipher:
+  `shredSubject`, `sealSubjectPayloads`, `openSubjectPayloads`. New `shredSubject` admin action,
+  carrying a receipt (`eventsRedacted`, `keyDestroyed`, `tombstoned`) as its `after`. Audited in
+  **both** logs — the admin log because it is a mutation, the access log because it destroys
+  evidence, and an erasure is the one action where _who asked for this to disappear_ is itself
+  part of the record.
+
+  `POST /tenants/:t/scopes/:s/subjects/:id/shred` is staff-only and absent from
+  `BUILDER_ROUTES`: a builder forwards the DSAR and the platform executes it, which is where
+  hosting-and-certification.md §3 already draws the line (_"we provide extraction, they define
+  scope"_).
+
+  **Five limits ship as documentation, not as backlog** (kernel-design §13.1, closing open
+  question 17's spine half). One subject per event, so _"erase Jens Palmgren from everywhere"_
+  is still out of reach. Vertical-owned tables are untouched — `hr_employees.national_id` needs
+  the `onSubjectErased` hook that is deliberately a separate issue. Copies already handed to a
+  customer, and backups taken before sealing existed, are beyond reach. A PITR rewind restores
+  the pre-redaction state. A directory restore can resurrect a key, and the admin log — the
+  compliance witness, never swept — is what records which erasures must then be re-applied.
+
+  The acceptance criterion is a round trip rather than a claim: back up a scope, shred one of
+  its two subjects, read the same stored copy back, and watch that subject's payloads open to
+  nothing while the other's restore intact.
+
+### Patch Changes
+
+- 6ecb3c9: feat(platform): the stored copies get a lifecycle, and only an operator can start the clock (#557)
+
+  The backup buckets kept every copy forever: `scopes/` reap copies (#493) and `access-log/`
+  NDJSON batches (#553) had no lifecycle rule — the one retention decision #36's closure left
+  unmade. (`directory/` copies were never the gap; their 30-copy window has lived in
+  `backupDirectoryIfDue` since #40.)
+
+  **`pruneScopeBackups` / `pruneAccessLogBatches`** (control-plane-api) enforce an age window
+  over their own prefix, in code rather than as an R2 bucket rule so the policy is visible in
+  the repo and portable to any store. Both are conservative by construction: an object that
+  cannot be dated is kept, and an access-log batch is dated by its **newest** row — never
+  dropped while it still holds in-window rows. The CP worker's sweep runs them behind two new
+  opt-in vars, `SCOPE_BACKUP_RETENTION_DAYS` and `ACCESS_LOG_RETENTION_DAYS`; unset — the
+  default — deletes nothing, the same posture as the reap windows: the platform never deletes
+  evidence on a schedule a human did not choose.
+
+  **The drive-by #553 flagged:** `pruneAccessLog`'s admin-log row carried its payload in
+  `before`, inverted from `adminLogEntry`'s contract (before = prior state, after = the
+  applied payload). Both adapters now record `after: { pruned }`, matching `drainAccessLog`,
+  and the contract suite pins the shape.
+
+- Updated dependencies [b387919]
+- Updated dependencies [fa81319]
+  - @substrat-run/contracts@0.54.0
+  - @substrat-run/kernel@0.54.0
+
 ## 0.53.0
 
 ### Minor Changes
@@ -1927,7 +2050,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
