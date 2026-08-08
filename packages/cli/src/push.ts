@@ -21,7 +21,7 @@ import {
   type RuntimeNeeds,
 } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
-import { parseJsonBody, readAllEntries } from './http.js';
+import { explainPlatformFault, parseJsonBody, readAllEntries } from './http.js';
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
@@ -575,7 +575,7 @@ export async function push(
     } catch {
       // not JSON — keep the raw body
     }
-    throw new Error(`push failed (${res.status}): ${detail}`);
+    throw new Error(`push failed (${res.status}): ${detail}${explainPlatformFault(res.status, detail)}`);
   }
   return parseJsonBody<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }>(body, url);
 }
