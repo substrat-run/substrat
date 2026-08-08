@@ -10,6 +10,7 @@ import type {
   HostnameStatus,
   MeterReading,
   MigrationProgress,
+  OpsFailureEntry,
   Page,
   PromotionAcknowledgement,
   Scope,
@@ -104,6 +105,18 @@ export interface AuditLogQuery extends PageQuery {
   scopeId?: ScopeId;
   actor?: string;
   action?: AdminAction[];
+  since?: string;
+  until?: string;
+}
+
+/** The ops-failure list's server-side narrowing (#559) — `reference` is an exact
+ *  match, the `reference = <id>` a CI log hands the operator. */
+export interface OpsFailuresQuery extends PageQuery {
+  tenantId?: TenantId;
+  scopeId?: ScopeId;
+  vertical?: string;
+  operation?: string;
+  reference?: string;
   since?: string;
   until?: string;
 }
@@ -312,6 +325,12 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     ),
 
     adminLog: (q: AuditLogQuery = {}) => call<AdminLogPage>(`/admin-log${query({ ...q })}`),
+
+    // Operational failures (#559) — what the platform could NOT do, durable and
+    // queryable, distinct from the admin log's successful mutations. Newest first
+    // by default; `reference` finds the row a `reference = <id>` CI error names.
+    listOpsFailures: (q: OpsFailuresQuery = {}) =>
+      call<Page<OpsFailureEntry>>(`/ops-failures${query({ ...q })}`),
 
     // -- vertical + version registry (orchestration.md §5.6) ----------------
     // The staff surface for the two human checkpoints: admit/reject a version,

@@ -21,10 +21,12 @@ export interface VerticalsProps {
   openSlug?: string;
   onOpen: (slug: string) => void;
   onBack: () => void;
+  /** Jump to Operations → Failures pre-narrowed to one vertical (#559). */
+  onOpenFailures: (slug: string) => void;
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
 }
 
-export function Verticals({ api, openSlug, onOpen, onBack, onToast }: VerticalsProps) {
+export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToast }: VerticalsProps) {
   // Bumped after every mutation — the paged list's refresh signal (the hook re-reads the
   // loaded window, so a flag flip on page 3 still shows) and the detail-resolve
   // dependency, so a mutation in the detail re-reads the row it drilled into.
@@ -131,6 +133,7 @@ export function Verticals({ api, openSlug, onOpen, onBack, onToast }: VerticalsP
         vertical={resolved}
         onBack={onBack}
         onChanged={() => setRefresh((n) => n + 1)}
+        onOpenFailures={onOpenFailures}
         onToast={onToast}
       />
     );

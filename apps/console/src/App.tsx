@@ -13,6 +13,7 @@ import { Domains } from './views/Domains';
 import { Meters } from './views/Meters';
 import { Observability } from './views/Observability';
 import { Login } from './views/Login';
+import { OpsFailures } from './views/OpsFailures';
 import { Permissions } from './views/Permissions';
 import { ScopeDetail } from './views/ScopeDetail';
 import { Scopes } from './views/Scopes';
@@ -63,6 +64,7 @@ const VIEWS: ViewKey[] = [
   'meters',
   'admin-log',
   'permissions',
+  'failures',
   'settings',
 ];
 
@@ -133,6 +135,8 @@ export function App() {
   const [openTenant, setOpenTenant] = useState<TenantId | undefined>(() => readNav().tenant);
   const [openScope, setOpenScope] = useState<ScopeId | undefined>(() => readNav().scope);
   const [openVertical, setOpenVertical] = useState<string | undefined>(() => readNav().vertical);
+  // A vertical's "view failures" jump pre-narrows the Failures view; sidebar nav clears it.
+  const [failuresVertical, setFailuresVertical] = useState<string | undefined>();
   const [dark, setDark] = useState(false);
   const [toast, setToast] = useState<Toast>();
   const [error, setError] = useState<string>();
@@ -271,7 +275,7 @@ export function App() {
         : undefined;
 
   const crumbs: BreadcrumbItem[] = [
-    { label: view === 'settings' ? 'Console' : 'Fleet' },
+    { label: view === 'settings' ? 'Console' : view === 'failures' ? 'Operations' : 'Fleet' },
     { label: view === 'admin-log' ? 'Admin log' : view[0]!.toUpperCase() + view.slice(1), onClick: clearDetail },
     ...(detailCrumb ? [detailCrumb] : []),
   ];
@@ -325,6 +329,7 @@ export function App() {
       active={view}
       onNav={(v) => {
         setView(v);
+        setFailuresVertical(undefined);
         clearDetail();
       }}
       onToggleDark={() => setDark((d) => !d)}
@@ -410,6 +415,11 @@ export function App() {
           openSlug={openVertical}
           onOpen={setOpenVertical}
           onBack={() => setOpenVertical(undefined)}
+          onOpenFailures={(slug) => {
+            setFailuresVertical(slug);
+            setView('failures');
+            clearDetail();
+          }}
           onToast={notify}
         />
       )}
@@ -426,6 +436,7 @@ export function App() {
         />
       )}
       {view === 'admin-log' && <AdminLog api={api} tenants={tenantMap} />}
+      {view === 'failures' && <OpsFailures api={api} tenants={tenantMap} initialVertical={failuresVertical} />}
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}
       {view === 'settings' && <Settings api={api} onToast={notify} />}
 

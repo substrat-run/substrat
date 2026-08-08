@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type {
   ChannelName,
+  OpsFailureEntry,
   PromotionAcknowledgement,
   Scope,
   Vertical,
@@ -27,6 +28,8 @@ export interface VerticalDetailProps {
   onBack: () => void;
   /** Refresh the parent list so the row (listed/blocked/provisioner) reflects a mutation. */
   onChanged: () => void;
+  /** Jump to Operations → Failures pre-narrowed to this vertical (#559). */
+  onOpenFailures: (slug: string) => void;
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
 }
 
@@ -38,9 +41,12 @@ export interface VerticalDetailProps {
  * acknowledged here), list/unlist, block installs, grant the provisioner capability,
  * retire bound scopes, and delete.
  */
-export function VerticalDetail({ api, vertical, onBack, onChanged, onToast }: VerticalDetailProps) {
+export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailures, onToast }: VerticalDetailProps) {
   const [versions, setVersions] = useState<VerticalVersion[]>([]);
   const [channels, setChannels] = useState<VerticalChannel[]>([]);
+  // This vertical's recent operational failures (#559): the badge/strip below, and the
+  // per-row explanation a stuck-`provisioning` preview joins against by scopeId.
+  const [failures, setFailures] = useState<OpsFailureEntry[]>([]);
   // How much of the walked version list the TABLE shows (the Load-more window).
   const [versionsShown, setVersionsShown] = useState(PAGE);
 
@@ -67,13 +73,25 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onToast }: Ve
         // computations over the whole version set — a channel pointer whose version fell
         // outside a loaded page would render as "unset", a lie. Only the versions TABLE
         // below windows what it shows.
-        const [vs, ch, sc] = await Promise.all([
+        const [vs, ch, sc, fl] = await Promise.all([
           walkAll((p) => api.listVersions(slug, p)),
           walkAll((p) => api.listChannels(slug, p)),
           walkAll((p) => api.listScopes({ vertical: slug, ...p })),
+          // The last 7 days of operational failures (#559) — one page is plenty for a
+          // strip; the Failures view has the full history. Tolerated to empty: a control
+          // plane predating the route must not fail the whole detail.
+          api
+            .listOpsFailures({
+              vertical: slug,
+              since: new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString(),
+              limit: 50,
+            })
+            .then((p) => p.entries)
+            .catch(() => [] as OpsFailureEntry[]),
         ]);
         setVersions(vs);
         setChannels(ch);
+        setFailures(fl);
         // Reaped rows are terminal tombstones that never block the delete — the retire
         // panel lists only what still does (live + archived).
         setBoundScopes(sc.filter((s) => s.status !== 'reaped'));
@@ -89,6 +107,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onToast }: Ve
     setVersions([]);
     setChannels([]);
     setBoundScopes([]);
+    setFailures([]);
     setVersionsShown(PAGE);
     void loadDetail(vertical.slug);
   }, [vertical.slug, loadDetail]);
@@ -153,7 +172,27 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onToast }: Ve
 
   const scopeColumns: TableColumn<Scope>[] = [
     { header: 'Scope', render: (s) => <Tag mono>{s.slug}</Tag> },
-    { header: 'Status', render: (s) => <Badge status={statusTone(s.status)}>{statusLabel(s.status)}</Badge> },
+    {
+      header: 'Status',
+      render: (s) => {
+        // A row stuck in `provisioning` is a create that died mid-flight. Joined against
+        // the failure record by scopeId (#559), the console can SAY why — "restore failed
+        // (CF reference …)" — instead of showing an inert blue badge until the GC sweep
+        // reaps it.
+        const fail = s.status === 'provisioning' ? failures.find((f) => f.scopeId === s.id) : undefined;
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <Badge status={fail ? 'danger' : statusTone(s.status)}>{statusLabel(s.status)}</Badge>
+            {fail && (
+              <span style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>
+                {fail.stage ?? fail.operation} failed
+                {fail.reference ? ` (CF reference ${fail.reference})` : ''}
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
     { header: 'Kind', render: (s) => <Tag mono>{s.forkedFrom ? 'snapshot' : s.kind}</Tag> },
     {
       header: '',
@@ -329,6 +368,38 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onToast }: Ve
             </Badge>
           </div>
         ) : null}
+
+        {/* Recent operational failures (#559): the week the crm-eff incident made the case
+            for — 5 failed restores would have been visible HERE at a glance instead of
+            reconstructed from expiring per-version observability logs. */}
+        {failures.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              marginBottom: 16,
+              padding: '8px 12px',
+              borderRadius: 8,
+              border: '1px solid var(--status-danger-border, var(--border-default))',
+              background: 'var(--status-danger-bg, var(--surface-card))',
+              fontSize: 12.5,
+            }}
+          >
+            <Badge status="danger">
+              {failures.length} failure{failures.length === 1 ? '' : 's'} · 7 days
+            </Badge>
+            <span style={{ color: 'var(--text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              latest: {failures[0]!.operation}
+              {failures[0]!.stage ? ` · ${failures[0]!.stage}` : ''} at{' '}
+              {failures[0]!.at.slice(0, 16).replace('T', ' ')}
+              {failures[0]!.reference ? ` — reference ${failures[0]!.reference}` : ''}
+            </span>
+            <Button size="sm" variant="ghost" onClick={() => onOpenFailures(vertical.slug)}>
+              View all
+            </Button>
+          </div>
+        )}
 
         {/* Channels: the named pointers promotion moves. */}
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
