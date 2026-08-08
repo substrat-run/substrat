@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // DOM for the ambient `console` (the Workers runtime has it; #559's structured
+    // platform-fault log) — the same shape control-plane-api's tsconfig uses.
+    "lib": ["ES2023", "DOM"]
   },
   "include": ["src"]
 }

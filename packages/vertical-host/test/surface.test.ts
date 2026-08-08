@@ -112,6 +112,48 @@ describe('mountPlatformSurface — the error envelope (#510 regression)', () => 
     expect(res.status).toBe(409);
   });
 
+  it('answers a DO SQLite redacted fault ("internal error; reference = …") with 502, message intact (#559)', async () => {
+    const host = fakeHost({
+      restoreScopeLocal: async () => {
+        throw new Error('internal error; reference = 242sg7l0st8ldln5uqu8ei58');
+      },
+    });
+    const res = await appWith(host).request(
+      '/internal/restore',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ scopeId: SCOPE, tables: [] }),
+      },
+      ENV,
+    );
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe('internal error; reference = 242sg7l0st8ldln5uqu8ei58');
+  });
+
+  it('answers a workerd-flagged transient (retryable) with 502 regardless of message', async () => {
+    const host = fakeHost({
+      exportScopeLocal: async () => {
+        throw Object.assign(new Error('Durable Object reset because its code was updated.'), {
+          retryable: true,
+        });
+      },
+    });
+    const res = await appWith(host).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(res.status).toBe(502);
+  });
+
+  it('leaves an APP error that merely mentions "internal error" mid-sentence as 400', async () => {
+    const host = fakeHost({
+      exportScopeLocal: async () => {
+        throw new Error('column check failed: expected no internal error marker');
+      },
+    });
+    const res = await appWith(host).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(res.status).toBe(400);
+  });
+
   it('maps a "permission denied" throw to 403', async () => {
     const host = fakeHost({
       exportScopeLocal: async () => {
