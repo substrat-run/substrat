@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Hono } from 'hono';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { ulid } from '@substrat-run/kernel';
 import { buildRallyHost, seedRally, type RallyWorld } from '../src/index.js';
 import { createRallyApp } from '../src/routes.js';
 
@@ -504,6 +505,69 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
       as: astrid, method: 'POST',
       body: { resourceId: court, date: DATE, time: '12:00', duration: 60, reason: 'Omslipning' },
     });
+  });
+
+  // -- inviting a player, through the surface the desk actually uses ---------
+
+  it('invite → accept → roster, and revocation closes the door', async () => {
+    // The desk invites by name and email only — no partyRef (the module mints
+    // the player ref) and no orgId (the server pins it to the venue).
+    const { invitationId } = await ok('/api/invites', {
+      as: astrid, method: 'POST',
+      body: { name: 'Saga Lindqvist', identifier: 'saga@example.com' },
+    });
+
+    // The desk sees it under the name the club filed it as.
+    const open = await ok('/api/invites', { as: astrid });
+    expect(open.find((i: any) => i.id === invitationId)).toMatchObject({
+      state: 'invited',
+      name: 'Saga Lindqvist',
+    });
+
+    // Being invited confers nothing.
+    const before = await ok('/api/members', { as: astrid });
+    expect(before.some((m: any) => m.name === 'Saga Lindqvist')).toBe(false);
+
+    // The recipient accepts as a FRESH principal (the dev-header path): the
+    // email in the body is the proof the engine re-hashes.
+    await ok('/api/invites/accept', {
+      as: ulid(), method: 'POST',
+      body: { invitationId, identifier: 'saga@example.com' },
+    });
+
+    // ...and only now does the roster have them.
+    const after = await ok('/api/members', { as: astrid });
+    expect(after.some((m: any) => m.name === 'Saga Lindqvist')).toBe(true);
+
+    // The wrong email is refused — and the refusal does not say why.
+    const second = await ok('/api/invites', {
+      as: astrid, method: 'POST',
+      body: { name: 'Andra Spelaren', identifier: 'andra@example.com' },
+    });
+    const wrong = await call('/api/invites/accept', {
+      as: ulid(), method: 'POST',
+      body: { invitationId: second.invitationId, identifier: 'fel@example.com' },
+    });
+    expect(wrong.status).toBe(400);
+
+    // Revoked: the RIGHT email now fails the same, indistinguishable way.
+    await ok(`/api/invites/${second.invitationId}/revoke`, { as: astrid, method: 'POST' });
+    const revoked = await call('/api/invites/accept', {
+      as: ulid(), method: 'POST',
+      body: { invitationId: second.invitationId, identifier: 'andra@example.com' },
+    });
+    expect(revoked.status).toBe(400);
+
+    // Desk vocabulary, not engine keys: the receptionist runs this flow too,
+    // the coach does not, and nobody anonymous reaches the engine at all.
+    expect((await call('/api/invites', { as: ravi })).status).toBe(200);
+    expect((await call('/api/invites', { as: nils })).status).toBe(403);
+    expect(
+      (await call('/api/invites/accept', {
+        method: 'POST',
+        body: { invitationId, identifier: 'saga@example.com' },
+      })).status,
+    ).toBe(403);
   });
 
   // -- the denials, at the surface a browser actually hits -------------------

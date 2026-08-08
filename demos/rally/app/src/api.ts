@@ -123,6 +123,40 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 const post = <T,>(p: string, b?: unknown): Promise<T> =>
   call<T>(p, { method: 'POST', body: JSON.stringify(b ?? {}) });
 
+/** ULID-shaped principal for a newcomer (Crockford: no I L O U). */
+function newPrincipal(): string {
+  const A = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  let s = '';
+  for (let i = 0; i < 26; i += 1) s += A[Math.floor(Math.random() * A.length)];
+  return s;
+}
+
+/**
+ * Accept a club invitation — deliberately NOT through `call`: the recipient is
+ * by definition not yet a member, so there is no persona to send and no
+ * principal-guard to satisfy. A fresh principal rides the dev header; with a
+ * real session the server ignores it and uses the session's own identity and
+ * verified email instead.
+ */
+export async function acceptInvite(
+  invitationId: string,
+  identifier: string,
+): Promise<{ state: string }> {
+  const res = await fetch('/api/invites/accept', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-principal': newPrincipal(),
+      'x-venue': venue,
+    },
+    body: JSON.stringify({ invitationId, identifier }),
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new ApiError(res.status, data?.error ?? res.statusText, data?.code);
+  return data as { state: string };
+}
+
 export interface OpenMatch {
   reservationId: string;
   resourceId: string;

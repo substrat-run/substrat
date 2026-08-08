@@ -135,6 +135,7 @@ let venue = 'solna';
 export const setVenue = (v: string): void => {
   venue = v;
 };
+export const getVenue = (): string => venue;
 
 export interface Venue {
   key: string;
@@ -228,6 +229,10 @@ export const api = {
   }): Promise<PriceRule> => post('/api/price-rules', input),
   addMember: (input: { partyRef: string; name: string }): Promise<Member> =>
     post('/api/members', input),
+  invites: (): Promise<ClubInvitation[]> => call('/api/invites'),
+  invitePlayer: (input: { name: string; identifier: string }): Promise<{ invitationId: string }> =>
+    post('/api/invites', input),
+  revokeInvite: (id: string): Promise<{ ok: true }> => post(`/api/invites/${id}/revoke`),
 
   occupancy: (from: string, to: string): Promise<Occupancy> =>
     call(`/api/occupancy?from=${from}&to=${to}`),
@@ -258,6 +263,34 @@ export interface TenantRole {
   permissions: string[];
   source: string;
   tenantId: string;
+}
+
+export type InviteState = 'invited' | 'accepted' | 'revoked' | 'expired';
+
+/** The engine's public invitation shape + the name the club filed it under. */
+export interface ClubInvitation {
+  id: string;
+  org_id: string;
+  role_key: string;
+  state: InviteState;
+  invited_by: string;
+  accepted_by: string | null;
+  created_at: string;
+  expires_at: string;
+  settled_at: string | null;
+  name: string | null;
+}
+
+/**
+ * The accept link, pointed at the PLAYER app — the invitation is accepted where
+ * players live, not in the console. No email delivery in this demo, so the desk
+ * copies the link and sends it themselves.
+ */
+export function inviteLink(venueKey: string, invitationId: string): string {
+  const origin =
+    (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_PLAYER_ORIGIN ??
+    'http://localhost:5277';
+  return `${origin}/?venue=${venueKey}&join=${invitationId}`;
 }
 
 /** ULID-shaped id for a new member's global player ref (Crockford: no I L O U). */

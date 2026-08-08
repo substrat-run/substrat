@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ApiError,
+  acceptInvite,
   api,
   dayLabel,
   getVenue,
@@ -33,9 +34,9 @@ const kr = (m: Money) => `${m.amount} kr`;
  * enough for a demo and wrong in general — a real link would carry a token that
  * encodes the club.
  */
-const linkParams = (): { match: string | null; venue: string | null } => {
+const linkParams = (): { match: string | null; venue: string | null; join: string | null } => {
   const q = new URLSearchParams(location.search);
-  return { match: q.get('match'), venue: q.get('venue') };
+  return { match: q.get('match'), venue: q.get('venue'), join: q.get('join') };
 };
 export const matchLink = (venue: string, id: string): string =>
   `${location.origin}/?venue=${venue}&match=${id}`;
@@ -126,6 +127,23 @@ export default function App() {
   const memberId = allMembers[venue]?.[who] ?? '';
   const ready = Boolean(cast[who]);
   const [invite, setInvite] = useState<string | null>(() => linkParams().match);
+  const [join, setJoin] = useState<string | null>(() => linkParams().join);
+
+  // A club invitation takes over the whole screen, before any persona exists:
+  // the recipient is by definition not yet a member (#35 / #564).
+  if (join) {
+    return (
+      <div className="phone">
+        <AcceptClubInvite
+          invitationId={join}
+          onDone={() => {
+            setUrl({ join: null });
+            setJoin(null);
+          }}
+        />
+      </div>
+    );
+  }
 
   // An invite takes over the whole screen: someone sent you here for one reason.
   if (invite) {
@@ -783,6 +801,96 @@ function Matches({ tz, memberId }: { tz: string; memberId: string }) {
  * shown FIRST — you decide whether you care before you are asked who you are —
  * and a link that can no longer be taken says so plainly instead of failing.
  */
+/**
+ * A club invitation, opened from the link the desk copied. No persona picker
+ * here: the whole point is that the recipient is not a member yet. The email
+ * field is the proof — the engine re-hashes it against what the club entered,
+ * so the invitation id alone opens nothing. (With a real login session the
+ * server uses the session's verified email and the field is belt-and-braces.)
+ */
+function AcceptClubInvite({
+  invitationId,
+  onDone,
+}: {
+  invitationId: string;
+  onDone: () => void;
+}) {
+  const [email, setEmail] = useState('');
+  const [state, setState] = useState<'asking' | 'accepted' | 'refused'>('asking');
+
+  const shell = (body: React.ReactNode) => (
+    <div className="scroll" style={{ background: 'var(--ink)', minHeight: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0 20px' }}>
+        <span className="brand-mark" />
+        <span className="wordmark" style={{ color: '#fff' }}>
+          RALLYPOINT
+        </span>
+      </div>
+      {body}
+    </div>
+  );
+
+  if (state === 'accepted')
+    return shell(
+      <div className="card">
+        <h2>Välkommen till klubben!</h2>
+        <p className="meta">
+          Du är nu medlem. Klubben ser dig i medlemsregistret och kan boka in dig direkt.
+        </p>
+        <button className="cta" style={{ marginTop: 12 }} onClick={onDone}>
+          Till klubben →
+        </button>
+      </div>,
+    );
+
+  if (state === 'refused')
+    return shell(
+      <div className="card">
+        <h2>Inbjudan kan inte användas</h2>
+        <p className="meta">
+          Fel e-postadress, återkallad eller utgången — länken avslöjar inte vilket. Kontrollera
+          adressen eller be klubben om en ny inbjudan.
+        </p>
+        <button
+          className="cta ghost"
+          style={{ marginTop: 12, background: 'transparent', color: '#fff', borderColor: '#4a5050' }}
+          onClick={() => setState('asking')}
+        >
+          Försök igen
+        </button>
+      </div>,
+    );
+
+  return shell(
+    <div className="card">
+      <h2>Du är inbjuden</h2>
+      <p className="meta">
+        En klubb har bjudit in dig som spelare. Ange e-postadressen som inbjudan skickades till.
+      </p>
+      <input
+        type="email"
+        placeholder="E-post"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        style={{ width: '100%', marginTop: 10 }}
+      />
+      <button
+        className="cta"
+        style={{ marginTop: 10 }}
+        disabled={!email}
+        onClick={() =>
+          acceptInvite(invitationId, email).then(
+            () => setState('accepted'),
+            () => setState('refused'),
+          )
+        }
+      >
+        Acceptera inbjudan
+      </button>
+    </div>,
+  );
+}
+
 function JoinByLink({
   reservationId,
   tz,
