@@ -1,5 +1,12 @@
 # @substrat-run/demo-auth-server
 
+## 0.2.40
+
+### Patch Changes
+
+- @substrat-run/contracts@0.55.0
+- @substrat-run/kernel@0.55.0
+
 ## 0.2.39
 
 ### Patch Changes

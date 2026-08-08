@@ -1,5 +1,39 @@
 # @substrat-run/control-plane-api
 
+## 0.55.0
+
+### Minor Changes
+
+- 8cd5039: feat(dashboard,control-plane-api): builders see their own vertical's failure history (#559)
+
+  `GET /ops-failures` opens to builders, tenant-narrowed by the forced-filter
+  pattern (`GET /scopes` precedent): a builder reads only its own tenant's rows,
+  platform-level rows (null tenant) stay staff-only, and staff keep the fleet
+  view. The dashboard grows the pipe — a tenant-pinned `listOpsFailures` on the
+  authority seam, `GET /api/deployments/:slug/failures` (owned-slug-checked, with
+  an embedded-host fallback) — and a "Recent failures" panel on the vertical
+  detail: when, operation · stage, status, message, and the upstream
+  `reference = <id>` with a copy affordance. A red CI run is now explainable from
+  the dashboard without staff involvement; a `reference` row says "platform
+  fault, here is the Cloudflare support handle", not "your code broke".
+
+### Patch Changes
+
+- 512822b: fix(control-plane-api): the platform's own export→restore calls ride out a transient blip (#559)
+
+  When the control plane talks to a vertical deployment on the caller's behalf —
+  the preview fork's restore, the snapshot copy, a backup restore, adopt/rebind
+  onto the serving script — a one-shot downstream 5xx (a DO storage blip) now
+  heals on the same bounded backoff the install path already uses, instead of
+  failing the request. Cheap at exactly these call sites: the dump is already in
+  memory and the far end is drop-then-replay idempotent — unlike CI's blind
+  retry, which burns a freshly pushed version per attempt. Honest refusals (4xx,
+  and 501 = not implemented) still surface immediately, and a persistent fault
+  still exhausts, answers honestly, and lands its ops-failure row.
+
+  - @substrat-run/contracts@0.55.0
+  - @substrat-run/kernel@0.55.0
+
 ## 0.54.0
 
 ### Minor Changes
