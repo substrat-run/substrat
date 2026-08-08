@@ -643,6 +643,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       .catch(() => undefined);
   };
 
+  // Rides out a transient downstream window: the install path's binding-attach →
+  // script-settings propagation race (#424 case 2), and a one-shot DO storage blip
+  // during an export→restore or snapshot copy (#559 (2)). Retrying is cheap at THESE
+  // call sites specifically — the dump is already in memory and the far end is
+  // drop-then-replay idempotent — unlike CI's retry, which burns a pushed version per
+  // attempt. Honest refusals (4xx, and 501 = not implemented) surface immediately:
+  // retrying a refusal only delays the real message. ~3s worst case on the default
+  // delays, well inside a Worker request budget; a persistent fault still exhausts
+  // and surfaces (and lands an ops-failure row via the paths that record).
+  const PROVISION_RETRY_DELAYS_MS: readonly number[] = [750, 2500];
+  const retryTransient = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const delays = options.provisionRetryDelaysMs ?? PROVISION_RETRY_DELAYS_MS;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        const transient =
+          e instanceof ControlPlaneError && (e.status === 0 || (e.status >= 500 && e.status !== 501));
+        const delay = delays[attempt];
+        if (!transient || delay === undefined) throw e;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  };
+
   // One error boundary for every route: adapters throw plain Errors, and each
   // one is a fail-closed refusal that must reach the caller as a status, not a
   // stack trace.
@@ -1121,7 +1146,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw new ControlPlaneError(501, 'adopt-serving needs dispatch resolution for both ends');
     }
     const dump = await source.exportScope(scopeId);
-    const restored = await dest.restoreScope(tenantId, scopeId, dump);
+    const restored = await retryTransient(() => dest.restoreScope(tenantId, scopeId, dump));
     // Data landed — only now flip routing and move the version pointer.
     await admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref);
     await admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId);
@@ -1252,7 +1277,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw new ControlPlaneError(501, 'rebind-vertical needs dispatch resolution for both ends');
     }
     const dump = await source.exportScope(scopeId);
-    const restored = await dest.restoreScope(tenantId, scopeId, dump);
+    const restored = await retryTransient(() => dest.restoreScope(tenantId, scopeId, dump));
     // Data landed on the target script — only now flip routing and cross the pointer.
     // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
     // extra snapshot here (adopt-serving's precedent): the source script's copy is the
@@ -1462,7 +1487,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       forkedAt: new Date().toISOString(),
       expiresAt: opts.expiresAt,
     });
-    await vertical.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId });
+    await retryTransient(() => vertical.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId }));
     await admin.activateScope(actor, tenantId, snapId);
     // Bound to the SOURCE's current version: source and fork share a deployment, so
     // the fork resolves to the DO namespace its bytes actually live in.
@@ -2022,7 +2047,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const landing = { ...dump, tables };
       await host.restoreScope(actor, tenantId, scopeId, landing);
       const vertical = await verticalForScope(c, scope);
-      if (vertical) await vertical.restoreScope(tenantId, scopeId, tables);
+      if (vertical) await retryTransient(() => vertical.restoreScope(tenantId, scopeId, tables));
       return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
@@ -2219,11 +2244,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // that does not exist. `scopeStatus` has a `provisioning` state for expressing the
   // in-between properly, and it is still unused — see the PR.
 
-  // Rides out the binding-attach → script-settings propagation window (see the
-  // `provisionRetryDelaysMs` option); the same shape as the dashboard's #391
-  // configure retry. ~3s worst case, well inside a Worker request budget.
-  const PROVISION_RETRY_DELAYS_MS: readonly number[] = [750, 2500];
-
   app.post('/verticals/:slug/instances', async (c) => {
     const slug = c.req.param('slug');
     // The install kill-switch: a blocked vertical takes no NEW instances, for anyone
@@ -2280,28 +2300,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // #424 case 2: the binding attach above races Cloudflare script-settings
       // propagation, so the vertical's FIRST answer can be a transient 5xx that a
       // retry moments later heals. `provisionInstance` is idempotent at the far end
-      // (K-31), so ride the window out on a short backoff. Honest refusals (4xx, and
-      // 501 = not implemented) surface immediately — retrying a refusal only delays
-      // the real message.
-      const delays = options.provisionRetryDelaysMs ?? PROVISION_RETRY_DELAYS_MS;
-      let instance: Awaited<ReturnType<VerticalClient['provisionInstance']>>;
-      for (let attempt = 0; ; attempt++) {
-        try {
-          instance = await vertical.provisionInstance({
-            ...(input as Parameters<VerticalClient['provisionInstance']>[0]),
-            entitlements,
-            identityLinks,
-            ...(tenantStores.length ? { tenantStores } : {}),
-          });
-          break;
-        } catch (e) {
-          const transient =
-            e instanceof ControlPlaneError && (e.status === 0 || (e.status >= 500 && e.status !== 501));
-          const delay = delays[attempt];
-          if (!transient || delay === undefined) throw e;
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-      }
+      // (K-31), so ride the window out on a short backoff.
+      const instance = await retryTransient(() =>
+        vertical.provisionInstance({
+          ...(input as Parameters<VerticalClient['provisionInstance']>[0]),
+          entitlements,
+          identityLinks,
+          ...(tenantStores.length ? { tenantStores } : {}),
+        }),
+      );
       return c.json(instance, 201);
     } catch (e) {
       // Propagate the vertical's own status rather than collapsing it to a 500. A
@@ -3572,8 +3579,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         expiresAt: expiresAt ?? undefined,
       });
       // Load the fork into the PR version's deployment (materializes the preview scope DO
-      // there; restore re-projects the vertical's roles from the dump's tuples).
-      await target.restoreScope(tenantId, previewId, tables);
+      // there; restore re-projects the vertical's roles from the dump's tuples). A one-shot
+      // DO storage blip heals on the in-request retry WITHOUT burning a CI attempt (which
+      // pushes a fresh version per try) — #559 (2).
+      await retryTransient(() => target.restoreScope(tenantId, previewId, tables));
     } else {
       // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
       // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
@@ -3590,7 +3599,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         jurisdiction: 'global',
         expiresAt: expiresAt ?? undefined,
       });
-      if (target) await target.restoreScope(tenantId, previewId, []);
+      if (target) await retryTransient(() => target.restoreScope(tenantId, previewId, []));
     }
     await admin.activateScope(actor, tenantId, previewId);
     // Bind the PR version. A private vertical's push self-admitted, so this is accepted; a

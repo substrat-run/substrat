@@ -997,6 +997,75 @@ describe('control-plane API', () => {
     expect(row).toMatchObject({ status: 'active', kind: 'preview', forkedFrom: prod, verticalVersionId: v2 });
   });
 
+  it('rides out a one-shot transient 5xx during the preview restore IN-REQUEST (#559 (2))', async () => {
+    // The complement of the re-fork test above: a single DO storage blip should heal on
+    // the CP's own bounded retry — same fork, same in-memory dump, ONE create — instead
+    // of failing the request and making CI burn a fresh pushed version on its blind retry.
+    // Only a `ControlPlaneError` 5xx retries (what VerticalClient throws for a downstream
+    // status); refusals and unrecognized throws still surface one-shot.
+    const tB = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tB, slug: 'blip-co', name: 'Blip Co' });
+    await host.admin.registerVertical(staff, {
+      slug: 'blip-vert', name: 'Blip Vert', source: 'cli', ownerTenant: tB,
+    });
+    const vId = ulid();
+    await host.admin.publishVersion(staff, {
+      id: vId, verticalSlug: 'blip-vert', version: '1.0.0',
+      manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+    });
+    await host.admin.admitVersion(staff, vId);
+
+    const prod = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tB, scopeId: prod, vertical: 'blip-vert' });
+    await host.admin.activateScope(staff, tB, prod);
+    await host.admin.bindScopeVersion(staff, tB, prod, vId);
+    await host.admin.bindHostname(staff, {
+      hostname: 'blip-acme.global.substrat.run',
+      tenantId: tB, scopeId: prod, surface: 'app', region: null, canonical: true,
+    });
+
+    let exports = 0;
+    const restores: string[] = [];
+    const fakeVertical = {
+      exportScope: async (): Promise<ScopeDumpTable[]> => {
+        exports += 1;
+        return [{ name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: [['a']] }];
+      },
+      restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
+        restores.push(sid);
+        // The blip: Cloudflare's redacted storage fault, once. VerticalClient surfaces
+        // a downstream 5xx as a ControlPlaneError — the shape the retry recognizes.
+        if (restores.length === 1) {
+          throw new ControlPlaneError(502, 'internal error; reference = 242sg7l0st8ldln5uqu8ei58');
+        }
+        return { tables: tables.length };
+      },
+      deleteScope: async () => {},
+    } as unknown as VerticalClient;
+    const dapp = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'blip-vert': fakeVertical },
+      platformBaseDomains: ['global.substrat.run'],
+      provisionRetryDelaysMs: [1, 1],
+    });
+
+    const res = await dapp.request('/verticals/blip-vert/previews', {
+      method: 'POST', headers: auth, body: JSON.stringify({ tag: 'pr-1', versionId: vId }),
+    });
+    expect(res.status).toBe(201);
+    const p = (await res.json()) as { scopeId: string; reused: boolean };
+    expect(p.reused).toBe(false);
+    // One export, two restore attempts, both onto the SAME fresh fork — no stranded
+    // `provisioning` row, no second create.
+    expect(exports).toBe(1);
+    expect(restores).toEqual([p.scopeId, p.scopeId]);
+    const row = (await (await dapp.request(`/tenants/${tB}/scopes/${p.scopeId}`, { headers: auth })).json()) as {
+      status: string;
+    };
+    expect(row.status).toBe('active');
+  });
+
   it('lets a LISTED vertical owner preview a PENDING version into their own scope (#509 (d))', async () => {
     // Publishing widens who may INSTALL, not who may preview their own code. A listed
     // vertical's owner still forks their own prod scope and runs their (not-yet-admitted)
