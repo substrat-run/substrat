@@ -196,6 +196,28 @@ export interface PlatformSurfaceDeps<Env> {
 }
 
 /**
+ * A throw that names the RUNTIME failing, not the request (#559). Two signals, either
+ * sufficient: the flags workerd sets on transient Durable Object errors (`retryable`,
+ * `overloaded`), and the message shapes the runtime is known to emit — foremost DO
+ * SQLite's redacted `internal error; reference = <id>`, whose reference resolves only at
+ * Cloudflare support. The patterns are anchored/specific on purpose: an APP error that
+ * merely mentions "internal error" mid-sentence is still the caller's 400.
+ */
+const PLATFORM_FAULT_PATTERNS = [
+  /^internal error(?:;|$)/i,
+  /^durable object reset/i,
+  /^durable object storage operation/i,
+  /transient (?:issue|error)/i,
+  /^network connection lost/i,
+];
+
+function isPlatformFault(err: unknown, message: string): boolean {
+  const flags = err as { retryable?: unknown; overloaded?: unknown } | null;
+  if (flags?.retryable === true || flags?.overloaded === true) return true;
+  return PLATFORM_FAULT_PATTERNS.some((p) => p.test(message));
+}
+
+/**
  * Mount the platform's `/internal/*` contract and the guaranteed error envelope onto a
  * vertical's Hono app. Call it once; it registers the platform-secret gate (one
  * middleware, not a per-route try/catch), every `/internal` route, and `app.onError`.
@@ -392,6 +414,21 @@ export function mountPlatformSurface<Env extends object>(
     if (mapped) return c.json({ error: mapped.message }, mapped.status as ContentfulStatusCode);
     const status = err instanceof HTTPException ? err.status : 400;
     const m = err instanceof Error ? err.message : String(err);
+    // An infrastructure fault is the PLATFORM failing, not the request (#559). Defaulting
+    // it to 400 taught every layer above to treat a Cloudflare outage as the caller's
+    // fault — the control plane relays the status verbatim, and its retry convention
+    // (install path) deliberately retries 5xx while surfacing 4xx immediately, so the
+    // misclassification also disarmed any retry. 502 is the honest answer. Log it
+    // structured so the vertical's observability keeps stage + reference queryable.
+    if (status === 400 && isPlatformFault(err, m)) {
+      console.error('vertical-host.platform-fault', {
+        method: c.req.method,
+        path: c.req.path,
+        detail: m,
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      return c.json({ error: m }, 502);
+    }
     // Map the kernel/engine error vocabulary onto HTTP. Only reinterpret the default 400 —
     // an explicit HTTPException status (403/404/409/501 the routes raise) is authoritative.
     if (status === 400 && /permission denied/i.test(m)) return c.json({ error: m }, 403);

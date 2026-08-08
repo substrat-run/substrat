@@ -2,6 +2,12 @@
 	"name": "substrat-control-plane",
 	"main": "src/worker.ts",
 	"compatibility_date": "2025-01-01",
+	// Ship console logs to Workers Observability (#559). Without this, the worker's own
+	// diagnostics — `deploy.upload.failed`, `control-plane.unhandled`, every unmapped 500 —
+	// existed ONLY in a live `wrangler tail`: an unwatched failure left no queryable trace
+	// anywhere. The 2026-08-08 preview-restore incident was diagnosable solely because the
+	// VERTICAL scripts happened to log; the control plane itself was blind.
+	"observability": { "enabled": true },
 	// The platform's scheduled pass (worker.ts `scheduled`): snapshot GC — reap
 	// expired preview/archive forks (preview-and-snapshots.md §3/§9) — and, when
 	// SCOPE_RETENTION_DAYS is set, reap the DO storage of long-archived scopes
@@ -159,6 +165,10 @@
 			// deploys with NO cron and its scheduled pass — the platform-intent drain included —
 			// never runs (#444). Same schedule as prod.
 			"triggers": { "crons": ["*/15 * * * *"] },
+			// Repeated like `triggers`: #444 proved a named env does not inherit keys we
+			// assumed it would, and a silently log-less TEST control plane is exactly the
+			// blindness #559 removes. Same setting as prod.
+			"observability": { "enabled": true },
 			"routes": [{ "pattern": "console-test.substrat.net", "custom_domain": true }], // differs
 			"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run", "PLATFORM_CP_URL": "https://console-test.substrat.net" }, // differs
 			"durable_objects": {
