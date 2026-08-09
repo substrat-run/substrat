@@ -1,4 +1,4 @@
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type OpsFailureInput, type ScopeHost } from '@substrat-run/kernel';
 import {
   principalId as principalIdSchema,
   scopeId as scopeIdSchema,
@@ -9,6 +9,7 @@ import {
   setEntitlementsPayload,
   type PlatformActorId,
   type PlatformRequest,
+  type Scope,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
@@ -54,6 +55,28 @@ export interface PlatformDrainReport {
 }
 
 /**
+ * How many drain passes a pending intent may burn before the platform stops retrying and
+ * settles it `failed` (#570). Every pass through the ceiling means a HANDLER judged the
+ * failure transient — but an intent that has been "transient" this many times is
+ * structurally stuck (a wrong dispatch target, a refusal upstream of the platform), and
+ * before this ceiling its only trace was an `attempts` column nobody reads. At the
+ * ~15-min sweep cadence 100 attempts ≈ a day — generous for any genuinely transient
+ * fault, short enough that the proposer learns the truth while it still matters.
+ */
+export const MAX_PLATFORM_REQUEST_ATTEMPTS = 100;
+
+export interface PlatformDrainOptions {
+  /**
+   * Land a durable ops-failure row (#559) when the drain gives up on an intent at the
+   * attempt ceiling. Fire-and-forget at the call site: a recorder that throws must never
+   * mask the settle it is recording. The drain adds the `actor` upstream.
+   */
+  recordFailure?: (entry: Omit<OpsFailureInput, 'actor'>) => void;
+  /** Test override of {@link MAX_PLATFORM_REQUEST_ATTEMPTS}. */
+  maxAttempts?: number;
+}
+
+/**
  * Drain one scope's pending platform intents: list them from the vertical, dispatch each to the
  * handler for its `kind`, and settle the outcome back in the vertical. An unknown kind settles
  * `failed` (never silently dropped); a thrown handler settles `pending` (retried on the next drain).
@@ -63,6 +86,7 @@ export async function drainScopePlatformRequests(
   client: Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'>,
   ctx: PlatformRequestContext,
   handlers: Record<string, PlatformRequestHandler>,
+  opts?: PlatformDrainOptions,
 ): Promise<PlatformDrainReport> {
   const pending = await client.listPlatformRequests(ctx.tenantId, ctx.scopeId);
   const report: PlatformDrainReport = { drained: pending.length, done: 0, failed: 0, pending: 0 };
@@ -79,6 +103,27 @@ export async function drainScopePlatformRequests(
         outcome = { status: 'pending', error: e instanceof Error ? e.message : String(e) };
       }
     }
+    // The attempt ceiling (#570): `attempts` counts SETTLED passes, so this pass is
+    // attempts + 1. At the ceiling a still-pending outcome settles `failed` carrying its
+    // last error — the truth the proposer's read actually surfaces — and the give-up
+    // lands an ops-failure row (#559) so a six-day retry loop is an operator's headline,
+    // not a spine-table archaeology find.
+    const maxAttempts = opts?.maxAttempts ?? MAX_PLATFORM_REQUEST_ATTEMPTS;
+    if (outcome.status === 'pending' && request.attempts + 1 >= maxAttempts) {
+      outcome = {
+        status: 'failed',
+        result: outcome.result,
+        error: `gave up after ${request.attempts + 1} drain attempts — last error: ${outcome.error ?? 'unknown'}`,
+      };
+      opts?.recordFailure?.({
+        operation: `intent.${request.kind}`,
+        stage: 'attempt-ceiling',
+        tenantId: ctx.tenantId,
+        scopeId: ctx.scopeId,
+        vertical: ctx.vertical,
+        message: `platform intent ${request.id} ${outcome.error}`,
+      });
+    }
     await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, request.id, {
       status: outcome.status,
       result: outcome.result,
@@ -87,6 +132,33 @@ export async function drainScopePlatformRequests(
     report[outcome.status]++;
   }
   return report;
+}
+
+/**
+ * Align a still-provisioning scope with its vertical's serving script (#570). A scope
+ * born without `servingRef` while its vertical serves in place (#286) — a directory
+ * predating the insert-time inherit, or early passes that named a not-yet-matching slug —
+ * makes provisioning dispatch to the pinned VERSION's script, while the tenant-store
+ * binding patch targets the SERVING script (tenant-stores.ts): two halves of the same
+ * handler aimed at two different scripts, so a store-backed vertical refuses every retry
+ * and the intent can never converge. Stamping the serving pointer before resolving the
+ * client makes provisioning, the binding patch, and the router agree on one script.
+ *
+ * Deliberately bounded to `status === 'provisioning'`: such a scope has never activated,
+ * so its DO holds only re-derivable provisioning state (role/entitlement projections) and
+ * there is no data to hop — unlike `adopt-serving`, which exists for scopes with data.
+ */
+async function adoptServingForProvisioning(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  scope: Scope | undefined,
+): Promise<Scope | undefined> {
+  if (!scope?.vertical || scope.servingRef || scope.status !== 'provisioning') return scope;
+  const serving = await host.admin.verticalServing(actor, scope.vertical).catch(() => null);
+  if (!serving) return scope;
+  await host.admin.setScopeServingRef(actor, scope.tenantId, scope.id, serving.ref);
+  await host.admin.bindScopeVersion(actor, scope.tenantId, scope.id, serving.versionId);
+  return { ...scope, servingRef: serving.ref, verticalVersionId: serving.versionId };
 }
 
 export interface ProvisionSiblingDeps {
@@ -146,7 +218,11 @@ export async function provisionSiblingScope(
     vertical: parent.vertical,
     jurisdiction: parent.jurisdiction ?? undefined,
   } as Parameters<ScopeHost['provisionScope']>[1]);
-  const created = await admin.getScopeRecord(actor, input.tenantId, input.scopeId);
+  const created = await adoptServingForProvisioning(
+    host,
+    actor,
+    await admin.getScopeRecord(actor, input.tenantId, input.scopeId),
+  );
   const vertical = created ? await deps.resolveVerticalForScope(created) : undefined;
   if (!vertical) {
     return { ok: false, status: 501, error: `no deployment is bound for vertical '${parent.vertical}'` };
@@ -381,7 +457,11 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
       name: payload.instance.name,
       vertical: payload.instance.vertical,
     } as Parameters<ScopeHost['provisionScope']>[1]);
-    const created = await admin.getScopeRecord(actor, tenantId, scopeId);
+    const created = await adoptServingForProvisioning(
+      host,
+      actor,
+      await admin.getScopeRecord(actor, tenantId, scopeId),
+    );
     const vertical = created ? await deps.resolveVerticalForScope(created) : undefined;
     if (!vertical) {
       return {

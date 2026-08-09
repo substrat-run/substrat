@@ -26,12 +26,14 @@ export type { ControlPlaneClientOptions, ClientProvisionScopeInput } from './cli
 export { VerticalClient } from './vertical-client.js';
 export {
   drainScopePlatformRequests,
+  MAX_PLATFORM_REQUEST_ATTEMPTS,
   provisionSiblingScope,
   provisionSiblingHandler,
   archiveScopeHandler,
   provisionTenantHandler,
   setEntitlementsHandler,
   type ManagedTenantDeps,
+  type PlatformDrainOptions,
   type ArchiveScopeDeps,
   type PlatformRequestHandler,
   type PlatformRequestContext,
