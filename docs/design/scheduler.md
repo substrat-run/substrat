@@ -195,8 +195,11 @@ alarms. Start with the latter — retry is the higher-frequency, more latency-se
    sweeper beside its dispatch handler — the call site stops assembling the map by hand.
 4. **Move `drainDue` to per-scope alarms (Design B)** when fan-out latency shows up; keep the
    timer/cron as the safety net.
-5. **Add webhook push (#96)** as a latency layer when a provider's poll interval is too slow — the
-   handler calls the same `reconcileScriveDispatch`. Poll stays as the floor.
+5. ~~**Add webhook push (#96)**~~ **Done** — `handleScriveCallback` (connector) verifies a
+   per-dispatch capability token (Scrive signs nothing, so the minted token in the URL is the
+   whole authentication) and calls the same `reconcileScriveDispatch`; the mount is
+   `SCRIVE_CALLBACK_ROUTE` + a `callbackUrl` config (live in `demos/meridian/src/server.ts`,
+   with `ScriveMock` delivering real POSTs offline). Poll stays as the floor.
 
 Step 1 is landed. Step 2 is the only thing between here and an autonomous connector, and it waits
 on a deployed vertical, not on more platform code. The rest is scale and latency, each additive.

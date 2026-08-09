@@ -383,6 +383,19 @@ so a callback surface needs no contract change. The auth pattern to copy is
 ([demos/callout/src/worker.ts:224](../../demos/callout/src/worker.ts)) — deliberately *not*
 under `/api/*`, which is the tenant-facing surface.
 
+> **Landed (#96).** Push exists beside poll, exactly as scheduler.md §2 shaped it. The
+> dispatch mints a 256-bit capability token, stores it on the ledger row
+> (`ScriveDispatchState.webhookToken`), and registers
+> `${base}/hooks/scrive/{connectionId}/{instanceId}/{token}` as the document's callback URL.
+> `handleScriveCallback` (connector) is the ingress: constant-time token check against the
+> ledger, one uniform rejection for every failure mode (no oracle, and **zero provider
+> egress** without a verified token), then the SAME `reconcileScriveDispatch` the sweep
+> runs. No body is ever read, so replay protection needs no seen-set — a replayed callback
+> can assert nothing; it only triggers an idempotent re-read of `documents/{id}/get`. The
+> deployment mounts `SCRIVE_CALLBACK_ROUTE` and sets a public base
+> (`demos/meridian/src/server.ts`, `SCRIVE_CALLBACK_BASE`; mock mode delivers callbacks
+> against the server itself, so the loop runs offline). Poll remains the floor.
+
 ---
 
 ## 6. The Scrive connector, concretely
@@ -526,7 +539,7 @@ connection, written through `HostAdmin`, never touching a scope.
 
 ## 7. Non-goals (v0)
 
-Webhook ingress (poll first, §5). A general connector marketplace or per-tenant connector
+~~Webhook ingress (poll first, §5)~~ — landed, see §5. A general connector marketplace or per-tenant connector
 enablement UI. OAuth **authorization-code** flows in the console — v0 accepts credentials
 administratively. Rate-limit orchestration across tenants. Replacing the module consumer path,
 which is unchanged throughout.
@@ -537,7 +550,7 @@ which is unchanged throughout.
 
 - [#100](https://github.com/substrat-run/substrat/issues/100) — executor runtime (§2), the prerequisite
 - [#101](https://github.com/substrat-run/substrat/issues/101) — connection store (§3)
-- [#96](https://github.com/substrat-run/substrat/issues/96) — webhook ingress (§5), deferrable via polling
+- [#96](https://github.com/substrat-run/substrat/issues/96) — webhook ingress (§5) — landed as the push layer beside the poll floor
 - [#97](https://github.com/substrat-run/substrat/issues/97) — inbound authority seam (§5)
 
 ---

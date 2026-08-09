@@ -37,6 +37,15 @@ interface MockDocument {
 export interface ScriveMockOptions {
   /** Reject every call with this HTTP status — the failure path on demand. */
   failWith?: number;
+  /**
+   * Fired when a signing event lands on a document that has an
+   * `api_callback_url` — the provider-side POST the real Scrive makes on status
+   * changes. The mock only reports WHERE (the capability URL the connector set)
+   * and what document, never a trustworthy body, matching the real callback's
+   * standing as a hint. Errors are swallowed, as a provider's delivery failures
+   * would be — the poll floor is what covers a lost callback.
+   */
+  onCallback?: (cb: { url: string; documentId: string; status: string }) => void | Promise<void>;
 }
 
 // URL and TextEncoder are web-standard everywhere this runs; declared locally so
@@ -48,9 +57,11 @@ export class ScriveMock {
   readonly documents = new Map<string, MockDocument>();
   private seq = 0;
   failWith: number | undefined;
+  private readonly onCallback: ScriveMockOptions['onCallback'];
 
   constructor(options: ScriveMockOptions = {}) {
     this.failWith = options.failWith;
+    this.onCallback = options.onCallback;
   }
 
   /** Simulate a party completing BankID. The provider-side event we cannot cause for real. */
@@ -62,10 +73,21 @@ export class ScriveMock {
     // Scrive closes a document only when EVERY party has signed — the same rule
     // engine-protocol applies to its own request set, arrived at independently.
     if (doc.parties.every((p) => p.signTime)) doc.status = 'closed';
+    this.fireCallback(doc);
   }
 
   decline(documentId: string): void {
-    this.mustGet(documentId).status = 'rejected';
+    const doc = this.mustGet(documentId);
+    doc.status = 'rejected';
+    this.fireCallback(doc);
+  }
+
+  /** The provider-side POST on a signing event — fire and forget, like the real one. */
+  private fireCallback(doc: MockDocument): void {
+    if (!doc.callbackUrl || !this.onCallback) return;
+    void Promise.resolve(
+      this.onCallback({ url: doc.callbackUrl, documentId: doc.id, status: doc.status }),
+    ).catch(() => {});
   }
 
   private mustGet(id: string): MockDocument {

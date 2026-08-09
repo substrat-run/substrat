@@ -8,6 +8,8 @@ import { PermissionDenied, startPlatformSweeper, ulid, type FetchLike, type Scop
 import {
   ScriveMock,
   SCRIVE_TESTBED,
+  SCRIVE_CALLBACK_ROUTE,
+  handleScriveCallback,
   sweepScriveReconciliations,
 } from '@substrat-run/connector-scrive';
 import {
@@ -53,6 +55,13 @@ const WEB_PORT = Number(process.env.WEB_PORT ?? 5275);
  *   - off (default): no connection, no sweeper — the contract sits pending, honest
  *     without a provider.
  * `mock` is returned when ScriveMock backs the egress, so the dev route can drive it.
+ *
+ * The webhook ingress (#96) rides the same opt-ins. `SCRIVE_CALLBACK_BASE` names
+ * the public base Scrive can reach this server on (for the real testbed that is
+ * a tunnel URL; unset ⇒ poll-only, exactly as before). Mock mode defaults it to
+ * this server's own localhost, and the mock DELIVERS the callback with a real
+ * HTTP POST — the full loop, sign → provider callback → capability URL verified
+ * → reconcile, runs offline.
  */
 function resolveScrive(): { config: ScriveConfig; egress: FetchLike; mock: ScriveMock | null } | null {
   const { SCRIVE_CLIENT_ID, SCRIVE_CLIENT_SECRET, SCRIVE_TOKEN_ID, SCRIVE_TOKEN_SECRET } = process.env;
@@ -66,15 +75,32 @@ function resolveScrive(): { config: ScriveConfig; egress: FetchLike; mock: Scriv
     // Real testbed: the runtime's global fetch is the egress (host default), so
     // pass no `fetch` and hand the sweeper the same global.
     return {
-      config: { secret, baseUrl: process.env.SCRIVE_BASE_URL ?? SCRIVE_TESTBED },
+      config: {
+        secret,
+        baseUrl: process.env.SCRIVE_BASE_URL ?? SCRIVE_TESTBED,
+        ...(process.env.SCRIVE_CALLBACK_BASE
+          ? { callbackBaseUrl: process.env.SCRIVE_CALLBACK_BASE }
+          : {}),
+      },
       egress: (globalThis as unknown as { fetch: FetchLike }).fetch,
       mock: null,
     };
   }
   if (process.env.MERIDIAN_SCRIVE_MOCK === '1') {
-    const mock = new ScriveMock();
+    // The mock plays the provider's delivery too: a signing event POSTs the
+    // capability URL the connector registered, against this very server.
+    const mock = new ScriveMock({
+      onCallback: async (cb) => {
+        const res = await fetch(cb.url, { method: 'POST' });
+        console.log(`[scrive-mock] callback → ${res.status} (${cb.documentId} ${cb.status})`);
+      },
+    });
     return {
-      config: { secret: { clientId: 'ci', clientSecret: 'cs', tokenId: 'ti', tokenSecret: 'ts' }, fetch: mock.fetch },
+      config: {
+        secret: { clientId: 'ci', clientSecret: 'cs', tokenId: 'ti', tokenSecret: 'ts' },
+        fetch: mock.fetch,
+        callbackBaseUrl: process.env.SCRIVE_CALLBACK_BASE ?? `http://localhost:${PORT}`,
+      },
       egress: mock.fetch,
       mock,
     };
@@ -241,6 +267,39 @@ if (scrive?.mock && process.env.ALLOW_DEV_HEADER === 'true') {
   });
 }
 
+// The webhook ingress (#96): Scrive POSTs a capability URL on signing events, and
+// this verifies the minted token against the dispatch ledger and runs the same
+// reconcile the sweep runs — push collapses the poll's latency, never replaces it.
+// Unauthenticated by design (the token IS the authentication; Scrive signs nothing),
+// mounted only when a provider is wired, and the body is never read.
+if (scrive) {
+  const s = scrive;
+  app.post(SCRIVE_CALLBACK_ROUTE, async (c) => {
+    const ref = c.req.param();
+    try {
+      const outcome = await handleScriveCallback(host, ref, {
+        fetch: s.egress,
+        baseUrl: s.config.baseUrl,
+      });
+      if (!outcome.accepted) {
+        // One uniform answer for every rejection; the WHY stays server-side.
+        console.log(`[scrive-callback] rejected (${outcome.reason})`);
+        return c.json({ error: 'not found' }, 404);
+      }
+      const { recorded, complete, documentStatus } = outcome.result;
+      console.log(
+        `[scrive-callback] ${ref.instanceId}: recorded ${recorded.length}, status ${documentStatus}${complete ? ', complete' : ''}`,
+      );
+      return c.json({ ok: true });
+    } catch (err) {
+      // Verified but the reconcile failed (provider hiccup, store contention):
+      // 500 so the provider retries; the poll floor covers it regardless.
+      console.error('[scrive-callback] reconcile failed', err);
+      return c.json({ error: 'reconcile failed' }, 500);
+    }
+  });
+}
+
 // No /api/auth/* here: the vertical runs no credential store (oidc-only-demos.md). Dev auth is
 // the x-principal persona picker; real login is the OIDC round-trip via the worker + issuer.
 
@@ -275,4 +334,7 @@ if (scrive?.mock && process.env.ALLOW_DEV_HEADER === 'true') {
 serve({ fetch: app.fetch, port: PORT });
 console.log(`\n  Meridian (HR) demo API  http://localhost:${PORT}`);
 console.log(`  employee app            http://localhost:${WEB_PORT}`);
+if (scrive?.config.callbackBaseUrl) {
+  console.log(`  scrive callbacks        ${scrive.config.callbackBaseUrl}/hooks/scrive/…`);
+}
 console.log(`  data                    ${dataDir}\n`);

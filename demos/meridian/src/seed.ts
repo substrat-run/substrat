@@ -11,7 +11,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox, type FetchLike } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { registerScriveConnector } from '@substrat-run/connector-scrive';
+import { registerScriveConnector, scriveCallbackPath } from '@substrat-run/connector-scrive';
 import {
   EMPLOYEE_SELF,
   MODULES,
@@ -38,6 +38,13 @@ export interface ScriveConfig {
   fetch?: FetchLike;
   baseUrl?: string;
   secret: ScriveCredential;
+  /**
+   * Public base for the webhook ingress (#96) — set, and every dispatch mints a
+   * capability URL under `${callbackBaseUrl}/hooks/scrive/…` that the server's
+   * callback route verifies. Absent, no callback is registered and the poll
+   * sweep alone drives the return path, exactly as before.
+   */
+  callbackBaseUrl?: string;
 }
 
 /**
@@ -88,7 +95,15 @@ export function buildDemoHost(dir: string, scrive?: ScriveConfig): SqliteScopeHo
   // The connector is host code registered on the scope host, exactly like an
   // engine module — but only when Scrive is enabled, because a registered
   // connector with no connection would fail every dispatch.
-  if (scrive) registerScriveConnector(host, { baseUrl: scrive.baseUrl });
+  if (scrive) {
+    const { callbackBaseUrl } = scrive;
+    registerScriveConnector(host, {
+      baseUrl: scrive.baseUrl,
+      ...(callbackBaseUrl
+        ? { callbackUrl: (ref) => `${callbackBaseUrl}${scriveCallbackPath(ref)}` }
+        : {}),
+    });
+  }
   return host;
 }
 
