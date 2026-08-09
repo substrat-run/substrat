@@ -15,11 +15,13 @@ import {
 } from '@substrat-run/contracts';
 import {
   drainScopePlatformRequests,
+  MAX_PLATFORM_REQUEST_ATTEMPTS,
   provisionSiblingHandler,
   archiveScopeHandler,
   provisionTenantHandler,
   setEntitlementsHandler,
   type PlatformRequestHandler,
+  ControlPlaneError,
   VerticalClient,
 } from '../src/index.js';
 
@@ -90,6 +92,62 @@ describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
     expect(report.pending).toBe(1);
     expect(settled[0]!.status).toBe('pending');
     expect(settled[0]!.lastError).toMatch(/vertical unreachable/);
+  });
+
+  it('the attempt ceiling (#570): a pending outcome at the ceiling settles failed + records an ops-failure', async () => {
+    // 577 attempts into the acme incident, `pending` was a lie only the spine table knew.
+    const stuck = intent('provision-tenant', { attempts: MAX_PLATFORM_REQUEST_ATTEMPTS - 1 });
+    const { client, settled } = fakeTransport([stuck]);
+    const failures: Array<{ operation: string; stage?: string | null; message: string }> = [];
+    const refusing: PlatformRequestHandler = async () => ({
+      status: 'pending',
+      result: { tenantId: 'T', scopeId: 'S' },
+      error: 'vertical refused provisioning (503): no tenant store attached',
+    });
+
+    const report = await drainScopePlatformRequests(
+      client,
+      ctx,
+      { 'provision-tenant': refusing },
+      { recordFailure: (e) => failures.push(e) },
+    );
+
+    expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+    expect(settled[0]!.status).toBe('failed');
+    // The proposer reads the truth: how long the platform tried, and the last real error.
+    expect(settled[0]!.lastError).toMatch(new RegExp(`gave up after ${MAX_PLATFORM_REQUEST_ATTEMPTS} drain attempts`));
+    expect(settled[0]!.lastError).toMatch(/no tenant store attached/);
+    // Two-phase idempotency survives the give-up: the proposed ids stay persisted.
+    expect(settled[0]!.result).toEqual({ tenantId: 'T', scopeId: 'S' });
+    // …and the operator gets a durable #559 row instead of a spine-table archaeology find.
+    expect(failures).toEqual([
+      expect.objectContaining({
+        operation: 'intent.provision-tenant',
+        stage: 'attempt-ceiling',
+        tenantId: ctx.tenantId,
+        scopeId: ctx.scopeId,
+        vertical: ctx.vertical,
+        message: expect.stringMatching(stuck.id),
+      }),
+    ]);
+  });
+
+  it('below the ceiling a pending outcome stays pending — no give-up, no ops-failure row', async () => {
+    const req = intent('provision-tenant', { attempts: MAX_PLATFORM_REQUEST_ATTEMPTS - 2 });
+    const { client, settled } = fakeTransport([req]);
+    const failures: unknown[] = [];
+    const refusing: PlatformRequestHandler = async () => ({ status: 'pending', error: 'still warming up' });
+
+    const report = await drainScopePlatformRequests(
+      client,
+      ctx,
+      { 'provision-tenant': refusing },
+      { recordFailure: (e) => failures.push(e) },
+    );
+
+    expect(report.pending).toBe(1);
+    expect(settled[0]!.status).toBe('pending');
+    expect(failures).toEqual([]);
   });
 });
 
@@ -379,6 +437,71 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     const outcome = await provisionTenantHandler(unbound)(ctx, intent('provision-tenant', { payload }));
     expect(outcome.status).toBe('failed');
     expect(outcome.error).toMatch(/no deployment is bound for vertical 'managed-product'/);
+  });
+
+  it('adopts a still-provisioning scope onto the serving script between passes (#570)', async () => {
+    // The acme incident in miniature: the first pass runs while the scope has no serving
+    // pointer to inherit, so its client resolves via the pinned version's script — and the
+    // vertical refuses (its tenant store is bound to the SERVING script, not that one).
+    const vId = ulid();
+    await host.admin.registerVertical(staff, { slug: 'managed-product', name: 'Managed', source: 'cli' });
+    await host.admin.publishVersion(staff, {
+      id: vId,
+      verticalSlug: 'managed-product',
+      version: '1.0.0',
+      manifestDigest: 'm',
+      permissionDigest: 'p',
+      migrationDigest: 'g',
+      deploymentRef: 'managed-product-v1',
+    });
+    await host.admin.admitVersion(staff, vId);
+
+    const newTenant = ulid();
+    const newScope = ulid();
+    const refusing = {
+      ...deps(),
+      resolveVerticalForScope: async () =>
+        ({
+          provisionInstance: async () => {
+            throw new ControlPlaneError(503, 'no tenant store attached — provision first');
+          },
+        }) as unknown as VerticalClient,
+    };
+    const first = await provisionTenantHandler(refusing)(
+      ctx,
+      intent('provision-tenant', { payload: payloadFor(newTenant, newScope) }),
+    );
+    expect(first.status).toBe('pending'); // transient by the handler's contract — retried
+    const stranded = await host.admin.getScopeRecord(staff, tenantId.parse(newTenant), scopeId.parse(newScope));
+    expect(stranded?.servingRef ?? null).toBeNull();
+
+    // The vertical now serves in place. The retry must stamp the scope's serving pointer
+    // BEFORE resolving the client, so provisioning, the store-binding patch, and the
+    // router all target the one serving script — the #570 convergence.
+    await host.admin.setVerticalServing(staff, 'managed-product', {
+      ref: 'managed-product-serving',
+      versionId: vId,
+      doClasses: [],
+      migrationTag: 'g',
+    });
+    let resolvedWith: { servingRef?: string | null } | undefined;
+    const capture = {
+      ...deps(),
+      resolveVerticalForScope: async (scope: { servingRef?: string | null }) => {
+        resolvedWith = scope;
+        return fakeVertical;
+      },
+    };
+    const retry = await provisionTenantHandler(capture)(
+      ctx,
+      intent('provision-tenant', { payload: payloadFor(newTenant, newScope) }),
+    );
+    expect(retry.status).toBe('done');
+    expect(resolvedWith?.servingRef).toBe('managed-product-serving');
+    const adopted = await host.admin.getScopeRecord(staff, tenantId.parse(newTenant), scopeId.parse(newScope));
+    expect(adopted?.servingRef).toBe('managed-product-serving');
+    expect(adopted?.verticalVersionId).toBe(vId);
+    expect(adopted?.status).toBe('active');
   });
 });
 

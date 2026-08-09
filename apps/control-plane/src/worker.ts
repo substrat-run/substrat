@@ -523,6 +523,13 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
       [PROVISION_TENANT_KIND]: provisionTenantHandler(managedTenantDeps),
       [SET_ENTITLEMENTS_KIND]: setEntitlementsHandler(managedTenantDeps),
     },
+    {
+      // #570: the drain's attempt-ceiling give-up lands a durable ops-failure row
+      // (#559). Fire-and-forget — a recorder failure must never mask the settle.
+      recordFailure: (entry) => {
+        void host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch(() => undefined);
+      },
+    },
   );
 }
 
