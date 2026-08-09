@@ -13,7 +13,12 @@ import {
 import { ulid, webCryptoSecretBox, type ScopeStub } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PROTOCOL_PERM as PERM, protocolModule } from '@substrat-run/engine-protocol';
-import { ScriveMock, registerScriveConnector, type ScriveDispatchState } from '../src/index.js';
+import {
+  ScriveMock,
+  registerScriveConnector,
+  scriveCallbackPath,
+  type ScriveDispatchState,
+} from '../src/index.js';
 
 /**
  * The outbound half, end to end: a vertical freezes a document and asks for
@@ -68,7 +73,7 @@ describe('scrive connector — outbound dispatch', () => {
 
     registerScriveConnector(host, {
       baseUrl: 'https://api-testbed.scrive.test',
-      callbackUrl: (instanceId) => `https://vertical.test/hooks/scrive/${instanceId}-secret`,
+      callbackUrl: (ref) => `https://vertical.test${scriveCallbackPath(ref)}`,
       // Retry immediately, so a test can watch a failure recover rather than
       // asserting that a timer it cannot advance would eventually fire.
       retry: { baseDelayMs: 0 },
@@ -176,8 +181,10 @@ describe('scrive connector — outbound dispatch', () => {
       ['Anställd', 'se_bankid'],
     ]);
 
-    // A capability URL, because Scrive's callbacks carry no signature to verify.
+    // A capability URL, because Scrive's callbacks carry no signature to verify:
+    // (connection, instance) route it, and the minted token authenticates it.
     expect(doc!.callbackUrl).toContain(sent.instance.id);
+    expect(doc!.callbackUrl).toMatch(/\/hooks\/scrive\/[0-9A-HJKMNP-TV-Z]{26}\/[^/]+\/[0-9a-f]{64}$/);
 
     // The dispatch is recorded in the connector's directory ledger — the id, so
     // a redelivery can find it and skip, and the request ids the poll driver

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { scopeId, tenantId, type ConnectionId, type DomainEvent } from '@substrat-run/contracts';
+import { connectionId, scopeId, tenantId, type ConnectionId, type DomainEvent } from '@substrat-run/contracts';
 import type {
   ConnectorConnection,
   ConnectorHandler,
@@ -14,6 +14,11 @@ import { renderPdf } from './pdf.js';
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
 // connector pulls in no platform typings, exactly as `api.ts`/`mock.ts` do.
 declare const AbortSignal: { timeout(ms: number): unknown };
+declare const crypto: {
+  getRandomValues(array: Uint8Array): Uint8Array;
+  subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> };
+};
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 
 export { ScriveApi, SCRIVE_TESTBED, SCRIVE_PRODUCTION } from './api.js';
 export { ScriveMock } from './mock.js';
@@ -52,27 +57,60 @@ export { renderPdf } from './pdf.js';
  *    enumerates the dispatch ledger (`listConnectorState`) and reconciles every
  *    outstanding instance, so completion needs no per-instance caller.
  *
- * The one gap that remains: **nothing calls the sweep on a timer** (#96, poll
- * path). There is no cron, queue or Durable Object alarm in any deployment yet —
- * the same trigger `drainDue` still lacks — so `sweepScriveReconciliations` runs
- * from a test or by hand today. That trigger, not the seam or the driver, is why
- * the connector stays unpublished; it is a deployment concern, not connector
- * code.
+ * Both triggers for the return path exist now (#96):
+ *
+ * - **Poll, the floor:** `sweepScriveReconciliations` runs on the platform
+ *   sweeper — `startPlatformSweeper` in a node deployment (live in
+ *   `demos/meridian/src/server.ts`), `definePlatformSweeperDO`'s alarm on
+ *   Cloudflare — and is the source of truth that survives lost callbacks.
+ * - **Push, the latency layer:** `handleScriveCallback` verifies a capability
+ *   URL (Scrive callbacks carry no signature, so the URL's minted token is the
+ *   whole authentication) and runs the same reconcile immediately. The
+ *   deployment mounts `SCRIVE_CALLBACK_ROUTE` and configures `callbackUrl`.
  */
 export interface ScriveConnectorOptions {
   /** `SCRIVE_TESTBED` by default; production needs a paid licence. */
   baseUrl?: string;
   /**
-   * Where Scrive should POST status changes.
+   * Where Scrive should POST status changes (#96, the push layer).
    *
    * Scrive's callbacks are **unauthenticated** — there is no signature to
    * verify — so this must be a capability URL (an unguessable secret in the
    * path), and a callback must never be trusted as a fact. It is a hint to
    * re-read `documents/{id}/get`. Optional because polling alone is a complete
-   * strategy and needs no ingress at all (#96).
+   * strategy: the sweep is the floor, push only collapses its latency.
+   *
+   * The `ref` carries everything `handleScriveCallback` resolves the hint by —
+   * the connection, the instance, and the freshly minted capability token —
+   * and `scriveCallbackPath(ref)` is the canonical way to lay them into a
+   * path. A deployment supplies only its public base:
+   * `(ref) => `${base}${scriveCallbackPath(ref)}``.
    */
-  callbackUrl?: (instanceId: string) => string;
+  callbackUrl?: (ref: ScriveCallbackRef) => string;
 }
+
+/**
+ * What a Scrive callback URL must carry for the ingress to resolve it without
+ * trusting anything in the request body (#96): which connection, which
+ * dispatched instance, and the capability token minted for exactly that
+ * dispatch. The ids are routing, not secrets; the token is the entire
+ * authentication, because the provider offers none.
+ */
+export interface ScriveCallbackRef {
+  connectionId: string;
+  instanceId: string;
+  token: string;
+}
+
+/**
+ * The canonical callback path — mint side and ingress side agree through this
+ * one function, so a deployment mounts one route shape and never re-derives it.
+ */
+export const scriveCallbackPath = (ref: ScriveCallbackRef): string =>
+  `/hooks/scrive/${ref.connectionId}/${ref.instanceId}/${ref.token}`;
+
+/** The same path as a `:param` route pattern, for mounting the ingress. */
+export const SCRIVE_CALLBACK_ROUTE = '/hooks/scrive/:connectionId/:instanceId/:token';
 
 /**
  * What the connector remembers about a dispatch, stored per-connection in the
@@ -116,6 +154,14 @@ export interface ScriveDispatchState {
   }[];
   /** Requests already recorded by a prior poll — so a re-poll is a no-op, not a double. */
   recordedRequestIds?: string[];
+  /**
+   * The capability token minted for this dispatch's callback URL (#96) — present
+   * exactly when the connector was configured with `callbackUrl`. The ingress
+   * compares a presented token against this in constant time and answers
+   * uniformly otherwise; a row without one (older dispatch, poll-only config)
+   * simply has no callback door, and the sweep remains its only trigger.
+   */
+  webhookToken?: string;
   /**
    * The attachment id of the sealed signed PDF, once landed (#476 step 2). Set after the
    * document closes and the file is fetched and stored via the blob-store attachment
@@ -202,11 +248,24 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
       ],
     });
 
+    // The capability token (#96): minted per dispatch, stored in the ledger row,
+    // and laid into the callback URL — the URL is the only authentication a
+    // Scrive callback will ever carry, so it has to be unguessable.
+    const webhookToken = options.callbackUrl ? mintCallbackToken() : undefined;
+
     const doc = await api.createDocument();
     await api.setFile(doc.id, `${payload.templateKey}.pdf`, pdf);
     await api.update(doc.id, {
       title: `${payload.templateKey} v${payload.templateVersion}`,
-      ...(options.callbackUrl ? { callbackUrl: options.callbackUrl(payload.instanceId) } : {}),
+      ...(options.callbackUrl && webhookToken
+        ? {
+            callbackUrl: options.callbackUrl({
+              connectionId: conn.id,
+              instanceId: payload.instanceId,
+              token: webhookToken,
+            }),
+          }
+        : {}),
       // Tag the document with the instance id (verified settable). It is not yet
       // used for dedup — the list-by-tag filter needs a query syntax not settled
       // here — but it makes the eventual provider-side reconciliation that would
@@ -253,6 +312,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
         kind: p.kind,
         ref: p.ref,
       })),
+      ...(webhookToken ? { webhookToken } : {}),
       dispatchedAt: event.occurredAt,
     };
     await ctx.admin.putConnectorState(conn.id, key, state);
@@ -564,6 +624,90 @@ export async function sweepScriveReconciliations(
   }
 
   return result;
+}
+
+/** 256 bits from the runtime's CSPRNG, as hex — the capability a callback URL carries. */
+function mintCallbackToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Compare a presented token against the stored one without leaking where they
+ * diverge: both are digested first, and the DIGESTS are compared bytewise, so
+ * the comparison runs over fixed-length, attacker-unpredictable values whatever
+ * the inputs were. (`crypto.subtle.timingSafeEqual` is Workers-only; this holds
+ * everywhere the connector runs.)
+ */
+async function tokensMatch(presented: string, stored: string): Promise<boolean> {
+  const digest = async (value: string): Promise<Uint8Array> =>
+    new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+  const [a, b] = await Promise.all([digest(presented), digest(stored)]);
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a[i]! ^ b[i]!;
+  return diff === 0;
+}
+
+/** What the ingress did with one callback. */
+export type ScriveCallbackOutcome =
+  /** Token verified; the reconcile ran. `result` is the same shape a poll returns. */
+  | { accepted: true; result: ScriveReconcileResult }
+  /**
+   * Not verified — unknown connection, unknown instance, no callback door on
+   * the row, or a token mismatch. Deliberately ONE shape for all four: which it
+   * was is logged server-side, never answered to the caller, so the response is
+   * no oracle for probing which instances exist.
+   */
+  | { accepted: false; reason: string };
+
+/**
+ * The webhook INGRESS (#96) — the push half of the return path, beside the poll.
+ *
+ * Scrive's callbacks are unauthenticated and their bodies are untrusted, so
+ * this takes no body at all: the capability URL is the entire input. Verify the
+ * token against the dispatch ledger row, and on a match run the SAME
+ * `reconcileScriveDispatch` the sweep runs — re-fetch the provider's truth,
+ * record what is newly signed, idempotently (connections.md §5: a webhook is a
+ * cache invalidation, not a fact).
+ *
+ * That design is also the replay protection. A replayed or stale callback
+ * cannot assert anything — it only triggers another idempotent reconcile whose
+ * facts come from `documents/{id}/get` — so a seen-set with a retention window
+ * (the shape #96 sketched for providers that sign their callbacks) has nothing
+ * to protect here. The cost of a replay is one provider read.
+ *
+ * Fail-closed and quiet: anything short of a verified token returns
+ * `{ accepted: false }` with a uniform shape and NO provider egress — an
+ * attacker without the token cannot make this function fetch. A reconcile
+ * failure after verification throws (the caller should answer 5xx so the
+ * provider retries); the poll floor covers whatever push drops.
+ */
+export async function handleScriveCallback(
+  host: ScopeHost,
+  ref: ScriveCallbackRef,
+  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number },
+): Promise<ScriveCallbackOutcome> {
+  const parsedConnection = connectionId.safeParse(ref.connectionId);
+  if (!parsedConnection.success) return { accepted: false, reason: 'malformed connection id' };
+
+  let state: ScriveDispatchState | undefined;
+  try {
+    state = (await host.admin.getConnectorState(
+      parsedConnection.data,
+      dispatchKey(ref.instanceId),
+    )) as ScriveDispatchState | undefined;
+  } catch {
+    // An unknown connection reads the same as an unknown instance — no oracle.
+    return { accepted: false, reason: 'no such dispatch' };
+  }
+  if (!state) return { accepted: false, reason: 'no such dispatch' };
+  if (!state.webhookToken) return { accepted: false, reason: 'dispatch has no callback door' };
+  if (!(await tokensMatch(ref.token, state.webhookToken))) {
+    return { accepted: false, reason: 'token mismatch' };
+  }
+
+  const result = await reconcileScriveDispatch(host, parsedConnection.data, ref.instanceId, options);
+  return { accepted: true, result };
 }
 
 /**
