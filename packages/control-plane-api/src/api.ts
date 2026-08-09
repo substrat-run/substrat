@@ -60,7 +60,7 @@ import {
   nextMigrationTag,
   upstreamStatusOf,
 } from './deploy.js';
-import type { AssetUpload, DeployVerticalFn, FetchVerticalModulesFn } from './deploy.js';
+import type { AssetUpload, DeployVerticalFn, FetchVerticalAssetFn, FetchVerticalModulesFn } from './deploy.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 import {
   blobStoreBindings,
@@ -142,6 +142,15 @@ export interface ControlPlaneApiOptions {
    * place (the pre-#286 behavior: scopes stay on per-version dispatch).
    */
   fetchVerticalModules?: FetchVerticalModulesFn;
+  /**
+   * Reads one static file back from a script's runtime-served assets (#578) — how a
+   * serving upload recovers asset bytes the stable script's upload session reports
+   * missing (the asset store dedups per script, so the push's upload to the archive
+   * script does not cover a re-serve). Host-injected like `fetchVerticalModules`.
+   * Absent ⇒ a re-serve of an asset-carrying version refuses when the runtime wants
+   * bytes (the pre-#578 behavior).
+   */
+  fetchVerticalAsset?: FetchVerticalAssetFn;
   /**
    * Ensures per-tenant store D1 bindings exist on a dispatch script without a redeploy
    * (#301) — the attach step that makes a freshly-minted tenant store reachable in the
@@ -2664,12 +2673,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         doClasses: manifest.doClasses,
         bindings: [...manifest.bindings, ...storeBindings],
         // #340: the version's static files travel with it onto the serving script — from
-        // the RETAINED manifest, with no bytes. An asset upload session is driven by
-        // content addresses, and the runtime's asset store is namespace-wide and deduped,
-        // so re-declaring the same hashes re-attaches the same files. This is why the
-        // manifest is retained rather than the bytes: the archive script gives back the
-        // modules (#286), and the asset store gives back the assets.
-        ...(manifest.assets ? { assets: manifest.assets } : {}),
+        // the RETAINED manifest, with no bytes up front. The asset store dedups PER
+        // SCRIPT (#578), so hashes the push uploaded to the archive script are still
+        // missing for the stable script — each file therefore carries a `fetchContent`
+        // that reads the bytes back from the archive script's runtime-served assets,
+        // invoked (and hash-verified) only for hashes the upload session reports
+        // missing. The archive script gives back the modules (#286) AND the assets:
+        // nothing but the manifest is retained.
+        ...(manifest.assets
+          ? {
+              assets: {
+                ...manifest.assets,
+                files: manifest.assets.files.map(
+                  (f): AssetUpload => ({
+                    ...f,
+                    ...(options.fetchVerticalAsset
+                      ? { fetchContent: () => options.fetchVerticalAsset!(version.deploymentRef!, f.path) }
+                      : {}),
+                  }),
+                ),
+              },
+            }
+          : {}),
       },
       serving
         ? { priorDoClasses: serving.doClasses, priorMigrationTag: serving.migrationTag }

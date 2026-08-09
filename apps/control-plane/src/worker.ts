@@ -82,6 +82,7 @@ import {
   type ManagedTenantDeps,
   type PlatformDrainReport,
   type DeployVerticalFn,
+  type FetchVerticalAssetFn,
   type CustomHostnameProvisioner,
   type PlatformActorAuth,
   type PlatformRuntime,
@@ -337,6 +338,28 @@ function fetchVerticalModulesFor(env: Env) {
     namespace: env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
     apiToken: env.CF_API_TOKEN,
   });
+}
+
+/**
+ * Reads one static file back from a pushed script's runtime-served assets (#578) — the
+ * asset half of the archive-script-as-bundle-store: an in-place serve recovers the bytes
+ * the stable script's upload session reports missing (the asset store dedups per script,
+ * so the push's upload to the archive script never covers the serving script). A plain
+ * dispatch fetch: the runtime serves a non-`run_worker_first` asset path before the
+ * worker runs, so no vertical code executes; the caller hash-verifies the body against
+ * the retained manifest, so a worker-generated response on an overlapping path refuses
+ * rather than deploys.
+ */
+function fetchVerticalAssetFor(env: Env): FetchVerticalAssetFn | undefined {
+  const dispatch = env.DISPATCH;
+  if (!dispatch) return undefined;
+  return async (deploymentRef, path) => {
+    const res = await dispatch
+      .get(deploymentRef)
+      .fetch(`https://asset-recovery.internal${path}`, { method: 'GET' });
+    if (!res.ok) return null;
+    return new Uint8Array(await res.arrayBuffer());
+  };
 }
 
 /**
@@ -1014,6 +1037,7 @@ export default {
         resolveVerticalRef: resolveVerticalRefFor(env),
         deployVertical: deployVerticalFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
+        fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),
         observability: observabilityFor(env),
         // Where the refs the console shows actually resolve, so staff get a link into the

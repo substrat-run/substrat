@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { assetHash } from '@substrat-run/contracts';
 import { createWfpUploader, createWfpModulesFetcher, clip } from '../src/wfp.js';
 import { upstreamStatusOf } from '../src/deploy.js';
 import type { VerticalBundle } from '../src/deploy.js';
@@ -281,6 +282,55 @@ describe('createWfpUploader — static assets (#340)', () => {
     expect(calls).toHaveLength(2); // session, then the script PUT — no bucket upload
     const meta = JSON.parse(await ((calls[1]!.init.body as FormData).get('metadata') as File).text());
     expect(meta.assets.jwt).toBe('session-jwt');
+  });
+
+  it('recovers a missing hash through fetchContent, verifies it, and uploads it (#578)', async () => {
+    // The promote reality: the asset store dedups per script, so the stable script's
+    // session reports the archive script's bytes missing. The re-serve's files carry a
+    // `fetchContent` reading them back; recovery must ride the normal bucket upload.
+    const hash = await assetHash(html, '/index.html');
+    const calls = await driveUpload(
+      withAssets({
+        files: [{ path: '/index.html', hash, size: html.byteLength, contentType: 'text/html', fetchContent: async () => html }],
+      }),
+      (url) =>
+        url.includes('assets-upload-session')
+          ? sessionWith([[hash]])
+          : url.includes('/workers/assets/upload')
+            ? new Response(JSON.stringify({ result: { jwt: 'completion-jwt' } }), { status: 200 })
+            : new Response('{}', { status: 200 }),
+    );
+    const part = (calls[1]!.init.body as FormData).get(hash) as File;
+    expect(await part.text()).toBe(Buffer.from(html).toString('base64'));
+    const meta = JSON.parse(await ((calls[2]!.init.body as FormData).get('metadata') as File).text());
+    expect(meta.assets.jwt).toBe('completion-jwt');
+  });
+
+  it('REFUSES recovered bytes that do not hash to the manifest entry', async () => {
+    // A recovery fetch can land on a worker-generated response (a run_worker_first
+    // overlap, an error page). Whatever comes back must BE the manifest's content —
+    // anything else refuses rather than deploys under a hash that is not its own.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown) =>
+        String(url).includes('assets-upload-session') ? sessionWith([['e'.repeat(32)]]) : new Response('{}', { status: 200 }),
+      ),
+    );
+    const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
+    await expect(
+      upload(
+        'callout-01k',
+        withAssets({
+          files: [{
+            path: '/index.html',
+            hash: 'e'.repeat(32),
+            size: 5,
+            contentType: 'text/html',
+            fetchContent: async () => new TextEncoder().encode('worker-generated error page'),
+          }],
+        }),
+      ),
+    ).rejects.toThrow(/could not recover/);
   });
 
   it('REFUSES a re-serve whose bytes the runtime no longer holds, naming the remedy', async () => {

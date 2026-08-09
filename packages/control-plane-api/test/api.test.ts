@@ -3750,7 +3750,10 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
   let scripts: Map<string, Map<string, ScopeDumpTable[]>>;
   let failServeRef: string | null; // when set, an upload to THIS ref throws (a flaky serve)
   // Every upload this suite performs, so a test can assert what a PROMOTE re-sent (#340).
-  const uploads: { ref: string; assets?: { files: { path: string; hash: string; content?: Uint8Array }[] } }[] = [];
+  const uploads: {
+    ref: string;
+    assets?: { files: { path: string; hash: string; content?: Uint8Array; fetchContent?: () => Promise<Uint8Array | null> }[] };
+  }[] = [];
 
   const ensure = (ref: string) => {
     let s = scripts.get(ref);
@@ -3786,6 +3789,10 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
       fetchVerticalModules: async () => [
         { name: 'worker.js', content: new Uint8Array([1]), contentType: 'application/javascript+module' },
       ],
+      // The asset half of the archive-as-store (#578): a re-serve recovers bytes from the
+      // version's script by served path. Modelled as the archive script serving its one file.
+      fetchVerticalAsset: async (_ref, path) =>
+        path === '/index.html' ? new TextEncoder().encode('<!doctype html>') : null,
       resolveVerticalRef: async (ref) => clientFor(ref),
       resolveVerticalVersion: async (slug, versionId) => clientFor(deploymentRefFor(slug, versionId)),
     });
@@ -3894,12 +3901,15 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect((await promote(pushed.verticalSlug, pushed.id)).status).toBe(200);
 
     // The serving upload carries the SAME content addresses the push did — read back from
-    // the retained manifest, with no bytes. That is what lets the runtime's namespace-wide
-    // dedup re-attach the files instead of the promote silently serving a code-only script.
+    // the retained manifest, with no bytes up front. Each file also carries a working
+    // `fetchContent` (#578): the asset store dedups per script, so when the stable
+    // script's session reports a hash missing, the uploader recovers the bytes from the
+    // version's archive script instead of the promote failing or serving a code-only script.
     const serve = uploads.slice(before).find((u) => u.ref === stableDeploymentRefFor(pushed.verticalSlug));
     expect(serve?.assets?.files.map((f) => f.path)).toEqual(['/index.html']);
     expect(serve!.assets!.files[0]!.hash).toBe(files[0]!.hash);
     expect(serve!.assets!.files[0]!.content).toBeUndefined();
+    await expect(serve!.assets!.files[0]!.fetchContent!()).resolves.toEqual(new TextEncoder().encode(body));
   });
 
   it('a failed in-place serve strands nothing — the retry adopts the still-intact data', async () => {
