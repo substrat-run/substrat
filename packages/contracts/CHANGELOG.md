@@ -1,5 +1,73 @@
 # @substrat-run/contracts
 
+## 0.56.0
+
+### Minor Changes
+
+- 4eb90ca: feat: outbound connector dispatch rides platform-requests — a CP-less vertical's connector runs end to end (#574 phase 3, closes #574)
+
+  Phases 1 and 2 gave a hosted vertical the platform-run sweep and the
+  platform-terminated webhook ingress; outbound dispatch still ran nowhere — a
+  connector registered on a CP-less host would throw into dead-letters, because
+  the connection directory, the sealed credential, and sanctioned egress are all
+  platform-side. This closes the loop:
+
+  - **The vertical half** (`adapter-cloudflare`): on a CP-less host, `drainDue`
+    routes each connector delivery onto the platform-requests surface instead of
+    running the handler. A new ScopeDO verb enqueues the `connector:<provider>`
+    intent (the kernel-stamped event embedded fat, `executorId` for attribution)
+    and journals the delivery as routed in one atomic step, so a crash can never
+    re-route or lose one; backpressure refuses before any write and the delivery
+    retries on its own backoff. The inline drain reports routed deliveries
+    through `onPlatformRequests`, so the response carries the router-kick header
+    and dispatch latency collapses from sweep-cadence to seconds.
+  - **The platform half**: `ScopeHost` gains `dispatchConnector` (both adapters)
+    — execute ONE routed delivery with this host's directory, credential, and
+    egress, no journal (the intent row is the journal). `control-plane-api` adds
+    `connectorDispatchHandler`, which parses the routed payload, refuses an event
+    whose kernel stamps disagree with the drained scope (terminal), and runs the
+    connector; a throw settles `pending` and retries under the attempt ceiling.
+  - **Contracts**: `connectorDispatchKind(provider)` / `connectorDispatchPayload`
+    — the shared vocabulary between the routing host and the drain.
+  - **Kernel**: `ConnectorOptions.provider` (defaults to the registration id) and
+    `ExecutorDrainReport.routedToPlatform`.
+  - **The control plane** registers `connector:scrive` in its drain-handler map,
+    running the SAME `scriveConnector` closure a self-host registers — with the
+    callback URL now minted as `PLATFORM_CP_URL` + `scriveCallbackPath(ref)`, so
+    the capability URL terminates on the phase-2 ingress.
+  - **Meridian's CF worker** registers the connector (routing needs the
+    registration; the handler never runs there) and flags
+    `x-substrat-platform-request` on invokes that enqueued intents.
+
+  Self-host (node/SQLite) keeps its in-process wiring untouched; the connector
+  itself does not fork.
+
+- c1faa15: feat: every pushed version records where its code came from — git CI or a terminal
+
+  A git-connected deploy and a `substrat push` from a terminal were
+  indistinguishable on the platform: the generated deploy workflow runs the same
+  CLI against the same endpoint, so the dashboard could not answer "where did the
+  code this app is serving come from". Now the CLI self-reports its context with
+  each push and the dashboard shows it:
+
+  - **Contracts**: `versionOrigin` on the version record — `source: 'git' | 'cli'`
+    plus `gitRepo`/`gitCommit`/`gitRef` when pushed from CI. A label, never
+    authority: nothing gates on it, and a version pushed before tracking (or by an
+    old CLI) reads back `null`.
+  - **CLI**: `substrat push` detects the GitHub Actions runner and attaches the
+    repo, commit, and branch it built from; a terminal push sends `{ source: 'cli' }`.
+  - **Control plane**: the deploy route parses the field leniently — a missing or
+    malformed origin must never fail a push — and both adapters store it as a
+    nullable `origin_json` column on the version row.
+  - **Dashboard**: an origin tag (git-branch icon + `repo@sha` linking to the
+    GitHub commit, or a terminal icon + `cli`) on every version row on the
+    Verticals page, in the per-app Deployments tab, and beside the app's Running
+    version.
+
+  The vertical-level `source` field is deliberately untouched: it is
+  claim-at-first-push metadata, and one app legitimately receives both kinds of
+  push — provenance is per version.
+
 ## 0.55.0
 
 ## 0.54.0
@@ -1786,7 +1854,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

@@ -1,5 +1,117 @@
 # @substrat-run/control-plane
 
+## 0.5.31
+
+### Patch Changes
+
+- 4eb90ca: feat: outbound connector dispatch rides platform-requests — a CP-less vertical's connector runs end to end (#574 phase 3, closes #574)
+
+  Phases 1 and 2 gave a hosted vertical the platform-run sweep and the
+  platform-terminated webhook ingress; outbound dispatch still ran nowhere — a
+  connector registered on a CP-less host would throw into dead-letters, because
+  the connection directory, the sealed credential, and sanctioned egress are all
+  platform-side. This closes the loop:
+
+  - **The vertical half** (`adapter-cloudflare`): on a CP-less host, `drainDue`
+    routes each connector delivery onto the platform-requests surface instead of
+    running the handler. A new ScopeDO verb enqueues the `connector:<provider>`
+    intent (the kernel-stamped event embedded fat, `executorId` for attribution)
+    and journals the delivery as routed in one atomic step, so a crash can never
+    re-route or lose one; backpressure refuses before any write and the delivery
+    retries on its own backoff. The inline drain reports routed deliveries
+    through `onPlatformRequests`, so the response carries the router-kick header
+    and dispatch latency collapses from sweep-cadence to seconds.
+  - **The platform half**: `ScopeHost` gains `dispatchConnector` (both adapters)
+    — execute ONE routed delivery with this host's directory, credential, and
+    egress, no journal (the intent row is the journal). `control-plane-api` adds
+    `connectorDispatchHandler`, which parses the routed payload, refuses an event
+    whose kernel stamps disagree with the drained scope (terminal), and runs the
+    connector; a throw settles `pending` and retries under the attempt ceiling.
+  - **Contracts**: `connectorDispatchKind(provider)` / `connectorDispatchPayload`
+    — the shared vocabulary between the routing host and the drain.
+  - **Kernel**: `ConnectorOptions.provider` (defaults to the registration id) and
+    `ExecutorDrainReport.routedToPlatform`.
+  - **The control plane** registers `connector:scrive` in its drain-handler map,
+    running the SAME `scriveConnector` closure a self-host registers — with the
+    callback URL now minted as `PLATFORM_CP_URL` + `scriveCallbackPath(ref)`, so
+    the capability URL terminates on the phase-2 ingress.
+  - **Meridian's CF worker** registers the connector (routing needs the
+    registration; the handler never runs there) and flags
+    `x-substrat-platform-request` on invokes that enqueued intents.
+
+  Self-host (node/SQLite) keeps its in-process wiring untouched; the connector
+  itself does not fork.
+
+- 1fa4bd0: feat: the connector write-back seam — the platform runs the connector pass for CP-less verticals (#574 phase 1)
+
+  A CP-less dispatch vertical cannot run a connector: the connection directory and
+  its sealed secrets live platform-side, and a pushed script must never hold them.
+  This lands the approved shape's first phase — the shared control plane runs the
+  connector pass FOR dispatch verticals, and the vertical opens one narrow
+  write-back door:
+
+  - `vertical-host` mounts three platform-secret-gated verbs:
+    `/internal/connector-invoke` (one operation, invoked as the connection),
+    `/internal/connector-attachment` (the multipart bytes leg), and
+    `/internal/connector-grant` (delivery of the scope-local `connection:<id>`
+    grant tuple). Authorization happens in the scope's own DO against that
+    delivered tuple — the platform cannot skip the permission check.
+  - `CloudflareScopeHost` gains the far-end local methods
+    (`connectorInvokeLocal` / `connectorAttachmentUploadLocal` /
+    `connectorGrantLocal`) and a `connectorDelegation` option for the platform
+    end: with it set, `getConnectorScope().invoke`, `getConnectorAttachments()`
+    upload, and scope-level `grantToConnection` ride the delegation to the
+    deployment actually serving the scope instead of touching the control plane's
+    own module-less scope namespace. Directory gates (live connection,
+    tenant/vertical match) still run platform-side before every delegated call.
+  - `VerticalClient` speaks the three verbs (`connectorInvoke`,
+    `connectorUploadAttachment`, `connectorGrant`).
+  - The control plane wires the delegation into its host, seals/opens connection
+    credentials with a new `SECRET_BOX_KEY` secret (base64 of 32 bytes, the
+    dashboard's exact convention; canonical name `CP_SECRET_BOX_KEY` in
+    secrets.mjs), and registers the Scrive sweeper on its scheduled
+    `runPlatformSweep` pass — the poll floor now covers hosted verticals'
+    connections. `SCRIVE_BASE_URL` selects the provider environment (default:
+    testbed).
+
+  Phase 2 (webhook ingress terminating on the platform) and phase 3 (outbound
+  dispatch riding platform-requests) follow.
+
+- e6bc94d: feat: the Scrive webhook ingress terminates on the platform (#574 phase 2, #96)
+
+  For a CP-less dispatch vertical the callback capability URL has nowhere to land:
+  the dispatch ledger the token verifies against lives in the control plane's
+  directory, out of any pushed script's reach — PR #573 deliberately stopped short
+  of mounting the ingress there. Phase 2 puts the door where the ledger is:
+
+  - The CP worker mounts `SCRIVE_CALLBACK_ROUTE`
+    (`/hooks/scrive/:connectionId/:instanceId/:token`). Unauthenticated by design —
+    Scrive signs nothing, so the per-dispatch minted token is the entire
+    authentication, compared in constant time against the ControlPlaneDO-held
+    ledger row.
+  - On a match the same `reconcileScriveDispatch` the sweep runs re-reads the
+    provider's truth (the callback body is never read, let alone trusted) and
+    records it back through the vertical's `/internal/connector-*` surface — the
+    phase-1 write-back seam. Push collapses the poll floor's latency; it never
+    replaces it.
+  - Every rejection is one uniform 404 with the reason only logged, so the
+    response is no oracle for probing which instances exist, and nothing short of
+    a verified token causes provider egress. A post-verification failure answers
+    500 so Scrive retries.
+
+  Phase 3 (outbound dispatch via platform-requests) closes #574.
+
+- Updated dependencies [4eb90ca]
+- Updated dependencies [1fa4bd0]
+- Updated dependencies [b8bdb9d]
+- Updated dependencies [336352b]
+- Updated dependencies [c1faa15]
+  - @substrat-run/contracts@0.56.0
+  - @substrat-run/kernel@0.56.0
+  - @substrat-run/adapter-cloudflare@0.56.0
+  - @substrat-run/control-plane-api@0.56.0
+  - @substrat-run/connector-scrive@0.3.0
+
 ## 0.5.30
 
 ### Patch Changes
