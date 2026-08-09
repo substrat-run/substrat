@@ -32,7 +32,10 @@ export interface AuthServerDoEnv {
   EMAIL?: import('@substrat-run/adapter-email').SendEmailBinding;
   /** The sender address; its domain must be onboarded for sending. */
   EMAIL_FROM?: string;
-  /** The canonical issuer origin (e.g. https://auth.substrat.run). Falls back to the request origin. */
+  /** Optional issuer pin. Unset (the default), the issuer derives from each request's own
+   *  origin — every hostname the router binds to this scope answers as itself, and discovery
+   *  can never advertise an origin that doesn't route here. Set only when the request origin
+   *  can't be trusted (standalone behind a rewriting proxy). */
   PUBLIC_ORIGIN?: string;
   /** Bootstrap admin address — when set with ADMIN_PASSWORD, seeded as `admin` on first init. */
   ADMIN_EMAIL?: string;
@@ -95,7 +98,10 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     }
   }
 
-  /** A Better Auth instance over THIS DO's SQLite, issuing for `origin`. */
+  /** A Better Auth instance over THIS DO's SQLite, issuing for `origin`. The issuer is the
+   *  request's own origin unless PUBLIC_ORIGIN pins it — per-hostname derivation keeps
+   *  discovery self-consistent on every hostname bound to this scope (OIDC requires the
+   *  advertised `issuer` to match the URL discovery was fetched from). */
   private auth(origin: string) {
     const cfg = this.effectiveCfg();
     const baseURL = cfg.PUBLIC_ORIGIN ?? origin;

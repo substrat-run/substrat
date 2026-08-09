@@ -40,7 +40,7 @@ import { serveAsset } from './assets.js';
  */
 export interface Env {
   AUTH: { idFromName(name: string): unknown; get(id: unknown): unknown };
-  /** The canonical issuer origin; falls back to the request origin under local dev. */
+  /** Optional issuer pin; unset ⇒ the issuer derives from each request's own origin. */
   PUBLIC_ORIGIN?: string;
   /** Shared secret the router presents (K-26). Unset ⇒ standalone (no router expected). */
   ROUTER_SECRET?: string;
