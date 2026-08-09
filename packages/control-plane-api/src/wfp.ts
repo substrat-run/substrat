@@ -1,3 +1,4 @@
+import { assetHash } from '@substrat-run/contracts';
 import { DeployUploadError, nextMigrationTag } from './deploy.js';
 import type { AssetUpload, DeployVerticalFn, FetchVerticalModulesFn, VerticalBundle } from './deploy.js';
 
@@ -64,17 +65,20 @@ function assetConfigOf(assets: NonNullable<VerticalBundle['assets']>): Record<st
  *
  * 1. POST the manifest (`path → { hash, size }`) to the script's `assets-upload-session`.
  *    Cloudflare answers with a session JWT and the BUCKETS of hashes it does not already
- *    hold — content-addressed storage, deduped namespace-wide, so an unchanged SPA re-deploy
- *    usually comes back with nothing to upload at all.
+ *    hold — content-addressed storage, deduped PER SCRIPT (#578: not namespace-wide, which
+ *    the first cut of #340 assumed), so an unchanged re-deploy of the SAME script comes
+ *    back with nothing to upload, but the same bytes on a DIFFERENT script must go up again.
  * 2. POST each bucket's files, base64, one part per hash, each carrying the Content-Type the
  *    file will be SERVED with. The response to the last bucket carries the completion JWT.
  * 3. (caller) name that JWT in the script metadata's `assets` block.
  *
  * Empty buckets ⇒ every file was already stored and the SESSION jwt is itself the completion
- * token. That is the case a promote depends on: re-serving an archived version onto the
- * stable script re-runs this with the retained manifest and no bytes. When the runtime has in
- * fact dropped content we were not given, this refuses loudly — a script deployed with an
- * incomplete asset set would serve a half-broken page and look like a successful deploy.
+ * token — the steady state once the stable script has served this asset set before. A hash
+ * the runtime reports missing is recovered through the file's `fetchContent` (a re-serve
+ * attaches one that reads the archive script's served assets, #578) and verified against the
+ * manifest hash before upload. Only when neither bytes nor recovery can produce the file does
+ * this refuse loudly — a script deployed with an incomplete asset set would serve a
+ * half-broken page and look like a successful deploy.
  */
 async function uploadAssets(
   opts: Pick<WfpUploaderOptions, 'accountId' | 'namespace' | 'apiToken'>,
@@ -118,18 +122,31 @@ async function uploadAssets(
     const form = new FormData();
     for (const hash of bucket) {
       const file = byHash.get(hash);
-      if (!file?.content) {
-        // The runtime wants bytes this upload does not carry. Only a re-serve can be here
-        // (a push always carries every byte), so name the remedy rather than the mechanism.
+      // A re-serve carries no bytes, and the asset store dedups PER SCRIPT (#578) — a
+      // hash the push uploaded to the version's archive script is still "missing" for
+      // the stable serving script. Recover the file from its source and verify it IS
+      // the manifest's content before letting it ride: a recovered body that hashes
+      // differently (a worker response, a stale file) must refuse, not deploy.
+      let content = file?.content;
+      if (!content && file?.fetchContent) {
+        const recovered = await file.fetchContent().catch(() => null);
+        if (recovered && (await assetHash(recovered, file.path)) === file.hash) {
+          content = recovered;
+        }
+      }
+      if (!file || !content) {
+        // The runtime wants bytes neither this upload nor recovery could produce. A
+        // half-deployed asset set would serve a broken page and look like a success,
+        // so refuse loudly and name the remedy.
         throw new DeployUploadError(
           502,
           `the runtime no longer holds asset '${file?.path ?? hash}' for '${scriptName}' and this ` +
-            `re-deploy carries no bytes for it — push the version again to restore its static files`,
+            `re-deploy could not recover its bytes — push the version again to restore its static files`,
         );
       }
       // The part's Content-Type is what the file is SERVED as later, so it must be the
       // asset's own type, not the base64 envelope's.
-      form.set(hash, new Blob([toBase64(file.content)], { type: file.contentType }), hash);
+      form.set(hash, new Blob([toBase64(content)], { type: file.contentType }), hash);
     }
     const res = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/assets/upload?base64=true`,

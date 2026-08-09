@@ -5,3 +5,4 @@
 // (console, dashboard) — there is no build step; the app bundler transpiles the
 // TSX. The design tokens ride along at `@substrat-run/ui/styles.css`.
 export * from './components';
+export * from './hooks';
