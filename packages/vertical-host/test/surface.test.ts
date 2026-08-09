@@ -33,6 +33,9 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     introspectScopeQuery: async () => note('introspectScopeQuery', { columns: [], rows: [] }) as never,
     listPlatformRequests: async () => note('listPlatformRequests', []),
     settlePlatformRequest: async () => note('settlePlatformRequest', undefined),
+    connectorInvokeLocal: async () => note('connectorInvokeLocal', { ok: true }),
+    connectorAttachmentUploadLocal: async () => note('connectorAttachmentUploadLocal', { id: 'att1' }),
+    connectorGrantLocal: async () => note('connectorGrantLocal', undefined),
   };
   return Object.assign(base, overrides, { calls }) as VerticalScopeHost & { calls: string[] };
 }
@@ -341,5 +344,148 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
     );
     expect(res.status).toBe(200);
     expect(got).toBe(1);
+  });
+});
+
+describe('mountPlatformSurface — the connector write-back verbs (#574)', () => {
+  const CONN = '01JZ0000000000000000CNN001';
+
+  it('connector-invoke: parses, delegates, and envelopes the result', async () => {
+    let got: unknown[] = [];
+    const host = fakeHost({
+      connectorInvokeLocal: async (...args: unknown[]) => {
+        got = args;
+        return { recorded: 2 };
+      },
+    });
+    const res = await appWith(host).request(
+      '/internal/connector-invoke',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({
+          connectionId: CONN,
+          tenantId: TENANT,
+          scopeId: SCOPE,
+          operation: 'protocol/record-signature',
+          input: { requestId: 'r1' },
+        }),
+      },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ result: { recorded: 2 } });
+    expect(got).toEqual([CONN, TENANT, SCOPE, 'protocol/record-signature', { requestId: 'r1' }]);
+  });
+
+  it('connector-invoke: an undefined result still answers valid JSON ({ result: null })', async () => {
+    const host = fakeHost({ connectorInvokeLocal: async () => undefined });
+    const res = await appWith(host).request(
+      '/internal/connector-invoke',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ connectionId: CONN, tenantId: TENANT, scopeId: SCOPE, operation: 'x/y' }),
+      },
+      ENV,
+    );
+    expect(await res.json()).toEqual({ result: null });
+  });
+
+  it("connector-invoke: the scope DO's permission denial surfaces as 403, not 400", async () => {
+    const host = fakeHost({
+      connectorInvokeLocal: async () => {
+        throw new Error('permission denied: protocol:record-signature');
+      },
+    });
+    const res = await appWith(host).request(
+      '/internal/connector-invoke',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ connectionId: CONN, tenantId: TENANT, scopeId: SCOPE, operation: 'x/y' }),
+      },
+      ENV,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('connector-attachment: multipart meta + bytes reach the host intact', async () => {
+    let seen: { upload?: { filename: string; contentType: string; body: Uint8Array } } = {};
+    const host = fakeHost({
+      connectorAttachmentUploadLocal: async (_c, _t, _s, upload) => {
+        seen = { upload };
+        return { id: 'att1', filename: upload.filename };
+      },
+    });
+    const form = new FormData();
+    form.append(
+      'meta',
+      JSON.stringify({
+        connectionId: CONN,
+        tenantId: TENANT,
+        scopeId: SCOPE,
+        entity: { entityType: 'item', entityId: 'i1' },
+        filename: 'sealed.pdf',
+        contentType: 'application/pdf',
+        visibility: 'customer',
+      }),
+    );
+    form.append('body', new Blob([new TextEncoder().encode('pdf bytes')]), 'sealed.pdf');
+    const res = await appWith(host).request(
+      '/internal/connector-attachment',
+      { method: 'POST', headers: authed(), body: form },
+      ENV,
+    );
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { id: string }).id).toBe('att1');
+    expect(seen.upload!.filename).toBe('sealed.pdf');
+    expect(seen.upload!.contentType).toBe('application/pdf');
+    expect(new TextDecoder().decode(seen.upload!.body)).toBe('pdf bytes');
+  });
+
+  it('connector-attachment: a body-less form is a 400 naming the field', async () => {
+    const form = new FormData();
+    form.append('meta', JSON.stringify({}));
+    const res = await appWith(fakeHost()).request(
+      '/internal/connector-attachment',
+      { method: 'POST', headers: authed(), body: form },
+      ENV,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('connector-grant: parses and delivers the tuple write', async () => {
+    let got: unknown[] = [];
+    const host = fakeHost({
+      connectorGrantLocal: async (...args: unknown[]) => {
+        got = args;
+      },
+    });
+    const res = await appWith(host).request(
+      '/internal/connector-grant',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ connectionId: CONN, scopeId: SCOPE, permission: 'protocol:record-signature' }),
+      },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ granted: 'protocol:record-signature', scopeId: SCOPE });
+    expect(got).toEqual([CONN, SCOPE, 'protocol:record-signature', undefined]);
+  });
+
+  it('connector verbs sit behind the platform-secret gate like the rest of the surface', async () => {
+    const res = await appWith(fakeHost()).request(
+      '/internal/connector-invoke',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ connectionId: CONN, tenantId: TENANT, scopeId: SCOPE, operation: 'x/y' }),
+      },
+      ENV,
+    );
+    expect(res.status).toBe(403);
   });
 });

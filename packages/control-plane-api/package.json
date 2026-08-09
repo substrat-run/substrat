@@ -36,6 +36,7 @@
   "devDependencies": {
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
     "better-auth": "^1.6.23",
     "better-sqlite3": "^13.0.3",

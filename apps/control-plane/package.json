@@ -16,6 +16,7 @@
   "dependencies": {
     "@substrat-run/adapter-cloudflare": "workspace:^",
     "@substrat-run/adapter-email": "workspace:^",
+    "@substrat-run/connector-scrive": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/kernel": "workspace:^",

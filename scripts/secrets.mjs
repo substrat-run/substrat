@@ -56,6 +56,10 @@ const MANIFEST = {
       PLATFORM_SECRET: 'PLATFORM_SECRET',
       ROUTER_SECRET: 'ROUTER_SECRET',
       PUSH_TOKEN_SECRET: 'CP_PUSH_TOKEN_SECRET',
+      // Seals connection credentials in the directory (#574) — the CP's own box,
+      // deliberately NOT the dashboard's key (different stores, independent rotation).
+      SECRET_BOX_KEY: 'CP_SECRET_BOX_KEY',
+      SECRET_BOX_KEY_ID: 'CP_SECRET_BOX_KEY_ID',
       CF_API_TOKEN: 'CF_API_TOKEN',
       CF_ACCOUNT_ID: 'CF_ACCOUNT_ID',
       CF_SAAS_ZONE_ID: 'CF_SAAS_ZONE_ID',
@@ -104,6 +108,7 @@ const GENERATABLE = [
   'DASH_SESSION_SECRET',
   'CP_PUSH_TOKEN_SECRET',
   'SECRET_BOX_KEY', // base64 of 32 bytes (AES-256); the rest are hex
+  'CP_SECRET_BOX_KEY', // base64 of 32 bytes — the control plane's connection box (#574)
 ];
 
 // ── arg parsing ────────────────────────────────────────────────────────────────

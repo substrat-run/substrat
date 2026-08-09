@@ -31,6 +31,11 @@ import {
   scopeId as scopeIdOf,
   tenantId as tenantIdOf,
   principalId as principalIdOf,
+  connectionId as connectionIdOf,
+  permissionKey as permissionKeyOf,
+  entityRef,
+  visibility,
+  instant,
   entitlementGrant,
   projectedIdentityLink,
   platformRequestId,
@@ -40,6 +45,10 @@ import {
   type ScopeId,
   type TenantId,
   type PrincipalId,
+  type ConnectionId,
+  type PermissionKey,
+  type EntityRef,
+  type Visibility,
   type RoleDefinition,
   type ScopeDumpTable,
   type ScopeTable,
@@ -93,6 +102,35 @@ export interface VerticalScopeHost {
     id: PlatformRequestId,
     outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
   ): Promise<void>;
+  // The connector write-back's far end (#574): the shared control plane runs the
+  // connector pass for this CP-less deployment and reaches back through these. The
+  // permission check happens HERE, in the scope's own DO, against the delivered
+  // `connection:<id>` tuple — the platform cannot skip it.
+  connectorInvokeLocal(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    operation: string,
+    input?: unknown,
+  ): Promise<unknown>;
+  connectorAttachmentUploadLocal(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    upload: {
+      entity: EntityRef;
+      filename: string;
+      contentType: string;
+      visibility: Visibility;
+      body: Uint8Array;
+    },
+  ): Promise<unknown>;
+  connectorGrantLocal(
+    connectionId: ConnectionId,
+    scopeId: ScopeId,
+    permission: PermissionKey,
+    expiresAt?: string,
+  ): Promise<void>;
 }
 
 /** `/internal/provision` body. `slug`/`name` ride along so `onProvision` can register a site (M2). */
@@ -144,6 +182,34 @@ const settleBody = z.object({
   status: platformRequestStatus,
   result: z.unknown().optional(),
   lastError: z.string().nullable().optional(),
+});
+
+/** `/internal/connector-invoke` body (#574) — one operation, invoked as the connection. */
+const connectorInvokeBody = z.object({
+  connectionId: connectionIdOf,
+  tenantId: tenantIdOf,
+  scopeId: scopeIdOf,
+  operation: z.string().min(1),
+  input: z.unknown().optional(),
+});
+
+/** The `meta` field of a `/internal/connector-attachment` multipart body (#574). */
+const connectorAttachmentMeta = z.object({
+  connectionId: connectionIdOf,
+  tenantId: tenantIdOf,
+  scopeId: scopeIdOf,
+  entity: entityRef,
+  filename: z.string().min(1),
+  contentType: z.string().min(1),
+  visibility,
+});
+
+/** `/internal/connector-grant` body (#574) — the delivery half of `grantToConnection`. */
+const connectorGrantBody = z.object({
+  connectionId: connectionIdOf,
+  scopeId: scopeIdOf,
+  permission: permissionKeyOf,
+  expiresAt: instant.optional(),
 });
 
 export interface PlatformSurfaceDeps<Env> {
@@ -333,6 +399,62 @@ export function mountPlatformSurface<Env extends object>(
     const t = tenantIdOf.parse(c.req.query('tenantId'));
     const s = scopeIdOf.parse(c.req.query('scopeId'));
     return c.json(await deps.hostFor(c.env).listPlatformRequests(t, s));
+  });
+
+  // The connector write-back seam (#574): the shared control plane runs the connector
+  // pass (poll sweep, and later webhook ingress + dispatch) for this CP-less deployment,
+  // because the connection directory and its sealed secrets live platform-side and a
+  // pushed script must never hold them. What comes BACK over these three verbs carries
+  // no credential — an operation invocation, provider bytes, a grant tuple — and each is
+  // authorized in the scope's own DO against its `connection:<id>` grants, exactly like
+  // any other caller. Platform-secret gated with the rest of the surface.
+  app.post('/internal/connector-invoke', async (c) => {
+    const body = connectorInvokeBody.parse(await c.req.json());
+    const result = await deps
+      .hostFor(c.env)
+      .connectorInvokeLocal(body.connectionId, body.tenantId, body.scopeId, body.operation, body.input);
+    // Enveloped: an operation may legitimately return undefined, which bare JSON can't say.
+    return c.json({ result: result ?? null });
+  });
+
+  // The bytes leg (#574): multipart, because provider artifacts (a sealed signed PDF)
+  // cannot ride a JSON invoke. `meta` is a JSON string field, `body` the raw blob.
+  app.post('/internal/connector-attachment', async (c) => {
+    const form = await c.req.formData();
+    const metaRaw = form.get('meta');
+    if (typeof metaRaw !== 'string') {
+      throw new HTTPException(400, { message: 'connector-attachment needs a `meta` JSON field' });
+    }
+    const meta = connectorAttachmentMeta.parse(JSON.parse(metaRaw));
+    const blob = form.get('body');
+    if (blob === null || typeof blob === 'string') {
+      throw new HTTPException(400, { message: 'connector-attachment needs a `body` file field' });
+    }
+    const record = await deps.hostFor(c.env).connectorAttachmentUploadLocal(
+      meta.connectionId,
+      meta.tenantId,
+      meta.scopeId,
+      {
+        entity: meta.entity,
+        filename: meta.filename,
+        contentType: meta.contentType,
+        visibility: meta.visibility,
+        body: new Uint8Array(await blob.arrayBuffer()),
+      },
+    );
+    return c.json(record as Record<string, unknown>, 201);
+  });
+
+  // Grant delivery (#574): the scope-level `connection:<id>` tuple the two verbs above
+  // are checked against. Idempotent (INSERT OR REPLACE). No revoke mirror: every
+  // delegated call re-passes the platform's live-connection gate first, so revoking
+  // the connection closes the door even while the tuple remains.
+  app.post('/internal/connector-grant', async (c) => {
+    const body = connectorGrantBody.parse(await c.req.json());
+    await deps
+      .hostFor(c.env)
+      .connectorGrantLocal(body.connectionId, body.scopeId, body.permission, body.expiresAt);
+    return c.json({ granted: body.permission, scopeId: body.scopeId });
   });
 
   app.post('/internal/platform-requests/settle', async (c) => {
