@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { EntitlementGrant, HostnameBinding, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
-import { Card, Toast } from './components';
+import { Card, Toast, useAutoRefresh } from './components';
 import { scopeHandle } from './lib/fleet';
 import { ConsoleShell } from './ConsoleShell';
 import type { ViewKey } from './ConsoleShell';
@@ -230,6 +230,12 @@ export function App() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Keep the directory live without a manual browser reload: refetch when the tab
+  // regains focus, plus a slow poll while it stays visible. 60s (not the hook's 30s
+  // default) because each load() is a full directory walk plus the per-tenant
+  // entitlements N+1 — cheap at today's fleet size, but not something to double.
+  useAutoRefresh(load, { enabled: authed, intervalMs: 60_000 });
 
   // Fetched alongside the directory, but never with it: a control plane with no runtime
   // configured is a normal deployment, so a failure here must not surface as a console-wide

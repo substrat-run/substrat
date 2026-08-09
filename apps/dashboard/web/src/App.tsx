@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Toast, Dialog, Input } from '@substrat-run/ui';
+import { Toast, Dialog, Input, useAutoRefresh } from '@substrat-run/ui';
 import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
 import { navigate as go } from './lib/router';
@@ -497,6 +497,16 @@ export function App() {
     setMembers(page.entries);
     setMembersCursor(page.nextCursor);
   }, []);
+
+  // Keep the dashboard live without a manual browser reload: refetch when the tab
+  // regains focus, plus a 30s poll while it stays visible (the provisioning poll
+  // above stays — 5s is the right cadence for an install in flight). Catalog rides
+  // along so a freshly pushed vertical version shows up too.
+  const refreshAll = useCallback(async () => {
+    if (DEV_MOCK) return;
+    await Promise.all([reloadApps(), reloadMembers(), reloadDeployments(), api.catalog().then(setCatalog)]);
+  }, [reloadApps, reloadMembers, reloadDeployments]);
+  useAutoRefresh(refreshAll, { enabled: !DEV_MOCK && me != null && !needsOnboarding(me) && !inviteBlock });
 
   const membersMoreRef = useRef(false);
   const loadMoreMembers = useCallback(async () => {
