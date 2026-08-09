@@ -562,6 +562,8 @@ interface VersionRow {
   admission_note: string | null;
   /** The pushed DeployManifest (JSON) — the serving upload's metadata source (#286). */
   manifest_json: string | null;
+  /** Push provenance (`versionOrigin` JSON) — null for a pre-tracking push. */
+  origin_json: string | null;
   created_at: string;
 }
 
@@ -3057,6 +3059,7 @@ export class SqliteScopeHost implements ScopeHost {
         deploymentRef: r.deployment_ref,
         admission: r.admission,
         admissionNote: r.admission_note,
+        origin: r.origin_json ? JSON.parse(r.origin_json) : null,
         createdAt: r.created_at,
       });
     const readVersion = (id: string): VerticalVersion | undefined => {
@@ -3755,13 +3758,14 @@ export class SqliteScopeHost implements ScopeHost {
         const selfAdmits = owning.ownerTenant !== null && !owning.listed;
         // The manifest is retained for the serving upload (#286), not audited — a whole
         // manifest per publish would drown the admin log in bundle metadata.
-        const { manifestJson, ...audited } = parsed;
+        const { manifestJson, origin, ...audited } = parsed;
         this.directory
           .prepare(
             `INSERT INTO vertical_versions
                (id, vertical_slug, version, manifest_digest, permission_digest,
-                migration_digest, deployment_ref, admission, admission_note, manifest_json, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                migration_digest, deployment_ref, admission, admission_note, manifest_json,
+                origin_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             audited.id,
@@ -3774,10 +3778,12 @@ export class SqliteScopeHost implements ScopeHost {
             selfAdmits ? 'admitted' : 'pending',
             selfAdmits ? AUTO_ADMISSION_NOTE : null,
             manifestJson ?? null,
+            origin ? JSON.stringify(origin) : null,
             new Date().toISOString(),
           );
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
+          ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
       },
@@ -5817,6 +5823,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'verticals', 'serving_do_classes', 'serving_do_classes TEXT');
     this.ensureColumn(this.directory, 'verticals', 'serving_migration_tag', 'serving_migration_tag TEXT');
     this.ensureColumn(this.directory, 'vertical_versions', 'manifest_json', 'manifest_json TEXT');
+    // Push provenance (git CI vs a terminal) — null for a pre-tracking push.
+    this.ensureColumn(this.directory, 'vertical_versions', 'origin_json', 'origin_json TEXT');
     // #33: the SKU flag learns to express a plan. All nullable — a legacy row
     // reads as a perpetual boolean flag, exactly its pre-widening semantics.
     for (const [col, ddl] of [

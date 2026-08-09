@@ -379,6 +379,7 @@ interface ControlPlaneStub {
     id: string; verticalSlug: string; version: string; manifestDigest: string;
     permissionDigest: string; migrationDigest: string; deploymentRef: string | null;
     admission: string; admissionNote: string | null; manifestJson: string | null;
+    originJson: string | null;
     createdAt: string;
   }): Promise<void>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionRow[]>;
@@ -2165,6 +2166,7 @@ export class CloudflareScopeHost implements ScopeHost {
         deploymentRef: r.deployment_ref,
         admission: r.admission,
         admissionNote: r.admission_note,
+        origin: r.origin_json ? JSON.parse(r.origin_json) : null,
         createdAt: r.created_at,
       });
 
@@ -2660,16 +2662,18 @@ export class CloudflareScopeHost implements ScopeHost {
         const selfAdmits = owning.owner_tenant !== null && !owning.listed;
         // The manifest is retained for the serving upload (#286), not audited — a whole
         // manifest per publish would drown the admin log in bundle metadata.
-        const { manifestJson, ...audited } = parsed;
+        const { manifestJson, origin, ...audited } = parsed;
         await this.cp.insertVersion({
           ...audited,
           manifestJson: manifestJson ?? null,
+          originJson: origin ? JSON.stringify(origin) : null,
           admission: selfAdmits ? 'admitted' : 'pending',
           admissionNote: selfAdmits ? AUTO_ADMISSION_NOTE : null,
           createdAt: new Date().toISOString(),
         });
         await this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
+          ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
       },

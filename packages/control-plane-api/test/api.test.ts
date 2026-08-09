@@ -2788,6 +2788,28 @@ describe('control-plane API — deploy', () => {
     expect(verticals).toContainEqual(expect.objectContaining({ slug: 'fsm', source: 'cli' }));
   });
 
+  it('records the push origin the CLI reports, and tolerates a malformed one', async () => {
+    // The CI push: the CLI detects the GitHub Actions runner and sends where it built from.
+    const fd = form(manifest());
+    fd.set('origin', JSON.stringify({ source: 'git', gitRepo: 'acme/fsm2', gitCommit: 'deadbeef', gitRef: 'main' }));
+    const res = await push('fsm2', fd);
+    expect(res.status).toBe(201);
+    const version = await res.json();
+    const versions = (await (await app.request('/verticals/fsm2/versions', { headers: auth })).json()).entries;
+    expect(versions.find((v: { id: string }) => v.id === version.id)?.origin).toEqual({
+      source: 'git', gitRepo: 'acme/fsm2', gitCommit: 'deadbeef', gitRef: 'main',
+    });
+
+    // Provenance is a label, never authority — garbage in the field must not fail the push.
+    const bad = form(manifest({ version: '0.1.1' }));
+    bad.set('origin', 'not json at all');
+    const res2 = await push('fsm2', bad);
+    expect(res2.status).toBe(201);
+    const v2 = await res2.json();
+    const after = (await (await app.request('/verticals/fsm2/versions', { headers: auth })).json()).entries;
+    expect(after.find((v: { id: string }) => v.id === v2.id)?.origin ?? null).toBeNull();
+  });
+
   it('forwards compatibility flags to the uploader (nodejs_compat must survive)', async () => {
     const res = await push('flagsdemo', form(manifest({ compatibilityFlags: ['nodejs_compat'] })));
     expect(res.status).toBe(201);

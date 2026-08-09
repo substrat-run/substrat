@@ -1912,6 +1912,34 @@ export function scopeHostContractSuite(
       expect(scope?.vertical).toBe('callout');
     });
 
+    it('round-trips a version\'s push origin, and an untagged push reads as null', async () => {
+      await host.admin.registerVertical(staff, {
+        slug: 'provenanced',
+        name: 'Provenanced',
+        source: 'cli',
+        ownerTenant: t1,
+      });
+      const fromCi = ulid();
+      await host.admin.publishVersion(staff, {
+        id: fromCi, verticalSlug: 'provenanced', version: '1.0.0',
+        manifestDigest: 'm1', permissionDigest: 'p1', migrationDigest: 'g1', deploymentRef: null,
+        origin: { source: 'git', gitRepo: 'acme/provenanced', gitCommit: 'abc123', gitRef: 'main' },
+      });
+      // An old CLI sends no origin — the version must still publish, and read back null.
+      const untagged = ulid();
+      await host.admin.publishVersion(staff, {
+        id: untagged, verticalSlug: 'provenanced', version: '1.0.1',
+        manifestDigest: 'm2', permissionDigest: 'p2', migrationDigest: 'g2', deploymentRef: null,
+      });
+
+      const versions = await host.admin.listVersions(staff, 'provenanced');
+      const ci = versions.find((v) => v.id === fromCi);
+      expect(ci?.origin).toEqual({ source: 'git', gitRepo: 'acme/provenanced', gitCommit: 'abc123', gitRef: 'main' });
+      expect(versions.find((v) => v.id === untagged)?.origin ?? null).toBeNull();
+      // The single-version read carries it too — the dashboard's per-app tab reads this path.
+      expect((await host.admin.getVersion(staff, fromCi))?.origin?.source).toBe('git');
+    });
+
     it('admits a PENDING version onto a preview fork — but still refuses it on a serving scope (#509 (d))', async () => {
       // Admission gates code reaching an INSTALL. A preview is a fork of the builder's own
       // scope at a non-canonical URL, serving no install, so it may run not-yet-admitted PR

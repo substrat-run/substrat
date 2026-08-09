@@ -173,6 +173,8 @@ export interface VersionRow {
   admission_note: string | null;
   /** The pushed DeployManifest (JSON) — promote/backout rebuild upload metadata from it. */
   manifest_json: string | null;
+  /** Push provenance (`versionOrigin` JSON) — null for a pre-tracking push. */
+  origin_json: string | null;
   created_at: string;
 }
 
@@ -821,6 +823,9 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('verticals', 'serving_do_classes TEXT');
     this.addColumn('verticals', 'serving_migration_tag TEXT');
     this.addColumn('vertical_versions', 'manifest_json TEXT');
+    // Push provenance (git CI vs a terminal), as pushed-alongside JSON. NULL = pushed
+    // before origin tracking, or by an old CLI.
+    this.addColumn('vertical_versions', 'origin_json TEXT');
     // #33: the SKU flag learns to express a plan. All nullable — a legacy row
     // reads as a perpetual boolean flag, exactly its pre-widening semantics.
     this.addColumn('_substrat_entitlements', 'expires_at TEXT');
@@ -1801,16 +1806,18 @@ export class ControlPlaneDO extends DurableObject {
     id: string; verticalSlug: string; version: string; manifestDigest: string;
     permissionDigest: string; migrationDigest: string; deploymentRef: string | null;
     admission: string; admissionNote: string | null; manifestJson: string | null;
+    originJson: string | null;
     createdAt: string;
   }): void {
     this.sql.exec(
       `INSERT INTO vertical_versions
          (id, vertical_slug, version, manifest_digest, permission_digest,
-          migration_digest, deployment_ref, admission, admission_note, manifest_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          migration_digest, deployment_ref, admission, admission_note, manifest_json,
+          origin_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       v.id, v.verticalSlug, v.version, v.manifestDigest, v.permissionDigest,
       v.migrationDigest, v.deploymentRef, v.admission, v.admissionNote, v.manifestJson,
-      v.createdAt,
+      v.originJson, v.createdAt,
     );
   }
 
