@@ -82,6 +82,7 @@ import {
   type ManagedTenantDeps,
   type PlatformDrainReport,
   type DeployVerticalFn,
+  type FetchVerticalAssetFn,
   type CustomHostnameProvisioner,
   type PlatformActorAuth,
   type PlatformRuntime,
@@ -337,6 +338,42 @@ function fetchVerticalModulesFor(env: Env) {
     namespace: env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
     apiToken: env.CF_API_TOKEN,
   });
+}
+
+/**
+ * Reads a pushed script's STATIC ASSET bytes back through the dispatch fabric (#578) —
+ * the asset twin of `fetchVerticalModulesFor`, for the serve-in-place at promote: the
+ * asset store dedupes per script, so the stable serving script cannot ride dedupe on
+ * bytes the push uploaded to the version's archive script. There is no read-back API for
+ * assets the way `/content` gives back modules, but none is needed: assets are served by
+ * the runtime's edge without invoking the worker, so a plain dispatch fetch of the path
+ * returns the bytes (which the serve then verifies against their content-address).
+ * Redirects are followed by hand — `html_handling` may answer `/index.html` with a
+ * redirect to `/` — against the same script, never off it.
+ */
+function fetchVerticalAssetFor(env: Env): FetchVerticalAssetFn | undefined {
+  const dispatch = env.DISPATCH;
+  if (!dispatch) return undefined;
+  return async (deploymentRef, asset) => {
+    const fetcher = dispatch.get(deploymentRef);
+    let url = new URL(asset.path, 'https://asset-recovery.invalid');
+    for (let hop = 0; hop < 3; hop++) {
+      const res = await fetcher.fetch(url.toString(), { redirect: 'manual' });
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        await res.body?.cancel();
+        if (!location) return undefined;
+        url = new URL(location, url);
+        continue;
+      }
+      if (!res.ok) {
+        await res.body?.cancel();
+        return undefined;
+      }
+      return new Uint8Array(await res.arrayBuffer());
+    }
+    return undefined;
+  };
 }
 
 /**
@@ -1014,6 +1051,7 @@ export default {
         resolveVerticalRef: resolveVerticalRefFor(env),
         deployVertical: deployVerticalFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
+        fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),
         observability: observabilityFor(env),
         // Where the refs the console shows actually resolve, so staff get a link into the

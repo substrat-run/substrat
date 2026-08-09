@@ -60,7 +60,12 @@ import {
   nextMigrationTag,
   upstreamStatusOf,
 } from './deploy.js';
-import type { AssetUpload, DeployVerticalFn, FetchVerticalModulesFn } from './deploy.js';
+import type {
+  AssetUpload,
+  DeployVerticalFn,
+  FetchVerticalAssetFn,
+  FetchVerticalModulesFn,
+} from './deploy.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 import {
   blobStoreBindings,
@@ -142,6 +147,18 @@ export interface ControlPlaneApiOptions {
    * place (the pre-#286 behavior: scopes stay on per-version dispatch).
    */
   fetchVerticalModules?: FetchVerticalModulesFn;
+  /**
+   * Reads one static file's bytes back from a script in the namespace (#578) — the
+   * asset twin of `fetchVerticalModules`. The runtime's asset store dedupes per
+   * SCRIPT, not namespace-wide, so the first serve of an asset-carrying version onto
+   * the stable serving script always finds its hashes missing there; this seam is how
+   * the serve recovers the bytes the push uploaded to the version's archive script.
+   * Host-injected like `deployVertical` (on Cloudflare, a dispatch fetch — the archive
+   * script's edge serves its own assets without invoking the worker). Absent ⇒ a
+   * re-serve can only ride what the stable script already holds and refuses honestly
+   * otherwise.
+   */
+  fetchVerticalAsset?: FetchVerticalAssetFn;
   /**
    * Ensures per-tenant store D1 bindings exist on a dispatch script without a redeploy
    * (#301) — the attach step that makes a freshly-minted tenant store reachable in the
@@ -2626,6 +2643,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!version?.deploymentRef) {
       throw new ControlPlaneError(502, `version ${versionId} has no archive script to serve from`);
     }
+    const archiveRef = version.deploymentRef;
     const manifestJson = await admin.versionManifest(actor, slug, versionId);
     if (!manifestJson) {
       throw new ControlPlaneError(
@@ -2663,13 +2681,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         modules,
         doClasses: manifest.doClasses,
         bindings: [...manifest.bindings, ...storeBindings],
-        // #340: the version's static files travel with it onto the serving script — from
-        // the RETAINED manifest, with no bytes. An asset upload session is driven by
-        // content addresses, and the runtime's asset store is namespace-wide and deduped,
-        // so re-declaring the same hashes re-attaches the same files. This is why the
-        // manifest is retained rather than the bytes: the archive script gives back the
-        // modules (#286), and the asset store gives back the assets.
-        ...(manifest.assets ? { assets: manifest.assets } : {}),
+        // #340/#578: the version's static files travel with it onto the serving script —
+        // from the RETAINED manifest, with no bytes. The runtime's asset store dedupes
+        // per SCRIPT (not namespace-wide — the #578 finding), so the serving script only
+        // skips hashes it has itself held before; everything else — every first serve of
+        // new content — is recovered on demand from the version's archive script, the
+        // same store the modules come back from (#286), and verified against its
+        // content-address before upload. This is why the manifest is retained rather
+        // than the bytes: the archive script gives back modules AND assets.
+        ...(manifest.assets
+          ? {
+              assets: {
+                ...manifest.assets,
+                ...(options.fetchVerticalAsset
+                  ? {
+                      recoverContent: (asset: Pick<AssetUpload, 'path' | 'hash'>) =>
+                        options.fetchVerticalAsset!(archiveRef, asset),
+                    }
+                  : {}),
+              },
+            }
+          : {}),
       },
       serving
         ? { priorDoClasses: serving.doClasses, priorMigrationTag: serving.migrationTag }
