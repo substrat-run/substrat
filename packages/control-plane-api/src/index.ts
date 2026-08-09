@@ -32,6 +32,8 @@ export {
   archiveScopeHandler,
   provisionTenantHandler,
   setEntitlementsHandler,
+  connectorDispatchHandler,
+  type ConnectorDispatchDeps,
   type ManagedTenantDeps,
   type PlatformDrainOptions,
   type ArchiveScopeDeps,

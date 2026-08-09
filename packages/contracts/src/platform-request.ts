@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { instant, platformRequestId, scopeId } from './ids.js';
-import { actor } from './events.js';
+import { actor, domainEvent } from './events.js';
 
 /**
  * Platform intents (docs/design/platform-intents.md) — how a sandbox-clean vertical asks the
@@ -139,3 +139,36 @@ export type SetEntitlementsPayload = z.infer<typeof setEntitlementsPayload>;
 
 /** The well-known intent kind string for `setEntitlementsPayload`. */
 export const SET_ENTITLEMENTS_KIND = 'set-entitlements';
+
+/**
+ * The `connector:<provider>` intent family (#574 phase 3) — a CP-less host routing one
+ * connector delivery onto the platform-requests surface instead of running it in-process.
+ * A hosted vertical cannot reach the connection directory, so its host journals the
+ * delivery as routed and enqueues this intent; the platform's drain executes the same
+ * connector handler a self-host runs, with the directory, sealed credentials and egress
+ * it already holds, and writes back through the vertical's `/internal/connector-*` seam.
+ *
+ * The kind is a FAMILY, not one string: the suffix names the provider so the platform
+ * registers one handler per connector it operates (`connector:scrive`), exactly as it
+ * registers per-provider sweepers.
+ */
+export const CONNECTOR_DISPATCH_KIND_PREFIX = 'connector:';
+
+/** The intent kind for one provider's routed dispatch: `connector:scrive`. */
+export const connectorDispatchKind = (provider: string): string =>
+  `${CONNECTOR_DISPATCH_KIND_PREFIX}${provider}`;
+
+/**
+ * The routed delivery itself. The event is embedded FAT (the whole spine envelope, not an
+ * id): the platform's handler needs everything the in-process handler would have been
+ * handed, and the vertical's outbox is not reachable from the drain without a second hop.
+ * The drain re-parses it (`domainEvent`) and refuses an event whose kernel-stamped
+ * tenant/scope disagree with the drained scope's — the intent rides that scope's own
+ * spine table, so those are the proven values. `executorId` is the vertical-side
+ * registration the delivery was journaled under, carried for attribution/debugging.
+ */
+export const connectorDispatchPayload = z.object({
+  executorId: z.string().min(1),
+  event: domainEvent,
+});
+export type ConnectorDispatchPayload = z.infer<typeof connectorDispatchPayload>;
