@@ -15,7 +15,7 @@ import {
 import { Ic } from '../lib/icons';
 import { DEV_MOCK, MOCK_FAILURES, MOCK_PREVIEWS } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
-import { card, CopyButton, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
+import { card, CopyButton, OriginTag, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 
 /**
  * Verticals (builder-plane.md Phase 4; formerly "Deployments") — the supply side of the
@@ -70,6 +70,8 @@ function VersionRow({
         {/* #286: promoting this version migrates every instance's data in place —
             the badge is the at-a-glance half of the acknowledgement gate. */}
         {v.schemaChange && <Pill kind="warning">schema change</Pill>}
+        {/* Where the push came from — the repo's deploy workflow vs someone's terminal. */}
+        <OriginTag origin={v.origin} />
       </span>
       <span>
         <Pill kind={ADMISSION_PILL[v.admission] ?? 'neutral'}>{v.admission}</Pill>

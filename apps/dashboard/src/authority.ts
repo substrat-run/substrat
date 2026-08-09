@@ -14,6 +14,7 @@ import type {
   ScopeTable,
   ScopeTablePage,
   TenantId,
+  VersionOrigin,
 } from '@substrat-run/contracts';
 import { LIST_PAGE_MAX } from '@substrat-run/contracts';
 
@@ -378,7 +379,7 @@ export class TenantNarrowedControlPlane {
   async listVersions(
     verticalSlug: string,
   ): Promise<
-    Array<{ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; createdAt: string }>
+    Array<{ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; origin?: VersionOrigin | null; createdAt: string }>
   > {
     try {
       return await this.listAll(`/verticals/${encodeURIComponent(verticalSlug)}/versions`);
@@ -397,7 +398,7 @@ export class TenantNarrowedControlPlane {
     verticalSlug: string,
     page: ListPage,
   ): Promise<
-    Page<{ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; createdAt: string }>
+    Page<{ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; origin?: VersionOrigin | null; createdAt: string }>
   > {
     try {
       return await this.page(`/verticals/${encodeURIComponent(verticalSlug)}/versions`, page);

@@ -6,7 +6,7 @@ import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES,
 import { relativeTime, shortDate, shortId } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
-import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, Pill, RowActions } from '../components/ui';
+import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, OriginTag, Pill, RowActions } from '../components/ui';
 import { IntegrationCard } from './Integrations';
 import { navigate } from '../lib/router';
 import { DnsRecords } from './Domains';
@@ -574,6 +574,8 @@ function Deployments({ app }: { app: AppRow }) {
         {running ? (
           <>
             <MonoTag>{running.version}</MonoTag>
+            {/* Where the running code came from — the repo's deploy workflow vs a CLI push. */}
+            <OriginTag origin={running.origin} />
             <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
               {bound ? <>this app is pinned to it</> : <>via the <b>prod</b> channel</>} of <MonoTag>{dep.displaySlug}</MonoTag>
             </span>
@@ -658,6 +660,7 @@ function Deployments({ app }: { app: AppRow }) {
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{v.version}</span>
                   {v.id === dep.boundVersionId && <Pill kind="success">running</Pill>}
                   {v.schemaChange && <Pill kind="warning">schema change</Pill>}
+                  <OriginTag origin={v.origin} />
                 </span>
                 <span><Pill kind={v.admission === 'admitted' ? 'success' : v.admission === 'rejected' ? 'danger' : 'warning'}>{v.admission}</Pill></span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

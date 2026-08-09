@@ -100,6 +100,56 @@ export function MonoTag({ children, color }: { children: ReactNode; color?: stri
   );
 }
 
+/**
+ * Where a pushed version's code came from — `git` (the repo's deploy workflow, with
+ * repo@commit linking to GitHub) vs `cli` (someone's terminal). Renders nothing for a
+ * version pushed before origin tracking: absence of evidence stays visibly absent
+ * rather than being guessed at.
+ */
+export function OriginTag({
+  origin,
+}: {
+  origin?: { source: 'git' | 'cli'; gitRepo?: string; gitCommit?: string; gitRef?: string } | null;
+}) {
+  if (!origin) return null;
+  const style: CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    fontFamily: 'var(--font-mono)',
+    fontSize: 11,
+    color: 'var(--text-tertiary)',
+    whiteSpace: 'nowrap',
+  };
+  if (origin.source === 'cli') {
+    return (
+      <span style={style} title="Pushed from a terminal (substrat push)">
+        <Ic name="terminal" size={11} />
+        cli
+      </span>
+    );
+  }
+  const short = origin.gitCommit?.slice(0, 7);
+  const label = origin.gitRepo ? `${origin.gitRepo}${short ? `@${short}` : ''}` : (short ?? 'git');
+  const commitUrl =
+    origin.gitRepo && origin.gitCommit
+      ? `https://github.com/${origin.gitRepo}/commit/${origin.gitCommit}`
+      : null;
+  const title = `Pushed by the deploy workflow${origin.gitRef ? ` (${origin.gitRef})` : ''}`;
+  return (
+    <span style={style} title={title}>
+      <Ic name="gitBranch" size={11} />
+      {commitUrl ? (
+        <a href={commitUrl} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>
+          {label}
+        </a>
+      ) : (
+        label
+      )}
+    </span>
+  );
+}
+
 /** An inset honesty banner — the "nothing here is faked" strip on future screens. */
 export function HonestyBanner({ children }: { children: ReactNode }) {
   return (

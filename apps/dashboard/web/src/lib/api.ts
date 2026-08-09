@@ -188,6 +188,14 @@ export interface DeploymentVersion {
   deploymentRef: string | null;
   /** Updating TO this version crosses a migration boundary (#286) — badged in the UI. */
   schemaChange?: boolean;
+  /** Where the push came from: git CI (with repo/commit) vs a terminal. Null = pushed
+   *  before origin tracking. */
+  origin?: {
+    source: 'git' | 'cli';
+    gitRepo?: string;
+    gitCommit?: string;
+    gitRef?: string;
+  } | null;
   createdAt: string;
 }
 

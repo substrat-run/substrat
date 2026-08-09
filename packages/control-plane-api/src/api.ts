@@ -28,6 +28,7 @@ import {
   surfaceName,
   tenantId as tenantIdSchema,
   tenantStatus,
+  versionOrigin,
   z,
 } from '@substrat-run/contracts';
 import type {
@@ -2789,6 +2790,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const pinField = form.get('tenant');
     const pin = typeof pinField === 'string' && pinField.length > 0 ? pinField : null;
 
+    // The push's self-reported provenance (git CI vs a terminal) — a label the dashboard
+    // shows, never authority, so a missing or malformed field must not fail the push
+    // (an old CLI sends none). Lenient by construction: safeParse, drop on mismatch.
+    const originField = form.get('origin');
+    const origin = (() => {
+      if (typeof originField !== 'string') return undefined;
+      try {
+        const parsed = versionOrigin.safeParse(JSON.parse(originField));
+        return parsed.success ? parsed.data : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+
     // Resolve the registry id + owner this push acts on. Checked BEFORE the upload so a
     // refused push never leaves an orphaned namespace script.
     const bare = c.req.param('slug');
@@ -3051,6 +3066,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       permissionDigest: manifest.digests.permission,
       migrationDigest: manifest.digests.migration,
       deploymentRef,
+      ...(origin ? { origin } : {}),
       // Retained for the serving upload (#286): the archive script keeps the module
       // bytes, this keeps their shape (entry, compat, doClasses, bindings).
       manifestJson: JSON.stringify(manifest),

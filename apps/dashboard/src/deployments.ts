@@ -1,4 +1,4 @@
-import type { DeployAssets, PermissionRegistry, PlatformActorId, TenantId } from '@substrat-run/contracts';
+import type { DeployAssets, PermissionRegistry, PlatformActorId, TenantId, VersionOrigin } from '@substrat-run/contracts';
 import { LIST_PAGE_MAX, deployManifest, storedDeployManifest } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import type { TenantNarrowedControlPlane } from './authority.js';
@@ -31,6 +31,8 @@ export interface DeploymentVersion {
    * first version (there is no update that reaches it).
    */
   schemaChange: boolean;
+  /** Where this push came from (git CI vs a terminal) — null for a pre-tracking push. */
+  origin: VersionOrigin | null;
   createdAt: string;
 }
 
@@ -62,6 +64,7 @@ interface RawVersion {
   admissionNote?: string | null;
   deploymentRef?: string | null;
   migrationDigest?: string;
+  origin?: VersionOrigin | null;
   createdAt?: string;
 }
 
@@ -100,6 +103,7 @@ function shape(
         admissionNote: r.admissionNote ?? null,
         deploymentRef: r.deploymentRef ?? null,
         schemaChange: changed.get(r.id) ?? false,
+        origin: r.origin ?? null,
         createdAt: r.createdAt ?? '',
       }));
     })(),
@@ -184,6 +188,7 @@ export function shapeVersionsPage(
       deploymentRef: r.deploymentRef ?? null,
       schemaChange:
         prev !== undefined && r.migrationDigest !== undefined && r.migrationDigest !== prev.migrationDigest,
+      origin: r.origin ?? null,
       createdAt: r.createdAt ?? '',
     };
   });

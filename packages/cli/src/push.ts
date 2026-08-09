@@ -19,9 +19,25 @@ import {
   type PermissionRegistry,
   type PermissionsInput,
   type RuntimeNeeds,
+  type VersionOrigin,
 } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
 import { explainPlatformFault, parseJsonBody, readAllEntries } from './http.js';
+
+/**
+ * Where this push runs: the generated deploy workflow runs THIS SAME CLI inside GitHub
+ * Actions, so the runner's env is what tells a git-driven release apart from a person's
+ * terminal — and carries which repo/commit the code was built from.
+ */
+function pushOrigin(): VersionOrigin {
+  if (process.env.GITHUB_ACTIONS !== 'true') return { source: 'cli' };
+  return {
+    source: 'git',
+    ...(process.env.GITHUB_REPOSITORY ? { gitRepo: process.env.GITHUB_REPOSITORY } : {}),
+    ...(process.env.GITHUB_SHA ? { gitCommit: process.env.GITHUB_SHA } : {}),
+    ...(process.env.GITHUB_REF_NAME ? { gitRef: process.env.GITHUB_REF_NAME } : {}),
+  };
+}
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
@@ -541,6 +557,9 @@ export async function push(
   // code, so it stays out of every digest). The control plane honors or refuses it.
   if (opts.tenant) form.set('tenant', opts.tenant);
   if (opts.allowFork) form.set('allowFork', '1');
+  // Provenance rides beside the pin for the same reason: it describes THIS push, not the
+  // code, so it stays out of every digest. Self-reported — a label, never authority.
+  form.set('origin', JSON.stringify(pushOrigin()));
   for (const m of modules) {
     form.set(m.name, new Blob([m.content], { type: 'application/javascript+module' }), m.name);
   }

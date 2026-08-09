@@ -198,6 +198,24 @@ export const AUTO_ADMISSION_NOTE = 'auto-admitted: private vertical';
  * comparison here, where today it is a person remembering to look — and per §4 of the
  * plan, a checkpoint that can be skipped is not a checkpoint.
  */
+/**
+ * Where ONE pushed version's code came from — self-reported by the CLI at push time.
+ * `git` is a push from CI (the generated deploy workflow runs `substrat push` inside
+ * GitHub Actions, so the CLI detects the runner and attaches the repo/commit/ref it
+ * built from); `cli` is a person's terminal. Informational labeling, never authority:
+ * both transports are the same authenticated push, and nothing gates on this — it
+ * exists so the dashboard can answer "where did this code come from".
+ */
+export const versionOrigin = z.object({
+  source: z.enum(['git', 'cli']),
+  /** `owner/repo`, when pushed from GitHub Actions. */
+  gitRepo: z.string().min(1).optional(),
+  gitCommit: z.string().min(1).optional(),
+  /** The branch/tag the workflow ran for (`GITHUB_REF_NAME`). */
+  gitRef: z.string().min(1).optional(),
+});
+export type VersionOrigin = z.infer<typeof versionOrigin>;
+
 export const verticalVersion = z.object({
   id: z.string().min(1), // ULID
   verticalSlug,
@@ -210,6 +228,8 @@ export const verticalVersion = z.object({
   admission: admissionStatus,
   /** Why it was rejected, when it was. Null otherwise. */
   admissionNote: z.string().nullable(),
+  /** Null/absent = pushed before origin tracking (or by an old CLI). */
+  origin: versionOrigin.nullish(),
   createdAt: instant,
 });
 export type VerticalVersion = z.infer<typeof verticalVersion>;
@@ -223,6 +243,7 @@ export const publishVersionInput = verticalVersion
     permissionDigest: true,
     migrationDigest: true,
     deploymentRef: true,
+    origin: true,
   })
   .extend({
     /**
