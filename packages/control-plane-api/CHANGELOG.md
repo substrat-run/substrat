@@ -1,5 +1,136 @@
 # @substrat-run/control-plane-api
 
+## 0.56.0
+
+### Minor Changes
+
+- 4eb90ca: feat: outbound connector dispatch rides platform-requests — a CP-less vertical's connector runs end to end (#574 phase 3, closes #574)
+
+  Phases 1 and 2 gave a hosted vertical the platform-run sweep and the
+  platform-terminated webhook ingress; outbound dispatch still ran nowhere — a
+  connector registered on a CP-less host would throw into dead-letters, because
+  the connection directory, the sealed credential, and sanctioned egress are all
+  platform-side. This closes the loop:
+
+  - **The vertical half** (`adapter-cloudflare`): on a CP-less host, `drainDue`
+    routes each connector delivery onto the platform-requests surface instead of
+    running the handler. A new ScopeDO verb enqueues the `connector:<provider>`
+    intent (the kernel-stamped event embedded fat, `executorId` for attribution)
+    and journals the delivery as routed in one atomic step, so a crash can never
+    re-route or lose one; backpressure refuses before any write and the delivery
+    retries on its own backoff. The inline drain reports routed deliveries
+    through `onPlatformRequests`, so the response carries the router-kick header
+    and dispatch latency collapses from sweep-cadence to seconds.
+  - **The platform half**: `ScopeHost` gains `dispatchConnector` (both adapters)
+    — execute ONE routed delivery with this host's directory, credential, and
+    egress, no journal (the intent row is the journal). `control-plane-api` adds
+    `connectorDispatchHandler`, which parses the routed payload, refuses an event
+    whose kernel stamps disagree with the drained scope (terminal), and runs the
+    connector; a throw settles `pending` and retries under the attempt ceiling.
+  - **Contracts**: `connectorDispatchKind(provider)` / `connectorDispatchPayload`
+    — the shared vocabulary between the routing host and the drain.
+  - **Kernel**: `ConnectorOptions.provider` (defaults to the registration id) and
+    `ExecutorDrainReport.routedToPlatform`.
+  - **The control plane** registers `connector:scrive` in its drain-handler map,
+    running the SAME `scriveConnector` closure a self-host registers — with the
+    callback URL now minted as `PLATFORM_CP_URL` + `scriveCallbackPath(ref)`, so
+    the capability URL terminates on the phase-2 ingress.
+  - **Meridian's CF worker** registers the connector (routing needs the
+    registration; the handler never runs there) and flags
+    `x-substrat-platform-request` on invokes that enqueued intents.
+
+  Self-host (node/SQLite) keeps its in-process wiring untouched; the connector
+  itself does not fork.
+
+- 1fa4bd0: feat: the connector write-back seam — the platform runs the connector pass for CP-less verticals (#574 phase 1)
+
+  A CP-less dispatch vertical cannot run a connector: the connection directory and
+  its sealed secrets live platform-side, and a pushed script must never hold them.
+  This lands the approved shape's first phase — the shared control plane runs the
+  connector pass FOR dispatch verticals, and the vertical opens one narrow
+  write-back door:
+
+  - `vertical-host` mounts three platform-secret-gated verbs:
+    `/internal/connector-invoke` (one operation, invoked as the connection),
+    `/internal/connector-attachment` (the multipart bytes leg), and
+    `/internal/connector-grant` (delivery of the scope-local `connection:<id>`
+    grant tuple). Authorization happens in the scope's own DO against that
+    delivered tuple — the platform cannot skip the permission check.
+  - `CloudflareScopeHost` gains the far-end local methods
+    (`connectorInvokeLocal` / `connectorAttachmentUploadLocal` /
+    `connectorGrantLocal`) and a `connectorDelegation` option for the platform
+    end: with it set, `getConnectorScope().invoke`, `getConnectorAttachments()`
+    upload, and scope-level `grantToConnection` ride the delegation to the
+    deployment actually serving the scope instead of touching the control plane's
+    own module-less scope namespace. Directory gates (live connection,
+    tenant/vertical match) still run platform-side before every delegated call.
+  - `VerticalClient` speaks the three verbs (`connectorInvoke`,
+    `connectorUploadAttachment`, `connectorGrant`).
+  - The control plane wires the delegation into its host, seals/opens connection
+    credentials with a new `SECRET_BOX_KEY` secret (base64 of 32 bytes, the
+    dashboard's exact convention; canonical name `CP_SECRET_BOX_KEY` in
+    secrets.mjs), and registers the Scrive sweeper on its scheduled
+    `runPlatformSweep` pass — the poll floor now covers hosted verticals'
+    connections. `SCRIVE_BASE_URL` selects the provider environment (default:
+    testbed).
+
+  Phase 2 (webhook ingress terminating on the platform) and phase 3 (outbound
+  dispatch riding platform-requests) follow.
+
+- c1faa15: feat: every pushed version records where its code came from — git CI or a terminal
+
+  A git-connected deploy and a `substrat push` from a terminal were
+  indistinguishable on the platform: the generated deploy workflow runs the same
+  CLI against the same endpoint, so the dashboard could not answer "where did the
+  code this app is serving come from". Now the CLI self-reports its context with
+  each push and the dashboard shows it:
+
+  - **Contracts**: `versionOrigin` on the version record — `source: 'git' | 'cli'`
+    plus `gitRepo`/`gitCommit`/`gitRef` when pushed from CI. A label, never
+    authority: nothing gates on it, and a version pushed before tracking (or by an
+    old CLI) reads back `null`.
+  - **CLI**: `substrat push` detects the GitHub Actions runner and attaches the
+    repo, commit, and branch it built from; a terminal push sends `{ source: 'cli' }`.
+  - **Control plane**: the deploy route parses the field leniently — a missing or
+    malformed origin must never fail a push — and both adapters store it as a
+    nullable `origin_json` column on the version row.
+  - **Dashboard**: an origin tag (git-branch icon + `repo@sha` linking to the
+    GitHub commit, or a terminal icon + `cli`) on every version row on the
+    Verticals page, in the per-app Deployments tab, and beside the app's Running
+    version.
+
+  The vertical-level `source` field is deliberately untouched: it is
+  claim-at-first-push metadata, and one app legitimately receives both kinds of
+  push — provenance is per version.
+
+### Patch Changes
+
+- b8bdb9d: fix(control-plane-api): drained provisioning targets the serving script, and a stuck intent gives up honestly (#570)
+
+  The acme provision-tenant intent retried every sweep for six days (577 attempts)
+  because the handler's two halves aimed at two different scripts: the tenant-store
+  D1 binding was patched onto the vertical's stable SERVING script, while the
+  provision call dispatched through the scope's pinned version to the per-version
+  script — which has no store bindings, so the vertical refused "no tenant store
+  attached" forever. A still-provisioning scope that lacks its serving pointer while
+  its vertical serves in place is now stamped onto the serving script (serving ref +
+  version pointer) before the client resolves, on both the provision-tenant and
+  provision-sibling paths — safe exactly because such a scope has never activated,
+  so there is no data to hop. The stranded acme scope converges on its next drain
+  pass with no manual adopt-serving.
+
+  And a structurally-stuck intent no longer pretends to be transient forever: at
+  `MAX_PLATFORM_REQUEST_ATTEMPTS` (100 passes ≈ a day at sweep cadence) the drain
+  settles it `failed` carrying its last real error — what the proposer's read
+  actually surfaces — and lands a durable ops-failure row (#559) for the operator,
+  instead of burning an attempt every 15 minutes visible only to someone reading
+  `_substrat_platform_requests` by hand.
+
+- Updated dependencies [4eb90ca]
+- Updated dependencies [c1faa15]
+  - @substrat-run/contracts@0.56.0
+  - @substrat-run/kernel@0.56.0
+
 ## 0.55.0
 
 ### Minor Changes
