@@ -115,6 +115,7 @@ import {
   type BlobStoreProvisionInput,
   type BlobStoreRecord,
   type ScopeAttachments,
+  type AttachmentUploadInput,
   type TenantBlobStore,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
@@ -713,6 +714,47 @@ interface ScopeStubRpc {
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
 
+/**
+ * Where a connector's scope-side effects land when the scope is served by ANOTHER
+ * deployment (#574). Set only on the shared control plane's host — its own SCOPE
+ * namespace is the module-less placeholder, so a connector write-back executed
+ * locally would land in a DO that runs no modules. Each method is expected to ride
+ * the vertical's platform-secret-gated `/internal/connector-*` surface.
+ *
+ * The DIRECTORY gates (live connection, tenant/vertical match) still run in this
+ * host before any delegated call; the PERMISSION check runs at the far end, in the
+ * vertical's own ScopeDO, against the delivered `connection:<id>` tuple — the
+ * platform cannot skip it any more than any other caller can.
+ */
+export interface ConnectorDelegation {
+  /** Invoke one operation in the serving deployment, as the connection. */
+  invoke(args: {
+    connectionId: ConnectionId;
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    operation: string;
+    input: unknown;
+  }): Promise<unknown>;
+  /** Land provider bytes in the serving deployment, as the connection. */
+  uploadAttachment(args: {
+    connectionId: ConnectionId;
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    upload: AttachmentUploadInput;
+  }): Promise<AttachmentRecord>;
+  /** Write the scope-local `connection:<id>` grant tuple in the serving deployment. */
+  grant(args: {
+    connectionId: ConnectionId;
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    permission: PermissionKey;
+    expiresAt?: string;
+  }): Promise<void>;
+}
+
 export interface CloudflareScopeHostOptions {
   scope: DurableObjectNamespace;
   /**
@@ -777,6 +819,13 @@ export interface CloudflareScopeHostOptions {
    * letting a declared `tenantStoreNeed` appear provisioned while no store exists.
    */
   tenantStores?: D1TenantStores;
+  /**
+   * #574: route a connector's scope write-back (invoke / attachment / grant) to the
+   * deployment actually serving the scope. Set only on the shared control plane's
+   * host; a vertical's own host (CP-full or CP-less) leaves it unset and executes
+   * locally.
+   */
+  connectorDelegation?: ConnectorDelegation;
 }
 
 /**
@@ -851,6 +900,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private causedBy: string | null = null;
   private readonly withdrawn = new Map<string, string>(); // operation → module
   private readonly operationEntitlement = new Map<string, string>();
+  /** #574: remote connector write-back for scopes served by another deployment. */
+  private readonly connectorDelegation?: ConnectorDelegation;
 
   /**
    * MUST be constructed per request. Never cache an instance across requests.
@@ -875,6 +926,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.cp = options.controlPlane
       ? (options.controlPlane.get(options.controlPlane.idFromName('control-plane')) as unknown as ControlPlaneStub)
       : nullControlPlane();
+    this.connectorDelegation = options.connectorDelegation;
     this.admin = this.buildAdmin();
   }
 
@@ -1535,6 +1587,27 @@ export class CloudflareScopeHost implements ScopeHost {
       );
     }
     await this.cp.validateScopeAccess(conn.tenant_id as TenantId, scopeId);
+    // #574: same delegation as getConnectorScope. Only `upload` crosses the seam in
+    // phase 1 — it is the one verb the reconcile path needs (landing the sealed PDF);
+    // the read/remove verbs fail loudly rather than pretending.
+    if (this.connectorDelegation) {
+      const delegation = this.connectorDelegation;
+      const tenant = conn.tenant_id as TenantId;
+      const vertical = conn.vertical;
+      const notDelegated = (verb: string) => async (): Promise<never> => {
+        throw new Error(
+          `connector attachment ${verb} is not delegated (#574 phase 1) — only upload ` +
+            `crosses the /internal seam to the serving deployment`,
+        );
+      };
+      return {
+        upload: (upload) =>
+          delegation.uploadAttachment({ connectionId, tenantId: tenant, scopeId, vertical, upload }),
+        list: notDelegated('list'),
+        open: notDelegated('open'),
+        remove: notDelegated('remove'),
+      };
+    }
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(conn.tenant_id as TenantId);
     return this.buildAttachmentSurface({ connectionId }, conn.tenant_id as TenantId, scopeId, store);
@@ -1818,6 +1891,27 @@ export class CloudflareScopeHost implements ScopeHost {
       );
     }
     await this.cp.validateScopeAccess(conn.tenant_id as TenantId, scopeId);
+    // #574: a scope served by ANOTHER deployment (the shared control plane running the
+    // connector pass for a dispatch vertical) — the write-back rides the delegation
+    // seam; migration is the serving deployment's business, exactly like provision.
+    if (this.connectorDelegation) {
+      const delegation = this.connectorDelegation;
+      const tenant = conn.tenant_id as TenantId;
+      const vertical = conn.vertical;
+      return {
+        tenantId: tenant,
+        scopeId,
+        invoke: async <O, I>(operation: string, input?: I): Promise<O> =>
+          (await delegation.invoke({
+            connectionId,
+            tenantId: tenant,
+            scopeId,
+            vertical,
+            operation,
+            input,
+          })) as O,
+      };
+    }
     await this.migrateAndRecord(scopeId);
     return this.buildStub(conn.tenant_id as TenantId, scopeId, undefined, connectionId);
   }
@@ -2250,13 +2344,28 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
         }
-        await writeGrant(
-          subjectRef({ kind: 'connection', id: grant.connectionId }),
-          grant.permission,
-          grant.node,
-          undefined,
-          grant.expiresAt,
-        );
+        // #574: a scope-level grant is a SCOPE tuple, and the scope's DO lives in the
+        // deployment serving it — for the shared control plane that is the vertical's
+        // dispatch script, so the tuple write rides the delegation seam. Tenant-level
+        // grants stay directory-side either way.
+        if (this.connectorDelegation && grant.node.scopeId) {
+          await this.connectorDelegation.grant({
+            connectionId: grant.connectionId as ConnectionId,
+            tenantId: grant.node.tenantId,
+            scopeId: grant.node.scopeId,
+            vertical: conn.vertical,
+            permission: grant.permission,
+            expiresAt: grant.expiresAt,
+          });
+        } else {
+          await writeGrant(
+            subjectRef({ kind: 'connection', id: grant.connectionId }),
+            grant.permission,
+            grant.node,
+            undefined,
+            grant.expiresAt,
+          );
+        }
         await this.recordAdmin(
           actor,
           'grantToConnection',
@@ -3978,6 +4087,62 @@ export class CloudflareScopeHost implements ScopeHost {
       `granted:${permission}`,
       `${entity.entityType}:${entity.entityId}`,
       null,
+    );
+  }
+
+  // -- the connector write-back's far end (#574) -----------------------------
+  // A CP-less dispatch vertical cannot run a connector, so the shared control
+  // plane runs the pass FOR it and reaches back through the platform-secret-gated
+  // `/internal/connector-*` surface — these are that surface's host methods. The
+  // directory gates (live connection, tenant/vertical match) ran on the platform
+  // side before the call; what runs HERE is the half only this deployment can
+  // enforce: the scope's own permission check against its delivered
+  // `connection:<id>` tuple, in the scope's own DO. Fail closed — no grant, no
+  // effect — exactly as for any other caller.
+
+  /** Invoke ONE operation in this deployment as a CONNECTION (#574). */
+  async connectorInvokeLocal(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    operation: string,
+    input?: unknown,
+  ): Promise<unknown> {
+    await this.migrateAndRecord(scopeId);
+    return this.buildStub(tenantId, scopeId, undefined, connectionId).invoke(operation, input);
+  }
+
+  /** Land provider bytes in this deployment as a CONNECTION — the bytes leg (#574). */
+  async connectorAttachmentUploadLocal(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    upload: AttachmentUploadInput,
+  ): Promise<AttachmentRecord> {
+    await this.migrateAndRecord(scopeId);
+    const store = await this.resolveAttachmentStore(tenantId);
+    return this.buildAttachmentSurface({ connectionId }, tenantId, scopeId, store).upload(upload);
+  }
+
+  /**
+   * The delivery half of `grantToConnection` for a scope served HERE (#574): write
+   * the scope-local `connection:<id>` grant tuple the permission checker reads.
+   * Revocation needs no mirror verb — every delegated call re-passes the platform's
+   * live-connection gate first, so revoking the connection closes the door even
+   * while the tuple remains; `expiresAt` bounds the tuple itself.
+   */
+  async connectorGrantLocal(
+    connectionId: ConnectionId,
+    scopeId: ScopeId,
+    permission: PermissionKey,
+    expiresAt?: string,
+  ): Promise<void> {
+    await this.writeScopeTuple(
+      scopeId,
+      subjectRef({ kind: 'connection', id: connectionId }),
+      `granted:${permission}`,
+      `scope:${scopeId}`,
+      expiresAt ?? null,
     );
   }
 }

@@ -191,6 +191,13 @@ alarms. Start with the latter — retry is the higher-frequency, more latency-se
    (or on the platform running the pass FOR dispatch verticals, the same orchestrated shape as
    snapshot GC). Its scope-local halves — retries and schedules — no longer wait: they run on
    the deployment's own `defineScopeSweeperDO` (§3.3, #461).
+   **Landed, phase 1 (#574):** the orchestrated shape won — the shared control plane's
+   scheduled pass registers the scrive sweeper against its own directory, and the write-back
+   reaches the vertical's deployment over three platform-secret-gated `/internal/connector-*`
+   verbs (invoke / attachment bytes / grant delivery), authorized in the scope's own DO
+   against its delivered `connection:<id>` tuple (`connectorDelegation` on the CP's host).
+   Phase 2 moves the webhook ingress mount to the platform; phase 3 routes outbound dispatch
+   through platform-requests so a CP-less vertical's connector runs end to end.
 3. **Add the sweeper registry to the host contract** so a connector registers its reconcile
    sweeper beside its dispatch handler — the call site stops assembling the map by hand.
 4. **Move `drainDue` to per-scope alarms (Design B)** when fan-out latency shows up; keep the

@@ -73,6 +73,9 @@ importers:
       '@substrat-run/adapter-email':
         specifier: workspace:^
         version: link:../../packages/adapter-email
+      '@substrat-run/connector-scrive':
+        specifier: workspace:^
+        version: link:../../connectors/scrive
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
@@ -1164,6 +1167,9 @@ importers:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../adapter-sqlite
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../vertical-host
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0

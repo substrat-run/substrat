@@ -28,13 +28,22 @@ import {
   SET_ENTITLEMENTS_KIND,
 } from '@substrat-run/contracts';
 import type { PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
-import { runPlatformSweep, assertPlatformCall, PlatformCallError, type FetchLike } from '@substrat-run/kernel';
+import {
+  runPlatformSweep,
+  assertPlatformCall,
+  PlatformCallError,
+  webCryptoSecretBox,
+  type FetchLike,
+  type SecretBox,
+} from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   ControlPlaneDO,
   createD1TenantStores,
   defineScopeDO,
+  type ConnectorDelegation,
 } from '@substrat-run/adapter-cloudflare';
+import { sweepScriveReconciliations } from '@substrat-run/connector-scrive';
 import {
   createControlPlaneApi,
   createWfpUploader,
@@ -210,6 +219,22 @@ interface Env extends OidcEnv {
    * to provision an instance of it (orchestration.md §5.4), the mirror of the router.
    */
   DISPATCH?: DispatchNamespace;
+  /**
+   * Seals connection credentials at rest (#101/#574) — base64(url) of 32 bytes
+   * (`openssl rand -base64 32`), same convention as the dashboard's box. The
+   * coordinator-side key for the directory's `_substrat_connection_secrets`
+   * ciphertext; the DO never holds it. Unset ⇒ the host refuses to store or open
+   * a connection credential (fail closed), which also disables the platform-run
+   * connector pass. `SECRET_BOX_KEY_ID` labels the key generation for rotation
+   * (default `sb1`).
+   */
+  SECRET_BOX_KEY?: string;
+  SECRET_BOX_KEY_ID?: string;
+  /**
+   * Scrive API base for the platform-run connector sweep (#574/#96). Unset ⇒ the
+   * connector's default (the testbed); production sets `https://api.scrive.com`.
+   */
+  SCRIVE_BASE_URL?: string;
   /**
    * Service bindings to vertical deployments, `VERTICAL_<SLUG>` with dashes as
    * underscores — the same convention and the same static-map shape the router
@@ -425,6 +450,75 @@ function verticalsFor(env: Env): Record<string, VerticalClient> {
   return out;
 }
 
+/** The connection-secret box (#574), when the seal key is configured — the dashboard's
+ *  exact convention (base64/base64url key, labelled key id) so operators set one shape. */
+function secretBoxFor(env: Env): SecretBox | undefined {
+  if (!env.SECRET_BOX_KEY) return undefined;
+  const b64 = env.SECRET_BOX_KEY.trim().replace(/-/g, '+').replace(/_/g, '/');
+  const padded = b64.padEnd(Math.ceil(b64.length / 4) * 4, '=');
+  const key = Uint8Array.from(atob(padded), (ch) => ch.charCodeAt(0));
+  if (key.length !== 32) {
+    throw new Error(
+      `SECRET_BOX_KEY must decode to 32 bytes (got ${key.length}) — use \`openssl rand -base64 32\``,
+    );
+  }
+  return webCryptoSecretBox(env.SECRET_BOX_KEY_ID ?? 'sb1', key);
+}
+
+/**
+ * The connector write-back's platform half (#574): a connector running ON this worker
+ * (the sweep, later the ingress) writes into a scope that lives in a vertical's dispatch
+ * deployment — this routes `getConnectorScope().invoke` / attachment upload / grant
+ * delivery over that vertical's platform-secret-gated `/internal/connector-*` surface,
+ * resolved by the same serving-ref → bound-version → prod ladder every other delegated
+ * verb uses. Undefined without DISPATCH/PLATFORM_SECRET — a deployment that cannot
+ * reach a vertical fails the connector call loudly instead of writing into the CP's
+ * own module-less placeholder DO.
+ */
+function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  const clientFor = async (tenantId: TenantId, scopeId: ScopeId): Promise<VerticalClient> => {
+    // A bare directory host (no delegation) — this is a read of our own directory,
+    // not a connector call; constructed per invocation like every other host here.
+    const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
+    if (!rec?.vertical) {
+      throw new Error(`scope ${scopeId} has no vertical — cannot delegate a connector call`);
+    }
+    const client = await resolveVerticalForScopeFor(env)(rec);
+    if (!client) {
+      throw new Error(
+        `no deployment serving scope ${scopeId} (vertical '${rec.vertical}') — cannot deliver the connector call`,
+      );
+    }
+    return client;
+  };
+  return {
+    invoke: async (a) =>
+      (await clientFor(a.tenantId, a.scopeId)).connectorInvoke({
+        connectionId: a.connectionId,
+        tenantId: a.tenantId,
+        scopeId: a.scopeId,
+        operation: a.operation,
+        input: a.input,
+      }),
+    uploadAttachment: async (a) =>
+      (await clientFor(a.tenantId, a.scopeId)).connectorUploadAttachment({
+        connectionId: a.connectionId,
+        tenantId: a.tenantId,
+        scopeId: a.scopeId,
+        ...a.upload,
+      }),
+    grant: async (a) =>
+      (await clientFor(a.tenantId, a.scopeId)).connectorGrant({
+        connectionId: a.connectionId,
+        scopeId: a.scopeId,
+        permission: a.permission,
+        expiresAt: a.expiresAt,
+      }),
+  };
+}
+
 /** The coordinator is stateless — rebuilt per request; durable state is in the DOs. */
 function hostFor(env: Env): CloudflareScopeHost {
   return new CloudflareScopeHost({
@@ -437,6 +531,11 @@ function hostFor(env: Env): CloudflareScopeHost {
       env.CF_API_TOKEN && env.CF_ACCOUNT_ID
         ? createD1TenantStores({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN })
         : undefined,
+    // Connections (#574): seal/open credentials coordinator-side, and route connector
+    // write-backs to the vertical deployment serving the scope — this worker's own
+    // SCOPE namespace is the module-less placeholder and must never receive one.
+    secretBox: secretBoxFor(env),
+    connectorDelegation: connectorDelegationFor(env),
   });
 }
 
@@ -577,10 +676,19 @@ export default {
     const resolveVersion = resolveVerticalVersionFor(env);
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
-      // Handed to connector sweepers only — none are registered here, so this is a
-      // type bridge (kernel's FetchLike vs the workers RequestInit), never called.
+      // Sanctioned egress for the connector sweepers below (kernel's FetchLike vs the
+      // workers RequestInit — a type bridge, same fetch).
       fetch: globalThis.fetch as unknown as FetchLike,
-      sweepers: {},
+      // #574: the platform runs the connector pass FOR dispatch verticals — they are
+      // CP-less and cannot reach the connection directory. The sweep enumerates THIS
+      // directory's connections, opens each with the coordinator-held secret box, polls
+      // the provider, and writes back through the vertical's /internal/connector-*
+      // surface (the host's connectorDelegation). A connection whose secret cannot be
+      // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly into report.errors.
+      sweepers: {
+        scrive: (h, id, o) =>
+          sweepScriveReconciliations(h, id, { ...o, baseUrl: env.SCRIVE_BASE_URL }),
+      },
       drainRetries: false,
       deleteSnapshotFn: async (tenantId, scopeId) => {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);

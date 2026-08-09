@@ -1,5 +1,9 @@
 import type {
+  AttachmentRecord,
+  ConnectionId,
+  EntityRef,
   EntitlementGrant,
+  PermissionKey,
   PlatformRequest,
   PlatformRequestId,
   PlatformRequestStatus,
@@ -14,6 +18,7 @@ import type {
   ScopeTablePage,
   TenantId,
   TenantStoreHandle,
+  Visibility,
 } from '@substrat-run/contracts';
 import { PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
 import { ControlPlaneError } from './client.js';
@@ -281,6 +286,74 @@ export class VerticalClient {
   async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
     const q = new URLSearchParams({ tenantId, scopeId });
     return this.getInternal<PlatformRequest[]>(`/internal/platform-requests?${q}`);
+  }
+
+  /**
+   * Invoke ONE operation in the vertical's deployment as a CONNECTION (#574) — the
+   * write-back leg of the platform-run connector pass. The platform already passed the
+   * directory gates (live connection, tenant/vertical match); the permission check runs
+   * at the far end, in the scope's own DO, against its delivered `connection:<id>`
+   * grant. Carries no credential — an operation name and its input, nothing more.
+   */
+  async connectorInvoke(input: {
+    connectionId: ConnectionId;
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    operation: string;
+    input?: unknown;
+  }): Promise<unknown> {
+    const body = await this.postInternal<{ result: unknown }>(
+      '/internal/connector-invoke',
+      input,
+      'connector-invoke',
+    );
+    return body.result;
+  }
+
+  /**
+   * Land provider bytes in the vertical's deployment as a CONNECTION (#574) — the bytes
+   * leg (a sealed signed PDF cannot ride the JSON invoke). Multipart: `meta` carries the
+   * JSON envelope, `body` the blob; fetch stamps the boundary content-type itself.
+   */
+  async connectorUploadAttachment(input: {
+    connectionId: ConnectionId;
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    entity: EntityRef;
+    filename: string;
+    contentType: string;
+    visibility: Visibility;
+    body: Uint8Array;
+  }): Promise<AttachmentRecord> {
+    const { body, ...meta } = input;
+    const form = new FormData();
+    form.append('meta', JSON.stringify(meta));
+    form.append('body', new Blob([body as BlobPart], { type: input.contentType }), input.filename);
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach('connector-attachment', () =>
+      this.options.fetch(`${base}/internal/connector-attachment`, {
+        method: 'POST',
+        // No content-type here: fetch sets multipart/form-data with its boundary.
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: form,
+      }),
+    );
+    if (!res.ok) throw await this.refusal('connector-attachment', res);
+    return this.parseInternal<AttachmentRecord>('connector-attachment', '/internal/connector-attachment', res);
+  }
+
+  /**
+   * Deliver a connection's scope-level grant tuple into the vertical's deployment
+   * (#574) — the delivery half of `grantToConnection` for a scope served there.
+   * Idempotent at the far end.
+   */
+  async connectorGrant(input: {
+    connectionId: ConnectionId;
+    scopeId: ScopeId;
+    permission: PermissionKey;
+    expiresAt?: string;
+  }): Promise<void> {
+    await this.postInternal<unknown>('/internal/connector-grant', input, 'connector-grant');
   }
 
   /** Journal a platform-request outcome back in the vertical after the platform ran it. */
