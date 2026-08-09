@@ -19,7 +19,13 @@ export default defineWorkersConfig({
           // Enables the UNSAFE dev-actor stub for the test only (never in
           // wrangler.jsonc, so a real deploy stays fail-closed — see src/worker.ts).
           // SESSION_SECRET lets the CLI-broker test mint sessions the worker accepts.
-          bindings: { ALLOW_DEV_ACTOR: 'true', SESSION_SECRET: 'test-session-secret-32-bytes-min-xxxxx' },
+          bindings: {
+            ALLOW_DEV_ACTOR: 'true',
+            SESSION_SECRET: 'test-session-secret-32-bytes-min-xxxxx',
+            // 32 fixed bytes, base64 — lets the scrive-ingress test seed a sealed
+            // connection credential the worker's `secretBoxFor` can open.
+            SECRET_BOX_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
+          },
           // The vertical service binding names a SEPARATELY deployed worker
           // (`substrat-fsm`), which does not exist in the test runtime — without a
           // stub, workerd refuses to start at all. It answers 501 so a test that

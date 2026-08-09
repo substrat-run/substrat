@@ -9,5 +9,10 @@ declare module 'cloudflare:test' {
     ALLOW_DEV_ACTOR?: string;
     /** Signs sessions/flow — bound in vitest.config.ts so the CLI-broker test can mint them. */
     SESSION_SECRET?: string;
+    /**
+     * The connection-secret seal key — bound in vitest.config.ts so the ingress test can
+     * seed a connection the worker's own box (`secretBoxFor`) can open.
+     */
+    SECRET_BOX_KEY?: string;
   }
 }

@@ -196,8 +196,12 @@ alarms. Start with the latter — retry is the higher-frequency, more latency-se
    reaches the vertical's deployment over three platform-secret-gated `/internal/connector-*`
    verbs (invoke / attachment bytes / grant delivery), authorized in the scope's own DO
    against its delivered `connection:<id>` tuple (`connectorDelegation` on the CP's host).
-   Phase 2 moves the webhook ingress mount to the platform; phase 3 routes outbound dispatch
-   through platform-requests so a CP-less vertical's connector runs end to end.
+   **Landed, phase 2 (#574):** the webhook ingress mount lives on the platform — the CP
+   worker mounts `SCRIVE_CALLBACK_ROUTE`, verifies the per-dispatch capability token
+   against ITS directory's ledger (where a hosted vertical's connector state lives), and
+   runs the same reconcile, writing back over the phase-1 seam; push collapses the sweep's
+   latency for hosted verticals. Phase 3 routes outbound dispatch through platform-requests
+   so a CP-less vertical's connector runs end to end.
 3. **Add the sweeper registry to the host contract** so a connector registers its reconcile
    sweeper beside its dispatch handler — the call site stops assembling the map by hand.
 4. **Move `drainDue` to per-scope alarms (Design B)** when fan-out latency shows up; keep the
@@ -206,7 +210,8 @@ alarms. Start with the latter — retry is the higher-frequency, more latency-se
    per-dispatch capability token (Scrive signs nothing, so the minted token in the URL is the
    whole authentication) and calls the same `reconcileScriveDispatch`; the mount is
    `SCRIVE_CALLBACK_ROUTE` + a `callbackUrl` config (live in `demos/meridian/src/server.ts`,
-   with `ScriveMock` delivering real POSTs offline). Poll stays as the floor.
+   with `ScriveMock` delivering real POSTs offline — and on the shared control plane for
+   hosted verticals, #574 phase 2). Poll stays as the floor.
 
 Step 1 is landed. Step 2 is the only thing between here and an autonomous connector, and it waits
 on a deployed vertical, not on more platform code. The rest is scale and latency, each additive.

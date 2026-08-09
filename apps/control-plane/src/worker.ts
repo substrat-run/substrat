@@ -43,7 +43,11 @@ import {
   defineScopeDO,
   type ConnectorDelegation,
 } from '@substrat-run/adapter-cloudflare';
-import { sweepScriveReconciliations } from '@substrat-run/connector-scrive';
+import {
+  SCRIVE_CALLBACK_ROUTE,
+  handleScriveCallback,
+  sweepScriveReconciliations,
+} from '@substrat-run/connector-scrive';
 import {
   createControlPlaneApi,
   createWfpUploader,
@@ -231,8 +235,9 @@ interface Env extends OidcEnv {
   SECRET_BOX_KEY?: string;
   SECRET_BOX_KEY_ID?: string;
   /**
-   * Scrive API base for the platform-run connector sweep (#574/#96). Unset ⇒ the
-   * connector's default (the testbed); production sets `https://api.scrive.com`.
+   * Scrive API base for the platform-run connector pass (#574/#96) — the sweep
+   * and the webhook ingress both reconcile against it. Unset ⇒ the connector's
+   * default (the testbed); production sets `https://api.scrive.com`.
    */
   SCRIVE_BASE_URL?: string;
   /**
@@ -927,6 +932,41 @@ export default {
         text,
       });
       return c.json({ sent: true, ...result });
+    });
+
+    // The Scrive webhook ingress (#574 phase 2, #96): for a CP-less dispatch vertical the
+    // capability URL terminates HERE, not on the vertical — the dispatch ledger the token is
+    // verified against lives in THIS directory (ControlPlaneDO connector state), and a pushed
+    // script must never hold it. Unauthenticated by design: Scrive signs nothing, so the
+    // per-dispatch token minted into the URL is the entire authentication, compared in
+    // constant time against the ledger row. On a match the same reconcile the sweep runs
+    // re-reads the provider's truth and records it back through the vertical's
+    // `/internal/connector-*` surface (the host's connectorDelegation) — push collapses the
+    // sweep's latency, never replaces it. Every rejection is one uniform 404 (the WHY stays
+    // in the log), so the response is no oracle for probing which instances exist, and
+    // nothing short of a verified token causes provider egress.
+    app.post(SCRIVE_CALLBACK_ROUTE, async (c) => {
+      const ref = c.req.param();
+      try {
+        const outcome = await handleScriveCallback(hostFor(c.env), ref, {
+          fetch: globalThis.fetch as unknown as FetchLike,
+          baseUrl: c.env.SCRIVE_BASE_URL,
+        });
+        if (!outcome.accepted) {
+          console.log(`[scrive-callback] rejected (${outcome.reason})`);
+          return c.json({ error: 'not found' }, 404);
+        }
+        const { recorded, complete, documentStatus } = outcome.result;
+        console.log(
+          `[scrive-callback] ${ref.instanceId}: recorded ${recorded.length}, status ${documentStatus}${complete ? ', complete' : ''}`,
+        );
+        return c.json({ ok: true });
+      } catch (err) {
+        // Verified but the reconcile failed (provider hiccup, a vertical deployment out of
+        // reach): 500 so Scrive retries; the poll floor covers whatever push drops.
+        console.error('[scrive-callback] reconcile failed', err);
+        return c.json({ error: 'reconcile failed' }, 500);
+      }
     });
 
     // The audited control-plane API under /api (the console's baseUrl).
