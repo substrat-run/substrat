@@ -200,8 +200,15 @@ alarms. Start with the latter — retry is the higher-frequency, more latency-se
    worker mounts `SCRIVE_CALLBACK_ROUTE`, verifies the per-dispatch capability token
    against ITS directory's ledger (where a hosted vertical's connector state lives), and
    runs the same reconcile, writing back over the phase-1 seam; push collapses the sweep's
-   latency for hosted verticals. Phase 3 routes outbound dispatch through platform-requests
-   so a CP-less vertical's connector runs end to end.
+   latency for hosted verticals.
+   **Landed, phase 3 (#574):** outbound dispatch rides platform-requests, closing the loop —
+   a CP-less host routes each connector delivery as a `connector:<provider>` intent (the DO
+   enqueues the intent and journals the delivery atomically; the inline drain flags
+   `onPlatformRequests` so the router kicks an immediate platform drain), and the CP's drain
+   executes it via `connectorDispatchHandler` → `host.dispatchConnector` — the SAME
+   `scriveConnector` closure a self-host registers, now minting its callback URL from
+   `PLATFORM_CP_URL` in front of the phase-2 ingress. A CP-less vertical's connector runs
+   end to end.
 3. **Add the sweeper registry to the host contract** so a connector registers its reconcile
    sweeper beside its dispatch handler — the call site stops assembling the map by hand.
 4. **Move `drainDue` to per-scope alarms (Design B)** when fan-out latency shows up; keep the

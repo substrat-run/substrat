@@ -2551,6 +2551,28 @@ export class SqliteScopeHost implements ScopeHost {
     return rt.actor.enqueue(() => this.dispatchExecutors(rt));
   }
 
+  async dispatchConnector(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    handler: ConnectorHandler,
+    event: DomainEvent,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    // The platform half of a routed `connector:<provider>` intent (#574 phase 3): run
+    // ONE delivery with this host's directory, credentials and egress, no journal — the
+    // intent row the caller settles is the journal. This adapter always holds its own
+    // directory, so a node control plane can drain routed intents exactly as the
+    // Cloudflare one does; the context build is the same one `dispatchExecutors` hands
+    // an in-process connector.
+    const rt = this.runtime(tenantId, scopeId);
+    this.causedBy = event.id;
+    try {
+      await handler(this.connectorContext(rt, options?.timeoutMs ?? 30_000), event);
+    } finally {
+      this.causedBy = null;
+    }
+  }
+
   migrationFrontier(): MigrationFrontier {
     let total = 0;
     for (const mod of this.modules.values()) total += mod.migrations.length;

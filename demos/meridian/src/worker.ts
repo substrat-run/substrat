@@ -20,10 +20,12 @@ import { principalId, scopeId, tenantId, resolveScopedEnvSpec, z } from '@substr
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import {
+  PLATFORM_REQUEST_HEADER,
   readRoutedNode,
   RouterAssertionError,
   ulid,
 } from '@substrat-run/kernel';
+import { registerScriveConnector } from '@substrat-run/connector-scrive';
 import type { PrincipalId } from '@substrat-run/contracts';
 import { EMPLOYEE_SELF, MODULES, ROLES } from './provision.js';
 import { MERIDIAN_ENV } from './manifest.js';
@@ -108,6 +110,14 @@ function nodeFor(req: Request, env: Env): CompanyNode {
 function hostFor(env: Env): CloudflareScopeHost {
   const host = new CloudflareScopeHost({ scope: env.SCOPE });
   for (const m of MODULES) host.registerModule(m);
+  // #574 phase 3: the SAME registration the node self-host makes (seed.ts) — but on
+  // this CP-less host the handler never runs. Registering it is what tells the host
+  // which events are connector deliveries, so the drain routes each one onto the
+  // platform-requests surface as a `connector:scrive` intent and the platform (which
+  // holds the directory, the sealed credential and the egress) dispatches it. Options
+  // like `baseUrl`/`callbackUrl` are deliberately absent: they are the DISPATCHING
+  // host's concern, configured where the handler actually executes.
+  registerScriveConnector(host, {});
   return host;
 }
 
@@ -271,13 +281,18 @@ app.all('/internal/*', (c) =>
 );
 
 /** Resolve the caller (any provider) → the routed node → a scope stub. 401 if nobody. */
-async function stub(c: { env: Env; req: { raw: Request } }) {
+async function stub(c: { env: Env; req: { raw: Request }; header?: (name: string, value: string) => void }) {
   const node = nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
   // CP-less: lifecycle is the router's gate — it forwards only an active scope and asserts
   // the node. The vertical trusts that node and opens the scope; permissions evaluate locally.
-  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
+  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
+    // #458/#574: an invoke that enqueued platform intents — including a connector
+    // delivery the inline drain just routed — flags the response so the router kicks
+    // an immediate platform drain instead of waiting for the sweep.
+    onPlatformRequests: () => c.header?.(PLATFORM_REQUEST_HEADER, '1'),
+  });
 }
 
 /**

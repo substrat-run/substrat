@@ -1,4 +1,4 @@
-import { ulid, type OpsFailureInput, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type ConnectorHandler, type OpsFailureInput, type ScopeHost } from '@substrat-run/kernel';
 import {
   principalId as principalIdSchema,
   scopeId as scopeIdSchema,
@@ -7,6 +7,7 @@ import {
   archiveScopePayload,
   provisionTenantPayload,
   setEntitlementsPayload,
+  connectorDispatchPayload,
   type PlatformActorId,
   type PlatformRequest,
   type Scope,
@@ -532,6 +533,55 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
  * cleanly). Keys OUTSIDE the declared universe are never touched, so a platform-granted
  * entitlement (e.g. the tenant's own product SKU) survives any manager reconcile.
  */
+export interface ConnectorDispatchDeps {
+  host: ScopeHost;
+  /**
+   * The provider's handler — the SAME closure a self-host registers in-process
+   * (e.g. `scriveConnector({...})`). The connector does not fork for hosting; only
+   * the host running it changes.
+   */
+  connector: ConnectorHandler;
+  /** Per-request egress timeout for this provider. Default 30s, the registration default. */
+  timeoutMs?: number;
+}
+
+/**
+ * The `connector:<provider>` platform-request handler (#574 phase 3) — the outbound half
+ * of the platform-run connector pass. A CP-less vertical's host routed one connector
+ * delivery here as an intent; this executes it with platform authority: open the tenant's
+ * connection from THIS directory, egress to the provider, mint the webhook token, write
+ * the dispatch ledger — all inside the connector's own closure via `host.dispatchConnector`
+ * — and the drain settles the intent from the outcome. Registered once per provider the
+ * platform operates, exactly as its sweepers are.
+ *
+ * A thrown handler (provider unreachable, no live connection yet) settles `pending` and
+ * retries on later drains up to the attempt ceiling; the connector's dispatch ledger makes
+ * those retries idempotent. An event whose kernel-stamped tenant/scope disagree with the
+ * drained scope's is terminal: intents ride the scope's own spine table, so the drained
+ * scope is the proven origin and a mismatched payload can only be a forgery or a bug.
+ */
+export function connectorDispatchHandler(deps: ConnectorDispatchDeps): PlatformRequestHandler {
+  return async (ctx, request) => {
+    const payload = connectorDispatchPayload.parse(request.payload);
+    if (payload.event.tenantId !== ctx.tenantId || payload.event.scopeId !== ctx.scopeId) {
+      return {
+        status: 'failed',
+        error:
+          `routed event ${payload.event.id} is stamped (${payload.event.tenantId}, ${payload.event.scopeId}), ` +
+          `which is not the drained scope (${ctx.tenantId}, ${ctx.scopeId})`,
+      };
+    }
+    await deps.host.dispatchConnector(
+      ctx.tenantId,
+      ctx.scopeId,
+      deps.connector,
+      payload.event,
+      deps.timeoutMs === undefined ? undefined : { timeoutMs: deps.timeoutMs },
+    );
+    return { status: 'done', result: { eventId: payload.event.id } };
+  };
+}
+
 export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequestHandler {
   return async (ctx, request) => {
     const payload = setEntitlementsPayload.parse(request.payload);

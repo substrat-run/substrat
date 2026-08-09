@@ -148,9 +148,14 @@ Most of the gaps found by building it have since closed. What is done, and what 
    (`@substrat-run/adapter-cloudflare`) drives it on Workers: a singleton Durable Object whose
    alarm runs one `runPlatformSweep` pass and re-arms only after the pass settles — non-overlap
    by construction, and it works inside a Workers-for-Platforms dispatch namespace, where crons
-   do not ([#96](https://github.com/substrat-run/substrat/issues/96), the poll path). What's left
-   is deployment wiring, not a timer: a hosted CP-less vertical holds no connection directory to
-   enumerate, so its sweep waits on connections becoming reachable from the vertical's runtime.
+   do not ([#96](https://github.com/substrat-run/substrat/issues/96), the poll path). For a
+   hosted CP-less vertical the platform runs the whole pass
+   ([#574](https://github.com/substrat-run/substrat/issues/574)): the control plane's scheduled
+   sweep enumerates ITS connection directory (phase 1), the webhook ingress terminates on the
+   control plane (phase 2), and outbound dispatch rides platform-requests (phase 3) — the
+   vertical registers the connector as usual, its host routes each delivery as a
+   `connector:scrive` intent, and the platform executes the same handler with the credential
+   and egress the vertical must never hold.
 6. **BankID-to-sign is disabled on the testbed account**, so `start` returns 409 for `se_bankid`
    and the real BankID signing round-trip (and Scrive's live `get` party shape and order) cannot
    be verified yet. The live test uses `standard` auth until it is enabled.

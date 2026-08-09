@@ -26,6 +26,7 @@ import {
   ARCHIVE_SCOPE_KIND,
   PROVISION_TENANT_KIND,
   SET_ENTITLEMENTS_KIND,
+  connectorDispatchKind,
 } from '@substrat-run/contracts';
 import type { PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
 import {
@@ -46,6 +47,8 @@ import {
 import {
   SCRIVE_CALLBACK_ROUTE,
   handleScriveCallback,
+  scriveCallbackPath,
+  scriveConnector,
   sweepScriveReconciliations,
 } from '@substrat-run/connector-scrive';
 import {
@@ -75,6 +78,7 @@ import {
   archiveScopeHandler,
   provisionTenantHandler,
   setEntitlementsHandler,
+  connectorDispatchHandler,
   type ManagedTenantDeps,
   type PlatformDrainReport,
   type DeployVerticalFn,
@@ -626,6 +630,26 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
       [ARCHIVE_SCOPE_KIND]: archiveScopeHandler({ host, actor: SWEEP_ACTOR }),
       [PROVISION_TENANT_KIND]: provisionTenantHandler(managedTenantDeps),
       [SET_ENTITLEMENTS_KIND]: setEntitlementsHandler(managedTenantDeps),
+      // #574 phase 3: the outbound half of the platform-run connector pass. A CP-less
+      // vertical routed a `protocol.signatures-requested` delivery here as an intent;
+      // this host holds the directory, the sealed credential, and (via its
+      // connectorDelegation) the scope write-back seam, so the SAME `scriveConnector`
+      // closure a self-host registers runs unchanged. The callback URL terminates on
+      // THIS worker's phase-2 ingress — minted only when the deployment knows its own
+      // public origin; without it the dispatch is poll-only, which is complete, just
+      // slower (the sweep is the floor).
+      [connectorDispatchKind('scrive')]: connectorDispatchHandler({
+        host,
+        connector: scriveConnector({
+          baseUrl: env.SCRIVE_BASE_URL,
+          ...(env.PLATFORM_CP_URL
+            ? {
+                callbackUrl: (ref) =>
+                  `${env.PLATFORM_CP_URL!.replace(/\/+$/, '')}${scriveCallbackPath(ref)}`,
+              }
+            : {}),
+        }),
+      }),
     },
     {
       // #570: the drain's attempt-ceiling give-up lands a durable ops-failure row

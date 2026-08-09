@@ -280,6 +280,14 @@ export interface ExecutorDrainReport {
   retrying: number;
   /** Failed at `maxAttempts` — terminal, and the row keeps the last error. */
   deadLettered: number;
+  /**
+   * Connector deliveries a CP-less host turned into `connector:<provider>` platform
+   * intents instead of running (#574 phase 3). Counted separately from `delivered`
+   * because the effect has not happened yet — the platform's drain owns it now. A
+   * harness treats a non-zero count like `ScopeStubOptions.onPlatformRequests`: flag
+   * the response so the router kicks an immediate drain.
+   */
+  routedToPlatform?: number;
 }
 
 /**
@@ -398,6 +406,16 @@ export type ConnectorHandler = (ctx: ConnectorContext, event: DomainEvent) => vo
 export interface ConnectorOptions extends ExecutorRetryPolicy {
   /** Per-request timeout. Default 30s. */
   timeoutMs?: number;
+  /**
+   * The provider slug this connector operates (#574 phase 3) — the routing key a
+   * CP-less host uses when it cannot run the handler itself: the delivery becomes a
+   * `connector:<provider>` platform intent, and the platform's drain dispatches it to
+   * the handler registered for that same slug. Defaults to the registration id, which
+   * for the shipped connectors is already the provider name ('scrive'). Irrelevant on
+   * a host that reaches the connection directory (self-host, the control plane): there
+   * the handler runs in-process and this key is never consulted.
+   */
+  provider?: string;
 }
 
 /** A delivery that exhausted its attempts. The evidence, not a silent drop. */
@@ -2268,6 +2286,26 @@ export interface ScopeHost {
    * nothing is due.
    */
   drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport>;
+
+  /**
+   * Execute ONE connector delivery with this host's directory, credentials and egress —
+   * the platform half of #574 phase 3. A CP-less host routes each connector delivery
+   * onto the platform-requests surface as a `connector:<provider>` intent; the
+   * platform's drain calls this to run the same handler a self-host would have run
+   * in-process, against the SAME `ConnectorContext` shape (ambient tenant/vertical, the
+   * opened connection, sanctioned egress). No journal here: the intent row IS the
+   * journal — the drain settles it done/pending from this call's outcome, and
+   * at-least-once still requires the handler's own idempotency (the dispatch ledger).
+   * Fleet maintenance, no actor, same class as `drainDue`. Fails closed on a host that
+   * cannot reach the connection directory.
+   */
+  dispatchConnector(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    handler: ConnectorHandler,
+    event: DomainEvent,
+    options?: { timeoutMs?: number },
+  ): Promise<void>;
 
   /**
    * The deployed migration frontier for the modules registered on this host —

@@ -88,6 +88,8 @@ import {
   type SubjectShredReceipt,
   type ScopeId,
   platformRequest,
+  connectorDispatchKind,
+  type ConnectorDispatchPayload,
   type PlatformRequest,
   type PlatformRequestId,
   type PlatformRequestStatus,
@@ -211,6 +213,8 @@ type RegisteredEffector =
       handler: ConnectorHandler;
       retry: Required<ExecutorRetryPolicy>;
       timeoutMs: number;
+      /** The `connector:<provider>` routing key a CP-less host enqueues under (#574 phase 3). */
+      provider: string;
     };
 
 /** DO row → contract shape. Never reads the secrets table — that is the split. */
@@ -610,6 +614,14 @@ interface ScopeStubRpc {
     result: string | null,
     lastError: string | null,
   ): Promise<void>;
+  /** #574 phase 3: enqueue a `connector:<provider>` intent + journal the delivery, atomically. */
+  routeExecutorEventToPlatform(
+    eventId: string,
+    deliveryId: string,
+    kind: string,
+    payload: string,
+    requestedBy: string,
+  ): Promise<PlatformRequestId>;
   /** The migration that failed on this instance, read on `migrate()`'s reject path. */
   migrationFailure(): Promise<{ version: string; error: string; applied: number } | null>;
   invoke(
@@ -960,6 +972,7 @@ export class CloudflareScopeHost implements ScopeHost {
       handler,
       retry: resolveRetryPolicy(options),
       timeoutMs: options?.timeoutMs ?? 30_000,
+      provider: options?.provider ?? id,
     });
   }
 
@@ -1044,6 +1057,7 @@ export class CloudflareScopeHost implements ScopeHost {
       delivered: 0,
       retrying: 0,
       deadLettered: 0,
+      routedToPlatform: 0,
     };
     if (this.executors.size === 0) return report;
     const stub = this.scopeStub(scopeId);
@@ -1054,16 +1068,35 @@ export class CloudflareScopeHost implements ScopeHost {
         report.attempted += 1;
         this.causedBy = event.id;
         try {
-          if (executor.kind === 'connector') {
+          if (executor.kind === 'connector' && this.cpLess) {
+            // #574 phase 3: this host cannot run a connector — no connection
+            // directory, no credentials, no sanctioned egress. Route the delivery
+            // onto the platform-requests surface instead: the DO enqueues the
+            // `connector:<provider>` intent and journals the delivery as routed in
+            // one atomic verb, and the platform's drain executes the handler with
+            // the authority this host lacks. The intent row carries the retry
+            // state from here on; the handler's own idempotency ledger absorbs
+            // the at-least-once residue, as it already must in-process.
+            await stub.routeExecutorEventToPlatform(
+              event.id,
+              deliveryId,
+              connectorDispatchKind(executor.provider),
+              JSON.stringify({ executorId: id, event } satisfies ConnectorDispatchPayload),
+              JSON.stringify({ system: 'connector-dispatch' }),
+            );
+            report.routedToPlatform! += 1;
+          } else if (executor.kind === 'connector') {
             await executor.handler(
               await this.connectorContext(tenantId, scopeId, executor.timeoutMs),
               event,
             );
+            await stub.recordExecutorAttempt(event.id, deliveryId, null, null);
+            report.delivered += 1;
           } else {
             await executor.handler(this.admin, event);
+            await stub.recordExecutorAttempt(event.id, deliveryId, null, null);
+            report.delivered += 1;
           }
-          await stub.recordExecutorAttempt(event.id, deliveryId, null, null);
-          report.delivered += 1;
         } catch (err) {
           const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
           // The DO owns the attempt count; the coordinator owns the policy, so it
@@ -1093,6 +1126,30 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     return this.drainExecutors(tenantId, scopeId);
+  }
+
+  async dispatchConnector(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    handler: ConnectorHandler,
+    event: DomainEvent,
+    options?: { timeoutMs?: number },
+  ): Promise<void> {
+    // The platform half of a routed delivery (#574 phase 3). The same lifecycle gate as
+    // `drainDue` — a suspended scope's routed intent waits, it does not execute — and the
+    // same context build as the in-process path, so the handler cannot tell which host
+    // ran it. On a CP-less host `connectorContext` throws from the null control plane:
+    // fail closed, exactly the hole routing exists to avoid.
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    this.causedBy = event.id;
+    try {
+      await handler(
+        await this.connectorContext(tenantId, scopeId, options?.timeoutMs ?? 30_000),
+        event,
+      );
+    } finally {
+      this.causedBy = null;
+    }
   }
 
   async executorDeadLetters(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDeadLetter[]> {
@@ -2039,10 +2096,14 @@ export class CloudflareScopeHost implements ScopeHost {
           requiredKey,
           systemModuleId,
         );
-        await this.drainExecutors(tenantId, scopeId);
+        const drained = await this.drainExecutors(tenantId, scopeId);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).
-        if (envelope.platformRequests > 0) options?.onPlatformRequests?.(envelope.platformRequests);
+        // Routed connector deliveries (#574 phase 3) count too: the inline drain just
+        // turned this operation's event into a `connector:<provider>` intent, and the
+        // kick is what collapses its dispatch latency from sweep-cadence to seconds.
+        const enqueued = envelope.platformRequests + (drained.routedToPlatform ?? 0);
+        if (enqueued > 0) options?.onPlatformRequests?.(enqueued);
         return envelope.result as O;
       },
     };

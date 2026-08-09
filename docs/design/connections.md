@@ -352,6 +352,14 @@ Coordinator/host code, not the ScopeDO — already the stated intent
 ([scope-do.ts:391](../../packages/adapter-cloudflare/src/scope-do.ts): *"Executors run on the
 COORDINATOR, not here"*). Module code remains unable to `fetch` at all.
 
+> **Landed (#574 phase 3).** For a hosted CP-less vertical "the coordinator" is the
+> PLATFORM's coordinator: the vertical's host cannot build a `ConnectorContext` (no
+> directory, no secrets, no sanctioned egress), so it routes each connector delivery as
+> a `connector:<provider>` platform intent — enqueued and journaled atomically in the
+> scope's own DO — and the control plane's drain executes the same handler via
+> `host.dispatchConnector`, writing back over the §"write-back" seam. Self-host keeps
+> the in-process path; the registration is identical in both.
+
 ---
 
 ## 5. Ingress — the return path

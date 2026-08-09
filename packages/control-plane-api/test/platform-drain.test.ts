@@ -20,6 +20,7 @@ import {
   archiveScopeHandler,
   provisionTenantHandler,
   setEntitlementsHandler,
+  connectorDispatchHandler,
   type PlatformRequestHandler,
   ControlPlaneError,
   VerticalClient,
@@ -148,6 +149,97 @@ describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
     expect(report.pending).toBe(1);
     expect(settled[0]!.status).toBe('pending');
     expect(failures).toEqual([]);
+  });
+});
+
+describe('connectorDispatchHandler — executes a routed connector delivery (#574 phase 3)', () => {
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const ctx = { tenantId: t, scopeId: s, vertical: 'meridian' };
+
+  /** A kernel-stamped event as the routing host embeds it — JSON-shaped, parsed at drain. */
+  const routedEvent = (over: Record<string, unknown> = {}) => ({
+    id: ulid(),
+    type: 'protocol.signatures-requested',
+    schemaVersion: 1,
+    occurredAt: new Date().toISOString(),
+    tenantId: t,
+    scopeId: s,
+    actor: { system: 'protocol' },
+    entity: { entityType: 'protocol', entityId: '01JPROTO000000000000000000' },
+    piiClass: 'none',
+    payload: { instanceId: 'i1' },
+    ...over,
+  });
+
+  /** A fake host recording `dispatchConnector` calls; `boom` makes it throw instead. */
+  function recordingHost(boom?: string) {
+    const dispatched: Array<{ tenantId: string; scopeId: string; eventId: string }> = [];
+    const host = {
+      dispatchConnector: async (
+        tenant: string,
+        scope: string,
+        _handler: unknown,
+        event: { id: string },
+      ) => {
+        if (boom) throw new Error(boom);
+        dispatched.push({ tenantId: tenant, scopeId: scope, eventId: event.id });
+      },
+    } as unknown as Parameters<typeof connectorDispatchHandler>[0]['host'];
+    return { host, dispatched };
+  }
+  const connector = async () => undefined;
+
+  it('dispatches the embedded event through the host and settles done', async () => {
+    const event = routedEvent();
+    const req = intent('connector:scrive', { payload: { executorId: 'scrive', event } });
+    const { client, settled } = fakeTransport([req]);
+    const { host, dispatched } = recordingHost();
+
+    const report = await drainScopePlatformRequests(client, ctx, {
+      'connector:scrive': connectorDispatchHandler({ host, connector }),
+    });
+
+    expect(report).toEqual({ drained: 1, done: 1, failed: 0, pending: 0 });
+    expect(dispatched).toEqual([{ tenantId: t, scopeId: s, eventId: event.id }]);
+    expect(settled[0]).toEqual({
+      id: req.id,
+      status: 'done',
+      result: { eventId: event.id },
+      lastError: null,
+    });
+  });
+
+  it('refuses an event whose kernel stamps disagree with the drained scope — terminal, no dispatch', async () => {
+    const forged = routedEvent({ tenantId: tenantId.parse(ulid()) });
+    const req = intent('connector:scrive', { payload: { executorId: 'scrive', event: forged } });
+    const { client, settled } = fakeTransport([req]);
+    const { host, dispatched } = recordingHost();
+
+    const report = await drainScopePlatformRequests(client, ctx, {
+      'connector:scrive': connectorDispatchHandler({ host, connector }),
+    });
+
+    expect(report.failed).toBe(1);
+    expect(dispatched).toEqual([]);
+    expect(settled[0]!.status).toBe('failed');
+    expect(settled[0]!.lastError).toMatch(/not the drained scope/);
+  });
+
+  it('a throwing dispatch (provider down, no live connection yet) settles pending and retries', async () => {
+    const req = intent('connector:scrive', {
+      payload: { executorId: 'scrive', event: routedEvent() },
+    });
+    const { client, settled } = fakeTransport([req]);
+    const { host } = recordingHost("no live 'scrive' connection for tenant");
+
+    const report = await drainScopePlatformRequests(client, ctx, {
+      'connector:scrive': connectorDispatchHandler({ host, connector }),
+    });
+
+    expect(report.pending).toBe(1);
+    expect(settled[0]!.status).toBe('pending');
+    expect(settled[0]!.lastError).toMatch(/no live 'scrive' connection/);
   });
 });
 

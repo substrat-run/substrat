@@ -1282,6 +1282,50 @@ export function defineScopeDO(
       );
     }
 
+    /**
+     * Turn one connector delivery into a `connector:<provider>` platform intent (#574
+     * phase 3) — the CP-less host's substitute for running the handler it cannot run.
+     * One verb, not two, so the intent insert and the delivery journal commit together:
+     * everything here is synchronous SQL in a single RPC, so a crash leaves either both
+     * writes or neither, never an intent without its journal row (which would re-route
+     * the event on the next drain). Backpressure throws BEFORE any write — the caller
+     * records a failed attempt and the delivery retries on its own backoff, exactly as
+     * a throwing handler would.
+     */
+    routeExecutorEventToPlatform(
+      eventId: string,
+      deliveryId: string,
+      kind: string,
+      payload: string,
+      requestedBy: string,
+    ): PlatformRequestId {
+      const pending = Number(
+        (
+          this.sql
+            .exec(`SELECT COUNT(*) AS c FROM _substrat_platform_requests WHERE status = 'pending'`)
+            .toArray()[0] as { c: number }
+        ).c,
+      );
+      if (pending >= MAX_PENDING_PLATFORM_REQUESTS) {
+        throw new Error(
+          `too many pending platform requests (${pending}); the delivery retries once some have drained`,
+        );
+      }
+      const id = platformRequestId.parse(ulid());
+      this.sql.exec(
+        `INSERT INTO _substrat_platform_requests
+           (id, kind, payload, requested_by, status, attempts, requested_at)
+         VALUES (?, ?, ?, ?, 'pending', 0, ?)`,
+        id,
+        kind,
+        payload,
+        requestedBy,
+        instant.parse(new Date().toISOString()),
+      );
+      this.recordExecutorAttempt(eventId, deliveryId, null, null);
+      return id;
+    }
+
     /** Executor deliveries that exhausted their attempts. */
     executorDeadLetters(): {
       eventId: string;
