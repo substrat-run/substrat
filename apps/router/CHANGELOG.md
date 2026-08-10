@@ -1,5 +1,13 @@
 # @substrat-run/router
 
+## 0.1.43
+
+### Patch Changes
+
+- Updated dependencies [c9911ea]
+  - @substrat-run/contracts@0.57.0
+  - @substrat-run/adapter-cloudflare@0.57.0
+
 ## 0.1.42
 
 ### Patch Changes
