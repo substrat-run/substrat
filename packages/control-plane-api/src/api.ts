@@ -1545,6 +1545,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // the vertical must never even be asked to wipe a primary scope — and re-checked
   // below the seam by deleteSnapshot, which also wipes the co-located storage,
   // removes hostnames + the directory row, and writes the audit entry.
+  /**
+   * Wipe a scope's co-located bytes via the vertical's `/internal/delete-scope`,
+   * tolerating the ONE refusal that must never pin a directory row forever: a script
+   * that never implemented the verb (answers 501 — the standalone-app shape; the
+   * retired auth-server lineage is the canonical case). Those bytes are unreachable
+   * through every platform verb — export and delete alike — so they stay in the
+   * script's own storage and die with the script at orphan cleanup (#248): the same
+   * stranded-not-deleted posture as rebind's `abandonData`. Anything else (a real
+   * 5xx, a timeout) still aborts — an implemented wipe that failed is a retry, not a
+   * shrug. Returns true when the storage was stranded.
+   */
+  const deleteScopeStorageOrStrand = async (
+    vertical: { deleteScope(input: { scopeId: ScopeId }): Promise<void> } | null | undefined,
+    scopeId: ScopeId,
+  ): Promise<boolean> => {
+    if (!vertical) return false;
+    try {
+      await vertical.deleteScope({ scopeId });
+      return false;
+    } catch (e) {
+      if (e instanceof ControlPlaneError && e.status === 501) return true;
+      throw e;
+    }
+  };
+
   app.delete('/tenants/:tenantId/scopes/:scopeId', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -1563,9 +1588,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // storage-before-row ordering deleteSnapshot itself keeps, so a crash
       // between the two converges on retry.
       const vertical = await verticalForScope(c, scope);
-      if (vertical) await vertical.deleteScope({ scopeId });
+      const storageStranded = await deleteScopeStorageOrStrand(vertical, scopeId);
       await options.host.deleteSnapshot(actor, tenantId, scopeId);
-      return c.json({ deleted: scopeId });
+      return c.json({ deleted: scopeId, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);
@@ -1842,12 +1867,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     try {
       const vertical = await verticalForScope(c, scope);
-      if (vertical) await vertical.deleteScope({ scopeId });
+      // By this point the backup contract has resolved (a copy landed, or the caller
+      // explicitly declined one), so stranding is a bookkeeping fact, not data loss.
+      const storageStranded = await deleteScopeStorageOrStrand(vertical, scopeId);
       await admin.reapScope(actor, tenantId, scopeId, {
         ...(backup ? { backupRef: backupRefOf(backup) } : {}),
       });
       const reaped = await admin.getScopeRecord(actor, tenantId, scopeId);
-      return c.json({ ...reaped, backup });
+      return c.json({ ...reaped, backup, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);
