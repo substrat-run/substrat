@@ -112,9 +112,16 @@ function writeNav(view: ViewKey, detail?: string): void {
   const p = new URLSearchParams(window.location.search);
   p.delete('view');
   const search = p.toString();
-  // replaceState, not push: a refresh should restore state without every nav
-  // click stacking a history entry. Back/forward still works via popstate below.
-  window.history.replaceState(null, '', `${path}${search ? `?${search}` : ''}`);
+  const url = `${path}${search ? `?${search}` : ''}`;
+  // Push when the path actually changes so Back returns to the previous view
+  // instead of leaving the console. Replace when it doesn't: the initial mount
+  // (normalizing a legacy `?view=` link) and the reflect that runs after a
+  // popstate — pushing there would re-stack the entry Back just popped.
+  if (window.location.pathname === path) {
+    window.history.replaceState(null, '', url);
+  } else {
+    window.history.pushState(null, '', url);
+  }
 }
 
 // Co-located quick path: a build-time dev actor (set by `pnpm dev`) means the
