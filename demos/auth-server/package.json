@@ -7,6 +7,8 @@
   "substrat": {
     "slug": "auth-server",
     "name": "Auth Server",
+    "permissions": "src/permissions.ts",
+    "tenant": "substrat-9yjbbn",
     "provides": [
       "oidc-issuer"
     ],
