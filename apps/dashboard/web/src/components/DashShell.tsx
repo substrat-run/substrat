@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Ic, StrataGlyph, type IconName } from '../lib/icons';
+import { teamPath } from '../lib/router';
 import { initials } from '../lib/format';
 import type { Team } from '../lib/api';
 
@@ -38,7 +39,7 @@ function NavRow({ item, active, onNav }: { item: NavItem; active: boolean; onNav
   const [hover, setHover] = useState(false);
   return (
     <a
-      href={`/${item.key}`}
+      href={teamPath(`/${item.key}`)}
       onClick={(e) => {
         e.preventDefault();
         onNav(item.key);

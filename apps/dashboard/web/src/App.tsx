@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input, useAutoRefresh } from '@substrat-run/ui';
 import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
-import { navigate as go } from './lib/router';
+import { navigate as go, setTeamSlug } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
 import { CommandPalette } from './components/CommandPalette';
@@ -26,21 +26,32 @@ interface Route {
   app?: string;
   tab?: string;
   vertical?: string;
+  /** The team slug the URL is scoped to (its first segment); absent on legacy slug-less paths. */
+  team?: string;
 }
 
+const SECTIONS: NavKey[] = ['overview', 'apps', 'verticals', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
+
 function parsePath(): Route {
-  const parts = window.location.pathname.split('/').filter(Boolean);
-  if (parts[0] === 'apps' && parts[1] === 'new') return { section: 'new' };
+  let parts = window.location.pathname.split('/').filter(Boolean);
+  // The first segment is the team slug (`/acme-x1y2z3/apps`) unless it's a section
+  // (a legacy slug-less path) or a reserved word. Real slugs always carry a ULID
+  // tail (worker's `teamSlug()`), so they can never shadow a section name.
+  let team: string | undefined;
+  if (parts[0] && !SECTIONS.includes(parts[0] as NavKey) && !['invite', 'deployments', 'api'].includes(parts[0])) {
+    team = parts[0];
+    parts = parts.slice(1);
+  }
+  if (parts[0] === 'apps' && parts[1] === 'new') return { section: 'new', team };
   // The tab may carry a sub-section (settings/environment); AppDetail parses it.
-  if (parts[0] === 'apps' && parts[1]) return { section: 'apps', app: parts[1], tab: parts.slice(2).join('/') || 'overview' };
+  if (parts[0] === 'apps' && parts[1]) return { section: 'apps', app: parts[1], tab: parts.slice(2).join('/') || 'overview', team };
   // A vertical's slug (acme-co/helpdesk) carries a slash, so it's URI-encoded into the
   // single segment — the `/` stays as `%2F` in the pathname, so it never splits across parts.
-  if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: decodeURIComponent(parts[1]) };
+  if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: decodeURIComponent(parts[1]), team };
   // Legacy alias: the page was called "Deployments" before the apps/verticals split.
-  if (parts[0] === 'deployments') return { section: 'verticals' };
-  const known: NavKey[] = ['overview', 'apps', 'verticals', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
-  const section = (known.includes(parts[0] as NavKey) ? parts[0] : 'overview') as NavKey;
-  return { section };
+  if (parts[0] === 'deployments') return { section: 'verticals', team };
+  const section = (SECTIONS.includes(parts[0] as NavKey) ? parts[0] : 'overview') as NavKey;
+  return { section, team };
 }
 
 /** Fallback org label from the signed-in email domain (acme.com → "Acme"). */
@@ -217,12 +228,27 @@ export function App() {
       //    no local sign-in page). The one exception is a failed login round-trip
       //    (`?error=auth`), where redirecting again would loop — that renders the
       //    retry card instead.
-      const m = await api.me();
+      let m = await api.me();
       if (!live) return;
       if (m === null && new URLSearchParams(window.location.search).get('error') !== 'auth') {
         const here = `${window.location.pathname}${window.location.search}`;
         signIn(here !== '/' ? { returnTo: here } : {});
         return; // `me` stays undefined → interstitial while the browser navigates
+      }
+      // A team-prefixed deep link (`/other-team/apps`) may name a DIFFERENT team than
+      // the cookie-pinned one — switch BEFORE the fetch burst below so everything
+      // loads scoped to the team the URL asks for. An unknown slug is left alone
+      // here; the normalize effect rewrites it onto the pinned team.
+      if (m && !needsOnboarding(m)) {
+        const session = m;
+        const urlTeam = parsePath().team;
+        const current = session.teams.find((t) => t.id === session.currentTeamId);
+        const target = urlTeam && urlTeam !== current?.slug ? session.teams.find((t) => t.slug === urlTeam) : undefined;
+        if (target) {
+          await api.switchTeam(target.id);
+          m = (await api.me()) ?? m;
+          if (!live) return;
+        }
       }
       setMe(m);
       // A teamless login (onboarding) has nothing to load yet — skip the fetches.
@@ -248,6 +274,31 @@ export function App() {
       live = false;
     };
   }, []);
+
+  // Team-in-URL bookkeeping: pin the current team's slug so `navigate()` prefixes
+  // every path, rewrite legacy slug-less paths (`/apps` → `/<team>/apps`) and
+  // unknown slugs onto the pinned team, and honor a Back/Forward landing on
+  // ANOTHER team's history entry by re-scoping onto that team (full reload — the
+  // whole portal re-scopes server-side, same as the switcher).
+  useEffect(() => {
+    if (!me || needsOnboarding(me) || window.location.pathname.startsWith('/invite/')) return;
+    const slug = me.teams.find((t) => t.id === me.currentTeamId)?.slug;
+    if (!slug) return;
+    setTeamSlug(slug);
+    if (route.team === slug) return;
+    const target = route.team ? me.teams.find((t) => t.slug === route.team) : undefined;
+    if (target) {
+      // First loads switch in the session effect above (before data fetches); this
+      // branch covers in-page history traversal across teams.
+      if (DEV_MOCK) setMe({ ...me, currentTeamId: target.id, tenant: target.id });
+      else void api.switchTeam(target.id).then(() => window.location.reload()).catch(() => {});
+      return;
+    }
+    const parts = window.location.pathname.split('/').filter(Boolean);
+    if (route.team) parts.shift(); // an unknown slug — swap it for the pinned team's
+    window.history.replaceState(null, '', `/${[slug, ...parts].join('/')}${window.location.search}`);
+    setRoute(parsePath());
+  }, [me, route.team]);
 
   useEffect(() => {
     if (!toast) return;
@@ -443,15 +494,17 @@ export function App() {
   const switchTeam = useCallback(
     async (teamId: string) => {
       if (!me || needsOnboarding(me) || teamId === me.currentTeamId) return;
+      const slug = me.teams.find((t) => t.id === teamId)?.slug;
       if (DEV_MOCK) {
+        setTeamSlug(slug ?? null);
         setMe((m) => (m ? { ...m, currentTeamId: teamId as Me['currentTeamId'], tenant: teamId as Me['tenant'] } : m));
         go('/overview');
         return;
       }
       try {
         await api.switchTeam(teamId);
-        // A full navigation to /overview re-scopes the whole portal on the new team.
-        window.location.href = '/overview';
+        // A full navigation onto the new team's URL re-scopes the whole portal.
+        window.location.href = slug ? `/${slug}/overview` : '/overview';
       } catch (e) {
         setToast({ status: 'danger', title: 'Could not switch team', detail: e instanceof Error ? e.message : String(e) });
       }
@@ -476,12 +529,15 @@ export function App() {
           });
           setNewTeamOpen(false);
           setNewTeamName('');
+          setTeamSlug(teamName.toLowerCase());
           go('/overview');
           setToast({ status: 'success', title: `${teamName} created`, detail: 'You’re now in your new team.' });
           return;
         }
         await api.createTeam(teamName);
-        window.location.reload();
+        // Land on the ROOT, not a reload of the old team's URL: the fresh load pins
+        // the new team and the normalize effect prefixes its slug.
+        window.location.href = '/';
       } catch (e) {
         setToast({ status: 'danger', title: 'Could not create team', detail: e instanceof Error ? e.message : String(e) });
       } finally {
