@@ -1,5 +1,35 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.58.0
+
+### Minor Changes
+
+- daab0d5: feat(control-plane): the connection relay — a tenant admin connects a provider from the vertical's own UI
+
+  `POST /internal/connections/upsert` (connections.md §3.5.2), mirroring the email relay
+  (#303): a hosted CP-less vertical permission-checks the act with its own `ctx.check`,
+  returns the pasted credential as a harness-side effect, and the harness POSTs it to the
+  control plane, which re-derives the vertical from its own scope record (the shared
+  `PLATFORM_SECRET` never says which vertical), seals the secret with the platform's
+  `SecretBox`, and applies any requested `grantToConnection` grants on the calling scope.
+  Upserts are keyed (tenant, vertical, provider, externalAccountRef): a live connection is
+  rotated **in place**, so the connection id — and every grant tuple keyed on it — survives
+  rotation, making credential rotation self-serve. Attribution follows §3.5.1 on both paths:
+  `createdBy` on create, and a new additive `opts.rotatedBy` on
+  `HostAdmin.updateConnectionSecret` that lands in the audit metadata on rotate — the tenant
+  principal, never laundered into the platform actor. New contracts:
+  `connectionRelayRequest` / `connectionRelayResult`; new export
+  `relayConnectionUpsert` from `@substrat-run/control-plane-api`.
+
+- 778f48a: Connection grants now reach scopes provisioned after the grant (#592). `grantToConnection` records each grant directory-side alongside the enforcement tuple (`_substrat_connection_grants`, tombstoned by `revokeConnection`'s cascade, readable via `HostAdmin.listConnectionGrants` and `GET /tenants/:tenantId/connection-grants`), and provision/reconcile gather those rows and deliver them per scope — the same authoritative channel as entitlements (#310) and identity links (#406) — so the connector return path works on every install without a human replaying grants, and a revoked connection's grants stop being delivered.
+
+### Patch Changes
+
+- Updated dependencies [daab0d5]
+- Updated dependencies [778f48a]
+  - @substrat-run/contracts@0.58.0
+  - @substrat-run/kernel@0.58.0
+
 ## 0.57.1
 
 ### Patch Changes
@@ -2379,7 +2409,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
