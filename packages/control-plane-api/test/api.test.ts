@@ -726,6 +726,63 @@ describe('control-plane API', () => {
     expect((await delegated.request(`/tenants/${t1}/scopes/${snap.id}`, { headers: auth })).status).toBe(404);
   });
 
+  it('reaps past a script that never implemented delete-scope — storage stranded, row tombstoned', async () => {
+    // The retired-standalone shape (the old auth-server lineage): the script answers 501
+    // for /internal/delete-scope, so its bytes are unreachable through every platform
+    // verb. With the backup contract resolved (backup: false — the explicit
+    // unrecoverable-wipe consent), the reap must strand the storage on the script (it
+    // dies with the script at orphan cleanup, #248) rather than pin the directory row
+    // as archived forever.
+    // Own tenant: the archive/reap audit rows here must not leak into t1's
+    // admin-log filter assertions below.
+    const tL = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tL, slug: 'legacy-co', name: 'Legacy Co' });
+    const sL = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tL, scopeId: sL, vertical: 'legacy-vert' });
+    await host.admin.activateScope(staff, tL, sL);
+    await host.admin.archiveScope(staff, tL, sL);
+    const legacyVertical = {
+      deleteScope: async () => {
+        throw new ControlPlaneError(501, 'auth-server does not implement POST /internal/delete-scope');
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'legacy-vert': legacyVertical },
+    });
+    const djson = (path: string, method: string, body?: unknown) =>
+      delegated.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    const res = await djson(`/tenants/${tL}/scopes/${sL}/reap`, 'POST', { backup: false });
+    expect(res.status).toBe(200);
+    const reaped = (await res.json()) as { status: string; storageStranded?: boolean };
+    expect(reaped.status).toBe('reaped');
+    expect(reaped.storageStranded).toBe(true);
+
+    // A REAL failure from an implemented wipe still aborts — 501 is the only shrug.
+    const sB = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tL, scopeId: sB, vertical: 'broken-vert' });
+    await host.admin.activateScope(staff, tL, sB);
+    await host.admin.archiveScope(staff, tL, sB);
+    const brokenVertical = {
+      deleteScope: async () => {
+        throw new ControlPlaneError(500, 'wipe crashed mid-flight');
+      },
+    } as unknown as VerticalClient;
+    const delegated2 = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'broken-vert': brokenVertical },
+    });
+    const res2 = await delegated2.request(`/tenants/${tL}/scopes/${sB}/reap`, {
+      method: 'POST', headers: auth, body: JSON.stringify({ backup: false }),
+    });
+    expect(res2.status).toBe(500);
+    const still = (await delegated2.request(`/tenants/${tL}/scopes/${sB}`, { headers: auth }).then((r) => r.json())) as { status: string };
+    expect(still.status).toBe('archived');
+  });
+
   it('bind-version with snapshot: true forks through the vertical only across a migration change', async () => {
     await host.admin.registerVertical(staff, { slug: 'snap-vert', name: 'Snap Vert', source: 'builtin' });
     const pub = async (version: string, mig: string) => {
