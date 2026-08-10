@@ -38,7 +38,7 @@ import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromC
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
-import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi, upsertPrComment } from './github.js';
+import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
 import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
 import { b64url, b64urlToBytes } from './b64.js';
@@ -2727,7 +2727,22 @@ const setupCiBody = z.object({
   branch: z.string().min(1).max(200),
   /** Which connected GitHub account (namespace) holds the repo — omitted, the default. */
   account: z.string().min(1).optional(),
+  /** The vertical's directory inside the repo (monorepo) — omitted, the repo root. */
+  path: z.string().min(1).max(300).optional(),
 });
+
+/**
+ * Normalize a monorepo package directory, or 400 — the generator throws on traversal and
+ * absolute paths (`normalizeWorkflowDir`), and a caller's typo should come back as a
+ * message naming the input, not a 500.
+ */
+function packageDirOrThrow(path: string | undefined): string | undefined {
+  try {
+    return normalizeWorkflowDir(path);
+  } catch (e) {
+    throw new HTTPException(400, { message: e instanceof Error ? e.message : String(e) });
+  }
+}
 
 /**
  * One-click deploy setup on an imported repo (the git-import happy path): mint a
@@ -2759,13 +2774,16 @@ app.post('/api/github/setup-ci', async (c) => {
   }
   const { token, tenantSlug } = await cp.mintPushToken();
 
-  const slug = slugify(body.repo.split('/').pop() ?? 'app');
+  // A monorepo package deploys under ITS name, not the repo's — `acme/tools` with
+  // path `apps/helpdesk` registers `helpdesk`, exactly what an in-package push claims.
+  const path = packageDirOrThrow(body.path);
+  const slug = slugify((path ? path.split('/').pop() : undefined) ?? body.repo.split('/').pop() ?? 'app');
   const workflowPath = '.github/workflows/substrat-deploy.yml';
   const result = await setupRepoCi(cfg, installationId, {
     repoFullName: body.repo,
     branch: body.branch,
     workflowPath,
-    workflowContent: deployWorkflowYaml({ branch: body.branch, slug, cpUrl }),
+    workflowContent: deployWorkflowYaml({ branch: body.branch, slug, cpUrl, ...(path ? { path } : {}) }),
     secretName: 'SUBSTRAT_SERVICE_TOKEN',
     secretValue: token,
     seal: sealForGithub,
@@ -2819,10 +2837,16 @@ app.get('/api/github/workflow-preview', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const repo = c.req.query('repo') ?? 'owner/app';
   const branch = c.req.query('branch') ?? 'main';
-  const slug = slugify(repo.split('/').pop() ?? 'app');
+  const path = packageDirOrThrow(c.req.query('path') || undefined);
+  const slug = slugify((path ? path.split('/').pop() : undefined) ?? repo.split('/').pop() ?? 'app');
   return c.json({
     workflowPath: '.github/workflows/substrat-deploy.yml',
-    workflow: deployWorkflowYaml({ branch, slug, cpUrl: c.env.CP_PUBLIC_URL ?? 'https://console.substrat.net/api' }),
+    workflow: deployWorkflowYaml({
+      branch,
+      slug,
+      cpUrl: c.env.CP_PUBLIC_URL ?? 'https://console.substrat.net/api',
+      ...(path ? { path } : {}),
+    }),
   });
 });
 

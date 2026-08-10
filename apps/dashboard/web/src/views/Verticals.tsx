@@ -837,6 +837,10 @@ function GitImportCard({ git, error, onPick, onSelectAccount }: { git: GitReposR
 function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch: string; account?: string }; onBack: () => void; onDone: () => void }) {
   const [branches, setBranches] = useState<string[] | null>(null);
   const [branch, setBranch] = useState(repo.branch);
+  // Monorepo: the vertical's directory inside the repo. Empty = the repo root (the common
+  // case). Trimmed of the decorations people paste (`./`, a trailing `/`) before sending.
+  const [path, setPath] = useState('');
+  const packageDir = path.trim().replace(/^\.\//, '').replace(/\/+$/, '') || undefined;
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ workflowPath: string; workflowUpdated: boolean; vertical: string } | null>(null);
   const [needsPermissions, setNeedsPermissions] = useState(false);
@@ -863,7 +867,7 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
     setBusy(true);
     setError(undefined);
     try {
-      const result = await api.setupCi(repo.fullName, branch, repo.account);
+      const result = await api.setupCi(repo.fullName, branch, repo.account, packageDir);
       if (result.ok) setDone(result);
       else setNeedsPermissions(true);
     } catch (e) {
@@ -926,6 +930,15 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
             style={{ width: 260 }}
           />
 
+          <Input
+            label="Directory in the repo (optional)"
+            hint="For a monorepo: the app's package directory, e.g. apps/helpdesk. It names the deployed app and only changes under it trigger a deploy. Leave empty when the app is the repo root."
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            placeholder="apps/helpdesk"
+            style={{ width: 260 }}
+          />
+
           {needsPermissions && (
             <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
               The GitHub App is missing write access on this repository (an older installation). Re-approve the App's updated
@@ -936,7 +949,7 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
           )}
           {error && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
 
-          {manual && <ManualCiSetup repo={repo.fullName} branch={branch} />}
+          {manual && <ManualCiSetup repo={repo.fullName} branch={branch} path={packageDir} />}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
             <Button onClick={setup} disabled={busy || branches === null}>{busy ? 'Setting up…' : 'Set up deployment'}</Button>
@@ -955,18 +968,18 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
 }
 
 /** The copy-paste fallback: the same workflow the one-click path would commit. */
-function ManualCiSetup({ repo, branch }: { repo: string; branch: string }) {
+function ManualCiSetup({ repo, branch, path }: { repo: string; branch: string; path?: string }) {
   const [preview, setPreview] = useState<WorkflowPreview | null>(null);
   useEffect(() => {
     let live = true;
     api
-      .workflowPreview(repo, branch)
+      .workflowPreview(repo, branch, path)
       .then((p) => live && setPreview(p))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [repo, branch]);
+  }, [repo, branch, path]);
 
   if (!preview) return <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading workflow…</div>;
   return (

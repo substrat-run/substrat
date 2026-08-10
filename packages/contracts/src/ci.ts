@@ -120,6 +120,32 @@ export interface DeployWorkflowOptions {
   cpUrl: string;
   /** Defaults to `trunk`. */
   release?: ReleaseMode;
+  /**
+   * The vertical's directory INSIDE the repo, for a monorepo whose package is not the
+   * repo root (e.g. `demos/auth-server`). Every push/preview runs against this directory,
+   * the version gates read ITS package.json, and the triggers gain a `paths:` filter so a
+   * merge that never touched the package does not release it. Install still runs at the
+   * repo root — a workspace repo's lockfile lives there. Omitted = the repo root, exactly
+   * the file this generator always produced.
+   */
+  path?: string;
+}
+
+/**
+ * Normalize a package directory to the repo-relative form the workflow embeds: no leading
+ * `./`, no trailing `/`. Root spellings (``, `.`, `./`) collapse to undefined so callers
+ * cannot generate a `push ./` that means the same thing as the pathless file but diffs
+ * against it. Traversal is refused here — a generator shared by three writers must not
+ * rely on every caller validating.
+ */
+export function normalizeWorkflowDir(path: string | undefined): string | undefined {
+  if (path === undefined) return undefined;
+  const trimmed = path.replace(/^\.\//, '').replace(/\/+$/, '');
+  if (trimmed === '' || trimmed === '.') return undefined;
+  if (trimmed.startsWith('/') || trimmed.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) {
+    throw new Error(`not a repo-relative package directory: '${path}'`);
+  }
+  return trimmed;
 }
 
 /** Render a comment body as a single-quoted `printf` format string (literal `\n`, `%s` holes). */
@@ -147,6 +173,10 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
   const { branch, slug, cpUrl } = opts;
   const release = opts.release ?? 'trunk';
   const cli = 'npx @substrat-run/cli';
+  // The package directory: what push/preview build, whose package.json owns the version.
+  const path = normalizeWorkflowDir(opts.path);
+  const dir = path ?? '.';
+  const pkgRef = path ? `./${path}/package.json` : './package.json';
 
   // The install block repeats across jobs (self-contained file, see above). `fetch-depth: 2`
   // is what lets the changesets release gate diff package.json against the previous commit.
@@ -182,19 +212,19 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
 ${cpEnv}
         run: |
           set -euo pipefail
-          CUR=$(node -p "require('./package.json').version")
-          PREV=$(git show HEAD^:package.json 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || echo '')
+          CUR=$(node -p "require('${pkgRef}').version")
+          PREV=$(git show HEAD^:${path ? `${path}/package.json` : 'package.json'} 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || echo '')
           if [ "$CUR" = "$PREV" ]; then
             echo "package.json version is still $CUR — this merge landed a changeset, not a release. Skipping prod."
             exit 0
           fi
           echo "releasing $CUR (was \${PREV:-none})"
-          ${cli} push . --slug ${slug} --version "$CUR" --promote prod`
+          ${cli} push ${dir} --slug ${slug} --version "$CUR" --promote prod`
     : `      - name: Release to prod
 ${cpEnv}
         run: |
           set -euo pipefail
-          ${cli} push . --slug ${slug} --promote prod`;
+          ${cli} push ${dir} --slug ${slug} --promote prod`;
 
   // --- the "tracks main" test environment ---------------------------------------------
   //
@@ -209,8 +239,8 @@ ${cpEnv}
 ${cpEnv}
         run: |
           set -euo pipefail
-          BASE=$(node -p "require('./package.json').version")
-          ${cli} push . --slug ${slug} --version "$BASE-test.\${{ github.run_number }}" | tee push.out
+          BASE=$(node -p "require('${pkgRef}').version")
+          ${cli} push ${dir} --slug ${slug} --version "$BASE-test.\${{ github.run_number }}" | tee push.out
           # '|| true' so an unmatched grep does not trip pipefail before the message below —
           # "could not read the pushed version id" beats a bare exit 1 from grep.
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
@@ -225,7 +255,7 @@ ${cpEnv}
 ${cpEnv}
         run: |
           set -euo pipefail
-          ${cli} preview create . --slug ${slug} --tag pr-\${{ github.event.number }} | tee preview.out
+          ${cli} preview create ${dir} --slug ${slug} --tag pr-\${{ github.event.number }} | tee preview.out
           # Take the URL from the CLI success line (the ✓ marker) only — the push it runs
           # first also prints an https:// *deploy endpoint* we must never mistake for a preview.
           grep -F '✓ preview' preview.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > preview.url || true
@@ -237,7 +267,7 @@ ${cpEnv}
           # A FRESH scope, bound once and never rebound, so this URL is frozen to this build
           # forever. Clean-room (--empty) rather than a fork: a throwaway per build should not
           # copy prod data every push. Short TTL — the sticky preview is the one that lives.
-          ${cli} preview create . --slug ${slug} \\
+          ${cli} preview create ${dir} --slug ${slug} \\
             --tag pr-\${{ github.event.number }}-\${{ github.run_id }} --empty --ttl 24h | tee build.out
           grep -F '✓ preview' build.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > build.url || true`;
 
@@ -284,6 +314,23 @@ ${cpEnv}
 ${cpEnv}
         run: ${cli} preview delete --slug ${slug} --tag pr-\${{ github.event.number }}`;
 
+  // A nested package only deploys when a change could have affected it. The filter is
+  // deliberately editable prose, not policy: a workspace package that consumes SIBLING
+  // packages should add their paths, or delete the filter to deploy on every merge.
+  const pathsFilter = path
+    ? `
+    # Only changes that can affect ${path} deploy it. If this package depends on other
+    # directories of the repo (workspace packages, shared config), add their paths here —
+    # or remove the filter to build on every merge.
+    paths:
+      - '${path}/**'
+      - '.github/workflows/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'yarn.lock'
+      - 'package-lock.json'`
+    : '';
+
   const releaseNote = release === 'changesets'
     ? `    # Release train: the version lives in package.json and only a version PR moves it, so a
     # merge releases ONLY when that version changed. Every merge still updates the test env.`
@@ -294,7 +341,11 @@ ${cpEnv}
 
 # Generated by Substrat (substrat init --ci github). The workflow this encodes — one prod
 # channel, previews as the only non-prod environment — is documented at
-# https://substrat.net/guide/environments-and-previews
+# https://substrat.net/guide/environments-and-previews${
+    path
+      ? `\n#\n# Monorepo: this deploys the '${slug}' vertical from ${path}/ (dependencies still\n# install at the repo root — the workspace lockfile lives there).`
+      : ''
+  }
 #
 # Optional repository variables (Settings → Secrets and variables → Actions → Variables):
 #   SUBSTRAT_TEST_SCOPE_ID      a long-lived scope rebound to every merge (the test env)
@@ -302,11 +353,11 @@ ${cpEnv}
 
 on:
   push:
-    branches: [${branch}]
+    branches: [${branch}]${pathsFilter}
   # Per-PR previews: open/update a PR → a preview instance running the PR's code against a
   # FORK of prod on its own URL; close the PR → it is reaped (the TTL is the GC backstop).
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened, closed]${pathsFilter}
 
 jobs:
   deploy:

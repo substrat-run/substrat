@@ -31,6 +31,12 @@ export interface InitCiOptions {
   force: boolean;
   /** Where to write, relative to `dir`. */
   path?: string;
+  /**
+   * The vertical's directory inside the repo (`--path`), for a monorepo whose package is
+   * not the repo root. Rendered into the workflow: pushes and previews build this
+   * directory, and the triggers only fire on changes that can affect it.
+   */
+  packageDir?: string;
 }
 
 export const DEFAULT_WORKFLOW_PATH = '.github/workflows/substrat-deploy.yml';
@@ -60,7 +66,13 @@ export function writeCiWorkflow(opts: InitCiOptions): InitCiResult {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(
     file,
-    deployWorkflowYaml({ branch: opts.branch, slug: opts.slug, cpUrl: opts.cpUrl, release: opts.release }),
+    deployWorkflowYaml({
+      branch: opts.branch,
+      slug: opts.slug,
+      cpUrl: opts.cpUrl,
+      release: opts.release,
+      ...(opts.packageDir ? { path: opts.packageDir } : {}),
+    }),
   );
   return { file, overwritten };
 }

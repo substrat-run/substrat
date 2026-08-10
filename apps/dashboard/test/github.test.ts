@@ -345,6 +345,37 @@ describe('GitHub App client', () => {
       }
     });
 
+    it('threads a monorepo package directory through every build and version gate', () => {
+      const base = { branch: 'main', slug: 'auth-server', cpUrl: 'https://console.example/api' };
+      const yaml = deployWorkflowYaml({ ...base, path: 'demos/auth-server' });
+      // Every push/preview builds the package directory, never the repo root…
+      expect(yaml).toContain('push demos/auth-server --slug auth-server --promote prod');
+      expect(yaml).toContain('preview create demos/auth-server --slug auth-server --tag pr-${{ github.event.number }}');
+      // …the version reads come from ITS package.json…
+      expect(yaml).toContain("require('./demos/auth-server/package.json').version");
+      // …and both triggers gain a paths filter so an unrelated merge does not deploy it.
+      expect(yaml).toContain("- 'demos/auth-server/**'");
+      // Install stays at the repo root: a workspace monorepo's lockfile lives there.
+      expect(yaml).toContain('if [ -f pnpm-lock.yaml ]');
+      // The changesets gate diffs the PACKAGE's manifest against the previous commit.
+      const cs = deployWorkflowYaml({ ...base, release: 'changesets' as const, path: 'demos/auth-server' });
+      expect(cs).toContain('git show HEAD^:demos/auth-server/package.json');
+      expect(cs).toContain('push demos/auth-server --slug auth-server --version "$CUR" --promote prod');
+    });
+
+    it('collapses root spellings of the package directory and refuses traversal', () => {
+      const base = { branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.example/api' };
+      // `.`/`./`/trailing-slash spellings must not produce a file that DIFFS against the
+      // pathless one — three writers regenerate this file and a spelling-only diff would
+      // read as a real change.
+      expect(deployWorkflowYaml({ ...base, path: './' })).toBe(deployWorkflowYaml(base));
+      expect(deployWorkflowYaml({ ...base, path: 'apps/x/' })).toBe(deployWorkflowYaml({ ...base, path: 'apps/x' }));
+      expect(deployWorkflowYaml({ ...base, path: './apps/x' })).toBe(deployWorkflowYaml({ ...base, path: 'apps/x' }));
+      for (const bad of ['../sibling', '/abs', 'a//b', 'a/./b', 'a/../b']) {
+        expect(() => deployWorkflowYaml({ ...base, path: bad })).toThrow(/repo-relative/);
+      }
+    });
+
     it('surfaces missing App write-permissions as needsPermissions, before any write', async () => {
       // A pre-widening installation: the secrets API 403s/404s. No workflow commit happens.
       const denied = await setupRepoCi(cfgFor(fakeCiGithub({ keyStatus: 404 }).fetchImpl), '987', input);
