@@ -252,6 +252,37 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
     expect(hooked).toBe(OWNER);
   });
 
+  it('provision and reconcile hand the delivered connection grants to the host (#592)', async () => {
+    const seen: unknown[] = [];
+    const host = fakeHost({
+      provisionScopeLocal: async (input) => {
+        seen.push(input.connectionGrants);
+      },
+    });
+    const grants = [{ connectionId: '01JZ0000000000000000CON001', permission: 'protocol:record-signature' }];
+    const provision = await appWith(host).request(
+      '/internal/provision',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER, connectionGrants: grants }),
+      },
+      ENV,
+    );
+    expect(provision.status).toBe(201);
+    const reconcile = await appWith(host, { resolveOwner: async () => OWNER as never }).request(
+      '/internal/reconcile',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, connectionGrants: grants }),
+      },
+      ENV,
+    );
+    expect(reconcile.status).toBe(200);
+    expect(seen).toEqual([grants, grants]);
+  });
+
   it('reconcile 501s when no resolveOwner is supplied', async () => {
     const res = await appWith(fakeHost()).request(
       '/internal/reconcile',

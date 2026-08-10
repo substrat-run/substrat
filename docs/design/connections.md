@@ -540,6 +540,12 @@ connection, written through `HostAdmin`, never touching a scope.
 2. Is the declared operation list on the connection (runtime, console-managed) or on the
    connector's registration (code, review-gated)? The permission-diff discipline argues for
    code; per-tenant reality argues for runtime. Probably both, intersected.
+   *The runtime half landed with [#592](https://github.com/substrat-run/substrat/issues/592):
+   `grantToConnection` records each grant directory-side (`listConnectionGrants`, tombstoned by
+   the revoke cascade), so "what may this connection invoke" is readable without walking scope
+   DOs — and provision/reconcile gather from those rows and deliver per scope, the same
+   authoritative channel as entitlements (#310) and identity links (#406), so a scope
+   provisioned after the grant holds the same tuples as one provisioned before it.*
 3. Does `protocol:record-signature` stay a permission key at all, or become "an operation only
    a connection may call"? Two mechanisms for one gate is worse than either.
 

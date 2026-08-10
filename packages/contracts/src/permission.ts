@@ -102,6 +102,47 @@ export const connectionGrant = z.object({
 });
 export type ConnectionGrant = z.infer<typeof connectionGrant>;
 
+/**
+ * A connection grant as the DIRECTORY records it (#592) — the durable, readable half
+ * of `grantToConnection`, written alongside the enforcement tuple. The tuple lives
+ * where it is checked (the scope's own store); this row is what the platform gathers
+ * FROM, so a scope provisioned after the grant receives the same grants as one
+ * provisioned before it, and so "what may this connection invoke" is answerable
+ * without walking every scope DO (connections.md §6.2.4). Tombstoned (never deleted)
+ * by `revokeConnection`'s cascade — a revoked row is evidence, not roster.
+ */
+export const connectionGrantRecord = z.object({
+  connectionId: z.string().min(1),
+  tenantId,
+  /** The connection's vertical, denormalized at grant time — the gather's filter key. */
+  vertical: z.string().min(1),
+  permission: permissionKey,
+  /** Null = tenant-wide: materialized per scope at provision/reconcile (a CP-less
+   *  scope cannot read tenant tuples, so per-scope delivery is the only shape). */
+  scopeId: scopeId.nullable(),
+  expiresAt: instant.nullable(),
+  grantedBy: platformActorId,
+  grantedAt: instant,
+  revokedAt: instant.nullable(),
+});
+export type ConnectionGrantRecord = z.infer<typeof connectionGrantRecord>;
+
+/**
+ * A connection grant as it travels INTO a deployment (#592) — delivered with
+ * provision/reconcile exactly as entitlements (#310) and identity links (#406) are,
+ * and projected as the scope-local `connection:<id>` tuple the permission checker
+ * reads. Already materialized to ONE scope, so it carries no node; the platform is
+ * the authoritative source (it gathers from the directory, never the caller's body),
+ * and only LIVE grants of LIVE connections are ever delivered — a revoked
+ * connection's grants are simply absent from the next delivery.
+ */
+export const projectedConnectionGrant = z.object({
+  connectionId: z.string().min(1),
+  permission: permissionKey,
+  expiresAt: instant.optional(),
+});
+export type ProjectedConnectionGrant = z.infer<typeof projectedConnectionGrant>;
+
 export const capabilityGrant = z.object({
   principalId,
   permission: permissionKey,

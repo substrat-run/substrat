@@ -94,6 +94,28 @@ describe('connector write-back (#574)', () => {
       expect(JSON.parse(String(q.rows[0]![0]))).toEqual({ connection: conn });
     });
 
+    it('delivers grants WITH provisioning (#592) — a scope provisioned after the grant invokes at once', async () => {
+      // The acceptance property: no `connectorGrantLocal` hand-write for this scope —
+      // the grant rides `provisionScopeLocal` exactly as entitlements/identity links do,
+      // so an install provisioned AFTER `grantToConnection` holds the return path too.
+      const s2 = scopeId.parse(ulid());
+      const host = hostFor();
+      await host.provisionScopeLocal({
+        tenantId: t,
+        scopeId: s2,
+        owner,
+        roles: [{ key: 'office-admin', permissions: [USE, READ], source: 'vertical' }],
+        ownerRoleKey: 'office-admin',
+        connectionGrants: [{ connectionId: conn, permission: USE }],
+      });
+      await host.connectorInvokeLocal(conn, t, s2, 'perm/authorized-emit', { permission: USE });
+      const q = await host.introspectScopeQuery(s2, {
+        sql: "SELECT actor FROM _substrat_outbox WHERE type = 'perm.acted'",
+      });
+      expect(q.rows).toHaveLength(1);
+      expect(JSON.parse(String(q.rows[0]![0]))).toEqual({ connection: conn });
+    });
+
     it('an expired tuple enforces nothing (fail closed on expiry)', async () => {
       const expiredConn = connectionIdOf.parse(ulid());
       const host = hostFor();
@@ -206,6 +228,16 @@ describe('connector write-back (#574)', () => {
         grantedBy: staff,
       });
       expect(recorded.grant.length).toBe(before);
+    });
+
+    it('records BOTH grants directory-side (#592) — the gather provision/reconcile read', async () => {
+      const rows = await hostFor().admin.listConnectionGrants(staff, t);
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => [r.permission, r.scopeId]).sort()).toEqual([
+        [READ, null],
+        [USE, s],
+      ]);
+      expect(rows.every((r) => r.vertical === 'docs' && r.revokedAt === null)).toBe(true);
     });
 
     it('routes getConnectorScope().invoke through the delegation and returns its answer', async () => {

@@ -8,6 +8,8 @@ import type {
   PlatformRequestId,
   PlatformRequestStatus,
   PrincipalId,
+  ConnectionGrantRecord,
+  ProjectedConnectionGrant,
   ProjectedIdentityLink,
   QueryScopeInput,
   ReadScopeTableInput,
@@ -92,6 +94,17 @@ export interface ProvisionInstanceInput {
    */
   identityLinks?: ProjectedIdentityLink[];
   /**
+   * The tenant's connection grants for THIS scope (#592), on the same trust line as
+   * entitlements and identity links: the platform gathers them itself from the directory
+   * (`admin.listConnectionGrants`, never the caller's body), materializes tenant-wide rows
+   * per scope, and the CP-less vertical projects them as the `connection:<id>` tuples its
+   * connector return path (`connectorInvokeLocal`) is permission-checked against. Without
+   * this, a grant is a one-shot hand-write per scope: every install provisioned after
+   * `grantToConnection` silently ships without the return path. A vertical that predates
+   * the field ignores it (its body parse strips unknown keys).
+   */
+  connectionGrants?: ProjectedConnectionGrant[];
+  /**
    * Per-tenant relational stores the platform MINTED for this tenant (#301), handed over
    * WITH provisioning so the vertical opens each (`host.openTenantStore(handle)`) and runs
    * its OWN store migrations against it before the callback returns — the same fail-closed,
@@ -172,6 +185,35 @@ export interface ReconcileInstanceInput {
    *  exactly as at provision (#406) — the repair channel for a dropped delivery, and the
    *  re-delivery a link/unlink AFTER provision rides. */
   identityLinks?: ProjectedIdentityLink[];
+  /** The tenant's connection grants for this scope, gathered and re-delivered exactly as at
+   *  provision (#592) — the back-fill for a scope provisioned before `grantToConnection`
+   *  ran, and the channel a grant AFTER provision rides. A revoked connection's grants are
+   *  absent from the gather, so they stop being delivered. */
+  connectionGrants?: ProjectedConnectionGrant[];
+}
+
+/**
+ * Materialize a tenant's directory-side connection grants for ONE scope (#592) — the
+ * gather half every delivery site shares. Keeps only grants whose connection belongs to
+ * the scope's vertical (a connection is keyed (tenant, vertical, provider) and must not
+ * reach another vertical's scopes), then tenant-wide rows (`scopeId: null`) materialize
+ * for any scope while scope-targeted rows survive only for their own — which is what
+ * lets a re-provision re-deliver a hand-granted scope AND a fresh install receive the
+ * tenant-wide grants it was provisioned after.
+ */
+export function connectionGrantsForScope(
+  grants: ConnectionGrantRecord[],
+  vertical: string | null | undefined,
+  scopeId: ScopeId,
+): ProjectedConnectionGrant[] {
+  if (!vertical) return [];
+  return grants
+    .filter((g) => g.vertical === vertical && (g.scopeId === null || g.scopeId === scopeId))
+    .map((g) => ({
+      connectionId: g.connectionId,
+      permission: g.permission,
+      ...(g.expiresAt ? { expiresAt: g.expiresAt } : {}),
+    }));
 }
 
 export interface ReconciledInstance {

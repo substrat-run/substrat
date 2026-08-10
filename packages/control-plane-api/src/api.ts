@@ -45,7 +45,7 @@ import type { OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
 import { migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
-import type { VerticalClient } from './vertical-client.js';
+import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import { ControlPlaneError } from './client.js';
 import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -913,6 +913,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(await admin.listIdentityLinks(c.get('actor'), tenantId));
   });
 
+  // The tenant's live connection grants (#592) — the readable "what may this connection
+  // invoke" (connections.md §6.2.4 Q2), and the rows provision/reconcile deliver from.
+  app.get('/tenants/:tenantId/connection-grants', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    return c.json(await admin.listConnectionGrants(c.get('actor'), tenantId));
+  });
+
   // -- the scope directory (§3.2/§4.2) ---------------------------------------
 
   app.get('/scopes', async (c) => {
@@ -1375,8 +1382,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const identityLinks = (await admin.listIdentityLinks(actor, tenantId)).map(
       ({ tenantId: _tenantId, ...link }) => link,
     );
+    // #592: connection grants ride the same authoritative gather — the back-fill for a
+    // scope provisioned before `grantToConnection` ran, and how a revoked connection's
+    // grants stop being delivered (they are absent from the directory's live rows).
+    const connectionGrants = connectionGrantsForScope(
+      await admin.listConnectionGrants(actor, tenantId),
+      scope.vertical,
+      scopeId,
+    );
     try {
-      const result = await vertical.reconcileInstance({ tenantId, scopeId, entitlements, identityLinks });
+      const result = await vertical.reconcileInstance({
+        tenantId,
+        scopeId,
+        entitlements,
+        identityLinks,
+        connectionGrants,
+      });
       return c.json(result);
     } catch (e) {
       if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
@@ -2315,6 +2336,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const identityLinks = (await admin.listIdentityLinks(c.get('actor'), input.tenantId)).map(
       ({ tenantId: _tenantId, ...link }) => link,
     );
+    // #592: connection grants too — tenant-wide rows materialize for the NEW scope, so an
+    // install provisioned after `grantToConnection` holds the same `connection:<id>` tuple
+    // as one provisioned before it, and the connector return path works without a human
+    // replaying grants per install.
+    const connectionGrants = connectionGrantsForScope(
+      await admin.listConnectionGrants(c.get('actor'), input.tenantId),
+      slug,
+      input.scopeId,
+    );
     // #301 PR-2: per-tenant relational stores the vertical DECLARED, minted here (before
     // the callback — the vertical migrates the store inside the K-31 ready-gate, so it
     // must exist and be bound first). Idempotent like the endpoint: a retried provision
@@ -2347,6 +2377,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           ...(input as Parameters<VerticalClient['provisionInstance']>[0]),
           entitlements,
           identityLinks,
+          connectionGrants,
           ...(tenantStores.length ? { tenantStores } : {}),
         }),
       );

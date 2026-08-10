@@ -78,6 +78,19 @@ export interface ConnectionDoRow {
   revoked_at: string | null;
 }
 
+/** A connection grant as the DO records it (#592) — the gather source for delivery. */
+export interface ConnectionGrantDoRow {
+  connection_id: string;
+  tenant_id: string;
+  vertical: string;
+  permission: string;
+  scope_id: string | null;
+  expires_at: string | null;
+  granted_by: string;
+  granted_at: string;
+  revoked_at: string | null;
+}
+
 export interface RoleRow {
   tenant_id: string;
   role_key: string;
@@ -569,6 +582,26 @@ const DIRECTORY_DDL = `
     ciphertext    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
   );
+  -- Connection grants as the directory records them (#592) — the durable half of
+  -- grantToConnection, written alongside the enforcement tuple. The tuple lives
+  -- where it is checked (the scope's own DO); this row is what provision/reconcile
+  -- gather FROM, so a scope provisioned after the grant holds the same grants as
+  -- one provisioned before it. Tombstoned by revokeConnection's cascade (K-21).
+  CREATE TABLE IF NOT EXISTS _substrat_connection_grants (
+    connection_id TEXT NOT NULL,
+    tenant_id     TEXT NOT NULL,
+    vertical      TEXT NOT NULL,
+    permission    TEXT NOT NULL,
+    scope_id      TEXT,
+    expires_at    TEXT,
+    granted_by    TEXT NOT NULL,
+    granted_at    TEXT NOT NULL,
+    revoked_at    TEXT
+  );
+  -- One row per (connection, permission, target) — COALESCEd so the NULL
+  -- (tenant-wide) target collides with itself and a re-grant upserts in place.
+  CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connection_grants_key
+    ON _substrat_connection_grants (connection_id, permission, COALESCE(scope_id, ''));
   CREATE TABLE IF NOT EXISTS _substrat_connector_state (
     connection_id TEXT NOT NULL,
     state_key     TEXT NOT NULL,
@@ -2433,7 +2466,59 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('DELETE FROM _substrat_connection_secrets WHERE connection_id = ?', id);
     // Connector state dies with the connection — its private bookkeeping.
     this.sql.exec('DELETE FROM _substrat_connector_state WHERE connection_id = ?', id);
+    // #592: its grants tombstone (K-21 — evidence, not roster). Absent from the
+    // next gather, so no later provision/reconcile delivers them again.
+    this.sql.exec(
+      `UPDATE _substrat_connection_grants SET revoked_at = ?
+       WHERE connection_id = ? AND revoked_at IS NULL`,
+      at,
+      id,
+    );
     return true;
+  }
+
+  /**
+   * Record a connection grant directory-side (#592) — written by `grantToConnection`
+   * alongside the enforcement tuple, upserting in place on re-grant (the unique
+   * (connection, permission, target) index). This row is what provision/reconcile
+   * gather FROM; the tuple stays the only thing the permission checker reads.
+   */
+  recordConnectionGrant(row: {
+    connectionId: string;
+    tenantId: string;
+    vertical: string;
+    permission: string;
+    scopeId: string | null;
+    expiresAt: string | null;
+    grantedBy: string;
+    grantedAt: string;
+  }): void {
+    this.sql.exec(
+      `INSERT OR REPLACE INTO _substrat_connection_grants
+         (connection_id, tenant_id, vertical, permission, scope_id, expires_at,
+          granted_by, granted_at, revoked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      row.connectionId,
+      row.tenantId,
+      row.vertical,
+      row.permission,
+      row.scopeId,
+      row.expiresAt,
+      row.grantedBy,
+      row.grantedAt,
+    );
+  }
+
+  /** The tenant's LIVE connection grants (#592) — the provision/reconcile gather read. */
+  listConnectionGrants(tenantId: string): ConnectionGrantDoRow[] {
+    return this.sql
+      .exec(
+        `SELECT * FROM _substrat_connection_grants
+         WHERE tenant_id = ? AND revoked_at IS NULL
+         ORDER BY connection_id, permission`,
+        tenantId,
+      )
+      .toArray() as unknown as ConnectionGrantDoRow[];
   }
 
   recordConnectionUse(id: string, error: string | null, at: string): void {

@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid } from '@substrat-run/kernel';
-import { assetHash, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { assetHash, connectionId, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -40,7 +40,8 @@ describe('control-plane API', () => {
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-api-'));
-    host = new SqliteScopeHost({ dir });
+    // The #592 test stores a (fake) connection credential, which requires a SecretBox.
+    host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
     app = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
   });
 
@@ -524,6 +525,79 @@ describe('control-plane API', () => {
   it('404s a provision for a scope the tenant does not own', async () => {
     const res = await json(`/tenants/${t1}/scopes/${scopeId.parse(ulid())}/provision`, 'POST', {});
     expect(res.status).toBe(404);
+  });
+
+  // -- #592: connection grants ride the same gather-and-deliver channel --------
+
+  it('gathers connection grants and delivers them WITH provisioning and reconcile (#592)', async () => {
+    const sA = scopeId.parse(ulid()); // exists when the grants are written
+    const sB = scopeId.parse(ulid()); // provisioned AFTER the grants — the issue's failing case
+    const owner = principalId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sA, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sA);
+    const connId = connectionId.parse(ulid());
+    await host.admin.createConnection(staff, {
+      id: connId,
+      tenantId: t1,
+      vertical: 'demo-vert',
+      provider: 'signer',
+      label: 'Signer',
+      secret: { accessToken: 'x' },
+    });
+    const RECORD = permissionKey.parse('protocol:record-signature');
+    const READ = permissionKey.parse('protocol:read');
+    await host.admin.grantToConnection(staff, {
+      connectionId: connId,
+      permission: RECORD,
+      node: { tenantId: t1, scopeId: null }, // tenant-wide: must reach every install
+      grantedBy: staff,
+    });
+    await host.admin.grantToConnection(staff, {
+      connectionId: connId,
+      permission: READ,
+      node: { tenantId: t1, scopeId: sA }, // scope-targeted: must reach ONLY sA
+      grantedBy: staff,
+    });
+
+    type Delivered = { connectionGrants?: { connectionId: string; permission: string }[] };
+    let provisioned: Delivered | undefined;
+    let reconciled: Delivered | undefined;
+    const fakeVertical = {
+      provisionInstance: async (input: Delivered) => {
+        provisioned = input;
+        return { tenantId: t1, scopeId: sB, owner };
+      },
+      reconcileInstance: async (input: Delivered) => {
+        reconciled = input;
+        return { tenantId: t1, scopeId: sA, owner };
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    const dreq = (path: string, body?: unknown) =>
+      delegated.request(path, { method: 'POST', headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
+
+    // A NEW install receives the tenant-wide grant — and not the one targeting sA.
+    const res = await dreq('/verticals/demo-vert/instances', { tenantId: t1, scopeId: sB, owner, slug: 'post-grant', name: 'Post Grant' });
+    expect(res.status).toBe(201);
+    expect(provisioned?.connectionGrants).toEqual([{ connectionId: connId, permission: RECORD }]);
+
+    // Reconcile of the pre-existing scope back-fills BOTH (the repair channel).
+    expect((await dreq(`/tenants/${t1}/scopes/${sA}/provision`)).status).toBe(200);
+    expect(reconciled?.connectionGrants).toHaveLength(2);
+    expect(new Set(reconciled?.connectionGrants?.map((g) => g.permission))).toEqual(new Set([RECORD, READ]));
+
+    // The grants are readable directory-side (connections.md §6.2.4).
+    const listed = (await (await req(`/tenants/${t1}/connection-grants`)).json()) as { scopeId: string | null }[];
+    expect(listed).toHaveLength(2);
+
+    // A revoked connection's grants stop being delivered — absent from the next gather.
+    await host.admin.revokeConnection(staff, connId);
+    expect((await dreq(`/tenants/${t1}/scopes/${sA}/provision`)).status).toBe(200);
+    expect(reconciled?.connectionGrants).toEqual([]);
   });
 
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------

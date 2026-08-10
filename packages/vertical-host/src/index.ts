@@ -37,6 +37,7 @@ import {
   visibility,
   instant,
   entitlementGrant,
+  projectedConnectionGrant,
   projectedIdentityLink,
   platformRequestId,
   platformRequestStatus,
@@ -54,6 +55,7 @@ import {
   type ScopeTable,
   type ScopeQueryResult,
   type EntitlementGrant,
+  type ProjectedConnectionGrant,
   type ProjectedIdentityLink,
   type PlatformRequest,
   type PlatformRequestId,
@@ -75,6 +77,7 @@ export interface VerticalScopeHost {
     ownerRoleKey: string;
     entitlements?: EntitlementGrant[];
     identityLinks?: ProjectedIdentityLink[];
+    connectionGrants?: ProjectedConnectionGrant[];
   }): Promise<void>;
   restoreScopeLocal(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ tables: number }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
@@ -142,6 +145,7 @@ const provisionBody = z.object({
   name: z.string().min(1).optional(),
   entitlements: z.array(entitlementGrant).optional(),
   identityLinks: z.array(projectedIdentityLink).optional(),
+  connectionGrants: z.array(projectedConnectionGrant).optional(),
 });
 /** The parsed provision body handed to `onProvision`. */
 export type ProvisionBody = z.infer<typeof provisionBody>;
@@ -152,6 +156,7 @@ const reconcileBody = z.object({
   scopeId: scopeIdOf,
   entitlements: z.array(entitlementGrant).optional(),
   identityLinks: z.array(projectedIdentityLink).optional(),
+  connectionGrants: z.array(projectedConnectionGrant).optional(),
 });
 
 const restoreBody = z.object({
@@ -482,6 +487,7 @@ export function mountPlatformSurface<Env extends object>(
       ownerRoleKey: deps.ownerRoleKey,
       entitlements: body.entitlements,
       identityLinks: body.identityLinks,
+      connectionGrants: body.connectionGrants,
     });
     await deps.onProvision?.(c.env, body);
     return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
@@ -511,6 +517,7 @@ export function mountPlatformSurface<Env extends object>(
       ownerRoleKey: deps.ownerRoleKey,
       entitlements: body.entitlements,
       identityLinks: body.identityLinks,
+      connectionGrants: body.connectionGrants,
     });
     return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner });
   });
