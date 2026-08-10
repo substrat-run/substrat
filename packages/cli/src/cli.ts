@@ -17,6 +17,7 @@
  * SUBSTRAT_SERVICE_TOKEN. A push is not a deploy — the version lands PENDING; admission
  * (in the console) still gates serving.
  */
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
@@ -164,7 +165,8 @@ Usage:
   substrat preview delete --tag <tag> [--slug <s>]  reap a preview (idempotent)
   substrat preview ls [--slug <s>]            list a vertical's active previews
   substrat init --ci github [dir]             write .github/workflows/substrat-deploy.yml —
-                    [--branch <b>] [--release trunk|changesets] [--out <path>] [--force]
+                    [--branch <b>] [--path <packageDir>] [--release trunk|changesets]
+                    [--out <path>] [--force]
                                               the same workflow the dashboard's one-click CI
                                               setup commits: merge deploys prod, a PR gets a
                                               preview + its URL commented, closing it reaps.
@@ -788,7 +790,8 @@ async function cmdInit(): Promise<void> {
   if (ci !== 'github') {
     console.error(
       'usage: substrat init --ci github [dir] [--slug <slug>] [--branch <branch>]\n' +
-        '                                [--release trunk|changesets] [--out <path>] [--force]\n' +
+        '                                [--path <packageDir>] [--release trunk|changesets]\n' +
+        '                                [--out <path>] [--force]\n' +
         (ci ? `\n'--ci ${ci}' is not supported — GitHub Actions is the only generator today.` : ''),
     );
     process.exit(1);
@@ -796,7 +799,10 @@ async function cmdInit(): Promise<void> {
   // `[dir]` is the repo root; the vertical's package.json is read from it for the slug.
   // It trails `--ci github`, so it must be found by skipping flag values — not by index.
   const dir = positional(0, ['force']) ?? '.';
-  const slug = flag('slug') ?? readVerticalMeta(dir).slug;
+  // `--path` is the vertical's directory INSIDE the repo (monorepo): the workflow builds
+  // there, and the slug defaults from THAT package.json, not the repo root's.
+  const packageDir = flag('path');
+  const slug = flag('slug') ?? readVerticalMeta(packageDir ? join(dir, packageDir) : dir).slug;
   if (!slug) {
     console.error('no --slug given and none in package.json — add `"substrat": { "slug": "…" }` or pass --slug');
     process.exit(1);
@@ -814,9 +820,10 @@ async function cmdInit(): Promise<void> {
     release: releaseFlag,
     force: argv.includes('--force'),
     ...(flag('out') ? { path: flag('out')! } : {}),
+    ...(packageDir ? { packageDir } : {}),
   });
   console.log(`✓ ${overwritten ? 'replaced' : 'wrote'} ${file}`);
-  console.log(`  ${slug} · deploys on push to '${branch}' · control plane ${cpUrl}`);
+  console.log(`  ${slug}${packageDir ? ` (${packageDir})` : ''} · deploys on push to '${branch}' · control plane ${cpUrl}`);
   process.stdout.write(nextStepsMessage(slug, releaseFlag));
 }
 
@@ -882,6 +889,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : String(err));
+  // The `error:` prefix is load-bearing: a push's build step runs wrangler, whose own
+  // chatter (`--dry-run: exiting now.`) precedes this line — an unprefixed message after
+  // it reads as more narration, not as the reason the command failed.
+  console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });

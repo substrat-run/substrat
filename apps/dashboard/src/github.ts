@@ -252,7 +252,7 @@ export async function setupRepoCi(
  * acknowledge). A builder who wants the release-train shape instead runs
  * `substrat init --ci github --release changesets`.
  */
-export { deployWorkflowYaml } from '@substrat-run/contracts';
+export { deployWorkflowYaml, normalizeWorkflowDir } from '@substrat-run/contracts';
 
 /**
  * Create-or-update the sticky preview comment on a PR (the platform half of the

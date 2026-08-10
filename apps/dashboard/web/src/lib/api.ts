@@ -849,16 +849,17 @@ export const api = {
     call<{ branches: Array<{ name: string }> }>(
       `/github/branches?repo=${encodeURIComponent(repo)}${account ? `&account=${encodeURIComponent(account)}` : ''}`,
     ),
-  /** One-click deploy setup: commit the workflow + write the scoped push credential. */
-  setupCi: (repo: string, branch: string, account?: string) =>
+  /** One-click deploy setup: commit the workflow + write the scoped push credential.
+   *  `path` is the vertical's directory inside the repo (monorepo) — omitted, the root. */
+  setupCi: (repo: string, branch: string, account?: string, path?: string) =>
     call<SetupCiResult>('/github/setup-ci', {
       method: 'POST',
-      body: JSON.stringify({ repo, branch, ...(account ? { account } : {}) }),
+      body: JSON.stringify({ repo, branch, ...(account ? { account } : {}), ...(path ? { path } : {}) }),
     }),
   /** The manual path's workflow YAML (same generator the one-click commit uses). */
-  workflowPreview: (repo: string, branch: string) =>
+  workflowPreview: (repo: string, branch: string, path?: string) =>
     call<WorkflowPreview>(
-      `/github/workflow-preview?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`,
+      `/github/workflow-preview?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}${path ? `&path=${encodeURIComponent(path)}` : ''}`,
     ),
   promoteDeployment: (
     slug: string,
