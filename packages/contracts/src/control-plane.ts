@@ -3,6 +3,7 @@ import {
   eventId,
   instant,
   orgId,
+  permissionKey,
   platformActorId,
   principalId,
   scopeId,
@@ -15,7 +16,7 @@ import {
 import { org, scope, tenant, tenantStatus } from './tenancy.js';
 import { tenantRole } from './permission.js';
 import { hostnameBinding } from './routing.js';
-import { connection } from './connections.js';
+import { connection, connectionId, connectionProvider, connectionSecret } from './connections.js';
 import { scopeDump } from './introspection.js';
 
 // The control plane — the shared layer across N per-vertical deployments (D-30,
@@ -429,6 +430,57 @@ export const emailRelayRequest = z.object({
   fromName: z.string().min(1).optional(),
 });
 export type EmailRelayRequest = z.infer<typeof emailRelayRequest>;
+
+/**
+ * The body a hosted vertical POSTs to the control plane's `/internal/connections/upsert`
+ * relay (connections.md §3.5.2). Connecting a provider is a TENANT ADMIN's act (§3.5, D-31):
+ * the vertical proves it with its own `ctx.check` before the credential ever leaves the
+ * operation, then hands the secret here so the platform can seal it into the connection
+ * store — the one place plaintext is allowed to rest. Same trust posture as the email
+ * relay: `(tenantId, scopeId)` name the caller, the relay re-derives the VERTICAL from the
+ * platform's own scope record, and the shared PLATFORM_SECRET never gets to say which
+ * vertical it is acting for — so the caller cannot plant a credential on a foreign
+ * vertical, and grants cannot reach outside the connection's own (tenant, vertical).
+ *
+ * Upsert semantics keyed (tenant, vertical, provider, externalAccountRef): no live
+ * connection → create; one live → rotate its secret in place (the connection id — and
+ * with it every `grantToConnection` tuple — survives rotation). `createdBy` is the
+ * authorizing tenant principal, recorded on the connection (create) and in the audit
+ * metadata (rotate) — never the platform actor, which would launder the act (§3.5.1).
+ */
+export const connectionRelayRequest = z.object({
+  tenantId,
+  scopeId,
+  provider: connectionProvider,
+  /** Human label for a console; defaults to the provider slug. Rotation never changes it. */
+  label: z.string().min(1).max(200).optional(),
+  /** The provider's own account identifier, for multi-account providers — part of the upsert key. */
+  externalAccountRef: z.string().min(1).optional(),
+  /** Provider scopes/permissions the credential carries, as the provider names them. */
+  scopes: z.array(z.string()).max(64).default([]),
+  /** When the grant itself lapses, if known. */
+  expiresAt: instant.optional(),
+  /** The credential — sealed by the platform's SecretBox, never stored or echoed in the clear. */
+  secret: connectionSecret.refine((s) => Object.keys(s).length > 0, 'secret must not be empty'),
+  /**
+   * Permission keys to grant the connection on the calling scope (`grantToConnection`,
+   * #97) — e.g. `protocol:record-signature` so the connector may write back. Applied on
+   * every upsert (idempotent tuples), so a re-connect also heals a missing grant.
+   */
+  grants: z.array(permissionKey).max(16).default([]),
+  /** The tenant principal whose permission-checked act authorized this connect/rotation. */
+  createdBy: z.string().min(1),
+});
+export type ConnectionRelayRequest = z.infer<typeof connectionRelayRequest>;
+
+/** What the relay answers — metadata only, the secret is never echoed. */
+export const connectionRelayResult = z.object({
+  connectionId,
+  /** True when this call created the connection; false when it rotated a live one. */
+  created: z.boolean(),
+  granted: z.array(permissionKey),
+});
+export type ConnectionRelayResult = z.infer<typeof connectionRelayResult>;
 
 /**
  * A whole tenant, exported (#36) — GDPR Art. 20 portability, and the escrow handover.

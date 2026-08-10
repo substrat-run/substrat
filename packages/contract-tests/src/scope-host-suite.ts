@@ -1612,6 +1612,28 @@ export function scopeHostContractSuite(
         expect(JSON.stringify(log)).not.toContain('tok-refreshed');
       });
 
+      it('a rotation authorized by a tenant principal records rotatedBy — never the actor alone', async () => {
+        // §3.5.1's attribution, rotate-side: the connection relay rotates with platform
+        // authority, but the audit must name the tenant admin whose permission-checked
+        // act it was. The credential itself still never reaches the log.
+        const [row] = await host.admin.listConnections(staff, {
+          tenantId: t1,
+          vertical: 'callout',
+        });
+        const officeAdmin = ulid();
+        await host.admin.updateConnectionSecret(
+          staff,
+          row!.id,
+          { accessToken: 'tok-relay-rotated' },
+          undefined,
+          { rotatedBy: officeAdmin },
+        );
+        const log = await host.admin.auditLog(staff, { tenantId: t1 });
+        const rotated = log.filter((e) => e.action === 'updateConnectionSecret').at(-1);
+        expect(rotated?.after).toMatchObject({ id: row!.id, rotatedBy: officeAdmin });
+        expect(JSON.stringify(log)).not.toContain('tok-relay-rotated');
+      });
+
       it('records health, and a success clears a prior error', async () => {
         const [row] = await host.admin.listConnections(staff, {
           tenantId: t1,

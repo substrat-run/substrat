@@ -314,3 +314,27 @@ describe('email relay — /internal/email/send', () => {
     expect(res.status).toBe(403);
   });
 });
+
+/**
+ * The connection relay (connections.md §3.5.2) — the same platform-secret gate as the two
+ * surfaces above, and the one carrying a CREDENTIAL, so failing closed matters most here:
+ * a deployment that never configured the shared secret must refuse to accept (and seal)
+ * a provider secret for an anonymous caller. The upsert/rotation/attribution logic is
+ * unit-tested against a real adapter in control-plane-api's connection-relay suite.
+ */
+describe('connection relay — /internal/connections/upsert', () => {
+  it('refuses when the platform secret is not configured (fails closed)', async () => {
+    const res = await SELF.fetch('https://cp.test/internal/connections/upsert', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
+      body: JSON.stringify({
+        tenantId: ulid(),
+        scopeId: ulid(),
+        provider: 'scrive',
+        secret: { apiToken: 'tok' },
+        createdBy: ulid(),
+      }),
+    });
+    expect(res.status).toBe(403);
+  });
+});

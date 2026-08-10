@@ -74,6 +74,8 @@ import {
   sessionPlatformAuth,
   UNSAFE_devPlatformActorAuth,
   drainScopePlatformRequests,
+  relayConnectionUpsert,
+  ConnectionRelayError,
   provisionSiblingHandler,
   archiveScopeHandler,
   provisionTenantHandler,
@@ -444,6 +446,10 @@ const SERVICE_ACTOR = platformActorId.parse('01JZ00000000000000000000SV');
 // The actor the scheduled sweep runs as (a machine pass, not staff): its directory
 // reads land in the access log and its reaps in the admin log under this id.
 const SWEEP_ACTOR = platformActorId.parse('01JZ00000000000000000000SW');
+// The actor the connection relay effects as (connections.md §3.5.2). Distinct from the
+// sweep so the admin log reads honestly: a `createConnection` under this id was a tenant
+// admin's relayed act (the principal is in the row's `createdBy`/`rotatedBy`), not staff.
+const CONNECTION_RELAY_ACTOR = platformActorId.parse('01JZ00000000000000000000CR');
 
 /**
  * `SCOPE_RETENTION_DAYS` → the sweep's `reapArchivedAfterDays`, or `undefined` when
@@ -979,6 +985,38 @@ export default {
         text,
       });
       return c.json({ sent: true, ...result });
+    });
+
+    // The connection relay (connections.md §3.5.2) — a tenant admin connects a provider
+    // from the vertical's OWN admin screen: the vertical permission-checks the act
+    // (`ctx.check`), returns the pasted credential as a harness-side effect, and the
+    // harness POSTs it here for the platform to seal into the connection store — create,
+    // or rotate in place when the connection is already live. Same trust posture as the
+    // email relay above: the shared PLATFORM_SECRET only proves "a platform script is
+    // calling"; WHICH vertical is re-derived from this directory's scope record, so a
+    // caller can never plant a credential on a foreign vertical, and the store's own
+    // guards pin every grant inside the connection's (tenant, vertical). The credential
+    // is plaintext for the length of this call and never rests anywhere unsealed — the
+    // reason this is a relay and not a platform-request intent (an intent payload lives
+    // in the scope's spine, and with it in every export, backup, and PITR window).
+    app.post('/internal/connections/upsert', async (c) => {
+      try {
+        assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+      } catch (e) {
+        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        throw e;
+      }
+      try {
+        const result = await relayConnectionUpsert(
+          hostFor(c.env),
+          CONNECTION_RELAY_ACTOR,
+          await c.req.json().catch(() => ({})),
+        );
+        return c.json(result);
+      } catch (e) {
+        if (e instanceof ConnectionRelayError) return c.json({ error: e.message }, e.status);
+        throw e;
+      }
     });
 
     // The Scrive webhook ingress (#574 phase 2, #96): for a CP-less dispatch vertical the

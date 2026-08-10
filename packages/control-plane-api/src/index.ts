@@ -11,6 +11,7 @@ export {
   firstPlatformActorAuth,
   firstBuilderAuth,
 } from './auth.js';
+export { relayConnectionUpsert, ConnectionRelayError } from './connection-relay.js';
 export { mintPushToken, verifyPushToken, pushTokenBuilderAuth, pushActorFor } from './push-token.js';
 export type {
   PlatformActorAuth,

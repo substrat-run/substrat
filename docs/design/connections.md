@@ -1,6 +1,6 @@
 # The integrations hub — connections, connectors, and the executor runtime
 
-Status: draft v0.1 · Last updated: 2026-07-20 · For review before any code
+Status: draft v0.1 · Last updated: 2026-08-10 · For review before any code
 
 > **Relationship to canon.** Master plan §6 and the decision log rule; this document
 > proposes, it doesn't decide. It exists to be reviewed against decisions 18 (the triage
@@ -297,6 +297,54 @@ attributed*, not by retyping the store. A later `TenantAdminActorId` (option C) 
 without touching the store, the sealing, or the audit shape — the one thing §3.5 always promised
 would stay stable.
 
+#### 3.5.2 The connection relay — pasted credentials from the vertical's own UI
+
+The signed-state callback (§3.5.1) covers OAuth authorization-code providers, where the
+credential is minted host-side. It does not cover the other common case: the tenant admin
+**holds** the credential — a Scrive OAuth1 four-part, a Fortnox API key — and the natural
+place to paste it is the vertical's own Administration screen, not a console staff can see and
+the tenant cannot. For a hosted CP-less vertical (verticals are sandbox-clean; only the
+dashboard is privileged) that screen has no path to the connection store at all.
+
+The mechanism is `POST /internal/connections/upsert` on the control plane, mirroring the email
+relay (#303) — same secret, same trust derivation, same one uniform posture:
+
+- **Authorization is in-scope**, exactly as B demands: the vertical's operation opens with
+  `assertAllowed(await ctx.check(<manage-integrations>))`, emits a textless fat event, and
+  returns the credential as a harness-side *effect* (stripped from the response) — the same
+  shape `user/set-password` and the support-mail effect established. No scope row, event, or
+  intent payload ever holds the plaintext.
+- **The effect is host-side, gated on the platform secret.** The harness POSTs
+  `{tenantId, scopeId, provider, label?, externalAccountRef?, scopes?, expiresAt?, secret,
+  grants?, createdBy}` with the injected `PLATFORM_SECRET`. That shared secret only proves "a
+  platform script is calling" — the relay re-derives WHICH vertical from its own scope record
+  for `(tenantId, scopeId)`, so a caller can never plant a credential on a foreign vertical.
+- **Upsert keyed (tenant, vertical, provider, externalAccountRef).** No live connection →
+  `createConnection` under a fresh id; one live → `updateConnectionSecret` in place —
+  rotation preserves the connection id, and with it every `grantToConnection` tuple. The
+  relay is how the tenant rotates a credential without a support ticket.
+- **Attribution is the tenant principal's** (§3.5.1's law, both sides): `createdBy` lands on
+  the connection row at create, and in the audit metadata as `rotatedBy` at rotate
+  (`updateConnectionSecret` grew an additive `opts.rotatedBy`). The relay effects under a
+  dedicated `CONNECTION_RELAY_ACTOR`, so the admin log distinguishes a relayed tenant act
+  from staff.
+- **Grants ride along**: `grants: PermissionKey[]` is applied via `grantToConnection` on the
+  calling scope on every upsert (tuples are idempotent), so a re-connect heals a missing
+  grant. The store's own guards pin every grant inside the connection's (tenant, vertical) —
+  the relay adds no authority a vertical did not already have over its own scopes.
+
+Why a relay and not a platform-request intent: an intent's payload is a row in the scope's
+`_substrat_platform_requests` spine — a plaintext credential in every export, backup, and PITR
+window, precisely what §3.4 forbids the audit log for. The relay keeps the plaintext alive for
+the length of one harness call, then it exists only sealed.
+
+Deliberately **not** gated on a staff-set capability (unlike the email relay's `emailSender`):
+the email relay spends the *platform's* credential on the caller's behalf; this relay stores
+the *tenant's own* credential for the caller's own vertical, and its blast radius is already
+pinned by the scope-record derivation and the store's grant guards. If provider/grant
+allowlists ever prove necessary, the `package.json substrat` declaration + staff capability
+shape is the known pattern to add.
+
 ### 3.6 Token refresh
 
 Scrive is OAuth2: 1-hour access token, 30-day refresh. So refresh is not optional and it is not
@@ -549,8 +597,9 @@ connection, written through `HostAdmin`, never touching a scope.
 
 ~~Webhook ingress (poll first, §5)~~ — landed, see §5. A general connector marketplace or per-tenant connector
 enablement UI. OAuth **authorization-code** flows in the console — v0 accepts credentials
-administratively. Rate-limit orchestration across tenants. Replacing the module consumer path,
-which is unchanged throughout.
+administratively, which since §3.5.2 includes the tenant admin pasting them into the
+vertical's own UI (the connection relay). Rate-limit orchestration across tenants. Replacing
+the module consumer path, which is unchanged throughout.
 
 ---
 
