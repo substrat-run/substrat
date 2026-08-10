@@ -3638,6 +3638,7 @@ export class CloudflareScopeHost implements ScopeHost {
         id: ConnectionId,
         secret: ConnectionSecret,
         expiresAt?: string,
+        opts?: { rotatedBy?: string },
       ) => {
         const row = await this.cp.readConnection(id);
         if (!row) throw new Error(`connection not found: ${id}`);
@@ -3655,7 +3656,15 @@ export class CloudflareScopeHost implements ScopeHost {
           'updateConnectionSecret',
           { tenantId: row.tenant_id as TenantId, vertical: row.vertical },
           null,
-          { id, provider: row.provider, rotatedAt: now, expiresAt: expiresAt ?? row.expires_at },
+          {
+            id,
+            provider: row.provider,
+            rotatedAt: now,
+            expiresAt: expiresAt ?? row.expires_at,
+            // §3.5.1's attribution, rotate-side: the authorizing tenant principal,
+            // never laundered into the actor column.
+            ...(opts?.rotatedBy ? { rotatedBy: opts.rotatedBy } : {}),
+          },
         );
       },
 

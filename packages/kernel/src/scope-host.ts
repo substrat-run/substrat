@@ -1436,23 +1436,32 @@ export interface HostAdmin {
    * label, scopes. That is structural, not careful: `_substrat_admin_log` is
    * append-only, so a secret written into it could never be removed.
    *
-   * Takes a `PlatformActorId` today. Connecting a provider is really a tenant
-   * admin's act, and routing it through a platform actor is the same defect
-   * D-31 named for `addMember` — so this is a deliberate deferral, recorded in
-   * connections.md §3.5, not an answer. No console flow should be built on this
-   * signature until the question is settled together with membership's.
+   * Takes a `PlatformActorId`, but connecting a provider is really a tenant
+   * admin's act — §3.5 settled that the authority ORIGINATES in-scope (option B)
+   * and the effecting caller here is host code holding platform authority
+   * legitimately (an OAuth callback, the connection relay). Attribution rides in
+   * `input.createdBy` — the authorizing principal, recorded on the connection
+   * and in the audit row — never laundered into the actor (§3.5.1).
    */
   createConnection(actor: PlatformActorId, input: CreateConnectionInput): Promise<void>;
 
   /** Metadata only — never the credential, at any privilege level. */
   listConnections(actor: PlatformActorId, filter?: ConnectionFilter): Promise<Connection[]>;
 
-  /** Replace the sealed credential — the OAuth refresh path. */
+  /**
+   * Replace the sealed credential — the OAuth refresh path, and the connection
+   * relay's rotation (connections.md §3.5.2). `opts.rotatedBy` names the tenant
+   * principal whose permission-checked act authorized the rotation, recorded in
+   * the audit metadata — the rotate-side analogue of `createdBy` on create
+   * (§3.5.1). Omitted ⇒ the effecting actor stands alone, the platform-driven
+   * refresh path.
+   */
   updateConnectionSecret(
     actor: PlatformActorId,
     id: ConnectionId,
     secret: ConnectionSecret,
     expiresAt?: string,
+    opts?: { rotatedBy?: string },
   ): Promise<void>;
 
   /**

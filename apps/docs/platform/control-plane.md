@@ -53,6 +53,22 @@ Beyond the base registry, a few capabilities have landed that are worth naming:
   the uploader already injects into every dispatch script; the relay re-derives *which* vertical is
   calling from the named `(tenant, scope)` and checks the grant against that, so holding the shared
   secret is not enough. The `from` address is always the platform's onboarded sender.
+- **Platform-mediated credential handover: the connection relay.** The inbound twin of the email
+  relay. Connecting a provider (Scrive, Fortnox) is a *tenant admin's* act, so the natural place to
+  paste a provider credential is the vertical's own admin screen — but a hosted vertical must never
+  store one (plaintext in a scope row would ride every export, backup, and PITR window). Instead the
+  vertical permission-checks the act with its own `ctx.check`, hands the secret to its harness as an
+  effect stripped from the response, and the harness POSTs
+  `POST /internal/connections/upsert` — `{tenant, scope, provider, secret, grants?, createdBy}` —
+  to the control plane, which seals it into the connection store with the platform's `SecretBox`.
+  Upserts are keyed (tenant, vertical, provider, account): a live connection is rotated **in
+  place**, so its id and every permission granted to it survive — credential rotation is self-serve,
+  no support ticket. The same trust derivation as the email relay applies (the shared secret never
+  says *which* vertical; the platform's own scope record does), and the audit records the
+  authorizing tenant principal (`createdBy`/`rotatedBy`) — metadata only, never the credential.
+  Unlike the email relay there is no staff-granted capability: the tenant hands over its *own*
+  credential for its *own* vertical, and the store's grant guards already pin the blast radius to
+  that (tenant, vertical).
 
 ## Backup and recovery
 

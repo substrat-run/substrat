@@ -5301,6 +5301,7 @@ export class SqliteScopeHost implements ScopeHost {
         id: ConnectionId,
         secret: ConnectionSecret,
         expiresAt?: string,
+        opts?: { rotatedBy?: string },
       ) => {
         const row = this.connectionRow(id);
         const sealed = await this.secretBox.seal(JSON.stringify(connectionSecret.parse(secret)));
@@ -5319,13 +5320,21 @@ export class SqliteScopeHost implements ScopeHost {
              WHERE id = ?`,
           )
           .run(expiresAt ?? row.expires_at, id);
-        // The event, never the token. "Rotated at T" is the auditable fact.
+        // The event, never the token. "Rotated at T" is the auditable fact — plus WHO
+        // authorized it when the rotation was a tenant admin's act (§3.5.1's attribution,
+        // rotate-side): the principal, never laundered into the actor column.
         this.recordAdmin(
           actor,
           'updateConnectionSecret',
           { tenantId: row.tenant_id as TenantId, vertical: row.vertical },
           null,
-          { id, provider: row.provider, rotatedAt: now, expiresAt: expiresAt ?? row.expires_at },
+          {
+            id,
+            provider: row.provider,
+            rotatedAt: now,
+            expiresAt: expiresAt ?? row.expires_at,
+            ...(opts?.rotatedBy ? { rotatedBy: opts.rotatedBy } : {}),
+          },
         );
       },
 
