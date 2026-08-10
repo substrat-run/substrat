@@ -5,6 +5,7 @@ import type {
   ConnectionFilter,
   ConnectionId,
   ConnectionGrant,
+  ConnectionGrantRecord,
   ConnectionSecret,
   CreateConnectionInput,
   OpenConnection,
@@ -558,6 +559,16 @@ export interface HostAdmin {
    * either, and only one of them would have shown up in a review.
    */
   grantToConnection(actor: PlatformActorId, grant: ConnectionGrant): Promise<void>;
+  /**
+   * The tenant's connection grants as the DIRECTORY records them (#592) — what
+   * `grantToConnection` wrote alongside each enforcement tuple. This is the gather
+   * source for provision/reconcile delivery (the platform materializes tenant-wide
+   * rows per scope, the same authoritative channel as `listEntitlements` /
+   * `listIdentityLinks`), and the readable answer to "what may this connection
+   * invoke". Returns LIVE rows only — a grant whose connection was revoked is
+   * tombstoned by the revoke cascade and absent here.
+   */
+  listConnectionGrants(actor: PlatformActorId, tenantId: TenantId): Promise<ConnectionGrantRecord[]>;
   /**
    * Grant a permission to a MODULE's system principal (#383) — how a scheduled
    * operation is allowed to act on a scope without impersonating a person.

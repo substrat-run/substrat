@@ -26,6 +26,7 @@ import {
   instant,
   connection,
   connectionGrant,
+  connectionGrantRecord,
   connectionSecret,
   systemGrant,
   subjectRef,
@@ -1043,6 +1044,26 @@ export class SqliteScopeHost implements ScopeHost {
         ciphertext    TEXT NOT NULL,
         updated_at    TEXT NOT NULL
       );
+      -- Connection grants as the directory records them (#592) — the durable half
+      -- of grantToConnection, written alongside the enforcement tuple. The tuple
+      -- lives where it is checked; this row is what provision/reconcile gather
+      -- FROM, so a scope provisioned after the grant holds the same grants as one
+      -- provisioned before it. Tombstoned by revokeConnection's cascade (K-21).
+      CREATE TABLE IF NOT EXISTS _substrat_connection_grants (
+        connection_id TEXT NOT NULL,
+        tenant_id     TEXT NOT NULL,
+        vertical      TEXT NOT NULL,
+        permission    TEXT NOT NULL,
+        scope_id      TEXT,
+        expires_at    TEXT,
+        granted_by    TEXT NOT NULL,
+        granted_at    TEXT NOT NULL,
+        revoked_at    TEXT
+      );
+      -- One row per (connection, permission, target) — COALESCEd so the NULL
+      -- (tenant-wide) target collides with itself and a re-grant upserts in place.
+      CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connection_grants_key
+        ON _substrat_connection_grants (connection_id, permission, COALESCE(scope_id, ''));
       -- A connector's own durable state (#101 gap 3), keyed by connection. The
       -- dispatch-idempotency ledger: (connection, event key) -> what was done,
       -- so a redelivery skips instead of repeating an outward effect. Directory-
@@ -3419,6 +3440,26 @@ export class SqliteScopeHost implements ScopeHost {
           undefined,
           grant.expiresAt,
         );
+        // #592: the directory-side record, alongside the tuple. The tuple is checked
+        // where it lives; this row is what provision/reconcile gather FROM, so the
+        // grant reaches scopes provisioned after it without a human replaying it.
+        this.directory
+          .prepare(
+            `INSERT OR REPLACE INTO _substrat_connection_grants
+               (connection_id, tenant_id, vertical, permission, scope_id, expires_at,
+                granted_by, granted_at, revoked_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          )
+          .run(
+            grant.connectionId,
+            grant.node.tenantId,
+            conn.vertical,
+            grant.permission,
+            grant.node.scopeId ?? null,
+            grant.expiresAt ?? null,
+            grant.grantedBy,
+            new Date().toISOString(),
+          );
         this.recordAdmin(
           actor,
           'grantToConnection',
@@ -5218,6 +5259,43 @@ export class SqliteScopeHost implements ScopeHost {
         return rows.map(toConnection);
       },
 
+      listConnectionGrants: async (actor: PlatformActorId, tenantId: TenantId) => {
+        // #592: live rows only — the gather source for provision/reconcile delivery,
+        // and the readable "what may this connection invoke". A revoked connection's
+        // grants are tombstoned by the revoke cascade and absent by construction.
+        const rows = this.directory
+          .prepare(
+            `SELECT * FROM _substrat_connection_grants
+             WHERE tenant_id = ? AND revoked_at IS NULL
+             ORDER BY connection_id, permission`,
+          )
+          .all(tenantId) as {
+          connection_id: string;
+          tenant_id: string;
+          vertical: string;
+          permission: string;
+          scope_id: string | null;
+          expires_at: string | null;
+          granted_by: string;
+          granted_at: string;
+          revoked_at: string | null;
+        }[];
+        this.recordAccess(actor, 'listConnectionGrants', { tenantId }, null, rows.length);
+        return rows.map((r) =>
+          connectionGrantRecord.parse({
+            connectionId: r.connection_id,
+            tenantId: r.tenant_id,
+            vertical: r.vertical,
+            permission: r.permission,
+            scopeId: r.scope_id,
+            expiresAt: r.expires_at,
+            grantedBy: r.granted_by,
+            grantedAt: r.granted_at,
+            revokedAt: r.revoked_at,
+          }),
+        );
+      },
+
       updateConnectionSecret: async (
         actor: PlatformActorId,
         id: ConnectionId,
@@ -5269,6 +5347,14 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory
           .prepare('DELETE FROM _substrat_connector_state WHERE connection_id = ?')
           .run(id);
+        // #592: its grants tombstone (K-21 — evidence, not roster). Absent from the
+        // next gather, so no later provision/reconcile delivers them again.
+        this.directory
+          .prepare(
+            `UPDATE _substrat_connection_grants SET revoked_at = ?
+             WHERE connection_id = ? AND revoked_at IS NULL`,
+          )
+          .run(now, id);
         this.recordAdmin(
           actor,
           'revokeConnection',

@@ -15,7 +15,7 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from './client.js';
-import type { VerticalClient } from './vertical-client.js';
+import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import { collectBlobStoreHandles, collectTenantStoreHandles } from './tenant-stores.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 
@@ -614,8 +614,15 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
     const identityLinks = (await admin.listIdentityLinks(actor, tenantId)).map(
       ({ tenantId: _tenantId, ...link }) => link,
     );
+    // #592: every reconcile re-delivers the tenant's live connection grants, whoever
+    // triggered it — this drain-side reconcile must not silently wipe or omit them.
+    const connectionGrants = connectionGrantsForScope(
+      await admin.listConnectionGrants(actor, tenantId),
+      scope.vertical,
+      scopeId,
+    );
     try {
-      await vertical.reconcileInstance({ tenantId, scopeId, entitlements, identityLinks });
+      await vertical.reconcileInstance({ tenantId, scopeId, entitlements, identityLinks, connectionGrants });
     } catch (e) {
       if (e instanceof ControlPlaneError) return { status: 'pending', error: e.message };
       throw e;

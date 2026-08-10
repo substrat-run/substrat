@@ -3,6 +3,7 @@ import { connectorCalls, connectorTestFetch, resetConnectorCalls } from './conne
 import {
   connectionId,
   dataSubjectId,
+  instant,
   moduleManifest,
   orgId,
   AUTO_ADMISSION_NOTE,
@@ -1731,6 +1732,89 @@ export function scopeHostContractSuite(
         );
         // An unknown account is simply not connected — the ordinary miss.
         expect(await host.admin.openConnection(t1, 'multigit', 'github', 'nobody')).toBeUndefined();
+      });
+    });
+
+    // -- connection grants: the directory record behind the tuple (#592) --------
+    //
+    // `grantToConnection` writes the enforcement tuple where it is checked; the
+    // directory row written ALONGSIDE it is what provision/reconcile gather from,
+    // so a scope provisioned after the grant holds the same grants as one
+    // provisioned before it. These tests pin the record half: the row exists, is
+    // readable, and dies (tombstones) with its connection.
+
+    describe('connection grants (#592)', () => {
+      const gt = tenantId.parse(ulid());
+      const gs = scopeId.parse(ulid());
+      const gconn = connectionId.parse(ulid());
+      const RECORD = permissionKey.parse('protocol:record-signature');
+      const READ = permissionKey.parse('protocol:read');
+
+      beforeAll(async () => {
+        await host.admin.createTenant(staff, { id: gt, slug: 'tenant-grants', name: 'Grants' });
+        await host.provisionScope(staff, { tenantId: gt, scopeId: gs, vertical: 'signing' });
+        await host.admin.activateScope(staff, gt, gs);
+        await host.admin.createConnection(staff, {
+          id: gconn,
+          tenantId: gt,
+          vertical: 'signing',
+          provider: 'signer',
+          label: 'Signer',
+          secret: { accessToken: 'tok-grants' },
+        });
+      });
+
+      it('records a directory row per grant — tenant-wide and scope-targeted', async () => {
+        await host.admin.grantToConnection(staff, {
+          connectionId: gconn,
+          permission: RECORD,
+          node: { tenantId: gt, scopeId: null },
+          grantedBy: staff,
+        });
+        await host.admin.grantToConnection(staff, {
+          connectionId: gconn,
+          permission: READ,
+          node: { tenantId: gt, scopeId: gs },
+          grantedBy: staff,
+        });
+        const rows = await host.admin.listConnectionGrants(staff, gt);
+        expect(rows).toHaveLength(2);
+        const tenantWide = rows.find((r) => r.scopeId === null);
+        expect(tenantWide).toMatchObject({
+          connectionId: gconn,
+          tenantId: gt,
+          vertical: 'signing',
+          permission: RECORD,
+          grantedBy: staff,
+          revokedAt: null,
+        });
+        const scoped = rows.find((r) => r.scopeId === gs);
+        expect(scoped).toMatchObject({ permission: READ, vertical: 'signing' });
+        expect(tenantWide!.grantedAt).toBeTruthy();
+      });
+
+      it('upserts in place on a re-grant — one row per (connection, permission, target)', async () => {
+        await host.admin.grantToConnection(staff, {
+          connectionId: gconn,
+          permission: RECORD,
+          node: { tenantId: gt, scopeId: null },
+          expiresAt: instant.parse('2030-01-01T00:00:00.000Z'),
+          grantedBy: staff,
+        });
+        const rows = await host.admin.listConnectionGrants(staff, gt);
+        expect(rows).toHaveLength(2);
+        expect(rows.find((r) => r.scopeId === null)!.expiresAt).toBe('2030-01-01T00:00:00.000Z');
+      });
+
+      it('isolates tenants — another tenant sees nothing', async () => {
+        expect(await host.admin.listConnectionGrants(staff, t2)).toEqual([]);
+      });
+
+      it('tombstones the grants when the connection is revoked — absent from the gather', async () => {
+        await host.admin.revokeConnection(staff, gconn);
+        // A revoked connection's grants stop being delivered: the gather read
+        // returns live rows only, so no later provision/reconcile carries them.
+        expect(await host.admin.listConnectionGrants(staff, gt)).toEqual([]);
       });
     });
 

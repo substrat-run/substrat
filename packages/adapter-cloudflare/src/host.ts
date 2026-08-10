@@ -22,6 +22,7 @@ import {
   verticalVersion,
   connection,
   connectionGrant,
+  connectionGrantRecord,
   connectionSecret,
   systemGrant,
   entitlementGrant,
@@ -61,6 +62,7 @@ import {
   type IdentityPool,
   type ListPage,
   type MeterReading,
+  type ProjectedConnectionGrant,
   type ProjectedIdentityLink,
   type Node,
   type Org,
@@ -162,6 +164,7 @@ import type {
   ChannelHistoryRow,
   ChannelRow,
   ConnectionDoRow,
+  ConnectionGrantDoRow,
   EntitlementRow,
   HostnameRow,
   OrgRow,
@@ -470,6 +473,17 @@ interface ControlPlaneStub {
     at: string,
   ): Promise<void>;
   revokeConnection(id: string, at: string): Promise<boolean>;
+  recordConnectionGrant(row: {
+    connectionId: string;
+    tenantId: string;
+    vertical: string;
+    permission: string;
+    scopeId: string | null;
+    expiresAt: string | null;
+    grantedBy: string;
+    grantedAt: string;
+  }): Promise<void>;
+  listConnectionGrants(tenantId: string): Promise<ConnectionGrantDoRow[]>;
   recordConnectionUse(id: string, error: string | null, at: string): Promise<void>;
   putConnectorState(id: string, key: string, value: string, at: string): Promise<void>;
   getConnectorState(id: string, key: string): Promise<string | undefined>;
@@ -2407,6 +2421,21 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
         }
+        // #592: the directory-side record FIRST, so a grant whose tuple delivery
+        // fails below is still gathered by the next provision/reconcile — the
+        // repair channel — instead of vanishing. The tuple stays the only thing
+        // the permission checker reads; this row is what the platform gathers
+        // from so scopes provisioned AFTER the grant receive it too.
+        await this.cp.recordConnectionGrant({
+          connectionId: grant.connectionId,
+          tenantId: grant.node.tenantId,
+          vertical: conn.vertical,
+          permission: grant.permission,
+          scopeId: grant.node.scopeId ?? null,
+          expiresAt: grant.expiresAt ?? null,
+          grantedBy: grant.grantedBy,
+          grantedAt: new Date().toISOString(),
+        });
         // #574: a scope-level grant is a SCOPE tuple, and the scope's DO lives in the
         // deployment serving it — for the shared control plane that is the vertical's
         // dispatch script, so the tuple write rides the delegation seam. Tenant-level
@@ -3583,6 +3612,27 @@ export class CloudflareScopeHost implements ScopeHost {
         return rows.map(toConnection);
       },
 
+      listConnectionGrants: async (actor, tenantId: TenantId) => {
+        // #592: live rows only — the gather source for provision/reconcile delivery,
+        // and the readable "what may this connection invoke". A revoked connection's
+        // grants are tombstoned by the revoke cascade and absent by construction.
+        const rows = await this.cp.listConnectionGrants(tenantId);
+        await this.recordAccess(actor, 'listConnectionGrants', { tenantId }, null, rows.length);
+        return rows.map((r) =>
+          connectionGrantRecord.parse({
+            connectionId: r.connection_id,
+            tenantId: r.tenant_id,
+            vertical: r.vertical,
+            permission: r.permission,
+            scopeId: r.scope_id,
+            expiresAt: r.expires_at,
+            grantedBy: r.granted_by,
+            grantedAt: r.granted_at,
+            revokedAt: r.revoked_at,
+          }),
+        );
+      },
+
       updateConnectionSecret: async (
         actor,
         id: ConnectionId,
@@ -4040,6 +4090,15 @@ export class CloudflareScopeHost implements ScopeHost {
      *  scope's own storage (`resolveIdentityLocal`). Absent ⇒ untouched, so a provision path
      *  predating #406 never wipes links a fan-out or reconcile already delivered. */
     identityLinks?: ProjectedIdentityLink[];
+    /** The tenant's connection grants for THIS scope (#592), gathered by the platform from
+     *  the directory (tenant-wide rows materialized per scope) and written as the
+     *  `connection:<id>` tuples `connectorInvokeLocal`'s permission check reads — the same
+     *  tuple `connectorGrantLocal` writes at grant time, now also delivered at
+     *  provision/reconcile so a scope provisioned AFTER `grantToConnection` holds it too.
+     *  Additive like the owner grant; a revoked connection's grants simply stop being
+     *  delivered, and every delegated call re-passes the platform's live-connection gate
+     *  first, so a stale tuple cannot act. */
+    connectionGrants?: ProjectedConnectionGrant[];
   }): Promise<void> {
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
@@ -4086,6 +4145,15 @@ export class CloudflareScopeHost implements ScopeHost {
             expires_at: null,
           }));
         }),
+        // #592: the tenant's connection grants ride the same unit — the provision-time
+        // mirror of `connectorGrantLocal`, so the connector return path works on every
+        // install, not only the one that existed when `grantToConnection` ran.
+        ...(input.connectionGrants ?? []).map((g) => ({
+          subject: `connection:${g.connectionId}`,
+          relation: `granted:${g.permission}`,
+          object: `scope:${input.scopeId}`,
+          expires_at: g.expiresAt ?? null,
+        })),
       ],
       // #406: identity links, delivered by the platform with provisioning exactly as
       // entitlements are (#310). Preserve-on-undefined, so an absent field never wipes
