@@ -89,14 +89,29 @@ async function cp(method, path) {
   return res.status === 204 ? undefined : res.json();
 }
 
+/** Walk a paged list route to exhaustion — every list egress answers the
+ *  `{ entries, nextCursor }` envelope (contracts pagination.ts) with a default
+ *  page size, so a bare GET silently truncates the directory. */
+async function cpAll(path) {
+  const all = [];
+  let cursor;
+  for (;;) {
+    const sep = path.includes('?') ? '&' : '?';
+    const page = await cp('GET', `${path}${sep}limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+    all.push(...page.entries);
+    if (page.nextCursor === null || page.nextCursor === undefined) return all;
+    cursor = page.nextCursor;
+  }
+}
+
 // -- gather the directory ----------------------------------------------------
 
 console.log(`${APPLY ? 'CLEANUP' : 'DRY RUN'} against ${cpUrl}\n`);
 
 const [tenants, scopes, hostnames] = await Promise.all([
-  cp('GET', '/tenants'),
-  cp('GET', '/scopes'),
-  cp('GET', '/hostnames'),
+  cpAll('/tenants'),
+  cpAll('/scopes'),
+  cpAll('/hostnames'),
 ]);
 const tenantById = new Map(tenants.map((t) => [t.id, t]));
 const scopeById = new Map(scopes.map((s) => [s.id, s]));
@@ -149,9 +164,9 @@ if (flag('--skip-wfp')) {
 } else if (!cfToken) {
   wfpNote = 'skipped — set CLOUDFLARE_API_TOKEN to include dispatch scripts';
 } else {
-  const verticals = await cp('GET', '/verticals');
+  const verticals = await cpAll('/verticals');
   const versionLists = await Promise.all(
-    verticals.map((v) => cp('GET', `/verticals/${encodeURIComponent(v.slug)}/versions`)),
+    verticals.map((v) => cpAll(`/verticals/${encodeURIComponent(v.slug)}/versions`)),
   );
   const recordedRefs = new Set(
     versionLists.flat().map((v) => v.deploymentRef).filter((r) => r != null),
