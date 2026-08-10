@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/console",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "private": true,
   "description": "The control-plane admin console (control-plane.md §4.5)",
   "type": "module",
