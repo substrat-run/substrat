@@ -257,6 +257,18 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // that landed — the operator's proof it exists, and the address to restore from.
     reapScope: (t: TenantId, s: ScopeId, opts: { backup?: boolean } = { backup: true }) =>
       post<Scope & { backup: ScopeBackup | null }>(`/tenants/${t}/scopes/${s}/reap`, opts),
+    // Move ONE scope onto a DIFFERENT vertical lineage's serving script (#389) — the
+    // update-rebind behind retiring a lineage in favour of another. Data-first with the
+    // source script kept as the backout. `ackMigrations` is the digest gate's override:
+    // the control plane refuses the crossing when the two lineages' migration digests
+    // differ unless the operator acknowledges having read both surfaces. `abandonData`
+    // is deliberately NOT exposed — it exists for pre-#236 relic scripts only, and a
+    // console that offers it invites moving an install while leaving its data behind.
+    rebindScopeVertical: (t: TenantId, s: ScopeId, vertical: string, opts: { ackMigrations?: boolean } = {}) =>
+      post<{ servingRef: string; versionId: string; alreadyBound?: boolean; tables?: number }>(
+        `/tenants/${t}/scopes/${s}/rebind-vertical`,
+        { vertical, ...opts },
+      ),
     /** The copies held for a scope, newest first — readable after the reap (the tombstone survives). */
     listScopeBackups: (t: TenantId, s: ScopeId) =>
       call<ScopeBackup[]>(`/tenants/${t}/scopes/${s}/backups`),
