@@ -4,11 +4,12 @@ import type {
   OpsFailureEntry,
   PromotionAcknowledgement,
   Scope,
+  ScopeId,
   Vertical,
   VerticalChannel,
   VerticalVersion,
 } from '@substrat-run/contracts';
-import { Badge, Button, Card, Checkbox, Dialog, Input, Select, Table, Tag } from '../components';
+import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
@@ -66,6 +67,19 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   const [retire, setRetire] = useState<{ scope: Scope; hostnames: string[] } | null>(null);
   const [retireInput, setRetireInput] = useState('');
 
+  // Bulk selection over the bound scopes, keyed by id so a reload never carries a stale
+  // row into an action — everything derives from the current `boundScopes`.
+  const [selectedIds, setSelectedIds] = useState<Set<ScopeId>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // Move-to-vertical (the #389 update-rebind): target lineages come from the registry,
+  // loaded when the dialog opens. `ack` is the migration-digest override the control
+  // plane demands when the two lineages' migration histories differ.
+  const [move, setMove] = useState<{ targets: { slug: string; name: string }[]; choice: string; ack: boolean } | null>(null);
+  // Bulk retire: every selected scope with the hostnames each will release, armed by
+  // typing the count (the Scopes-view convention for storage-wiping bulk actions).
+  const [bulkRetire, setBulkRetire] = useState<{ scopes: Scope[]; hostnames: Map<ScopeId, string[]> } | null>(null);
+  const [bulkArmed, setBulkArmed] = useState('');
+
   const loadDetail = useCallback(
     async (slug: string) => {
       try {
@@ -109,6 +123,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     setBoundScopes([]);
     setFailures([]);
     setVersionsShown(PAGE);
+    setSelectedIds(new Set());
     void loadDetail(vertical.slug);
   }, [vertical.slug, loadDetail]);
 
@@ -157,6 +172,125 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     ).then(() => setRetire(null));
   }
 
+  const selectedScopes = boundScopes.filter((s) => selectedIds.has(s.id));
+  // The rebind endpoint refuses a fork (reap and re-preview against the target instead),
+  // so snapshots ride the selection for retire but never for a move.
+  const movableScopes = selectedScopes.filter((s) => !s.forkedFrom);
+  const allSelected = boundScopes.length > 0 && selectedScopes.length === boundScopes.length;
+
+  function toggleOne(id: ScopeId, on: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  // Open the move dialog: the target list is the registry minus this vertical, loaded
+  // fresh so a just-created lineage (the exact migration use case) is offerable.
+  async function openMove() {
+    try {
+      const registry = await walkAll((p) => api.listVerticals(p));
+      const targets = registry
+        .filter((v) => v.slug !== vertical.slug)
+        .map((v) => ({ slug: v.slug, name: v.name }));
+      if (targets.length === 0) {
+        onToast('No target verticals', 'The registry has no other lineage to move onto.', 'danger');
+        return;
+      }
+      setMove({ targets, choice: targets[0]!.slug, ack: false });
+    } catch (e) {
+      onToast('Failed to load verticals', (e as Error).message, 'danger');
+    }
+  }
+
+  // Move every selected (non-fork) scope onto the target lineage's serving script —
+  // sequential, each its own audited rebind; a mid-run refusal is surfaced verbatim
+  // (the digest gate's message names the acknowledgement it wants) and stops the run,
+  // so the operator re-runs the remainder rather than half-acknowledging.
+  async function confirmMove() {
+    if (!move) return;
+    setBulkBusy(true);
+    let ok = 0;
+    let refusal: string | null = null;
+    for (const s of movableScopes) {
+      try {
+        await api.rebindScopeVertical(s.tenantId, s.id, move.choice, move.ack ? { ackMigrations: true } : {});
+        ok++;
+      } catch (e) {
+        refusal = `${s.slug}: ${(e as Error).message}`;
+        break;
+      }
+    }
+    setBulkBusy(false);
+    // On a refusal the dialog stays open WITH the selection, so the operator can read
+    // the message, tick the acknowledgement, and retry the remainder — scopes that did
+    // move drop out of the selection naturally when the reload removes them from the
+    // bound list.
+    if (refusal === null) {
+      setMove(null);
+      setSelectedIds(new Set());
+    }
+    onChanged();
+    await loadDetail(vertical.slug);
+    onToast(
+      `${ok} scope${ok === 1 ? '' : 's'} moved to ${move.choice}`,
+      refusal ?? undefined,
+      refusal ? 'danger' : 'success',
+    );
+  }
+
+  // Open the bulk retire confirm: pre-load every selected scope's hostnames so the
+  // dialog can name exactly what goes offline (the reap-safety lesson, at bulk scale).
+  async function openBulkRetire() {
+    try {
+      const hostnames = new Map<ScopeId, string[]>();
+      for (const s of selectedScopes) {
+        const hs = await walkAll((p) => api.listHostnames({ scopeId: s.id, ...p }));
+        hostnames.set(s.id, hs.map((h) => h.hostname));
+      }
+      setBulkArmed('');
+      setBulkRetire({ scopes: selectedScopes, hostnames });
+    } catch (e) {
+      onToast('Failed to load hostnames', (e as Error).message, 'danger');
+    }
+  }
+
+  // Retire the whole selection, each scope in the platform's own order (release names →
+  // fork-delete, or archive → reap). A mid-run failure is counted, not fatal — the
+  // reload shows exactly which rows remain.
+  async function confirmBulkRetire() {
+    if (!bulkRetire) return;
+    setBulkBusy(true);
+    let ok = 0;
+    let failed = 0;
+    for (const s of bulkRetire.scopes) {
+      try {
+        for (const h of bulkRetire.hostnames.get(s.id) ?? []) await api.unbindHostname(h);
+        if (s.forkedFrom) {
+          await api.deleteScope(s.tenantId, s.id);
+        } else {
+          if (s.status !== 'archived') await api.archiveScope(s.tenantId, s.id);
+          await api.reapScope(s.tenantId, s.id);
+        }
+        ok++;
+      } catch {
+        failed++;
+      }
+    }
+    setBulkBusy(false);
+    setBulkRetire(null);
+    setSelectedIds(new Set());
+    onChanged();
+    await loadDetail(vertical.slug);
+    onToast(
+      `${ok} scope${ok === 1 ? '' : 's'} retired`,
+      failed > 0 ? `${failed} failed` : undefined,
+      failed > 0 ? 'danger' : 'success',
+    );
+  }
+
   const versionById = (id: string) => versions.find((v) => v.id === id);
   const channelVersion = (ch: ChannelName) =>
     versionById(channels.find((c) => c.channel === ch)?.versionId ?? '');
@@ -171,6 +305,17 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   const ackSatisfied = (!permChanged || ack.permissionChange) && (!migChanged || ack.migrationChange);
 
   const scopeColumns: TableColumn<Scope>[] = [
+    {
+      header: '',
+      width: 36,
+      render: (s) => (
+        <SelectBox
+          checked={selectedIds.has(s.id)}
+          onChange={(on) => toggleOne(s.id, on)}
+          ariaLabel={`Select ${s.slug}`}
+        />
+      ),
+    },
     { header: 'Scope', render: (s) => <Tag mono>{s.slug}</Tag> },
     {
       header: 'Status',
@@ -474,9 +619,47 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
               <h4 style={{ margin: 0, fontSize: 13 }}>Bound scopes ({boundScopes.length})</h4>
               <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                installs still on this vertical — retire each before the vertical can be deleted
+                installs still on this vertical — move or retire each before the vertical can be deleted
               </span>
+              <span style={{ flex: 1 }} />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setSelectedIds(allSelected ? new Set() : new Set(boundScopes.map((s) => s.id)))}
+              >
+                {allSelected ? 'Clear selection' : 'Select all'}
+              </Button>
             </div>
+            {/* Bulk bar — Move rides the #389 rebind (data-first, source kept as backout);
+                Retire wipes storage and is armed by typing the count in its dialog. */}
+            {selectedScopes.length > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: '8px 12px',
+                  marginBottom: 8,
+                  borderRadius: 8,
+                  border: '1px solid var(--border-default)',
+                  background: 'var(--surface-inset)',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
+                  {selectedScopes.length} selected
+                </span>
+                <span style={{ flex: 1 }} />
+                {movableScopes.length > 0 && (
+                  <Button size="sm" variant="secondary" disabled={bulkBusy} onClick={() => void openMove()}>
+                    Move to vertical… ({movableScopes.length})
+                  </Button>
+                )}
+                <Button size="sm" variant="danger" disabled={bulkBusy} onClick={() => void openBulkRetire()}>
+                  Retire… ({selectedScopes.length})
+                </Button>
+              </div>
+            )}
             <Table columns={scopeColumns} rows={boundScopes} emptyText="" />
           </div>
         )}
@@ -554,6 +737,95 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
               placeholder={retire.scope.slug}
               value={retireInput}
               onChange={(e) => setRetireInput(e.target.value)}
+            />
+          </div>
+        )}
+      </Dialog>
+
+      {/* Move — the #389 update-rebind, from the console. Data-first: the target's serving
+          script gets the data, the source script stays as the backout, and the control
+          plane's digest gate refuses a crossing between diverged migration histories
+          unless acknowledged. Forks never move (reap and re-preview against the target). */}
+      <Dialog
+        open={move !== null}
+        title={`Move ${movableScopes.length} scope${movableScopes.length === 1 ? '' : 's'} to another vertical`}
+        description="Rebinds each scope onto the target lineage's serving script, data first. The source script is kept as the backout. Refused per scope when the migration digests differ, unless acknowledged."
+        confirmLabel={bulkBusy ? 'Moving…' : 'Move scopes'}
+        confirmDisabled={bulkBusy || !move?.choice || movableScopes.length === 0}
+        onConfirm={() => void confirmMove()}
+        onCancel={() => setMove(null)}
+      >
+        {move && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {movableScopes.map((s) => (
+                <Tag key={s.id} mono>
+                  {s.slug}
+                </Tag>
+              ))}
+            </div>
+            {selectedScopes.length > movableScopes.length && (
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                {selectedScopes.length - movableScopes.length} selected snapshot fork(s) stay behind — a fork
+                cannot be rebound; reap it and re-preview against the target.
+              </span>
+            )}
+            <Select
+              label="Target vertical"
+              value={move.choice}
+              onChange={(e) => setMove({ ...move, choice: e.target.value })}
+              options={move.targets.map((t) => ({ value: t.slug, label: `${t.name} — ${t.slug}` }))}
+            />
+            <Checkbox
+              label="Migration histories differ — I have read both"
+              description="Only needed when the scope's bound version and the target's serving version carry different migration digests; the control plane refuses the crossing otherwise."
+              checked={move.ack}
+              onChange={(v) => setMove({ ...move, ack: v })}
+            />
+          </div>
+        )}
+      </Dialog>
+
+      {/* Bulk retire — the single-scope retire at selection scale. Names every hostname
+          that goes offline, and arms by typing the count (the storage-wiping bulk
+          convention from the fleet view): there is no restore. */}
+      <Dialog
+        open={bulkRetire !== null}
+        danger
+        title={bulkRetire ? `Retire ${bulkRetire.scopes.length} scope${bulkRetire.scopes.length === 1 ? '' : 's'}` : ''}
+        description="For each scope: unbinds its hostnames, then archives and reaps it (a snapshot fork is hard-deleted). Storage is wiped. Irreversible; there is no restore."
+        confirmLabel={bulkBusy ? 'Retiring…' : 'Retire scopes'}
+        confirmDisabled={bulkBusy || bulkArmed !== String(bulkRetire?.scopes.length ?? 0)}
+        onConfirm={() => void confirmBulkRetire()}
+        onCancel={() => setBulkRetire(null)}
+      >
+        {bulkRetire && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 240, overflowY: 'auto' }}>
+              {bulkRetire.scopes.map((s) => {
+                const names = bulkRetire.hostnames.get(s.id) ?? [];
+                return (
+                  <div key={s.id} style={{ fontSize: 12.5, display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 6 }}>
+                    <Tag mono>{s.slug}</Tag>
+                    {names.length > 0 ? (
+                      names.map((h) => (
+                        <span key={h} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-tertiary)' }}>
+                          {h}
+                        </span>
+                      ))
+                    ) : (
+                      <span style={{ color: 'var(--text-placeholder)' }}>no hostnames</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <Input
+              label={`Type ${bulkRetire.scopes.length} to confirm`}
+              mono
+              placeholder={String(bulkRetire.scopes.length)}
+              value={bulkArmed}
+              onChange={(e) => setBulkArmed(e.target.value)}
             />
           </div>
         )}
