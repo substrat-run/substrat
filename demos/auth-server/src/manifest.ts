@@ -16,9 +16,9 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
   {
     key: 'PUBLIC_ORIGIN',
     label: 'Issuer origin',
-    description: 'The canonical public URL of this issuer. Becomes the OIDC `issuer` and the base of every discovery/token/JWKS URL.',
-    placeholder: 'https://auth.example.com',
-    required: true,
+    description: 'Optional pin for the OIDC `issuer`. Leave blank on the platform: the issuer derives itself from the hostname each request arrives on (the install’s platform hostname or a bound custom domain), so discovery is always self-consistent. Set only when the request origin cannot be trusted (e.g. standalone behind a rewriting proxy).',
+    placeholder: 'blank ⇒ the hostname the request arrived on',
+    required: false,
     secret: false,
     group: 'Issuer',
   },
