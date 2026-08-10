@@ -1,5 +1,37 @@
 # @substrat-run/dashboard
 
+## 0.19.0
+
+### Minor Changes
+
+- c9911ea: feat(contracts,cli,dashboard): the deploy workflow learns a package directory — monorepos connect nested verticals
+
+  The generated GitHub workflow assumed the vertical is the repo root: install at
+  root, `push .`, version gates on the root package.json. `DeployWorkflowOptions`
+  gains `path` — pushes and previews build that directory, both version gates read
+  ITS package.json, and the triggers gain an editable `paths:` filter so an
+  unrelated merge does not deploy the package. Threaded through all three writers:
+  `substrat init --ci github --path <dir>`, the dashboard's setup-ci and
+  workflow-preview endpoints (the slug now derives from the directory basename,
+  not the repo name), and a directory field in the connect form. Root spellings
+  collapse to the pathless file; traversal is refused in the generator. The CLI's
+  top-level errors now carry an `error:` prefix so a failure is not read as more
+  wrangler chatter.
+
+### Patch Changes
+
+- Updated dependencies [c9911ea]
+  - @substrat-run/contracts@0.57.0
+  - @substrat-run/demo-callout@0.2.12
+  - @substrat-run/demo-manyfold@0.6.12
+  - @substrat-run/demo-meridian@0.4.12
+  - @substrat-run/engine-invites@0.1.2
+  - @substrat-run/engine-invoicing@0.5.13
+  - @substrat-run/engine-protocol@0.5.15
+  - @substrat-run/engine-workorder@0.3.55
+  - @substrat-run/adapter-cloudflare@0.57.0
+  - @substrat-run/kernel@0.57.0
+
 ## 0.18.1
 
 ### Patch Changes
