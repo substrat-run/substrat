@@ -215,7 +215,22 @@ export const connectionActivityEntry = z.object({
 });
 export type ConnectionActivityEntry = z.infer<typeof connectionActivityEntry>;
 
+/**
+ * Where a set of activity entries came from (#605). Two genuinely different questions,
+ * and a console that answers one while the operator asked the other is worse than one
+ * that answers neither:
+ *
+ * - `ledger` — what THIS platform sent through this connection. Complete for our own
+ *   traffic, blind to everything else in the provider account.
+ * - `provider` — what the provider currently holds, listed from its own API. Includes
+ *   documents nobody here created (someone using Scrive's own UI), and is bounded by
+ *   whatever page the connector asked for.
+ */
+export const connectionActivitySource = z.enum(['ledger', 'provider']);
+export type ConnectionActivitySource = z.infer<typeof connectionActivitySource>;
+
 export const connectionActivity = z.object({
+  source: connectionActivitySource.default('ledger'),
   entries: z.array(connectionActivityEntry),
   /**
    * True when the entries carry the provider's CURRENT state (a live read happened),
@@ -226,3 +241,35 @@ export const connectionActivity = z.object({
   live: z.boolean(),
 });
 export type ConnectionActivity = z.infer<typeof connectionActivity>;
+
+/**
+ * One stored credential field, as a console may see it (#605).
+ *
+ * The store's rule is that a credential goes in and never comes out: `Connection` cannot
+ * carry a secret (contract-tested), and no route returns `connectionSecret`. That rule
+ * stands. What it left, though, was a screen where "connected" and "connected with the
+ * wrong keys" looked identical, and the only repair offered was to paste all four fields
+ * again blind.
+ *
+ * So this is a deliberate, bounded disclosure with two rules:
+ *
+ * 1. **Only the connector may produce it.** It knows which of its fields are IDENTIFIERS
+ *    (Scrive's `clientId`/`tokenId` — the labels its own UI calls "credentials
+ *    identifier") and which are secrets. The platform cannot guess, and must not.
+ * 2. **A secret field is never returned whole.** `masked: true` means the value has been
+ *    reduced — the shipped rule is a bullet run plus the last four characters, enough to
+ *    tell two credentials apart by eye and not enough to use. A short value is masked
+ *    entirely rather than mostly revealed.
+ */
+export const connectionCredentialField = z.object({
+  key: z.string().min(1).max(64),
+  /** The provider's own name for the field, as its UI writes it. */
+  label: z.string().min(1).max(80),
+  /** Verbatim when `masked` is false; reduced when true. Never the whole secret. */
+  value: z.string().max(200),
+  masked: z.boolean(),
+});
+export type ConnectionCredentialField = z.infer<typeof connectionCredentialField>;
+
+export const connectionCredential = z.object({ fields: z.array(connectionCredentialField).max(16) });
+export type ConnectionCredential = z.infer<typeof connectionCredential>;

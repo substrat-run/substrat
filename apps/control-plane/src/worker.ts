@@ -51,6 +51,7 @@ import {
   scriveCallbackPath,
   scriveConnectionActivity,
   scriveConnector,
+  scriveCredentialSummary,
   sweepScriveReconciliations,
 } from '@substrat-run/connector-scrive';
 import {
@@ -1111,7 +1112,9 @@ export default {
                 fetch: globalThis.fetch as unknown as FetchLike,
                 baseUrl: env.SCRIVE_BASE_URL,
                 live: opts.live,
+                source: opts.source,
               }),
+            credential: (h, row) => scriveCredentialSummary(h, row),
           },
         },
         // Where the refs the console shows actually resolve, so staff get a link into the

@@ -587,14 +587,32 @@ export interface ConnectionActivityEntryView {
 }
 
 /**
- * `GET /api/apps/:scope/integrations/:provider/activity` — the ledger, plus the grants
- * the connection holds. `live` says whether the statuses are the provider's current
- * truth or the platform's own record; a UI must not blur the two.
+ * One stored credential field as the console may see it: identifiers whole, secrets
+ * reduced by the connector to a bullet run plus their last four characters. Never enough
+ * to use — enough to tell two credentials apart.
+ */
+export interface ConnectionCredentialFieldView {
+  key: string;
+  label: string;
+  value: string;
+  masked: boolean;
+}
+
+/**
+ * `GET /api/apps/:scope/integrations/:provider/activity` — activity, plus the grants the
+ * connection holds and the masked credential.
+ *
+ * Two dials, two different questions. `source` is `ledger` (what this platform sent) or
+ * `provider` (what the provider's own archive holds, including documents nobody here
+ * created) — neither is a superset. `live` says whether ledger statuses were refreshed
+ * against the provider; a UI must not blur the platform's record with the provider's.
  */
 export interface ConnectionActivityView {
+  source: 'ledger' | 'provider';
   entries: ConnectionActivityEntryView[];
   live: boolean;
   grants: string[];
+  credential: ConnectionCredentialFieldView[];
 }
 
 /** One hostname bound to the app's scope (the Domains tab). */
@@ -911,11 +929,20 @@ export const api = {
       `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/verify`,
       { method: 'POST' },
     ),
-  /** What the connection has done (the connector's ledger) and what it may invoke. */
-  integrationActivity: (scopeId: string, provider: string, opts: { live?: boolean } = {}) =>
-    call<ConnectionActivityView>(
-      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/activity${opts.live ? '?live=1' : ''}`,
-    ),
+  /** What the connection has done (or what the provider holds), plus grants and the masked credential. */
+  integrationActivity: (
+    scopeId: string,
+    provider: string,
+    opts: { live?: boolean; source?: 'ledger' | 'provider' } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (opts.live) q.set('live', '1');
+    if (opts.source === 'provider') q.set('source', 'provider');
+    const qs = q.toString();
+    return call<ConnectionActivityView>(
+      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/activity${qs ? `?${qs}` : ''}`,
+    );
+  },
   /** Disconnect a provider (terminal — reconnecting creates a new connection). */
   disconnectIntegration: (scopeId: string, provider: string) =>
     call<void>(`/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}`, { method: 'DELETE' }),

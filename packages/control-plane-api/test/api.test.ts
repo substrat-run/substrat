@@ -669,6 +669,7 @@ describe('control-plane API', () => {
     // A stand-in connector: the routes are pure transport over the declared shape, and
     // proving that means proving they carry a provider's answer without interpreting it.
     let sawLive: boolean | undefined;
+    let sawSource: string | undefined;
     const inspected = createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
@@ -683,7 +684,9 @@ describe('control-plane API', () => {
           }),
           activity: async (_h, _row, opts) => {
             sawLive = opts.live;
+            sawSource = opts.source;
             return {
+              source: opts.source,
               live: opts.live,
               entries: [
                 {
@@ -697,6 +700,12 @@ describe('control-plane API', () => {
               ],
             };
           },
+          credential: async () => ({
+            fields: [
+              { key: 'clientId', label: 'Client credentials identifier', value: 'ci', masked: false },
+              { key: 'clientSecret', label: 'Client credentials secret', value: '••••••••', masked: true },
+            ],
+          }),
         },
       },
     });
@@ -709,10 +718,26 @@ describe('control-plane API', () => {
     const activity = await ireq(`/tenants/${t1}/connections/${created.connectionId}/activity?live=1`);
     expect(activity.status).toBe(200);
     expect(sawLive).toBe(true);
-    expect(await activity.json()).toMatchObject({ live: true, entries: [{ reference: 'doc-1' }] });
+    expect(await activity.json()).toMatchObject({ source: 'ledger', live: true, entries: [{ reference: 'doc-1' }] });
     // Absent `live` means the ledger's own view — the flag is never assumed.
     await ireq(`/tenants/${t1}/connections/${created.connectionId}/activity`);
     expect(sawLive).toBe(false);
+    expect(sawSource).toBe('ledger');
+
+    // `source=provider` asks the other question; a nonsense value falls back to the
+    // ledger rather than 400ing, because the default is always a safe answer.
+    await ireq(`/tenants/${t1}/connections/${created.connectionId}/activity?source=provider`);
+    expect(sawSource).toBe('provider');
+    await ireq(`/tenants/${t1}/connections/${created.connectionId}/activity?source=nonsense`);
+    expect(sawSource).toBe('ledger');
+
+    // The credential view: identifiers whole, secrets reduced — and the plaintext the
+    // store holds never appears in it.
+    const credential = await ireq(`/tenants/${t1}/connections/${created.connectionId}/credential`);
+    expect(credential.status).toBe(200);
+    const body = await credential.text();
+    expect(JSON.parse(body)).toMatchObject({ fields: [{ key: 'clientId', masked: false }, { masked: true }] });
+    expect(body).not.toContain('SECRET');
 
     // K-3 existence hiding, the same law as revoke: a foreign tenant's connection id and
     // an absent one are indistinguishable.
@@ -723,6 +748,7 @@ describe('control-plane API', () => {
     // 200 would read as "your credential is fine".
     expect((await req(`/tenants/${t1}/connections/${created.connectionId}/verify`, { method: 'POST' })).status).toBe(501);
     expect((await req(`/tenants/${t1}/connections/${created.connectionId}/activity`)).status).toBe(501);
+    expect((await req(`/tenants/${t1}/connections/${created.connectionId}/credential`)).status).toBe(501);
 
     // A revoked connection has no secret left to probe with — 404, like an absent one.
     await host.admin.revokeConnection(staff, connectionId.parse(created.connectionId));

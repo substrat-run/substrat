@@ -374,7 +374,9 @@ directory, the secret box, and sanctioned egress):
 | Route | Answers |
 |---|---|
 | `POST /tenants/:t/connections/:id/verify` | Does the provider accept this credential, and whose account is it? |
-| `GET /tenants/:t/connections/:id/activity[?live=1]` | What has this connection actually done? |
+| `GET /tenants/:t/connections/:id/activity[?live=1]` | What has this connection sent? |
+| `GET …/activity?source=provider` | What does the provider's own archive hold? |
+| `GET /tenants/:t/connections/:id/credential` | Which credential is loaded here? |
 
 Four properties make them safe to have:
 
@@ -390,13 +392,36 @@ Four properties make them safe to have:
    (`connectionActivityEntry`), which makes redaction structural rather than something each route
    has to remember.
 4. **The ledger's view and the provider's view are different facts.** `?live=1` joins current
-   provider state; the response says which it got (`live`), and a provider failure degrades to the
-   ledger rather than failing the read. A console that blurs the two invents facts.
+   provider state onto our rows; the response says which it got (`live`), and a provider failure
+   degrades to the ledger rather than failing the read. `?source=provider` asks the *other*
+   question — list the provider's own archive, including records nobody here created — and it
+   deliberately does NOT degrade: an empty list would read as "the account is empty", which is a
+   lie an operator would act on. Neither view is a superset, so `source` travels in the answer.
 
 Wiring is `connectionInspectors`, host-injected and keyed by provider — the same idiom as the
 sweep's `sweepers` — so `control-plane-api` still imports no connector. An unregistered provider
 **501s**: "this platform cannot verify a Fortnox key yet" is true, and an empty `200` would read
 as "your Fortnox key is fine".
+
+#### The credential view — a bounded exception to write-only
+
+The store's rule is that a credential goes in and never comes out: `Connection` cannot carry a
+secret (contract-tested), and no route returns `connectionSecret`. That rule stands, but taken
+alone it produced a screen where **"connected" and "connected with a mistyped token" looked
+identical**, and the only repair offered was to paste every field again blind.
+
+So `GET …/credential` answers a *reduced* view, under two rules:
+
+1. **Only the connector may produce it.** It is the one party that knows which of its fields are
+   identifiers and which are secrets — Scrive's own UI calls two of its four "credentials
+   identifier". The platform cannot guess, and must not.
+2. **A secret is never returned whole.** The shipped rule is a bullet run plus the last four
+   characters; anything shorter than eight characters is masked entirely rather than mostly
+   revealed. Enough to tell two credentials apart by eye, never enough to sign a request.
+
+The plaintext is unsealed control-plane-side for the length of the call, like `openConnection`,
+and is not audited for the same reason. Replacing a credential is still rotation — there is no
+edit-in-place and no reveal.
 
 **Still open.** A bounded outcome history (a ~20-row ring buffer next to `recordConnectionUse`)
 would turn "last error" into "the last twenty calls"; the activity view covers dispatches, not

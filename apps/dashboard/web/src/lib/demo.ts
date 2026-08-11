@@ -213,8 +213,15 @@ export const MOCK_CONNECTION_PROBE: ConnectionProbeView = {
  * is the platform's own record, which is exactly the distinction the real view keeps.
  */
 export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
+  source: 'ledger',
   live: false,
   grants: ['protocol:record-signature', 'protocol:attach'],
+  credential: [
+    { key: 'clientId', label: 'Client credentials identifier', value: '3d4e9f21c0a84b17', masked: false },
+    { key: 'clientSecret', label: 'Client credentials secret', value: '••••••••a91f', masked: true },
+    { key: 'tokenId', label: 'Token credentials identifier', value: '8b2c17de40915a63', masked: false },
+    { key: 'tokenSecret', label: 'Token credentials secret', value: '••••••••7c04', masked: true },
+  ],
   entries: [
     {
       key: 'scrive:dispatch:01MOCKINSTANCE000000000001',
@@ -238,6 +245,44 @@ export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
         { label: 'Acme AB', value: 'signature recorded' },
         { label: 'Sealed copy', value: 'stored on the instance' },
       ],
+    },
+  ],
+};
+
+/**
+ * The provider's own archive — the other question the detail view can ask. Note the
+ * third row: a document nobody here created, which is exactly what the ledger cannot
+ * show and why the two views are separate rather than one with a filter.
+ */
+export const MOCK_PROVIDER_DOCUMENTS: ConnectionActivityView = {
+  source: 'provider',
+  live: true,
+  grants: MOCK_CONNECTION_ACTIVITY.grants,
+  credential: MOCK_CONNECTION_ACTIVITY.credential,
+  entries: [
+    {
+      key: 'scrive:document:8222115557388321607',
+      title: 'Serviceavtal v3',
+      reference: '8222115557388321607',
+      status: 'awaiting signatures',
+      at: new Date(Date.now() - 7200_000).toISOString(),
+      facts: [{ label: 'Sent from', value: 'this app' }],
+    },
+    {
+      key: 'scrive:document:8222115557388321444',
+      title: 'Uppsägning v1',
+      reference: '8222115557388321444',
+      status: 'signed',
+      at: new Date(Date.now() - 86400_000 * 3).toISOString(),
+      facts: [{ label: 'Sent from', value: 'this app' }],
+    },
+    {
+      key: 'scrive:document:8222115557388320001',
+      title: 'Hyresavtal (skickat från Scrive)',
+      reference: '8222115557388320001',
+      status: 'signed',
+      at: new Date(Date.now() - 86400_000 * 12).toISOString(),
+      facts: [{ label: 'Sent from', value: 'elsewhere in this Scrive account' }],
     },
   ],
 };
