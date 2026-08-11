@@ -1,5 +1,11 @@
 # @substrat-run/cli
 
+## 0.22.2
+
+### Patch Changes
+
+- @substrat-run/contracts@0.59.0
+
 ## 0.22.1
 
 ### Patch Changes
