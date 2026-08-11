@@ -13,6 +13,11 @@
 	// internet.
 	"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run" },
 
+	// Egress metering (#303, D-30 "meter, don't bill"): one datapoint per subrequest
+	// decision — index = vertical slug; blobs = [hostname, verdict, tenant]. This is what
+	// keeps the unenforced tail (pre-#303 versions) and refusal spikes visible.
+	"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_egress" }],
+
 	// No public route and no workers.dev hostname: this worker is only ever reached as the
 	// dispatch namespace's outbound worker, never addressed directly.
 	"workers_dev": false,
@@ -26,6 +31,7 @@
 			// Test hosts (`*.global.test.substrat.run`) still end in `substrat.run`, so the same
 			// base-domain match routes them; the differing ROUTER binding keeps test loops off prod.
 			"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run" },
+			"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_egress_test" }], // differs: test data stays out of prod charts
 			"workers_dev": false,
 			"observability": { "enabled": true }
 		}

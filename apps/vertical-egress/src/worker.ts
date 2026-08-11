@@ -1,34 +1,53 @@
 /**
- * The vertical egress worker (#442; control-plane.md §4.7, K-27).
+ * The vertical egress worker (#442, #303; control-plane.md §4.7, K-27, D-46).
  *
  * A Workers-for-Platforms **outbound worker** bound to the `substrat-verticals`
  * dispatch namespace. Every `fetch()` a dispatched vertical makes is routed through
  * here before it leaves — Cloudflare invokes this worker in place of the user worker's
  * subrequest (workers-for-platforms/configuration/outbound-workers).
  *
- * It exists to close one structural gap: a vertical calling another vertical's public
- * `*.substrat.run` API. That is a **same-zone** subrequest, and a same-zone worker
- * subrequest never re-enters the router — it falls through to an origin that isn't
- * there and times out at the edge (522). The concrete casualty was OIDC: the AuthHero
- * console worker fetching its issuer's JWKS (`{issuer}/.well-known/jwks.json`, another
- * vertical on our own zone) 522'd, so every valid login 401'd (#442).
+ * It answers two questions per subrequest:
  *
- * The fix is to send platform-bound egress back **through the router** — the one worker
- * that resolves `hostname → (tenant, scope, vertical)` and dispatches. We reach it over
- * a service binding (`env.ROUTER`), which is a direct in-process call, not an edge
- * subrequest, so it dodges the same-zone loopback entirely. This keeps K-27 intact: the
- * vertical still reaches the platform *only through the router* — this worker is just the
- * plumbing that makes a plain `fetch('https://other.global.substrat.run/…')` take that
- * path instead of dying.
+ * 1. **Is the destination ours?** (#442) A vertical calling another vertical's public
+ *    `*.substrat.run` API is a **same-zone** subrequest, which never re-enters the router —
+ *    it falls through to an origin that isn't there and times out at the edge (522). The
+ *    concrete casualty was OIDC: the AuthHero console worker fetching its issuer's JWKS
+ *    522'd, so every valid login 401'd. Platform-bound egress is handed to `env.ROUTER`
+ *    (a service binding — a direct in-process call), re-entering resolution + dispatch.
+ *    This keeps K-27 intact: the vertical reaches the platform *only through the router*.
  *
- * Everything else — a connector hitting a third-party API, any call to a host that is
- * NOT ours — passes straight through to the public internet, untouched.
+ * 2. **May this vertical call this third party?** (#303, D-46) The router passes the
+ *    dispatched version's DECLARED outbound surface — package.json `substrat.outbound`,
+ *    carried in the deploy manifest, reviewed at the admit checkpoint — as the
+ *    `OUTBOUND_POLICY` dispatch parameter. A declared host passes untouched; an
+ *    undeclared one is refused with a body that says exactly what to declare. A version
+ *    pushed before the declaration existed carries no list (`hosts: null`) and passes
+ *    through unenforced until its next push — but every verdict, including that one, is
+ *    metered (D-30: meter, don't bill), so the unenforced tail is visible, not silent.
  *
- * Deliberately transparent: verticals need no SDK, no special client, no code change.
- * And deliberately minimal — it routes by *destination* only. A caller-identity story
- * (who may call whom, per #303's outbound network policy) layers on top here later; the
- * dispatch binding can pass the calling script as an outbound `parameter` when that lands.
+ * Deliberately transparent on the allowed path: verticals need no SDK, no special
+ * client, no code change — a plain `fetch('https://api.example.com/…')` just works once
+ * declared.
+ *
+ * Honest limits (self-serve-deploy.md §4.2): Cloudflare outbound workers do not
+ * intercept subrequests made from inside Durable Objects, so a DO-originated fetch
+ * bypasses this policy today — worker-context egress is what is actually policed. The
+ * flip side is free: attaching an outbound worker disables raw TCP `connect()` for
+ * every dispatched script, so sockets are closed entirely.
  */
+
+import { matchesOutboundHost } from '@substrat-run/contracts';
+
+/** What the router passes per dispatch (its `OutboundPolicy` — one shape, two ends). */
+export interface OutboundPolicy {
+  /** The dispatched vertical's slug — meter attribution and refusal messages. */
+  slug: string | null;
+  /** The tenant the request was dispatched for — meter attribution only. */
+  tenant: string;
+  /** The declared outbound surface of the version the script serves. `null` = a
+   *  pre-#303 manifest: unenforced (metered only) until the vertical's next push. */
+  hosts: string[] | null;
+}
 
 export interface Env {
   /**
@@ -48,6 +67,22 @@ export interface Env {
    * through — a safe default that never misroutes external traffic into the router.
    */
   PLATFORM_BASE_DOMAINS?: string;
+  /**
+   * The per-dispatch outbound policy (#303, D-46) — NOT a deploy-time var: the router sets
+   * it on every `DISPATCH.get(…, { outbound: { OUTBOUND_POLICY } })`, and the dispatch
+   * binding's `parameters` list is what lets it land here. Absent when the dispatcher
+   * passed none (an older router): everything passes through unenforced, exactly like a
+   * pre-#303 manifest, because a policy that can be dropped by config must fail open on
+   * the platform's own plumbing and closed only on what a builder actually declared.
+   */
+  OUTBOUND_POLICY?: OutboundPolicy;
+  /**
+   * Per-subrequest egress metering (D-30: meter, don't bill): one datapoint per decision,
+   * index = vertical slug. This is the observability that makes the unenforced tail
+   * (pre-#303 versions) and any refusal spike visible without reading logs. Optional —
+   * metering must never fail a request, and dev/test runs without the dataset.
+   */
+  ANALYTICS?: AnalyticsEngineDataset;
 }
 
 /** Parse the platform base domains, mirroring the control plane's `platformBaseDomains`. */
@@ -68,6 +103,22 @@ function isPlatformHost(hostname: string, bases: string[]): boolean {
   return bases.some((b) => h === b || h.endsWith(`.${b}`));
 }
 
+/** Where a subrequest ended up: the four verdicts the meter distinguishes. */
+type Verdict = 'platform' | 'allowed' | 'unenforced' | 'refused';
+
+/** One datapoint per decision — append-only shape, like the router's request meter:
+ *  index [slug]; blobs [hostname, verdict, tenant]. */
+function meter(env: Env, hostname: string, verdict: Verdict): void {
+  try {
+    env.ANALYTICS?.writeDataPoint({
+      indexes: [env.OUTBOUND_POLICY?.slug ?? ''],
+      blobs: [hostname, verdict, env.OUTBOUND_POLICY?.tenant ?? ''],
+    });
+  } catch {
+    // Metering must never fail a request.
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const hostname = new URL(request.url).hostname;
@@ -75,11 +126,37 @@ export default {
       // Same-zone: hand it to the router over the service binding so it re-enters
       // resolution+dispatch instead of dying at the edge (522). The router strips any
       // inbound `x-substrat-*` and re-asserts the destination's node itself, so the
-      // caller cannot forge the tenant it lands as.
+      // caller cannot forge the tenant it lands as. Policy never applies here — the
+      // router's own resolution + the destination vertical's auth are the gate.
+      meter(env, hostname, 'platform');
       return env.ROUTER.fetch(request);
     }
-    // The outside world: pass through untouched. This is the only place a vertical's
-    // subrequest actually leaves for the public internet.
-    return fetch(request);
+    const policy = env.OUTBOUND_POLICY;
+    if (!policy || policy.hosts === null) {
+      // No declared surface travelled with this dispatch: a pre-#303 version (or a
+      // dispatcher that passed no policy). Unenforced by design — least privilege
+      // arrives version by version, not as a fleet outage — but never invisible.
+      meter(env, hostname, 'unenforced');
+      return fetch(request);
+    }
+    if (matchesOutboundHost(hostname, policy.hosts)) {
+      // The one place a vertical's subrequest actually leaves for the public internet.
+      meter(env, hostname, 'allowed');
+      return fetch(request);
+    }
+    meter(env, hostname, 'refused');
+    return new Response(
+      JSON.stringify({
+        error: 'outbound refused',
+        host: hostname,
+        vertical: policy.slug,
+        detail:
+          `'${hostname}' is not in this vertical's declared outbound surface. ` +
+          `Add it to package.json substrat.outbound (e.g. ["${hostname}"]) and push a new ` +
+          'version — the declaration is reviewed at the admit checkpoint ' +
+          '(self-serve-deploy.md §4.2, #303).',
+      }),
+      { status: 403, headers: { 'content-type': 'application/json' } },
+    );
   },
 };

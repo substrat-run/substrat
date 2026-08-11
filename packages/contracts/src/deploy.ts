@@ -207,6 +207,57 @@ export const runtimeNeeds = z.object({
 export type RuntimeNeeds = z.infer<typeof runtimeNeeds>;
 
 /**
+ * One declared outbound destination (#303, D-46): a lowercase hostname the vertical's
+ * worker may `fetch()` directly, or a `*.`-prefixed wildcard matching any subdomain depth
+ * (`*.googleapis.com` matches `oauth2.googleapis.com` and `a.b.googleapis.com`, never the
+ * apex `googleapis.com` — declare the apex separately if it is called). Hostname only:
+ * no scheme, no port, no path, no embedded wildcards. IDNs are declared in punycode,
+ * because that is the hostname the runtime sees.
+ */
+export const outboundHost = z
+  .string()
+  .max(253)
+  .regex(
+    /^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]([a-z0-9-]*[a-z0-9])?$/,
+    'a lowercase hostname (api.example.com) or a *.-prefixed wildcard (*.example.com)',
+  );
+export type OutboundHost = z.infer<typeof outboundHost>;
+
+/**
+ * Does a destination hostname match the vertical's declared outbound surface? One
+ * implementation for every seam that answers the question — the egress worker enforcing
+ * (apps/vertical-egress), the CLI predicting, a console rendering — so "allowed" cannot
+ * mean different things at different layers. Exact entries match exactly; `*.` entries
+ * match any subdomain depth but never the apex. Case-insensitive on the hostname side
+ * (DNS is), strict on the declared side (the schema only admits lowercase).
+ */
+export function matchesOutboundHost(hostname: string, declared: readonly string[]): boolean {
+  const h = hostname.toLowerCase();
+  // `*.example.com` → suffix `.example.com`: the retained dot is the label boundary, so
+  // the apex and any `evil-example.com` lookalike never match.
+  return declared.some((d) => (d.startsWith('*.') ? h.endsWith(d.slice(1)) : h === d));
+}
+
+/**
+ * Lift the declared `outbound` surface out of a STORED manifest's JSON (#303) without
+ * re-parsing the whole manifest through the schema — a version list should not pay a full
+ * manifest validation per row, and a legacy manifest predating the field must read as
+ * null (unenforced) rather than fail. Null in ⇒ null out; malformed JSON reads as null,
+ * because a manifest that never parsed also never served.
+ */
+export function outboundOfManifestJson(manifestJson: string | null | undefined): string[] | null {
+  if (!manifestJson) return null;
+  try {
+    const m = JSON.parse(manifestJson) as { outbound?: unknown };
+    return Array.isArray(m.outbound)
+      ? m.outbound.filter((h): h is string => typeof h === 'string')
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The §4 sandbox allowlist: the binding types a hosted vertical may declare, because each
  * is one of its OWN resources and carries no reach into platform infrastructure. This is a
  * POSITIVE allowlist — anything not named here is refused (self-serve-deploy.md §4), the
@@ -219,8 +270,9 @@ export type RuntimeNeeds = z.infer<typeof runtimeNeeds>;
  *   platform through the router (K-27), never a service binding. No own sibling to bind.
  * - `dispatch_namespace` — the platform's Workers-for-Platforms fabric, never a vertical's.
  * - anything managed/egress-shaped (`ai`, `browser`, `vectorize`, `hyperdrive`, `send_email`,
- *   `mtls_certificate`) — the outside world is a connector concern, and outbound policy is an
- *   open question (§6 / #303); least-privilege means these are refused until decided.
+ *   `mtls_certificate`) — the outside world is a connector concern, and a vertical's own
+ *   direct egress is the DECLARED `outbound` host list (#303, D-46), enforced by the egress
+ *   worker — never a binding-shaped capability.
  *
  * NOT on this list because it is not a binding at all: **native static assets** (#340). They
  * are a top-level upload path (`assets: { jwt, config }` in the script metadata), so they can
@@ -509,6 +561,16 @@ export const deployManifest = z.object({
    *  tenant-provisioner capability stays a staff-flipped registry flag; this feeds the
    *  console's requested/granted review surface and bounds `provision-tenant` targets. */
   provisions: z.array(verticalSlug).optional(),
+  /** The vertical's DECLARED outbound surface (#303, D-46): the third-party hosts its
+   *  worker `fetch()`es directly. Versioned with the code (each version's manifest carries
+   *  its own list, lifted onto the version record), so widening it is visible at the admit
+   *  checkpoint — a policy change ships only by shipping a version. The dispatch
+   *  egress worker enforces it per subrequest: platform hosts always loop back through the
+   *  router (K-27), declared hosts pass, anything else is refused with a pointer here.
+   *  `[]` = no direct third-party egress (the right answer for most verticals — connectors
+   *  and the email relay are platform-side and need no declaration). ABSENT = pushed by a
+   *  pre-#303 CLI: unenforced (metered only) until the next push, which always carries it. */
+  outbound: z.array(outboundHost).max(32).optional(),
   /** DECLARED email-sender intent (#303): this vertical wants to send transactional mail
    *  (password-reset, verification, invites) — package.json `substrat.sendsEmail`. Outbound
    *  is a platform concern (deploy.ts §4 keeps `send_email` OUT of the sandbox allowlist and

@@ -59,11 +59,14 @@
 	// The egress worker must already exist when this deploys (it holds a service binding to this
 	// router) — CI deploys it between control-plane and router; on a brand-new env, deploy the
 	// router once without this line, then the egress worker, then re-add it.
+	// `parameters` declares the per-dispatch value the router hands the egress worker:
+	// OUTBOUND_POLICY = { slug, tenant, hosts } — the dispatched version's declared
+	// outbound surface (#303, D-46), which the egress worker enforces and meters.
 	"dispatch_namespaces": [
 		{
 			"binding": "DISPATCH",
 			"namespace": "substrat-verticals",
-			"outbound": { "service": "substrat-vertical-egress" }
+			"outbound": { "service": "substrat-vertical-egress", "parameters": ["OUTBOUND_POLICY"] }
 		}
 	],
 
@@ -110,7 +113,7 @@
 				{
 					"binding": "DISPATCH",
 					"namespace": "substrat-verticals-test", // differs
-					"outbound": { "service": "substrat-vertical-egress-test" } // differs: test egress worker
+					"outbound": { "service": "substrat-vertical-egress-test", "parameters": ["OUTBOUND_POLICY"] } // differs: test egress worker
 				}
 			],
 			"services": [{ "binding": "CONTROL_PLANE_KICK", "service": "substrat-control-plane-test" }], // differs: test CP worker

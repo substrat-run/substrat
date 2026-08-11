@@ -185,5 +185,14 @@ export const routeTarget = z.object({
   deploymentRef: z.string().min(1).nullable(),
   surface: surfaceName,
   region: hostnameRegion,
+  /**
+   * The DECLARED outbound surface of the code this dispatch will run (#303, D-46) — the
+   * `outbound` list from the manifest of the version the resolved script serves, joined in
+   * the same directory read. The router hands it to the egress worker as a dispatch
+   * parameter; it never inspects it. `null` = that version predates the declaration
+   * (pushed by a pre-#303 CLI), which the egress worker treats as unenforced-but-metered.
+   * Defaulted so a resolver that predates this field still parses.
+   */
+  outboundHosts: z.array(z.string()).nullable().default(null),
 });
 export type RouteTarget = z.infer<typeof routeTarget>;

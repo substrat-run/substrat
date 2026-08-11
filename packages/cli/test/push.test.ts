@@ -8,6 +8,8 @@ import {
   definePermissions,
   runtimeNeeds,
   RUNTIME_BASELINE,
+  outboundHost,
+  matchesOutboundHost,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
 import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta, previewVersion, collectAssets, readAssetsNeed } from '../src/push.js';
@@ -252,6 +254,53 @@ describe('readVerticalMeta — slug identity', () => {
     const meta = readVerticalMeta(scratch());
     expect(meta.slug).toBe('');
     expect(meta.slugExplicit).toBe(false);
+  });
+
+  it('reads the declared outbound surface (#303), and reports absence as undefined', () => {
+    // Absence must stay distinguishable from `[]` HERE, because push turns undefined into
+    // `[]` on the wire (a new-CLI push always declares) — collapsing the two at the read
+    // would make "declared nothing" and "an old package.json" the same fact.
+    const declared = readVerticalMeta(
+      scratch({ name: 'crm', substrat: { outbound: ['api.scrive.com', '*.googleapis.com'] } }),
+    );
+    expect(declared.outbound).toEqual(['api.scrive.com', '*.googleapis.com']);
+    expect(readVerticalMeta(scratch({ name: 'crm' })).outbound).toBeUndefined();
+  });
+});
+
+/**
+ * The outbound surface (#303, D-46) is enforcement input, not metadata: the egress worker
+ * reads `null` as "pre-#303, unenforced". So the schema has to refuse the shapes that
+ * would silently widen it, and the matcher has to agree with the worker that enforces it.
+ */
+describe('outboundHost — the declared egress surface (#303)', () => {
+  it('accepts a hostname and a *. wildcard', () => {
+    expect(outboundHost.parse('api.scrive.com')).toBe('api.scrive.com');
+    expect(outboundHost.parse('*.googleapis.com')).toBe('*.googleapis.com');
+  });
+
+  it('refuses a scheme, a port, a path, a bare label, and an embedded wildcard', () => {
+    for (const bad of [
+      'https://api.scrive.com',
+      'api.scrive.com:443',
+      'api.scrive.com/v2',
+      'localhost',
+      'api.*.com',
+      '*',
+      'API.SCRIVE.COM', // uppercase: the runtime sees lowercase, so declare lowercase
+    ]) {
+      expect(() => outboundHost.parse(bad)).toThrow();
+    }
+  });
+
+  it('matches the way the egress worker enforces: wildcards at depth, never the apex', () => {
+    expect(matchesOutboundHost('api.scrive.com', ['api.scrive.com'])).toBe(true);
+    expect(matchesOutboundHost('API.Scrive.com', ['api.scrive.com'])).toBe(true); // DNS is case-insensitive
+    expect(matchesOutboundHost('oauth2.googleapis.com', ['*.googleapis.com'])).toBe(true);
+    expect(matchesOutboundHost('a.b.googleapis.com', ['*.googleapis.com'])).toBe(true);
+    expect(matchesOutboundHost('googleapis.com', ['*.googleapis.com'])).toBe(false);
+    expect(matchesOutboundHost('evil-googleapis.com', ['*.googleapis.com'])).toBe(false);
+    expect(matchesOutboundHost('api.scrive.com', [])).toBe(false);
   });
 });
 

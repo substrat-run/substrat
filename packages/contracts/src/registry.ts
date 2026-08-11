@@ -230,6 +230,13 @@ export const verticalVersion = z.object({
   admissionNote: z.string().nullable(),
   /** Null/absent = pushed before origin tracking (or by an old CLI). */
   origin: versionOrigin.nullish(),
+  /**
+   * The version's DECLARED outbound surface (#303, D-46), lifted from its stored manifest
+   * so the admit checkpoint can show it without shipping N whole manifests. `[]` = no
+   * direct third-party egress; null/absent = pushed by a pre-#303 CLI, so the egress
+   * worker meters but does not enforce it.
+   */
+  outbound: z.array(z.string()).nullish(),
   createdAt: instant,
 });
 export type VerticalVersion = z.infer<typeof verticalVersion>;

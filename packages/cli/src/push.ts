@@ -342,6 +342,11 @@ export interface PushOptions {
   /** The surfaces the vertical serves (K-26), from package.json `substrat.surfaces` —
    *  labels only; buys the dashboard a hostname-binding picker + a push-time warning. */
   surfaces?: readonly unknown[];
+  /** Declared outbound hosts (#303, D-46), from package.json `substrat.outbound`: the
+   *  third-party hosts the worker fetches directly, enforced by the egress worker.
+   *  Undefined is still SENT as `[]` — a new-CLI push always declares its outbound
+   *  surface, and "no third-party egress" is the least-privilege default. */
+  outbound?: readonly unknown[];
   /**
    * Acknowledge a lineage fork (#388): a first push of a NEW registry id whose name
    * matches an existing lineage under a different owner is refused by the control plane
@@ -541,6 +546,11 @@ export async function push(
     ...(opts.provisions ? { provisions: opts.provisions } : {}),
     ...(opts.sendsEmail ? { sendsEmail: true } : {}),
     ...(opts.surfaces ? { surfaces: opts.surfaces } : {}),
+    // The declared outbound surface (#303, D-46) — ALWAYS sent, `[]` when undeclared,
+    // because absence means "pre-#303 push" to the egress worker (unenforced, metered
+    // only) and a new-CLI push must not read as that. Unlike the metadata above it is
+    // enforcement input, versioned with the code it ships beside.
+    outbound: opts.outbound ?? [],
     // The declared permission surface travels with the bundle (D-39/D-41): keys+descriptions,
     // role templates, entity-grant shapes. Required — its content hash is digests.permission.
     registry,
@@ -635,6 +645,10 @@ export interface VerticalMeta {
   sendsEmail: boolean | undefined;
   /** Declared surfaces (K-26), from package.json `substrat.surfaces`: `[{ name, label }]`. */
   surfaces: readonly unknown[] | undefined;
+  /** Declared outbound hosts (#303, D-46), from package.json `substrat.outbound`. Undefined
+   *  = the key is absent, which the push STILL sends as `[]` — a new-CLI push always
+   *  declares its outbound surface, and no third-party egress is the default. */
+  outbound: readonly unknown[] | undefined;
 }
 
 /**
@@ -648,7 +662,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   let pkg: {
     name?: string;
     version?: string;
-    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; sendsEmail?: boolean; surfaces?: unknown[] };
+    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; sendsEmail?: boolean; surfaces?: unknown[]; outbound?: unknown[] };
   } = {};
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg;
@@ -673,6 +687,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
     provisions: s?.provisions,
     sendsEmail: s?.sendsEmail,
     surfaces: s?.surfaces,
+    outbound: s?.outbound,
   };
 }
 

@@ -104,6 +104,7 @@ import {
   type TenantRole,
   type TenantStatus,
   type TenantStoreHandle,
+  outboundOfManifestJson,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -2181,6 +2182,7 @@ export class CloudflareScopeHost implements ScopeHost {
         admission: r.admission,
         admissionNote: r.admission_note,
         origin: r.origin_json ? JSON.parse(r.origin_json) : null,
+        outbound: outboundOfManifestJson(r.manifest_json),
         createdAt: r.created_at,
       });
 

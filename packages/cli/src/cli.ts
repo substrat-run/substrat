@@ -349,6 +349,7 @@ async function cmdPush(): Promise<void> {
     provisions: meta.provisions,
     sendsEmail: meta.sendsEmail,
     surfaces: meta.surfaces,
+    outbound: meta.outbound,
     controlPlaneUrl, authHeader: header,
   });
   console.log(`✓ pushed ${v.verticalSlug ?? slug}. version ${v.id} (${version}) is ${v.admission}; deploymentRef=${v.deploymentRef}`);
@@ -726,6 +727,7 @@ async function cmdPreview(): Promise<void> {
       provisions: meta.provisions,
       sendsEmail: meta.sendsEmail,
       surfaces: meta.surfaces,
+      outbound: meta.outbound,
       controlPlaneUrl, authHeader: header,
     });
     const empty = argv.includes('--empty');
