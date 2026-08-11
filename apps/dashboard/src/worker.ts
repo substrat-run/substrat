@@ -14,7 +14,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
@@ -2165,7 +2165,13 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
  */
 async function inspectableConnection(
   c: Context<{ Bindings: Env }>,
-): Promise<{ connectionId: string; cp: NonNullable<ReturnType<typeof controlPlaneFor>>; spec: ProviderSpec }> {
+): Promise<{
+  connectionId: string;
+  cp: NonNullable<ReturnType<typeof controlPlaneFor>>;
+  spec: ProviderSpec;
+  /** The row as the directory holds it RIGHT NOW — health included. */
+  connection: Connection;
+}> {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
@@ -2188,7 +2194,7 @@ async function inspectableConnection(
     // only the connector's own projection is safe to serve.
     throw new HTTPException(501, { message: 'connection inspection runs on the control plane' });
   }
-  return { connectionId: live.id, cp, spec };
+  return { connectionId: live.id, cp, spec, connection: live };
 }
 
 /**
@@ -2198,8 +2204,21 @@ async function inspectableConnection(
  * answering "no" is a successful verification.
  */
 app.post('/api/apps/:scopeId/integrations/:provider/verify', async (c) => {
-  const { connectionId, cp } = await inspectableConnection(c);
-  return c.json(await cp.verifyConnection(connectionId));
+  const { connectionId, cp, spec } = await inspectableConnection(c);
+  const probe = await cp.verifyConnection(connectionId);
+  // Re-read the row AFTER the probe. The probe rides the sanctioned fetch, so it just
+  // wrote health — a success clears `last_error` and lifts the row out of `error`. Without
+  // this the caller would render a fresh "Credential accepted" beside the stale error that
+  // the very same call just resolved, which is what a console must never do.
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  let connection = null;
+  if (node) {
+    const rows = await connectionsFor(host, c.env, node.tenantId);
+    const live = liveConnectionFor(rows, spec.provider);
+    connection = live ? connectionView(live) : null;
+  }
+  return c.json({ ...probe, ...(connection ? { connection } : {}) });
 });
 
 /**
@@ -2209,7 +2228,7 @@ app.post('/api/apps/:scopeId/integrations/:provider/verify', async (c) => {
  * current state; the answer reports whether it got it.
  */
 app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
-  const { connectionId, cp } = await inspectableConnection(c);
+  const { connectionId, cp, connection } = await inspectableConnection(c);
   const source = c.req.query('source') === 'provider' ? ('provider' as const) : ('ledger' as const);
   const [activity, grants, credential] = await Promise.all([
     cp.connectionActivity(connectionId, { live: c.req.query('live') === '1', source }),
@@ -2223,6 +2242,8 @@ app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
     grants: grants.filter((g) => g.connectionId === connectionId).map((g) => g.permission),
     // Identifiers whole, secrets masked by the connector — never a usable credential.
     credential: credential.fields,
+    // Current health, read in this request. The list page's copy can be minutes old.
+    connection: connectionView(connection),
   });
 });
 

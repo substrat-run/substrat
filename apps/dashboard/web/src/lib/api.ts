@@ -570,6 +570,7 @@ export interface ConnectionFact {
  */
 export interface ConnectionProbeView {
   ok: boolean;
+  refused?: boolean;
   accountRef: string | null;
   accountLabel: string | null;
   facts: ConnectionFact[];
@@ -609,6 +610,8 @@ export interface ConnectionCredentialFieldView {
  */
 export interface ConnectionActivityView {
   source: 'ledger' | 'provider';
+  /** The connection as the directory holds it right now — health included. */
+  connection: ConnectionView;
   entries: ConnectionActivityEntryView[];
   live: boolean;
   grants: string[];
@@ -939,7 +942,7 @@ export const api = {
     ),
   /** Ask the provider whether the stored credential works, and whose account it is. */
   verifyIntegration: (scopeId: string, provider: string) =>
-    call<ConnectionProbeView>(
+    call<ConnectionProbeView & { connection?: ConnectionView }>(
       `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/verify`,
       { method: 'POST' },
     ),

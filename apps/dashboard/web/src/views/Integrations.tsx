@@ -108,6 +108,13 @@ function IntegrationDetail({
   onRotate: () => void;
   onClose: () => void;
 }) {
+  /**
+   * The row as of the last read, which is NOT the prop: the prop was captured when the
+   * list page loaded, and a probe rewrites health (a success clears the error and lifts
+   * the row out of `error`). Rendering the prop next to a fresh probe is how a screen
+   * ends up saying "Error — last error 10m ago" directly above "Credential accepted".
+   */
+  const [health, setHealth] = useState<ConnectionView>(connection);
   const [probe, setProbe] = useState<ConnectionProbeView | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeErr, setProbeErr] = useState<string | null>(null);
@@ -119,7 +126,9 @@ function IntegrationDetail({
 
   useEffect(() => {
     if (DEV_MOCK) {
-      setActivity(source === 'provider' ? MOCK_PROVIDER_DOCUMENTS : MOCK_CONNECTION_ACTIVITY);
+      const mock = source === 'provider' ? MOCK_PROVIDER_DOCUMENTS : MOCK_CONNECTION_ACTIVITY;
+      setActivity(mock);
+      setHealth(mock.connection); // same path as the live read — the preview must not diverge
       return;
     }
     let alive = true;
@@ -127,7 +136,11 @@ function IntegrationDetail({
     setActivityErr(null);
     api
       .integrationActivity(scopeId, provider.provider, { live, source })
-      .then((v) => alive && setActivity(v))
+      .then((v) => {
+        if (!alive) return;
+        setActivity(v);
+        setHealth(v.connection); // read in that same request
+      })
       .catch((e) => alive && setActivityErr(e instanceof ApiError ? e.message : String(e)));
     return () => {
       alive = false;
@@ -139,14 +152,20 @@ function IntegrationDetail({
     setProbing(true);
     setProbeErr(null);
     try {
-      setProbe(DEV_MOCK ? MOCK_CONNECTION_PROBE : await api.verifyIntegration(scopeId, provider.provider));
+      if (DEV_MOCK) setProbe(MOCK_CONNECTION_PROBE);
+      else {
+        const result = await api.verifyIntegration(scopeId, provider.provider);
+        setProbe(result);
+        // The probe just wrote health; show what it wrote, not what we loaded before it.
+        if (result.connection) setHealth(result.connection);
+      }
     } catch (e) {
       setProbeErr(e instanceof ApiError ? e.message : String(e));
     }
     setProbing(false);
   };
 
-  const s = STATUS[connection.status];
+  const s = STATUS[health.status];
   return (
     <Dialog
       open
@@ -164,9 +183,9 @@ function IntegrationDetail({
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Pill kind={s.kind}>{s.label}</Pill>
-              <span style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>{connection.label}</span>
+              <span style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>{health.label}</span>
             </div>
-            <HealthLine conn={connection} />
+            <HealthLine conn={health} />
           </div>
           <Button variant="secondary" size="sm" onClick={onRotate}>
             Rotate
@@ -188,10 +207,10 @@ function IntegrationDetail({
             </div>
             {probe.error && <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{probe.error}</div>}
             <Facts facts={probe.facts} />
-            {probe.ok && connection.externalAccountRef && probe.accountRef && connection.externalAccountRef !== probe.accountRef && (
+            {probe.ok && health.externalAccountRef && probe.accountRef && health.externalAccountRef !== probe.accountRef && (
               <div style={{ fontSize: 11.5, color: 'var(--status-warning-fg)' }}>
                 These credentials act as account {probe.accountRef}, but this connection was made for{' '}
-                {connection.externalAccountRef}.
+                {health.externalAccountRef}.
               </div>
             )}
           </div>
@@ -532,7 +551,10 @@ export function AppIntegrations({ app }: { app: AppRow }) {
             setDialog({ provider: detail, rotate: true });
             setDetail(null);
           }}
-          onClose={() => setDetail(null)}
+          onClose={() => {
+            setDetail(null);
+            setNonce((n) => n + 1); // a verify inside the drawer may have repaired health
+          }}
         />
       )}
 
@@ -653,7 +675,10 @@ export function Integrations() {
             setDialog(detail.provider);
             setDetail(null);
           }}
-          onClose={() => setDetail(null)}
+          onClose={() => {
+            setDetail(null);
+            setNonce((n) => n + 1);
+          }}
         />
       )}
 
