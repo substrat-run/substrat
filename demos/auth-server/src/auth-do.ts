@@ -1,8 +1,14 @@
 import { DurableObject } from 'cloudflare:workers';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
-import { resolveScopedEnvSpec, type ScopeTable, type ScopeTablePage } from '@substrat-run/contracts';
+import {
+  resolveScopedEnvSpec,
+  type ScopeDumpTable,
+  type ScopeTable,
+  type ScopeTablePage,
+} from '@substrat-run/contracts';
 import { introspectTables, introspectTable } from './introspect.js';
+import { exportDump } from './dump.js';
 import { schema } from './auth-schema.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.js';
 import { buildAuth } from './auth.js';
@@ -217,6 +223,28 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
 
   async introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage> {
     return introspectTable(this.ctx.storage.sql, table, limit, offset);
+  }
+
+  /**
+   * The COMPLETE dump of this issuer's SQLite (#590) — full fidelity, secrets included,
+   * because a dump exists to rebuild the issuer elsewhere (see `dump.ts` for why it must
+   * NOT redact). Arrives via the platform-gated `/internal/export`; the control-plane
+   * route in front is the gate, the auditor, and the default masker.
+   */
+  async exportDump(): Promise<ScopeDumpTable[]> {
+    return exportDump(this.ctx.storage.sql);
+  }
+
+  /**
+   * Wipe this issuer's storage irreversibly (#590) — the vertical's half of a reap or a
+   * data-carrying rebind, via the platform-gated `/internal/delete-scope`. The refusals
+   * (backup-first, directory cleanup) live on the control plane, which calls this before
+   * deleting the directory row; this DO just destroys its own bytes. After deleteAll the
+   * instance is inert; a stray re-open re-runs the constructor against empty storage and
+   * mints a fresh signing secret for a schema no directory row points at.
+   */
+  async destroyStorage(): Promise<void> {
+    await this.ctx.storage.deleteAll();
   }
 
   /** Is the issuer un-bootstrapped (no users yet)? The worker shows "create the first admin". */

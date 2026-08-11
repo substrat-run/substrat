@@ -13,7 +13,9 @@
  *
  * The platform surface (K-31) is `/internal/*`, gated by `PLATFORM_SECRET`:
  * `/internal/provision` materializes an instance, `/internal/configure` delivers config,
- * `/internal/tables` answers the §5.4 introspection reads (secrets redacted in the DO);
+ * `/internal/tables` answers the §5.4 introspection reads (secrets redacted in the DO),
+ * `/internal/export` dumps an instance in full and `/internal/delete-scope` wipes one
+ * (#590 — backed-up reap, wipe, and data-carrying rebind);
  * every OTHER `/internal/*` path answers a JSON 501 — NEVER the SPA fallback. (A platform
  * call once fell through to the SPA catch-all, returned 200 text/html, and surfaced as
  * "Provisioning failed — internal error" in the dashboard. The fallback route and its
@@ -231,7 +233,36 @@ app.get('/internal/tables/:table', async (c) => {
 });
 
 /**
- * Every OTHER platform verb (snapshot, export …) is honestly unimplemented:
+ * The scope's FULL dump (#590) — the one verb here that deliberately moves instance
+ * bytes out, and deliberately UNredacted (see `dump.ts`): a dump exists to rebuild the
+ * issuer elsewhere, so the credentials must ride along. The control-plane route in
+ * front is the gate, the auditor, and the default masker — same trust line as every
+ * other vertical's export. Same addressing as provisioning: the QUERY's scope id.
+ * What this buys an auth-server install: retire-with-backup (#493) stops refusing,
+ * and a data-carrying `rebindScopeVertical` can move it between lineages.
+ */
+app.get('/internal/export', async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const scope = scopeId.parse(c.req.query('scopeId'));
+  return c.json(await stubFor(c.env, scope).exportDump());
+});
+
+/**
+ * Wipe one instance's storage irreversibly (#590) — the vertical's half of a reap or a
+ * carried rebind. The refusals (backup-first, fork-only, directory cleanup) live on the
+ * control plane, which calls this BEFORE deleting the directory row, so a crash between
+ * the two converges on retry — and `storageStranded` stops appearing for these installs.
+ * Same gate and addressing as provisioning: platform-secret, the BODY's scope id.
+ */
+app.post('/internal/delete-scope', async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const body = z.object({ scopeId }).parse(await c.req.json());
+  await stubFor(c.env, body.scopeId).destroyStorage();
+  return c.json({ deleted: body.scopeId });
+});
+
+/**
+ * Every OTHER platform verb (snapshot, restore, rewind …) is honestly unimplemented:
  * a JSON 501 the control plane's error mapping can surface verbatim. This MUST precede the
  * SPA catch-all — an `/internal/*` request that falls through to the SPA returns 200
  * text/html, which the platform's JSON parse turns into an unrecognized throw and the

@@ -33,6 +33,10 @@ export type AuthServerStub = {
     limit: number,
     offset: number,
   ): Promise<import('@substrat-run/contracts').ScopeTablePage>;
+  /** The full-fidelity dump (#590) — deliberately UNredacted; the control plane is the gate. */
+  exportDump(): Promise<import('@substrat-run/contracts').ScopeDumpTable[]>;
+  /** Wipe this issuer's storage irreversibly (#590) — the reap/rebind half. */
+  destroyStorage(): Promise<void>;
 };
 
 /** The verified subject behind a session, as the `/__session` probe returns it. */
