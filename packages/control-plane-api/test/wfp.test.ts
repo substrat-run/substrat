@@ -284,55 +284,6 @@ describe('createWfpUploader — static assets (#340)', () => {
     expect(meta.assets.jwt).toBe('session-jwt');
   });
 
-  it('recovers a missing hash through fetchContent, verifies it, and uploads it (#578)', async () => {
-    // The promote reality: the asset store dedups per script, so the stable script's
-    // session reports the archive script's bytes missing. The re-serve's files carry a
-    // `fetchContent` reading them back; recovery must ride the normal bucket upload.
-    const hash = await assetHash(html, '/index.html');
-    const calls = await driveUpload(
-      withAssets({
-        files: [{ path: '/index.html', hash, size: html.byteLength, contentType: 'text/html', fetchContent: async () => html }],
-      }),
-      (url) =>
-        url.includes('assets-upload-session')
-          ? sessionWith([[hash]])
-          : url.includes('/workers/assets/upload')
-            ? new Response(JSON.stringify({ result: { jwt: 'completion-jwt' } }), { status: 200 })
-            : new Response('{}', { status: 200 }),
-    );
-    const part = (calls[1]!.init.body as FormData).get(hash) as File;
-    expect(await part.text()).toBe(Buffer.from(html).toString('base64'));
-    const meta = JSON.parse(await ((calls[2]!.init.body as FormData).get('metadata') as File).text());
-    expect(meta.assets.jwt).toBe('completion-jwt');
-  });
-
-  it('REFUSES recovered bytes that do not hash to the manifest entry', async () => {
-    // A recovery fetch can land on a worker-generated response (a run_worker_first
-    // overlap, an error page). Whatever comes back must BE the manifest's content —
-    // anything else refuses rather than deploys under a hash that is not its own.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: unknown) =>
-        String(url).includes('assets-upload-session') ? sessionWith([['e'.repeat(32)]]) : new Response('{}', { status: 200 }),
-      ),
-    );
-    const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
-    await expect(
-      upload(
-        'callout-01k',
-        withAssets({
-          files: [{
-            path: '/index.html',
-            hash: 'e'.repeat(32),
-            size: 5,
-            contentType: 'text/html',
-            fetchContent: async () => new TextEncoder().encode('worker-generated error page'),
-          }],
-        }),
-      ),
-    ).rejects.toThrow(/could not recover/);
-  });
-
   it('REFUSES a re-serve whose bytes the runtime no longer holds, naming the remedy', async () => {
     vi.stubGlobal(
       'fetch',
@@ -346,6 +297,74 @@ describe('createWfpUploader — static assets (#340)', () => {
     await expect(
       upload('callout-01k', withAssets({ files: [{ path: '/app.js', hash: 'c'.repeat(32), size: 9, contentType: 'text/javascript' }] })),
     ).rejects.toThrow(/push the version again/);
+  });
+
+  it('recovers a missing asset’s bytes on demand and uploads them (#578)', async () => {
+    // The dedupe a byteless re-serve rides is per SCRIPT, not namespace-wide: the stable
+    // script's first serve of new content always reports the hash missing, even though the
+    // push uploaded those exact bytes to the version's archive script moments earlier. The
+    // recovery hook turns that refusal into a read-back + upload.
+    const content = new TextEncoder().encode('<!doctype html>');
+    const hash = await assetHash(content, '/index.html');
+    const recover = vi.fn(async () => content);
+    const calls = await driveUpload(
+      withAssets({
+        files: [{ path: '/index.html', hash, size: content.byteLength, contentType: 'text/html' }],
+        recoverContent: recover,
+      }),
+      (url) =>
+        url.includes('assets-upload-session')
+          ? sessionWith([[hash]])
+          : url.includes('/workers/assets/upload')
+            ? new Response(JSON.stringify({ result: { jwt: 'completion-jwt' } }), { status: 200 })
+            : new Response('{}', { status: 200 }),
+    );
+    expect(recover).toHaveBeenCalledWith({ path: '/index.html', hash });
+    const part = (calls[1]!.init.body as FormData).get(hash) as File;
+    expect(await part.text()).toBe(Buffer.from('<!doctype html>').toString('base64'));
+    const meta = JSON.parse(await ((calls[2]!.init.body as FormData).get('metadata') as File).text());
+    expect(meta.assets.jwt).toBe('completion-jwt');
+  });
+
+  it('REFUSES recovered bytes that do not hash to the manifest’s content-address', async () => {
+    // The asset store is shared and content-addressed: bytes stored under a key they do
+    // not have could decide what a DIFFERENT vertical's identical-hash asset serves (D-44).
+    const hash = await assetHash(new TextEncoder().encode('the real bytes'), '/app.js');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown) =>
+        String(url).includes('assets-upload-session') ? sessionWith([[hash]]) : new Response('{}', { status: 200 }),
+      ),
+    );
+    const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
+    await expect(
+      upload(
+        'callout-01k',
+        withAssets({
+          files: [{ path: '/app.js', hash, size: 14, contentType: 'text/javascript' }],
+          recoverContent: async () => new TextEncoder().encode('tampered bytes'),
+        }),
+      ),
+    ).rejects.toThrow(/content-address they do not have/);
+  });
+
+  it('refuses honestly when the archive script gives no bytes back either', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown) =>
+        String(url).includes('assets-upload-session') ? sessionWith([['e'.repeat(32)]]) : new Response('{}', { status: 200 }),
+      ),
+    );
+    const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
+    await expect(
+      upload(
+        'callout-01k',
+        withAssets({
+          files: [{ path: '/gone.js', hash: 'e'.repeat(32), size: 1, contentType: 'text/javascript' }],
+          recoverContent: async () => undefined,
+        }),
+      ),
+    ).rejects.toThrow(/archive script gave none back/);
   });
 
   it('a bundle with no assets runs no session and sends no assets block', async () => {

@@ -61,7 +61,12 @@ import {
   nextMigrationTag,
   upstreamStatusOf,
 } from './deploy.js';
-import type { AssetUpload, DeployVerticalFn, FetchVerticalAssetFn, FetchVerticalModulesFn } from './deploy.js';
+import type {
+  AssetUpload,
+  DeployVerticalFn,
+  FetchVerticalAssetFn,
+  FetchVerticalModulesFn,
+} from './deploy.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 import {
   blobStoreBindings,
@@ -144,12 +149,15 @@ export interface ControlPlaneApiOptions {
    */
   fetchVerticalModules?: FetchVerticalModulesFn;
   /**
-   * Reads one static file back from a script's runtime-served assets (#578) — how a
-   * serving upload recovers asset bytes the stable script's upload session reports
-   * missing (the asset store dedups per script, so the push's upload to the archive
-   * script does not cover a re-serve). Host-injected like `fetchVerticalModules`.
-   * Absent ⇒ a re-serve of an asset-carrying version refuses when the runtime wants
-   * bytes (the pre-#578 behavior).
+   * Reads one static file's bytes back from a script in the namespace (#578) — the
+   * asset twin of `fetchVerticalModules`. The runtime's asset store dedupes per
+   * SCRIPT, not namespace-wide, so the first serve of an asset-carrying version onto
+   * the stable serving script always finds its hashes missing there; this seam is how
+   * the serve recovers the bytes the push uploaded to the version's archive script.
+   * Host-injected like `deployVertical` (on Cloudflare, a dispatch fetch — the archive
+   * script's edge serves its own assets without invoking the worker). Absent ⇒ a
+   * re-serve can only ride what the stable script already holds and refuses honestly
+   * otherwise.
    */
   fetchVerticalAsset?: FetchVerticalAssetFn;
   /**
@@ -2694,6 +2702,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!version?.deploymentRef) {
       throw new ControlPlaneError(502, `version ${versionId} has no archive script to serve from`);
     }
+    const archiveRef = version.deploymentRef;
     const manifestJson = await admin.versionManifest(actor, slug, versionId);
     if (!manifestJson) {
       throw new ControlPlaneError(
@@ -2731,26 +2740,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         modules,
         doClasses: manifest.doClasses,
         bindings: [...manifest.bindings, ...storeBindings],
-        // #340: the version's static files travel with it onto the serving script — from
-        // the RETAINED manifest, with no bytes up front. The asset store dedups PER
-        // SCRIPT (#578), so hashes the push uploaded to the archive script are still
-        // missing for the stable script — each file therefore carries a `fetchContent`
-        // that reads the bytes back from the archive script's runtime-served assets,
-        // invoked (and hash-verified) only for hashes the upload session reports
-        // missing. The archive script gives back the modules (#286) AND the assets:
-        // nothing but the manifest is retained.
+        // #340/#578: the version's static files travel with it onto the serving script —
+        // from the RETAINED manifest, with no bytes. The runtime's asset store dedupes
+        // per SCRIPT (not namespace-wide — the #578 finding), so the serving script only
+        // skips hashes it has itself held before; everything else — every first serve of
+        // new content — is recovered on demand from the version's archive script, the
+        // same store the modules come back from (#286), and verified against its
+        // content-address before upload. This is why the manifest is retained rather
+        // than the bytes: the archive script gives back modules AND assets.
         ...(manifest.assets
           ? {
               assets: {
                 ...manifest.assets,
-                files: manifest.assets.files.map(
-                  (f): AssetUpload => ({
-                    ...f,
-                    ...(options.fetchVerticalAsset
-                      ? { fetchContent: () => options.fetchVerticalAsset!(version.deploymentRef!, f.path) }
-                      : {}),
-                  }),
-                ),
+                ...(options.fetchVerticalAsset
+                  ? {
+                      recoverContent: (asset: Pick<AssetUpload, 'path' | 'hash'>) =>
+                        options.fetchVerticalAsset!(archiveRef, asset),
+                    }
+                  : {}),
               },
             }
           : {}),

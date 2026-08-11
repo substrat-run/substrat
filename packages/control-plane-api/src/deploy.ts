@@ -44,12 +44,6 @@ export interface AssetUpload {
   size: number;
   contentType: string;
   content?: Uint8Array;
-  /** Recover the bytes when the runtime's asset store turns out not to hold them (#578):
-   *  the store dedups PER SCRIPT, so a re-serve onto the stable script cannot rely on the
-   *  bytes the push uploaded to the version's archive script. A re-serve attaches this
-   *  (reading from the archive script); a push never needs it. Resolves null when the
-   *  source cannot produce the file — the uploader then refuses loudly as before. */
-  fetchContent?: () => Promise<Uint8Array | null>;
 }
 
 /** A built vertical, ready to upload. `modules` are the bundled ESM parts. */
@@ -64,9 +58,23 @@ export interface VerticalBundle {
   doClasses: string[];
   bindings: DeclaredBinding[];
   /** Static files served from the edge, with the routing config that decides how paths
-   *  resolve against them (#340). Absent ⇒ the script serves no static assets. */
-  assets?: AssetRouting & { files: AssetUpload[] };
+   *  resolve against them (#340). Absent ⇒ the script serves no static assets.
+   *  `recoverContent` is the re-serve's escape hatch (#578): the runtime's asset store
+   *  dedupes PER SCRIPT, so a byteless upload targeting a different script than the push
+   *  uploaded to must be able to fetch the missing bytes back on demand. */
+  assets?: AssetRouting & { files: AssetUpload[]; recoverContent?: RecoverAssetContentFn };
 }
+
+/**
+ * Recover one asset's bytes when the target script's store reports its hash missing and
+ * the upload carries none (#578). Returns undefined when the bytes cannot be produced —
+ * the uploader then refuses rather than deploying a half-broken asset set. The caller
+ * verifies the recovered bytes against the manifest's content-address before uploading
+ * under it (D-44: what is trusted is the bytes; what is verified is the key).
+ */
+export type RecoverAssetContentFn = (
+  asset: Pick<AssetUpload, 'path' | 'hash'>,
+) => Promise<Uint8Array | undefined>;
 
 /**
  * How an upload treats an ALREADY-EXISTING script of the same name (#286). Absent ⇒
@@ -126,17 +134,17 @@ export type FetchVerticalModulesFn = (
 ) => Promise<VerticalBundle['modules']>;
 
 /**
- * Download ONE static file of a script already in the namespace, by served path (#578) —
- * what a re-serve recovers asset bytes from when the stable script's upload session
- * reports hashes missing. The archive script's runtime-served assets are the store (the
- * mirror of `FetchVerticalModulesFn` for static files); the caller verifies the recovered
- * bytes against the retained manifest's hash before uploading. Host-injected like
- * `DeployVerticalFn`. Resolves null when the script does not serve the path.
+ * Download one static file's bytes back from a script already in the namespace — the
+ * asset twin of {@link FetchVerticalModulesFn} (#578). The archive script is the bundle
+ * store for assets exactly as it is for modules: the push uploaded the bytes to it, and
+ * a serve onto the STABLE script cannot ride dedupe (the asset store dedupes per script,
+ * not namespace-wide), so the serve reads them back from here. Host-injected like
+ * `DeployVerticalFn`; undefined when the bytes cannot be produced.
  */
 export type FetchVerticalAssetFn = (
   deploymentRef: string,
-  path: string,
-) => Promise<Uint8Array | null>;
+  asset: Pick<AssetUpload, 'path' | 'hash'>,
+) => Promise<Uint8Array | undefined>;
 
 /**
  * A refused binding type the builder is most likely to reach for, paired with the reason
