@@ -10,8 +10,9 @@ import type { AuthServerStub, ConfigEntry, InstanceMeta } from '../src/do-contra
  * and surfaced in the dashboard as "Provisioning failed — internal error". Everything
  * here pins the contract the control plane and router rely on:
  *
- *   - `/internal/*` ALWAYS answers JSON — provision works, everything else is an honest
- *     501, and nothing reaches the SPA fallback.
+ *   - `/internal/*` ALWAYS answers JSON — the implemented verbs (provision, configure,
+ *     tables, export, delete-scope) work, everything else is an honest 501, and nothing
+ *     reaches the SPA fallback.
  *   - Provisioning is platform-secret gated and fails closed when unconfigured.
  *   - The issuer DO is per-scope behind the router, the fixed standalone name without
  *     one, and a present-but-wrong router assertion is a 400, never a fall-through.
@@ -25,6 +26,8 @@ function fakeAuth() {
   const provisioned: Array<{ doName: string; meta: InstanceMeta; config?: ConfigEntry[] }> = [];
   const configured: Array<{ doName: string; entries: ConfigEntry[] }> = [];
   const introspected: Array<{ doName: string; verb: string }> = [];
+  const exported: string[] = [];
+  const destroyed: string[] = [];
   const touched: string[] = [];
   const namespace = {
     idFromName: (name: string) => name,
@@ -50,10 +53,17 @@ function fakeAuth() {
           if (table === 'no_such_table') throw new Error(`unknown table '${table}'`);
           return { table, columns: ['id'], rows: [['u1']], rowCount: 1, limit, offset };
         },
+        exportDump: async () => {
+          exported.push(doName);
+          return [{ name: 'user', ddl: 'CREATE TABLE user (id TEXT)', columns: ['id'], rows: [['u1']] }];
+        },
+        destroyStorage: async () => {
+          destroyed.push(doName);
+        },
       };
     },
   };
-  return { namespace, provisioned, configured, introspected, touched };
+  return { namespace, provisioned, configured, introspected, exported, destroyed, touched };
 }
 
 let auth: ReturnType<typeof fakeAuth>;
@@ -209,13 +219,76 @@ describe('/internal/tables (§5.4 introspection — the dashboard Data tab)', ()
   });
 });
 
+describe('/internal/export (#590 — the full dump behind backed-up reap and carried rebind)', () => {
+  const get = (path: string, secret?: string) =>
+    Promise.resolve(app.request(path, { headers: secret ? { 'x-substrat-platform': secret } : {} }, env));
+
+  it('dumps the SCOPE-NAMED issuer DO in full', async () => {
+    const scope = ulid();
+    const res = await get(`/internal/export?scopeId=${scope}`, PLATFORM_SECRET);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { name: 'user', ddl: 'CREATE TABLE user (id TEXT)', columns: ['id'], rows: [['u1']] },
+    ]);
+    expect(auth.exported).toEqual([scope]);
+  });
+
+  it('refuses a call without the platform secret, before touching any DO', async () => {
+    const res = await get(`/internal/export?scopeId=${ulid()}`);
+    expect(res.status).toBe(403);
+    expect(auth.exported).toHaveLength(0);
+  });
+
+  it('rejects a malformed scope id as a 400', async () => {
+    expect((await get('/internal/export?scopeId=not-a-ulid', PLATFORM_SECRET)).status).toBe(400);
+    expect(auth.exported).toHaveLength(0);
+  });
+});
+
+describe('/internal/delete-scope (#590 — the wipe half of a reap or carried rebind)', () => {
+  const del = (body: unknown, secret?: string) =>
+    Promise.resolve(app.request(
+      '/internal/delete-scope',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(secret ? { 'x-substrat-platform': secret } : {}),
+        },
+        body: JSON.stringify(body),
+      },
+      env,
+    ));
+
+  it('destroys the SCOPE-NAMED issuer DO and echoes what it deleted', async () => {
+    const scope = ulid();
+    const res = await del({ scopeId: scope }, PLATFORM_SECRET);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ deleted: scope });
+    expect(auth.destroyed).toEqual([scope]);
+  });
+
+  it('refuses a call without the platform secret, before touching any DO', async () => {
+    const res = await del({ scopeId: ulid() });
+    expect(res.status).toBe(403);
+    expect(auth.destroyed).toHaveLength(0);
+  });
+
+  it('rejects a malformed scope id as a 400 — a wipe must never guess its target', async () => {
+    expect((await del({ scopeId: 'not-a-ulid' }, PLATFORM_SECRET)).status).toBe(400);
+    expect((await del({}, PLATFORM_SECRET)).status).toBe(400);
+    expect(auth.destroyed).toHaveLength(0);
+  });
+});
+
 describe('the /internal/* surface never reaches the SPA', () => {
   // The incident: an unknown /internal/* path served the SPA's index.html with 200, the
   // platform's JSON parse threw, and the dashboard showed the generic "internal error".
   it.each([
-    ['GET', '/internal/export?scopeId=01JZ0000000000000000000000'],
+    ['GET', '/internal/bookmarks?scopeId=01JZ0000000000000000000000'],
     ['POST', '/internal/snapshot'],
-    ['POST', '/internal/delete-scope'],
+    ['POST', '/internal/restore'],
+    ['POST', '/internal/rewind'],
   ])('%s %s is a JSON 501, not the SPA fallback', async (method, path) => {
     const res = await app.request(path, { method, headers: { 'x-substrat-platform': PLATFORM_SECRET } }, env);
     expect(res.status).toBe(501);
