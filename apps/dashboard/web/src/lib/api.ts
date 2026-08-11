@@ -556,6 +556,47 @@ export interface AccountIntegrationsView {
   providers: AccountIntegration[];
 }
 
+/** One provider-named fact — a probe's account detail, or a line of an activity row. */
+export interface ConnectionFact {
+  label: string;
+  value: string;
+}
+
+/**
+ * `POST /api/apps/:scope/integrations/:provider/verify` — what the provider said when
+ * asked to accept this credential. `ok: false` is an answer, not a failure: the
+ * provider's own words are the whole value ("This feature is disabled" and "invalid
+ * credentials" send an operator to different places).
+ */
+export interface ConnectionProbeView {
+  ok: boolean;
+  accountRef: string | null;
+  accountLabel: string | null;
+  facts: ConnectionFact[];
+  error: string | null;
+}
+
+/** One thing the connection did — a projected dispatch-ledger row. */
+export interface ConnectionActivityEntryView {
+  key: string;
+  title: string;
+  reference: string | null;
+  status: string;
+  at: string | null;
+  facts: ConnectionFact[];
+}
+
+/**
+ * `GET /api/apps/:scope/integrations/:provider/activity` — the ledger, plus the grants
+ * the connection holds. `live` says whether the statuses are the provider's current
+ * truth or the platform's own record; a UI must not blur the two.
+ */
+export interface ConnectionActivityView {
+  entries: ConnectionActivityEntryView[];
+  live: boolean;
+  grants: string[];
+}
+
 /** One hostname bound to the app's scope (the Domains tab). */
 export interface AppHostnameRow {
   hostname: string;
@@ -863,6 +904,17 @@ export const api = {
     call<{ connectionId: string; created: boolean }>(
       `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}`,
       { method: 'POST', body: JSON.stringify(input) },
+    ),
+  /** Ask the provider whether the stored credential works, and whose account it is. */
+  verifyIntegration: (scopeId: string, provider: string) =>
+    call<ConnectionProbeView>(
+      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/verify`,
+      { method: 'POST' },
+    ),
+  /** What the connection has done (the connector's ledger) and what it may invoke. */
+  integrationActivity: (scopeId: string, provider: string, opts: { live?: boolean } = {}) =>
+    call<ConnectionActivityView>(
+      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/activity${opts.live ? '?live=1' : ''}`,
     ),
   /** Disconnect a provider (terminal — reconnecting creates a new connection). */
   disconnectIntegration: (scopeId: string, provider: string) =>

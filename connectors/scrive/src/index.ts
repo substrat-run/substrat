@@ -1,5 +1,15 @@
 import { z } from 'zod';
-import { connectionId, scopeId, tenantId, type ConnectionId, type DomainEvent } from '@substrat-run/contracts';
+import {
+  connectionId,
+  instant,
+  scopeId,
+  tenantId,
+  type ConnectionActivity,
+  type ConnectionId,
+  type ConnectionProbe,
+  type DomainEvent,
+  type Instant,
+} from '@substrat-run/contracts';
 import type {
   ConnectorConnection,
   ConnectorHandler,
@@ -548,6 +558,185 @@ export async function reconcileScriveDispatch(
     complete,
     ...(sealedDocument ? { sealedDocument } : {}),
   };
+}
+
+/**
+ * The identity half of a connection, as the directory holds it — everything the two
+ * read paths below need to reopen the credential. Deliberately not the whole
+ * `Connection`: these functions reopen a connection, they do not inspect one.
+ */
+export interface ScriveConnectionRef {
+  id: ConnectionId;
+  tenantId: string;
+  vertical: string;
+}
+
+/**
+ * **Probe** the credential (#605): one cheap authenticated read, answering whether
+ * Scrive accepts these keys and whose account they act as.
+ *
+ * Why this exists. A connection's health (§3.7) is written by whatever call happened
+ * last, so a freshly connected credential carries no health at all until the first real
+ * dispatch — which for this connector means a legal document going out to real
+ * signatories. Verifying at connect time is the difference between finding a typo now
+ * and finding it in a failed signing request days later.
+ *
+ * A rejected credential is a RESULT, not an exception: `{ ok: false, error }` carries
+ * the provider's own words, and "This feature is disabled" reading differently from
+ * "No valid access credentials were provided" is the entire point. Failures that are
+ * not the provider's answer — no live connection, a secret that cannot be unsealed —
+ * still throw, because those are platform faults and must not read as a bad key.
+ *
+ * Rides the same connection-bound `fetch` as every other call here, so a probe also
+ * refreshes `lastOkAt` / `lastError` — verifying is itself a use.
+ */
+export async function probeScriveConnection(
+  host: ScopeHost,
+  connection: ScriveConnectionRef,
+  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number },
+): Promise<ConnectionProbe> {
+  const conn = await openScriveConnection(
+    host.admin,
+    options.fetch,
+    tenantId.parse(connection.tenantId),
+    connection.vertical,
+    options.timeoutMs ?? 15_000,
+  );
+  const api = new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED);
+  let profile;
+  try {
+    profile = await api.getProfile();
+  } catch (err) {
+    return {
+      ok: false,
+      accountRef: null,
+      accountLabel: null,
+      facts: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const person = [profile.fstname, profile.sndname].filter((s) => s !== '').join(' ');
+  const company = profile.company?.companyname ?? '';
+  return {
+    ok: true,
+    // What `externalAccountRef` means for this provider — so a console can say "these
+    // keys are for a different Scrive company than the one you connected".
+    accountRef: profile.company?.companyid ?? null,
+    accountLabel: company !== '' ? `${company}${profile.email ? ` (${profile.email})` : ''}` : (profile.email || null),
+    facts: [
+      ...(company !== '' ? [{ label: 'Company', value: company }] : []),
+      ...(person !== '' || profile.email
+        ? [{ label: 'API user', value: person !== '' ? `${person}${profile.email ? ` <${profile.email}>` : ''}` : profile.email }]
+        : []),
+      ...(profile.role ? [{ label: 'Role', value: profile.role.replace(/^role_/, '').replace(/_/g, ' ') }] : []),
+    ],
+    error: null,
+  };
+}
+
+/** Provider status → the word an operator reads. Unknown values pass through verbatim. */
+const DOCUMENT_STATUS: Record<string, string> = {
+  preparation: 'draft at provider',
+  pending: 'awaiting signatures',
+  closed: 'signed',
+  canceled: 'cancelled',
+  timedout: 'timed out',
+  rejected: 'rejected',
+};
+
+/** An ISO instant, or null — a projector must never fail a read over a stray timestamp. */
+const asInstant = (value: string | undefined): Instant | null => {
+  const parsed = instant.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+/**
+ * **What this connection has done** (#605) — the dispatch ledger, projected into the
+ * platform's declared activity shape.
+ *
+ * The ledger is the only durable record that an outbound call ever happened: the audit
+ * log deliberately holds none (`openConnection` is unaudited — one row per outbound HTTP
+ * call would drown the log that matters) and health keeps exactly one line. So this is
+ * the read that answers "has anything gone out, and what happened to it".
+ *
+ * **The projection is the redaction.** A ledger row carries the callback capability
+ * token — the entire authentication of the webhook door — so the row must never be
+ * served raw. Mapping it here, field by field into a declared shape, is what makes
+ * that structural rather than something a route has to remember.
+ *
+ * `live` joins the provider's CURRENT status onto each row with ONE `documents/list`
+ * call. A provider failure degrades to the ledger's own view (`live: false`) rather
+ * than failing the read: a console that can't reach Scrive should still show what was
+ * sent. The flag travels in the result precisely so the UI never presents a stale
+ * ledger status as the provider's truth.
+ */
+export async function scriveConnectionActivity(
+  host: ScopeHost,
+  connection: ScriveConnectionRef,
+  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number; live?: boolean },
+): Promise<ConnectionActivity> {
+  const rows = await host.admin.listConnectorState(connection.id, DISPATCH_PREFIX);
+
+  // The live join: one bounded page, keyed by document id. Best-effort by design.
+  let provider: Map<string, { title: string; status: string; mtime?: string }> | undefined;
+  if (options.live) {
+    try {
+      const conn = await openScriveConnection(
+        host.admin,
+        options.fetch,
+        tenantId.parse(connection.tenantId),
+        connection.vertical,
+        options.timeoutMs ?? 15_000,
+      );
+      const api = new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED);
+      const list = await api.listDocuments({ max: 100 });
+      provider = new Map(
+        list.documents.map((d) => [d.id, { title: d.title, status: d.status, mtime: d.mtime }]),
+      );
+    } catch {
+      provider = undefined; // degraded to the ledger's view; reported as `live: false`
+    }
+  }
+
+  const entries = rows.map(({ key, value }) => {
+    const state = value as ScriveDispatchState;
+    const done = new Set(state.recordedRequestIds ?? []);
+    const signed = state.parties.filter((p) => done.has(p.requestId)).length;
+    const live = provider?.get(state.documentId);
+
+    // Ledger-derived status, used when there is no live read. It says what the PLATFORM
+    // knows — signatures recorded, sealed copy stored — never what the provider has
+    // since done, which is exactly the distinction `live` exists to keep honest.
+    const ledgerStatus =
+      state.sealedAttachmentId !== undefined
+        ? 'signed — sealed copy stored'
+        : state.parties.length > 0 && signed === state.parties.length
+          ? 'signed'
+          : signed > 0
+            ? `partly signed (${signed}/${state.parties.length})`
+            : 'sent for signature';
+
+    return {
+      key,
+      title: live?.title && live.title !== '' ? live.title : `Signature request ${state.instanceId}`,
+      reference: state.documentId,
+      status: live ? (DOCUMENT_STATUS[live.status] ?? live.status) : ledgerStatus,
+      at: asInstant(state.dispatchedAt),
+      facts: [
+        ...state.parties.slice(0, 24).map((p) => ({
+          label: p.label,
+          value: done.has(p.requestId) ? 'signature recorded' : 'awaiting signature',
+        })),
+        { label: 'Content hash', value: state.contentHash },
+        ...(state.sealedAttachmentId ? [{ label: 'Sealed copy', value: 'stored on the instance' }] : []),
+        ...(live?.mtime ? [{ label: 'Provider last change', value: live.mtime }] : []),
+      ],
+    };
+  });
+
+  // Newest first — a console reads the last thing that happened, not the first.
+  entries.sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''));
+  return { entries, live: provider !== undefined };
 }
 
 /** What one sweep of a connection's outstanding dispatches did. */

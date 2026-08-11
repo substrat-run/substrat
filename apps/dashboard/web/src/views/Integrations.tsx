@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Button, Dialog, Input, Select } from '@substrat-run/ui';
 import {
   api,
@@ -6,13 +6,21 @@ import {
   type AccountIntegration,
   type AppIntegration,
   type AppRow,
+  type ConnectionActivityView,
+  type ConnectionFact,
+  type ConnectionProbeView,
   type ConnectionView,
   type ProviderField,
 } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
-import { MOCK_APP_INTEGRATIONS, MOCK_ACCOUNT_INTEGRATIONS } from '../lib/demo';
+import {
+  MOCK_APP_INTEGRATIONS,
+  MOCK_ACCOUNT_INTEGRATIONS,
+  MOCK_CONNECTION_ACTIVITY,
+  MOCK_CONNECTION_PROBE,
+} from '../lib/demo';
 import { Page } from '../components/layout';
-import { card, HonestyBanner, PageTitle, Pill, type PillKind } from '../components/ui';
+import { card, HonestyBanner, MonoTag, PageTitle, Pill, type PillKind } from '../components/ui';
 import { relativeTime } from '../lib/format';
 
 /**
@@ -48,6 +56,205 @@ function HealthLine({ conn }: { conn: ConnectionView }) {
     return <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Last used {relativeTime(conn.lastOkAt)}</div>;
   }
   return <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Connected {relativeTime(conn.createdAt)} — not used yet</div>;
+}
+
+/** A label/value line — the shape both a probe's account detail and an activity row use. */
+function Facts({ facts }: { facts: ConnectionFact[] }) {
+  if (facts.length === 0) return null;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '2px 12px', fontSize: 11.5 }}>
+      {facts.map((f, i) => (
+        <Fragment key={`${f.label}-${i}`}>
+          <span style={{ color: 'var(--text-tertiary)' }}>{f.label}</span>
+          <span style={{ color: 'var(--text-secondary)', fontFamily: f.value.length > 40 ? 'var(--font-mono)' : undefined, wordBreak: 'break-all' }}>
+            {f.value}
+          </span>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The integration detail (#605) — what a connected provider is, what it may do, and
+ * what it has actually done.
+ *
+ * Three reads, each answering a question the card alone could not:
+ *
+ * - **Verify** asks the provider to accept the credential right now. Health (§3.7) is
+ *   written by whatever call happened last, so a freshly connected credential has no
+ *   health at all until the first real dispatch — which for Scrive means a legal
+ *   document going to real signatories. The primary action here is deliberately that
+ *   probe, not "save": this dialog exists so a typo is found on the spot.
+ * - **Grants** are the readable blast radius: exactly what a leaked provider token could
+ *   invoke on this app, straight from the live tuples rather than the catalog's claim.
+ * - **Activity** is the connector's own dispatch ledger, which is the only durable record
+ *   that an outbound call ever happened — the audit log deliberately holds none of it.
+ *   `Refresh from provider` re-reads current state; `live` is surfaced verbatim because
+ *   the ledger's view and the provider's view are different facts.
+ */
+function IntegrationDetail({
+  provider,
+  scopeId,
+  connection,
+  onRotate,
+  onClose,
+}: {
+  provider: { provider: string; name: string; monogram: string; description: string };
+  /** The app whose vertical owns the connection — the routes are per-app by design. */
+  scopeId: string;
+  connection: ConnectionView;
+  onRotate: () => void;
+  onClose: () => void;
+}) {
+  const [probe, setProbe] = useState<ConnectionProbeView | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [probeErr, setProbeErr] = useState<string | null>(null);
+  const [activity, setActivity] = useState<ConnectionActivityView | null>(null);
+  const [activityErr, setActivityErr] = useState<string | null>(null);
+  const [live, setLive] = useState(false);
+
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setActivity(MOCK_CONNECTION_ACTIVITY);
+      return;
+    }
+    let alive = true;
+    setActivity(null);
+    setActivityErr(null);
+    api
+      .integrationActivity(scopeId, provider.provider, { live })
+      .then((v) => alive && setActivity(v))
+      .catch((e) => alive && setActivityErr(e instanceof ApiError ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, [scopeId, provider.provider, live]);
+
+  const verify = async () => {
+    if (probing) return;
+    setProbing(true);
+    setProbeErr(null);
+    try {
+      setProbe(DEV_MOCK ? MOCK_CONNECTION_PROBE : await api.verifyIntegration(scopeId, provider.provider));
+    } catch (e) {
+      setProbeErr(e instanceof ApiError ? e.message : String(e));
+    }
+    setProbing(false);
+  };
+
+  const s = STATUS[connection.status];
+  return (
+    <Dialog
+      open
+      title={provider.name}
+      width={640}
+      cancelLabel="Close"
+      confirmLabel={probing ? 'Testing…' : 'Test connection'}
+      confirmDisabled={probing}
+      onCancel={onClose}
+      onConfirm={verify}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '60vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Monogram text={provider.monogram} size={32} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Pill kind={s.kind}>{s.label}</Pill>
+              <span style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>{connection.label}</span>
+            </div>
+            <HealthLine conn={connection} />
+          </div>
+          <Button variant="secondary" size="sm" onClick={onRotate}>
+            Rotate
+          </Button>
+        </div>
+
+        {/* The probe's answer. A refused credential is reported as the provider's own
+            words — that difference is the reason this button exists. */}
+        {probeErr && (
+          <div style={{ ...card, padding: 12, fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
+            Couldn’t reach the provider — {probeErr}
+          </div>
+        )}
+        {probe && (
+          <div style={{ ...card, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Pill kind={probe.ok ? 'success' : 'danger'}>{probe.ok ? 'Credential accepted' : 'Refused'}</Pill>
+              {probe.accountLabel && <span style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>{probe.accountLabel}</span>}
+            </div>
+            {probe.error && <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{probe.error}</div>}
+            <Facts facts={probe.facts} />
+            {probe.ok && connection.externalAccountRef && probe.accountRef && connection.externalAccountRef !== probe.accountRef && (
+              <div style={{ fontSize: 11.5, color: 'var(--status-warning-fg)' }}>
+                These credentials act as account {probe.accountRef}, but this connection was made for{' '}
+                {connection.externalAccountRef}.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* What a leaked token could invoke — the live tuples, not the catalog's claim. */}
+        {activity && activity.grants.length > 0 && (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+              This connection may invoke
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {activity.grants.map((g) => (
+                <MonoTag key={g}>{g}</MonoTag>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>Activity</div>
+            <Button variant="ghost" size="sm" onClick={() => setLive((v) => !v)}>
+              {live ? 'Showing provider state' : 'Refresh from provider'}
+            </Button>
+          </div>
+          {activityErr && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>Couldn’t load activity — {activityErr}</div>}
+          {!activityErr && !activity && <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading…</div>}
+          {activity && activity.entries.length === 0 && (
+            <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              Nothing has been sent through this connection yet.
+            </div>
+          )}
+          {activity && activity.entries.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {live && !activity.live && (
+                <div style={{ fontSize: 11.5, color: 'var(--status-warning-fg)' }}>
+                  The provider couldn’t be reached — showing what this platform recorded sending.
+                </div>
+              )}
+              {activity.entries.map((e) => (
+                <div key={e.key} style={{ ...card, padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>{e.title}</span>
+                    <span style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>{e.status}</span>
+                    {e.at && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>sent {relativeTime(e.at)}</span>}
+                  </div>
+                  <Facts facts={e.facts} />
+                  {e.reference && (
+                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                      Provider reference <MonoTag>{e.reference}</MonoTag>
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                {activity.live
+                  ? 'Statuses read live from the provider.'
+                  : 'What this platform recorded sending — the provider may have moved on since.'}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </Dialog>
+  );
 }
 
 /**
@@ -138,6 +345,7 @@ export function AppIntegrations({ app }: { app: AppRow }) {
   const [view, setView] = useState<AppIntegration[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ provider: AppIntegration; rotate: boolean } | null>(null);
+  const [detail, setDetail] = useState<AppIntegration | null>(null);
   const [disconnect, setDisconnect] = useState<AppIntegration | null>(null);
   const [busy, setBusy] = useState(false);
   const [nonce, setNonce] = useState(0);
@@ -206,8 +414,12 @@ export function AppIntegrations({ app }: { app: AppRow }) {
                 ) : null}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
-                <Button variant="secondary" size="sm" onClick={() => setDialog({ provider: p, rotate: p.connection !== null })}>
-                  {p.connection ? 'Rotate' : 'Connect'}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => (p.connection ? setDetail(p) : setDialog({ provider: p, rotate: false }))}
+                >
+                  {p.connection ? 'Details' : 'Connect'}
                 </Button>
                 {p.connection && (
                   <Button variant="ghost" size="sm" onClick={() => setDisconnect(p)}>
@@ -233,6 +445,19 @@ export function AppIntegrations({ app }: { app: AppRow }) {
         />
       )}
 
+      {detail?.connection && (
+        <IntegrationDetail
+          provider={detail}
+          scopeId={app.app_scope_id}
+          connection={detail.connection}
+          onRotate={() => {
+            setDialog({ provider: detail, rotate: true });
+            setDetail(null);
+          }}
+          onClose={() => setDetail(null)}
+        />
+      )}
+
       <Dialog
         open={!!disconnect}
         title={disconnect ? `Disconnect ${disconnect.name}` : ''}
@@ -254,6 +479,7 @@ export function Integrations() {
   const [view, setView] = useState<AccountIntegration[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<AccountIntegration | null>(null);
+  const [detail, setDetail] = useState<{ provider: AccountIntegration; scopeId: string; connection: ConnectionView } | null>(null);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -299,6 +525,13 @@ export function Integrations() {
                         <span style={{ color: 'var(--text-tertiary)' }}>
                           used by {c.apps.length > 0 ? c.apps.map((a) => a.name).join(', ') : c.vertical}
                         </span>
+                        {/* Detail is per-APP because the routes are: a connection is keyed to a
+                            vertical, and any app of that vertical is a valid door to it. */}
+                        {c.apps[0] && (
+                          <Button variant="ghost" size="sm" onClick={() => setDetail({ provider: p, scopeId: c.apps[0]!.scopeId, connection: c })}>
+                            Details
+                          </Button>
+                        )}
                       </div>
                       <HealthLine conn={c} />
                     </div>
@@ -319,6 +552,19 @@ export function Integrations() {
             );
           })}
         </div>
+      )}
+
+      {detail && (
+        <IntegrationDetail
+          provider={detail.provider}
+          scopeId={detail.scopeId}
+          connection={detail.connection}
+          onRotate={() => {
+            setDialog(detail.provider);
+            setDetail(null);
+          }}
+          onClose={() => setDetail(null)}
+        />
       )}
 
       {dialog && (

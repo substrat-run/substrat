@@ -8,7 +8,14 @@
  * The generic "Acme" tenant from the design handoff.
  */
 import type { IconName } from './icons';
-import type { AppEnvView, AppIntegrationsView, AccountIntegrationsView, AppScope } from './api';
+import type {
+  AppEnvView,
+  AppIntegrationsView,
+  AccountIntegrationsView,
+  AppScope,
+  ConnectionActivityView,
+  ConnectionProbeView,
+} from './api';
 
 /** Per-vertical display metadata — the "kind" label and its layer-accent colour. */
 export interface VerticalMeta {
@@ -183,6 +190,53 @@ export const MOCK_ACCOUNT_INTEGRATIONS: AccountIntegrationsView = {
       connectTargets: [
         { scopeId: 'mock-scope-1', name: 'Acme HR', vertical: 'callout', connected: true },
         { scopeId: 'mock-scope-2', name: 'Acme Legal', vertical: 'meridian', connected: false },
+      ],
+    },
+  ],
+};
+
+/** The probe (#605), as the dev preview renders it — a credential the provider accepted. */
+export const MOCK_CONNECTION_PROBE: ConnectionProbeView = {
+  ok: true,
+  accountRef: '30338661',
+  accountLabel: 'Acme AB (drift@acme.se)',
+  facts: [
+    { label: 'Company', value: 'Acme AB' },
+    { label: 'API user', value: 'Alex Ek <drift@acme.se>' },
+    { label: 'Role', value: 'account owner' },
+  ],
+  error: null,
+};
+
+/**
+ * The dispatch ledger as the detail view shows it — `live: false`, because the fixture
+ * is the platform's own record, which is exactly the distinction the real view keeps.
+ */
+export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
+  live: false,
+  grants: ['protocol:record-signature', 'protocol:attach'],
+  entries: [
+    {
+      key: 'scrive:dispatch:01MOCKINSTANCE000000000001',
+      title: 'Serviceavtal v3',
+      reference: '8222115557388321607',
+      status: 'partly signed (1/2)',
+      at: new Date(Date.now() - 7200_000).toISOString(),
+      facts: [
+        { label: 'Acme AB', value: 'signature recorded' },
+        { label: 'Nordljus Fastigheter', value: 'awaiting signature' },
+        { label: 'Content hash', value: 'b2f1c0…9ad4' },
+      ],
+    },
+    {
+      key: 'scrive:dispatch:01MOCKINSTANCE000000000002',
+      title: 'Uppsägning v1',
+      reference: '8222115557388321444',
+      status: 'signed — sealed copy stored',
+      at: new Date(Date.now() - 86400_000 * 3).toISOString(),
+      facts: [
+        { label: 'Acme AB', value: 'signature recorded' },
+        { label: 'Sealed copy', value: 'stored on the instance' },
       ],
     },
   ],

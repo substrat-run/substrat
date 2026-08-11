@@ -142,6 +142,32 @@ export class ScriveMock {
 
       const path = new URL(url).pathname;
 
+      // The probe's read (#605). Shaped after the real testbed response, down to the
+      // company object `externalAccountRef` is drawn from — the fields the connector
+      // parses and nothing else, because a mock that invents fields teaches nothing.
+      if (path === '/api/v2/getprofile') {
+        return respond(200, {
+          id: '211338',
+          fstname: 'Mock',
+          sndname: 'Operator',
+          email: 'mock@substrat.test',
+          role: 'role_account_owner',
+          company: { companyid: '30338661', companyname: 'Mock Company' },
+        });
+      }
+
+      // The account's documents, newest first — the live half of the activity view.
+      if (path === '/api/v2/documents/list') {
+        const documents = [...this.documents.values()].reverse().map((d) => ({
+          id: d.id,
+          title: d.title,
+          status: d.status,
+          ctime: '2026-08-01T10:00:00Z',
+          mtime: '2026-08-01T10:05:00Z',
+        }));
+        return respond(200, { total_matching: documents.length, documents });
+      }
+
       if (path === '/api/v2/documents/new') {
         this.seq += 1;
         const doc: MockDocument = {

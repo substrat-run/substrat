@@ -47,7 +47,9 @@ import {
 import {
   SCRIVE_CALLBACK_ROUTE,
   handleScriveCallback,
+  probeScriveConnection,
   scriveCallbackPath,
+  scriveConnectionActivity,
   scriveConnector,
   sweepScriveReconciliations,
 } from '@substrat-run/connector-scrive';
@@ -1092,6 +1094,26 @@ export default {
         fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),
         observability: observabilityFor(env),
+        // #605: the same connector closure the dispatch and the sweep already use, in its
+        // third role — answering FOR a connection instead of acting through one. The
+        // control plane is the only place that can: it holds the directory, the secret
+        // box, and the sanctioned egress. Keyed by provider, so `control-plane-api`
+        // learns no Scrive vocabulary and an unwired provider 501s honestly.
+        connectionInspectors: {
+          scrive: {
+            probe: (h, row) =>
+              probeScriveConnection(h, row, {
+                fetch: globalThis.fetch as unknown as FetchLike,
+                baseUrl: env.SCRIVE_BASE_URL,
+              }),
+            activity: (h, row, opts) =>
+              scriveConnectionActivity(h, row, {
+                fetch: globalThis.fetch as unknown as FetchLike,
+                baseUrl: env.SCRIVE_BASE_URL,
+                live: opts.live,
+              }),
+          },
+        },
         // Where the refs the console shows actually resolve, so staff get a link into the
         // Cloudflare dashboard instead of an id to hunt for. Account id + namespace only —
         // no credential — and absent when the account is not configured, which is the

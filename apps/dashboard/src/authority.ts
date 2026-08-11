@@ -1,6 +1,9 @@
 import type {
   AdminLogEntry,
   Connection,
+  ConnectionActivity,
+  ConnectionGrantRecord,
+  ConnectionProbe,
   DeployAssets,
   ListPage,
   OpsFailureEntry,
@@ -276,6 +279,35 @@ export class TenantNarrowedControlPlane {
     createdBy: string;
   }): Promise<{ connectionId: string; created: boolean; granted: string[] }> {
     return this.post(`/tenants/${this.tenantId}/connections`, input);
+  }
+
+  /**
+   * Verify a stored credential against the provider (#605) — the plane opens the sealed
+   * secret, spends one cheap authenticated read, and answers what the provider said.
+   * A rejected credential is a 200 with `ok: false`; only an unwired provider (501) or
+   * a platform fault is an error. Also refreshes the connection's health, because
+   * verifying IS a use.
+   */
+  verifyConnection(connectionId: string): Promise<ConnectionProbe> {
+    return this.post<ConnectionProbe>(
+      `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/verify`,
+    );
+  }
+
+  /**
+   * What the connection has done (#605) — the connector's dispatch ledger, projected by
+   * the connector itself (a raw ledger row can carry connector secrets). `live` asks the
+   * provider for current state too, and the answer reports whether it got it.
+   */
+  connectionActivity(connectionId: string, opts: { live?: boolean } = {}): Promise<ConnectionActivity> {
+    return this.call<ConnectionActivity>(
+      `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/activity${opts.live ? '?live=1' : ''}`,
+    );
+  }
+
+  /** The tenant's live connection grants — what each connection is allowed to invoke (#592). */
+  listConnectionGrants(): Promise<ConnectionGrantRecord[]> {
+    return this.call<ConnectionGrantRecord[]>(`/tenants/${this.tenantId}/connection-grants`);
   }
 
   /** Revoke a connection (terminal — the sealed secret is deleted, grants tombstone). */

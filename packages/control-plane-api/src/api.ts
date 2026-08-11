@@ -5,7 +5,9 @@ import {
   ASSET_PART_PREFIX,
   assetHash,
   channelName,
+  connectionActivity,
   connectionFilter,
+  connectionProbe,
   createTenantInput,
   entitlementGrantInput,
   hostname as hostnameSchema,
@@ -33,6 +35,9 @@ import {
   z,
 } from '@substrat-run/contracts';
 import type {
+  Connection,
+  ConnectionActivity,
+  ConnectionProbe,
   ListPageQuery,
   Page,
   PlatformActorId,
@@ -92,6 +97,26 @@ import {
   validateBindableHostname,
   type CustomHostnameProvisioner,
 } from './custom-hostnames.js';
+
+/**
+ * What one provider can answer about a live connection (#605) — the seam behind
+ * `POST /tenants/:t/connections/:id/verify` and `GET …/activity`.
+ *
+ * Both halves take the connection ROW, never a credential: opening the secret is the
+ * connector's own act through `HostAdmin`, so the plaintext still never crosses this
+ * package. `probe` says whether the provider accepts the credential and whose account
+ * it is; `activity` projects the connector's dispatch ledger into the declared shape —
+ * a projection precisely because a raw ledger row may carry connector secrets (Scrive's
+ * callback capability token), and redaction has to be structural.
+ */
+export interface ConnectionInspector {
+  probe?: (host: ScopeHost, connection: Connection) => Promise<ConnectionProbe>;
+  activity?: (
+    host: ScopeHost,
+    connection: Connection,
+    opts: { live: boolean },
+  ) => Promise<ConnectionActivity>;
+}
 
 export interface ControlPlaneApiOptions {
   host: ScopeHost;
@@ -211,6 +236,20 @@ export interface ControlPlaneApiOptions {
    * means forgetting that costs a feature, never a leak.
    */
   observability?: ObservabilityReader;
+  /**
+   * Per-provider connection **inspectors** (#605), keyed by provider slug — what makes
+   * an integration something an operator can interrogate rather than trust.
+   *
+   * Host-injected for the same reason `deployVertical` and `observability` are: this
+   * package holds no connector and must learn no provider's vocabulary. The host wires
+   * the same connector closure it already registers for dispatch and sweep (the
+   * `sweepers` idiom, `apps/control-plane/src/worker.ts`), and the routes below stay
+   * pure transport over a declared, provider-agnostic shape.
+   *
+   * An unregistered provider 501s rather than answering emptily — "this platform cannot
+   * verify a Fortnox key yet" is a true statement; "your Fortnox key is fine" is not.
+   */
+  connectionInspectors?: Record<string, ConnectionInspector>;
   /**
    * Where this platform's compute actually runs — the coordinates a staff surface needs
    * to hand an operator a link INTO the provider's own console (the right script, the
@@ -983,6 +1022,62 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!row) return c.json({ error: 'unknown connection' }, 404);
     if (row.status !== 'revoked') await admin.revokeConnection(c.get('actor'), row.id);
     return c.body(null, 204);
+  });
+
+  /**
+   * The tenant-scoped connection lookup the two inspection routes share. Same K-3
+   * existence hiding as the revoke above — a foreign tenant's connection id reads
+   * exactly like an absent one — and revoked rows are excluded: a withdrawn credential
+   * has no secret left to probe with, so "revoked" is a 404 for these reads too.
+   */
+  const inspectableConnection = async (c: Context<{ Variables: Vars }>) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const id = c.req.param('id');
+    const rows = await admin.listConnections(c.get('actor'), { tenantId });
+    return rows.find((r) => r.id === id);
+  };
+
+  /**
+   * **Verify a credential against the provider** (#605) — the read that turns "stored"
+   * into "works, and for this account".
+   *
+   * A POST because it reaches out: it spends an authenticated call at the provider and
+   * writes health (`recordConnectionUse` rides the connector's sanctioned `fetch`), so
+   * it is not the safe, cacheable read a GET promises. Not audited — like every other
+   * connection USE, it is machine telemetry, and §3.4's rule is that the audit log
+   * records control-plane mutations, not outbound calls.
+   *
+   * A rejected credential is `200 { ok: false, error }`, not an HTTP error: the
+   * provider answered, and its answer is the payload. Only a platform fault (no
+   * inspector wired, an unopenable secret) is a non-200.
+   */
+  app.post('/tenants/:tenantId/connections/:id/verify', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    const probe = options.connectionInspectors?.[row.provider]?.probe;
+    if (!probe) {
+      return c.json({ error: `no probe registered for provider '${row.provider}'` }, 501);
+    }
+    return c.json(connectionProbe.parse(await probe(host, row)));
+  });
+
+  /**
+   * **What the connection has done** (#605) — the connector's dispatch ledger, projected.
+   *
+   * `?live=1` asks the provider for current state as well; the result says which it got
+   * (`live`), because presenting the ledger's view as the provider's would be inventing
+   * facts. The projection is the connector's, never this package's: a raw ledger row can
+   * carry connector secrets, so it is never serialized here.
+   */
+  app.get('/tenants/:tenantId/connections/:id/activity', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    const activity = options.connectionInspectors?.[row.provider]?.activity;
+    if (!activity) {
+      return c.json({ error: `no activity view registered for provider '${row.provider}'` }, 501);
+    }
+    const live = c.req.query('live') === '1';
+    return c.json(connectionActivity.parse(await activity(host, row, { live })));
   });
 
   // -- the scope directory (§3.2/§4.2) ---------------------------------------

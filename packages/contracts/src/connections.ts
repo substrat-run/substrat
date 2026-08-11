@@ -138,3 +138,91 @@ export interface OpenConnection {
   secret: ConnectionSecret;
   expiresAt: string | null;
 }
+
+/**
+ * One provider-named fact about a connection — the readable half of a probe or an
+ * activity row. A pair, not a typed union, deliberately: the platform must be able to
+ * show 'Company: Nordljus AB' or 'BankID to sign: disabled' without learning what
+ * either means. The provider decides what is worth saying; the console renders it.
+ */
+export const connectionFact = z.object({
+  label: z.string().min(1).max(80),
+  value: z.string().max(400),
+});
+export type ConnectionFact = z.infer<typeof connectionFact>;
+
+/**
+ * What a **probe** answers (#605): did this credential just work, and whose account is
+ * it? A connection's health (§3.7) is written by whatever call happened last, which
+ * means a freshly connected credential has no health at all until the first real
+ * dispatch — possibly days later, and possibly a legal document sent to real
+ * signatories. A probe is the cheap read that turns "stored" into "verified" on the
+ * spot, and it rides the sanctioned `fetch`, so it refreshes health as a side effect.
+ *
+ * Provider-agnostic on purpose: `control-plane-api` holds no connector and learns no
+ * provider's vocabulary. A connector supplies the probe; this is the shape it must
+ * answer in.
+ */
+export const connectionProbe = z.object({
+  /** True when the provider accepted the credential. False is a real answer, not an error. */
+  ok: z.boolean(),
+  /**
+   * The provider's own identifier for the account the credential acts as — a Scrive
+   * company id, a Fortnox tenant. The same value `externalAccountRef` holds, which is
+   * what makes a probe able to say "these keys are for a DIFFERENT account than the one
+   * this connection was created for".
+   */
+  accountRef: z.string().max(200).nullable(),
+  /** Human label for that account: 'Nordljus AB (drift@nordljus.se)'. */
+  accountLabel: z.string().max(200).nullable(),
+  /** Anything else worth showing an operator — plan, role, whether a feature is enabled. */
+  facts: z.array(connectionFact).max(16).default([]),
+  /**
+   * The provider's own error message when `ok` is false — 'This feature is disabled'
+   * reads differently from 'invalid credentials', and that difference is the whole
+   * value of a probe. Never carries credential material: a probe reports what the
+   * provider said, never what was sent.
+   */
+  error: z.string().max(600).nullable(),
+});
+export type ConnectionProbe = z.infer<typeof connectionProbe>;
+
+/**
+ * One thing a connection **did** (#605) — a projection of the connector's own dispatch
+ * ledger (`listConnectorState`), which is the only durable record that an outbound call
+ * ever happened. The audit log deliberately holds none of this (`openConnection` is
+ * unaudited: one row per outbound HTTP call would drown the log that matters), and
+ * health keeps exactly one line, last-write-wins.
+ *
+ * **Projected by the connector, never read raw.** A ledger row is opaque connector
+ * bookkeeping and may hold secrets — Scrive's rows carry the callback capability token —
+ * so the platform never serves them as-is. The provider maps its own rows into this
+ * declared shape, which is how redaction becomes structural rather than remembered.
+ */
+export const connectionActivityEntry = z.object({
+  /** The ledger key — stable, opaque, and the handle a per-row refresh would use. */
+  key: z.string().min(1),
+  /** What this was: a document title, an invoice number. */
+  title: z.string().min(1).max(200),
+  /** The provider's own id for the thing, when it has one. */
+  reference: z.string().max(200).nullable(),
+  /** Provider-named state, already humanized: 'awaiting signatures', 'signed'. */
+  status: z.string().min(1).max(80),
+  /** When it started, as the connector recorded it. */
+  at: instant.nullable(),
+  /** The readable detail — parties and what each has done, the frozen hash, and so on. */
+  facts: z.array(connectionFact).max(32).default([]),
+});
+export type ConnectionActivityEntry = z.infer<typeof connectionActivityEntry>;
+
+export const connectionActivity = z.object({
+  entries: z.array(connectionActivityEntry),
+  /**
+   * True when the entries carry the provider's CURRENT state (a live read happened),
+   * false when they are the ledger's own view. The distinction is not cosmetic: the
+   * ledger knows what the platform recorded, not what the provider has since done, and
+   * a console that blurs the two invents facts.
+   */
+  live: z.boolean(),
+});
+export type ConnectionActivity = z.infer<typeof connectionActivity>;

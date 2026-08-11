@@ -360,6 +360,48 @@ once, properly, rather than a Scrive-specific timer.
 is where a dead-lettered delivery (§2.2) surfaces. Master plan §6 lists "per-tenant config +
 health" as part of the framework; this is the minimum that makes §2.2's trade honest.
 
+### 3.8 Inspection: verify, and what it did (#605)
+
+Health is the minimum, and the minimum turned out to be too little. It is one line,
+last-write-wins, and it is written by whatever call happened last — so a **freshly connected
+credential carries no health at all** until the first real dispatch, which for Scrive means a
+legal document going to real signatories. A tenant admin pasting four OAuth1 fields had no way to
+learn they had pasted one wrong.
+
+Two reads, both provider-agnostic, both on the control plane (the only place that holds the
+directory, the secret box, and sanctioned egress):
+
+| Route | Answers |
+|---|---|
+| `POST /tenants/:t/connections/:id/verify` | Does the provider accept this credential, and whose account is it? |
+| `GET /tenants/:t/connections/:id/activity[?live=1]` | What has this connection actually done? |
+
+Four properties make them safe to have:
+
+1. **A refusal is a result, not an error.** `200 { ok: false, error }` carries the provider's own
+   message. "This feature is disabled" and "No valid access credentials were provided" send an
+   operator to different places, and collapsing both into a 502 destroys the only useful signal.
+2. **Verify is a POST.** It spends an authenticated call at the provider and writes health — not
+   the safe, cacheable read a GET promises. It is not audited, for §3.4's reason: it is a
+   connection USE, and the audit log records control-plane mutations, not outbound calls.
+3. **Activity is a projection, never a raw ledger row.** The source is the connector's own
+   `listConnectorState` bookkeeping, which may hold secrets — Scrive's rows carry the callback
+   capability token (§4.4). The connector maps its rows into a declared shape
+   (`connectionActivityEntry`), which makes redaction structural rather than something each route
+   has to remember.
+4. **The ledger's view and the provider's view are different facts.** `?live=1` joins current
+   provider state; the response says which it got (`live`), and a provider failure degrades to the
+   ledger rather than failing the read. A console that blurs the two invents facts.
+
+Wiring is `connectionInspectors`, host-injected and keyed by provider — the same idiom as the
+sweep's `sweepers` — so `control-plane-api` still imports no connector. An unregistered provider
+**501s**: "this platform cannot verify a Fortnox key yet" is true, and an empty `200` would read
+as "your Fortnox key is fine".
+
+**Still open.** A bounded outcome history (a ~20-row ring buffer next to `recordConnectionUse`)
+would turn "last error" into "the last twenty calls"; the activity view covers dispatches, not
+every call. That is a kernel + adapter change, deliberately deferred.
+
 ---
 
 ## 4. Connectors — the interface
