@@ -25,6 +25,12 @@ export default defineWorkersConfig({
             // 32 fixed bytes, base64 — lets the scrive-ingress test seed a sealed
             // connection credential the worker's `secretBoxFor` can open.
             SECRET_BOX_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
+            // The pool loads `wrangler.jsonc`, so its `vars` ARE this suite's environment.
+            // Pin the provider base here rather than inheriting whichever Scrive production
+            // happens to point at: `fetchMock` intercepts one host with net-connect
+            // disabled, so a config change on the deploy side would otherwise turn every
+            // ingress assertion into an unrelated 500. A test names its own world.
+            SCRIVE_BASE_URL: 'https://api-testbed.scrive.com',
           },
           // The vertical service binding names a SEPARATELY deployed worker
           // (`substrat-fsm`), which does not exist in the test runtime — without a

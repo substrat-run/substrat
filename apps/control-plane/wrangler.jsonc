@@ -37,7 +37,17 @@
 	// `substrat.run` covers every `<label>.<jurisdiction>.substrat.run` mint.
 	// PLATFORM_CP_URL is this worker's own origin, injected into every pushed vertical as
 	// CONTROL_PLANE_URL — the callback address for the email relay (#303). Public, per-env: a var.
-	"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run", "PLATFORM_CP_URL": "https://console.substrat.net" },
+	// SCRIVE_BASE_URL is set EXPLICITLY, in both environments, because the connector's
+	// default is the testbed — and a production credential sent to the testbed is a 401
+	// that looks exactly like a mistyped key. An unset var here is not "unconfigured", it
+	// is "silently pointed at the wrong provider", so neither env may rely on the default.
+	// Production is `https://scrive.com` (the API lives under /api/v2 on the main host);
+	// `api.scrive.com` does not resolve.
+	"vars": {
+		"PLATFORM_BASE_DOMAINS": "substrat.run",
+		"PLATFORM_CP_URL": "https://console.substrat.net",
+		"SCRIVE_BASE_URL": "https://scrive.com"
+	},
 	// Staff sign-in is OIDC against AuthHero (jose + Web Crypto) — no Node built-ins.
 	// OIDC config is entirely secrets, nothing checked in (locally: .dev.vars):
 	//   wrangler secret put OIDC_ISSUER          # e.g. https://auth.substrat.run
@@ -170,7 +180,12 @@
 			// blindness #559 removes. Same setting as prod.
 			"observability": { "enabled": true },
 			"routes": [{ "pattern": "console-test.substrat.net", "custom_domain": true }], // differs
-			"vars": { "PLATFORM_BASE_DOMAINS": "substrat.run", "PLATFORM_CP_URL": "https://console-test.substrat.net" }, // differs
+			// TEST talks to Scrive's testbed — stated, not defaulted, for the reason above.
+			"vars": {
+				"PLATFORM_BASE_DOMAINS": "substrat.run",
+				"PLATFORM_CP_URL": "https://console-test.substrat.net",
+				"SCRIVE_BASE_URL": "https://api-testbed.scrive.com"
+			}, // differs
 			"durable_objects": {
 				"bindings": [
 					{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
