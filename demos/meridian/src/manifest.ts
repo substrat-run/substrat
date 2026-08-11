@@ -125,5 +125,10 @@ export const meridianManifest = moduleManifest.parse({
   // `substrat:auth`. Requiring is an OFFER, not a demand: builtin auth stays the
   // default, and the OIDC_* envSpec above remains the hand-configured fallback for an
   // externally-hosted issuer. Mirrored in `package.json` `substrat.requires`.
-  requires: ['oidc-issuer'],
+  //
+  // `scrive` declares the e-sign provider connection this vertical's signing flow
+  // dispatches through (dashboard-ui.md §4.8): the dashboard's Integrations tab renders
+  // it as connect-or-"missing its settings". Also an offer, never a gate — a dispatch
+  // with no live connection settles pending and delivers once connected.
+  requires: ['oidc-issuer', 'scrive'],
 });

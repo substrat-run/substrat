@@ -8,7 +8,7 @@
  * The generic "Acme" tenant from the design handoff.
  */
 import type { IconName } from './icons';
-import type { AppEnvView, AppScope } from './api';
+import type { AppEnvView, AppIntegrationsView, AccountIntegrationsView, AppScope } from './api';
 
 /** Per-vertical display metadata — the "kind" label and its layer-accent colour. */
 export interface VerticalMeta {
@@ -135,19 +135,58 @@ export const MOCK_APP_ENV: AppEnvView = {
 
 // -- M2: integrations -------------------------------------------------------
 
-export interface Integration {
-  monogram: string;
-  name: string;
-  description: string;
-  connected: boolean;
-  usedBy?: string;
-}
-export const INTEGRATIONS: Integration[] = [
-  { monogram: 'Sc', name: 'Scrive', description: 'E-signing for documents and protocols.', connected: true, usedBy: 'Acme HR, Acme Legal' },
-  { monogram: 'Fx', name: 'Fortnox', description: 'Push invoice basis to your accounting.', connected: true, usedBy: 'Acme Finance' },
-  { monogram: 'Sl', name: 'Slack', description: 'Notify channels on app events.', connected: false },
-  { monogram: 'Pm', name: 'Postmark', description: 'Transactional email from your apps.', connected: false },
+/** Dev-preview fixtures (VITE_DEV_MOCK) mirroring the real integrations routes. */
+const SCRIVE_FIELDS = [
+  { key: 'clientId', label: 'Client credentials identifier', secret: false },
+  { key: 'clientSecret', label: 'Client credentials secret', secret: true },
+  { key: 'tokenId', label: 'Token credentials identifier', secret: false },
+  { key: 'tokenSecret', label: 'Token credentials secret', secret: true },
 ];
+
+export const MOCK_APP_INTEGRATIONS: AppIntegrationsView = {
+  providers: [
+    {
+      provider: 'scrive',
+      name: 'Scrive',
+      description: 'E-signing for documents and protocols.',
+      monogram: 'Sc',
+      fields: SCRIVE_FIELDS,
+      required: true,
+      connection: null,
+    },
+  ],
+};
+
+export const MOCK_ACCOUNT_INTEGRATIONS: AccountIntegrationsView = {
+  providers: [
+    {
+      provider: 'scrive',
+      name: 'Scrive',
+      description: 'E-signing for documents and protocols.',
+      monogram: 'Sc',
+      fields: SCRIVE_FIELDS,
+      connections: [
+        {
+          id: '01MOCKCONNECTION0000000000',
+          label: 'Scrive (testbed)',
+          status: 'active',
+          externalAccountRef: null,
+          expiresAt: null,
+          lastOkAt: new Date(Date.now() - 3600_000).toISOString(),
+          lastError: null,
+          lastErrorAt: null,
+          createdAt: new Date(Date.now() - 86400_000).toISOString(),
+          vertical: 'callout',
+          apps: [{ scopeId: 'mock-scope-1', name: 'Acme HR' }],
+        },
+      ],
+      connectTargets: [
+        { scopeId: 'mock-scope-1', name: 'Acme HR', vertical: 'callout', connected: true },
+        { scopeId: 'mock-scope-2', name: 'Acme Legal', vertical: 'meridian', connected: false },
+      ],
+    },
+  ],
+};
 
 // -- M3: plan ---------------------------------------------------------------
 

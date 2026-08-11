@@ -600,6 +600,57 @@ describe('control-plane API', () => {
     expect(reconciled?.connectionGrants).toEqual([]);
   });
 
+  // -- the tenant-scoped connection store (connections.md §3.5, dashboard half) --
+
+  it('upserts, lists (secretless), and revokes a tenant connection', async () => {
+    const sConn = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sConn, vertical: 'conn-vert' });
+    await host.admin.activateScope(staff, t1, sConn);
+
+    const body = {
+      scopeId: sConn,
+      provider: 'scrive',
+      label: 'Scrive (testbed)',
+      secret: { clientId: 'ci', clientSecret: 'cs-SECRET', tokenId: 'ti', tokenSecret: 'ts-SECRET' },
+      grants: ['protocol:record-signature'],
+      createdBy: principalId.parse(ulid()),
+    };
+
+    // Create: the vertical comes from the directory's scope record, never the body.
+    const created = await (await json(`/tenants/${t1}/connections`, 'POST', body)).json() as { connectionId: string; created: boolean };
+    expect(created.created).toBe(true);
+
+    // A body naming a different tenant is refused, not silently rewritten.
+    expect((await json(`/tenants/${t1}/connections`, 'POST', { ...body, tenantId: t2 })).status).toBe(400);
+    // An unknown scope is a 404 from the relay, mapped to the route's status.
+    expect((await json(`/tenants/${t1}/connections`, 'POST', { ...body, scopeId: scopeId.parse(ulid()) })).status).toBe(404);
+
+    // Rotate in place: same id, still one live row.
+    const rotated = await (await json(`/tenants/${t1}/connections`, 'POST', body)).json() as { connectionId: string; created: boolean };
+    expect(rotated).toMatchObject({ connectionId: created.connectionId, created: false });
+
+    // The list is metadata only — the credential is unrepresentable on the row.
+    const listRes = await req(`/tenants/${t1}/connections?vertical=conn-vert&provider=scrive`);
+    expect(listRes.status).toBe(200);
+    const rows = await listRes.json() as { id: string; vertical: string; status: string }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: created.connectionId, vertical: 'conn-vert', provider: 'scrive', status: 'active' });
+    expect(JSON.stringify(rows)).not.toContain('SECRET');
+
+    // Revoke is tenant-scoped with existence hiding: an unknown id and a foreign
+    // tenant's id answer the same 404.
+    expect((await req(`/tenants/${t1}/connections/${ulid()}`, { method: 'DELETE' })).status).toBe(404);
+    expect((await req(`/tenants/${t2}/connections/${created.connectionId}`, { method: 'DELETE' })).status).toBe(404);
+    expect((await req(`/tenants/${t1}/connections/${created.connectionId}`, { method: 'DELETE' })).status).toBe(204);
+    // Idempotent: revoking the revoked row is a no-op 204.
+    expect((await req(`/tenants/${t1}/connections/${created.connectionId}`, { method: 'DELETE' })).status).toBe(204);
+
+    // Revoked rows leave the default list; includeRevoked=1 still shows them.
+    expect(await (await req(`/tenants/${t1}/connections?provider=scrive`)).json()).toEqual([]);
+    const all = await (await req(`/tenants/${t1}/connections?provider=scrive&includeRevoked=1`)).json() as { status: string }[];
+    expect(all.map((r) => r.status)).toEqual(['revoked']);
+  });
+
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------
 
   it('delivers per-instance config through the vertical that owns the scope', async () => {

@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview } from '../lib/api';
-import { verticalMeta, APP_TABS, INTEGRATIONS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
+import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
 import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, OriginTag, Pill, RowActions } from '../components/ui';
-import { IntegrationCard } from './Integrations';
+import { AppIntegrations } from './Integrations';
 import { navigate } from '../lib/router';
 import { DnsRecords } from './Domains';
 import { AppObservability } from './AppObservability';
@@ -2537,11 +2537,7 @@ function Settings({ app, section, onSection, onDeleted, authServers }: { app: Ap
       {section === 'general' && <GeneralSettings app={app} onDeleted={onDeleted} authServers={authServers} />}
       {section === 'environment' && <EnvVars app={app} />}
       {section === 'domains' && <AppDomains app={app} />}
-      {section === 'integrations' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 16 }}>
-          {INTEGRATIONS.slice(0, 2).map((i) => <IntegrationCard key={i.name} integ={i} />)}
-        </div>
-      )}
+      {section === 'integrations' && <AppIntegrations app={app} />}
     </div>
   );
 }

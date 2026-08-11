@@ -499,6 +499,63 @@ export interface AppEnvUpdateResult {
   note?: string;
 }
 
+/** A provider credential form field — server-driven, the same move as the env spec. */
+export interface ProviderField {
+  key: string;
+  label: string;
+  /** Write-only: never echoed back after saving. */
+  secret: boolean;
+  placeholder?: string;
+}
+
+/** One provider connection, metadata only — the row cannot carry its secret. */
+export interface ConnectionView {
+  id: string;
+  label: string;
+  status: 'active' | 'expired' | 'revoked' | 'error';
+  externalAccountRef: string | null;
+  expiresAt: string | null;
+  lastOkAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  createdAt: string;
+}
+
+/** One provider on the per-app Integrations tab: the form, whether the app's vertical
+ *  declares it (`required`), and the live connection if one exists. */
+export interface AppIntegration {
+  provider: string;
+  name: string;
+  description: string;
+  monogram: string;
+  fields: ProviderField[];
+  required: boolean;
+  connection: ConnectionView | null;
+}
+
+/** `GET /api/apps/:scope/integrations` */
+export interface AppIntegrationsView {
+  providers: AppIntegration[];
+}
+
+/** One provider on the account-level Integrations page: every connection under it (a
+ *  connection is keyed to a vertical, shared by that vertical's apps) and which apps
+ *  can connect it. */
+export interface AccountIntegration {
+  provider: string;
+  name: string;
+  description: string;
+  monogram: string;
+  fields: ProviderField[];
+  connections: Array<ConnectionView & { vertical: string; apps: Array<{ scopeId: string; name: string }> }>;
+  connectTargets: Array<{ scopeId: string; name: string; vertical: string; connected: boolean }>;
+}
+
+/** `GET /api/integrations` */
+export interface AccountIntegrationsView {
+  providers: AccountIntegration[];
+}
+
 /** One hostname bound to the app's scope (the Domains tab). */
 export interface AppHostnameRow {
   hostname: string;
@@ -799,6 +856,19 @@ export const api = {
   /** Remove one env var. */
   deleteAppEnv: (scopeId: string, key: string) =>
     call<void>(`/apps/${encodeURIComponent(scopeId)}/env/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  /** The app's declared providers + live connections (Settings → Integrations). */
+  appIntegrations: (scopeId: string) => call<AppIntegrationsView>(`/apps/${encodeURIComponent(scopeId)}/integrations`),
+  /** Connect or rotate a provider credential for this app — the secret rides one call and is stored sealed. */
+  connectIntegration: (scopeId: string, provider: string, input: { secret: Record<string, string>; label?: string }) =>
+    call<{ connectionId: string; created: boolean }>(
+      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}`,
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+  /** Disconnect a provider (terminal — reconnecting creates a new connection). */
+  disconnectIntegration: (scopeId: string, provider: string) =>
+    call<void>(`/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}`, { method: 'DELETE' }),
+  /** The account-level integrations overview: all providers, connections, and connectable apps. */
+  integrations: () => call<AccountIntegrationsView>('/integrations'),
   /** The app's hostname bindings + the vertical's declared surfaces (Domains tab). */
   appHostnames: (scopeId: string) => call<AppHostnamesView>(`/apps/${encodeURIComponent(scopeId)}/hostnames`),
   /** Bind a hostname to a surface: platform-minted (`domain` omitted, lands active) or a custom domain (lands pending). */

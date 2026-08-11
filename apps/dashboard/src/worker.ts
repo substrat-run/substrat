@@ -34,6 +34,7 @@ import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@s
 import { dashboardModule, type DashboardAppRow } from './module.js';
 import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
+import { PROVIDERS, parseProviderSecret, liveConnectionFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, verticalDeploymentPageFromCp, verticalDeploymentPageFromHost, versionRegistryFromHost, versionAssetsFromHost, assertOwned } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
@@ -1962,6 +1963,217 @@ app.delete('/api/apps/:scopeId/env/:key', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   await dash.invoke('dashboard/delete-app-env', { appScopeId: appRow.app_scope_id, key: c.req.param('key') });
   return c.body(null, 204);
+});
+
+/**
+ * Which known providers each vertical DECLARES (`requires:` in its manifest, #427) — the
+ * same three-step lookup ladder as the env-spec: local registry, the hardcoded catalog,
+ * then the shared plane's catalog. Only slugs this dashboard has a `PROVIDERS` spec for
+ * count — `oidc-issuer` and future capability bindings pass through untouched.
+ */
+async function requiredProvidersBySlug(
+  host: ScopeHost,
+  env: Env,
+  tenantId: TenantId,
+  slugs: string[],
+): Promise<Map<string, string[]>> {
+  await ensureCatalog(host, STAFF);
+  const registered = await host.admin.listVerticals(STAFF);
+  let remote: Array<{ slug: string; requires?: string[] }> | undefined;
+  const out = new Map<string, string[]>();
+  for (const slug of new Set(slugs)) {
+    let requires = registered.find((v) => v.slug === slug)?.requires ?? CATALOG[slug]?.requires;
+    if (!requires) {
+      const cp = controlPlaneFor(env, tenantId);
+      remote ??= cp ? await cp.listCatalog() : [];
+      requires = remote.find((v) => v.slug === slug)?.requires ?? [];
+    }
+    out.set(slug, requires.filter((r) => PROVIDERS[r] !== undefined));
+  }
+  return out;
+}
+
+/**
+ * The tenant's provider connections for one vertical, read from wherever the CONSUMER
+ * reads them: the shared plane's store in connected mode (that is the directory
+ * `connector:<provider>` dispatch opens), this deployment's own in embedded mode (where
+ * the local connector runtime is the consumer). Metadata only — a connection row cannot
+ * carry its secret.
+ */
+async function connectionsFor(host: ScopeHost, env: Env, tenantId: TenantId, vertical?: string) {
+  const cp = controlPlaneFor(env, tenantId);
+  return cp
+    ? await cp.listConnections(vertical === undefined ? {} : { vertical })
+    : await host.admin.listConnections(STAFF, { tenantId, ...(vertical === undefined ? {} : { vertical }) });
+}
+
+const connectionView = (r: {
+  id: string; label: string; status: string; externalAccountRef: string | null;
+  expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string;
+}) => ({
+  id: r.id,
+  label: r.label,
+  status: r.status,
+  externalAccountRef: r.externalAccountRef,
+  expiresAt: r.expiresAt,
+  lastOkAt: r.lastOkAt,
+  lastError: r.lastError,
+  lastErrorAt: r.lastErrorAt,
+  createdAt: r.createdAt,
+});
+
+const providerForm = (spec: ProviderSpec) => ({
+  provider: spec.provider,
+  name: spec.name,
+  description: spec.description,
+  monogram: spec.monogram,
+  fields: spec.fields,
+});
+
+/**
+ * One app's integrations (the Settings → Integrations tab, dashboard-ui.md §4.8): the
+ * providers its vertical declares, each with its live connection or the
+ * "required, not connected" gap. A declared-but-unconnected provider never gates the
+ * app — a connector dispatch with no live connection settles pending and retries, so
+ * connecting later heals every queued delivery.
+ */
+app.get('/api/apps/:scopeId/integrations', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const required =
+    (await requiredProvidersBySlug(host, c.env, node.tenantId, [appRow.vertical_slug])).get(appRow.vertical_slug) ?? [];
+  const rows = await connectionsFor(host, c.env, node.tenantId, appRow.vertical_slug);
+  // Declared providers first, then any live connection whose provider the vertical no
+  // longer declares (still real — it can be disconnected here).
+  const slugs = [...required];
+  for (const r of rows) {
+    if (r.status !== 'revoked' && PROVIDERS[r.provider] && !slugs.includes(r.provider)) slugs.push(r.provider);
+  }
+  return c.json({
+    providers: slugs.map((p) => {
+      const live = liveConnectionFor(rows, p);
+      return {
+        ...providerForm(PROVIDERS[p]!),
+        required: required.includes(p),
+        connection: live ? connectionView(live) : null,
+      };
+    }),
+  });
+});
+
+/**
+ * Connect (or rotate — same act, same row) a provider for this app. Authorization is
+ * in-scope (connections.md §3.5, B): `dashboard/begin-connection` asserts
+ * `dashboard:manage-integrations` as the caller's own permission-checked act, and the
+ * connection is attributed to that principal. The credential then rides ONE call to the
+ * store that seals it — never a scope row, an event, or a log line.
+ */
+app.post('/api/apps/:scopeId/integrations/:provider', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const spec = PROVIDERS[c.req.param('provider')];
+  if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
+  const body = (await c.req.json().catch(() => ({}))) as { secret?: unknown; label?: string };
+  let secret: Record<string, string>;
+  try {
+    secret = parseProviderSecret(spec, body.secret);
+  } catch (e) {
+    throw new HTTPException(400, { message: e instanceof Error ? e.message : String(e) });
+  }
+  const authz = (await dash.invoke('dashboard/begin-connection', { provider: spec.provider })) as { principal: string };
+  const label = typeof body.label === 'string' && body.label.trim() !== '' ? body.label.trim() : undefined;
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const appScope = scopeId.parse(appRow.app_scope_id);
+  const result = cp
+    ? await cp.upsertConnection({
+        scopeId: appScope,
+        provider: spec.provider,
+        ...(label ? { label } : {}),
+        secret,
+        grants: spec.grants,
+        createdBy: authz.principal,
+      })
+    : await upsertLocalConnection(host, STAFF, {
+        tenantId: node.tenantId,
+        scopeId: appScope,
+        vertical: appRow.vertical_slug,
+        spec,
+        secret,
+        ...(label ? { label } : {}),
+        createdBy: authz.principal,
+      });
+  return c.json({ connectionId: result.connectionId, created: result.created });
+});
+
+/** Disconnect — revoke is terminal: the sealed secret is deleted and the grants tombstone. */
+app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const spec = PROVIDERS[c.req.param('provider')];
+  if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
+  await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
+  const rows = await connectionsFor(host, c.env, node.tenantId, appRow.vertical_slug);
+  const live = liveConnectionFor(rows, spec.provider);
+  if (!live) throw new HTTPException(404, { message: 'not connected' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (cp) await cp.revokeConnection(live.id);
+  else await host.admin.revokeConnection(STAFF, live.id);
+  return c.body(null, 204);
+});
+
+/**
+ * The account-level Integrations page (dashboard-ui.md §4.8): every known provider, the
+ * tenant's connections under it (a connection is keyed to a VERTICAL, so every app of
+ * that vertical shares it), and which of the tenant's apps can connect it (their
+ * vertical declares it). Connecting from here still targets one app — the connect
+ * dialog picks it, and the grant lands on that app's scope.
+ */
+app.get('/api/integrations', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const requiredBy = await requiredProvidersBySlug(host, c.env, node.tenantId, apps.map((a) => a.vertical_slug));
+  const rows = await connectionsFor(host, c.env, node.tenantId);
+  return c.json({
+    providers: Object.values(PROVIDERS).map((spec) => {
+      const targets = apps
+        .filter((a) => (requiredBy.get(a.vertical_slug) ?? []).includes(spec.provider))
+        .map((a) => ({
+          scopeId: a.app_scope_id,
+          name: a.name,
+          vertical: a.vertical_slug,
+          connected: rows.some((r) => r.provider === spec.provider && r.status !== 'revoked' && r.vertical === a.vertical_slug),
+        }));
+      return {
+        ...providerForm(spec),
+        connections: rows
+          .filter((r) => r.provider === spec.provider && r.status !== 'revoked')
+          .map((r) => ({
+            ...connectionView(r),
+            vertical: r.vertical,
+            apps: apps.filter((a) => a.vertical_slug === r.vertical).map((a) => ({ scopeId: a.app_scope_id, name: a.name })),
+          })),
+        connectTargets: targets,
+      };
+    }),
+  });
 });
 
 /**
