@@ -2095,25 +2095,42 @@ app.post('/api/apps/:scopeId/integrations/:provider', async (c) => {
   const label = typeof body.label === 'string' && body.label.trim() !== '' ? body.label.trim() : undefined;
   const cp = controlPlaneFor(c.env, node.tenantId);
   const appScope = scopeId.parse(appRow.app_scope_id);
-  const result = cp
-    ? await cp.upsertConnection({
-        scopeId: appScope,
-        provider: spec.provider,
-        ...(label ? { label } : {}),
-        secret,
-        grants: spec.grants,
-        createdBy: authz.principal,
-      })
-    : await upsertLocalConnection(host, STAFF, {
-        tenantId: node.tenantId,
-        scopeId: appScope,
-        vertical: appRow.vertical_slug,
-        spec,
-        secret,
-        ...(label ? { label } : {}),
-        createdBy: authz.principal,
-      });
-  return c.json({ connectionId: result.connectionId, created: result.created });
+  let result;
+  try {
+    result = cp
+      ? await cp.upsertConnection({
+          scopeId: appScope,
+          provider: spec.provider,
+          ...(label ? { label } : {}),
+          secret,
+          grants: spec.grants,
+          createdBy: authz.principal,
+        })
+      : await upsertLocalConnection(host, STAFF, {
+          tenantId: node.tenantId,
+          scopeId: appScope,
+          vertical: appRow.vertical_slug,
+          spec,
+          secret,
+          ...(label ? { label } : {}),
+          createdBy: authz.principal,
+        });
+  } catch (e) {
+    // #605: the plane checked the candidate with the provider and the provider said no —
+    // nothing was written. Pass the provider's own words through with the 422 so the
+    // dialog can say what is wrong with the key instead of "couldn't save".
+    if (e instanceof ControlPlaneError && e.status === 422) {
+      return c.json({ error: e.message, ...(e.probe ? { probe: e.probe } : {}) }, 422);
+    }
+    throw e;
+  }
+  return c.json({
+    connectionId: result.connectionId,
+    created: result.created,
+    // Present when the provider accepted the credential — what turns the console's
+    // "Connected" from "a row exists" into "verified as this account".
+    ...('probe' in result && result.probe ? { probe: result.probe } : {}),
+  });
 });
 
 /** Disconnect — revoke is terminal: the sealed secret is deleted and the grants tombstone. */

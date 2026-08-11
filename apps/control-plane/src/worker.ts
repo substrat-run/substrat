@@ -48,6 +48,7 @@ import {
   SCRIVE_CALLBACK_ROUTE,
   handleScriveCallback,
   probeScriveConnection,
+  probeScriveSecret,
   scriveCallbackPath,
   scriveConnectionActivity,
   scriveConnector,
@@ -90,6 +91,7 @@ import {
   type FetchVerticalAssetFn,
   type CustomHostnameProvisioner,
   type PlatformActorAuth,
+  type ConnectionInspector,
   type PlatformRuntime,
   type DoNamespaceReader,
 } from '@substrat-run/control-plane-api';
@@ -518,6 +520,32 @@ function secretBoxFor(env: Env): SecretBox | undefined {
     );
   }
   return webCryptoSecretBox(env.SECRET_BOX_KEY_ID ?? 'sb1', key);
+}
+
+/**
+ * What each connector can ANSWER about a connection (#605) — the third role the same
+ * closures play, next to dispatch and sweep. Defined once because two callers need it:
+ * the control-plane API's inspection routes, and the `/internal/connections/upsert`
+ * relay, whose connect-time gate must be the same check the dashboard's connect makes.
+ *
+ * `probeCandidate` is the one that runs BEFORE a write — see `relayConnectionUpsert`.
+ */
+function connectionInspectorsFor(env: Env): Record<string, ConnectionInspector> {
+  const fetchImpl = globalThis.fetch as unknown as FetchLike;
+  return {
+    scrive: {
+      probe: (h, row) => probeScriveConnection(h, row, { fetch: fetchImpl, baseUrl: env.SCRIVE_BASE_URL }),
+      activity: (h, row, opts) =>
+        scriveConnectionActivity(h, row, {
+          fetch: fetchImpl,
+          baseUrl: env.SCRIVE_BASE_URL,
+          live: opts.live,
+          source: opts.source,
+        }),
+      credential: (h, row) => scriveCredentialSummary(h, row),
+      probeCandidate: (secret) => probeScriveSecret(secret, { fetch: fetchImpl, baseUrl: env.SCRIVE_BASE_URL }),
+    },
+  };
 }
 
 /**
@@ -1028,10 +1056,20 @@ export default {
           hostFor(c.env),
           CONNECTION_RELAY_ACTOR,
           await c.req.json().catch(() => ({})),
+          // #605: a vertical's own admin screen gets the same connect-time gate the
+          // dashboard does — a credential Scrive refuses never reaches the store.
+          {
+            probeCandidate: (provider, secret) =>
+              Promise.resolve(
+                connectionInspectorsFor(c.env)[provider]?.probeCandidate?.(secret),
+              ),
+          },
         );
         return c.json(result);
       } catch (e) {
-        if (e instanceof ConnectionRelayError) return c.json({ error: e.message }, e.status);
+        if (e instanceof ConnectionRelayError) {
+          return c.json({ error: e.message, ...(e.probe ? { probe: e.probe } : {}) }, e.status);
+        }
         throw e;
       }
     });
@@ -1100,23 +1138,7 @@ export default {
         // control plane is the only place that can: it holds the directory, the secret
         // box, and the sanctioned egress. Keyed by provider, so `control-plane-api`
         // learns no Scrive vocabulary and an unwired provider 501s honestly.
-        connectionInspectors: {
-          scrive: {
-            probe: (h, row) =>
-              probeScriveConnection(h, row, {
-                fetch: globalThis.fetch as unknown as FetchLike,
-                baseUrl: env.SCRIVE_BASE_URL,
-              }),
-            activity: (h, row, opts) =>
-              scriveConnectionActivity(h, row, {
-                fetch: globalThis.fetch as unknown as FetchLike,
-                baseUrl: env.SCRIVE_BASE_URL,
-                live: opts.live,
-                source: opts.source,
-              }),
-            credential: (h, row) => scriveCredentialSummary(h, row),
-          },
-        },
+        connectionInspectors: connectionInspectorsFor(env),
         // Where the refs the console shows actually resolve, so staff get a link into the
         // Cloudflare dashboard instead of an id to hunt for. Account id + namespace only —
         // no credential — and absent when the account is not configured, which is the

@@ -2,6 +2,7 @@ import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import {
   connectionId,
   connectionRelayRequest,
+  type ConnectionProbe,
   type ConnectionRelayResult,
   type PlatformActorId,
 } from '@substrat-run/contracts';
@@ -33,17 +34,38 @@ import {
 export class ConnectionRelayError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 404 | 409 | 422,
+    /** The provider's own answer, when the refusal came from a pre-flight probe (#605). */
+    readonly probe?: ConnectionProbe,
   ) {
     super(message);
     this.name = 'ConnectionRelayError';
   }
 }
 
+/**
+ * Check a candidate credential against the provider BEFORE it is written (#605).
+ *
+ * The upsert used to mean "store it": the row landed, the console said Connected, and the
+ * first evidence that the provider disagreed arrived on the next dispatch — after a
+ * signature request had already failed. On a ROTATION it is worse than cosmetic, because
+ * writing first replaces a working credential with a broken one.
+ *
+ * Only a definite refusal (the provider answering 401/403) blocks the write. An
+ * unreachable provider does not: rejecting then would make an outage look like every
+ * tenant's keys going bad, and would block the rotation someone is attempting *because*
+ * things are broken. Unverifiable is stored, and reported as unverified.
+ */
+export type ConnectionCandidateProbe = (
+  provider: string,
+  secret: Record<string, string>,
+) => Promise<ConnectionProbe | undefined>;
+
 export async function relayConnectionUpsert(
   host: ScopeHost,
   actor: PlatformActorId,
   body: unknown,
+  options: { probeCandidate?: ConnectionCandidateProbe } = {},
 ): Promise<ConnectionRelayResult> {
   const parsed = connectionRelayRequest.safeParse(body);
   if (!parsed.success) {
@@ -61,6 +83,17 @@ export async function relayConnectionUpsert(
     throw new ConnectionRelayError('scope has no vertical bound', 404);
   }
   const vertical = rec.vertical;
+
+  // Ask the provider before touching the store (#605). Deliberately here, ahead of every
+  // write below: a refused rotation must leave the live credential exactly as it was.
+  const probe = await options.probeCandidate?.(input.provider, input.secret);
+  if (probe && !probe.ok && probe.refused) {
+    throw new ConnectionRelayError(
+      probe.error ?? `${input.provider} refused these credentials`,
+      422,
+      probe,
+    );
+  }
 
   // `listConnections` already excludes revoked rows; expired/errored rows are still the
   // live row for this key — rotation is what revives them. The account leg matches
@@ -118,5 +151,12 @@ export async function relayConnectionUpsert(
     });
   }
 
-  return { connectionId: id, created, granted: input.grants };
+  // The pre-flight was a real, successful call with this exact credential — moments before
+  // the row existed. Recording it as health is what stops a just-verified connection from
+  // reading "connected, not used yet", which is the same "a row exists" claim the probe was
+  // added to replace. A refusal never reaches here (it threw above), and an unreachable
+  // provider records nothing: unverified must not look like failed.
+  if (probe?.ok) await host.admin.recordConnectionUse(id, { ok: true });
+
+  return { connectionId: id, created, granted: input.grants, ...(probe ? { probe } : {}) };
 }

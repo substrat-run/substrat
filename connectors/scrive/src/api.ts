@@ -155,6 +155,30 @@ export interface ScriveParty {
   isSignatory?: boolean;
 }
 
+/**
+ * A provider response that was not 2xx, carrying the STATUS as data.
+ *
+ * The status is the difference between two failures that must not be conflated: a
+ * `401`/`403` is Scrive saying "not with these credentials" — a definite answer about the
+ * credential — while a timeout, a 5xx or a DNS failure says nothing about it at all.
+ * A caller that cannot tell them apart must either reject good credentials during a
+ * provider outage or accept bad ones; both are worse than asking.
+ */
+export class ScriveApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ScriveApiError';
+  }
+
+  /** The provider refused the CREDENTIAL, as opposed to failing for its own reasons. */
+  get refused(): boolean {
+    return this.status === 401 || this.status === 403;
+  }
+}
+
 const asJson = async (
   res: { ok: boolean; status: number; text(): Promise<string> },
   what: string,
@@ -171,7 +195,7 @@ const asJson = async (
     } catch {
       /* not JSON; keep the raw slice */
     }
-    throw new Error(`scrive ${what} failed: HTTP ${res.status} ${detail}`);
+    throw new ScriveApiError(`scrive ${what} failed: HTTP ${res.status} ${detail}`, res.status);
   }
   try {
     return JSON.parse(body) as unknown;
@@ -204,7 +228,7 @@ const asBytes = async (
     } catch {
       /* not JSON; keep the raw slice */
     }
-    throw new Error(`scrive ${what} failed: HTTP ${res.status} ${detail}`);
+    throw new ScriveApiError(`scrive ${what} failed: HTTP ${res.status} ${detail}`, res.status);
   }
   return new Uint8Array(await res.arrayBuffer());
 };

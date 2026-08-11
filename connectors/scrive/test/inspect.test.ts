@@ -16,6 +16,7 @@ import { PROTOCOL_PERM as PERM, protocolModule } from '@substrat-run/engine-prot
 import {
   ScriveMock,
   probeScriveConnection,
+  probeScriveSecret,
   registerScriveConnector,
   scriveCallbackPath,
   scriveConnectionActivity,
@@ -152,6 +153,8 @@ describe('scrive connector — inspection (probe + activity)', () => {
     expect(probe.accountRef).toBe('30338661');
     expect(probe.accountLabel).toContain('Mock Company');
     expect(probe.facts.map((f) => f.label)).toContain('Company');
+    // Which Scrive was asked, on every answer — see the failure case below for why.
+    expect(probe.facts).toContainEqual({ label: 'Environment', value: 'testbed (api-testbed.scrive.test)' });
     // A probe is a USE: it rides the connection-bound fetch, so health lands on it.
     const [row] = await host.admin.listConnections(staff, { tenantId: t });
     expect(row!.lastOkAt).not.toBeNull();
@@ -167,6 +170,9 @@ describe('scrive connector — inspection (probe + activity)', () => {
     expect(probe.ok).toBe(false);
     expect(probe.error).toContain('mock failure');
     expect(probe.accountRef).toBeNull();
+    // A 401 from the WRONG Scrive is indistinguishable from a bad key, so the failure
+    // names the environment it asked — the one fact that separates the two.
+    expect(probe.facts).toContainEqual({ label: 'Environment', value: 'testbed (api-testbed.scrive.test)' });
     // And the failure is recorded as health, exactly as a failed dispatch would be.
     const [row] = await host.admin.listConnections(staff, { tenantId: t });
     expect(row!.lastError).not.toBeNull();
@@ -310,5 +316,49 @@ describe('scrive connector — inspection (probe + activity)', () => {
     const keys = activity.entries.map((e) => e.key);
     expect(keys[0]).toBe(`scrive:dispatch:${second.instance.id}`);
     expect(keys[1]).toBe(`scrive:dispatch:${first.instance.id}`);
+  });
+  // -- the connect-time gate (#605): probing a credential that is not stored yet ---
+
+  const CANDIDATE = { clientId: 'ci', clientSecret: 'cs', tokenId: 'ti', tokenSecret: 'ts' };
+
+  it('probes a candidate credential without touching the store', async () => {
+    const probe = await probeScriveSecret(CANDIDATE, { fetch: scrive.fetch, baseUrl: BASE });
+
+    expect(probe.ok).toBe(true);
+    expect(probe.accountRef).toBe('30338661');
+    // No connection was opened, so no health was written against the live one — a
+    // candidate's outcome is not a fact about the connection that already exists.
+    const [row] = await host.admin.listConnections(staff, { tenantId: t });
+    expect(row!.lastOkAt).toBeNull();
+  });
+
+  it('marks a provider REJECTION as refused — the answer a connect may act on', async () => {
+    scrive.failWith = 401;
+
+    const probe = await probeScriveSecret(CANDIDATE, { fetch: scrive.fetch, baseUrl: BASE });
+
+    expect(probe.ok).toBe(false);
+    expect(probe.refused).toBe(true); // 401 — the provider spoke about the credential
+  });
+
+  it('does NOT mark a provider OUTAGE as refused', async () => {
+    scrive.failWith = 503;
+
+    const probe = await probeScriveSecret(CANDIDATE, { fetch: scrive.fetch, baseUrl: BASE });
+
+    expect(probe.ok).toBe(false);
+    // A 503 says nothing about the credential. Calling this "refused" would block a
+    // legitimate connect during a Scrive outage — and block the rotation someone is
+    // attempting precisely because things are broken.
+    expect(probe.refused).toBe(false);
+  });
+
+  it('refuses an incomplete credential without spending a call', async () => {
+    scrive.failWith = 500; // would make any real call fail — none should happen
+
+    const probe = await probeScriveSecret({ clientId: 'ci' }, { fetch: scrive.fetch, baseUrl: BASE });
+
+    expect(probe).toMatchObject({ ok: false, refused: true });
+    expect(probe.error).toContain('clientSecret');
   });
 });

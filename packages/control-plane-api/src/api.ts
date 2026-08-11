@@ -127,6 +127,15 @@ export interface ConnectionInspector {
    * identifiers. What comes back is never usable as a credential.
    */
   credential?: (host: ScopeHost, connection: Connection) => Promise<ConnectionCredential>;
+  /**
+   * Check a credential that is not stored yet — the connect-time gate (#605).
+   *
+   * Distinct from `probe` because there is nothing to open: the candidate secret is passed
+   * straight in, no connection row is touched, and no health is written (a candidate's
+   * failure is not a fact about the live connection). Registered ⇒ every upsert of this
+   * provider is checked before it writes, and a REFUSED credential never lands.
+   */
+  probeCandidate?: (secret: Record<string, string>) => Promise<ConnectionProbe>;
 }
 
 export interface ControlPlaneApiOptions {
@@ -1014,9 +1023,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'body tenantId disagrees with the route tenant' }, 400);
     }
     try {
-      return c.json(await relayConnectionUpsert(host, c.get('actor'), { ...body, tenantId }));
+      return c.json(
+        await relayConnectionUpsert(host, c.get('actor'), { ...body, tenantId }, { probeCandidate }),
+      );
     } catch (err) {
-      if (err instanceof ConnectionRelayError) return c.json({ error: err.message }, err.status);
+      if (err instanceof ConnectionRelayError) {
+        // A refusal carries the provider's own answer, so a console can show WHY rather
+        // than "save failed" — the whole point of checking before writing.
+        return c.json({ error: err.message, ...(err.probe ? { probe: err.probe } : {}) }, err.status);
+      }
       throw err;
     }
   });
@@ -1041,6 +1056,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * exactly like an absent one — and revoked rows are excluded: a withdrawn credential
    * has no secret left to probe with, so "revoked" is a 404 for these reads too.
    */
+  /**
+   * The connect-time gate (#605), as the relay consumes it: ask the provider about a
+   * candidate credential, or answer `undefined` when this platform has no probe for it —
+   * in which case the upsert behaves exactly as it always did, storing unverified.
+   */
+  const probeCandidate = async (provider: string, secret: Record<string, string>) =>
+    options.connectionInspectors?.[provider]?.probeCandidate?.(secret);
+
   const inspectableConnection = async (c: Context<{ Variables: Vars }>) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const id = c.req.param('id');

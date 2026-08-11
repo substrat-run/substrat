@@ -20,7 +20,7 @@ import type {
   HostAdmin,
   ScopeHost,
 } from '@substrat-run/kernel';
-import { ScriveApi, SCRIVE_TESTBED, scriveSecret, type ScriveParty } from './api.js';
+import { ScriveApi, ScriveApiError, SCRIVE_TESTBED, scriveSecret, type ScriveParty } from './api.js';
 import { renderPdf } from './pdf.js';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
@@ -32,7 +32,7 @@ declare const crypto: {
 };
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 
-export { ScriveApi, SCRIVE_TESTBED, SCRIVE_PRODUCTION } from './api.js';
+export { ScriveApi, ScriveApiError, SCRIVE_TESTBED, SCRIVE_PRODUCTION } from './api.js';
 export { ScriveMock } from './mock.js';
 export { renderPdf } from './pdf.js';
 
@@ -604,16 +604,77 @@ export async function probeScriveConnection(
     connection.vertical,
     options.timeoutMs ?? 15_000,
   );
-  const api = new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED);
+  return probeWith(conn, options.baseUrl ?? SCRIVE_TESTBED);
+}
+
+/**
+ * **Probe a credential that is not stored yet** (#605) — the connect-time check.
+ *
+ * The gap this closes: connecting used to mean *storing*. The row was written, the UI
+ * said "Connected", and the first evidence that Scrive disagreed arrived on the next
+ * dispatch or sweep — by which point a signature request had already failed. Worse for a
+ * ROTATION, where writing first replaces a working credential with a broken one.
+ *
+ * So this takes the candidate secret directly, touches no connection and no store, and
+ * lets the caller decide before anything is written. It records no health for the same
+ * reason: there may be no connection to record it against, and a candidate's failure is
+ * not a fact about the live connection.
+ *
+ * `refused` on the result is what makes the answer actionable — see the field's own note:
+ * a 401/403 is grounds to reject the connect, an unreachable provider is not.
+ */
+export async function probeScriveSecret(
+  secret: Record<string, string>,
+  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number },
+): Promise<ConnectionProbe> {
+  const parsed = scriveSecret.safeParse(secret);
+  if (!parsed.success) {
+    // A malformed credential IS a refusal — the provider would reject it, and there is
+    // no point spending a round trip to hear so.
+    return {
+      ok: false,
+      refused: true,
+      accountRef: null,
+      accountLabel: null,
+      facts: [],
+      error: `incomplete Scrive credential: ${parsed.error.issues.map((i) => i.path.join('.')).join(', ')}`,
+    };
+  }
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  const conn: ConnectorConnection = {
+    id: connectionId.parse('00000000000000000000000000'), // no row yet; never read
+    tenantId: '',
+    vertical: '',
+    provider: 'scrive',
+    secret: parsed.data,
+    expiresAt: null,
+    fetch: (input, init) => options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
+  };
+  return probeWith(conn, options.baseUrl ?? SCRIVE_TESTBED);
+}
+
+/** The shared probe body: one `getprofile`, mapped to the platform's declared shape. */
+async function probeWith(conn: ConnectorConnection, baseUrl: string): Promise<ConnectionProbe> {
+  const api = new ScriveApi(conn, baseUrl);
+  // WHICH Scrive this is, on every answer — and especially on a failure. A production
+  // credential sent to the testbed comes back 401, identical to a mistyped key, so a
+  // probe that does not name the environment sends an operator to check the wrong thing.
+  // (It happened: the deployed control plane ran with no SCRIVE_BASE_URL and silently
+  // fell through to the connector's testbed default.)
+  const environment = { label: 'Environment', value: describeEnvironment(baseUrl) };
   let profile;
   try {
     profile = await api.getProfile();
   } catch (err) {
     return {
       ok: false,
+      // Only the provider saying "not with these credentials" counts. A timeout or a
+      // 5xx says nothing about the credential, and treating it as a refusal would make
+      // a Scrive outage look like every tenant's keys going bad at once.
+      refused: err instanceof ScriveApiError && err.refused,
       accountRef: null,
       accountLabel: null,
-      facts: [],
+      facts: [environment],
       error: err instanceof Error ? err.message : String(err),
     };
   }
@@ -621,11 +682,13 @@ export async function probeScriveConnection(
   const company = profile.company?.companyname ?? '';
   return {
     ok: true,
+    refused: false,
     // What `externalAccountRef` means for this provider — so a console can say "these
     // keys are for a different Scrive company than the one you connected".
     accountRef: profile.company?.companyid ?? null,
     accountLabel: company !== '' ? `${company}${profile.email ? ` (${profile.email})` : ''}` : (profile.email || null),
     facts: [
+      environment,
       ...(company !== '' ? [{ label: 'Company', value: company }] : []),
       ...(person !== '' || profile.email
         ? [{ label: 'API user', value: person !== '' ? `${person}${profile.email ? ` <${profile.email}>` : ''}` : profile.email }]
@@ -634,6 +697,19 @@ export async function probeScriveConnection(
     ],
     error: null,
   };
+}
+
+/**
+ * Name the provider environment a base URL points at — 'production (scrive.com)',
+ * 'testbed (api-testbed.scrive.com)', or the bare host for anything else (a mock, a
+ * self-hosted proxy). Reported by every probe, because "which Scrive did you ask?" is
+ * the question a 401 leaves an operator with, and guessing it wrong costs an afternoon.
+ */
+function describeEnvironment(baseUrl: string): string {
+  const host = baseUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  if (host === 'scrive.com' || host === 'www.scrive.com') return `production (${host})`;
+  if (host.includes('testbed')) return `testbed (${host})`;
+  return host;
 }
 
 /** Provider status → the word an operator reads. Unknown values pass through verbatim. */

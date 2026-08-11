@@ -700,6 +700,12 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * The provider's own answer, when a connect was refused because the credential was
+     * rejected upstream (#605, 422). Lets the dialog say what is actually wrong —
+     * including WHICH provider environment answered — rather than "couldn't save".
+     */
+    readonly probe?: ConnectionProbeView,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -713,8 +719,10 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new ApiError(res.status, body?.error ?? `${res.status} ${res.statusText}`);
+    const body = (await res.json().catch(() => null)) as
+      | { error?: string; probe?: ConnectionProbeView }
+      | null;
+    throw new ApiError(res.status, body?.error ?? `${res.status} ${res.statusText}`, body?.probe);
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
@@ -917,9 +925,15 @@ export const api = {
     call<void>(`/apps/${encodeURIComponent(scopeId)}/env/${encodeURIComponent(key)}`, { method: 'DELETE' }),
   /** The app's declared providers + live connections (Settings → Integrations). */
   appIntegrations: (scopeId: string) => call<AppIntegrationsView>(`/apps/${encodeURIComponent(scopeId)}/integrations`),
-  /** Connect or rotate a provider credential for this app — the secret rides one call and is stored sealed. */
+  /**
+   * Connect or rotate a provider credential (#605). The platform checks it with the
+   * provider BEFORE storing: a refused credential answers 422 and nothing is written, so
+   * a bad rotation can never replace a working credential. On success `probe` carries the
+   * account it verified as — absent when the provider could not be reached, which is
+   * stored-but-unverified, not verified.
+   */
   connectIntegration: (scopeId: string, provider: string, input: { secret: Record<string, string>; label?: string }) =>
-    call<{ connectionId: string; created: boolean }>(
+    call<{ connectionId: string; created: boolean; probe?: ConnectionProbeView }>(
       `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}`,
       { method: 'POST', body: JSON.stringify(input) },
     ),
