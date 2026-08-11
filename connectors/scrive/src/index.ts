@@ -5,6 +5,8 @@ import {
   scopeId,
   tenantId,
   type ConnectionActivity,
+  type ConnectionActivitySource,
+  type ConnectionCredential,
   type ConnectionId,
   type ConnectionProbe,
   type DomainEvent,
@@ -18,7 +20,7 @@ import type {
   HostAdmin,
   ScopeHost,
 } from '@substrat-run/kernel';
-import { ScriveApi, SCRIVE_TESTBED, type ScriveParty } from './api.js';
+import { ScriveApi, SCRIVE_TESTBED, scriveSecret, type ScriveParty } from './api.js';
 import { renderPdf } from './pdf.js';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
@@ -673,8 +675,16 @@ const asInstant = (value: string | undefined): Instant | null => {
 export async function scriveConnectionActivity(
   host: ScopeHost,
   connection: ScriveConnectionRef,
-  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number; live?: boolean },
+  options: {
+    fetch: FetchLike;
+    baseUrl?: string;
+    timeoutMs?: number;
+    live?: boolean;
+    /** `provider` lists Scrive's own archive instead; see {@link scriveProviderDocuments}. */
+    source?: ConnectionActivitySource;
+  },
 ): Promise<ConnectionActivity> {
+  if (options.source === 'provider') return scriveProviderDocuments(host, connection, options);
   const rows = await host.admin.listConnectorState(connection.id, DISPATCH_PREFIX);
 
   // The live join: one bounded page, keyed by document id. Best-effort by design.
@@ -736,8 +746,109 @@ export async function scriveConnectionActivity(
 
   // Newest first — a console reads the last thing that happened, not the first.
   entries.sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''));
-  return { entries, live: provider !== undefined };
+  return { source: 'ledger', entries, live: provider !== undefined };
 }
+
+/**
+ * **The provider's own archive** (#605) — `documents/list`, straight through.
+ *
+ * A different question from the ledger, and worth asking separately: this shows every
+ * document in the Scrive account, including ones nobody here created (someone working in
+ * Scrive's own UI) and ones sent before this connection existed. The ledger cannot show
+ * those, and this cannot show a dispatch the platform recorded but Scrive never received.
+ * Two views, both true, neither a superset — which is why `source` travels in the answer.
+ *
+ * Rows the platform DID send are marked as such: the connector tags every document it
+ * creates with `substrat_instance`, so "sent from here" is a fact the provider itself
+ * carries rather than a join this has to guess at.
+ *
+ * Unlike the ledger read, a provider failure here THROWS. There is no degraded view to
+ * fall back to — an empty list would read as "the account is empty", which is a lie.
+ */
+export async function scriveProviderDocuments(
+  host: ScopeHost,
+  connection: ScriveConnectionRef,
+  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number; max?: number },
+): Promise<ConnectionActivity> {
+  const conn = await openScriveConnection(
+    host.admin,
+    options.fetch,
+    tenantId.parse(connection.tenantId),
+    connection.vertical,
+    options.timeoutMs ?? 15_000,
+  );
+  const api = new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED);
+  const list = await api.listDocuments({ max: options.max ?? 50 });
+
+  // Which of them this platform sent — read from the ledger, so the marking is ours to
+  // know and needs no extra provider call.
+  const ours = new Set(
+    (await host.admin.listConnectorState(connection.id, DISPATCH_PREFIX)).map(
+      ({ value }) => (value as ScriveDispatchState).documentId,
+    ),
+  );
+
+  return {
+    source: 'provider',
+    live: true, // by construction — these ARE the provider's rows
+    entries: list.documents.map((d) => ({
+      key: `scrive:document:${d.id}`,
+      title: d.title !== '' ? d.title : `Document ${d.id}`,
+      reference: d.id,
+      status: DOCUMENT_STATUS[d.status] ?? d.status,
+      at: asInstant(d.ctime),
+      facts: [
+        ...(d.mtime ? [{ label: 'Last change', value: d.mtime }] : []),
+        { label: 'Sent from', value: ours.has(d.id) ? 'this app' : 'elsewhere in this Scrive account' },
+      ],
+    })),
+  };
+}
+
+/**
+ * **The stored credential, as a console may see it** (#605).
+ *
+ * The four-part OAuth1 credential goes into the store and never comes back out — that
+ * rule is why `Connection` cannot carry a secret. But it left an integrations screen
+ * where "connected" and "connected with a mistyped token" looked the same, and the only
+ * repair on offer was to paste all four fields again blind.
+ *
+ * So the connector — the only party that knows which of ITS fields are identifiers and
+ * which are secrets — answers a reduced view. Scrive's own UI calls two of the four
+ * "credentials identifier"; those are shown whole, because an identifier that cannot be
+ * read identifies nothing. The two secrets are reduced to a bullet run and their last
+ * four characters: enough to tell two credentials apart at a glance, not enough to sign
+ * a request with. Anything shorter than eight characters is masked entirely rather than
+ * mostly revealed.
+ */
+export async function scriveCredentialSummary(
+  host: ScopeHost,
+  connection: ScriveConnectionRef,
+): Promise<ConnectionCredential> {
+  const open = await host.admin.openConnection(
+    tenantId.parse(connection.tenantId),
+    connection.vertical,
+    'scrive',
+  );
+  if (!open) {
+    throw new Error(
+      `no live 'scrive' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'`,
+    );
+  }
+  const secret = scriveSecret.parse(open.secret);
+  return {
+    fields: [
+      { key: 'clientId', label: 'Client credentials identifier', value: secret.clientId, masked: false },
+      { key: 'clientSecret', label: 'Client credentials secret', value: mask(secret.clientSecret), masked: true },
+      { key: 'tokenId', label: 'Token credentials identifier', value: secret.tokenId, masked: false },
+      { key: 'tokenSecret', label: 'Token credentials secret', value: mask(secret.tokenSecret), masked: true },
+    ],
+  };
+}
+
+/** A bullet run plus the last four — or nothing at all when there is too little to hide behind. */
+const mask = (value: string): string =>
+  value.length < 8 ? '••••••••' : `••••••••${value.slice(-4)}`;
 
 /** What one sweep of a connection's outstanding dispatches did. */
 export interface ScriveSweepResult {

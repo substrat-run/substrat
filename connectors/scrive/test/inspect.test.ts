@@ -19,6 +19,7 @@ import {
   registerScriveConnector,
   scriveCallbackPath,
   scriveConnectionActivity,
+  scriveCredentialSummary,
 } from '../src/index.js';
 
 /**
@@ -231,6 +232,72 @@ describe('scrive connector — inspection (probe + activity)', () => {
     expect(activity.live).toBe(false);
     expect(activity.entries).toHaveLength(1);
     expect(activity.entries[0]!.status).toBe('sent for signature');
+  });
+
+  it('lists the provider’s own archive, marking what we sent', async () => {
+    await issue();
+    // A document created outside this platform — the case the ledger structurally cannot
+    // show, and the reason `source` is a switch rather than a filter.
+    await scrive.fetch(`${BASE}/api/v2/documents/new`, {
+      method: 'POST',
+      headers: { authorization: 'oauth_signature_method="PLAINTEXT"' },
+    });
+
+    const archive = await scriveConnectionActivity(host, ref(), {
+      fetch: scrive.fetch,
+      baseUrl: BASE,
+      source: 'provider',
+    });
+
+    expect(archive.source).toBe('provider');
+    expect(archive.live).toBe(true); // these ARE the provider's rows
+    expect(archive.entries).toHaveLength(2);
+    const marks = archive.entries.map((e) => e.facts.find((f) => f.label === 'Sent from')?.value);
+    expect(marks).toContain('this app');
+    expect(marks).toContain('elsewhere in this Scrive account');
+  });
+
+  it('refuses to answer an empty archive when the provider is unreachable', async () => {
+    await issue();
+    scrive.failWith = 503;
+
+    // No degraded view here, unlike the ledger read: an empty list would read as "the
+    // account is empty", which is a lie an operator would act on.
+    await expect(
+      scriveConnectionActivity(host, ref(), { fetch: scrive.fetch, baseUrl: BASE, source: 'provider' }),
+    ).rejects.toThrow();
+  });
+
+  it('summarizes the stored credential — identifiers whole, secrets reduced', async () => {
+    const summary = await scriveCredentialSummary(host, ref());
+
+    const byKey = Object.fromEntries(summary.fields.map((f) => [f.key, f]));
+    // An identifier that cannot be read identifies nothing.
+    expect(byKey.clientId).toMatchObject({ value: 'ci', masked: false });
+    expect(byKey.tokenId).toMatchObject({ value: 'ti', masked: false });
+    // Short secrets are masked ENTIRELY rather than mostly revealed — 'cs' has nothing
+    // to hide behind, so no part of it is shown.
+    expect(byKey.clientSecret!.masked).toBe(true);
+    expect(byKey.clientSecret!.value).toBe('••••••••');
+    expect(JSON.stringify(summary)).not.toContain('cs');
+  });
+
+  it('shows only the last four of a full-length secret', async () => {
+    await host.admin.updateConnectionSecret(staff, connId, {
+      clientId: 'client-id-1234',
+      clientSecret: 'sk-live-abcdefgh9876',
+      tokenId: 'token-id-5678',
+      tokenSecret: 'tk-live-ijklmnop5432',
+    });
+
+    const summary = await scriveCredentialSummary(host, ref());
+    const byKey = Object.fromEntries(summary.fields.map((f) => [f.key, f]));
+
+    expect(byKey.clientSecret!.value).toBe('••••••••9876');
+    expect(byKey.tokenSecret!.value).toBe('••••••••5432');
+    // Enough to recognise a credential, never enough to sign with one.
+    expect(JSON.stringify(summary)).not.toContain('abcdefgh');
+    expect(JSON.stringify(summary)).not.toContain('ijklmnop');
   });
 
   it('orders several dispatches newest first', async () => {

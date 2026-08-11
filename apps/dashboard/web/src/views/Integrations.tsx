@@ -18,6 +18,7 @@ import {
   MOCK_ACCOUNT_INTEGRATIONS,
   MOCK_CONNECTION_ACTIVITY,
   MOCK_CONNECTION_PROBE,
+  MOCK_PROVIDER_DOCUMENTS,
 } from '../lib/demo';
 import { Page } from '../components/layout';
 import { card, HonestyBanner, MonoTag, PageTitle, Pill, type PillKind } from '../components/ui';
@@ -113,23 +114,25 @@ function IntegrationDetail({
   const [activity, setActivity] = useState<ConnectionActivityView | null>(null);
   const [activityErr, setActivityErr] = useState<string | null>(null);
   const [live, setLive] = useState(false);
+  // Which question the list is answering: what we sent, or what the provider holds.
+  const [source, setSource] = useState<'ledger' | 'provider'>('ledger');
 
   useEffect(() => {
     if (DEV_MOCK) {
-      setActivity(MOCK_CONNECTION_ACTIVITY);
+      setActivity(source === 'provider' ? MOCK_PROVIDER_DOCUMENTS : MOCK_CONNECTION_ACTIVITY);
       return;
     }
     let alive = true;
     setActivity(null);
     setActivityErr(null);
     api
-      .integrationActivity(scopeId, provider.provider, { live })
+      .integrationActivity(scopeId, provider.provider, { live, source })
       .then((v) => alive && setActivity(v))
       .catch((e) => alive && setActivityErr(e instanceof ApiError ? e.message : String(e)));
     return () => {
       alive = false;
     };
-  }, [scopeId, provider.provider, live]);
+  }, [scopeId, provider.provider, live, source]);
 
   const verify = async () => {
     if (probing) return;
@@ -194,6 +197,37 @@ function IntegrationDetail({
           </div>
         )}
 
+        {/* The stored credential. Identifiers whole — an identifier that cannot be read
+            identifies nothing — and secrets reduced to their last four by the connector,
+            which is the only party that knows which of its fields are which. */}
+        {activity && activity.credential.length > 0 && (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+              Stored credentials
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px', fontSize: 12 }}>
+              {activity.credential.map((f) => (
+                <Fragment key={f.key}>
+                  <span style={{ color: 'var(--text-tertiary)' }}>{f.label}</span>
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      color: f.masked ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                      wordBreak: 'break-all',
+                    }}
+                  >
+                    {f.value}
+                  </span>
+                </Fragment>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
+              Secrets are shown only by their last four characters — enough to tell two credentials apart, never
+              enough to use. Rotate to replace them.
+            </div>
+          </div>
+        )}
+
         {/* What a leaked token could invoke — the live tuples, not the catalog's claim. */}
         {activity && activity.grants.length > 0 && (
           <div>
@@ -209,17 +243,34 @@ function IntegrationDetail({
         )}
 
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>Activity</div>
-            <Button variant="ghost" size="sm" onClick={() => setLive((v) => !v)}>
-              {live ? 'Showing provider state' : 'Refresh from provider'}
-            </Button>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, gap: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+              {source === 'provider' ? `All documents at ${provider.name}` : 'Sent from this app'}
+            </div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {/* Two questions, not two renderings of one: the ledger is complete for our
+                  traffic and blind to the rest of the account; the archive is the reverse. */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setSource((s) => (s === 'ledger' ? 'provider' : 'ledger'))}
+              >
+                {source === 'ledger' ? `Show all at ${provider.name}` : 'Show what we sent'}
+              </Button>
+              {source === 'ledger' && (
+                <Button variant="ghost" size="sm" onClick={() => setLive((v) => !v)}>
+                  {live ? 'Showing provider state' : 'Refresh from provider'}
+                </Button>
+              )}
+            </div>
           </div>
           {activityErr && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>Couldn’t load activity — {activityErr}</div>}
           {!activityErr && !activity && <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading…</div>}
           {activity && activity.entries.length === 0 && (
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-              Nothing has been sent through this connection yet.
+              {source === 'provider'
+                ? `No documents in this ${provider.name} account yet.`
+                : 'Nothing has been sent through this connection yet.'}
             </div>
           )}
           {activity && activity.entries.length > 0 && (
@@ -245,9 +296,11 @@ function IntegrationDetail({
                 </div>
               ))}
               <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                {activity.live
-                  ? 'Statuses read live from the provider.'
-                  : 'What this platform recorded sending — the provider may have moved on since.'}
+                {activity.source === 'provider'
+                  ? `Everything in this ${provider.name} account, newest first — including documents created outside this app.`
+                  : activity.live
+                    ? 'Statuses read live from the provider.'
+                    : 'What this platform recorded sending — the provider may have moved on since.'}
               </div>
             </div>
           )}
@@ -386,7 +439,10 @@ export function AppIntegrations({ app }: { app: AppRow }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <HonestyBanner>
-        Credentials are stored sealed in the platform’s connection vault and used by the platform’s connectors on this app’s behalf — they are never echoed back, and a reveal does not exist. Disconnecting is permanent; reconnecting creates a new connection.
+        Credentials are stored sealed in the platform’s connection vault and used by the platform’s connectors on this
+        app’s behalf. A secret is never shown again — Details lists the identifiers and the last four characters of each
+        secret, which is enough to recognise a credential and not enough to use one; replacing it means rotating.
+        Disconnecting is permanent, and reconnecting creates a new connection.
       </HonestyBanner>
       {view.length === 0 && (
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>
@@ -501,7 +557,10 @@ export function Integrations() {
 
   return (
     <Page>
-      <PageTitle title="Integrations" subtitle="Connections your apps can use. Credentials are stored once, sealed, and never shown again." />
+      <PageTitle
+        title="Integrations"
+        subtitle="Connections your apps can use. Credentials are stored sealed; a secret is never shown again, only recognised by its last four characters."
+      />
       {err && <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load integrations — {err}</div>}
       {!err && !view && <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading integrations…</div>}
       {view && (
@@ -540,11 +599,20 @@ export function Integrations() {
                     <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>No installed app declares this integration yet.</div>
                   )}
                 </div>
+                {/* Manage used to open the empty connect form, which read as "your
+                    credentials are gone". A connected provider opens its detail; the
+                    rotate form is one click further in, where replacing a credential
+                    belongs. */}
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => setDialog(p)}
-                  disabled={p.connectTargets.length === 0}
+                  onClick={() => {
+                    const first = p.connections[0];
+                    const scope = first?.apps[0]?.scopeId ?? p.connectTargets.find((t) => t.connected)?.scopeId;
+                    if (first && scope) setDetail({ provider: p, scopeId: scope, connection: first });
+                    else setDialog(p);
+                  }}
+                  disabled={p.connectTargets.length === 0 && !connected}
                 >
                   {connected ? 'Manage' : 'Connect'}
                 </Button>

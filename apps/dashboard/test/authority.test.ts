@@ -121,6 +121,8 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     await cp.verifyConnection(CN);
     await cp.connectionActivity(CN);
     await cp.connectionActivity(CN, { live: true });
+    await cp.connectionActivity(CN, { source: 'provider' });
+    await cp.connectionCredential(CN);
     await cp.listConnectionGrants();
 
     // Verify REACHES OUT (it spends a call at the provider and writes health), so it is
@@ -129,7 +131,10 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     // The ledger's own view by default; the provider is only read when asked.
     expect(calls[1]!).toMatchObject({ url: `https://cp/api/tenants/${T}/connections/${CN}/activity`, method: 'GET' });
     expect(calls[2]!.url).toBe(`https://cp/api/tenants/${T}/connections/${CN}/activity?live=1`);
-    expect(calls[3]!.url).toBe(`https://cp/api/tenants/${T}/connection-grants`);
+    // The other question: the provider's own archive, not what we sent.
+    expect(calls[3]!.url).toBe(`https://cp/api/tenants/${T}/connections/${CN}/activity?source=provider`);
+    expect(calls[4]!.url).toBe(`https://cp/api/tenants/${T}/connections/${CN}/credential`);
+    expect(calls[5]!.url).toBe(`https://cp/api/tenants/${T}/connection-grants`);
     expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
   });
 

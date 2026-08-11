@@ -2,6 +2,8 @@ import type {
   AdminLogEntry,
   Connection,
   ConnectionActivity,
+  ConnectionActivitySource,
+  ConnectionCredential,
   ConnectionGrantRecord,
   ConnectionProbe,
   DeployAssets,
@@ -299,9 +301,27 @@ export class TenantNarrowedControlPlane {
    * the connector itself (a raw ledger row can carry connector secrets). `live` asks the
    * provider for current state too, and the answer reports whether it got it.
    */
-  connectionActivity(connectionId: string, opts: { live?: boolean } = {}): Promise<ConnectionActivity> {
+  connectionActivity(
+    connectionId: string,
+    opts: { live?: boolean; source?: ConnectionActivitySource } = {},
+  ): Promise<ConnectionActivity> {
+    const q = new URLSearchParams();
+    if (opts.live) q.set('live', '1');
+    if (opts.source) q.set('source', opts.source);
+    const qs = q.toString();
     return this.call<ConnectionActivity>(
-      `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/activity${opts.live ? '?live=1' : ''}`,
+      `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/activity${qs ? `?${qs}` : ''}`,
+    );
+  }
+
+  /**
+   * The stored credential as a console may see it — identifiers whole, secrets masked by
+   * the connector's own rule. Never usable as a credential; it exists so "connected" and
+   * "connected with the wrong keys" stop looking identical.
+   */
+  connectionCredential(connectionId: string): Promise<ConnectionCredential> {
+    return this.call<ConnectionCredential>(
+      `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/credential`,
     );
   }
 

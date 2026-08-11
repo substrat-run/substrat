@@ -6,6 +6,8 @@ import {
   assetHash,
   channelName,
   connectionActivity,
+  connectionActivitySource,
+  connectionCredential,
   connectionFilter,
   connectionProbe,
   createTenantInput,
@@ -37,6 +39,8 @@ import {
 import type {
   Connection,
   ConnectionActivity,
+  ConnectionActivitySource,
+  ConnectionCredential,
   ConnectionProbe,
   ListPageQuery,
   Page,
@@ -114,8 +118,15 @@ export interface ConnectionInspector {
   activity?: (
     host: ScopeHost,
     connection: Connection,
-    opts: { live: boolean },
+    opts: { live: boolean; source: ConnectionActivitySource },
   ) => Promise<ConnectionActivity>;
+  /**
+   * The stored credential, REDUCED — identifiers whole, secrets masked by the connector's
+   * own rule. The one read in this package's vicinity that touches plaintext, and it is
+   * the connector that touches it: only the connector knows which of its fields are
+   * identifiers. What comes back is never usable as a credential.
+   */
+  credential?: (host: ScopeHost, connection: Connection) => Promise<ConnectionCredential>;
 }
 
 export interface ControlPlaneApiOptions {
@@ -1068,6 +1079,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * (`live`), because presenting the ledger's view as the provider's would be inventing
    * facts. The projection is the connector's, never this package's: a raw ledger row can
    * carry connector secrets, so it is never serialized here.
+   *
+   * `?source=provider` asks a different question entirely — list the provider's OWN
+   * records (Scrive's document archive), including ones this platform never sent. The
+   * answer echoes `source` back, because neither view is a superset of the other.
    */
   app.get('/tenants/:tenantId/connections/:id/activity', async (c) => {
     const row = await inspectableConnection(c);
@@ -1076,8 +1091,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!activity) {
       return c.json({ error: `no activity view registered for provider '${row.provider}'` }, 501);
     }
+    const source = connectionActivitySource.catch('ledger').parse(c.req.query('source'));
     const live = c.req.query('live') === '1';
-    return c.json(connectionActivity.parse(await activity(host, row, { live })));
+    return c.json(connectionActivity.parse(await activity(host, row, { live, source })));
+  });
+
+  /**
+   * **The stored credential, reduced** (#605) — identifiers whole, secrets masked.
+   *
+   * Reads plaintext plane-side (the connector opens it) and returns something that is
+   * deliberately not a credential. This is the screen that makes "connected" and
+   * "connected with a mistyped token" distinguishable, which they were not: the store's
+   * write-only rule is right, but with no view at all the only repair on offer was to
+   * paste every field again blind.
+   */
+  app.get('/tenants/:tenantId/connections/:id/credential', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    const credential = options.connectionInspectors?.[row.provider]?.credential;
+    if (!credential) {
+      return c.json({ error: `no credential view registered for provider '${row.provider}'` }, 501);
+    }
+    return c.json(connectionCredential.parse(await credential(host, row)));
   });
 
   // -- the scope directory (§3.2/§4.2) ---------------------------------------

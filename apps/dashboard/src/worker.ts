@@ -2193,14 +2193,19 @@ app.post('/api/apps/:scopeId/integrations/:provider/verify', async (c) => {
  */
 app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
   const { connectionId, cp } = await inspectableConnection(c);
-  const [activity, grants] = await Promise.all([
-    cp.connectionActivity(connectionId, { live: c.req.query('live') === '1' }),
-    // Best-effort: a plane too old to serve grants must not cost the activity view.
+  const source = c.req.query('source') === 'provider' ? ('provider' as const) : ('ledger' as const);
+  const [activity, grants, credential] = await Promise.all([
+    cp.connectionActivity(connectionId, { live: c.req.query('live') === '1', source }),
+    // Best-effort, both of them: a plane too old to serve grants or the credential view
+    // must not cost the activity itself.
     cp.listConnectionGrants().catch(() => []),
+    cp.connectionCredential(connectionId).catch(() => ({ fields: [] })),
   ]);
   return c.json({
     ...activity,
     grants: grants.filter((g) => g.connectionId === connectionId).map((g) => g.permission),
+    // Identifiers whole, secrets masked by the connector — never a usable credential.
+    credential: credential.fields,
   });
 });
 
