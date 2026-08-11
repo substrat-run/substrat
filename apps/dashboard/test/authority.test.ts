@@ -81,6 +81,40 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(calls[6]!.method).toBe('PATCH');
   });
 
+  it('connection methods stay pinned to the tenant and never send a vertical', async () => {
+    const { cp, calls } = harness(200, []);
+    await cp.listConnections({ vertical: 'egeryds-crm', provider: 'scrive' });
+    await cp.upsertConnection({
+      scopeId: S,
+      provider: 'scrive',
+      label: 'Scrive (testbed)',
+      secret: { clientId: 'a', clientSecret: 'b', tokenId: 'c', tokenSecret: 'd' },
+      grants: ['protocol:record-signature'],
+      createdBy: owner,
+    });
+    await cp.revokeConnection('01JZ00000000000000000000CN');
+
+    expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}/connections?vertical=egeryds-crm&provider=scrive`);
+    expect(calls[0]!.method).toBe('GET');
+
+    const upsert = calls[1]!;
+    expect(upsert.url).toBe(`https://cp/api/tenants/${T}/connections`);
+    expect(upsert.method).toBe('POST');
+    // The vertical is re-derived plane-side from the scope record — the body names the
+    // scope, never a tenant or a vertical.
+    expect(upsert.body).toEqual({
+      scopeId: S,
+      provider: 'scrive',
+      label: 'Scrive (testbed)',
+      secret: { clientId: 'a', clientSecret: 'b', tokenId: 'c', tokenSecret: 'd' },
+      grants: ['protocol:record-signature'],
+      createdBy: owner,
+    });
+    expect(calls[2]!.url).toBe(`https://cp/api/tenants/${T}/connections/01JZ00000000000000000000CN`);
+    expect(calls[2]!.method).toBe('DELETE');
+    expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
+  });
+
   it('listScopes reads GET /scopes narrowed to the pinned tenant + vertical (Data-tab switcher)', async () => {
     const { cp, calls } = harness(200, {
       entries: [{ id: S, tenantId: T, name: 'Cafe', status: 'active', vertical: 'manyfold' }],

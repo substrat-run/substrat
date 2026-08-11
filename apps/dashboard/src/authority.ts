@@ -1,5 +1,6 @@
 import type {
   AdminLogEntry,
+  Connection,
   DeployAssets,
   ListPage,
   OpsFailureEntry,
@@ -241,6 +242,45 @@ export class TenantNarrowedControlPlane {
    */
   configureInstance(scopeId: ScopeId, entries: Array<{ key: string; value: string }>): Promise<void> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/configure`, { entries });
+  }
+
+  /**
+   * The pinned tenant's provider connections in the SHARED plane's store — the one the
+   * platform-run connectors (`connector:scrive` dispatch) actually open. Metadata only:
+   * the `Connection` row cannot carry a secret. Distinct from the dashboard's own
+   * directory, where its GitHub App connections live.
+   */
+  listConnections(filter: { vertical?: string; provider?: string; includeRevoked?: boolean } = {}): Promise<Connection[]> {
+    const q = new URLSearchParams();
+    if (filter.vertical) q.set('vertical', filter.vertical);
+    if (filter.provider) q.set('provider', filter.provider);
+    if (filter.includeRevoked) q.set('includeRevoked', '1');
+    const qs = q.toString();
+    return this.call<Connection[]>(`/tenants/${this.tenantId}/connections${qs ? `?${qs}` : ''}`);
+  }
+
+  /**
+   * Upsert a provider credential (connections.md §3.5): no live connection for
+   * (tenant, scope's vertical, provider, externalAccountRef) → create; one live → rotate
+   * the secret in place, preserving the connection id and every grant tuple on it. The
+   * vertical is re-derived control-plane-side from the scope record — never sent. The
+   * plaintext lives for the length of this call; the plane seals it via SecretBox.
+   */
+  upsertConnection(input: {
+    scopeId: ScopeId;
+    provider: string;
+    label?: string;
+    externalAccountRef?: string;
+    secret: Record<string, string>;
+    grants?: string[];
+    createdBy: string;
+  }): Promise<{ connectionId: string; created: boolean; granted: string[] }> {
+    return this.post(`/tenants/${this.tenantId}/connections`, input);
+  }
+
+  /** Revoke a connection (terminal — the sealed secret is deleted, grants tombstone). */
+  revokeConnection(connectionId: string): Promise<void> {
+    return this.call(`/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}`, { method: 'DELETE' });
   }
 
   /** provisioning → active, once the vertical has confirmed the scope exists. */

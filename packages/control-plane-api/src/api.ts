@@ -5,6 +5,7 @@ import {
   ASSET_PART_PREFIX,
   assetHash,
   channelName,
+  connectionFilter,
   createTenantInput,
   entitlementGrantInput,
   hostname as hostnameSchema,
@@ -46,6 +47,7 @@ import { migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
+import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
 import { ControlPlaneError } from './client.js';
 import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -926,6 +928,61 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/connection-grants', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     return c.json(await admin.listConnectionGrants(c.get('actor'), tenantId));
+  });
+
+  // -- the connection store, tenant-scoped (connections.md §3.5) -------------
+  //
+  // The dashboard's door to the PLATFORM's connection store. The dashboard keeps its own
+  // directory (its GitHub App connections live there, consumed by the dashboard itself),
+  // but a provider credential a PLATFORM-run connector consumes (Scrive, Fortnox) must
+  // land in THIS directory — `connector:<provider>` dispatch opens connections here, and
+  // a row written anywhere else is invisible to it. Metadata only on the read: the
+  // `Connection` type cannot carry a secret (contract-tested), so listing is safe as-is.
+  // Not in BUILDER_ROUTES — service/staff only, fail-closed, same law as the identity
+  // mirror above.
+
+  app.get('/tenants/:tenantId/connections', async (c) => {
+    const filter = connectionFilter.parse({
+      tenantId: tenantIdSchema.parse(c.req.param('tenantId')),
+      vertical: c.req.query('vertical'),
+      provider: c.req.query('provider'),
+      includeRevoked: c.req.query('includeRevoked') === '1' ? true : undefined,
+    });
+    return c.json(await admin.listConnections(c.get('actor'), filter));
+  });
+
+  // The same upsert semantics as `/internal/connections/upsert` (§3.5.2) — create under a
+  // fresh id, or rotate the one live row in place so its grant tuples survive — behind
+  // platform-actor auth instead of the vertical-harness PLATFORM_SECRET. The tenant is
+  // the path's, never the body's: a body naming a different tenant is refused, not
+  // silently rewritten.
+  app.post('/tenants/:tenantId/connections', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const raw = await c.req.json();
+    const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+    if (body.tenantId !== undefined && body.tenantId !== tenantId) {
+      return c.json({ error: 'body tenantId disagrees with the route tenant' }, 400);
+    }
+    try {
+      return c.json(await relayConnectionUpsert(host, c.get('actor'), { ...body, tenantId }));
+    } catch (err) {
+      if (err instanceof ConnectionRelayError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
+  });
+
+  // Revoke — terminal (the sealed secret is deleted, grants tombstone; a replacement is a
+  // new connection). Tenant-scoped with K-3 existence hiding: a foreign tenant's
+  // connection id is indistinguishable from an absent one. Idempotent: revoking an
+  // already-revoked row is a 204 no-op, not an error.
+  app.delete('/tenants/:tenantId/connections/:id', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const id = c.req.param('id');
+    const rows = await admin.listConnections(c.get('actor'), { tenantId, includeRevoked: true });
+    const row = rows.find((r) => r.id === id);
+    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    if (row.status !== 'revoked') await admin.revokeConnection(c.get('actor'), row.id);
+    return c.body(null, 204);
   });
 
   // -- the scope directory (§3.2/§4.2) ---------------------------------------
