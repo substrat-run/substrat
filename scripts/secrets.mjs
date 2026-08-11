@@ -21,6 +21,8 @@
  *                 secrets/platform.dev.env for `dev`)
  * --only <worker> restrict to one worker: control-plane | dashboard | router
  * --dry-run       print what WOULD be set (secret NAMES only — never values)
+ * --allow-incomplete  let `push` proceed with a REQUIRED key blank (it refuses by default;
+ *                 `check` exits non-zero on the same condition, so it gates a deploy)
  *
  * Sibling tool: tools/set-platform-secrets.sh rotates just the three GENERATABLE shared
  * secrets (SERVICE_TOKEN / PLATFORM_SECRET / ROUTER_SECRET) with fresh random values and
@@ -43,10 +45,32 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * signs its own cookies. `optional` keys are behavioural config that normally lives in
  * wrangler.jsonc `vars`; set them here only to override. `generatable` keys are the
  * random shared tokens `generate` can fill.
+ *
+ * `required` lists the secrets a worker cannot do its job without. Everything else is
+ * genuinely optional, and that distinction is the point: before it existed, a blank key
+ * and an unused key printed the same dot, so a missing one only surfaced as a runtime
+ * 500 from whatever feature needed it (CP_SECRET_BOX_KEY, added with #574 and never
+ * filled in, took down connection storage exactly this way). `check` now exits non-zero
+ * and `push` refuses when a required key is blank.
  */
 const MANIFEST = {
   'control-plane': {
     dir: 'apps/control-plane',
+    required: [
+      'OIDC_ISSUER',
+      'OIDC_CLIENT_ID',
+      'OIDC_CLIENT_SECRET',
+      'SESSION_SECRET',
+      'SERVICE_TOKEN',
+      'PLATFORM_SECRET',
+      'ROUTER_SECRET',
+      'PUSH_TOKEN_SECRET',
+      // Without it the host falls back to `unconfiguredSecretBox` and every connection
+      // upsert rejects — the plane cannot store a provider credential at all.
+      'SECRET_BOX_KEY',
+      'CF_API_TOKEN',
+      'CF_ACCOUNT_ID',
+    ],
     secrets: {
       OIDC_ISSUER: 'OIDC_ISSUER',
       OIDC_CLIENT_ID: 'CP_OIDC_CLIENT_ID',
@@ -72,6 +96,18 @@ const MANIFEST = {
   },
   dashboard: {
     dir: 'apps/dashboard',
+    required: [
+      'OIDC_ISSUER',
+      'OIDC_CLIENT_ID',
+      'OIDC_CLIENT_SECRET',
+      'SESSION_SECRET',
+      'CP_SERVICE_TOKEN',
+      // Seals the dashboard's own GitHub App connections — its directory, not the CP's.
+      'SECRET_BOX_KEY',
+      'GITHUB_APP_ID',
+      'GITHUB_APP_SLUG',
+      'GITHUB_APP_PRIVATE_KEY',
+    ],
     secrets: {
       OIDC_ISSUER: 'OIDC_ISSUER',
       OIDC_CLIENT_ID: 'DASH_OIDC_CLIENT_ID',
@@ -92,6 +128,7 @@ const MANIFEST = {
   },
   router: {
     dir: 'apps/router',
+    required: ['PLATFORM_SECRET', 'ROUTER_SECRET'],
     secrets: {
       PLATFORM_SECRET: 'PLATFORM_SECRET',
       ROUTER_SECRET: 'ROUTER_SECRET',
@@ -162,30 +199,44 @@ const filePath = join(ROOT, flag('file') ?? defaultFile);
 function resolveForWorker(cfg, values) {
   const set = {}; // { secretName: value }
   const missing = []; // canonical keys with no value in the file
+  const missingRequired = []; // ...of those, the ones the worker cannot run without
+  const required = new Set(cfg.required ?? []);
   for (const [secretName, canonical] of Object.entries(cfg.secrets)) {
     const v = values[canonical];
-    if (v === undefined || v === '') missing.push(canonical);
-    else set[secretName] = v;
+    if (v === undefined || v === '') {
+      missing.push(canonical);
+      if (required.has(secretName)) missingRequired.push({ secretName, canonical });
+    } else set[secretName] = v;
   }
-  return { set, missing };
+  return { set, missing, missingRequired, required };
 }
 
 function cmdCheck() {
   const values = parseEnvFile(filePath);
   console.log(`env file: ${filePath}\n`);
+  const gaps = [];
   for (const [name, cfg] of workers) {
-    const { set, missing } = resolveForWorker(cfg, values);
+    const { set, missingRequired, required } = resolveForWorker(cfg, values);
     console.log(`● ${name}  (${cfg.dir})`);
     for (const [secretName, canonical] of Object.entries(cfg.secrets)) {
       const present = set[secretName] !== undefined;
-      const mark = present ? '✓' : '·';
+      const req = required.has(secretName);
+      const mark = present ? '✓' : req ? '✗' : '·';
       const via = secretName === canonical ? '' : `  ← ${canonical}`;
-      console.log(`    ${mark} ${secretName}${via}${present ? '' : '   (unset)'}`);
+      const note = present ? '' : req ? '   (REQUIRED — unset)' : '   (unset)';
+      console.log(`    ${mark} ${secretName}${via}${note}`);
     }
-    void missing;
+    for (const m of missingRequired) gaps.push({ worker: name, ...m });
     console.log();
   }
-  console.log('✓ = will be set   · = blank in the file (skipped). Values are never printed.');
+  console.log('✓ = will be set   · = blank, optional (skipped)   ✗ = blank but REQUIRED.');
+  console.log('Values are never printed.');
+  if (gaps.length) {
+    console.error(`\n✗ ${gaps.length} required secret(s) missing from ${filePath}:`);
+    for (const g of gaps) console.error(`    ${g.worker}: ${g.secretName}  ← ${g.canonical}`);
+    console.error(`\n  fill them (generatable ones: node scripts/secrets.mjs generate --env ${env} --keys <KEY>)`);
+    process.exit(1);
+  }
 }
 
 /** Names of secrets currently set on a deployed worker (values are never returned by CF). */
@@ -209,7 +260,7 @@ function cmdStatus() {
   console.log(`file: ${filePath}   vs   LIVE Cloudflare secrets (env: ${env})\n`);
   console.log('  L = set in Cloudflare   F = present in the file   (CF never returns values)\n');
   for (const [name, cfg] of workers) {
-    const { set } = resolveForWorker(cfg, values);
+    const { set, required } = resolveForWorker(cfg, values);
     const live = liveSecretNames(cfg.dir, envFlag);
     console.log(`● ${name}${live === null ? '  (could not list — wrangler login?)' : ''}`);
     for (const secretName of Object.keys(cfg.secrets)) {
@@ -217,7 +268,16 @@ function cmdStatus() {
       const inCf = live === null ? null : live.has(secretName);
       const l = inCf === null ? '?' : inCf ? 'L' : '·';
       const f = inFile ? 'F' : '·';
-      const note = inCf && !inFile ? '  live, not in file (write-only — can\'t be exported)' : !inCf && inFile ? '  in file, NOT live → push will set it' : '';
+      // A required secret that is live nowhere is the one line worth shouting about:
+      // the worker is deployed and running without it.
+      const note =
+        inCf === false && required.has(secretName) && !inFile
+          ? '  ✗ REQUIRED, not live and not in the file — this worker is running without it'
+          : inCf && !inFile
+            ? "  live, not in file (write-only — can't be exported)"
+            : !inCf && inFile
+              ? '  in file, NOT live → push will set it'
+              : '';
       console.log(`    [${l}${f}] ${secretName}${note}`);
     }
     console.log();
@@ -228,6 +288,17 @@ function cmdPush() {
   const values = parseEnvFile(filePath);
   const envFlag = env === 'prod' ? [] : ['--env', env];
   console.log(`Pushing secrets from ${filePath}  (env: ${env})${dryRun ? '  [dry-run]' : ''}\n`);
+  // Refuse BEFORE setting anything: a half-configured worker is the failure mode this
+  // whole distinction exists to prevent. `--allow-incomplete` is the deliberate override
+  // (a scratch env that genuinely runs without some feature).
+  const gaps = workers.flatMap(([name, cfg]) =>
+    resolveForWorker(cfg, values).missingRequired.map((m) => ({ worker: name, ...m })),
+  );
+  if (gaps.length && !has('allow-incomplete')) {
+    console.error(`✗ ${gaps.length} required secret(s) blank in ${filePath} — nothing pushed:`);
+    for (const g of gaps) console.error(`    ${g.worker}: ${g.secretName}  ← ${g.canonical}`);
+    fail('fill them, or pass --allow-incomplete to push anyway');
+  }
   for (const [name, cfg] of workers) {
     const { set } = resolveForWorker(cfg, values);
     const names = Object.keys(set);
@@ -278,7 +349,9 @@ function cmdGenerate() {
   let filled = 0;
   for (const key of targets) {
     if (values[key] && !force) continue;
-    const value = key === 'SECRET_BOX_KEY' ? randBase64(32) : randHex(32);
+    // Both boxes want base64 of 32 raw bytes — hex would decode to 24 and the worker
+    // refuses it ("must decode to 32 bytes"). The rest are opaque hex tokens.
+    const value = key.endsWith('SECRET_BOX_KEY') ? randBase64(32) : randHex(32);
     // Replace a blank `KEY=` line if present, else append.
     const re = new RegExp(`^(${key}=).*$`, 'm');
     if (re.test(text)) text = text.replace(re, `$1${value}`);
