@@ -3905,8 +3905,14 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
   // Every upload this suite performs, so a test can assert what a PROMOTE re-sent (#340).
   const uploads: {
     ref: string;
-    assets?: { files: { path: string; hash: string; content?: Uint8Array; fetchContent?: () => Promise<Uint8Array | null> }[] };
+    assets?: {
+      files: { path: string; hash: string; content?: Uint8Array }[];
+      recoverContent?: (a: { path: string; hash: string }) => Promise<Uint8Array | undefined>;
+    };
   }[] = [];
+  // Every asset read-back the serve asked the host for (#578), so a test can assert
+  // WHICH script the bytes are recovered from (the version's archive, never the stable).
+  const assetFetches: { ref: string; path: string }[] = [];
 
   const ensure = (ref: string) => {
     let s = scripts.get(ref);
@@ -3942,10 +3948,10 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
       fetchVerticalModules: async () => [
         { name: 'worker.js', content: new Uint8Array([1]), contentType: 'application/javascript+module' },
       ],
-      // The asset half of the archive-as-store (#578): a re-serve recovers bytes from the
-      // version's script by served path. Modelled as the archive script serving its one file.
-      fetchVerticalAsset: async (_ref, path) =>
-        path === '/index.html' ? new TextEncoder().encode('<!doctype html>') : null,
+      fetchVerticalAsset: async (ref, asset) => {
+        assetFetches.push({ ref, path: asset.path });
+        return new TextEncoder().encode('<!doctype html>');
+      },
       resolveVerticalRef: async (ref) => clientFor(ref),
       resolveVerticalVersion: async (slug, versionId) => clientFor(deploymentRefFor(slug, versionId)),
     });
@@ -4054,15 +4060,21 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect((await promote(pushed.verticalSlug, pushed.id)).status).toBe(200);
 
     // The serving upload carries the SAME content addresses the push did — read back from
-    // the retained manifest, with no bytes up front. Each file also carries a working
-    // `fetchContent` (#578): the asset store dedups per script, so when the stable
-    // script's session reports a hash missing, the uploader recovers the bytes from the
-    // version's archive script instead of the promote failing or serving a code-only script.
+    // the retained manifest, with no bytes: the runtime dedupes per SCRIPT, so hashes the
+    // stable script has held before re-attach for free.
     const serve = uploads.slice(before).find((u) => u.ref === stableDeploymentRefFor(pushed.verticalSlug));
     expect(serve?.assets?.files.map((f) => f.path)).toEqual(['/index.html']);
     expect(serve!.assets!.files[0]!.hash).toBe(files[0]!.hash);
     expect(serve!.assets!.files[0]!.content).toBeUndefined();
-    await expect(serve!.assets!.files[0]!.fetchContent!()).resolves.toEqual(new TextEncoder().encode(body));
+    // …and for hashes it has NOT (every first serve of new content, #578), the upload can
+    // recover the bytes on demand — from the promoted VERSION's archive script, the same
+    // bundle store the modules come back from, never from the stable script it is filling.
+    const recovered = await serve!.assets!.recoverContent!({ path: '/index.html', hash: files[0]!.hash });
+    expect(new TextDecoder().decode(recovered!)).toBe(body);
+    expect(assetFetches.at(-1)).toEqual({
+      ref: deploymentRefFor(pushed.verticalSlug, pushed.id),
+      path: '/index.html',
+    });
   });
 
   it('a failed in-place serve strands nothing — the retry adopts the still-intact data', async () => {

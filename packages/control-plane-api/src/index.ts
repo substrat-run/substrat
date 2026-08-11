@@ -61,7 +61,15 @@ export {
   DeployUploadError,
   upstreamStatusOf,
 } from './deploy.js';
-export type { DeployVerticalFn, FetchVerticalAssetFn, VerticalBundle, DeclaredBinding, DeployManifest } from './deploy.js';
+export type {
+  DeployVerticalFn,
+  FetchVerticalAssetFn,
+  FetchVerticalModulesFn,
+  RecoverAssetContentFn,
+  VerticalBundle,
+  DeclaredBinding,
+  DeployManifest,
+} from './deploy.js';
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
 export type {
   WfpUploaderOptions,

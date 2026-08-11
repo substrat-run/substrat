@@ -1,6 +1,12 @@
 import { assetHash } from '@substrat-run/contracts';
 import { DeployUploadError, nextMigrationTag } from './deploy.js';
-import type { AssetUpload, DeployVerticalFn, FetchVerticalModulesFn, VerticalBundle } from './deploy.js';
+import type {
+  AssetUpload,
+  DeployVerticalFn,
+  FetchVerticalModulesFn,
+  RecoverAssetContentFn,
+  VerticalBundle,
+} from './deploy.js';
 
 /**
  * Bound a (potentially large, untrusted) upstream error body before it rides inside a
@@ -65,25 +71,27 @@ function assetConfigOf(assets: NonNullable<VerticalBundle['assets']>): Record<st
  *
  * 1. POST the manifest (`path → { hash, size }`) to the script's `assets-upload-session`.
  *    Cloudflare answers with a session JWT and the BUCKETS of hashes it does not already
- *    hold — content-addressed storage, deduped PER SCRIPT (#578: not namespace-wide, which
- *    the first cut of #340 assumed), so an unchanged re-deploy of the SAME script comes
- *    back with nothing to upload, but the same bytes on a DIFFERENT script must go up again.
+ *    hold — content-addressed storage, deduped PER SCRIPT (#578: not namespace-wide, however
+ *    much the endpoint's shape suggests it), so an unchanged re-deploy of the SAME script
+ *    comes back with nothing to upload, but the same manifest against a different script
+ *    starts empty-handed.
  * 2. POST each bucket's files, base64, one part per hash, each carrying the Content-Type the
  *    file will be SERVED with. The response to the last bucket carries the completion JWT.
  * 3. (caller) name that JWT in the script metadata's `assets` block.
  *
  * Empty buckets ⇒ every file was already stored and the SESSION jwt is itself the completion
- * token — the steady state once the stable script has served this asset set before. A hash
- * the runtime reports missing is recovered through the file's `fetchContent` (a re-serve
- * attaches one that reads the archive script's served assets, #578) and verified against the
- * manifest hash before upload. Only when neither bytes nor recovery can produce the file does
- * this refuse loudly — a script deployed with an incomplete asset set would serve a
- * half-broken page and look like a successful deploy.
+ * token. A promote re-runs this against the stable serving script with the retained manifest
+ * and no bytes, which per-script dedupe only satisfies for content that script has served
+ * before — anything else (every first serve of new content) is recovered on demand through
+ * `recover`, verified against its content-address, and uploaded. When even recovery cannot
+ * supply the bytes, this refuses loudly — a script deployed with an incomplete asset set
+ * would serve a half-broken page and look like a successful deploy.
  */
 async function uploadAssets(
   opts: Pick<WfpUploaderOptions, 'accountId' | 'namespace' | 'apiToken'>,
   scriptName: string,
   files: AssetUpload[],
+  recover?: RecoverAssetContentFn,
 ): Promise<string> {
   const manifest: Record<string, { hash: string; size: number }> = {};
   const byHash = new Map<string, AssetUpload>();
@@ -122,26 +130,33 @@ async function uploadAssets(
     const form = new FormData();
     for (const hash of bucket) {
       const file = byHash.get(hash);
-      // A re-serve carries no bytes, and the asset store dedups PER SCRIPT (#578) — a
-      // hash the push uploaded to the version's archive script is still "missing" for
-      // the stable serving script. Recover the file from its source and verify it IS
-      // the manifest's content before letting it ride: a recovered body that hashes
-      // differently (a worker response, a stale file) must refuse, not deploy.
       let content = file?.content;
-      if (!content && file?.fetchContent) {
-        const recovered = await file.fetchContent().catch(() => null);
-        if (recovered && (await assetHash(recovered, file.path)) === file.hash) {
-          content = recovered;
+      if (file && !content && recover) {
+        // A re-serve missing bytes is the NORMAL first serve of new content (#578): the
+        // push uploaded them to the version's archive script, and per-script dedupe means
+        // this script has never seen them. Read them back, and verify the recovered bytes
+        // hash to the manifest's content-address before uploading under it — the store is
+        // shared, so a key must never be trusted on bytes that don't have it (D-44).
+        const recovered = await recover({ path: file.path, hash: file.hash }).catch(() => undefined);
+        if (recovered && (await assetHash(recovered, file.path)) !== file.hash) {
+          throw new DeployUploadError(
+            502,
+            `recovered bytes for asset '${file.path}' do not hash to the manifest's ` +
+              `'${file.hash}' — refusing to store them under a content-address they do not have`,
+          );
         }
+        content = recovered;
       }
       if (!file || !content) {
-        // The runtime wants bytes neither this upload nor recovery could produce. A
-        // half-deployed asset set would serve a broken page and look like a success,
-        // so refuse loudly and name the remedy.
+        // The runtime wants bytes neither this upload nor recovery could supply. A fresh
+        // push mints a new archive script carrying every byte, which the next promote
+        // recovers from — so the remedy it names is now a real one (#578).
         throw new DeployUploadError(
           502,
-          `the runtime no longer holds asset '${file?.path ?? hash}' for '${scriptName}' and this ` +
-            `re-deploy could not recover its bytes — push the version again to restore its static files`,
+          `the runtime holds no bytes for asset '${file?.path ?? hash}' on '${scriptName}', this ` +
+            `re-deploy carries none, and ${
+              recover ? "the version's archive script gave none back" : 'no asset recovery is configured'
+            } — push the version again to restore its static files`,
         );
       }
       // The part's Content-Type is what the file is SERVED as later, so it must be the
@@ -202,7 +217,7 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
     // about an assets-free vertical's upload changes.
     const assetsJwt =
       bundle.assets && bundle.assets.files.length > 0
-        ? await uploadAssets(opts, deploymentRef, bundle.assets.files)
+        ? await uploadAssets(opts, deploymentRef, bundle.assets.files, bundle.assets.recoverContent)
         : undefined;
 
     const metadata = {

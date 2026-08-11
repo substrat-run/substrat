@@ -343,24 +343,38 @@ function fetchVerticalModulesFor(env: Env) {
 }
 
 /**
- * Reads one static file back from a pushed script's runtime-served assets (#578) — the
- * asset half of the archive-script-as-bundle-store: an in-place serve recovers the bytes
- * the stable script's upload session reports missing (the asset store dedups per script,
- * so the push's upload to the archive script never covers the serving script). A plain
- * dispatch fetch: the runtime serves a non-`run_worker_first` asset path before the
- * worker runs, so no vertical code executes; the caller hash-verifies the body against
- * the retained manifest, so a worker-generated response on an overlapping path refuses
- * rather than deploys.
+ * Reads a pushed script's STATIC ASSET bytes back through the dispatch fabric (#578) —
+ * the asset twin of `fetchVerticalModulesFor`, for the serve-in-place at promote: the
+ * asset store dedupes per script, so the stable serving script cannot ride dedupe on
+ * bytes the push uploaded to the version's archive script. There is no read-back API for
+ * assets the way `/content` gives back modules, but none is needed: assets are served by
+ * the runtime's edge without invoking the worker, so a plain dispatch fetch of the path
+ * returns the bytes (which the serve then verifies against their content-address).
+ * Redirects are followed by hand — `html_handling` may answer `/index.html` with a
+ * redirect to `/` — against the same script, never off it.
  */
 function fetchVerticalAssetFor(env: Env): FetchVerticalAssetFn | undefined {
   const dispatch = env.DISPATCH;
   if (!dispatch) return undefined;
-  return async (deploymentRef, path) => {
-    const res = await dispatch
-      .get(deploymentRef)
-      .fetch(`https://asset-recovery.internal${path}`, { method: 'GET' });
-    if (!res.ok) return null;
-    return new Uint8Array(await res.arrayBuffer());
+  return async (deploymentRef, asset) => {
+    const fetcher = dispatch.get(deploymentRef);
+    let url = new URL(asset.path, 'https://asset-recovery.invalid');
+    for (let hop = 0; hop < 3; hop++) {
+      const res = await fetcher.fetch(url.toString(), { redirect: 'manual' });
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        await res.body?.cancel();
+        if (!location) return undefined;
+        url = new URL(location, url);
+        continue;
+      }
+      if (!res.ok) {
+        await res.body?.cancel();
+        return undefined;
+      }
+      return new Uint8Array(await res.arrayBuffer());
+    }
+    return undefined;
   };
 }
 
