@@ -1,5 +1,67 @@
 # @substrat-run/control-plane
 
+## 0.9.0
+
+### Minor Changes
+
+- 39807d7: feat: connecting an integration means verified, not stored — and every probe names the provider environment it asked
+
+  **The write path was still claiming more than it knew.** Upserting a credential wrote the row and
+  reported success; the console said "Connected", which was a statement about our own database. The
+  first evidence the provider disagreed arrived on the next dispatch or sweep — after a signature
+  request had already failed.
+
+  The relay now checks the candidate credential with the provider _before_ any write:
+
+  - **Refused** (the provider answers 401/403) → `422`, and nothing is stored. The order is the
+    whole point on a rotation: writing first would replace a working credential with a broken one.
+    The provider's own message rides the response, so the connect dialog keeps what was typed and
+    says what is wrong instead of "couldn't save".
+  - **Unreachable** (timeout, 5xx, DNS) → stored, reported unverified. Deliberately _not_ a refusal:
+    rejecting during a provider outage would make it look like every tenant's keys had gone bad, and
+    would block the rotation someone is attempting because things are broken. `ConnectionProbe.refused`
+    is what separates a provider speaking about the credential from a provider that did not answer.
+  - **Accepted** → stored, and the successful pre-flight is recorded as health, so a just-verified
+    connection reads "last used just now" rather than "connected, not used yet" — the same empty
+    claim in different words.
+
+  Both write paths get the gate: the dashboard's connect and a vertical's own admin screen through
+  `/internal/connections/upsert`. A provider with no candidate probe registered behaves exactly as
+  before — the check is available, never assumed.
+
+  `probeScriveSecret` tests a secret that is not stored yet (no connection opened, no health written
+  against the live one), and `ScriveApiError` carries the HTTP status so a 401 is _classified_ rather
+  than inferred from a message string.
+
+  **Every probe also names the environment it asked.** A production credential sent to Scrive's
+  testbed returns 401 — byte-for-byte what a mistyped key returns — so a verify result that does not
+  say which Scrive it called sends an operator to check the wrong thing. It is now the first fact on
+  both the success and the failure answer: `production (scrive.com)`, `testbed (api-testbed.scrive.com)`,
+  or the bare host.
+
+### Patch Changes
+
+- f136a6d: fix: the deployed control plane was talking to Scrive's TESTBED — set `SCRIVE_BASE_URL` explicitly in both environments
+
+  `SCRIVE_BASE_URL` was set nowhere: not in `wrangler.jsonc`, not in the platform secrets. So the
+  connector fell back to its own default, `https://api-testbed.scrive.com`, in production. A tenant
+  connecting a real Scrive credential got a 401 from the testbed — and a 401 is exactly what a
+  mistyped key looks like, so the failure pointed at the customer instead of at the config.
+
+  Both environments now state it: production `https://scrive.com` (the API lives under `/api/v2` on
+  the main host — `api.scrive.com`, which an old comment in `worker.ts` recommended, has no DNS
+  record at all), TEST `https://api-testbed.scrive.com`. Stated rather than defaulted, because an
+  unset var here does not mean "unconfigured", it means "silently pointed at the wrong provider".
+
+  Requires a control-plane deploy to take effect.
+
+- Updated dependencies [39807d7]
+  - @substrat-run/contracts@0.62.0
+  - @substrat-run/connector-scrive@0.6.0
+  - @substrat-run/control-plane-api@0.62.0
+  - @substrat-run/adapter-cloudflare@0.62.0
+  - @substrat-run/kernel@0.62.0
+
 ## 0.8.0
 
 ### Minor Changes
