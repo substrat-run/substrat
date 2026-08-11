@@ -245,9 +245,14 @@ interface Env extends OidcEnv {
   SECRET_BOX_KEY?: string;
   SECRET_BOX_KEY_ID?: string;
   /**
-   * Scrive API base for the platform-run connector pass (#574/#96) — the sweep
-   * and the webhook ingress both reconcile against it. Unset ⇒ the connector's
-   * default (the testbed); production sets `https://api.scrive.com`.
+   * Scrive API base for the platform-run connector pass (#574/#96) — the sweep, the
+   * webhook ingress and the inspection reads (#605) all go through it.
+   *
+   * Unset ⇒ the connector's default, which is the TESTBED. That default is right for a
+   * developer and wrong for a deployment: a production credential sent to the testbed
+   * comes back 401, indistinguishable from a mistyped key. So both environments set this
+   * var explicitly in `wrangler.jsonc` — production `https://scrive.com` (the API lives
+   * under /api/v2 on the main host; `api.scrive.com` does not resolve), TEST the testbed.
    */
   SCRIVE_BASE_URL?: string;
   /**
