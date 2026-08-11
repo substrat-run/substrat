@@ -80,6 +80,56 @@ export const scriveDocument = z.object({
 });
 export type ScriveDocument = z.infer<typeof scriveDocument>;
 
+/**
+ * The API user and the company it acts for — `GET /api/v2/getprofile`, the cheapest
+ * authenticated read Scrive offers and therefore the probe (#605).
+ *
+ * Verified against the testbed: the endpoint is `/api/v2/getprofile`, NOT
+ * `/api/v2/user/getprofile` (404), and a bad credential answers `401` with a
+ * **plain-text** body rather than Scrive's usual JSON error envelope — which
+ * {@link asJson} already handles by keeping the raw slice, so the operator reads
+ * "No valid access credentials were provided" instead of a bare status.
+ *
+ * `company.companyid` is what `externalAccountRef` means for this provider, which is
+ * what lets a probe answer "these keys are for a different Scrive account than the one
+ * this connection was made for". Extra fields ignored — the response carries a large
+ * company-settings object this deliberately does not learn.
+ */
+export const scriveProfile = z.object({
+  id: z.string().min(1),
+  email: z.string().default(''),
+  fstname: z.string().default(''),
+  sndname: z.string().default(''),
+  /** 'role_account_owner', 'role_account_admin', … — shown, never interpreted. */
+  role: z.string().optional(),
+  company: z
+    .object({ companyid: z.string().min(1), companyname: z.string().default('') })
+    .optional(),
+});
+export type ScriveProfile = z.infer<typeof scriveProfile>;
+
+/**
+ * One row of `GET /api/v2/documents/list` — the account's documents, newest first.
+ *
+ * Only the fields a console shows are parsed; the full row carries ~40 more. This is
+ * the LIVE view: the dispatch ledger knows what the platform sent, this knows what the
+ * provider currently holds, and the two answer different questions.
+ */
+export const scriveDocumentSummary = z.object({
+  id: z.string().min(1),
+  title: z.string().default(''),
+  status: z.string().min(1),
+  ctime: z.string().optional(),
+  mtime: z.string().optional(),
+});
+export type ScriveDocumentSummary = z.infer<typeof scriveDocumentSummary>;
+
+export const scriveDocumentList = z.object({
+  total_matching: z.number().int().nonnegative().default(0),
+  documents: z.array(scriveDocumentSummary).default([]),
+});
+export type ScriveDocumentList = z.infer<typeof scriveDocumentList>;
+
 export interface ScriveParty {
   /** Display name for the signing page. */
   name: string;
@@ -182,6 +232,35 @@ export class ScriveApi {
       `oauth_token="${s.tokenId}", ` +
       `oauth_signature="${s.clientSecret}&${s.tokenSecret}"`;
     return { authorization: auth, ...extra };
+  }
+
+  /**
+   * Who these credentials are — the probe (#605). Cheap, read-only, and the only call
+   * that names the ACCOUNT rather than a document, which is what makes it the right
+   * answer to "did I paste the right keys, and for which company?".
+   */
+  async getProfile(): Promise<ScriveProfile> {
+    const res = await this.conn.fetch(`${this.baseUrl}/api/v2/getprofile`, {
+      method: 'GET',
+      headers: this.headers(),
+    });
+    return scriveProfile.parse(await asJson(res, 'getprofile'));
+  }
+
+  /**
+   * The account's documents, newest first — the live counterpart to the dispatch
+   * ledger. Bounded by `max` (Scrive's own default is small; the console asks for a
+   * page, never the archive) and used to join the provider's CURRENT status onto the
+   * rows the platform recorded sending.
+   */
+  async listDocuments(opts: { max?: number; offset?: number } = {}): Promise<ScriveDocumentList> {
+    const max = opts.max ?? 100;
+    const offset = opts.offset ?? 0;
+    const res = await this.conn.fetch(
+      `${this.baseUrl}/api/v2/documents/list?offset=${offset}&max=${max}`,
+      { method: 'GET', headers: this.headers() },
+    );
+    return scriveDocumentList.parse(await asJson(res, 'documents/list'));
   }
 
   async createDocument(): Promise<ScriveDocRef> {

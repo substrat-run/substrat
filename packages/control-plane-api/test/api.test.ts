@@ -651,6 +651,84 @@ describe('control-plane API', () => {
     expect(all.map((r) => r.status)).toEqual(['revoked']);
   });
 
+  // -- connection inspection (#605): verify + activity ------------------------
+
+  it('verifies a credential and serves the connector’s projected activity', async () => {
+    const sInspect = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sInspect, vertical: 'inspect-vert' });
+    await host.admin.activateScope(staff, t1, sInspect);
+    const created = (await (
+      await json(`/tenants/${t1}/connections`, 'POST', {
+        scopeId: sInspect,
+        provider: 'scrive',
+        secret: { clientId: 'ci', clientSecret: 'cs-SECRET', tokenId: 'ti', tokenSecret: 'ts-SECRET' },
+        createdBy: principalId.parse(ulid()),
+      })
+    ).json()) as { connectionId: string };
+
+    // A stand-in connector: the routes are pure transport over the declared shape, and
+    // proving that means proving they carry a provider's answer without interpreting it.
+    let sawLive: boolean | undefined;
+    const inspected = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      connectionInspectors: {
+        scrive: {
+          probe: async (_h, row) => ({
+            ok: true,
+            accountRef: `acct-for-${row.id}`,
+            accountLabel: 'Mock Company',
+            facts: [{ label: 'Company', value: 'Mock Company' }],
+            error: null,
+          }),
+          activity: async (_h, _row, opts) => {
+            sawLive = opts.live;
+            return {
+              live: opts.live,
+              entries: [
+                {
+                  key: 'scrive:dispatch:01JINSTANCE',
+                  title: 'Anställningsavtal',
+                  reference: 'doc-1',
+                  status: 'awaiting signatures',
+                  at: null,
+                  facts: [{ label: 'Arbetsgivare', value: 'awaiting signature' }],
+                },
+              ],
+            };
+          },
+        },
+      },
+    });
+    const ireq = (path: string, init?: RequestInit) => inspected.request(path, { headers: auth, ...init });
+
+    const verified = await ireq(`/tenants/${t1}/connections/${created.connectionId}/verify`, { method: 'POST' });
+    expect(verified.status).toBe(200);
+    expect(await verified.json()).toMatchObject({ ok: true, accountLabel: 'Mock Company' });
+
+    const activity = await ireq(`/tenants/${t1}/connections/${created.connectionId}/activity?live=1`);
+    expect(activity.status).toBe(200);
+    expect(sawLive).toBe(true);
+    expect(await activity.json()).toMatchObject({ live: true, entries: [{ reference: 'doc-1' }] });
+    // Absent `live` means the ledger's own view — the flag is never assumed.
+    await ireq(`/tenants/${t1}/connections/${created.connectionId}/activity`);
+    expect(sawLive).toBe(false);
+
+    // K-3 existence hiding, the same law as revoke: a foreign tenant's connection id and
+    // an absent one are indistinguishable.
+    expect((await ireq(`/tenants/${t2}/connections/${created.connectionId}/verify`, { method: 'POST' })).status).toBe(404);
+    expect((await ireq(`/tenants/${t1}/connections/${ulid()}/activity`)).status).toBe(404);
+
+    // No inspector wired ⇒ 501. "This platform cannot verify that yet" is true; an empty
+    // 200 would read as "your credential is fine".
+    expect((await req(`/tenants/${t1}/connections/${created.connectionId}/verify`, { method: 'POST' })).status).toBe(501);
+    expect((await req(`/tenants/${t1}/connections/${created.connectionId}/activity`)).status).toBe(501);
+
+    // A revoked connection has no secret left to probe with — 404, like an absent one.
+    await host.admin.revokeConnection(staff, connectionId.parse(created.connectionId));
+    expect((await ireq(`/tenants/${t1}/connections/${created.connectionId}/verify`, { method: 'POST' })).status).toBe(404);
+  });
+
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------
 
   it('delivers per-instance config through the vertical that owns the scope', async () => {

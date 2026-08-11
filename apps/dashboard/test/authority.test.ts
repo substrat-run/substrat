@@ -115,6 +115,24 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
   });
 
+  it('the inspection reads (#605) are tenant-pinned, and only ask for live state when told to', async () => {
+    const { cp, calls } = harness(200, []);
+    const CN = '01JZ00000000000000000000CN';
+    await cp.verifyConnection(CN);
+    await cp.connectionActivity(CN);
+    await cp.connectionActivity(CN, { live: true });
+    await cp.listConnectionGrants();
+
+    // Verify REACHES OUT (it spends a call at the provider and writes health), so it is
+    // a POST — not the safe, cacheable read a GET promises.
+    expect(calls[0]!).toMatchObject({ url: `https://cp/api/tenants/${T}/connections/${CN}/verify`, method: 'POST' });
+    // The ledger's own view by default; the provider is only read when asked.
+    expect(calls[1]!).toMatchObject({ url: `https://cp/api/tenants/${T}/connections/${CN}/activity`, method: 'GET' });
+    expect(calls[2]!.url).toBe(`https://cp/api/tenants/${T}/connections/${CN}/activity?live=1`);
+    expect(calls[3]!.url).toBe(`https://cp/api/tenants/${T}/connection-grants`);
+    expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
+  });
+
   it('listScopes reads GET /scopes narrowed to the pinned tenant + vertical (Data-tab switcher)', async () => {
     const { cp, calls } = harness(200, {
       entries: [{ id: S, tenantId: T, name: 'Cafe', status: 'active', vertical: 'manyfold' }],

@@ -10,6 +10,7 @@
  * plane.
  */
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
@@ -2134,6 +2135,73 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
   if (cp) await cp.revokeConnection(live.id);
   else await host.admin.revokeConnection(STAFF, live.id);
   return c.body(null, 204);
+});
+
+/**
+ * Resolve one app's live connection for a provider, with the caller's own permission
+ * proven first — the shared preamble of the two inspection routes below.
+ *
+ * `dashboard/begin-connection` is re-used deliberately: reading what a credential has
+ * DONE (which documents went out, to which signatories) is the same class of act as
+ * managing it, and gating it on the same in-scope `dashboard:manage-integrations` check
+ * keeps one answer to "who may look at this integration".
+ */
+async function inspectableConnection(
+  c: Context<{ Bindings: Env }>,
+): Promise<{ connectionId: string; cp: NonNullable<ReturnType<typeof controlPlaneFor>>; spec: ProviderSpec }> {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const spec = PROVIDERS[c.req.param('provider') ?? ''];
+  if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
+  await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
+  const rows = await connectionsFor(host, c.env, node.tenantId, appRow.vertical_slug);
+  const live = liveConnectionFor(rows, spec.provider);
+  if (!live) throw new HTTPException(404, { message: 'not connected' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) {
+    // Embedded mode has no connector runtime of its own — the connectors live with the
+    // control plane, which is also the only place the sealed secret can be opened. Saying
+    // so beats a local read: the dashboard could enumerate the raw ledger, but a ledger
+    // row is connector bookkeeping (Scrive's carries the callback capability token) and
+    // only the connector's own projection is safe to serve.
+    throw new HTTPException(501, { message: 'connection inspection runs on the control plane' });
+  }
+  return { connectionId: live.id, cp, spec };
+}
+
+/**
+ * Verify the stored credential against the provider (#605). The credential never comes
+ * back here — the plane opens it, spends one cheap authenticated read, and answers what
+ * the provider said. A rejected key is a 200 with `ok: false`, because the provider
+ * answering "no" is a successful verification.
+ */
+app.post('/api/apps/:scopeId/integrations/:provider/verify', async (c) => {
+  const { connectionId, cp } = await inspectableConnection(c);
+  return c.json(await cp.verifyConnection(connectionId));
+});
+
+/**
+ * What this integration has done, and what it is allowed to do (#605): the connector's
+ * projected dispatch ledger plus the connection's live grants — the readable "a leaked
+ * provider token could invoke exactly these". `?live=1` also asks the provider for
+ * current state; the answer reports whether it got it.
+ */
+app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
+  const { connectionId, cp } = await inspectableConnection(c);
+  const [activity, grants] = await Promise.all([
+    cp.connectionActivity(connectionId, { live: c.req.query('live') === '1' }),
+    // Best-effort: a plane too old to serve grants must not cost the activity view.
+    cp.listConnectionGrants().catch(() => []),
+  ]);
+  return c.json({
+    ...activity,
+    grants: grants.filter((g) => g.connectionId === connectionId).map((g) => g.permission),
+  });
 });
 
 /**

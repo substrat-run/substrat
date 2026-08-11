@@ -86,6 +86,39 @@ function tinyPdf(): Uint8Array {
 }
 
 describe.skipIf(!creds)('scrive connector — LIVE testbed', () => {
+  /**
+   * The two reads the inspection surface (#605) rests on. Exactly the check the mock
+   * cannot make: that these endpoints exist, at these paths, returning what the
+   * connector parses. `/api/v2/getprofile` — NOT `/api/v2/user/getprofile`, which is a
+   * 404 — is the whole probe, and its `company.companyid` is what `externalAccountRef`
+   * means for this provider.
+   */
+  it('reads the account profile and the document list', async () => {
+    const api = new ScriveApi(liveConnection(creds!) as never, creds!.baseUrl);
+
+    const profile = await api.getProfile();
+    expect(profile.id).toBeTruthy();
+    expect(profile.company?.companyid).toBeTruthy();
+
+    const list = await api.listDocuments({ max: 1 });
+    expect(list.total_matching).toBeGreaterThanOrEqual(0);
+    expect(list.documents.length).toBeLessThanOrEqual(1);
+    for (const d of list.documents) {
+      expect(d.id).toBeTruthy();
+      expect(d.status).toBeTruthy();
+    }
+  });
+
+  it('reports a bad credential as the provider’s own words', async () => {
+    // The probe's failure path against the real API: Scrive answers 401 with a
+    // PLAIN-TEXT body, not its usual JSON error envelope — so the message an operator
+    // reads comes from `asJson`'s raw-slice fallback, and this is what proves it.
+    const broken = liveConnection({ ...creds!, tokenSecret: 'not-the-secret' });
+    const api = new ScriveApi(broken as never, creds!.baseUrl);
+
+    await expect(api.getProfile()).rejects.toThrow(/401/);
+  });
+
   it('authenticates and drives new → setfile → update → get, then cleans up', async () => {
     const api = new ScriveApi(liveConnection(creds!) as never, creds!.baseUrl);
 
