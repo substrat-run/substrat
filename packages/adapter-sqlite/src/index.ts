@@ -124,6 +124,7 @@ import {
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
   verticalServingState,
+  outboundOfManifestJson,
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
@@ -3081,6 +3082,7 @@ export class SqliteScopeHost implements ScopeHost {
         admission: r.admission,
         admissionNote: r.admission_note,
         origin: r.origin_json ? JSON.parse(r.origin_json) : null,
+        outbound: outboundOfManifestJson(r.manifest_json),
         createdAt: r.created_at,
       });
     const readVersion = (id: string): VerticalVersion | undefined => {
@@ -3690,13 +3692,21 @@ export class SqliteScopeHost implements ScopeHost {
         // Join the scope's dispatch script in the same read (orchestration.md §5.4).
         // A scope on the stable serving script (#286) routes THERE; falls back to the
         // bound version's own script. LEFT joins: neither resolves with null.
+        // `outbound_json` mirrors the Cloudflare directory read (#303, D-46): the declared
+        // outbound surface of the code this dispatch runs — the serving version's when the
+        // stable serving script wins, the bound version's on the per-version fallback.
         const r = this.directory
           .prepare(
             `SELECT h.tenant_id, h.scope_id, h.vertical_slug, h.surface, h.region,
-                    COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref
+                    COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
+                    CASE WHEN s.serving_ref IS NOT NULL
+                         THEN json_extract(sv.manifest_json, '$.outbound')
+                         ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json
                FROM hostnames h
                LEFT JOIN scopes s ON s.scope_id = h.scope_id
                LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
+               LEFT JOIN verticals vr ON vr.slug = s.vertical
+               LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
               WHERE h.hostname = ? AND h.status = 'active'`,
           )
           .get(hostname) as
@@ -3707,9 +3717,21 @@ export class SqliteScopeHost implements ScopeHost {
               surface: string;
               region: string | null;
               deployment_ref: string | null;
+              outbound_json: string | null;
             }
           | undefined;
         if (!r) return undefined;
+        let outboundHosts: string[] | null = null;
+        if (r.outbound_json) {
+          try {
+            const parsed = JSON.parse(r.outbound_json) as unknown;
+            if (Array.isArray(parsed)) {
+              outboundHosts = parsed.filter((h): h is string => typeof h === 'string');
+            }
+          } catch {
+            // Malformed JSON never breaks routing — the request dispatches unenforced.
+          }
+        }
         return routeTarget.parse({
           tenantId: r.tenant_id,
           scopeId: r.scope_id,
@@ -3717,6 +3739,7 @@ export class SqliteScopeHost implements ScopeHost {
           deploymentRef: r.deployment_ref ?? null,
           surface: r.surface,
           region: r.region,
+          outboundHosts,
         });
       },
       registerVertical: async (actor: PlatformActorId, input: RegisterVerticalInput) => {

@@ -98,8 +98,9 @@ enforce:
   platform's. It cannot call the control plane as the platform.
 - **Provisioning stays pull (K-31).** The customer worker cannot create tenants/entitlements;
   the platform calls *it* to provision, exactly as today.
-- **Outbound + resource limits.** WfP per-script CPU/subrequest caps; an outbound policy is an
-  open question (§6 / #303) but the default is least-privilege.
+- **Outbound + resource limits.** WfP per-script CPU/subrequest caps; outbound egress is the
+  vertical's **declared outbound surface**, enforced at the dispatch egress worker (§4.2,
+  D-46) — least-privilege by declaration, not by an undecided default.
 
 ### 4.1 The binding allowlist (positive, not by omission)
 
@@ -120,7 +121,7 @@ Every refusal names the offending binding and its type and points here.
 | `secret_text` / `plain_text` | **Permitted** — inert config | Own secrets (survive deploys via `keep_bindings`, #286) and inline config values; no reach into platform infrastructure. |
 | `service` | **Rejected** | A hosted vertical is **one serving script** (the DO *is* the app) — there is no own sibling worker to bind, and platform reach is the router (K-27), never a binding. Reconsider only if multi-script verticals are ever introduced. |
 | `dispatch_namespace` | **Rejected** | The platform's Workers-for-Platforms fabric — never a vertical's to bind. |
-| `ai`, `browser`, `vectorize`, `hyperdrive`, `send_email`, `mtls_certificate`, … | **Rejected** | Managed/egress-shaped capabilities: the outside world is a connector concern, and outbound policy is an open question (§6 / #303). Least-privilege refuses them until decided. |
+| `ai`, `browser`, `vectorize`, `hyperdrive`, `send_email`, `mtls_certificate`, … | **Rejected** | Managed/egress-shaped capabilities: the outside world is a connector concern, and a vertical's own direct egress is the declared `outbound` host list (§4.2, D-46) — never a binding-shaped capability. |
 | any other / unrecognized type | **Rejected** | Not on the allowlist ⇒ refused, by construction. |
 | `CONTROL_PLANE` (by **name**, any type) | **Rejected** | The platform's directory binding, refused by name whatever type it claims — masquerading as a permitted type must not slip it through. |
 
@@ -234,6 +235,70 @@ If an uploaded bundle's declared bindings exceed this contract, the deploy endpo
 before it ever reaches the namespace. That refusal — not code inspection — is the primary
 structural defense in model B.
 
+### 4.2 The outbound contract (#303, D-46) — a declared allowlist, enforced at the egress seam
+
+The §6.3 open question ("allowlist, none, or metered") is answered **allowlist *and*
+metered**, and the allowlist is the vertical's own declaration, not a staff grant:
+
+> **Decision (D-46): a hosted vertical declares the third-party hosts its worker fetches;
+> the dispatch egress worker enforces the declaration per subrequest and meters every
+> verdict. Anything not declared is refused; anything platform-bound keeps riding the
+> router.**
+
+**The declaration.** `package.json` `substrat.outbound` — a list of lowercase hostnames
+(`api.scrive.com`) and `*.`-prefixed wildcards (`*.googleapis.com`, any subdomain depth,
+never the apex). The CLI carries it into the deploy manifest (`outbound` in
+`@substrat-run/contracts` — schema `outboundHost`, matcher `matchesOutboundHost`, one
+implementation for every seam that asks). It is **versioned with the code**: each version's
+manifest holds its own list, the registry lifts it onto the version record, and the console
+renders it beside the Admit button — so widening egress is visible at the admit checkpoint
+exactly like the permission surface, and a policy change ships only by shipping a version.
+A new-CLI push **always** sends the field — `[]` when nothing is declared, because *no
+direct third-party egress* is the correct default: connectors run platform-side
+(`ConnectorContext.fetch`, its own policy), transactional mail rides the control-plane
+relay (`emailSender` grant), and cross-vertical calls ride the router. Most verticals need
+to declare nothing.
+
+**The enforcement path.** The router's directory read (`readHostname`) joins the declared
+list of **the version whose code the dispatch runs** — the registry's serving version when
+the stable serving script wins, the scope's bound version on the per-version fallback (the
+two can skew mid-promote; the policy follows the bundle). It rides `RouteTarget.outboundHosts`
+to the dispatch call, which passes `{ slug, tenant, hosts }` as the `OUTBOUND_POLICY`
+outbound parameter (`dispatch_namespaces[].outbound.parameters`); the egress worker
+(`apps/vertical-egress`) enforces: platform hosts loop back through the router (#442, K-27 —
+the destination vertical's own auth is the gate), declared hosts pass untouched, anything
+else is a **403** whose body names the host and says what to declare. The router never
+inspects the list; the control plane never sees the traffic.
+
+**Legacy is unenforced, never broken — and never invisible.** A version pushed by a
+pre-#303 CLI has no `outbound` field, resolves `hosts: null`, and passes through
+unenforced; the next push always carries the field, so the fleet converges to enforced as
+it re-deploys. Every verdict — `platform` / `allowed` / `unenforced` / `refused` — writes
+one Analytics Engine datapoint (`substrat_egress`: index = slug, blobs = [hostname,
+verdict, tenant]; D-30 *meter, don't bill*), so the unenforced tail is a chart, not a
+guess, and a refusal spike or an exfiltration attempt shows up attributed to a vertical.
+
+**Honest limits, published beside the mechanism (the D-45 rule):**
+
+- **Durable Object subrequests are not intercepted** — Cloudflare outbound workers see
+  worker-context `fetch()` only, and Substrat verticals are DO-centric, so a fetch made
+  from inside a vertical's own DO classes bypasses enforcement today. The declared surface
+  is still the *reviewed contract* for all egress, and the worker-context seam still
+  polices the paths that exist (OIDC/JWKS flows run in the top-level worker); but under
+  model B this is defense-in-depth plus an audit artifact, not an airtight sandbox. If
+  Cloudflare extends interception to DO subrequests, enforcement becomes complete with no
+  contract change.
+- Attaching an outbound worker **disables raw TCP `connect()`** for every dispatched
+  script — sockets are closed entirely, by construction.
+- **The control plane's own dispatch binding** carries no outbound worker (internal
+  provisioning, not cross-vertical HTTP; wiring it would create a deploy-order cycle) —
+  that path is trusted platform code.
+- The declaration is **self-serve authority for a private vertical** (it self-admits,
+  D-36): declaring a host *allows* it, with the blast radius being the builder's own
+  tenant plus the platform's egress reputation — which is why every subrequest is metered
+  and attributed. For a **listed** vertical the list sits in front of the human admitter,
+  like the permission surface.
+
 ## 5. `substrat push` and the endpoint
 
 - **`substrat push` (CLI).** Builds the vertical locally (or in the builder's CI), then POSTs
@@ -271,7 +336,9 @@ structural defense in model B.
    Worker/container build service), and its supply-chain posture.
 2. **Digest trust in model B:** the checkpoint is advisory when digests are self-declared —
    is human admission enough for vetted builders, and what does the admitter actually see?
-3. **Outbound policy** for customer workers — allowlist, none, or metered.
+3. ~~**Outbound policy** for customer workers — allowlist, none, or metered.~~ **Answered
+   (§4.2, D-46, #303):** a declared allowlist per version, enforced at the egress worker,
+   with every verdict metered.
 4. **Metering/abuse:** a customer worker consumes WfP resources under our account; billing and
    abuse limits (D-30 "meter, don't bill" gives the meter, not the cap).
 5. **Builder identity & accountability:** a push must be attributable to a named, agreed

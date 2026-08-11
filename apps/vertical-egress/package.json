@@ -12,6 +12,9 @@
     "cf:deploy:test": "wrangler deploy --env test",
     "dry-run": "wrangler deploy --dry-run --outdir dist-worker"
   },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:^"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250109.0",
     "typescript": "^7.0.0",

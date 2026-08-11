@@ -78,7 +78,25 @@ export interface Env {
 
 /** Minimal shape of a WfP dispatch namespace binding. */
 interface DispatchNamespace {
-  get(name: string): Fetcher;
+  get(
+    name: string,
+    args?: Record<string, unknown>,
+    options?: { outbound?: Record<string, unknown> },
+  ): Fetcher;
+}
+
+/**
+ * What the egress worker receives beside every subrequest the dispatched script makes
+ * (#303, D-46) — via the dispatch binding's outbound `parameters`, landing there as
+ * `env.OUTBOUND_POLICY`. The router only ferries it: `hosts` comes straight from the
+ * resolve (the dispatched version's declared outbound surface), and the identity fields
+ * are for the egress meter, not for enforcement. `hosts: null` = a pre-#303 manifest,
+ * which the egress worker passes through unenforced (but still metered).
+ */
+interface OutboundPolicy {
+  slug: string | null;
+  tenant: string;
+  hosts: string[] | null;
 }
 
 /** Headers the router asserts. Any inbound copy is stripped before these are set. */
@@ -93,7 +111,16 @@ function verticalFor(env: Env, target: RouteTarget): Fetcher | undefined {
   // that is not there (or not yet propagated, K-29) surfaces as `Worker not found.`
   // at fetch time, which the bounded retry below handles.
   if (target.deploymentRef && env.DISPATCH) {
-    return env.DISPATCH.get(target.deploymentRef);
+    // Every dispatch carries the outbound policy for the egress worker (#303, D-46):
+    // the dispatched version's declared outbound surface plus who is fetching, so a
+    // refusal names the vertical and the meter attributes the subrequest. The router
+    // never inspects the list — resolve produced it, the egress worker enforces it.
+    const policy: OutboundPolicy = {
+      slug: target.verticalSlug,
+      tenant: target.tenantId,
+      hosts: target.outboundHosts,
+    };
+    return env.DISPATCH.get(target.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
   }
   // Fallback: the milestone-one static service binding, for a route with no version.
   if (!target.verticalSlug) return undefined;

@@ -1635,24 +1635,42 @@ export class ControlPlaneDO extends DurableObject {
 
   // -- the hostname map (K-26) ------------------------------------------------
 
-  readHostname(hostname: string): (HostnameRow & { deployment_ref: string | null }) | undefined {
+  readHostname(
+    hostname: string,
+  ): (HostnameRow & { deployment_ref: string | null; outbound_json: string | null }) | undefined {
     // Join the scope's dispatch script, so the router resolves it in the same one
     // directory read (orchestration.md §5.4). A scope whose data lives in the stable
     // serving script (#286) routes THERE — per-scope truth, because rerouting a scope
     // whose Durable Objects sit in a per-version script would resolve empty storage.
     // Falls back to the bound version's own script (legacy per-version dispatch); LEFT
     // joins: a scope with neither resolves with deployment_ref = null.
+    //
+    // `outbound_json` is the declared outbound surface of the CODE THIS DISPATCH RUNS
+    // (#303, D-46): the serving script executes the registry's serving version, so when
+    // serving_ref wins the list comes from THAT version's manifest, not the scope's
+    // bound one (the two can skew mid-promote — the policy must follow the bundle).
+    // The per-version fallback runs the bound version's bundle, so it reads vv's.
+    // json_extract keeps the hot path from parsing whole manifests in JS: SQLite hands
+    // back just the `outbound` array as JSON text, or NULL for a pre-#303 manifest —
+    // which the egress worker treats as unenforced-but-metered.
     return this.sql
       .exec(
         `SELECT h.*, COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
-                s.status AS scope_status
+                s.status AS scope_status,
+                CASE WHEN s.serving_ref IS NOT NULL
+                     THEN json_extract(sv.manifest_json, '$.outbound')
+                     ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json
            FROM hostnames h
            LEFT JOIN scopes s ON s.scope_id = h.scope_id
            LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
+           LEFT JOIN verticals vr ON vr.slug = s.vertical
+           LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
           WHERE h.hostname = ?`,
         hostname,
       )
-      .toArray()[0] as unknown as (HostnameRow & { deployment_ref: string | null }) | undefined;
+      .toArray()[0] as unknown as
+      | (HostnameRow & { deployment_ref: string | null; outbound_json: string | null })
+      | undefined;
   }
 
   /** Demote any current canonical for this surface — exactly one may hold it. */

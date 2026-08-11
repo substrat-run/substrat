@@ -24,6 +24,10 @@ interface HostnameReader {
     status: string;
     /** The scope's bound version's dispatch script, joined in the read. */
     deployment_ref: string | null;
+    /** The dispatched code's declared outbound surface (#303) as JSON text — the
+     *  `outbound` array lifted from the resolved version's manifest in the same read.
+     *  Null = a pre-#303 manifest (or no version), which dispatches unenforced. */
+    outbound_json?: string | null;
   } | undefined>;
 }
 
@@ -41,10 +45,25 @@ export function toRouteTarget(
         region: string | null;
         status: string;
         deployment_ref?: string | null;
+        outbound_json?: string | null;
       }
     | undefined,
 ): RouteTarget | undefined {
   if (!row || row.status !== 'active') return undefined;
+  // The declared outbound surface rides as JSON text from the directory read (#303).
+  // A row that carries none — pre-#303 manifest, no bound version — resolves null,
+  // which the egress worker treats as unenforced-but-metered, never as deny-all.
+  let outboundHosts: string[] | null = null;
+  if (row.outbound_json) {
+    try {
+      const parsed = JSON.parse(row.outbound_json) as unknown;
+      if (Array.isArray(parsed)) {
+        outboundHosts = parsed.filter((h): h is string => typeof h === 'string');
+      }
+    } catch {
+      // Malformed JSON never breaks routing — the request still dispatches, unenforced.
+    }
+  }
   return routeTarget.parse({
     tenantId: row.tenant_id,
     scopeId: row.scope_id,
@@ -52,6 +71,7 @@ export function toRouteTarget(
     deploymentRef: row.deployment_ref ?? null,
     surface: row.surface,
     region: row.region,
+    outboundHosts,
   });
 }
 

@@ -18,6 +18,7 @@ interface Row {
   region: string | null;
   status: string;
   deployment_ref?: string | null;
+  outbound_json?: string | null;
 }
 
 const row = (over: Partial<Row> = {}): Row => ({
@@ -208,6 +209,60 @@ describe('router', () => {
     expect(dispatched).toBe('fsm-01ky535a');
     expect(fsm.seen().headers.get('x-substrat-tenant')).toBe(T);
     expect(fsm.seen().headers.get('x-substrat-scope')).toBe(S);
+  });
+
+  // -- the outbound policy rides the dispatch (#303, D-46) -------------------
+
+  it('hands the resolved outbound surface to the egress worker as a dispatch parameter', async () => {
+    // The egress worker can only enforce what the dispatch carries: if this stops being
+    // passed, every vertical silently reverts to unenforced egress — a failure that looks
+    // exactly like success from every other angle. So the parameter is pinned here.
+    let options: { outbound?: Record<string, unknown> } | undefined;
+    const fsm = spyVertical();
+    const DISPATCH = {
+      get: (_name: string, _args?: unknown, opts?: { outbound?: Record<string, unknown> }) => {
+        options = opts;
+        return fsm.binding;
+      },
+    };
+    const env = {
+      CONTROL_PLANE: directory({
+        'acme.example.com': row({
+          deployment_ref: 'fsm-01ky535a',
+          outbound_json: JSON.stringify(['api.scrive.com', '*.googleapis.com']),
+        }),
+      }),
+      DISPATCH,
+    } as unknown as Env;
+
+    await worker.fetch(get('https://acme.example.com/api/x'), env);
+
+    expect(options?.outbound?.OUTBOUND_POLICY).toEqual({
+      slug: 'fsm',
+      tenant: T,
+      hosts: ['api.scrive.com', '*.googleapis.com'],
+    });
+  });
+
+  it('passes hosts: null for a version pushed before the declaration existed', async () => {
+    // Unenforced, not deny-all — the egress worker meters it and lets it through, so a
+    // pre-#303 fleet keeps working until each vertical re-pushes.
+    let options: { outbound?: Record<string, unknown> } | undefined;
+    const fsm = spyVertical();
+    const DISPATCH = {
+      get: (_name: string, _args?: unknown, opts?: { outbound?: Record<string, unknown> }) => {
+        options = opts;
+        return fsm.binding;
+      },
+    };
+    const env = {
+      CONTROL_PLANE: directory({ 'acme.example.com': row({ deployment_ref: 'fsm-01ky535a' }) }),
+      DISPATCH,
+    } as unknown as Env;
+
+    await worker.fetch(get('https://acme.example.com/api/x'), env);
+
+    expect(options?.outbound?.OUTBOUND_POLICY).toMatchObject({ hosts: null });
   });
 
   it('falls back to the static binding when the scope has no bound version', async () => {

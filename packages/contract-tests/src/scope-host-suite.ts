@@ -2129,6 +2129,89 @@ export function scopeHostContractSuite(
       expect((await host.admin.resolveHostname('preview.example.com'))?.deploymentRef).toBe('per-version-script');
     });
 
+    it('resolves the outbound surface of the code the dispatch RUNS, not the scope pointer (#303)', async () => {
+      // The policy must follow the BUNDLE. An install runs the vertical's serving script,
+      // which carries the SERVING version's code — so mid-promote, when the scope is still
+      // bound to the old version, reading the bound version's list would enforce a
+      // different version's policy than the code actually executing. A preview runs its
+      // own per-version script, so it reads the bound version's list.
+      const slug = 'egressy';
+      await host.admin.registerVertical(staff, { slug, name: 'Egressy', source: 'cli', ownerTenant: t1 });
+      const bound = ulid();
+      const serving = ulid();
+      await host.admin.publishVersion(staff, {
+        id: bound, verticalSlug: slug, version: '1.0.0',
+        manifestDigest: 'm1', permissionDigest: 'p1', migrationDigest: 'g1',
+        deploymentRef: 'per-version-script',
+        manifestJson: JSON.stringify({ outbound: ['api.bound.example'] }),
+      });
+      await host.admin.publishVersion(staff, {
+        id: serving, verticalSlug: slug, version: '2.0.0',
+        manifestDigest: 'm2', permissionDigest: 'p2', migrationDigest: 'g2',
+        deploymentRef: 'serving-script',
+        manifestJson: JSON.stringify({ outbound: ['api.serving.example', '*.cdn.example'] }),
+      });
+      await host.admin.setVerticalServing(staff, slug, {
+        ref: 'serving-script', versionId: serving, doClasses: [], migrationTag: 'g1',
+      });
+
+      // The install sits on the serving script but is BOUND to the older version — the
+      // exact skew the join has to get right.
+      const install = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: install, vertical: slug });
+      await host.admin.activateScope(staff, t1, install);
+      await host.admin.bindScopeVersion(staff, t1, install, bound);
+      await host.admin.bindHostname(staff, {
+        hostname: 'egress-install.example.com', tenantId: t1, scopeId: install, surface: 'app', region: null, canonical: true,
+      });
+      await host.admin.setHostnameStatus(staff, 'egress-install.example.com', 'active');
+      expect((await host.admin.resolveHostname('egress-install.example.com'))?.outboundHosts).toEqual([
+        'api.serving.example',
+        '*.cdn.example',
+      ]);
+
+      // The preview runs the bound version's own script, so it gets that version's list.
+      const preview = scopeId.parse(ulid());
+      await host.provisionScope(staff, {
+        tenantId: t1, scopeId: preview, kind: 'preview', vertical: slug,
+        forkedFrom: install, forkedAt: new Date().toISOString(),
+      });
+      await host.admin.activateScope(staff, t1, preview);
+      await host.admin.bindScopeVersion(staff, t1, preview, bound);
+      await host.admin.bindHostname(staff, {
+        hostname: 'egress-preview.example.com', tenantId: t1, scopeId: preview, surface: 'app', region: null, canonical: true,
+      });
+      await host.admin.setHostnameStatus(staff, 'egress-preview.example.com', 'active');
+      expect((await host.admin.resolveHostname('egress-preview.example.com'))?.outboundHosts).toEqual([
+        'api.bound.example',
+      ]);
+    });
+
+    it('resolves outboundHosts = null for a version pushed before the declaration existed (#303)', async () => {
+      // Unenforced, not deny-all: a pre-#303 manifest (no `outbound` key at all, and the
+      // pre-#286 case of no manifest json) must route with a null policy so the egress
+      // worker meters it and passes it through. Least privilege arrives version by
+      // version, never as a fleet outage.
+      const slug = 'legacy-egress';
+      await host.admin.registerVertical(staff, { slug, name: 'Legacy', source: 'cli', ownerTenant: t1 });
+      const legacy = ulid();
+      await host.admin.publishVersion(staff, {
+        id: legacy, verticalSlug: slug, version: '1.0.0',
+        manifestDigest: 'm1', permissionDigest: 'p1', migrationDigest: 'g1',
+        deploymentRef: 'legacy-script',
+        manifestJson: JSON.stringify({ entry: 'worker.js' }), // a real manifest, no `outbound`
+      });
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s, vertical: slug });
+      await host.admin.activateScope(staff, t1, s);
+      await host.admin.bindScopeVersion(staff, t1, s, legacy);
+      await host.admin.bindHostname(staff, {
+        hostname: 'legacy-egress.example.com', tenantId: t1, scopeId: s, surface: 'app', region: null, canonical: true,
+      });
+      await host.admin.setHostnameStatus(staff, 'legacy-egress.example.com', 'active');
+      expect((await host.admin.resolveHostname('legacy-egress.example.com'))?.outboundHosts).toBeNull();
+    });
+
     it('records the owning tenant and fixes it at first push (claim-on-first-push)', async () => {
       // builder-plane.md Phase 1b: a vertical is owned by a TENANT (null = platform).
       // 'callout' above was registered platform-owned; a builder-pushed one carries

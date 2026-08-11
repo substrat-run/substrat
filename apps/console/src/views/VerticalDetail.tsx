@@ -355,6 +355,28 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     { header: 'Pushed', render: (v) => v.createdAt.slice(0, 16).replace('T', ' '), mono: true, muted: true, width: 140 },
     { header: 'Admission', render: (v) => <Badge status={admissionTone(v.admission)}>{v.admission}</Badge> },
     {
+      // The declared outbound surface (#303, D-46) — part of what admitting means, so it
+      // renders beside the Admit button: which third-party hosts this version's worker may
+      // fetch. `none` is the healthy default (connectors + the email relay need no
+      // declaration); `undeclared` = a pre-#303 push the egress worker meters but does not
+      // enforce until the next push.
+      header: 'Outbound',
+      render: (v) =>
+        v.outbound == null ? (
+          <span style={{ color: 'var(--text-placeholder)' }}>undeclared (unenforced)</span>
+        ) : v.outbound.length === 0 ? (
+          <span style={{ color: 'var(--text-placeholder)' }}>none</span>
+        ) : (
+          <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+            {v.outbound.map((h) => (
+              <Tag key={h} mono>
+                {h}
+              </Tag>
+            ))}
+          </span>
+        ),
+    },
+    {
       header: 'Deployment',
       render: (v) =>
         v.deploymentRef ? (
