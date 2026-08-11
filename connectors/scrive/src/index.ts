@@ -604,7 +604,14 @@ export async function probeScriveConnection(
     connection.vertical,
     options.timeoutMs ?? 15_000,
   );
-  const api = new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED);
+  const baseUrl = options.baseUrl ?? SCRIVE_TESTBED;
+  const api = new ScriveApi(conn, baseUrl);
+  // WHICH Scrive this is, on every answer — and especially on a failure. A production
+  // credential sent to the testbed comes back 401, identical to a mistyped key, so a
+  // probe that does not name the environment sends an operator to check the wrong thing.
+  // (It happened: the deployed control plane ran with no SCRIVE_BASE_URL and silently
+  // fell through to the connector's testbed default.)
+  const environment = { label: 'Environment', value: describeEnvironment(baseUrl) };
   let profile;
   try {
     profile = await api.getProfile();
@@ -613,7 +620,7 @@ export async function probeScriveConnection(
       ok: false,
       accountRef: null,
       accountLabel: null,
-      facts: [],
+      facts: [environment],
       error: err instanceof Error ? err.message : String(err),
     };
   }
@@ -626,6 +633,7 @@ export async function probeScriveConnection(
     accountRef: profile.company?.companyid ?? null,
     accountLabel: company !== '' ? `${company}${profile.email ? ` (${profile.email})` : ''}` : (profile.email || null),
     facts: [
+      environment,
       ...(company !== '' ? [{ label: 'Company', value: company }] : []),
       ...(person !== '' || profile.email
         ? [{ label: 'API user', value: person !== '' ? `${person}${profile.email ? ` <${profile.email}>` : ''}` : profile.email }]
@@ -634,6 +642,19 @@ export async function probeScriveConnection(
     ],
     error: null,
   };
+}
+
+/**
+ * Name the provider environment a base URL points at — 'production (scrive.com)',
+ * 'testbed (api-testbed.scrive.com)', or the bare host for anything else (a mock, a
+ * self-hosted proxy). Reported by every probe, because "which Scrive did you ask?" is
+ * the question a 401 leaves an operator with, and guessing it wrong costs an afternoon.
+ */
+function describeEnvironment(baseUrl: string): string {
+  const host = baseUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  if (host === 'scrive.com' || host === 'www.scrive.com') return `production (${host})`;
+  if (host.includes('testbed')) return `testbed (${host})`;
+  return host;
 }
 
 /** Provider status → the word an operator reads. Unknown values pass through verbatim. */

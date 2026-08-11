@@ -152,6 +152,8 @@ describe('scrive connector — inspection (probe + activity)', () => {
     expect(probe.accountRef).toBe('30338661');
     expect(probe.accountLabel).toContain('Mock Company');
     expect(probe.facts.map((f) => f.label)).toContain('Company');
+    // Which Scrive was asked, on every answer — see the failure case below for why.
+    expect(probe.facts).toContainEqual({ label: 'Environment', value: 'testbed (api-testbed.scrive.test)' });
     // A probe is a USE: it rides the connection-bound fetch, so health lands on it.
     const [row] = await host.admin.listConnections(staff, { tenantId: t });
     expect(row!.lastOkAt).not.toBeNull();
@@ -167,6 +169,9 @@ describe('scrive connector — inspection (probe + activity)', () => {
     expect(probe.ok).toBe(false);
     expect(probe.error).toContain('mock failure');
     expect(probe.accountRef).toBeNull();
+    // A 401 from the WRONG Scrive is indistinguishable from a bad key, so the failure
+    // names the environment it asked — the one fact that separates the two.
+    expect(probe.facts).toContainEqual({ label: 'Environment', value: 'testbed (api-testbed.scrive.test)' });
     // And the failure is recorded as health, exactly as a failed dispatch would be.
     const [row] = await host.admin.listConnections(staff, { tenantId: t });
     expect(row!.lastError).not.toBeNull();

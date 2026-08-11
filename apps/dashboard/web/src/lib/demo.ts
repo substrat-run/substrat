@@ -201,6 +201,7 @@ export const MOCK_CONNECTION_PROBE: ConnectionProbeView = {
   accountRef: '30338661',
   accountLabel: 'Acme AB (drift@acme.se)',
   facts: [
+    { label: 'Environment', value: 'production (scrive.com)' },
     { label: 'Company', value: 'Acme AB' },
     { label: 'API user', value: 'Alex Ek <drift@acme.se>' },
     { label: 'Role', value: 'account owner' },
