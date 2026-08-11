@@ -1,5 +1,16 @@
 # @substrat-run/demo-auth-server
 
+## 0.2.45
+
+### Patch Changes
+
+- 9386282: feat(auth-server): implement the platform's data verbs — `/internal/export` dumps an instance in full and `/internal/delete-scope` wipes one (#590)
+
+  The standalone auth-server answered 501 to both, so the console's retire-with-backup (#493) always refused, wipes stranded storage on the script, and a data-carrying `rebindScopeVertical` could not move an install between lineages. The dump is deliberately unredacted — it exists to rebuild the issuer elsewhere, and the control-plane route in front is the gate, the auditor, and the default masker.
+
+  - @substrat-run/contracts@0.59.0
+  - @substrat-run/kernel@0.59.0
+
 ## 0.2.44
 
 ### Patch Changes

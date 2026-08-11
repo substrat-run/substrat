@@ -1,5 +1,12 @@
 # @substrat-run/vertical-host
 
+## 0.59.0
+
+### Patch Changes
+
+- @substrat-run/contracts@0.59.0
+- @substrat-run/kernel@0.59.0
+
 ## 0.58.0
 
 ### Minor Changes
