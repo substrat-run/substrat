@@ -14,5 +14,12 @@ declare module 'cloudflare:test' {
      * seed a connection the worker's own box (`secretBoxFor`) can open.
      */
     SECRET_BOX_KEY?: string;
+    /**
+     * Which Scrive the worker talks to. A `vars` entry in `wrangler.jsonc` (production
+     * points at the real one), overridden in vitest.config.ts — and read back by the
+     * ingress test so its `fetchMock` intercepts whatever the config actually set,
+     * rather than a constant that can silently disagree with it.
+     */
+    SCRIVE_BASE_URL?: string;
   }
 }

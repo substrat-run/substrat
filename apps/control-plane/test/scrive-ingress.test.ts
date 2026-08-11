@@ -28,7 +28,12 @@ describe('scrive webhook ingress (#574 phase 2)', () => {
   const s = scopeId.parse(ulid());
   const conn = connectionId.parse(ulid());
   const TOKEN = 'a'.repeat(64);
-  const SCRIVE = 'https://api-testbed.scrive.com';
+  // Read from the binding, not hard-coded: the pool loads `wrangler.jsonc`, so the
+  // worker's provider base is whatever the deploy config says unless the test env
+  // overrides it (vitest.config.ts does). Deriving the intercepted origin from the same
+  // value is what stops a production config change from failing this suite with an
+  // unrelated 500 — which is exactly what setting SCRIVE_BASE_URL for prod first did.
+  const SCRIVE = env.SCRIVE_BASE_URL ?? 'https://api-testbed.scrive.com';
 
   // The worker's own box (`secretBoxFor`): same key bytes (vitest.config.ts binding),
   // same default key id — so a credential sealed here opens under the worker's key.
