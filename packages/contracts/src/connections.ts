@@ -167,6 +167,19 @@ export const connectionProbe = z.object({
   /** True when the provider accepted the credential. False is a real answer, not an error. */
   ok: z.boolean(),
   /**
+   * When `ok` is false: did the PROVIDER refuse the credential (a definite answer — an
+   * HTTP 401/403), or could the probe simply not tell (timeout, 5xx, DNS)?
+   *
+   * The distinction decides whether a caller may act on the failure. A refusal is grounds
+   * to reject a connect attempt outright; an unreachable provider is not — rejecting then
+   * would make a Scrive outage look like every tenant's credentials going bad, and would
+   * block a rotation that needs to happen precisely because things are broken.
+   *
+   * Defaulted false so an older producer's answer reads as "inconclusive", which is the
+   * side that never blocks.
+   */
+  refused: z.boolean().default(false),
+  /**
    * The provider's own identifier for the account the credential acts as — a Scrive
    * company id, a Fortnox tenant. The same value `externalAccountRef` holds, which is
    * what makes a probe able to say "these keys are for a DIFFERENT account than the one

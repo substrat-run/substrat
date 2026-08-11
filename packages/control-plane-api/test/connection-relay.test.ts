@@ -152,4 +152,111 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
       expect(g.vertical).toBe('egeryds-crm');
     }
   });
+  // -- the connect-time gate (#605) -----------------------------------------
+
+  it('refuses a credential the provider rejects, and writes NOTHING', async () => {
+    const before = await host.admin.listConnections(staff, { tenantId: t2, provider: 'scrive' });
+    expect(before).toHaveLength(0);
+
+    await expect(
+      relayConnectionUpsert(host, relayActor, request({ tenantId: t2, scopeId: s2 }), {
+        probeCandidate: async () => ({
+          ok: false,
+          refused: true,
+          accountRef: null,
+          accountLabel: null,
+          facts: [{ label: 'Environment', value: 'testbed (api-testbed.scrive.com)' }],
+          error: 'No valid access credentials were provided.',
+        }),
+      }),
+    ).rejects.toMatchObject({ status: 422, message: 'No valid access credentials were provided.' });
+
+    // The whole point: the store is untouched, so "connected" never became true.
+    expect(await host.admin.listConnections(staff, { tenantId: t2, provider: 'scrive' })).toHaveLength(0);
+  });
+
+  it('a refused ROTATION leaves the live credential exactly as it was', async () => {
+    // Its own tenant: the shared t1 already holds several live scrive rows from the
+    // multi-account tests above, and `openConnection` refuses to pick among them.
+    const tR = tenantId.parse(ulid());
+    const sR = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tR, slug: 'rotate', name: 'Rotate' });
+    await host.provisionScope(staff, { tenantId: tR, scopeId: sR, vertical: 'egeryds-crm' });
+    const created = await relayConnectionUpsert(host, relayActor, request({ tenantId: tR, scopeId: sR }));
+    const before = await host.admin.openConnection(tR, 'egeryds-crm', 'scrive');
+
+    await expect(
+      relayConnectionUpsert(
+        host,
+        relayActor,
+        request({ tenantId: tR, scopeId: sR, secret: { apiToken: 'typo', apiSecret: 'typo' } }),
+        {
+          probeCandidate: async () => ({
+            ok: false,
+            refused: true,
+            accountRef: null,
+            accountLabel: null,
+            facts: [],
+            error: 'refused',
+          }),
+        },
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+
+    // Writing first would have replaced a working credential with a broken one — the
+    // reason the probe runs BEFORE the store, not after.
+    const after = await host.admin.openConnection(tR, 'egeryds-crm', 'scrive');
+    expect(after?.secret).toEqual(before?.secret);
+    expect(after?.id).toBe(created.connectionId);
+  });
+
+  it('stores when the provider cannot be reached — unverifiable is not refused', async () => {
+    const t3 = tenantId.parse(ulid());
+    const s3 = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t3, slug: 'outage', name: 'Outage' });
+    await host.provisionScope(staff, { tenantId: t3, scopeId: s3, vertical: 'egeryds-crm' });
+
+    const result = await relayConnectionUpsert(host, relayActor, request({ tenantId: t3, scopeId: s3 }), {
+      // A timeout says nothing about the credential. Rejecting here would make a provider
+      // outage look like every tenant's keys going bad, and would block the rotation
+      // someone is attempting BECAUSE things are broken.
+      probeCandidate: async () => ({
+        ok: false,
+        refused: false,
+        accountRef: null,
+        accountLabel: null,
+        facts: [],
+        error: 'connect timeout',
+      }),
+    });
+
+    expect(result.created).toBe(true);
+    expect(result.probe).toMatchObject({ ok: false, refused: false });
+    // Stored, but NOT marked healthy — unverified must not look like verified.
+    const [row] = await host.admin.listConnections(staff, { tenantId: t3, provider: 'scrive' });
+    expect(row?.lastOkAt).toBeNull();
+  });
+
+  it('records health when the pre-flight succeeded, so a verified connection reads as used', async () => {
+    const t4 = tenantId.parse(ulid());
+    const s4 = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t4, slug: 'verified', name: 'Verified' });
+    await host.provisionScope(staff, { tenantId: t4, scopeId: s4, vertical: 'egeryds-crm' });
+
+    const result = await relayConnectionUpsert(host, relayActor, request({ tenantId: t4, scopeId: s4 }), {
+      probeCandidate: async () => ({
+        ok: true,
+        refused: false,
+        accountRef: '30338661',
+        accountLabel: 'Egeryds AB',
+        facts: [],
+        error: null,
+      }),
+    });
+
+    expect(result.probe?.accountLabel).toBe('Egeryds AB');
+    const [row] = await host.admin.listConnections(staff, { tenantId: t4, provider: 'scrive' });
+    // A real successful call happened with this credential moments before the row existed.
+    expect(row?.lastOkAt).not.toBeNull();
+  });
 });

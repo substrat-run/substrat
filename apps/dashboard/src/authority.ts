@@ -60,6 +60,12 @@ export class ControlPlaneError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * The provider's own answer, when the plane refused a connect because the credential
+     * was rejected upstream (#605, 422). Carried so a console can show WHY — "Scrive:
+     * No valid access credentials were provided" — instead of a generic save failure.
+     */
+    readonly probe?: ConnectionProbe,
   ) {
     super(message);
     this.name = 'ControlPlaneError';
@@ -155,8 +161,14 @@ export class TenantNarrowedControlPlane {
       // A tenant/entitlement that already exists is fine on an idempotent step
       // (re-provisioning, a retried create) — the directory already reflects it.
       if (init.idempotent && (res.status === 409 || res.status === 422)) return undefined as T;
-      const body = (await res.json().catch(() => null)) as { error?: string } | null;
-      throw new ControlPlaneError(res.status, body?.error ?? `${res.status} ${res.statusText}`);
+      const body = (await res.json().catch(() => null)) as
+        | { error?: string; probe?: ConnectionProbe }
+        | null;
+      throw new ControlPlaneError(
+        res.status,
+        body?.error ?? `${res.status} ${res.statusText}`,
+        body?.probe,
+      );
     }
     return res.status === 204 ? (undefined as T) : ((await res.json().catch(() => undefined)) as T);
   }
@@ -279,7 +291,10 @@ export class TenantNarrowedControlPlane {
     secret: Record<string, string>;
     grants?: string[];
     createdBy: string;
-  }): Promise<{ connectionId: string; created: boolean; granted: string[] }> {
+  }): Promise<{ connectionId: string; created: boolean; granted: string[]; probe?: ConnectionProbe }> {
+    // #605: the plane checks the candidate against the provider BEFORE writing. A refused
+    // credential comes back 422 (as a ControlPlaneError) and nothing is stored — which is
+    // what keeps a bad rotation from replacing a working credential.
     return this.post(`/tenants/${this.tenantId}/connections`, input);
   }
 

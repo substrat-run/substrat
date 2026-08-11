@@ -335,18 +335,26 @@ function ConnectDialog({
   const [target, setTarget] = useState<string>(scopeId ?? pickTarget?.[0]?.scopeId ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** The provider rejected these credentials — distinct from "the save failed". */
+  const [refusal, setRefusal] = useState<{ message: string; probe?: ConnectionProbeView } | null>(null);
   const complete = provider.fields.every((f) => (values[f.key] ?? '').trim() !== '') && target !== '';
 
   const submit = async () => {
     if (!complete || busy) return;
     setBusy(true);
     setErr(null);
+    setRefusal(null);
     try {
       const secret = Object.fromEntries(provider.fields.map((f) => [f.key, values[f.key]!.trim()]));
       await api.connectIntegration(target, provider.provider, { secret });
       onDone();
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : String(e));
+      // A 422 is the provider itself refusing the credential — nothing was stored, so the
+      // dialog stays open with what was typed and says which field to look at. The old
+      // behaviour (store, close, call it Connected) is what let a bad key sit until the
+      // first signing request failed.
+      if (e instanceof ApiError && e.status === 422) setRefusal({ message: e.message, probe: e.probe });
+      else setErr(e instanceof ApiError ? e.message : String(e));
       setBusy(false);
     }
   };
@@ -364,9 +372,23 @@ function ConnectDialog({
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Monogram text={provider.monogram} size={32} />
           <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-            Stored sealed in the connection vault — apps use it, never see it.{rotate ? ' Rotating keeps the same connection; every grant on it survives.' : ''}
+            Checked with {provider.name} before it is stored, then sealed in the connection vault — apps use it, never
+            see it.{rotate ? ' Rotating keeps the same connection; every grant on it survives.' : ''}
           </div>
         </div>
+
+        {/* The provider's refusal, in its own words. Nothing was written, so this is a
+            correction prompt rather than an error report — and on a rotation it is the
+            reason the live credential is still intact. */}
+        {refusal && (
+          <div style={{ ...card, padding: 12, display: 'flex', flexDirection: 'column', gap: 6, borderColor: 'var(--status-danger-fg)' }}>
+            <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
+              {provider.name} rejected these credentials — nothing was saved.
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{refusal.message}</div>
+            {refusal.probe && refusal.probe.facts.length > 0 && <Facts facts={refusal.probe.facts} />}
+          </div>
+        )}
         {scopeId === undefined && pickTarget && (
           <Select
             label="Connect for"

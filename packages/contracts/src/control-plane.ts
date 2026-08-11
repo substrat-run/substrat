@@ -16,7 +16,13 @@ import {
 import { org, scope, tenant, tenantStatus } from './tenancy.js';
 import { tenantRole } from './permission.js';
 import { hostnameBinding } from './routing.js';
-import { connection, connectionId, connectionProvider, connectionSecret } from './connections.js';
+import {
+  connection,
+  connectionId,
+  connectionProbe,
+  connectionProvider,
+  connectionSecret,
+} from './connections.js';
 import { scopeDump } from './introspection.js';
 
 // The control plane — the shared layer across N per-vertical deployments (D-30,
@@ -479,6 +485,17 @@ export const connectionRelayResult = z.object({
   /** True when this call created the connection; false when it rotated a live one. */
   created: z.boolean(),
   granted: z.array(permissionKey),
+  /**
+   * What the provider said when the candidate credential was checked, before anything
+   * was written (#605). Present when the platform has a probe for this provider.
+   *
+   * A stored credential the provider ACCEPTED and one it could not be asked about are
+   * different outcomes, and the caller has to be able to tell them apart: this is what
+   * lets a console say "Connected — verified as Nordljus AB" rather than the older,
+   * emptier claim that a row exists. A refusal never reaches here — it fails the call
+   * with 422 and writes nothing.
+   */
+  probe: connectionProbe.optional(),
 });
 export type ConnectionRelayResult = z.infer<typeof connectionRelayResult>;
 

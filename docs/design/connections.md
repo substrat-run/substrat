@@ -403,6 +403,31 @@ sweep's `sweepers` — so `control-plane-api` still imports no connector. An unr
 **501s**: "this platform cannot verify a Fortnox key yet" is true, and an empty `200` would read
 as "your Fortnox key is fine".
 
+#### Connecting means verified, not stored
+
+The upsert (§3.5.2) used to mean *store it*: the row landed, the console said **Connected**,
+and the first evidence the provider disagreed arrived on the next dispatch — after a
+signature request had already failed. "Connected" was a claim about our own database.
+
+So the relay now **pre-flights the candidate credential** through the provider's
+`probeCandidate`, ahead of every write:
+
+- **Refused** (the provider answers 401/403) ⇒ `422`, and **nothing is written**. Order
+  matters most on a rotation: writing first would replace a working credential with a
+  broken one. The response carries the provider's own message, so the console corrects a
+  field instead of reporting "couldn't save".
+- **Unreachable** (timeout, 5xx, DNS) ⇒ stored, and reported as unverified. Refusing here
+  would make a provider outage look like every tenant's keys going bad at once, and would
+  block the rotation someone is attempting *because* things are broken. `refused` on the
+  probe is what keeps the two apart.
+- **Accepted** ⇒ stored, and `recordConnectionUse(ok)` is written: a real successful call
+  happened with that exact credential moments before the row existed, so a just-verified
+  connection reads "last used just now" rather than "connected, not used yet" — which was
+  the same "a row exists" claim in different words.
+
+A provider with no `probeCandidate` registered behaves exactly as before: stored,
+unverified, no gate. The check is available, never assumed.
+
 #### The credential view — a bounded exception to write-only
 
 The store's rule is that a credential goes in and never comes out: `Connection` cannot carry a
