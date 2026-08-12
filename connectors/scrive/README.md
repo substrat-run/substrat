@@ -4,6 +4,8 @@ Scrive eSign (Swedish **BankID**) for Substrat: turns a vertical's signature req
 Scrive signing flow, and records the completed signatures back into the scope. A **connector** is
 host code — you register it on a scope host; it is never module code.
 
+**Full documentation: https://substrat.net/connectors/scrive**
+
 ## What it does
 
 Two halves, both built and tested against the real testbed API.

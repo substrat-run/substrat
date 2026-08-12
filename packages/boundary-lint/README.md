@@ -6,6 +6,8 @@ The Substrat layer rules, enforced mechanically — in this monorepo or in a sta
 npx @substrat-run/boundary-lint
 ```
 
+**Full documentation: https://substrat.net/reference/boundary-lint**
+
 ## Why this exists
 
 Every other guardrail in Substrat fails **loud**. Branded IDs fail at compile time. Zod

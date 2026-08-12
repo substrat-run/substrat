@@ -1,7 +1,10 @@
 # @substrat-run/adapter-email
 
-The platform's **notification-transport port** — how Substrat sends transactional
-email (invites, password resets, receipts).
+The platform's **notification-transport port** — how [Substrat](https://substrat.net) sends
+transactional email (invites, password resets, receipts).
+
+**Internal to this monorepo — not published to npm** (see Status). Background on where it sits:
+**https://substrat.net/platform**
 
 Email is an **adapter, not a connector** (decision 18): a notification transport is
 *infra the host consumes*, not a capability a tenant connects their own account to.

@@ -46,3 +46,10 @@ Invitations expire (14 days by default) and one sender may hold 25 open invitati
 organization. Expiry is applied on read and on transition rather than by a sweep — an
 expired invitation must never be acceptable, and a background job would be a second
 source of truth for the same fact.
+
+## Documentation
+
+**https://substrat.net/engines** — the domain model and invariants, the operation/permission
+surface, the event contracts, and how a vertical composes or extends it.
+
+The docs site is the single source of truth; this README deliberately doesn't restate it.
