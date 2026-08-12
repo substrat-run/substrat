@@ -1429,6 +1429,24 @@ export interface HostAdmin {
   // -- the integrations hub (#101; design/connections.md §3) ------------------
 
   /**
+   * Whether this host was built with a `SecretBox` — i.e. whether it can store a
+   * credential at all (#603).
+   *
+   * A synchronous property, not a probe: the answer is fixed when the host is
+   * constructed and needs no round trip. It exists so a caller can refuse BEFORE
+   * doing work that only makes sense if the result can be stored — the connection
+   * relay asks the provider to verify a candidate credential, and asking on a
+   * host that could never keep the answer spends a real outbound call, and hands
+   * the plaintext to the provider, to reach the same failure one step later.
+   *
+   * `false` does not disable the writes below; they still fail closed with a
+   * `SecretBoxUnconfiguredError`. This is the readable form of the same fact, so
+   * a transport can answer "this deployment cannot do that" (503) instead of
+   * letting a boot-time misconfiguration surface as an unexplained 500.
+   */
+  readonly canStoreSecrets: boolean;
+
+  /**
    * Store a tenant's authorization for one provider, held by one vertical.
    *
    * The credential is sealed by the host's `SecretBox` before it touches the

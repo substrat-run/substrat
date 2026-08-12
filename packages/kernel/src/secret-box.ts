@@ -139,6 +139,23 @@ export function webCryptoSecretBox(keyId: string, key: Uint8Array): SecretBox {
 }
 
 /**
+ * The refusal a host without a `SecretBox` raises (#603).
+ *
+ * Typed rather than a plain `Error` because it is a **deployment fact**, not a
+ * fault in the request: the caller sent a well-formed credential to a host that
+ * was started without a seal key. A transport that cannot tell the two apart
+ * answers 500 and sends the operator hunting through a worker tail for a fact
+ * the process knew at boot. Every seam that can raise it maps it to a typed
+ * 503 naming the missing key.
+ */
+export class SecretBoxUnconfiguredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SecretBoxUnconfiguredError';
+  }
+}
+
+/**
  * The box a host gets when none was configured: every call throws.
  *
  * Deliberately not "store it in the clear" and not "silently disable
@@ -148,7 +165,7 @@ export function webCryptoSecretBox(keyId: string, key: Uint8Array): SecretBox {
 export const unconfiguredSecretBox: SecretBox = {
   seal() {
     return Promise.reject(
-      new Error(
+      new SecretBoxUnconfiguredError(
         'no SecretBox configured: this host cannot store credentials. ' +
           'Pass one to the host (webCryptoSecretBox with a 32-byte key) — ' +
           'storing a credential unsealed is not an option.',
@@ -156,6 +173,20 @@ export const unconfiguredSecretBox: SecretBox = {
     );
   },
   open() {
-    return Promise.reject(new Error('no SecretBox configured: cannot open a stored credential'));
+    return Promise.reject(
+      new SecretBoxUnconfiguredError('no SecretBox configured: cannot open a stored credential'),
+    );
   },
 };
+
+/**
+ * Whether a host can seal at all — the question a caller asks BEFORE doing work
+ * whose only purpose is to produce something to store (#603).
+ *
+ * Identity against `unconfiguredSecretBox` rather than a flag on the interface:
+ * "unconfigured" is exactly the one box this module hands out, and keeping the
+ * `SecretBox` interface at two methods means an external KMS adapter has nothing
+ * extra to implement.
+ */
+export const isSecretBoxConfigured = (box: SecretBox | undefined): boolean =>
+  box !== undefined && box !== unconfiguredSecretBox;

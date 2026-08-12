@@ -259,4 +259,42 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
     // A real successful call happened with this credential moments before the row existed.
     expect(row?.lastOkAt).not.toBeNull();
   });
+
+  // -- a deployment that cannot store at all (#603) --------------------------
+
+  it('answers 503 naming the missing key when the host has no SecretBox — and never probes', async () => {
+    // The prod incident: SECRET_BOX_KEY was unset, `createConnection` refused (correctly),
+    // and the relay's plain throw reached the generic 500 handler — so the operator saw a
+    // bug in their credential where the plane had a boot-time fact to report.
+    const boxless = mkdtempSync(join(tmpdir(), 'substrat-conn-relay-nobox-'));
+    const noBox = new SqliteScopeHost({ dir: boxless });
+    const tn = tenantId.parse(ulid());
+    const sn = scopeId.parse(ulid());
+    await noBox.admin.createTenant(staff, { id: tn, slug: 'nobox', name: 'No box' });
+    await noBox.provisionScope(staff, { tenantId: tn, scopeId: sn, vertical: 'egeryds-crm' });
+
+    let probed = false;
+    const err = await relayConnectionUpsert(
+      noBox,
+      relayActor,
+      request({ tenantId: tn, scopeId: sn }),
+      {
+        probeCandidate: async () => {
+          probed = true;
+          return { ok: true, refused: false, accountRef: null, accountLabel: null, facts: [], error: null };
+        },
+      },
+    ).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ConnectionRelayError);
+    expect((err as ConnectionRelayError).status).toBe(503);
+    expect((err as ConnectionRelayError).message).toMatch(/SECRET_BOX_KEY/);
+    // Refused BEFORE the outbound call: a host that can never keep the answer has no
+    // business handing the plaintext to the provider to learn it.
+    expect(probed).toBe(false);
+    expect(await noBox.admin.listConnections(staff, { tenantId: tn })).toHaveLength(0);
+
+    await noBox.close();
+    rmSync(boxless, { recursive: true, force: true });
+  });
 });

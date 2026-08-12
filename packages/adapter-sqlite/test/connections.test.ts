@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, afterEach } from 'vitest';
 import { connectionId, platformActorId, tenantId } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
@@ -42,6 +42,27 @@ describe('connection store (pure adapter)', () => {
         secret: { accessToken: 'tok' },
       }),
     ).rejects.toThrow(/no SecretBox configured/);
+    await host.close();
+  });
+
+  it('says so up front, and refuses with a TYPED error (#603)', async () => {
+    // Two halves of one fact. The flag is what a caller reads BEFORE doing work whose only
+    // purpose is to produce something to store — the connection relay's 503 rests on it,
+    // ahead of its outbound probe. The typed throw is what a transport recognises when some
+    // other consumer of the box reaches the store anyway, so a deployment fact stops
+    // surfacing as an unexplained 500.
+    const { host, staff, t } = await world();
+    expect(host.admin.canStoreSecrets).toBe(false);
+    await expect(
+      host.admin.createConnection(staff, {
+        id: connectionId.parse(ulid()),
+        tenantId: t,
+        vertical: 'callout',
+        provider: 'scrive',
+        label: 'no box',
+        secret: { accessToken: 'tok' },
+      }),
+    ).rejects.toBeInstanceOf(SecretBoxUnconfiguredError);
     await host.close();
   });
 

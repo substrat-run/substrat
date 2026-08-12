@@ -428,6 +428,25 @@ So the relay now **pre-flights the candidate credential** through the provider's
 A provider with no `probeCandidate` registered behaves exactly as before: stored,
 unverified, no gate. The check is available, never assumed.
 
+#### A deployment that cannot store at all
+
+One refusal is neither the caller's nor the provider's: a plane deployed **without a seal
+key**. `SecretBox` fails closed (§3.3) — correctly, since storing unsealed is not an option —
+but the throw was a plain `Error`, so it landed in the generic `500`. The operator read a
+server fault in the relay or the credential; only a worker tail named the real cause, a fact
+the process knew at boot.
+
+So the relay asks `host.admin.canStoreSecrets` **first**, ahead of the probe, and refuses with
+a `503` naming the missing key. Ahead of the probe deliberately: a host that can never keep the
+answer has no business spending an outbound call to learn it — or handing the plaintext to the
+provider on the way. The store still refuses on its own (`SecretBoxUnconfiguredError`, thrown
+by the box); asking first is what turns the refusal into a status a console can read, and the
+typed error is what keeps every *other* consumer of the box — subject keys, a dump seal — out
+of the same unexplained `500`.
+
+`503`, not `4xx`: the request was well-formed and nothing about it needs correcting. It is the
+deployment that is incapable, until an operator sets `SECRET_BOX_KEY`.
+
 #### The credential view — a bounded exception to write-only
 
 The store's rule is that a credential goes in and never comes out: `Connection` cannot carry a

@@ -155,6 +155,7 @@ import {
   type ExecutorRetryPolicy,
   backoffAt,
   resolveRetryPolicy,
+  isSecretBoxConfigured,
   unconfiguredSecretBox,
   createSubjectKeys,
   type SubjectKeys,
@@ -3271,6 +3272,9 @@ export class SqliteScopeHost implements ScopeHost {
     };
 
     return {
+      // #603: fixed at construction — a host built without a box can never store a
+      // credential, and saying so is what lets a transport answer 503 instead of 500.
+      canStoreSecrets: isSecretBoxConfigured(this.secretBox),
       defineRole: async (actor: PlatformActorId, tenantId: TenantId, role: RoleDefinition) => {
         const parsed = roleDefinition.parse(role);
         const before = this.roles.get(`${tenantId}/${parsed.key}`) ?? null;
