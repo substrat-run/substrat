@@ -10,6 +10,8 @@ Before this package every sandbox-clean vertical hand-copied those ~14 routes an
 workers shipped without the error handler, so a failing `/internal/restore` surfaced as
 the Workers runtime's bare `Internal Server Error` with no diagnosis (issue #510).
 
+**Full documentation: https://substrat.net/reference/vertical-host**
+
 ## Usage
 
 ```ts
