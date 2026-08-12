@@ -34,7 +34,13 @@ import {
 export class ConnectionRelayError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 | 422,
+    /**
+     * `503` is the odd one out and deliberately so (#603): 4xx says the request was
+     * wrong, and this one was not — the DEPLOYMENT cannot store credentials. Answering
+     * 500 (what an unrecognised throw collapses to) sent an operator looking for a bug
+     * in the credential or the relay, when the plane knew at boot that it had no key.
+     */
+    readonly status: 400 | 404 | 409 | 422 | 503,
     /** The provider's own answer, when the refusal came from a pre-flight probe (#605). */
     readonly probe?: ConnectionProbe,
   ) {
@@ -76,6 +82,21 @@ export async function relayConnectionUpsert(
     );
   }
   const input = parsed.data;
+
+  // Can this deployment keep a credential at all? (#603) Knowable at boot, so it is
+  // answered before anything else happens — ahead of the probe in particular, which
+  // would otherwise hand the plaintext to the provider over a real outbound call only
+  // to fail at the write. The store refuses too (`SecretBoxUnconfiguredError`, fail
+  // closed); asking first is what makes the refusal a typed 503 naming the missing key
+  // instead of a bare 500 an operator can only diagnose from a worker tail.
+  if (!host.admin.canStoreSecrets) {
+    throw new ConnectionRelayError(
+      'connection storage is not configured on this deployment: no SecretBox ' +
+        '(SECRET_BOX_KEY unset on the control plane) — nothing was stored, and the ' +
+        'credential was not sent to the provider.',
+      503,
+    );
+  }
 
   // The vertical comes from THIS directory's record, never from the caller.
   const rec = await host.admin.getScopeRecord(actor, input.tenantId, input.scopeId);

@@ -1533,6 +1533,15 @@ export function scopeHostContractSuite(
     describe('connections', () => {
       const SECRET = { accessToken: 'tok-live-do-not-log', refreshToken: 'ref-abc' };
 
+      it('reports that it can store secrets — the box it was built with, read back (#603)', async () => {
+        // The suite's host holds a SecretBox (the seal round-trip below needs one), so the
+        // honest answer here is `true`. An adapter that hardcoded it would be claiming a
+        // capability it may not have, and a caller refuses up front on this answer — the
+        // relay's 503 for a plane with no key rests on it. The `false` half needs a host
+        // built WITHOUT a box, which only the pure adapter can do (its own suite covers it).
+        expect(host.admin.canStoreSecrets).toBe(true);
+      });
+
       it('round-trips a sealed credential for the vertical that owns it', async () => {
         const id = connectionId.parse(ulid());
         await host.admin.createConnection(staff, {

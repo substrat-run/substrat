@@ -337,6 +337,8 @@ function ConnectDialog({
   const [err, setErr] = useState<string | null>(null);
   /** The provider rejected these credentials — distinct from "the save failed". */
   const [refusal, setRefusal] = useState<{ message: string; probe?: ConnectionProbeView } | null>(null);
+  /** The PLATFORM can't store a credential here (503) — nothing to do with what was typed. */
+  const [unavailable, setUnavailable] = useState<string | null>(null);
   const complete = provider.fields.every((f) => (values[f.key] ?? '').trim() !== '') && target !== '';
 
   const submit = async () => {
@@ -344,6 +346,7 @@ function ConnectDialog({
     setBusy(true);
     setErr(null);
     setRefusal(null);
+    setUnavailable(null);
     try {
       const secret = Object.fromEntries(provider.fields.map((f) => [f.key, values[f.key]!.trim()]));
       await api.connectIntegration(target, provider.provider, { secret });
@@ -354,6 +357,10 @@ function ConnectDialog({
       // behaviour (store, close, call it Connected) is what let a bad key sit until the
       // first signing request failed.
       if (e instanceof ApiError && e.status === 422) setRefusal({ message: e.message, probe: e.probe });
+      // A 503 is the platform saying it cannot store credentials on this deployment
+      // (#603) — the key may be perfect. Saying so beats "Couldn’t save — 500", which
+      // is what this used to be and reads as "your credential is bad".
+      else if (e instanceof ApiError && e.status === 503) setUnavailable(e.message);
       else setErr(e instanceof ApiError ? e.message : String(e));
       setBusy(false);
     }
@@ -387,6 +394,18 @@ function ConnectDialog({
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{refusal.message}</div>
             {refusal.probe && refusal.probe.facts.length > 0 && <Facts facts={refusal.probe.facts} />}
+          </div>
+        )}
+        {/* Not the credential: the deployment. Kept separate from the refusal above so a
+            correct key is never presented as the thing to fix — the only way out is an
+            operator setting the plane's seal key. */}
+        {unavailable && (
+          <div style={{ ...card, padding: 12, display: 'flex', flexDirection: 'column', gap: 6, borderColor: 'var(--status-warning-fg)' }}>
+            <div style={{ fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+              This deployment can’t store credentials right now — nothing was saved, and nothing was sent to{' '}
+              {provider.name}.
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{unavailable}</div>
           </div>
         )}
         {scopeId === undefined && pickTarget && (

@@ -651,6 +651,39 @@ describe('control-plane API', () => {
     expect(all.map((r) => r.status)).toEqual(['revoked']);
   });
 
+  it('answers 503, not 500, when the deployment holds no SecretBox (#603)', async () => {
+    // The prod shape: a control plane deployed without SECRET_BOX_KEY. The store refuses
+    // (it must — unsealed is not an option), and before this the refusal reached the
+    // generic 500 handler, so the operator read it as a bug in the credential. It is a
+    // deployment fact the plane knew at boot, and 503 is how it says so.
+    const boxless = mkdtempSync(join(tmpdir(), 'cp-api-nobox-'));
+    const noBoxHost = new SqliteScopeHost({ dir: boxless });
+    const noBoxApp = createControlPlaneApi({ host: noBoxHost, authenticate: UNSAFE_devPlatformActorAuth() });
+    const tn = tenantId.parse(ulid());
+    const sn = scopeId.parse(ulid());
+    await noBoxHost.admin.createTenant(staff, { id: tn, slug: 'nobox', name: 'No box' });
+    await noBoxHost.provisionScope(staff, { tenantId: tn, scopeId: sn, vertical: 'conn-vert' });
+
+    const res = await noBoxApp.request(`/tenants/${tn}/connections`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        scopeId: sn,
+        provider: 'scrive',
+        secret: { clientId: 'ci', clientSecret: 'cs-SECRET' },
+        grants: [],
+        createdBy: principalId.parse(ulid()),
+      }),
+    });
+    expect(res.status).toBe(503);
+    // Names what to set. A generic body here is what sent the last operator to a worker tail.
+    expect(((await res.json()) as { error: string }).error).toMatch(/SECRET_BOX_KEY/);
+    expect(await noBoxHost.admin.listConnections(staff, { tenantId: tn })).toHaveLength(0);
+
+    await noBoxHost.close();
+    rmSync(boxless, { recursive: true, force: true });
+  });
+
   // -- connection inspection (#605): verify + activity ------------------------
 
   it('verifies a credential and serves the connector’s projected activity', async () => {

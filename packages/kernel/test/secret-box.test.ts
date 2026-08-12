@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { unconfiguredSecretBox, webCryptoSecretBox } from '../src/secret-box.js';
+import {
+  isSecretBoxConfigured,
+  SecretBoxUnconfiguredError,
+  unconfiguredSecretBox,
+  webCryptoSecretBox,
+} from '../src/secret-box.js';
 
 /**
  * `SecretBox` is the first encryption primitive in the codebase — every
@@ -58,5 +63,20 @@ describe('unconfiguredSecretBox', () => {
     await expect(
       unconfiguredSecretBox.open({ keyId: 'k', ciphertext: 'x' }),
     ).rejects.toThrow(/no SecretBox configured/);
+  });
+
+  it('throws a TYPED refusal, so a transport can answer 503 instead of 500 (#603)', async () => {
+    // The message alone left every seam matching on text — and the connection route
+    // matched on nothing, so a deployment fact surfaced as an unexplained server error.
+    await expect(unconfiguredSecretBox.seal('tok')).rejects.toBeInstanceOf(SecretBoxUnconfiguredError);
+    await expect(unconfiguredSecretBox.open({ keyId: 'k', ciphertext: 'x' })).rejects.toBeInstanceOf(
+      SecretBoxUnconfiguredError,
+    );
+  });
+
+  it('is what `isSecretBoxConfigured` reports on, so a caller can refuse up front', async () => {
+    expect(isSecretBoxConfigured(unconfiguredSecretBox)).toBe(false);
+    expect(isSecretBoxConfigured(undefined)).toBe(false);
+    expect(isSecretBoxConfigured(webCryptoSecretBox('k1', new Uint8Array(32).fill(3)))).toBe(true);
   });
 });

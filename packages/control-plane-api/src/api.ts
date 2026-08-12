@@ -783,7 +783,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // threw either. That left every unmapped failure (e.g. a raw SQLite constraint from a
     // registry write, or a deploy that 500s with no detail) undiagnosable without reproducing
     // it. Log the real error + the request that provoked it, server-side only, so the worker
-    // tail names the cause. Mapped 4xx are honest refusals — no log needed.
+    // tail names the cause. Mapped 4xx are honest refusals — no log needed. A MAPPED 5xx
+    // (the 503 for a plane with no seal key, #603) passes through here too: its body already
+    // says what is wrong, and the tail line is what ties it to the request that hit it.
     if (status >= 500) {
       console.error('control-plane.unhandled', {
         method: c.req.method,
@@ -1027,11 +1029,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         await relayConnectionUpsert(host, c.get('actor'), { ...body, tenantId }, { probeCandidate }),
       );
     } catch (err) {
-      if (err instanceof ConnectionRelayError) {
+      if (err instanceof ConnectionRelayError && err.status < 500) {
         // A refusal carries the provider's own answer, so a console can show WHY rather
         // than "save failed" — the whole point of checking before writing.
         return c.json({ error: err.message, ...(err.probe ? { probe: err.probe } : {}) }, err.status);
       }
+      // A 5xx relay refusal (#603: this deployment holds no seal key) is the PLATFORM
+      // failing, not the caller — rethrown so the shared boundary maps it (still a 503
+      // with this message) and records the ops-failure row a console can list. Answering
+      // it here would leave the operator's screen as the only place it was ever seen.
       throw err;
     }
   });

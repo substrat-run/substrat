@@ -50,7 +50,12 @@ export {
   resolveRetryPolicy,
   OPS_FAILURE_RETENTION_DAYS,
 } from './scope-host.js';
-export { unconfiguredSecretBox, webCryptoSecretBox } from './secret-box.js';
+export {
+  isSecretBoxConfigured,
+  SecretBoxUnconfiguredError,
+  unconfiguredSecretBox,
+  webCryptoSecretBox,
+} from './secret-box.js';
 export type { SealedSecret, SecretBox } from './secret-box.js';
 export { createSubjectKeys } from './subject-keys.js';
 export type { SubjectKeyRecords, SubjectKeyRow, SubjectKeys } from './subject-keys.js';

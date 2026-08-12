@@ -130,6 +130,7 @@ import {
   type MigrationFrontier,
   backoffAt,
   resolveRetryPolicy,
+  isSecretBoxConfigured,
   unconfiguredSecretBox,
   createSubjectKeys,
   type SubjectKeys,
@@ -2300,6 +2301,9 @@ export class CloudflareScopeHost implements ScopeHost {
     };
 
     return {
+      // #603: fixed at construction — a worker deployed without SECRET_BOX_KEY can never
+      // store a credential, and saying so is what lets a transport answer 503 instead of 500.
+      canStoreSecrets: isSecretBoxConfigured(this.secretBox),
       defineRole: async (actor, tenantId, role) => {
         const parsed = roleDefinition.parse(role);
         const before = await this.cp.defineRole(tenantId, parsed);

@@ -1,5 +1,7 @@
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { SecretBoxUnconfiguredError } from '@substrat-run/kernel';
 import { ControlPlaneError } from './client.js';
+import { ConnectionRelayError } from './connection-relay.js';
 
 /**
  * Map an adapter throw onto an HTTP status.
@@ -85,6 +87,24 @@ export function mapError(err: unknown): ApiError {
   // Several routes hand-catch it already; this makes the boundary consistent for the rest.
   if (err instanceof ControlPlaneError) {
     return { status: err.status as ContentfulStatusCode, body: { error: err.message } };
+  }
+  // A deployment fact, not a fault in the request (#603): this host was started without a
+  // seal key, so nothing that stores a credential can work — the connection store, the
+  // subject keys, the per-tenant D1 credential seal. The relay checks up front and answers
+  // 503 itself; this catches every OTHER consumer, which would otherwise reach the generic
+  // 500 below and read as a bug in the caller's payload. The message is the kernel's own —
+  // it names what to set, and carries no secret. The typed error is exactly what this
+  // file's header calls the durable fix; it is the first case that has one.
+  if (err instanceof SecretBoxUnconfiguredError) {
+    return { status: 503, body: { error: err.message } };
+  }
+  // The relay's own refusals already carry a reviewed status and message. The connection
+  // route answers the 4xx ones itself (a 422 additionally carries the provider's probe);
+  // a 503 reaches here because the route rethrows it, so that the platform's own
+  // inability lands an ops-failure row (#559) instead of vanishing into the operator's
+  // screen alone.
+  if (err instanceof ConnectionRelayError) {
+    return { status: err.status, body: { error: err.message } };
   }
   const message = err instanceof Error ? err.message : String(err);
   for (const [pattern, status] of STATUS_PATTERNS) {

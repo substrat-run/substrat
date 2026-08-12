@@ -16,7 +16,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { ulid, webCryptoSecretBox, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
+import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
 import { workorderModule } from '@substrat-run/engine-workorder';
 import { invoicingModule } from '@substrat-run/engine-invoicing';
@@ -3154,6 +3154,11 @@ app.get('/api/github/workflow-preview', async (c) => {
 
 app.onError((err, c) => {
   const m = err instanceof Error ? err.message : String(err);
+  // This deployment cannot seal a credential (#603) — the local (no control-plane) store
+  // path; the plane's own refusal arrives as a ControlPlaneError 503 below. Either way it
+  // is a deployment fact, not the caller's mistake, so it must not land in the `: 400`
+  // default: 400 would tell the operator to look at what they typed.
+  if (err instanceof SecretBoxUnconfiguredError) return c.json({ error: m }, 503);
   // A ControlPlaneError carries the plane's OWN status. Honor it rather than letting the
   // `: 400` default below flatten an upstream 5xx to a 400 — that mislabels a server/upstream
   // fault (e.g. the CF observability token 403 that the plane surfaces as a 500 `internal error`)
