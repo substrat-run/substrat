@@ -216,6 +216,17 @@ export const MOCK_CONNECTION_PROBE: ConnectionProbeView = {
 export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
   source: 'ledger',
   live: false,
+  connection: {
+    id: '01MOCKCONNECTION0000000000',
+    label: 'Scrive (production)',
+    status: 'active',
+    externalAccountRef: null,
+    expiresAt: null,
+    lastOkAt: new Date(Date.now() - 60_000).toISOString(),
+    lastError: null,
+    lastErrorAt: null,
+    createdAt: new Date(Date.now() - 86400_000).toISOString(),
+  },
   grants: ['protocol:record-signature', 'protocol:attach'],
   credential: [
     { key: 'clientId', label: 'Client credentials identifier', value: '3d4e9f21c0a84b17', masked: false },
@@ -258,6 +269,7 @@ export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
 export const MOCK_PROVIDER_DOCUMENTS: ConnectionActivityView = {
   source: 'provider',
   live: true,
+  connection: MOCK_CONNECTION_ACTIVITY.connection,
   grants: MOCK_CONNECTION_ACTIVITY.grants,
   credential: MOCK_CONNECTION_ACTIVITY.credential,
   entries: [
