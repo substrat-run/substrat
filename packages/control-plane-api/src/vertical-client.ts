@@ -5,6 +5,7 @@ import type {
   EntitlementGrant,
   PermissionKey,
   PlatformRequest,
+  PlatformRequestFilter,
   PlatformRequestId,
   PlatformRequestStatus,
   PrincipalId,
@@ -328,6 +329,24 @@ export class VerticalClient {
   async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
     const q = new URLSearchParams({ tenantId, scopeId });
     return this.getInternal<PlatformRequest[]>(`/internal/platform-requests?${q}`);
+  }
+
+  /**
+   * The scope's intent JOURNAL (#618) — every intent whatever became of it, newest first. Same
+   * pull, different question: the read above feeds the drain and so returns only `pending`,
+   * while a console asking "why did my connector fail?" needs the SETTLED rows, whose
+   * `last_error` holds the provider's full answer.
+   */
+  async listPlatformRequestHistory(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: PlatformRequestFilter,
+  ): Promise<PlatformRequest[]> {
+    const q = new URLSearchParams({ tenantId, scopeId });
+    if (filter?.kind) q.set('kind', filter.kind);
+    if (filter?.status) q.set('status', filter.status);
+    if (filter?.limit) q.set('limit', String(filter.limit));
+    return this.getInternal<PlatformRequest[]>(`/internal/platform-requests/history?${q}`);
   }
 
   /**

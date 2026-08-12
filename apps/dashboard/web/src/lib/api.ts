@@ -600,6 +600,26 @@ export interface ConnectionCredentialFieldView {
 }
 
 /**
+ * One platform-run delivery for this provider (#618) — a `connector:<provider>` intent as the
+ * drain settled it.
+ *
+ * This is the row that already held the answer and had no reader. A hosted vertical cannot run
+ * a connector, so every delivery becomes an intent the platform executes; the provider's reply
+ * lands in `lastError` in full, while the connection card could only ever say "HTTP 409 from
+ * scrive". `lastError` is carried verbatim and rendered untruncated for exactly that reason.
+ */
+export interface ConnectionIntentView {
+  id: string;
+  status: 'pending' | 'done' | 'failed';
+  attempts: number;
+  lastError: string | null;
+  requestedAt: string;
+  settledAt: string | null;
+  /** The routed event's type — what was sent, beside what came back. */
+  eventType: string;
+}
+
+/**
  * `GET /api/apps/:scope/integrations/:provider/activity` — activity, plus the grants the
  * connection holds and the masked credential.
  *
@@ -616,6 +636,11 @@ export interface ConnectionActivityView {
   live: boolean;
   grants: string[];
   credential: ConnectionCredentialFieldView[];
+  /**
+   * The platform's dispatch record for this provider (#618) — newest first, empty on a plane
+   * too old to serve it (the read is best-effort so a missing journal never costs the activity).
+   */
+  intents: ConnectionIntentView[];
 }
 
 /** One hostname bound to the app's scope (the Domains tab). */

@@ -8,6 +8,7 @@ import {
   type AppRow,
   type ConnectionActivityView,
   type ConnectionFact,
+  type ConnectionIntentView,
   type ConnectionProbeView,
   type ConnectionView,
   type ProviderField,
@@ -72,6 +73,75 @@ function Facts({ facts }: { facts: ConnectionFact[] }) {
           </span>
         </Fragment>
       ))}
+    </div>
+  );
+}
+
+const INTENT_STATUS: Record<ConnectionIntentView['status'], { kind: PillKind; label: string }> = {
+  pending: { kind: 'warning', label: 'Retrying' },
+  done: { kind: 'success', label: 'Delivered' },
+  failed: { kind: 'danger', label: 'Failed' },
+};
+
+/**
+ * **What the platform tried to send, and what came back** (#618).
+ *
+ * The card above this one used to be the whole diagnosis available for a broken connector:
+ * `Error · scrive · Last error 7m ago: HTTP 409 from scrive`. The sentence that actually named
+ * the bug — "Authentication to sign for participant #1 requires valid personal number field" —
+ * was journaled correctly on the intent row and reachable only by opening the read-only SQL
+ * console with system tables toggled on. So: one row per delivery, and the error printed in
+ * full. Truncating it here would rebuild the exact wall this section exists to remove.
+ *
+ * `Retrying` and `Failed` are different facts and are kept apart: a failed delivery is over —
+ * the platform is not coming back to it — and a 4xx now settles that way on the first attempt
+ * rather than after two days of identical retries.
+ */
+function IntentLedger({ intents, providerName }: { intents: ConnectionIntentView[]; providerName: string }) {
+  if (intents.length === 0) return null;
+  const failed = intents.filter((i) => i.status === 'failed').length;
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+        Delivery attempts
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {intents.map((i) => {
+          const s = INTENT_STATUS[i.status];
+          return (
+            <div key={i.id} style={{ ...card, padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                <Pill kind={s.kind}>{s.label}</Pill>
+                {i.eventType && <MonoTag>{i.eventType}</MonoTag>}
+                <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                  sent {relativeTime(i.requestedAt)}
+                  {i.settledAt ? `, settled ${relativeTime(i.settledAt)}` : ''}
+                  {i.attempts > 1 ? ` · ${i.attempts} attempts` : ''}
+                </span>
+              </div>
+              {i.lastError && (
+                <div
+                  style={{
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    fontFamily: 'var(--font-mono)',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    color: i.status === 'failed' ? 'var(--status-danger-fg)' : 'var(--status-warning-fg)',
+                  }}
+                >
+                  {i.lastError}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
+        {failed > 0
+          ? `What ${providerName} said, in full. A failed delivery is not retried — ${providerName} refused the request itself, so the same bytes would be refused again.`
+          : `What this platform sent to ${providerName} on this app's behalf, newest first.`}
+      </div>
     </div>
   );
 }
@@ -260,6 +330,10 @@ function IntegrationDetail({
             </div>
           </div>
         )}
+
+        {/* Above the ledger on purpose: when something is broken this is the answer, and it
+            should not be below a list of documents that all look fine. */}
+        {activity && <IntentLedger intents={activity.intents ?? []} providerName={provider.name} />}
 
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, gap: 8 }}>

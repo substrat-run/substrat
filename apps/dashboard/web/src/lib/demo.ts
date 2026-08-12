@@ -228,6 +228,30 @@ export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
     createdAt: new Date(Date.now() - 86400_000).toISOString(),
   },
   grants: ['protocol:record-signature', 'protocol:attach'],
+  // #618: the failure the preview must be able to show. A 4xx settles `failed` on the first
+  // attempt now, so this is one attempt with the provider's whole sentence — not attempt 78
+  // of a two-day retry loop whose error nobody could read.
+  intents: [
+    {
+      id: '01MOCKINTENT00000000000001',
+      status: 'failed',
+      attempts: 1,
+      lastError:
+        'scrive start failed: HTTP 409 Authentication to sign for participant #1 requires valid personal number field. — a client error the provider will refuse identically on retry, so this delivery was not retried',
+      requestedAt: new Date(Date.now() - 3600_000).toISOString(),
+      settledAt: new Date(Date.now() - 3540_000).toISOString(),
+      eventType: 'protocol.signature-requested',
+    },
+    {
+      id: '01MOCKINTENT00000000000002',
+      status: 'done',
+      attempts: 1,
+      lastError: null,
+      requestedAt: new Date(Date.now() - 7200_000).toISOString(),
+      settledAt: new Date(Date.now() - 7190_000).toISOString(),
+      eventType: 'protocol.signature-requested',
+    },
+  ],
   credential: [
     { key: 'clientId', label: 'Client credentials identifier', value: '3d4e9f21c0a84b17', masked: false },
     { key: 'clientSecret', label: 'Client credentials secret', value: '••••••••a91f', masked: true },
@@ -272,6 +296,7 @@ export const MOCK_PROVIDER_DOCUMENTS: ConnectionActivityView = {
   connection: MOCK_CONNECTION_ACTIVITY.connection,
   grants: MOCK_CONNECTION_ACTIVITY.grants,
   credential: MOCK_CONNECTION_ACTIVITY.credential,
+  intents: MOCK_CONNECTION_ACTIVITY.intents,
   entries: [
     {
       key: 'scrive:document:8222115557388321607',

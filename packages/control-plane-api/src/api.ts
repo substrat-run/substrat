@@ -18,6 +18,7 @@ import {
   identityLink,
   listPageQuery,
   pageOf,
+  platformRequestFilter,
   principalId as principalIdSchema,
   promotionAcknowledgement,
   provisionableJurisdiction,
@@ -690,6 +691,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/scopes$/ },
     { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+$/ },
     { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/health$/ },
+    // The scope's platform-intent journal (#618) — "why did my connector fail?", answered
+    // without the read-only SQL console. Tenant-narrowed in the handler like the health read.
+    { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/intents$/ },
     // Add a SIBLING scope (a new "site") to an app the builder's own tenant already runs
     // (multi-scope self-serve, M1). Tenant-narrowed + parent-authorized in the handler; the
     // allowlist alone is not authz.
@@ -1578,6 +1582,46 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       roleCount,
       roleProjectionEmpty,
     });
+  });
+
+  /**
+   * **A scope's platform-intent journal** (#618) — what the vertical asked the platform to do,
+   * and what came back.
+   *
+   * The gap this closes: a connector delivery routed as a `connector:<provider>` intent journals
+   * the provider's full refusal in `last_error`, correctly and durably — inside the scope's own
+   * DO, in the vertical's deployment, where the only readers were the read-only SQL console with
+   * system tables toggled on and a break-glass `scope pull --full`. A connection card could say
+   * "HTTP 409 from scrive" and nothing more, while the nine words that were the entire diagnosis
+   * ("requires valid personal number field") sat one hop away.
+   *
+   * `payload` rides along deliberately: what was SENT next to what came back is the difference
+   * between reading an error and fixing it. Nothing here is a credential — a connector's secret
+   * lives in the sealed directory, never in an intent — and the rows are the tenant's own scope's,
+   * behind the same K-3 addressing as every other scope read.
+   */
+  app.get('/tenants/:tenantId/scopes/:scopeId/intents', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const principal = c.get('principal');
+    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    const filter = platformRequestFilter.parse({
+      kind: c.req.query('kind'),
+      status: c.req.query('status'),
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+    });
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    // Same delegation ladder as the table reads: the intents live in the DO of the scope's BOUND
+    // version, so a hosted scope is asked through its vertical and a co-located one locally.
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.listPlatformRequestHistory(tenantId, scopeId, filter)
+        : await host.listPlatformRequestHistory(tenantId, scopeId, filter),
+    );
   });
 
   // #332: re-provision a scope stuck at "roles projected, zero tuples" — the enforcement flip

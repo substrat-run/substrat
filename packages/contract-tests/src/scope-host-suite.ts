@@ -14,6 +14,8 @@ import {
   tenantId,
   SCOPE_QUERY_ROW_MAX,
   type OrgId,
+  type PlatformRequest,
+  type PlatformRequestId,
   type PrincipalId,
   type TenantId,
 } from '@substrat-run/contracts';
@@ -341,6 +343,72 @@ export function scopeHostContractSuite(
       const row = rows.find((r) => r.id === id)!;
       expect(row.status).toBe('done');
       expect(JSON.parse(row.result as unknown as string)).toEqual({ scopeId: 'MINTED' });
+    });
+
+    it('reads back settled intents — the journal both the platform and the vertical see (#618)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const id = await stub.invoke<string>('platform/request', { kind: 'connector:test', payload: { doc: 1 } });
+      const row = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+
+      // The failure this issue is about: a provider's own sentence, journaled and then
+      // unreachable from anywhere a builder would look.
+      const refusal = 'HTTP 409 requires valid personal number field';
+      await host.settlePlatformRequest(t1, s1, row.id, { status: 'failed', lastError: refusal });
+
+      // Settled, so it is gone from the DRAIN's read…
+      expect((await host.listPlatformRequests(t1, s1)).some((r) => r.id === id)).toBe(false);
+      // …and present, with the whole error, in the JOURNAL's.
+      const history = await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' });
+      const settled = history.find((r) => r.id === id)!;
+      expect(settled.status).toBe('failed');
+      expect(settled.lastError).toBe(refusal); // verbatim, never truncated
+      expect(settled.payload).toEqual({ doc: 1 }); // what was SENT, beside what came back
+      expect(settled.settledAt).not.toBeNull();
+
+      // `kind` is an exact match, so one provider's traffic reads alone.
+      await stub.invoke('platform/request', { kind: 'provision-sibling', payload: {} });
+      expect(
+        (await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' })).every(
+          (r) => r.kind === 'connector:test',
+        ),
+      ).toBe(true);
+      // …as does `status`, and `limit` bounds the window.
+      expect(
+        (await host.listPlatformRequestHistory(t1, s1, { status: 'failed' })).every((r) => r.status === 'failed'),
+      ).toBe(true);
+      expect((await host.listPlatformRequestHistory(t1, s1, { limit: 1 })).length).toBe(1);
+    });
+
+    it('newest first, so a limit is a recency window rather than an arbitrary page (#618)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const first = await stub.invoke<string>('platform/request', { kind: 'order-check', payload: { n: 1 } });
+      const second = await stub.invoke<string>('platform/request', { kind: 'order-check', payload: { n: 2 } });
+      const rows = await host.listPlatformRequestHistory(t1, s1, { kind: 'order-check' });
+      expect(rows.map((r) => r.id)).toEqual([second, first]);
+      expect((await host.listPlatformRequestHistory(t1, s1, { kind: 'order-check', limit: 1 }))[0]!.id).toBe(second);
+    });
+
+    it('a vertical reads the outcome of its OWN intents in scope — ctx.platformRequests (#618)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const id = await stub.invoke<string>('platform/request', { kind: 'connector:mine', payload: { contract: 'c1' } });
+
+      // Before the drain runs, the app's own screen can already say "queued".
+      const queued = await stub.invoke<PlatformRequest[]>('platform/intents', { kind: 'connector:mine' });
+      expect(queued.find((r) => r.id === id)?.status).toBe('pending');
+
+      await host.settlePlatformRequest(t1, s1, id as PlatformRequestId, {
+        status: 'failed',
+        lastError: 'scrive start failed: HTTP 409 requires valid personal number field',
+      });
+
+      // …and afterwards it can say what actually happened, in the provider's words —
+      // instead of showing a document that appears to be out for signature and is not.
+      const settled = (await stub.invoke<PlatformRequest[]>('platform/intents', { kind: 'connector:mine' })).find(
+        (r) => r.id === id,
+      )!;
+      expect(settled.status).toBe('failed');
+      expect(settled.lastError).toMatch(/personal number field/);
+      expect(settled.payload).toEqual({ contract: 'c1' });
     });
 
     it('isolates scope storage: a write in one scope is invisible in another', async () => {

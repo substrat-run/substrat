@@ -79,6 +79,15 @@ export {
   PLATFORM_SECRET_HEADER,
   PLATFORM_REQUEST_HEADER,
 } from './platform-call.js';
+export {
+  PLATFORM_REQUEST_COLUMNS,
+  platformRequestHistoryQuery,
+} from './platform-request-query.js';
+export {
+  isTerminalProviderError,
+  providerErrorStatus,
+  RETRYABLE_CLIENT_STATUSES,
+} from './provider-error.js';
 export { runPlatformSweep, startPlatformSweeper } from './platform-sweep.js';
 export type {
   AccessLogSink,

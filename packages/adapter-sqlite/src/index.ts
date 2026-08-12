@@ -76,6 +76,7 @@ import {
   type PlatformRequestInput,
   type PlatformRequestId,
   type PlatformRequest,
+  type PlatformRequestFilter,
   type PlatformRequestStatus,
   type EntitlementGrant,
   type EntitlementGrantInput,
@@ -154,6 +155,7 @@ import {
   type ExecutorHandler,
   type ExecutorRetryPolicy,
   backoffAt,
+  platformRequestHistoryQuery,
   resolveRetryPolicy,
   isSecretBoxConfigured,
   unconfiguredSecretBox,
@@ -2701,6 +2703,19 @@ export class SqliteScopeHost implements ScopeHost {
       )
       .all() as PlatformRequestRawRow[];
     return rows.map(rowToPlatformRequest);
+  }
+
+  async listPlatformRequestHistory(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: PlatformRequestFilter,
+  ): Promise<PlatformRequest[]> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    const q = platformRequestHistoryQuery(filter);
+    return (rt.db.prepare(q.sql).all(...q.params) as PlatformRequestRawRow[]).map(
+      rowToPlatformRequest,
+    );
   }
 
   async settlePlatformRequest(
@@ -6124,6 +6139,14 @@ export class SqliteScopeHost implements ScopeHost {
           );
         if (signals) signals.platformRequests += 1;
         return id;
+      },
+      // The read half of `requestPlatform` (#618) — this scope's own journal, so no tenancy
+      // predicate is needed or possible: the runtime IS the scope.
+      platformRequests: (filter?: PlatformRequestFilter): PlatformRequest[] => {
+        const q = platformRequestHistoryQuery(filter);
+        return (rt.db.prepare(q.sql).all(...q.params) as PlatformRequestRawRow[]).map(
+          rowToPlatformRequest,
+        );
       },
       check: async (permission, entity?) => {
         if (overrideActor) {

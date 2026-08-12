@@ -11,6 +11,7 @@ import type {
   OpsFailureEntry,
   Page,
   PermissionRegistry,
+  PlatformRequest,
   PrincipalId,
   Scope,
   ScopeDump,
@@ -326,6 +327,29 @@ export class TenantNarrowedControlPlane {
     const qs = q.toString();
     return this.call<ConnectionActivity>(
       `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/activity${qs ? `?${qs}` : ''}`,
+    );
+  }
+
+  /**
+   * The scope's platform-intent journal for ONE provider (#618) — the dispatches the platform
+   * ran on this app's behalf, and what came back.
+   *
+   * A hosted vertical cannot run a connector itself: each delivery is routed as a
+   * `connector:<provider>` intent and settled by the platform's drain, which journals the
+   * provider's full answer in `lastError`. That journal is the only place the whole sentence
+   * exists — the connection row keeps a one-line summary — so a card that reads "HTTP 409 from
+   * scrive" has the rest of it right here.
+   */
+  scopeIntents(
+    scopeId: string,
+    filter: { kind?: string; limit?: number } = {},
+  ): Promise<PlatformRequest[]> {
+    const q = new URLSearchParams();
+    if (filter.kind) q.set('kind', filter.kind);
+    if (filter.limit) q.set('limit', String(filter.limit));
+    const qs = q.toString();
+    return this.call<PlatformRequest[]>(
+      `/tenants/${this.tenantId}/scopes/${encodeURIComponent(scopeId)}/intents${qs ? `?${qs}` : ''}`,
     );
   }
 

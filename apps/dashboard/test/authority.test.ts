@@ -138,6 +138,18 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
   });
 
+  // #618: the platform runs a hosted vertical's connectors, so the record of what it sent
+  // and what came back is an INTENT journal on the scope — not anything the connection row
+  // holds. This is the read that reaches it, pinned to the tenant like every other.
+  it('the intent journal is tenant-pinned and narrowed to one provider (#618)', async () => {
+    const { cp, calls } = harness(200, []);
+    await cp.scopeIntents(S);
+    await cp.scopeIntents(S, { kind: 'connector:scrive', limit: 20 });
+    expect(calls[0]!).toMatchObject({ url: `https://cp/api/tenants/${T}/scopes/${S}/intents`, method: 'GET' });
+    expect(calls[1]!.url).toBe(`https://cp/api/tenants/${T}/scopes/${S}/intents?kind=connector%3Ascrive&limit=20`);
+    expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
+  });
+
   it('listScopes reads GET /scopes narrowed to the pinned tenant + vertical (Data-tab switcher)', async () => {
     const { cp, calls } = harness(200, {
       entries: [{ id: S, tenantId: T, name: 'Cafe', status: 'active', vertical: 'manyfold' }],

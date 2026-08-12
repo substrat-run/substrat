@@ -1,4 +1,10 @@
-import { ulid, type ConnectorHandler, type OpsFailureInput, type ScopeHost } from '@substrat-run/kernel';
+import {
+  isTerminalProviderError,
+  ulid,
+  type ConnectorHandler,
+  type OpsFailureInput,
+  type ScopeHost,
+} from '@substrat-run/kernel';
 import {
   principalId as principalIdSchema,
   scopeId as scopeIdSchema,
@@ -123,6 +129,19 @@ export async function drainScopePlatformRequests(
         scopeId: ctx.scopeId,
         vertical: ctx.vertical,
         message: `platform intent ${request.id} ${outcome.error}`,
+      });
+    } else if (outcome.status === 'failed') {
+      // #618: a TERMINAL settle is the ceiling's own argument arriving early — the intent is
+      // over, nobody is coming back to it, and until now its only trace was a `last_error`
+      // column in the vertical's own DO. An unknown kind, a refused payload, a provider's 4xx:
+      // each is an operator's headline for the same reason a give-up is.
+      opts?.recordFailure?.({
+        operation: `intent.${request.kind}`,
+        stage: 'terminal',
+        tenantId: ctx.tenantId,
+        scopeId: ctx.scopeId,
+        vertical: ctx.vertical,
+        message: `platform intent ${request.id} failed: ${outcome.error ?? 'unknown'}`,
       });
     }
     await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, request.id, {
@@ -571,13 +590,28 @@ export function connectorDispatchHandler(deps: ConnectorDispatchDeps): PlatformR
           `which is not the drained scope (${ctx.tenantId}, ${ctx.scopeId})`,
       };
     }
-    await deps.host.dispatchConnector(
-      ctx.tenantId,
-      ctx.scopeId,
-      deps.connector,
-      payload.event,
-      deps.timeoutMs === undefined ? undefined : { timeoutMs: deps.timeoutMs },
-    );
+    try {
+      await deps.host.dispatchConnector(
+        ctx.tenantId,
+        ctx.scopeId,
+        deps.connector,
+        payload.event,
+        deps.timeoutMs === undefined ? undefined : { timeoutMs: deps.timeoutMs },
+      );
+    } catch (e) {
+      // #618: a 4xx is the provider telling the CALLER its request is wrong, and attempt 101
+      // sends the identical bytes. Settling it terminal here — rather than letting the drain's
+      // blanket catch call every throw transient — is what turns a payload bug into an answer
+      // the same day instead of a fortnight of silent retries. The provider's own words ride
+      // `lastError` into the journal, which is what a console now reads back.
+      if (isTerminalProviderError(e)) {
+        return {
+          status: 'failed',
+          error: `${e instanceof Error ? e.message : String(e)} — a client error the provider will refuse identically on retry, so this delivery was not retried`,
+        };
+      }
+      throw e; // transient (5xx, timeout, rate limit, no live connection yet) — drain retries
+    }
     return { status: 'done', result: { eventId: payload.event.id } };
   };
 }

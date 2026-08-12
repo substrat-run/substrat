@@ -41,6 +41,23 @@ export const platformRequest = z.object({
 export type PlatformRequest = z.infer<typeof platformRequest>;
 
 /**
+ * How a caller narrows a read of a scope's intent JOURNAL (#618) — every intent, not just the
+ * drainable ones. `listPlatformRequests` answers the drain's question ("what is pending?"); this
+ * answers a human's ("what happened to mine, and what did the provider actually say?"). `kind`
+ * is an exact match so `connector:scrive` reads one provider's traffic; results come back
+ * newest-first, so `limit` is a recency window rather than a page.
+ */
+export const platformRequestFilter = z.object({
+  kind: z.string().min(1).optional(),
+  status: platformRequestStatus.optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+});
+export type PlatformRequestFilter = z.infer<typeof platformRequestFilter>;
+
+/** How many journal rows an unbounded history read returns — a screenful, newest-first. */
+export const DEFAULT_PLATFORM_REQUEST_HISTORY_LIMIT = 50;
+
+/**
  * Backpressure bound (platform-intents.md §Resolved decisions): `ctx.requestPlatform` refuses once
  * a scope already holds this many `pending` intents, so a stuck or runaway vertical cannot flood
  * the drain. Shared by every adapter so the limit can't drift between them.
