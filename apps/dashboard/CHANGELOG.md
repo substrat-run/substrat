@@ -1,5 +1,72 @@
 # @substrat-run/dashboard
 
+## 0.25.0
+
+### Minor Changes
+
+- 5e71e1c: fix: a plane with no seal key says so (503), instead of a bare 500 on every connect
+
+  Saving a Scrive credential against the deployed control plane returned `500` with no usable
+  detail. The cause was one line of deployment configuration: `SECRET_BOX_KEY` was unset, so the
+  host fell back to the unconfigured `SecretBox` and the connection store refused to write. The
+  refusal was **correct** — storing a credential unsealed is not an option — but it threw a plain
+  `Error`, which no seam recognised, so it collapsed into the generic 500 handler. The operator
+  saw what looked like a bug in the credential or the relay; only a worker tail (or `wrangler
+secret list`) revealed a fact the process knew at boot.
+
+  - **The relay asks first.** `HostAdmin.canStoreSecrets` reports whether the host was built with
+    a box, and `relayConnectionUpsert` refuses up front with a `503` naming the missing key.
+    Ahead of the pre-flight probe deliberately: a host that can never keep the answer has no
+    business spending an outbound call to learn it, or handing the plaintext to the provider on
+    the way.
+  - **`503`, not `4xx`.** The request was well-formed and nothing about it needs correcting — it
+    is the deployment that is incapable. It is also not a silent one: the refusal lands an
+    ops-failure row like every other platform 5xx, so it is visible in the console rather than
+    only on the screen of whoever tried to connect.
+  - **Typed, so the other consumers are covered too.** The box now throws
+    `SecretBoxUnconfiguredError`, and the control-plane's error boundary maps it to the same 503.
+    That reaches every path a misconfigured deployment can hit — rotation, subject keys, a dump
+    seal — not just the one the incident happened to come through. It is the first case of the
+    typed-error fix that `mapError`'s own header has called the durable answer to matching on
+    message text.
+  - **The connect dialog says which thing is wrong.** A 503 now reads "this deployment can't store
+    credentials right now — nothing was saved, and nothing was sent to Scrive", kept distinct from
+    the provider refusing a key. A correct credential is never presented as the thing to fix.
+
+  `HostAdmin` gained a required `canStoreSecrets`; both in-tree adapters answer it from the box
+  they were constructed with.
+
+### Patch Changes
+
+- b4910dc: fix: Test connection no longer reports success next to the error it just cleared
+
+  Clicking Test connection on a connection whose last dispatch had failed produced a screen that
+  contradicted itself: an **Error** pill and "Last error 10m ago: HTTP 401 from scrive" directly
+  above **Credential accepted** and the verified account.
+
+  Nothing was wrong with the stored state. A successful use clears `last_error` and lifts the row
+  out of `error` (contract-tested for both adapters), and the probe rides the sanctioned `fetch`, so
+  it had already repaired the row. The screen was pairing a fresh probe result with the connection
+  row captured when the _list page_ loaded, minutes earlier.
+
+  Both inspection routes now answer with the row as read in that same request — `…/activity` on
+  open, and `…/verify` re-read **after** the probe — and the detail view renders that rather than
+  the prop it was opened with. Closing the drawer refreshes the card behind it, so a repair made
+  inside is visible outside. The dev-mock path updates through the same state, so the preview cannot
+  diverge from the live one.
+
+- Updated dependencies [5e71e1c]
+  - @substrat-run/kernel@0.63.0
+  - @substrat-run/adapter-cloudflare@0.63.0
+  - @substrat-run/demo-callout@0.2.18
+  - @substrat-run/demo-manyfold@0.6.18
+  - @substrat-run/demo-meridian@0.4.18
+  - @substrat-run/engine-invites@0.1.8
+  - @substrat-run/engine-invoicing@0.5.19
+  - @substrat-run/engine-protocol@0.5.21
+  - @substrat-run/engine-workorder@0.3.61
+  - @substrat-run/contracts@0.63.0
+
 ## 0.24.0
 
 ### Minor Changes
