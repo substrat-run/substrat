@@ -1,18 +1,35 @@
 {
   "name": "@substrat-run/vertical-auth",
   "version": "0.6.0",
-  "private": true,
-  "description": "Pluggable auth for Substrat verticals — the AuthProvider contract, an OIDC provider (Supabase/Auth0/AuthHero/Keycloak), and a per-tenant identity Durable Object (Better Auth + sub→principal directory). Source-exported; the vertical worker bundles it.",
+  "description": "Pluggable auth for Substrat verticals — the AuthProvider contract, an OIDC provider (Supabase/Auth0/AuthHero/Keycloak), a full relying-party login flow, and a per-tenant identity Durable Object (Better Auth + sub→principal directory). Workers-targeted; the vertical worker bundles it.",
   "license": "AGPL-3.0-only",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./provider": "./src/provider.ts",
-    "./oidc": "./src/oidc.ts",
-    "./oidc-rp-provider": "./src/oidc-rp-provider.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./provider": {
+      "types": "./dist/provider.d.ts",
+      "default": "./dist/provider.js"
+    },
+    "./oidc": {
+      "types": "./dist/oidc.d.ts",
+      "default": "./dist/oidc.js"
+    },
+    "./oidc-rp-provider": {
+      "types": "./dist/oidc-rp-provider.d.ts",
+      "default": "./dist/oidc-rp-provider.js"
+    }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {

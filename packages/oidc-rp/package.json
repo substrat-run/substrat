@@ -1,8 +1,7 @@
 {
   "name": "@substrat-run/oidc-rp",
   "version": "0.4.0",
-  "private": true,
-  "description": "Substrat platform OIDC relying party — Authorization-Code + PKCE against AuthHero, workerd-safe (jose + Web Crypto). Shared by the platform apps (console, dashboard).",
+  "description": "Substrat OIDC relying party — Authorization-Code + PKCE, workerd-safe (jose + Web Crypto). Shared by the platform apps (console, dashboard) and by @substrat-run/vertical-auth's RP provider.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/index.js",
