@@ -93,6 +93,7 @@ import {
   connectorDispatchKind,
   type ConnectorDispatchPayload,
   type PlatformRequest,
+  type PlatformRequestFilter,
   type PlatformRequestId,
   type PlatformRequestStatus,
   type ScopeStatus,
@@ -625,6 +626,8 @@ interface ScopeStubRpc {
   executorAttempts(eventId: string, deliveryId: string): Promise<number>;
   executorDeadLetters(): Promise<ExecutorDeadLetter[]>;
   pendingPlatformRequests(): Promise<PlatformRequestRawRow[]>;
+  /** #618: the intent JOURNAL (every status, newest first), where the read above is pending-only. */
+  platformRequestHistory(filter?: PlatformRequestFilter): Promise<PlatformRequestRawRow[]>;
   settlePlatformRequest(
     id: string,
     status: 'pending' | 'done' | 'failed',
@@ -1179,6 +1182,16 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     return (await this.scopeStub(scopeId).pendingPlatformRequests()).map(rowToPlatformRequest);
+  }
+
+  async listPlatformRequestHistory(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: PlatformRequestFilter,
+  ): Promise<PlatformRequest[]> {
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return (await this.scopeStub(scopeId).platformRequestHistory(filter)).map(rowToPlatformRequest);
   }
 
   async settlePlatformRequest(

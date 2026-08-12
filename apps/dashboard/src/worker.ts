@@ -2228,14 +2228,19 @@ app.post('/api/apps/:scopeId/integrations/:provider/verify', async (c) => {
  * current state; the answer reports whether it got it.
  */
 app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
-  const { connectionId, cp, connection } = await inspectableConnection(c);
+  const { connectionId, cp, connection, spec } = await inspectableConnection(c);
+  const scopeId = c.req.param('scopeId')!;
   const source = c.req.query('source') === 'provider' ? ('provider' as const) : ('ledger' as const);
-  const [activity, grants, credential] = await Promise.all([
+  const [activity, grants, credential, intents] = await Promise.all([
     cp.connectionActivity(connectionId, { live: c.req.query('live') === '1', source }),
-    // Best-effort, both of them: a plane too old to serve grants or the credential view
-    // must not cost the activity itself.
+    // Best-effort, all of them: a plane too old to serve grants, the credential view or the
+    // intent journal must not cost the activity itself.
     cp.listConnectionGrants().catch(() => []),
     cp.connectionCredential(connectionId).catch(() => ({ fields: [] })),
+    // #618: the platform's own record of every delivery it ran for this provider, whose
+    // `lastError` is the provider's FULL refusal. The ledger above says a dispatch happened;
+    // this says what became of it, which is the half a builder could not read at all.
+    cp.scopeIntents(scopeId, { kind: `connector:${spec.provider}`, limit: 20 }).catch(() => []),
   ]);
   return c.json({
     ...activity,
@@ -2244,6 +2249,21 @@ app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
     credential: credential.fields,
     // Current health, read in this request. The list page's copy can be minutes old.
     connection: connectionView(connection),
+    intents: intents.map((r) => ({
+      id: r.id,
+      status: r.status,
+      attempts: r.attempts,
+      // Verbatim, never truncated — the nine words past "HTTP 409" ARE the diagnosis.
+      lastError: r.lastError,
+      requestedAt: r.requestedAt,
+      settledAt: r.settledAt,
+      // What was SENT, next to what came back. The intent payload is the routed domain
+      // event; its `type` names the delivery without spilling the whole envelope into a card.
+      eventType:
+        typeof r.payload === 'object' && r.payload !== null && 'event' in r.payload
+          ? String((r.payload as { event?: { type?: unknown } }).event?.type ?? '')
+          : '',
+    })),
   });
 });
 

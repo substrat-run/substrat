@@ -18,6 +18,9 @@ import {
   type DomainEventInput,
   type PlatformRequestInput,
   type PlatformRequestId,
+  type PlatformRequest,
+  type PlatformRequestFilter,
+  platformRequest,
   type EntitlementView,
   type EntityRef,
   type EventAuthorization,
@@ -36,6 +39,7 @@ import {
   ulid,
   assertAllowed,
   assertReadOnlyQuery,
+  platformRequestHistoryQuery,
   PermissionDenied,
   type ConsumerHandler,
   type GuardPredicate,
@@ -323,6 +327,26 @@ export interface PlatformRequestRawRow {
   result: string | null;
   requested_at: string;
   settled_at: string | null;
+}
+
+/**
+ * A stored row → the `PlatformRequest` contract shape (JSON columns parsed). The coordinator
+ * maps the RPC's raw rows the same way in `host.ts`; this copy exists because `ctx.platformRequests`
+ * (#618) answers INSIDE the DO, where the row never crosses an RPC boundary at all.
+ */
+function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
+  return platformRequest.parse({
+    id: r.id,
+    kind: r.kind,
+    payload: JSON.parse(r.payload),
+    requestedBy: JSON.parse(r.requested_by),
+    status: r.status,
+    attempts: r.attempts,
+    lastError: r.last_error,
+    result: r.result === null ? null : JSON.parse(r.result),
+    requestedAt: r.requested_at,
+    settledAt: r.settled_at,
+  });
 }
 
 /** SQLite cell → a JSON-safe value: bigints stringify, blobs (ArrayBuffer) read as null. */
@@ -1257,6 +1281,21 @@ export function defineScopeDO(
     }
 
     /**
+     * The intent JOURNAL, newest first (#618) — every intent whatever became of it, where
+     * `pendingPlatformRequests` deliberately returns only the drainable ones. A settled row keeps
+     * its `last_error` verbatim, and this is the only RPC that hands that back: before it, the full
+     * text of a connector's refusal was reachable only through the read-only SQL console with
+     * system tables toggled on. The filter/ordering come from the kernel so the DO, the host and
+     * `ctx.platformRequests` cannot disagree about what "newest 50 of this kind" means.
+     */
+    platformRequestHistory(filter?: PlatformRequestFilter): PlatformRequestRawRow[] {
+      const q = platformRequestHistoryQuery(filter);
+      return this.sql
+        .exec(q.sql, ...q.params)
+        .toArray() as unknown as PlatformRequestRawRow[];
+    }
+
+    /**
      * Journal a platform-request outcome after the coordinator ran it. `status`: 'done' (succeeded),
      * 'failed' (terminal — unknown kind or given up), or 'pending' (transient failure, will retry).
      * `result` is COALESCE'd so a value written on an earlier pass (e.g. a minted sibling scope id,
@@ -1817,6 +1856,14 @@ export function defineScopeDO(
           );
           if (signals) signals.platformRequests += 1;
           return id;
+        },
+        // The read half of `requestPlatform` (#618) — this scope's own journal, so no tenancy
+        // predicate is needed or possible: the DO IS the scope.
+        platformRequests: (filter?: PlatformRequestFilter): PlatformRequest[] => {
+          const q = platformRequestHistoryQuery(filter);
+          return (sql.exec(q.sql, ...q.params).toArray() as unknown as PlatformRequestRawRow[]).map(
+            rowToPlatformRequest,
+          );
         },
         check: async (permission: PermissionKey, entity?: EntityRef) => {
           if (systemActor) {

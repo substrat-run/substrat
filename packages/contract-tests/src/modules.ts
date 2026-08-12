@@ -282,6 +282,10 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
     ctx.sql.query<PlatformRequestRow>(
       'SELECT * FROM _substrat_platform_requests ORDER BY id',
     )) as OperationHandler<never, unknown>,
+  // #618: the SUPPORTED read of the same rows — what a vertical uses to tell a user its
+  // signing request never left, instead of the hand-written SELECT above.
+  'platform/intents': ((ctx, input: { kind?: string; status?: string; limit?: number } | undefined) =>
+    ctx.platformRequests(input as never)) as OperationHandler<never, unknown>,
   'test/write-marker': ((ctx, input: { v: string }) => {
     ctx.sql.exec('CREATE TABLE IF NOT EXISTS marker (v TEXT NOT NULL)');
     ctx.sql.exec('INSERT INTO marker (v) VALUES (?)', [input.v]);

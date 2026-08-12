@@ -172,8 +172,12 @@ describe('connectorDispatchHandler — executes a routed connector delivery (#57
     ...over,
   });
 
-  /** A fake host recording `dispatchConnector` calls; `boom` makes it throw instead. */
-  function recordingHost(boom?: string) {
+  /**
+   * A fake host recording `dispatchConnector` calls; `boom` makes it throw instead. `status`
+   * attaches an HTTP status to that throw the way every connector's error type does
+   * (`ScriveApiError`) — which is exactly what the drain now classifies on (#618).
+   */
+  function recordingHost(boom?: string, status?: number) {
     const dispatched: Array<{ tenantId: string; scopeId: string; eventId: string }> = [];
     const host = {
       dispatchConnector: async (
@@ -182,7 +186,7 @@ describe('connectorDispatchHandler — executes a routed connector delivery (#57
         _handler: unknown,
         event: { id: string },
       ) => {
-        if (boom) throw new Error(boom);
+        if (boom) throw Object.assign(new Error(boom), status === undefined ? {} : { status });
         dispatched.push({ tenantId: tenant, scopeId: scope, eventId: event.id });
       },
     } as unknown as Parameters<typeof connectorDispatchHandler>[0]['host'];
@@ -240,6 +244,50 @@ describe('connectorDispatchHandler — executes a routed connector delivery (#57
     expect(report.pending).toBe(1);
     expect(settled[0]!.status).toBe('pending');
     expect(settled[0]!.lastError).toMatch(/no live 'scrive' connection/);
+  });
+
+  // #618. The production case: three signature requests failed on a permanent 409 since
+  // 9 August, were retried 100 times each over two days, and never reached a counterparty.
+  // A 4xx is the provider telling the CALLER its request is wrong; attempt 101 sends the
+  // identical bytes, so the only thing the retries bought was two days of silence.
+  it("settles a provider's 4xx terminal on the FIRST attempt — a refused request is not transient", async () => {
+    const req = intent('connector:scrive', { payload: { executorId: 'scrive', event: routedEvent() } });
+    const { client, settled } = fakeTransport([req]);
+    const { host } = recordingHost(
+      'scrive start failed: HTTP 409 Authentication to sign for participant #1 requires valid personal number field.',
+      409,
+    );
+    const failures: Array<{ operation: string; stage?: string | null; message: string }> = [];
+
+    const report = await drainScopePlatformRequests(
+      client,
+      ctx,
+      { 'connector:scrive': connectorDispatchHandler({ host, connector }) },
+      { recordFailure: (e) => failures.push(e) },
+    );
+
+    expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+    expect(settled[0]!.status).toBe('failed');
+    // The provider's own sentence survives into the journal — the whole diagnosis, not "HTTP 409".
+    expect(settled[0]!.lastError).toMatch(/requires valid personal number field/);
+    expect(settled[0]!.lastError).toMatch(/not retried/);
+    // …and a terminal settle is an operator's headline, not a spine-table archaeology find.
+    expect(failures).toEqual([
+      expect.objectContaining({ operation: 'intent.connector:scrive', stage: 'terminal' }),
+    ]);
+  });
+
+  it('keeps a 5xx, a timeout and a rate limit retryable — those say nothing about the request', async () => {
+    for (const status of [500, 502, 408, 429]) {
+      const req = intent('connector:scrive', { payload: { executorId: 'scrive', event: routedEvent() } });
+      const { client, settled } = fakeTransport([req]);
+      const { host } = recordingHost(`scrive start failed: HTTP ${status}`, status);
+      const report = await drainScopePlatformRequests(client, ctx, {
+        'connector:scrive': connectorDispatchHandler({ host, connector }),
+      });
+      expect({ status, pending: report.pending }).toEqual({ status, pending: 1 });
+      expect(settled[0]!.status).toBe('pending');
+    }
   });
 });
 

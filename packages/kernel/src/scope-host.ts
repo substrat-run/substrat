@@ -21,6 +21,7 @@ import type {
   PlatformRequestInput,
   PlatformRequestId,
   PlatformRequest,
+  PlatformRequestFilter,
   PlatformRequestStatus,
   EntitlementGrant,
   EntitlementGrantInput,
@@ -123,6 +124,24 @@ export interface OperationContext {
    * scope already holds `MAX_PENDING_PLATFORM_REQUESTS` pending intents (backpressure).
    */
   requestPlatform(request: PlatformRequestInput): PlatformRequestId;
+  /**
+   * Read back the intents THIS scope enqueued (#618) — the outcome half of `requestPlatform`.
+   *
+   * The write has always been a first-class kernel verb and the read was nothing: a vertical
+   * could ask the platform to do something and then had no supported way to learn whether it
+   * happened. Rule 3 permits a projection read of `_substrat_*`, but a hand-rolled `SELECT`
+   * against the spine is a private schema a vertical should not be pinned to — this is the
+   * stable shape, returning the same `PlatformRequest` the platform settles.
+   *
+   * The point is what an app can then TELL A USER: a contract whose signature request settled
+   * `failed` can say so on its own screen, instead of showing a document that appears to be out
+   * for signature and is not. Synchronous and scope-local (it is this scope's own table);
+   * newest first, `limit` defaulting to `DEFAULT_PLATFORM_REQUEST_HISTORY_LIMIT`.
+   *
+   * Read-only by construction: the kernel owns every write to this table (rule 3 forbids module
+   * code writing `_substrat_*`), so an intent's status is only ever the platform's answer.
+   */
+  platformRequests(filter?: PlatformRequestFilter): PlatformRequest[];
   /** Node-level check; pass `entity` for per-entity checks (portal access, §4.2 rule 3). */
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
   /**
@@ -2388,6 +2407,24 @@ export interface ScopeHost {
    * journals the outcome via `settlePlatformRequest` — the read-here/effect-there executor shape.
    */
   listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]>;
+
+  /**
+   * The scope's intent JOURNAL — every intent in whatever state it settled, newest first (#618).
+   *
+   * `listPlatformRequests` answers the drain's question and so returns only `pending`; that made
+   * a settled intent unreadable from anywhere but the scope's own spine table, which is how a
+   * connector's full `last_error` ("HTTP 409 Authentication to sign for participant #1 requires
+   * valid personal number field") ended up retained, correct, and reachable only by hand-written
+   * SQL. This is the read that surfaces it: `kind` narrows to one intent family
+   * (`connector:scrive`), `status` to one outcome, `limit` to a recency window.
+   *
+   * Fleet maintenance, no actor — same class as the pending read it complements.
+   */
+  listPlatformRequestHistory(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: PlatformRequestFilter,
+  ): Promise<PlatformRequest[]>;
 
   /**
    * Journal a platform-request outcome after the coordinator ran it: `done`, `failed` (terminal),

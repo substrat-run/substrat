@@ -39,6 +39,7 @@ import {
   entitlementGrant,
   projectedConnectionGrant,
   projectedIdentityLink,
+  platformRequestFilter,
   platformRequestId,
   platformRequestStatus,
   readScopeTableInput,
@@ -58,6 +59,7 @@ import {
   type ProjectedConnectionGrant,
   type ProjectedIdentityLink,
   type PlatformRequest,
+  type PlatformRequestFilter,
   type PlatformRequestId,
   type PlatformRequestStatus,
 } from '@substrat-run/contracts';
@@ -99,6 +101,11 @@ export interface VerticalScopeHost {
   ): Promise<unknown>;
   introspectScopeQuery(scopeId: ScopeId, input: { sql: string }): Promise<ScopeQueryResult>;
   listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]>;
+  listPlatformRequestHistory(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: PlatformRequestFilter,
+  ): Promise<PlatformRequest[]>;
   settlePlatformRequest(
     tenantId: TenantId,
     scopeId: ScopeId,
@@ -404,6 +411,23 @@ export function mountPlatformSurface<Env extends object>(
     const t = tenantIdOf.parse(c.req.query('tenantId'));
     const s = scopeIdOf.parse(c.req.query('scopeId'));
     return c.json(await deps.hostFor(c.env).listPlatformRequests(t, s));
+  });
+
+  // The intent JOURNAL (#618), not the drain queue: every intent this scope enqueued in
+  // whatever state it settled, newest first. The drain never needs it — the control plane's
+  // console does, because a `failed` connector intent's `last_error` is the whole diagnosis
+  // ("HTTP 409 … requires valid personal number field") and it lives here, in the scope's own
+  // deployment, where nothing but the read-only SQL console could reach it. Same
+  // platform-secret gate as the pending read it sits beside.
+  app.get('/internal/platform-requests/history', async (c) => {
+    const t = tenantIdOf.parse(c.req.query('tenantId'));
+    const s = scopeIdOf.parse(c.req.query('scopeId'));
+    const filter = platformRequestFilter.parse({
+      kind: c.req.query('kind'),
+      status: c.req.query('status'),
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+    });
+    return c.json(await deps.hostFor(c.env).listPlatformRequestHistory(t, s, filter));
   });
 
   // The connector write-back seam (#574): the shared control plane runs the connector

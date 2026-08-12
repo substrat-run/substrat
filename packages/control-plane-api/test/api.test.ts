@@ -898,6 +898,47 @@ describe('control-plane API', () => {
     expect(healthy).toMatchObject({ roleCount: 4, roleProjectionEmpty: false });
   });
 
+  it("serves a scope's intent journal with the provider's FULL error (#618)", async () => {
+    const sI = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sI, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sI);
+
+    // A routed connector delivery that the provider refused. The whole sentence is what
+    // makes it fixable; the connection card only ever had "HTTP 409 from scrive".
+    const refusal =
+      'scrive start failed: HTTP 409 Authentication to sign for participant #1 requires valid personal number field.';
+    host.defineOperation('intents/enqueue', (ctx, input: { kind: string; payload: unknown }) =>
+      ctx.requestPlatform(input),
+    );
+    const stub = await host.getScope(staff, t1, sI);
+    const id = (await stub.invoke('intents/enqueue', {
+      kind: 'connector:scrive',
+      payload: { executorId: 'scrive', event: { type: 'protocol.signatures-requested' } },
+    })) as string;
+    await host.settlePlatformRequest(t1, sI, id as never, { status: 'failed', lastError: refusal });
+    await stub.invoke('intents/enqueue', { kind: 'provision-sibling', payload: {} });
+
+    const rows = (await (
+      await app.request(`/tenants/${t1}/scopes/${sI}/intents?kind=connector:scrive`, { headers: auth })
+    ).json()) as Array<Record<string, unknown>>;
+    expect(rows.map((r) => r.id)).toEqual([id]); // `kind` narrows to one provider's traffic
+    expect(rows[0]).toMatchObject({ status: 'failed', lastError: refusal });
+    // What was SENT rides along — reading the error next to the payload is the whole point.
+    expect(rows[0]!.payload).toMatchObject({ executorId: 'scrive' });
+
+    // `limit` bounds the window; the unfiltered read sees both kinds.
+    expect(
+      ((await (await app.request(`/tenants/${t1}/scopes/${sI}/intents`, { headers: auth })).json()) as unknown[]).length,
+    ).toBe(2);
+    expect(
+      ((await (
+        await app.request(`/tenants/${t1}/scopes/${sI}/intents?limit=1`, { headers: auth })
+      ).json()) as unknown[]).length,
+    ).toBe(1);
+
+    expect((await app.request(`/tenants/${t1}/scopes/${ulid()}/intents`, { headers: auth })).status).toBe(404);
+  });
+
   it("propagates the vertical's own refusal status instead of collapsing to 500", async () => {
     const sR = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t1, scopeId: sR, vertical: 'demo-vert' });

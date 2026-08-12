@@ -113,6 +113,23 @@ id so the vertical can report "pending" and the app can poll it. **The kernel do
 `kind`** — it is an opaque, durable, typed queue, exactly as the outbox is agnostic to event
 types. Intent vocabulary is the *platform's*, keeping the kernel domain-free (three-layer rule).
 
+### 2b. The kernel read — `ctx.platformRequests` (#618)
+
+The write had been a first-class verb since day one and the read was nothing, which meant a
+vertical could ask the platform to do something and then had no supported way to learn whether
+it happened. An app showed a contract as "out for signature" while its `connector:scrive` intent
+had been `failed` for a fortnight.
+
+```ts
+ctx.platformRequests({ kind?: string, status?: PlatformRequestStatus, limit?: number }): PlatformRequest[]
+```
+
+Synchronous, scope-local (it is this scope's own spine table), newest first. Rule 3 already
+permits a projection read of `_substrat_*`, but a hand-rolled `SELECT` pins a vertical to a
+private schema — this is the stable shape, returning the same `PlatformRequest` the platform
+settles. Read-only by construction: the kernel owns every write to that table, so an intent's
+status is only ever the platform's answer.
+
 ### 3. The drain-executor (platform / control plane)
 
 A registry of `kind → handler`, run in two places that share one code path:
@@ -177,10 +194,22 @@ an implementation detail below.
   `ctx.waitUntil(cp.drainScope(tenant, scope))` against a new **platform-secret-gated
   `POST /internal/drain-scope`** on the control plane, which runs the drain-executor scoped to that
   one scope. Best-effort: a failed kick is caught by the ~2-min sweep.
-- **Result delivery.** v1 relies on the **domain-observable effect** — `provision-sibling` completes
-  when the site shows up in the M2 registry, so the app polls `GET /api/sites`. The generic form (a
-  `status`/`result`-by-request-id reader, backed by a kernel read of the request row) is added the
-  first time an intent has *no* observable domain effect; not needed for M3.
+- **Result delivery.** v1 relied on the **domain-observable effect** — `provision-sibling` completes
+  when the site shows up in the M2 registry, so the app polls `GET /api/sites`. The generic form
+  landed with **#618**, when the first intent kind with no observable domain effect arrived:
+  a `connector:<provider>` delivery that fails leaves the vertical's own state (a contract in
+  `pending_signature`) looking exactly like success. Three reads, one journal:
+  `ctx.platformRequests` in the vertical (2b above), `ScopeHost.listPlatformRequestHistory` for the
+  platform, and `GET /tenants/:t/scopes/:s/intents` on the control plane — which is what the
+  dashboard's integration detail renders, `lastError` **verbatim and untruncated**.
+- **Retry classification (#618).** `pending` means *try again*, and a handler that throws gets it by
+  default — correct for a provider outage, wrong for a provider's refusal. A **4xx carrying a
+  status** (`isTerminalProviderError`, `packages/kernel/src/provider-error.ts`) settles `failed` on
+  the first attempt: it is the provider telling the caller its request is wrong, and attempt 101
+  sends the identical bytes. 5xx, timeouts (408), locks (423/425) and rate limits (429) stay
+  retryable, as does anything with no status — an unclassifiable failure must never be settled
+  terminally. Every terminal settle now also lands an **ops-failure row** (`stage: 'terminal'`),
+  the same visibility the attempt ceiling already got.
 - **Intent-kind registry + validation.** The platform holds a `Record<kind, { schema, handle }>`
   (registered where `runPlatformSweep`'s connector sweepers are). The drain parses `payload` with the
   kind's Zod schema and runs `handle` with `HostAdmin`; an **unknown kind or a parse failure marks

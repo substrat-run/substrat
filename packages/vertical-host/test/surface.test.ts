@@ -32,6 +32,8 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
     introspectScopeQuery: async () => note('introspectScopeQuery', { columns: [], rows: [] }) as never,
     listPlatformRequests: async () => note('listPlatformRequests', []),
+    listPlatformRequestHistory: async (_t: unknown, _s: unknown, filter?: unknown) =>
+      note('listPlatformRequestHistory', [filter]) as never,
     settlePlatformRequest: async () => note('settlePlatformRequest', undefined),
     connectorInvokeLocal: async () => note('connectorInvokeLocal', { ok: true }),
     connectorAttachmentUploadLocal: async () => note('connectorAttachmentUploadLocal', { id: 'att1' }),
@@ -192,11 +194,35 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     ['/internal/tables?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/tables/some_table?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/platform-requests?tenantId=' + TENANT + '&scopeId=' + SCOPE, { headers: authed() }],
+    ['/internal/platform-requests/history?tenantId=' + TENANT + '&scopeId=' + SCOPE, { headers: authed() }],
   ];
   it.each(cases)('GET %s is served (not 404)', async (path, init) => {
     const res = await appWith(fakeHost()).request(path, init, ENV);
     expect(res.status).not.toBe(404);
     expect(res.status).toBeLessThan(500);
+  });
+
+  // #618: the journal read is the platform's door to a settled intent's full `last_error`,
+  // which lives in THIS deployment's DO. The query string is the filter — parsed here, not
+  // trusted onward — so a console can ask for one provider's traffic.
+  it('passes the history filter through to the host', async () => {
+    const host = fakeHost();
+    const res = await appWith(host).request(
+      `/internal/platform-requests/history?tenantId=${TENANT}&scopeId=${SCOPE}&kind=connector:scrive&status=failed&limit=5`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([{ kind: 'connector:scrive', status: 'failed', limit: 5 }]);
+  });
+
+  it('refuses a malformed history filter rather than widening it', async () => {
+    const res = await appWith(fakeHost()).request(
+      `/internal/platform-requests/history?tenantId=${TENANT}&scopeId=${SCOPE}&status=nonsense`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(400);
   });
 
   it('restore re-projects roles when a tenantId is present', async () => {
