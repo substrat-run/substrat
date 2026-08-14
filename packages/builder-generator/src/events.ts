@@ -85,12 +85,21 @@ export type BuildEvent =
 	 * name is still automatic; a user-typed name is never overwritten.
 	 */
 	| { readonly type: 'project-named'; readonly name: string }
-	/** Turn accounting — what §4.4 says actually dominates the bill. */
+	/**
+	 * Turn accounting — what §4.4 says actually dominates the bill. Totals are
+	 * summed across ALL tool-loop steps of the turn. `cachedInputTokens` is the
+	 * slice of input read from the provider's prompt cache (~10% price on
+	 * Anthropic); `cacheWriteTokens` is what was newly written to cache this
+	 * turn. Both absent when the provider reports nothing — absence means "not
+	 * measured", never "zero".
+	 */
 	| {
 			readonly type: 'usage';
 			readonly inputTokens: number;
 			readonly outputTokens: number;
 			readonly steps: number;
+			readonly cachedInputTokens?: number;
+			readonly cacheWriteTokens?: number;
 	  }
 	| { readonly type: 'error'; readonly message: string; readonly fatal: boolean };
 
@@ -126,7 +135,11 @@ export function formatEvent(e: BuildEvent): string {
 		case 'thinking':
 			return '· thinking…';
 		case 'usage':
-			return `· ${e.steps} steps, ${e.inputTokens}+${e.outputTokens} tokens`;
+			return `· ${e.steps} steps, ${e.inputTokens}+${e.outputTokens} tokens${
+				e.cachedInputTokens != null && e.inputTokens > 0
+					? ` (${Math.round((100 * e.cachedInputTokens) / e.inputTokens)}% cached)`
+					: ''
+			}`;
 		case 'error':
 			return `${e.fatal ? '✗' : '!'} ${e.message}`;
 	}

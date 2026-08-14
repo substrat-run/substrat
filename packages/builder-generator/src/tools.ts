@@ -178,7 +178,13 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 				const r = await ws.exec(cmd, cwd ? { cwd } : undefined);
 				emit({ type: 'command', cmd, exitCode: r.exitCode });
 				const body = [r.stdout.trimEnd(), r.stderr.trimEnd()].filter(Boolean).join('\n');
-				return `exit ${r.exitCode}\n${body.slice(-8000)}`;
+				// Success output is confirmation, not information — a passing vitest
+				// run's chatter would be re-billed on every later step of the turn.
+				// Failures keep a real tail; both caps are tail-biased because build
+				// tools put the verdict last.
+				const cap = r.exitCode === 0 ? 1_500 : 8_000;
+				const kept = body.slice(-cap);
+				return `exit ${r.exitCode}\n${body.length > cap ? `…[${body.length - cap} chars omitted]…\n` : ''}${kept}`;
 			},
 		}),
 	};
