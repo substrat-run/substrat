@@ -1,5 +1,29 @@
 # @substrat-run/builder
 
+## 0.2.1
+
+### Patch Changes
+
+- cff86ee: Builder-distilled skills + the phase ladder (D-54/D-55). The generator's skills are now studio-owned files under `apps/builder/skills/` — the repo's Claude Code skills assumed monorepo access and denied tools — split four ways (`platform`, `interview`, `scaffold`, `iterate`) and gated by a phase ladder derived from workspace facts: interview (no `spec/concept.md`), scaffold (no `src/module.ts` yet), iterate. A shared manifest (`phase.ts`) drives both hosts, so prefix content changes only at phase boundaries and each phase's prefix caches independently; mature-project turns drop the ~5k of scaffolding skeletons. A new `phase` BuildEvent (studio-emitted, never model-claimed) feeds a top-bar phase stepper in the UI — what the user sees is exactly what the generator is loaded for. Also fixes the hosted host detecting the phase before the R2 restore (a slept container read an empty disk and loaded interview skills for mature projects).
+- 02d114e: The studio records its token spend (#646): the builder worker gains its own
+  CP-less kernel scope — a `ScopeDO` bundling only the metering engine,
+  provisioned via `provisionScopeLocal` under a fixed studio node — and the
+  turn loop reports each turn's `usage` event into it: two counter entries
+  (`ai.tokens.input`/`ai.tokens.output`), subject = the project ref, dedupe
+  key = the turn's ulid, so a replayed report can never double-bill.
+  Recording is best-effort by design: the turn's product is the commit, and a
+  metering outage logs a miss rather than failing the turn. This is the first
+  brick of the builder's record-keeping half becoming a vertical (D-31/D-33);
+  when builder teams arrive, recording moves to per-team scopes and the fixed
+  node retires.
+- c3631be: Studio project-menu polish: the project dropdown now closes on outside click and Escape (document-level pointerdown/keydown listeners scoped to while it is open), and "New project" opens a styled modal — the model-picker shell sized down to a single input with Cancel/Create — instead of the browser-native `window.prompt()`. Enter creates, Escape or backdrop click cancels, and an empty name still lets the AI name the project at concept time.
+- 92fd9a8: Step-level token economy. The tool loop re-sends the whole growing transcript on every step, so this is where the bill actually lives: on the Anthropic dialect a moving cache breakpoint (`prepareStep`) makes each step read the prior transcript from cache instead of re-billing it; on OpenAI-compatible dialects, stale tool payloads (an old `write_file` body superseded by a later write, an outdated `read_file` result, a re-run command's old log) are stubbed since there is no placeable cache there. The volatile workspace brief moves out of the pre-history prefix into the final user message so it stops invalidating the conversation cache; successful `run_command` output is capped at a 1.5k tail (failures keep 8k). Usage events now report the whole turn (`totalUsage`, not final-step-only — the old number under-reported multi-step turns) plus cache read/write splits, rendered per turn and per session in the studio UI.
+- Updated dependencies [cff86ee]
+- Updated dependencies [92fd9a8]
+- Updated dependencies [f4529ed]
+  - @substrat-run/builder-generator@0.3.0
+  - @substrat-run/engine-metering@0.1.0
+
 ## 0.2.0
 
 ### Minor Changes
