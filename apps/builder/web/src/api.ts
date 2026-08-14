@@ -56,8 +56,30 @@ async function j<T>(res: Response): Promise<T> {
 	return body;
 }
 
+export interface UsageDay {
+	date: string;
+	input: number;
+	output: number;
+}
+
+export interface UsageByProject {
+	projectId: string;
+	input: number;
+	output: number;
+	turns: number;
+}
+
+export interface UsageReport {
+	totals: { input: number; output: number };
+	daily: UsageDay[];
+	byProject: UsageByProject[];
+	windowDays: number;
+	generatedAt: string;
+}
+
 export const api = {
 	session: () => fetch('/api/session').then((r) => j<SessionInfo>(r)),
+	usage: () => fetch('/api/usage').then((r) => j<UsageReport>(r)),
 	providers: () => fetch('/api/providers').then((r) => j<ProviderEntry[]>(r)),
 	models: (provider: string) =>
 		fetch(`/api/models?provider=${encodeURIComponent(provider)}`).then((r) =>

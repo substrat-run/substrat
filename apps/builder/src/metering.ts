@@ -141,3 +141,88 @@ export async function reportTurnUsage(env: StudioEnv, usage: TurnUsage): Promise
 		);
 	}
 }
+
+// ── the read side: /api/usage (#655) ──────────────────────────────────────────
+
+interface EntryView {
+	meterKey: string;
+	qty: string;
+	subject: { entityType: string; entityId: string } | null;
+	occurredAt: string;
+}
+
+export interface UsageDay {
+	/** YYYY-MM-DD (UTC). */
+	date: string;
+	input: number;
+	output: number;
+}
+
+export interface UsageByProject {
+	projectId: string;
+	input: number;
+	output: number;
+	turns: number;
+}
+
+export interface UsageReport {
+	totals: { input: number; output: number };
+	/** Oldest-first, one row per UTC day with any usage, capped to the window. */
+	daily: UsageDay[];
+	/** Largest spend first. */
+	byProject: UsageByProject[];
+	windowDays: number;
+	generatedAt: string;
+}
+
+/**
+ * The studio's usage, aggregated for the Usage pane. Reads the ledger via the
+ * engine's registered operations and rolls up host-side (this is harness code,
+ * not module code — plain JS over the returned rows is fine). Token counts are
+ * integers well under 2^53, so Number() is exact here; the engine's decimal
+ * discipline still guards the stored truth.
+ */
+export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<UsageReport> {
+	await ensureStudio(env);
+	const scope = await hostFor(env).getScope(
+		STUDIO_RECORDER,
+		STUDIO_NODE.tenantId,
+		STUDIO_NODE.scopeId,
+	);
+	const entries = (await scope.invoke('metering/list-entries', undefined)) as EntryView[];
+
+	const totals = { input: 0, output: 0 };
+	const byDay = new Map<string, UsageDay>();
+	const byProject = new Map<string, UsageByProject>();
+	const windowStart = new Date(Date.now() - windowDays * 86_400_000).toISOString();
+
+	for (const e of entries) {
+		const side =
+			e.meterKey === METERS.input ? 'input' : e.meterKey === METERS.output ? 'output' : null;
+		if (!side) continue;
+		const qty = Number(e.qty);
+		totals[side] += qty;
+
+		if (e.occurredAt >= windowStart) {
+			const date = e.occurredAt.slice(0, 10);
+			const day = byDay.get(date) ?? { date, input: 0, output: 0 };
+			day[side] += qty;
+			byDay.set(date, day);
+		}
+
+		const projectId = e.subject?.entityType === 'builder-project' ? e.subject.entityId : '(none)';
+		const proj = byProject.get(projectId) ?? { projectId, input: 0, output: 0, turns: 0 };
+		proj[side] += qty;
+		// Each turn records both meters under one dedupe key — count it once.
+		if (side === 'input') proj.turns += 1;
+		byProject.set(projectId, proj);
+	}
+
+	return {
+		totals,
+		daily: [...byDay.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
+		byProject: [...byProject.values()].sort((a, b) => b.input + b.output - (a.input + a.output)),
+		windowDays,
+		generatedAt: new Date().toISOString(),
+	};
+}

@@ -17,8 +17,9 @@ import { GatesPane } from './GatesPane.js';
 import { ModelPicker } from './ModelPicker.js';
 import { PreviewPane } from './PreviewPane.js';
 import { ProjectMenu } from './ProjectMenu.js';
+import { UsagePane } from './UsagePane.js';
 
-type Tab = 'preview' | 'code' | 'database' | 'gates';
+type Tab = 'preview' | 'code' | 'database' | 'gates' | 'usage';
 
 const PHASE_STEPS: readonly { key: BuildPhase; label: string; hint: string }[] = [
 	{ key: 'interview', label: 'Interview', hint: 'No approved concept yet — the model asks, one question at a time' },
@@ -314,6 +315,9 @@ export function App() {
 						<button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>
 							Gates
 						</button>
+						<button className={tab === 'usage' ? 'active' : ''} onClick={() => setTab('usage')}>
+							Usage
+						</button>
 					</nav>
 					<div className="pane">
 						{tab === 'preview' && <PreviewPane />}
@@ -321,6 +325,7 @@ export function App() {
 							<CodePane vertical={session.vertical} refreshKey={refreshKey} />
 						)}
 						{tab === 'gates' && <GatesPane />}
+						{tab === 'usage' && <UsagePane />}
 					</div>
 				</div>
 			</div>
