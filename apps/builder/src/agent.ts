@@ -257,11 +257,12 @@ export class BuilderAgent extends DurableObject<Env> {
 		return new ContainerWorkspace({ sandbox: sb, root: `${REPO}/${dir}`, id: `container:${dir}` });
 	}
 
-	/** Skills come from the image — the container carries .claude/skills/. */
+	/** Skills come from the image — the builder-distilled pair under
+	 * apps/builder/skills/ (see skills.ts for why not the repo's SKILL.md files). */
 	async #loadSkills(root: Workspace): Promise<string[]> {
 		if (this.#skills) return this.#skills;
 		const skills: string[] = [];
-		for (const rel of ['.claude/skills/substrat/SKILL.md', '.claude/skills/new-vertical/SKILL.md']) {
+		for (const rel of ['apps/builder/skills/interview.md', 'apps/builder/skills/build.md']) {
 			try {
 				skills.push(await root.readFile(rel));
 			} catch {
@@ -272,9 +273,9 @@ export class BuilderAgent extends DurableObject<Env> {
 		return skills;
 	}
 
-	/** Interview turns carry only the interview skill: the 269-line build skill
-	 * is dead weight before a concept exists, and each phase's prefix is
-	 * byte-stable so both cache independently. */
+	/** Interview turns carry only the interview skill: the build skill is dead
+	 * weight before a concept exists, and each phase's prefix is byte-stable so
+	 * both cache independently. */
 	#skillsForPhase(all: string[], conceptApproved: boolean): string[] {
 		return conceptApproved ? all : all.slice(0, 1);
 	}
