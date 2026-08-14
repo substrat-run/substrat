@@ -8,6 +8,9 @@ import type { GateRun } from '@substrat-run/builder-workspace';
 
 export type { BuildEvent, GateRun, PlanAssumption };
 
+/** Derived from the event union so the UI cannot drift from the server's ladder. */
+export type BuildPhase = Extract<BuildEvent, { type: 'phase' }>['phase'];
+
 export interface ProjectInfo {
 	id: string;
 	name: string;
@@ -23,8 +26,10 @@ export interface SessionInfo {
 	project: Pick<ProjectInfo, 'id' | 'name' | 'nameSource'>;
 	/** 'project' = the vertical is its own git repo (§4.6); 'scoped' = legacy demos/*. */
 	repoMode: 'project' | 'scoped';
-	/** True once spec/concept.md exists — the design-doc gate (interview → build). */
-	conceptApproved: boolean;
+	/** The build-phase ladder position — a workspace fact, computed server-side
+	 * (interview: no spec/concept.md; scaffold: no src/module.ts yet; iterate).
+	 * Null from the hosted host before the project's first turn. */
+	phase: BuildPhase | null;
 	modelSpec: string;
 	endpoint?: string;
 	endpointSource?: string;

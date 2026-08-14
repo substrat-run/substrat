@@ -36,6 +36,7 @@ import {
 	type SandboxLike,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
+import { detectPhase, skillsForPhase, SKILL_MANIFEST } from './phase.js';
 import { explainProviderFailure } from './provider-errors.js';
 import { HostedProviderError, resolveModelHosted, type ProviderSecrets } from './providers-worker.js';
 
@@ -113,7 +114,7 @@ function sandboxLike(sb: Sandbox): SandboxLike {
 
 export class BuilderAgent extends DurableObject<Env> {
 	#busy = false;
-	#skills: string[] | null = null;
+	#skills: Map<string, string> | null = null;
 
 	// ── storage (keys mirror the local .builder/ files) ───────────────────────
 
@@ -257,27 +258,20 @@ export class BuilderAgent extends DurableObject<Env> {
 		return new ContainerWorkspace({ sandbox: sb, root: `${REPO}/${dir}`, id: `container:${dir}` });
 	}
 
-	/** Skills come from the image — the builder-distilled pair under
-	 * apps/builder/skills/ (see skills.ts for why not the repo's SKILL.md files). */
-	async #loadSkills(root: Workspace): Promise<string[]> {
+	/** Skills come from the image — the builder-distilled set that phase.ts's
+	 * SKILL_MANIFEST names (see skills.ts for why not the repo's SKILL.md files). */
+	async #loadSkills(root: Workspace): Promise<Map<string, string>> {
 		if (this.#skills) return this.#skills;
-		const skills: string[] = [];
-		for (const rel of ['apps/builder/skills/interview.md', 'apps/builder/skills/build.md']) {
+		const skills = new Map<string, string>();
+		for (const { file } of SKILL_MANIFEST) {
 			try {
-				skills.push(await root.readFile(rel));
+				skills.set(file, await root.readFile(file));
 			} catch {
 				/* image without skills: the generator runs dumber, never blind */
 			}
 		}
 		this.#skills = skills;
 		return skills;
-	}
-
-	/** Interview turns carry only the interview skill: the build skill is dead
-	 * weight before a concept exists, and each phase's prefix is byte-stable so
-	 * both cache independently. */
-	#skillsForPhase(all: string[], conceptApproved: boolean): string[] {
-		return conceptApproved ? all : all.slice(0, 1);
 	}
 
 	async #generator(spec: string, skills: string[]): Promise<VerticalGenerator> {
@@ -310,11 +304,13 @@ export class BuilderAgent extends DurableObject<Env> {
 		const pair = this.#sandboxPair(entry.id);
 		const sb = pair.sb;
 		const rootWs = this.#rootWs(sb);
-		let generator: VerticalGenerator;
+		// Validate the provider config EARLY so a missing secret is a 422, not a
+		// mid-stream error. The generator itself is built inside run(), AFTER the
+		// R2 restore — phase detection reads the workspace, and a slept
+		// container's disk is empty until restore (detecting before it loaded
+		// interview skills for mature projects).
 		try {
-			const allSkills = await this.#loadSkills(rootWs);
-			const phaseApproved = await this.#projectWs(sb, entry.dir).exists('spec/concept.md');
-			generator = await this.#generator(modelSpec, this.#skillsForPhase(allSkills, phaseApproved));
+			resolveModelHosted(this.env, modelSpec);
 		} catch (err) {
 			return json(422, { error: err instanceof HostedProviderError ? err.message : String(err) });
 		}
@@ -341,10 +337,16 @@ export class BuilderAgent extends DurableObject<Env> {
 				await this.#restoreProject(pair, entry);
 				await ensureVerticalRepo(rootWs, entry.dir);
 				const projectWs = this.#projectWs(sb, entry.dir);
-				const conceptApproved = await projectWs.exists('spec/concept.md');
-				const concept = conceptApproved
-					? await projectWs.readFile('spec/concept.md')
-					: '(no concept document yet — interview the builder before writing code)';
+				// Post-restore on purpose — the phase is a workspace fact, and the
+				// workspace only exists now. Emitted so the UI stepper shows real state.
+				const phase = await detectPhase(projectWs);
+				emit({ type: 'phase', phase });
+				const allSkills = await this.#loadSkills(rootWs);
+				const generator = await this.#generator(modelSpec, skillsForPhase(allSkills, phase));
+				const concept =
+					phase === 'interview'
+						? '(no concept document yet — interview the builder before writing code)'
+						: await projectWs.readFile('spec/concept.md');
 
 				for await (const event of generator.run({
 					workspace: projectWs,
@@ -379,6 +381,9 @@ export class BuilderAgent extends DurableObject<Env> {
 					// is the cache, R2 is where the repo rests.
 					await this.#saveBundle(pair, entry);
 				}
+				const after = await detectPhase(projectWs);
+				if (after !== phase) emit({ type: 'phase', phase: after });
+				await this.ctx.storage.put(`phase:${entry.id}`, after);
 
 				state.history.push({ role: 'user', text: message });
 				if (assistant) state.history.push({ role: 'assistant', text: assistant });
@@ -431,7 +436,10 @@ export class BuilderAgent extends DurableObject<Env> {
 					vertical: entry.dir,
 					project: { id: entry.id, name: entry.name, nameSource: entry.nameSource },
 					repoMode: 'project',
-					conceptApproved: false, // cheap answer; the turn reads the real file
+					// Last phase persisted by a turn. Truthful without booting the
+					// container: only turns mutate the workspace, so the value can't
+					// be stale — null just means "no turn yet" (UI hides the stepper).
+					phase: ((await this.ctx.storage.get(`phase:${entry.id}`)) as string | undefined) ?? null,
 					modelSpec,
 					endpoint,
 					endpointSource: endpoint ? 'worker secret' : undefined,

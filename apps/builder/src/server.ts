@@ -53,6 +53,7 @@ import {
 	ProviderError,
 	resolveModel,
 } from './providers.js';
+import { detectPhase, skillsForPhase, type BuildPhase } from './phase.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -70,7 +71,7 @@ const PROJECTS_DIR = '.builder/projects';
 const env = loadEnvFiles(ROOT);
 /** Root workspace: registry, gates, commits. NEVER handed to the generator. */
 const ws = new LocalWorkspace({ root: ROOT });
-let skills: LoadedSkills = { skills: [], loaded: [], missing: [] };
+let skills: LoadedSkills = { byFile: new Map(), loaded: [], missing: [] };
 
 // ── the current project (the DO-state analog, resumable and switchable) ──────
 
@@ -126,11 +127,11 @@ function ndjson(res: ServerResponse): (e: BuildEvent) => void {
 	return (e) => res.write(`${JSON.stringify(e)}\n`);
 }
 
-async function makeGenerator(spec: string, conceptApproved = true): Promise<VerticalGenerator> {
+async function makeGenerator(spec: string, phase: BuildPhase = 'iterate'): Promise<VerticalGenerator> {
 	const resolved = await resolveModel(spec);
-	// Interview turns carry only the interview skill (§token-economy): each
-	// phase's prefix is byte-stable, so both cache independently.
-	const phaseSkills = conceptApproved ? skills.skills : skills.skills.slice(0, 1);
+	// The phase ladder (phase.ts): prefix content changes only at phase
+	// boundaries, so each phase's prefix is byte-stable and caches independently.
+	const phaseSkills = skillsForPhase(skills.byFile, phase);
 	return new AiSdkGenerator({
 		model: resolved.model,
 		label: resolved.label,
@@ -158,7 +159,7 @@ async function handleSession(res: ServerResponse): Promise<void> {
 		vertical: cur.entry.dir,
 		project: { id: cur.entry.id, name: cur.entry.name, nameSource: cur.entry.nameSource },
 		repoMode: cur.repoMode,
-		conceptApproved: await cur.projectWs.exists('spec/concept.md'),
+		phase: await detectPhase(cur.projectWs),
 		modelSpec,
 		endpoint,
 		endpointSource,
@@ -233,9 +234,9 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 	if (!message?.trim()) return json(res, 400, { error: 'message required' });
 
 	let generator: VerticalGenerator;
+	const phase = await detectPhase(cur.projectWs);
 	try {
-		const phaseApproved = await cur.projectWs.exists('spec/concept.md');
-		generator = await makeGenerator(modelSpec, phaseApproved);
+		generator = await makeGenerator(modelSpec, phase);
 	} catch (err) {
 		return json(res, 422, { error: err instanceof ProviderError ? err.message : String(err) });
 	}
@@ -257,12 +258,16 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		}
 	}, 10_000);
 
-	const conceptApproved = await cur.projectWs.exists('spec/concept.md');
-	const concept = conceptApproved
-		? await cur.projectWs.readFile('spec/concept.md')
-		: '(no concept document yet — interview the builder before writing code)';
+	const concept =
+		phase === 'interview'
+			? '(no concept document yet — interview the builder before writing code)'
+			: await cur.projectWs.readFile('spec/concept.md');
 
 	try {
+		// The phase is a workspace fact (phase.ts), so the UI's stepper renders
+		// real state — emitted at turn start, and again at the end if the turn's
+		// work moved the ladder (concept landed, module landed).
+		emit({ type: 'phase', phase });
 		for await (const event of generator.run({
 			workspace: cur.projectWs,
 			verticalDir: '.',
@@ -289,6 +294,8 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		if (turn.commit) {
 			emit({ type: 'commit', sha: turn.commit, summary: `${turn.changedFiles.length} files` });
 		}
+		const after = await detectPhase(cur.projectWs);
+		if (after !== phase) emit({ type: 'phase', phase: after });
 
 		cur.state.history.push({ role: 'user', text: message });
 		if (assistant) cur.state.history.push({ role: 'assistant', text: assistant });
