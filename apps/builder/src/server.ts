@@ -387,6 +387,16 @@ const server = createServer((req, res) => {
 		switch (route) {
 			case 'GET /api/session':
 				return handleSession(res);
+			case 'GET /api/usage':
+				// Local mode runs no metering scope (#646 — hosted-only); an honest
+				// empty report renders the pane's empty state, never a fake number.
+				return json(res, 200, {
+					totals: { input: 0, output: 0 },
+					daily: [],
+					byProject: [],
+					windowDays: 30,
+					generatedAt: new Date().toISOString(),
+				});
 			case 'GET /api/projects':
 				return handleProjects(res);
 			case 'POST /api/projects':

@@ -21,6 +21,7 @@
 import { Hono } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { meteringModule } from '@substrat-run/engine-metering';
+import { studioUsage } from './metering.js';
 import {
 	mountOidcRoutes,
 	SESSION_COOKIE,
@@ -94,6 +95,10 @@ app.use('*', async (c, next) => {
 	c.set('user' as never, user as never);
 	await next();
 });
+
+/** The studio's usage rollup (#646) — served by the worker, not the agent DO:
+ * the ledger lives in the SCOPE DO and the worker holds that binding. */
+app.get('/api/usage', async (c) => c.json(await studioUsage(c.env)));
 
 /** Session/state endpoints live on the DO — one named instance, the studio's
  * single home, mirroring the one-process local server it replaces. */
