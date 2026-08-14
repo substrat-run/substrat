@@ -79,6 +79,12 @@ const MANIFEST = {
       OIDC_CLIENT_ID: 'BUILDER_OIDC_CLIENT_ID',
       OIDC_CLIENT_SECRET: 'BUILDER_OIDC_CLIENT_SECRET',
       SESSION_SECRET: 'BUILDER_SESSION_SECRET',
+      // Model-provider keys (#626): the DO resolves models from these — the
+      // container/image NEVER carries them (§5.3, §10). D-53: each provider is
+      // a disclosed subprocessor of the customer's code.
+      ANTHROPIC_API_KEY: 'BUILDER_ANTHROPIC_API_KEY',
+      DASHSCOPE_API_KEY: 'BUILDER_DASHSCOPE_API_KEY',
+      DASHSCOPE_BASE_URL: 'BUILDER_DASHSCOPE_BASE_URL',
     },
   },
   dashboard: {

@@ -5,7 +5,13 @@
 		"declaration": false,
 		"declarationMap": false,
 		"rootDir": ".",
-		"types": ["@cloudflare/workers-types"]
+		"types": [
+			"@cloudflare/workers-types"
+		]
 	},
-	"include": ["src/worker.ts", "src/agent.ts"]
+	"include": [
+		"src/worker.ts",
+		"src/agent.ts",
+		"src/providers-worker.ts"
+	]
 }

@@ -1,0 +1,26 @@
+# Context for builder.Dockerfile — the monorepo, minus what the image must not
+# or need not carry.
+
+# Rebuilt inside the image (native modules must be linux/amd64, not host)
+node_modules
+**/node_modules
+
+# Never in the image: local studio state, project repos, secrets (§10 — the
+# image carries NO credentials; provider keys arrive as worker secrets)
+.builder
+secrets/*.env
+.env
+**/.env
+**/.dev.vars
+
+# Rebuilt by `pnpm -r build`
+**/dist
+
+# Not needed to run anything
+.git
+.github
+.claude/worktrees
+docs
+logo
+*.zip
+**/*.log
