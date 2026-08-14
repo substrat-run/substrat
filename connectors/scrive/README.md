@@ -12,7 +12,9 @@ Two halves, both built and tested against the real testbed API.
 
 **Outbound.** `engine-protocol` emits `protocol.signatures-requested` when a vertical freezes a
 document and sends it for signature. The connector (only for `method: 'scrive'`) turns that into a
-Scrive document: **create → set file → set parties → start**, external signatories on `se_bankid`.
+Scrive document: **create → set file → set parties → start**. Each party's authentication method
+comes from the request's provider-agnostic `authLevel` (`basic` → `standard`, the default;
+`strong` → `se_bankid`), falling back to the connection's `defaultAuthMethod`.
 It records each dispatch in a directory-side ledger (`putConnectorState`, keyed by the connection)
 so an at-least-once redelivery skips instead of creating a *second* document — duplicate legal
 paperwork to real signatories. Directory-side because a connector runs *inside* the scope's
@@ -74,12 +76,22 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
    directory — a control-plane-less vertical worker (scope-local-permissions.md Phase 3) cannot
    sweep until its connections are reachable from its runtime.
 
-2. **The live BankID signing round-trip is unverified.** The outbound lifecycle is checked against
-   `api-testbed.scrive.com`, but `se_bankid`-to-sign is **disabled on the testbed account**
-   (`start` → 409), so the actual signature — and Scrive's real signed-`get` party shape and order
-   — have only been exercised against `ScriveMock`. Because the reconcile fails closed on a
-   party-shape mismatch, a wrong assumption *skips* (visibly, in the sweep result), never
-   mis-records. It stays a `0.x` release for this reason.
+2. **The live BankID signing round-trip is unverified, and `authLevel: 'strong'` is refused.**
+   The outbound lifecycle is checked against `api-testbed.scrive.com`, but `se_bankid`-to-sign is
+   **disabled on the testbed account** (`start` → 409), so the actual signature — and Scrive's
+   real signed-`get` party shape and order — have only been exercised against `ScriveMock`.
+   Because the reconcile fails closed on a party-shape mismatch, a wrong assumption *skips*
+   (visibly, in the sweep result), never mis-records. It stays a `0.x` release for this reason.
+
+   Separately, Scrive's BankID auth-to-sign requires a `personal_number` on the party, and
+   Substrat carries none: a personnummer would have to ride `protocol.signatures-requested` into
+   `_substrat_outbox` and `_substrat_platform_requests` — kernel spine rows a vertical may
+   neither write nor erase (rule 3) — and design rule B6 forbids one reaching the kernel, the
+   events or the audit trail at all. So a request asking for `authLevel: 'strong'` is **refused
+   before any egress**, with a sentence saying why, rather than sent for Scrive to answer
+   `409 … requires valid personal number field`. Until a lawful carrier for direct PII exists
+   ([#620](https://github.com/substrat-run/substrat/issues/620)), BankID-to-sign is reachable only
+   by a deployment that supplies personal numbers by other means and sets `defaultAuthMethod`.
 
 3. **It sends an attestation sheet, not the avtal.** A one-page PDF naming the template, the
    parties, and the content hash the signature refers to — honest for a hash-attestation model,

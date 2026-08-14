@@ -84,6 +84,22 @@ export interface ScriveConnectorOptions {
   /** `SCRIVE_TESTBED` by default; production needs a paid licence. */
   baseUrl?: string;
   /**
+   * What `authLevel: 'basic'` means for THIS connection (#620) — the Scrive
+   * authentication method a party gets when the request asks for no more than
+   * control of a contact address.
+   *
+   * `'standard'` by default, and that default is the fix: the connector used to
+   * hardcode `se_bankid` for every external party, which Scrive refuses with
+   * `409 … requires valid personal number field` unless the party carries a
+   * personnummer — one this platform deliberately never supplies (B6). Every
+   * document this connector had ever sent failed on it.
+   *
+   * A deployment whose signatories all use BankID and which supplies personal
+   * numbers by some other means can set `'se_bankid'` here; a request asking for
+   * `authLevel: 'strong'` overrides it either way.
+   */
+  defaultAuthMethod?: 'standard' | 'se_bankid';
+  /**
    * Where Scrive should POST status changes (#96, the push layer).
    *
    * Scrive's callbacks are **unauthenticated** — there is no signature to
@@ -208,9 +224,46 @@ const signaturesRequested = z.object({
       kind: z.enum(['principal', 'external']),
       ref: z.string().nullable(),
       signatureKind: z.enum(['primary', 'counter']),
+      // #620: absent on events emitted by an engine older than 0003 — read as
+      // `basic`, which is what those requests effectively asked for.
+      authLevel: z.enum(['basic', 'strong']).default('basic'),
     }),
   ),
 });
+
+/**
+ * The engine's provider-agnostic `authLevel` → Scrive's own vocabulary (#620).
+ *
+ * `strong` means a national eID, which for Scrive is `se_bankid`, and Scrive's BankID
+ * auth-to-sign requires a `personal_number` field on the party. This platform has no
+ * lawful way to supply one: it would have to ride `protocol.signatures-requested` into
+ * `_substrat_outbox` and `_substrat_platform_requests` — kernel spine rows a vertical
+ * may neither write nor erase — and B6 forbids a personnummer reaching the kernel, the
+ * events or the audit trail at all.
+ *
+ * So `strong` is refused HERE, before any egress, with a sentence that names the
+ * problem. That is the whole improvement: the old code asked for `se_bankid`
+ * unconditionally and let Scrive answer `409 Authentication to sign for participant #1
+ * requires valid personal number field` — a message that reached nobody, on a delivery
+ * that retried for two days. A refusal a caller can read beats a provider error a
+ * caller cannot.
+ */
+function scriveAuthMethod(
+  authLevel: 'basic' | 'strong',
+  label: string,
+  fallback: 'standard' | 'se_bankid',
+): 'standard' | 'se_bankid' {
+  if (authLevel === 'strong') {
+    throw new Error(
+      `party '${label}' asks for authLevel 'strong' (BankID), which Scrive will not start ` +
+        `without a personal number on the party — and this platform carries none by design ` +
+        `(a personnummer may not enter an event or a spine row). Request 'basic', or set ` +
+        `ScriveConnectorOptions.defaultAuthMethod if this deployment supplies personal ` +
+        `numbers by other means.`,
+    );
+  }
+  return fallback;
+}
 
 /**
  * Build the handler. Register it with `host.registerConnector`.
@@ -220,6 +273,7 @@ const signaturesRequested = z.object({
  */
 export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandler {
   const baseUrl = options.baseUrl ?? SCRIVE_TESTBED;
+  const defaultAuthMethod = options.defaultAuthMethod ?? 'standard';
 
   return async (ctx, event: DomainEvent) => {
     const payload = signaturesRequested.parse(event.payload);
@@ -238,6 +292,15 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
       | ScriveDispatchState
       | undefined;
     if (prior) return; // already dispatched — do nothing, idempotently
+
+    // Resolve every party's authentication method BEFORE the first call (#620).
+    // Order matters: a refusal raised while building `update`'s body would already
+    // have created a draft document at Scrive, and since the delivery retries, each
+    // attempt would leave another orphan behind. Refusing here costs the provider
+    // nothing and leaves nothing to clean up.
+    const authMethods = payload.parties.map((p) =>
+      scriveAuthMethod(p.authLevel, p.label, defaultAuthMethod),
+    );
 
     const api = new ScriveApi(conn, baseUrl);
 
@@ -284,12 +347,14 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
       // close the narrow create-then-record window (below) a filter away.
       tags: [{ name: 'substrat_instance', value: payload.instanceId }],
       parties: payload.parties.map(
-        (p): ScriveParty => ({
+        (p, i): ScriveParty => ({
           name: p.label,
-          // BankID for external signatories; a principal signing through the
-          // provider still authenticates, but the flow does not require the
-          // stronger method to be meaningful.
-          authenticationMethodToSign: p.kind === 'external' ? 'se_bankid' : 'standard',
+          // #620: the REQUEST decides, then this connection's default, then
+          // `standard` — resolved above, before any egress. It used to be
+          // `p.kind === 'external' ? 'se_bankid' : 'standard'`: a requirement the
+          // caller could neither see nor satisfy, and the reason every document
+          // this connector ever sent came back a 409.
+          authenticationMethodToSign: authMethods[i]!,
           // Scrive auto-adds the API user as the author, and exactly one party
           // must be it. The issuing (primary) party is the sender's side, so it
           // is the author — and it still signs. Verified: an explicit author

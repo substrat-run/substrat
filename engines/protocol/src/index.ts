@@ -329,6 +329,18 @@ export const protocolMigrations = [
         ON protocol_instances (entity_type, entity_id, template_key, status);
     `,
   },
+  {
+    // #620: how hard the provider must prove WHO signed. Nullable, so every row
+    // written before this migration reads as "unspecified" and resolves to the
+    // `basic` default — the behaviour they already had, since the only connector
+    // shipped picked a method per party with no input from the request.
+    version: '0003-party-auth-level',
+    sql: `
+      ALTER TABLE protocol_signature_requests
+        ADD COLUMN auth_level TEXT
+        CHECK (auth_level IS NULL OR auth_level IN ('basic','strong'));
+    `,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -500,6 +512,8 @@ export interface ProtocolSignatureRequestRow {
   party_ref: string | null;
   signature_kind: 'primary' | 'counter';
   method: string;
+  /** #620: null on every row written before `0003-party-auth-level` — reads as `basic`. */
+  auth_level: 'basic' | 'strong' | null;
   status: 'pending' | 'signed' | 'declined' | 'expired' | 'cancelled';
   content_hash: string;
   external_ref: string | null;
@@ -1074,6 +1088,31 @@ export const signatureRequestParty = z.object({
    * `requireCountersigned` would then pass on a document nobody issued.
    */
   signatureKind: z.enum(['primary', 'counter']).optional(),
+  /**
+   * How hard the provider must work to prove WHO signed (#620).
+   *
+   * - `basic` — the provider establishes control of a contact address (a signing
+   *   link to an email or mobile). The default, and what a request that says
+   *   nothing gets.
+   * - `strong` — a national eID: BankID, and its equivalents. The signatory
+   *   proves a legal identity, not the possession of a mailbox.
+   *
+   * Deliberately NOT the provider's own vocabulary. `se_bankid` is Scrive's word
+   * for this and belongs in the connector that speaks to Scrive; an engine that
+   * learned it would have to learn the next provider's too, and a vertical would
+   * be choosing a Scrive enum through a provider-agnostic engine. The connector
+   * maps this pair onto whatever its provider calls them (star topology).
+   *
+   * **`strong` is currently unsatisfiable and will be refused at dispatch.** A
+   * national eID flow needs the signatory's personal number, and there is no
+   * lawful carrier for one: it would have to travel on this event, which lands
+   * in `_substrat_outbox` and `_substrat_platform_requests` — kernel spine rows a
+   * vertical may neither write nor erase (rule 3), and B6 says a personnummer
+   * never reaches the kernel, the events or the audit trail. The connector fails
+   * fast and says so, rather than sending a request the provider answers with a
+   * bare `409`. See the tracking issue for the sealed-carrier design.
+   */
+  authLevel: z.enum(['basic', 'strong']).optional(),
 });
 export type SignatureRequestParty = z.input<typeof signatureRequestParty>;
 
@@ -1146,8 +1185,9 @@ export async function requestSignatures(
     ctx.sql.exec(
       `INSERT INTO protocol_signature_requests
          (id, instance_id, party_label, party_kind, party_ref, signature_kind, method,
-          status, content_hash, external_ref, resolved_note, requested_by, requested_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, ?, ?, NULL)`,
+          auth_level, status, content_hash, external_ref, resolved_note, requested_by,
+          requested_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, ?, ?, NULL)`,
       [
         id,
         instance.id,
@@ -1156,6 +1196,7 @@ export async function requestSignatures(
         party.ref ?? null,
         index === primaryIndex ? 'primary' : 'counter',
         input.method,
+        party.authLevel ?? null,
         contentHash,
         ctx.principal,
         now,
@@ -1188,6 +1229,11 @@ export async function requestSignatures(
         kind: r.party_kind,
         ref: r.party_ref,
         signatureKind: r.signature_kind,
+        // #620: resolved here, not at the connector, so the event states the level
+        // that was actually requested rather than leaving every reader to re-derive
+        // the default. Additive and behaviour-preserving: a party that said nothing
+        // reads `basic`, which is what the connector did for principals already.
+        authLevel: r.auth_level ?? 'basic',
       })),
     },
   });

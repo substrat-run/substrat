@@ -379,6 +379,38 @@ describe('engine-protocol', () => {
         { instanceId, method: 'scrive', parties: [{ label, kind: 'external' }] },
       );
 
+    // #620: how hard the provider must prove WHO signed, chosen by the caller.
+    // Provider-agnostic on purpose — `se_bankid` is Scrive's word for `strong` and
+    // belongs in the connector, so a vertical is never picking a Scrive enum through
+    // an engine that speaks to several providers.
+    it('carries the requested auth level onto the row and the event, defaulting to basic', async () => {
+      await defineTemplate();
+      const inst = await instantiate();
+      const { requests } = await staff.invoke<{ requests: ProtocolSignatureRequestRow[] }>(
+        'protocol/request-signatures',
+        {
+          instanceId: inst.id,
+          method: 'scrive',
+          parties: [
+            { label: 'Beställare', kind: 'external', authLevel: 'strong' },
+            { label: 'Leverantör', kind: 'principal' }, // says nothing
+          ],
+        },
+      );
+      // Stored as asked; an unspecified party stores NULL rather than a guess, so
+      // the default lives in one place and rows written before 0003 read the same.
+      expect(requests.map((r) => r.auth_level)).toEqual(['strong', null]);
+
+      // The event resolves it, so no consumer re-derives the default.
+      const [requested] = h.eventsOfType('protocol.signatures-requested');
+      const parties = (requested!.payload as { parties: { label: string; authLevel: string }[] })
+        .parties;
+      expect(parties.map((p) => [p.label, p.authLevel])).toEqual([
+        ['Beställare', 'strong'],
+        ['Leverantör', 'basic'],
+      ]);
+    });
+
     it('freezes the content for the whole time it is out for signature', async () => {
       // THE bug this whole shape exists for: signing used to freeze, so an
       // instance sitting at Scrive for days stayed `open` and writable, and the
