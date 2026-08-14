@@ -1,5 +1,26 @@
 # @substrat-run/builder
 
+## 0.2.2
+
+### Patch Changes
+
+- 5145cd1: Hosted studio: the model picker now works. `GET /api/providers` and `GET /api/models`
+  were still falling through to the "not hosted yet" 503, so the picker on
+  builder.substrat.net rendered no provider rows and every session was pinned to the
+  default `anthropic:claude-opus-5` — even when the only credentials deployed were
+  Qwen/Cloudflare worker secrets. `providers-worker.ts` now serves the hosted catalog
+  (the same four providers `resolveModelHosted` can run, with the D-53 who/where/what
+  disclosure and `credential.set` read from worker secrets) plus live `/models` listing
+  for the OpenAI-compatible endpoints, and the DO routes both endpoints.
+- cf96565: The Usage tab (#646): the studio visualizes its own token spend. A worker
+  route (`GET /api/usage`) rolls the metering scope's ledger up host-side
+  (totals, per-UTC-day, per-project), and the SPA renders it as stat tiles, a
+  stacked daily bar chart (input + output tokens, last 30 days, per-theme
+  palettes validated for CVD/contrast), and a per-project table doubling as the
+  chart's accessible view. Local mode serves an honest empty report — the Node
+  server runs no metering scope, so the pane shows its empty state rather than
+  a fake number.
+
 ## 0.2.1
 
 ### Patch Changes

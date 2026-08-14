@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/builder-web",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "The builder studio's browser UI — chat left, code/preview/gates tabs right (builder-studio.md §7)",
   "license": "AGPL-3.0-only",
