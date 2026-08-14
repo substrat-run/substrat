@@ -1,0 +1,41 @@
+{
+	"name": "substrat-builder",
+	"main": "src/worker.ts",
+	"compatibility_date": "2025-01-01",
+	"observability": { "enabled": true },
+
+	// Staff-only (builder-studio.md §1.1): builder.substrat.net, same
+	// custom-domain shape as console.substrat.net. Deliberately on the
+	// substrat.net (brand) zone — the router's `*/*` claim is on substrat.run,
+	// so there is no route to fight.
+	"routes": [{ "pattern": "builder.substrat.net", "custom_domain": true }],
+
+	// EVERYTHING through the worker: the SPA shell itself is staff-only, so
+	// assets are behind the auth gate too — unlike the dashboard, which scopes
+	// run_worker_first to /api/*.
+	"assets": {
+		"directory": "web/dist",
+		"binding": "ASSETS",
+		"run_worker_first": true
+	},
+
+	"durable_objects": {
+		"bindings": [{ "name": "BUILDER_AGENT", "class_name": "BuilderAgent" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["BuilderAgent"] }],
+
+	// The control plane's auth DB — READ-ONLY roster lookups (staff_actor).
+	// Same database the console consults; the builder never writes to it.
+	"d1_databases": [
+		{
+			"binding": "AUTH_DB",
+			"database_name": "substrat-control-plane-auth",
+			"database_id": "da63a4b0-3b45-474f-bce0-1cbe18080906"
+		}
+	]
+
+	// Secrets (scripts/secrets.mjs, secrets/platform.<env>.env):
+	//   OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, SESSION_SECRET
+	// Provider keys (ANTHROPIC_API_KEY etc.) arrive with #626 — the shell
+	// holds no model credentials at all.
+}

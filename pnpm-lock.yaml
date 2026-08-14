@@ -98,13 +98,22 @@ importers:
       '@substrat-run/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
+      '@substrat-run/oidc-rp':
+        specifier: workspace:*
+        version: link:../../packages/oidc-rp
       ai:
         specifier: 7.0.62
         version: 7.0.62(zod@4.4.3)
+      hono:
+        specifier: 4.12.30
+        version: 4.12.30
     devDependencies:
       '@ai-sdk/anthropic':
         specifier: ^3.0.0
         version: 3.0.110(zod@4.4.3)
+      '@cloudflare/workers-types':
+        specifier: ^4.20250109.0
+        version: 4.20260702.1
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.1
@@ -117,6 +126,9 @@ importers:
       typescript:
         specifier: ^7.0.0
         version: 7.0.2
+      wrangler:
+        specifier: ^4.110.0
+        version: 4.116.0(@cloudflare/workers-types@4.20260702.1)
 
   apps/builder/web:
     dependencies:
