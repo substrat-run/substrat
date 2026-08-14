@@ -190,6 +190,20 @@ a PITR rewind the worst case is an orphaned object (harmless, GC-able via the st
 never a row silently re-pointed at different content. Bucket deletion at tenant reap is the same
 tracked follow-up as tenant stores — the ledger row is the teardown list.
 
+**Adoption by an already-provisioned tenant (#636):** minting happens only in the
+tenant-provisioning lifecycle — first install, sibling provision, manager-driven
+`provision-tenant` — never at promote. A serving upload re-derives the `r2_bucket` bindings
+from the `blob_stores` **ledger** (so a re-deploy cannot drop an existing tenant's bucket),
+but a ledger with no row for a tenant yields no binding, and promote mints nothing. So when a
+new version *first* declares `blobStores`, a tenant provisioned before that declaration adopts
+it with **one idempotent re-provision** (the K-31 provision endpoint, same tenant + scope):
+`collectBlobStoreHandles` re-resolves the declared needs against the *serving* version's
+manifest, mints the missing bucket, ledgers it, and attaches the binding — a retried or
+repeated call re-resolves the same bucket. Adoption is therefore "promote, then re-provision
+each pre-existing tenant once" — an explicit ops step (the same self-healing re-provision the
+restore runbook already uses), not push-and-it-works. Until it runs, attachment routes on that
+tenant fail loudly ("no blob store provisioned") — the fail-closed posture, not a bug.
+
 **Static assets (#340) are admitted, and they are not a binding.** A vertical's built SPA is
 declared as `runtimeNeeds.assets` — a *directory*, plus how the runtime should route paths
 against it — and the platform uploads those bytes to the runtime's own asset store
@@ -315,6 +329,14 @@ guess, and a refusal spike or an exfiltration attempt shows up attributed to a v
   the sandbox contract refuses everything except own stores anyway. A hand-authored
   `wrangler.jsonc` remains the expert/legacy path. Note the honest limit: this neutralizes
   the declaration, not the toolchain — wrangler still bundles in the builder's CI.
+  **`RUNTIME_BASELINE` is maintained, not set-and-forget (#636):** while it sits still,
+  hand-authored wrangler-path dates advance past it, and the D-38 migration itself becomes
+  a silent compatibility *downgrade*. Two mechanical guards: a staleness test goes red once
+  the baseline falls ~6 months behind, and `substrat push` **refuses** a `runtimeNeeds`
+  push whose (otherwise ignored) `wrangler.jsonc` pins a date newer than the baseline —
+  the remedy is advancing the baseline, or deleting `wrangler.jsonc` to state that the
+  platform picks the runtime baseline. A wrangler-path config that states *no* date also
+  gets the baseline, never a second hard-coded default.
 - **The deploy endpoint** (dashboard or control-plane worker, platform-controlled, holds the
   WfP-scoped CF credential): authenticates the builder → validates the declared bindings
   against §4 → uploads to the `substrat-verticals` namespace under `deploymentRef =
