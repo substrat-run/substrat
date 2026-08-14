@@ -87,6 +87,23 @@ export const PROVIDERS: Readonly<Record<string, ProviderSpec>> = {
 		note: 'e.g. qwen:qwen3-coder-plus · region override via DASHSCOPE_BASE_URL',
 	},
 
+	/**
+	 * Cloudflare Workers AI, OpenAI-compatible mode. The endpoint is
+	 * account-scoped (`…/accounts/<id>/ai/v1`), so there is no static default —
+	 * set CLOUDFLARE_AI_BASE_URL with your account id. Model ids keep their full
+	 * catalog prefix: `@cf/…` runs on Cloudflare's own network, a bare
+	 * `vendor/model` slug (e.g. `deepseek/deepseek-v4-pro`) is partner-served
+	 * under unified billing. Deliberately NOT wrangler's CLOUDFLARE_API_TOKEN,
+	 * so an ambient deploy token is never silently used for inference.
+	 */
+	cloudflare: {
+		kind: 'compatible',
+		baseUrl: '',
+		baseUrlEnv: 'CLOUDFLARE_AI_BASE_URL',
+		envVar: 'CLOUDFLARE_AI_API_TOKEN',
+		note: 'e.g. cloudflare:@cf/zai-org/glm-5.2 · set CLOUDFLARE_AI_BASE_URL to https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1',
+	},
+
 	/** Local models. No credential; the endpoint is Ollama's OpenAI-compatible one. */
 	ollama: {
 		kind: 'compatible',

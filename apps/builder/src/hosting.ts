@@ -71,6 +71,17 @@ export function hostingInfo(providerName: string): HostingInfo {
 				dataNote: sent,
 			};
 		}
+		case 'cloudflare': {
+			const base = spec?.kind === 'compatible' ? (process.env[spec.baseUrlEnv] ?? '') : '';
+			return {
+				vendor: 'Cloudflare (Workers AI)',
+				// D-53 honesty: `@cf/…` ids run on Cloudflare's network; bare
+				// `vendor/model` ids are partner-served on that vendor's infrastructure.
+				location: 'global (Cloudflare network) · vendor/model ids partner-served',
+				host: base ? hostOf(base) : '(CLOUDFLARE_AI_BASE_URL not set)',
+				dataNote: sent,
+			};
+		}
 		case 'ollama': {
 			const base =
 				(spec?.kind === 'compatible' ? process.env[spec.baseUrlEnv] : undefined) ??
@@ -105,6 +116,8 @@ export function suggestedModels(providerName: string): string[] {
 	switch (providerName) {
 		case 'anthropic':
 			return ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-fable-5'];
+		case 'cloudflare':
+			return ['@cf/zai-org/glm-5.2', '@cf/moonshotai/kimi-k2.7-code', 'deepseek/deepseek-v4-pro'];
 		default:
 			return [];
 	}
