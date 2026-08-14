@@ -70,6 +70,17 @@ const MANIFEST = {
       CF_SAAS_SSL_METHOD: 'CF_SAAS_SSL_METHOD',
     },
   },
+  builder: {
+    dir: 'apps/builder',
+    secrets: {
+      // Staff-only studio (#625): OIDC + session only — the shell holds NO
+      // model-provider keys; those arrive with #626 (ContainerWorkspace).
+      OIDC_ISSUER: 'OIDC_ISSUER',
+      OIDC_CLIENT_ID: 'BUILDER_OIDC_CLIENT_ID',
+      OIDC_CLIENT_SECRET: 'BUILDER_OIDC_CLIENT_SECRET',
+      SESSION_SECRET: 'BUILDER_SESSION_SECRET',
+    },
+  },
   dashboard: {
     dir: 'apps/dashboard',
     secrets: {
@@ -106,6 +117,7 @@ const GENERATABLE = [
   'ROUTER_SECRET',
   'CP_SESSION_SECRET',
   'DASH_SESSION_SECRET',
+  'BUILDER_SESSION_SECRET',
   'CP_PUSH_TOKEN_SECRET',
   'SECRET_BOX_KEY', // base64 of 32 bytes (AES-256); the rest are hex
   'CP_SECRET_BOX_KEY', // base64 of 32 bytes — the control plane's connection box (#574)
