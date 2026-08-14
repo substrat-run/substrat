@@ -11,6 +11,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
+import { absenceModule } from '@substrat-run/engine-absence';
 import { meridianModule } from './module.js';
 import { HR_PERM } from './manifest.js';
 
@@ -63,11 +64,13 @@ export interface MeridianInstance {
 }
 
 /**
- * Registration order = migration order. The protocol engine registers before
- * the vertical so its tables exist for onboarding. Exported for the permission
- * checkpoint emitter (parity with demos/callout).
+ * Registration order = migration order. The engines register before the
+ * vertical so their tables exist when its journal runs — protocol for
+ * onboarding, absence for the 0003 extraction handoff (which INSERTs into
+ * absence_*). Exported for the permission checkpoint emitter (parity with
+ * demos/callout).
  */
-export const MODULES = [protocolModule, meridianModule];
+export const MODULES = [protocolModule, absenceModule, meridianModule];
 
 const hrAdminPerms: PermissionKey[] = [
   HR_PERM.employeeManage,
@@ -202,7 +205,7 @@ export async function provisionMeridian(
   });
   // Entitlements (§4.3) are default-deny, so the SKU flags for the modules this
   // vertical runs must be granted before any of its operations resolve.
-  for (const key of ['protocol', 'meridian']) {
+  for (const key of ['protocol', 'absence', 'meridian']) {
     await host.admin.grantEntitlement(staff, input.tenantId, key);
   }
   await host.provisionScope(staff, {

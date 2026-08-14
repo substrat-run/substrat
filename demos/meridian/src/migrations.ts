@@ -119,4 +119,42 @@ export const meridianMigrations = [
         ON hr_employment_terms (employee_id);
     `,
   },
+  // 0003 — the §5 extraction lands (#634): absence moves to engine-absence.
+  //
+  // ORDERING CONTRACT: @substrat-run/engine-absence must be registered on the
+  // host BEFORE this module so its 0001-init (which creates absence_*) is
+  // journaled first; a wrong order fails closed at migration time.
+  //
+  // The subject mapping is D-B of engine-absence.md: subject = the opaque
+  // ('employee', id) ref this vertical owns; data_subject_id = the employee id,
+  // the same key hr.employee-created already shreds on. Leave-type POLICY rows
+  // (key + floor 0) register into the engine; hr_leave_types stays as the
+  // vocabulary (labels, kinds, statutory days) — vertical forever.
+  // On fresh scopes this replays as copy-nothing-drop — the honest cost of an
+  // append-only journal.
+  // boundary-lint-allow R5 — extraction handoff (decision 27): the one-time move
+  // of the absence ledger into the engine's tables; the only sanctioned write to
+  // another module's schema.
+  {
+    version: '0003-absence-to-engine',
+    sql: `
+    INSERT INTO absence_leave_types (key, floor, active, created_at)
+      SELECT key, '0', 1, created_at FROM hr_leave_types;
+    INSERT INTO absence_ledger
+      (id, subject_type, subject_id, data_subject_id, leave_type_key,
+       entry_kind, delta, effective_date, request_id, note, created_by, created_at)
+      SELECT id, 'employee', employee_id, employee_id, leave_type_key,
+             entry_kind, delta, effective_date, request_id, note, created_by, created_at
+      FROM hr_absence_ledger;
+    INSERT INTO absence_requests
+      (id, subject_type, subject_id, data_subject_id, leave_type_key,
+       start_date, end_date, days, status, note, decided_by, decided_at, created_by, created_at)
+      SELECT id, 'employee', employee_id, employee_id, leave_type_key,
+             start_date, end_date, days, status, note, decided_by, decided_at, created_by, created_at
+      FROM hr_leave_requests;
+    DROP TABLE hr_leave_requests;
+    DROP TABLE hr_absence_ledger;
+  `,
+  },
+  // boundary-lint-end R5
 ];

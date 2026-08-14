@@ -6,6 +6,7 @@ import { platformActorId, principalId, scopeId, tenantId, type PermissionKey, ty
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { protocolModule, PROTOCOL_PERM } from '@substrat-run/engine-protocol';
+import { absenceModule } from '@substrat-run/engine-absence';
 import { workorderModule } from '@substrat-run/engine-workorder';
 import { invoicingModule } from '@substrat-run/engine-invoicing';
 import { calloutModule } from '@substrat-run/demo-callout/module';
@@ -50,7 +51,7 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     host = new SqliteScopeHost({ dir });
     for (const m of MODULES) host.registerModule(m); // the dashboard vertical
     // The verticals an app can run, bundled in-process (M0), mirroring worker.ts.
-    for (const m of [protocolModule, workorderModule, invoicingModule, calloutModule, meridianModule]) {
+    for (const m of [protocolModule, absenceModule, workorderModule, invoicingModule, calloutModule, meridianModule]) {
       host.registerModule(m);
     }
     staff = platformActorId.parse(ulid());

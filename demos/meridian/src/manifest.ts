@@ -1,4 +1,5 @@
 import { moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
+import { PERM as ABSENCE_PERM } from '@substrat-run/engine-absence';
 
 // ============================================================================
 // The Meridian vertical's declarative surface: the permission keys and the
@@ -57,10 +58,13 @@ export const MERIDIAN_ENV: EnvVarSpec[] = [
 
 export const HR_PERM = {
   employeeManage: permissionKey.parse('employee:manage'),
-  absenceConfigure: permissionKey.parse('absence:configure'),
-  absenceRequest: permissionKey.parse('absence:request'),
-  absenceApprove: permissionKey.parse('absence:approve'),
-  absenceRead: permissionKey.parse('absence:read'),
+  // The absence:* keys are DECLARED by engine-absence since the §5 extraction
+  // (#634) — same strings as ever (permission keys are never renamed), now
+  // aliased so ownership is visible at the reference site.
+  absenceConfigure: ABSENCE_PERM.configure,
+  absenceRequest: ABSENCE_PERM.request,
+  absenceApprove: ABSENCE_PERM.approve,
+  absenceRead: ABSENCE_PERM.read,
   timeReport: permissionKey.parse('time:report'),
   timeRead: permissionKey.parse('time:read'),
   projectManage: permissionKey.parse('project:manage'),
@@ -75,11 +79,9 @@ export const meridianManifest = moduleManifest.parse({
   version: '0.0.1',
   kernelContract: '^0.0.1',
   permissions: [
+    // absence:* is engine-absence's declared surface now (#634) — this manifest
+    // stopped declaring those keys when the ledger moved; the roles still grant them.
     { key: 'employee:manage', description: 'Create and read employee records, including salary/national id (HR admin)' },
-    { key: 'absence:configure', description: 'Define leave types and grant accruals to employees (HR admin)' },
-    { key: 'absence:request', description: 'Request time off (employees, narrowed to their own record)' },
-    { key: 'absence:approve', description: 'Approve or reject a leave request — approval books the ledger (managers, HR admin)' },
-    { key: 'absence:read', description: 'Read absence balances, ledger, and requests' },
     { key: 'time:report', description: 'Log worked hours to a project (employees, narrowed to their own record)' },
     { key: 'time:read', description: 'Read time entries and utilization' },
     { key: 'project:manage', description: 'Manage the projects time books against (HR admin)' },
@@ -89,13 +91,12 @@ export const meridianManifest = moduleManifest.parse({
     { key: 'payroll:export', description: 'Generate the variable-pay export and mark expenses exported (payroll operator)' },
   ],
   events: {
+    // The absence events (absence.requested/decided/cancelled/expired,
+    // absence.entry-recorded) are emitted — and declared — by engine-absence
+    // since the extraction; the hr.* spine keeps only what stayed vertical.
     emits: [
       { type: 'hr.employee-created', schemaVersion: 1 },
       { type: 'hr.employment-terms-set', schemaVersion: 1 },
-      { type: 'hr.absence-accrued', schemaVersion: 1 },
-      { type: 'hr.leave-requested', schemaVersion: 1 },
-      { type: 'hr.leave-decided', schemaVersion: 1 },
-      { type: 'hr.leave-expired', schemaVersion: 1 },
       { type: 'hr.time-logged', schemaVersion: 1 },
       { type: 'hr.expense-submitted', schemaVersion: 1 },
       { type: 'hr.expense-decided', schemaVersion: 1 },
@@ -104,12 +105,8 @@ export const meridianManifest = moduleManifest.parse({
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
-  // #383: a recurring, date-triggered rule. The platform sweep invokes this on
-  // every live Meridian scope daily, under a system actor holding exactly
-  // `absence:approve` — cancelling leaves left unapproved past their start date.
-  schedules: [
-    { operation: 'hr/expire-stale-requests', cadence: { everyMinutes: 1440 }, permissions: ['absence:approve'] },
-  ],
+  // The #383 stale-leave expiry schedule moved to engine-absence's manifest
+  // (`absence/expire-stale`) together with the state machine it polices.
   attachmentTargets: [{ entityType: 'employee', readPermission: 'absence:read' }],
   entityRelations: [
     // Onboarding checklists (protocol engine) hang off employees; THIS vertical

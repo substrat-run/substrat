@@ -57,6 +57,7 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
     db.close();
     expect(rows.map((r) => r.module_id)).toEqual([
       '@substrat-run/demo-meridian',
+      '@substrat-run/engine-absence',
       '@substrat-run/engine-protocol',
     ]);
   });
@@ -142,7 +143,7 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
     await mats.invoke('hr/decide-leave', { requestId: tooBig.id, decision: 'reject' });
     await expect(
       mats.invoke('hr/decide-leave', { requestId: tooBig.id, decision: 'approve' }),
-    ).rejects.toThrow(/only a requested leave can be decided/);
+    ).rejects.toThrow(/only a requested absence can be decided/);
     // The failed approval wrote nothing: balance untouched.
     const bal = await hedda.invoke<{ balances: { balance: string }[] }>('hr/balance', {
       employeeId: w.elinEmpId,
@@ -486,8 +487,9 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
     expect(stale.status).toBe('requested');
 
     // No one touches it. The platform sweep — the same driver server.ts runs on a
-    // timer — invokes `hr/expire-stale-requests` on every live scope, under a
-    // system actor, and the leave is cancelled.
+    // timer — invokes the ENGINE's `absence/expire-stale` (its manifest declares
+    // the schedule since the §5 extraction) on every live scope, under a system
+    // actor, and the leave is cancelled.
     const report = await runPlatformSweep(host, {
       actor: platformActorId.parse(ulid()),
       fetch: globalThis.fetch as unknown as FetchLike,
@@ -507,11 +509,11 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
     // the attribution the whole seam exists to keep honest.
     const db = new Database(join(dir, `${w.t1}__${w.sSe}.sqlite`), { readonly: true });
     const evt = db
-      .prepare(`SELECT actor FROM _substrat_outbox WHERE type = 'hr.leave-expired' ORDER BY id DESC LIMIT 1`)
+      .prepare(`SELECT actor FROM _substrat_outbox WHERE type = 'absence.expired' ORDER BY id DESC LIMIT 1`)
       .get() as { actor: string } | undefined;
     db.close();
     expect(evt).toBeDefined();
-    expect(JSON.parse(evt!.actor)).toEqual({ system: '@substrat-run/demo-meridian' });
+    expect(JSON.parse(evt!.actor)).toEqual({ system: '@substrat-run/engine-absence' });
 
     // Cadence gate: a second immediate pass does not re-run it.
     const again = await runPlatformSweep(host, {

@@ -87,6 +87,7 @@
     "@substrat-run/connector-scrive": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
+    "@substrat-run/engine-absence": "workspace:^",
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",

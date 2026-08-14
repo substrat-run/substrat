@@ -91,11 +91,6 @@ export const API: ApiCatalog = {
     description: 'Requires `absence:approve`. Only a `requested` leave can be decided; approval books the ledger and cannot overdraw the balance.',
     input: decideLeaveInput,
   },
-  'hr/expire-stale-requests': {
-    tag: 'Leave',
-    summary: 'Cancel leave requests left unapproved past their start date.',
-    description: 'Requires `absence:approve`. A recurring rule (#383): the platform sweep invokes it daily on every scope under a system actor, so a signed leave that no one approved before it began is cancelled rather than lingering `requested` forever. Idempotent and paged; a manager may also trigger it, in which case the cancellation is attributed to them rather than the schedule.',
-  },
   'hr/list-requests': {
     tag: 'Leave',
     summary: 'List leave requests, optionally by status.',
