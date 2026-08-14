@@ -45,7 +45,14 @@ const fail = (m) => {
 };
 
 function sh(cmd, opts = {}) {
-	return execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+	return execSync(cmd, {
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'pipe'],
+		// Non-interactive wrangler cannot pick among multiple Cloudflare accounts —
+		// pin the platform account from the same secrets file everything else uses.
+		env: { ...process.env, ...(secrets.CF_ACCOUNT_ID ? { CLOUDFLARE_ACCOUNT_ID: secrets.CF_ACCOUNT_ID } : {}) },
+		...opts,
+	});
 }
 
 /** Flat KEY=value parser — same format secrets.mjs reads; values never printed. */
@@ -101,7 +108,8 @@ if (!token || !account) {
 		warn('versioning endpoint not recognised by the API (shape may have moved) —');
 		warn('enable manually: dash → R2 → substrat-builder-repos → Settings.');
 	} else if (DRY) {
-		act('would enable versioning');
+		if (!get.ok) warn(`cannot read versioning state (HTTP ${get.status}) — token lacks R2 read; state unknown`);
+		else act('would enable versioning');
 	} else {
 		const put = await fetch(`${base}/versioning`, {
 			method: 'PUT',
@@ -128,8 +136,19 @@ if (missing.length) {
 }
 ok('auth secrets set');
 if (!providers.some((k) => secrets[k])) {
-	warn('no model-provider key set — the studio will deploy but every turn 422s.');
-	warn(`set ${providers.join(' or ')} in ${envFile} and re-run (idempotent).`);
+	// Near-miss detection: the flat file is shared across workers, so builder
+	// keys carry the BUILDER_ prefix — an unprefixed DASHSCOPE_API_KEY is the
+	// most common way this goes wrong, and silence about it costs a debug loop.
+	const nearMiss = providers
+		.map((k) => k.replace(/^BUILDER_/, ''))
+		.filter((k) => secrets[k]);
+	if (nearMiss.length) {
+		warn(`found ${nearMiss.join(', ')} — but builder keys need the BUILDER_ prefix:`);
+		for (const k of nearMiss) warn(`  rename ${k} → BUILDER_${k}`);
+	} else {
+		warn('no model-provider key set — the studio will deploy but every turn 422s.');
+		warn(`set ${providers.join(' or ')} in ${envFile} and re-run (idempotent).`);
+	}
 } else {
 	ok(`provider key(s): ${providers.filter((k) => secrets[k]).join(', ')}`);
 }
@@ -140,6 +159,7 @@ if (DRY) act('would run: secrets.mjs push --env ' + ENV + ' --only builder');
 else {
 	execFileSync('node', ['scripts/secrets.mjs', 'push', '--env', ENV, '--only', 'builder'], {
 		stdio: 'inherit',
+		env: { ...process.env, ...(secrets.CF_ACCOUNT_ID ? { CLOUDFLARE_ACCOUNT_ID: secrets.CF_ACCOUNT_ID } : {}) },
 	});
 }
 
@@ -149,7 +169,10 @@ if (has('skip-deploy')) warn('skipped (--skip-deploy)');
 else if (DRY) act('would run: pnpm --filter @substrat-run/builder cf:deploy');
 else {
 	act('deploying (first run builds the container image — slow is normal)…');
-	execSync('pnpm --filter @substrat-run/builder cf:deploy', { stdio: 'inherit' });
+	execSync('pnpm --filter @substrat-run/builder cf:deploy', {
+		stdio: 'inherit',
+		env: { ...process.env, ...(secrets.CF_ACCOUNT_ID ? { CLOUDFLARE_ACCOUNT_ID: secrets.CF_ACCOUNT_ID } : {}) },
+	});
 }
 
 // ── 6. smoke ─────────────────────────────────────────────────────────────────
