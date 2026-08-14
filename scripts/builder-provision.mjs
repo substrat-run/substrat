@@ -110,8 +110,7 @@ if (!token || !account) {
 	} else {
 		warn(`token cannot list R2 buckets (HTTP ${r.status}) — check its permissions.`);
 	}
-	warn('versioning itself is NOT settable or readable via the v4 API —');
-	warn(`confirm ONCE in the dash: R2 → ${BUCKET} → Settings → Object versioning: Enabled.`);
+	ok('rollback trail: app-level bundle history (R2 has NO object versioning — verified)');
 }
 
 // ── 3. secrets present (names only) ─────────────────────────────────────────

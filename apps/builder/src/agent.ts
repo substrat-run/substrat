@@ -173,8 +173,22 @@ export class BuilderAgent extends DurableObject<Env> {
 
 	// ── D-52: git bundles in R2 — restore on wake, save after every commit ────
 
-	#bundleKey(entry: ProjectEntry): string {
-		return `projects/${entry.id}.bundle`;
+	/** Bundle HISTORY, not a single overwritten object: R2 has no object
+	 * versioning (verified against docs + API — bucket locks and lifecycles,
+	 * yes; versioning, no), so the rollback trail is ours: one ULID-keyed
+	 * bundle per save (lexicographic = chronological), pruned to the last N.
+	 * A corrupted newest bundle leaves every prior one intact. */
+	#bundlePrefix(entry: ProjectEntry): string {
+		return `projects/${entry.id}/`;
+	}
+
+	async #newestBundle(entry: ProjectEntry): Promise<string | null> {
+		const listed = await this.env.PROJECT_REPOS.list({ prefix: this.#bundlePrefix(entry) });
+		const keys = listed.objects.map((o) => o.key).sort();
+		if (keys.length > 0) return keys[keys.length - 1] as string;
+		// Legacy single-key layout from the pre-history deployments.
+		const legacy = `projects/${entry.id}.bundle`;
+		return (await this.env.PROJECT_REPOS.head(legacy)) ? legacy : null;
 	}
 
 	/**
@@ -187,7 +201,8 @@ export class BuilderAgent extends DurableObject<Env> {
 		const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${REPO}/${entry.dir}/.git`)}`);
 		if (probe.exitCode === 0) return; // container still has it
 
-		const obj = await this.env.PROJECT_REPOS.get(this.#bundleKey(entry));
+		const key = await this.#newestBundle(entry);
+		const obj = key ? await this.env.PROJECT_REPOS.get(key) : null;
 		if (!obj) return; // nothing durable yet — first turn will init
 
 		// Chunked: spreading a multi-MB bundle into fromCharCode blows the arg limit.
@@ -220,8 +235,16 @@ export class BuilderAgent extends DurableObject<Env> {
 		const r = await pair.raw.readFile(tmp, { encoding: 'base64' });
 		const b64 = typeof r === 'string' ? r : (r as { content: string }).content;
 		const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-		await this.env.PROJECT_REPOS.put(this.#bundleKey(entry), bytes);
+		await this.env.PROJECT_REPOS.put(`${this.#bundlePrefix(entry)}${ulid()}.bundle`, bytes);
 		await pair.sb.exec(`rm -f ${JSON.stringify(tmp)}`);
+		// Prune to the last N — each bundle is complete (git bundle --all), so
+		// history depth is a rollback budget, not a chain.
+		const KEEP = 10;
+		const listed = await this.env.PROJECT_REPOS.list({ prefix: this.#bundlePrefix(entry) });
+		const keys = listed.objects.map((o) => o.key).sort();
+		for (const k of keys.slice(0, Math.max(0, keys.length - KEEP))) {
+			await this.env.PROJECT_REPOS.delete(k);
+		}
 	}
 
 	#rootWs(sb: SandboxLike): Workspace {

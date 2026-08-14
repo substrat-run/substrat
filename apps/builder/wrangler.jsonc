@@ -46,10 +46,10 @@
 		}
 	],
 
-	// D-52 (#627): one bare repo per project, as a git bundle in R2 — the durable
-	// tier that survives container sleep. Bucket is created manually once
-	// (`wrangler r2 bucket create substrat-builder-repos`) with object
-	// versioning enabled, so a truncated bundle rolls back.
+	// D-52 (#627): one bare repo per project, as ULID-keyed git bundles in R2 —
+	// the durable tier that survives container sleep. R2 has NO object
+	// versioning (verified), so the rollback trail is app-level: last N bundles
+	// kept per project, pruned on save.
 	"r2_buckets": [
 		{ "binding": "PROJECT_REPOS", "bucket_name": "substrat-builder-repos" }
 	],

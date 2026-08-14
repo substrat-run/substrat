@@ -349,8 +349,10 @@ What makes it tractable rather than clever:
 
 - **Single writer, for free.** The `BuilderAgent` DO (§7.1) is the only thing that touches a given
   vertical's bundle, so there is no locking problem to solve — the DO *is* the lock.
-- **Durable.** R2 object versioning is GA, so a corrupted or truncated bundle rolls back; keep the
-  last N versions.
+- **Durable.** R2 has NO object versioning (verified against docs and API — an earlier draft
+  claimed otherwise), so the rollback trail is app-level: ULID-keyed bundle per save
+  (lexicographic = chronological), pruned to the last N. Each bundle is complete, so history
+  depth is a rollback budget, not a chain.
 - **Small.** A vertical's history is a few MB. Bundle-per-turn is cheap.
 - **Zero lock-in, and this is the deciding property.** Moving to any git host later is
   `git clone <bundle> && git remote add … && git push`. Choosing this forecloses nothing.
@@ -861,6 +863,8 @@ nothing now and retrofitting them later costs a rewrite.
   asymmetrically reversible: bundles → any git host is a `git push`, while our-org → elsewhere
   means transferring repos we should never have held. §4.5's "R2 is a cache" still holds, because
   git objects are not loose files: git remains the durable tier and R2 is only where it rests.
+  (Correction, post-implementation: R2 has no object versioning — rollback is app-level ULID-keyed
+  bundle history, not a bucket feature.)
 - **D-53 — The generated vertical is the customer's code; the studio is a tool, not the author.**
   Export is available from day one rather than at offboarding, we hold the repo as custodian by
   arrangement (D-52), the model provider is a disclosed subprocessor the tenant may constrain, and
