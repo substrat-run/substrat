@@ -10,13 +10,19 @@ import {
   tenantId,
   type PermissionKey,
 } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox, type ScopeStub } from '@substrat-run/kernel';
+import {
+  ulid,
+  webCryptoSecretBox,
+  type ConnectorOptions,
+  type ScopeStub,
+} from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PROTOCOL_PERM as PERM, protocolModule } from '@substrat-run/engine-protocol';
 import {
   ScriveMock,
   registerScriveConnector,
   scriveCallbackPath,
+  type ScriveConnectorOptions,
   type ScriveDispatchState,
 } from '../src/index.js';
 
@@ -42,7 +48,15 @@ describe('scrive connector — outbound dispatch', () => {
 
   const EMPLOYEE = { entityType: 'employee', entityId: '01JEMPLOYEE0000000000000AA' };
 
-  beforeEach(async () => {
+  /**
+   * Stand the whole world up: host, protocol engine, a stand-in vertical, the
+   * connector, a tenant/scope/connection and a template. Parameterised by the
+   * connector's own options so a test can prove a CONNECTION-level policy (#620's
+   * `defaultAuthMethod`) rather than only the shipped default.
+   */
+  const boot = async (
+    connectorOptions: Partial<ScriveConnectorOptions & { retry: ConnectorOptions }> = {},
+  ) => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scrive-'));
     scrive = new ScriveMock();
 
@@ -77,6 +91,7 @@ describe('scrive connector — outbound dispatch', () => {
       // Retry immediately, so a test can watch a failure recover rather than
       // asserting that a timer it cannot advance would eventually fire.
       retry: { baseDelayMs: 0 },
+      ...connectorOptions,
     });
 
     const principal = principalId.parse(ulid());
@@ -124,7 +139,9 @@ describe('scrive connector — outbound dispatch', () => {
         hashRecipe: 'sha256 over the terms row, fields in fixed order',
       },
     });
-  });
+  };
+
+  beforeEach(() => boot());
 
   afterEach(async () => {
     await host.close();
@@ -174,11 +191,14 @@ describe('scrive connector — outbound dispatch', () => {
     expect(doc!.file!.bytes).toBeGreaterThan(0);
     expect(doc!.title).toContain('anstallningsavtal');
 
-    // The external signatory authenticates with BankID; the employer does not
-    // need the stronger method for the signature to mean something.
+    // #620: BOTH parties authenticate with `standard`, because neither request
+    // asked for more. This assertion used to read `se_bankid` for the external
+    // party — the hardcoded requirement that made Scrive refuse every document
+    // this connector ever sent (`409 … requires valid personal number field`),
+    // since the platform supplies no personnummer by design.
     expect(doc!.parties.map((p) => [p.name, p.auth])).toEqual([
       ['Arbetsgivare', 'standard'],
-      ['Anställd', 'se_bankid'],
+      ['Anställd', 'standard'],
     ]);
 
     // A capability URL, because Scrive's callbacks carry no signature to verify:
@@ -193,6 +213,79 @@ describe('scrive connector — outbound dispatch', () => {
     expect(state!.documentId).toBe(doc!.id);
     expect(state!.parties.map((p) => p.requestId)).toEqual(sent.requests.map((r) => r.id));
     expect(state!.scopeId).toBe(s);
+  });
+
+  // #620. The connector hardcoded `se_bankid` for external parties, which Scrive
+  // will not start without a `personal_number` on the party — one this platform
+  // deliberately never supplies (B6: a personnummer reaches neither the kernel nor
+  // the events nor the audit trail). The result was a requirement the caller could
+  // neither see nor satisfy, and a production tenant whose every contract failed.
+  describe('the authentication method comes from the caller (#620)', () => {
+    /** Issue a set whose single external party asks for `level`. */
+    const issueAt = async (level?: 'basic' | 'strong') => {
+      const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
+        templateKey: 'anstallningsavtal',
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      });
+      await stub.invoke('protocol/bind-document', {
+        instanceId: inst.id,
+        contentRef: { entityType: 'employment-terms', entityId: '01JTERMS000000000000000AUT' },
+        contentHash: '11'.repeat(32),
+      });
+      return stub.invoke('protocol/request-signatures', {
+        instanceId: inst.id,
+        method: 'scrive',
+        parties: [{ label: 'Anställd', kind: 'external', ...(level ? { authLevel: level } : {}) }],
+      });
+    };
+
+    it("defaults to 'standard', so a document actually starts", async () => {
+      await issueAt();
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.status).toBe('pending'); // started — the 409 is gone
+      expect(doc!.parties.map((p) => p.auth)).toEqual(['standard']);
+    });
+
+    it("honours a connection-level default for parties that ask for 'basic'", async () => {
+      // A deployment that supplies personal numbers by other means can still put
+      // every `basic` party on BankID — the policy belongs to the connection, not
+      // to a hardcoded branch on `kind`. Re-boot the world with that option set.
+      const discarded = dir; // `boot` rebinds `dir`; afterEach only cleans the live one
+      await host.close();
+      await boot({ defaultAuthMethod: 'se_bankid' });
+      rmSync(discarded, { recursive: true, force: true });
+      await issueAt();
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.status).toBe('pending');
+      expect(doc!.parties.map((p) => p.auth)).toEqual(['se_bankid']);
+    });
+
+    it("refuses 'strong' before any egress, naming why it cannot be satisfied", async () => {
+      // One attempt, so the refusal lands in the dead-letter record immediately
+      // rather than after eight backoffs a test cannot advance through.
+      const discarded = dir;
+      await host.close();
+      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } });
+      rmSync(discarded, { recursive: true, force: true });
+
+      // The operation still SUCCEEDS — the freeze is committed and the request rows
+      // exist. Only the DELIVERY refuses, exactly as a provider failure would; the
+      // difference is that the reason is ours, and it is a sentence.
+      await issueAt('strong');
+
+      // Nothing was sent, and — the point of resolving up front — no draft document
+      // was left behind at the provider for a retry to duplicate.
+      expect(scrive.documents.size).toBe(0);
+
+      const [dead] = await host.executorDeadLetters(t, s);
+      expect(dead!.eventType).toBe('protocol.signatures-requested');
+      expect(dead!.error).toMatch(/authLevel 'strong'/);
+      expect(dead!.error).toMatch(/personal number/);
+      // The old behaviour, for contrast: Scrive's own `409 … requires valid personal
+      // number field`, raised only after a document had been created.
+      expect(dead!.error).not.toMatch(/409/);
+    });
   });
 
   it('skips a dispatch already recorded — the idempotency guard', async () => {
