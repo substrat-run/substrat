@@ -25,12 +25,16 @@
 	"durable_objects": {
 		"bindings": [
 			{ "name": "BUILDER_AGENT", "class_name": "BuilderAgent" },
-			{ "name": "Sandbox", "class_name": "Sandbox" }
+			{ "name": "Sandbox", "class_name": "Sandbox" },
+			// The studio's own kernel scope (#646): one CP-less ScopeDO bundling
+			// only the metering engine — token usage per turn lands here.
+			{ "name": "SCOPE", "class_name": "ScopeDO" }
 		]
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["BuilderAgent"] },
-		{ "tag": "v2", "new_sqlite_classes": ["Sandbox"] }
+		{ "tag": "v2", "new_sqlite_classes": ["Sandbox"] },
+		{ "tag": "v3", "new_sqlite_classes": ["ScopeDO"] }
 	],
 
 	// The execution container (#626): the monorepo baked warm — see

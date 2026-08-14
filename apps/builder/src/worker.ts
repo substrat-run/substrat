@@ -19,6 +19,8 @@
  * being able to execute yet, rather than pretending with a broken loop.
  */
 import { Hono } from 'hono';
+import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
+import { meteringModule } from '@substrat-run/engine-metering';
 import {
 	mountOidcRoutes,
 	SESSION_COOKIE,
@@ -30,11 +32,16 @@ import {
 export { BuilderAgent } from './agent.js';
 // The execution container's DO class (#626) — wrangler requires the export here.
 export { Sandbox } from '@cloudflare/sandbox';
+// The studio's kernel scope (#646): one CP-less ScopeDO bundling only the
+// metering engine — the builder's first kernel-backed table (src/metering.ts).
+export const ScopeDO = defineScopeDO([meteringModule], {});
 
 export interface Env extends OidcEnv {
 	/** The control plane's auth DB — read-only roster lookups, never writes. */
 	AUTH_DB: D1Database;
 	BUILDER_AGENT: DurableObjectNamespace;
+	/** The studio's own kernel scope (#646) — usage metering lives here. */
+	SCOPE: DurableObjectNamespace;
 	ASSETS: Fetcher;
 }
 
