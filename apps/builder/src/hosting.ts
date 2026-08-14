@@ -117,7 +117,12 @@ export function suggestedModels(providerName: string): string[] {
 		case 'anthropic':
 			return ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-fable-5'];
 		case 'cloudflare':
-			return ['@cf/zai-org/glm-5.2', '@cf/moonshotai/kimi-k2.7-code', 'deepseek/deepseek-v4-pro'];
+			return [
+				'@cf/zai-org/glm-5.2',
+				'@cf/zai-org/glm-4.7-flash',
+				'@cf/moonshotai/kimi-k2.7-code',
+				'deepseek/deepseek-v4-pro',
+			];
 		default:
 			return [];
 	}
