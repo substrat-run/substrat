@@ -92,12 +92,21 @@ importers:
       '@cloudflare/sandbox':
         specifier: 0.12.5
         version: 0.12.5
+      '@substrat-run/adapter-cloudflare':
+        specifier: workspace:*
+        version: link:../../packages/adapter-cloudflare
       '@substrat-run/builder-generator':
         specifier: workspace:*
         version: link:../../packages/builder-generator
       '@substrat-run/builder-workspace':
         specifier: workspace:*
         version: link:../../packages/builder-workspace
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@substrat-run/engine-metering':
+        specifier: workspace:*
+        version: link:../../engines/metering
       '@substrat-run/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel

@@ -39,6 +39,7 @@ import {
 import { detectPhase, skillsForPhase, SKILL_MANIFEST } from './phase.js';
 import { explainProviderFailure } from './provider-errors.js';
 import { HostedProviderError, resolveModelHosted, type ProviderSecrets } from './providers-worker.js';
+import { reportTurnUsage } from './metering.js';
 
 const REPO = '/workspace/substrat';
 const PROJECTS = '.builder/projects';
@@ -47,6 +48,8 @@ interface Env extends ProviderSecrets {
 	Sandbox: DurableObjectNamespace<Sandbox>;
 	/** D-52 (#627): one git bundle per project — the durable tier. */
 	PROJECT_REPOS: R2Bucket;
+	/** The studio's own kernel scope (#646) — usage metering lives here. */
+	SCOPE: DurableObjectNamespace;
 }
 
 interface ProjectEntry {
@@ -317,6 +320,9 @@ export class BuilderAgent extends DurableObject<Env> {
 
 		this.#busy = true;
 		state.turnNo += 1;
+		// The turn's identity for metering: the dedupe key that makes a replayed
+		// usage report record nothing (#646).
+		const turnId = ulid();
 
 		const { readable, writable } = new TransformStream<Uint8Array>();
 		const writer = writable.getWriter();
@@ -363,6 +369,19 @@ export class BuilderAgent extends DurableObject<Env> {
 						entry.nameSource = 'ai';
 						entry.updatedAt = new Date().toISOString();
 						await this.#save(reg);
+					}
+					if (event.type === 'usage') {
+						// Best-effort by design: the turn's product is the commit, and
+						// the meter must never take it down. waitUntil, not await — the
+						// record rides out past the stream close if it must.
+						this.ctx.waitUntil(
+							reportTurnUsage(this.env, {
+								projectId: entry.id,
+								turnId,
+								inputTokens: event.inputTokens,
+								outputTokens: event.outputTokens,
+							}),
+						);
 					}
 					emit(event);
 					if (event.type === 'assistant-text') assistant += event.text;
