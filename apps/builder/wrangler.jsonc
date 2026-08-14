@@ -43,6 +43,14 @@
 		}
 	],
 
+	// D-52 (#627): one bare repo per project, as a git bundle in R2 — the durable
+	// tier that survives container sleep. Bucket is created manually once
+	// (`wrangler r2 bucket create substrat-builder-repos`) with object
+	// versioning enabled, so a truncated bundle rolls back.
+	"r2_buckets": [
+		{ "binding": "PROJECT_REPOS", "bucket_name": "substrat-builder-repos" }
+	],
+
 	// The control plane's auth DB — READ-ONLY roster lookups (staff_actor).
 	// Same database the console consults; the builder never writes to it.
 	"d1_databases": [

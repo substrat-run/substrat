@@ -13,6 +13,8 @@ the same turn loop as the local server (ensureVerticalRepo per turn against
 ephemeral disk, generator over the project-rooted workspace, standalone gates,
 commit-per-turn, NDJSON with heartbeat) in a per-project sandbox, with skills
 read from the image and providers resolved from worker secrets (anthropic,
-qwen, compat; ollama refused hosted with the reason). Hosted project code is
-scratch until #627 (R2 bundles); /api/dev preview and the hosted picker
-catalog are named follow-ups.
+qwen, compat; ollama refused hosted with the reason). Durability is D-52 made real (#627):
+one git bundle per project in R2 — restored on container wake (clone at HEAD),
+re-bundled after every commit, chunk-safe binary transfer via the SDK's base64
+file encoding, rollback via R2 object versioning. /api/dev preview and the
+hosted picker catalog are named follow-ups.

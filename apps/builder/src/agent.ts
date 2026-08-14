@@ -10,13 +10,13 @@
  * workspace, runTurn with standalone gates, commit-per-turn. The skills arrive
  * from the image (the container has `.claude/skills/`), read once and cached.
  *
- * Honest limits, stated where they bite:
- * - Project repos live on the container's disk, which RESETS on sleep (§4.2).
- *   Until #627 (R2 git bundles) a hosted project's code survives only as long
- *   as its container — the UI must treat hosted projects as scratch. History
- *   and names survive (DO storage); the working tree does not.
- * - /api/dev (preview) stays 503: background processes want the SDK's process
- *   API + exposePort wiring, scoped to the follow-up in #626's checklist.
+ * Durability (D-52, #627): the container's disk is a CACHE — it resets on
+ * sleep (§4.2). The durable tier is one git bundle per project in R2:
+ * restored on wake (clone at HEAD, §4.5), re-bundled after every commit,
+ * rollback via R2 object versioning. History and names live in DO storage.
+ *
+ * Honest limit: /api/dev (preview) stays 503 — background processes want the
+ * SDK's process API + exposePort wiring, a named follow-up of #626.
  */
 import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, type Sandbox } from '@cloudflare/sandbox';
@@ -42,6 +42,8 @@ const PROJECTS = '.builder/projects';
 
 interface Env extends ProviderSecrets {
 	Sandbox: DurableObjectNamespace<Sandbox>;
+	/** D-52 (#627): one git bundle per project — the durable tier. */
+	PROJECT_REPOS: R2Bucket;
 }
 
 interface ProjectEntry {
@@ -157,9 +159,69 @@ export class BuilderAgent extends DurableObject<Env> {
 
 	// ── execution plumbing ────────────────────────────────────────────────────
 
-	/** One sandbox per project — its DO id is the project ULID (§7.1). */
+	/** One sandbox per project — its DO id is the project ULID (§7.1). The raw
+	 * stub is kept alongside the bridged slice: bundle transfer needs the SDK's
+	 * base64 file encoding, which is DO plumbing, not generator surface. */
+	#sandboxPair(projectId: string): { sb: SandboxLike; raw: Sandbox } {
+		const raw = getSandbox(this.env.Sandbox, `project:${projectId}`);
+		return { sb: sandboxLike(raw), raw };
+	}
+
 	#sandbox(projectId: string): SandboxLike {
-		return sandboxLike(getSandbox(this.env.Sandbox, `project:${projectId}`));
+		return this.#sandboxPair(projectId).sb;
+	}
+
+	// ── D-52: git bundles in R2 — restore on wake, save after every commit ────
+
+	#bundleKey(entry: ProjectEntry): string {
+		return `projects/${entry.id}.bundle`;
+	}
+
+	/**
+	 * The wake path (§4.5): clone at HEAD, not restore a disk. If the container's
+	 * disk lost the project (sleep) and a bundle exists, clone it back — full
+	 * history, exactly what the last completed turn committed. No bundle + no
+	 * dir = genuinely new project; ensureVerticalRepo inits it.
+	 */
+	async #restoreProject(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
+		const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${REPO}/${entry.dir}/.git`)}`);
+		if (probe.exitCode === 0) return; // container still has it
+
+		const obj = await this.env.PROJECT_REPOS.get(this.#bundleKey(entry));
+		if (!obj) return; // nothing durable yet — first turn will init
+
+		// Chunked: spreading a multi-MB bundle into fromCharCode blows the arg limit.
+		const bytes = new Uint8Array(await obj.arrayBuffer());
+		let bin = '';
+		for (let i = 0; i < bytes.length; i += 0x8000) {
+			bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+		}
+		const b64 = btoa(bin);
+		const tmp = `/tmp/${entry.id}.bundle`;
+		await pair.raw.writeFile(tmp, b64, { encoding: 'base64' });
+		const clone = await pair.sb.exec(
+			`mkdir -p ${JSON.stringify(`${REPO}/${PROJECTS}`)} && git clone -q ${JSON.stringify(tmp)} ${JSON.stringify(`${REPO}/${entry.dir}`)} && rm -f ${JSON.stringify(tmp)}`,
+		);
+		if (clone.exitCode !== 0) {
+			throw new Error(`bundle restore failed for ${entry.id}: ${clone.stderr || clone.stdout}`);
+		}
+	}
+
+	/** The save path: after a commit, the repo IS the durable state — bundle it
+	 * whole (few MB) and let R2 versioning keep the rollback trail. */
+	async #saveBundle(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
+		const tmp = `/tmp/${entry.id}.bundle`;
+		const made = await pair.sb.exec(`git bundle create ${JSON.stringify(tmp)} --all`, {
+			cwd: `${REPO}/${entry.dir}`,
+		});
+		if (made.exitCode !== 0) {
+			throw new Error(`git bundle failed for ${entry.id}: ${made.stderr || made.stdout}`);
+		}
+		const r = await pair.raw.readFile(tmp, { encoding: 'base64' });
+		const b64 = typeof r === 'string' ? r : (r as { content: string }).content;
+		const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+		await this.env.PROJECT_REPOS.put(this.#bundleKey(entry), bytes);
+		await pair.sb.exec(`rm -f ${JSON.stringify(tmp)}`);
 	}
 
 	#rootWs(sb: SandboxLike): Workspace {
@@ -207,7 +269,8 @@ export class BuilderAgent extends DurableObject<Env> {
 		const modelSpec =
 			((await this.ctx.storage.get('modelSpec')) as string | undefined) ?? 'anthropic:claude-opus-5';
 
-		const sb = this.#sandbox(entry.id);
+		const pair = this.#sandboxPair(entry.id);
+		const sb = pair.sb;
 		const rootWs = this.#rootWs(sb);
 		let generator: VerticalGenerator;
 		try {
@@ -233,8 +296,9 @@ export class BuilderAgent extends DurableObject<Env> {
 		const run = async (): Promise<void> => {
 			let assistant = '';
 			try {
-				// The container's disk may be fresh (slept) — ensure the project repo
-				// exists every turn, not just on create. Idempotent by design.
+				// The container's disk may be fresh (slept): restore from the R2
+				// bundle first (clone at HEAD, §4.5), then ensure — both idempotent.
+				await this.#restoreProject(pair, entry);
 				await ensureVerticalRepo(rootWs, entry.dir);
 				const projectWs = this.#projectWs(sb, entry.dir);
 				const concept = (await projectWs.exists('spec/concept.md'))
@@ -265,8 +329,12 @@ export class BuilderAgent extends DurableObject<Env> {
 					onGateResult: (result) => emit({ type: 'check', result }),
 				});
 				emit({ type: 'gates', run: turn.gates });
-				if (turn.commit)
+				if (turn.commit) {
 					emit({ type: 'commit', sha: turn.commit, summary: `${turn.changedFiles.length} files` });
+					// The commit is only durable once bundled (§4.5): container disk
+					// is the cache, R2 is where the repo rests.
+					await this.#saveBundle(pair, entry);
+				}
 
 				state.history.push({ role: 'user', text: message });
 				if (assistant) state.history.push({ role: 'assistant', text: assistant });
@@ -328,22 +396,25 @@ export class BuilderAgent extends DurableObject<Env> {
 					busy: this.#busy,
 					turns: state.turnNo,
 					foreign: [],
-					mode: 'hosted — execution in the sandbox container; project code is scratch until #627',
+					mode: 'hosted — execution in the sandbox container; repos durable as R2 bundles (D-52)',
 				});
 			}
 			case 'POST /api/turn':
 				return this.#turn(req);
 			case 'POST /api/gates': {
 				const { entry } = await this.#current();
-				const sb = this.#sandbox(entry.id);
-				const rootWs = this.#rootWs(sb);
+				const pair = this.#sandboxPair(entry.id);
+				const rootWs = this.#rootWs(pair.sb);
+				await this.#restoreProject(pair, entry);
 				await ensureVerticalRepo(rootWs, entry.dir);
 				return json(200, await runGates(rootWs, entry.dir, standaloneGates(entry.dir)));
 			}
 			case 'GET /api/files': {
 				const { entry } = await this.#current();
 				const path = url.searchParams.get('path') ?? entry.dir;
-				const rootWs = this.#rootWs(this.#sandbox(entry.id));
+				const pair = this.#sandboxPair(entry.id);
+				await this.#restoreProject(pair, entry).catch(() => undefined);
+				const rootWs = this.#rootWs(pair.sb);
 				try {
 					return json(200, { path, entries: await rootWs.listFiles(path) });
 				} catch {
