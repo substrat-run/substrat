@@ -20,9 +20,28 @@
 	},
 
 	"durable_objects": {
-		"bindings": [{ "name": "BUILDER_AGENT", "class_name": "BuilderAgent" }]
+		"bindings": [
+			{ "name": "BUILDER_AGENT", "class_name": "BuilderAgent" },
+			{ "name": "Sandbox", "class_name": "Sandbox" }
+		]
 	},
-	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["BuilderAgent"] }],
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["BuilderAgent"] },
+		{ "tag": "v2", "new_sqlite_classes": ["Sandbox"] }
+	],
+
+	// The execution container (#626): the monorepo baked warm — see
+	// builder.Dockerfile at the repo root (context must be the monorepo).
+	// standard-3 per builder-studio.md §4.1: pnpm + tsc + vitest + two dev
+	// servers do not fit below 8 GiB. Image version pins to @cloudflare/sandbox.
+	"containers": [
+		{
+			"class_name": "Sandbox",
+			"image": "../../builder.Dockerfile",
+			"instance_type": "standard-3",
+			"max_instances": 4
+		}
+	],
 
 	// The control plane's auth DB — READ-ONLY roster lookups (staff_actor).
 	// Same database the console consults; the builder never writes to it.

@@ -28,6 +28,8 @@ import {
 } from '@substrat-run/oidc-rp';
 
 export { BuilderAgent } from './agent.js';
+// The execution container's DO class (#626) — wrangler requires the export here.
+export { Sandbox } from '@cloudflare/sandbox';
 
 export interface Env extends OidcEnv {
 	/** The control plane's auth DB — read-only roster lookups, never writes. */

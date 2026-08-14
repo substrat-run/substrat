@@ -13,6 +13,12 @@ export { WorkspacePathError } from './workspace.js';
 export { LocalWorkspace, localWorkspace, type LocalWorkspaceOptions } from './local.js';
 
 export {
+	ContainerWorkspace,
+	type ContainerWorkspaceOptions,
+	type SandboxLike,
+} from './container.js';
+
+export {
 	defaultGates,
 	formatGateRun,
 	runGate,

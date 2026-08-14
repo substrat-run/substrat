@@ -13,6 +13,7 @@
   ],
   "exclude": [
     "src/worker.ts",
-    "src/agent.ts"
+    "src/agent.ts",
+    "src/providers-worker.ts"
   ]
 }
