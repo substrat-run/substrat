@@ -168,6 +168,25 @@ code, pre, .mono { font-family: var(--font-mono, 'Geist Mono', ui-monospace, Men
 .model-list button:disabled { opacity: .55; cursor: default; }
 .model-list .current { border-color: var(--status-success-dot); color: var(--status-success-fg); }
 
+/* phase stepper — the build ladder, server-truth only */
+.phase-stepper {
+	display: flex; align-items: center; gap: 4px;
+	font-size: 11.5px; user-select: none;
+}
+.phase-step {
+	padding: 2px 8px; border-radius: 999px;
+	color: var(--text-placeholder); border: 1px solid transparent;
+}
+.phase-step + .phase-step { position: relative; margin-left: 10px; }
+.phase-step + .phase-step::before {
+	content: '›'; position: absolute; left: -10px; color: var(--text-placeholder);
+}
+.phase-step.done { color: var(--status-success-fg); }
+.phase-step.current {
+	color: var(--text-primary); background: var(--surface-card);
+	border-color: var(--border-brand); font-weight: 500;
+}
+
 /* session token total — quiet, right-aligned, above the composer */
 .session-usage {
 	text-align: right; padding: 2px 16px; font-size: 11.5px;

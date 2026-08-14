@@ -884,3 +884,14 @@ nothing now and retrofitting them later costs a rewrite.
   Consequence accepted: a second document to keep in sync when platform surfaces change — the
   studio's files say so in their header, and `evals/` (D-51) is the mechanism that catches a
   drifted skill producing a vertical that no longer passes the gates.
+- **D-55 — Which skills ride a turn is decided by a phase ladder derived from workspace facts,
+  and prefix content changes only at phase boundaries.** Three phases — interview (no
+  `spec/concept.md`), scaffold (no `src/module.ts` yet), iterate — gate a skill manifest
+  (`phase.ts`) shared by both hosts; the UI's phase stepper renders the same server-emitted
+  facts, so what the user sees IS what the generator is loaded for. Rationale: a phase the
+  loader can't detect at turn start is a phase it can't enforce (which is why
+  "planning" and "design" are not phases — they happen inside interview turns with no
+  workspace fact between them), and per-turn dynamic prefix selection would invalidate the
+  prompt cache from byte one — anything finer-grained than a phase belongs behind a read
+  tool, not in the prefix. The ladder is monotonic in practice; a deliberate re-design
+  (deleting/rewriting the concept) moves it backward honestly, because the facts moved.

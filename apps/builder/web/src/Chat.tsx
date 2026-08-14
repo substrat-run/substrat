@@ -123,6 +123,8 @@ function eventLine(e: BuildEvent): { text: string; cls: string } {
 			return { text: `plan: ${e.summary} (${e.files.length} files)`, cls: '' };
 		case 'thinking':
 			return { text: 'thinking…', cls: '' };
+		case 'phase':
+			return { text: `phase: ${e.phase}`, cls: '' };
 		case 'error':
 			return { text: e.message, cls: 'error' };
 		default:

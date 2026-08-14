@@ -10,7 +10,7 @@
  */
 import { Badge, Button } from '@substrat-run/ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, streamTurn, type PlanAssumption, type SessionInfo } from './api.js';
+import { api, streamTurn, type BuildPhase, type PlanAssumption, type SessionInfo } from './api.js';
 import { appendEvent, Chat, type ChatItem } from './Chat.js';
 import { CodePane } from './CodePane.js';
 import { GatesPane } from './GatesPane.js';
@@ -19,6 +19,35 @@ import { PreviewPane } from './PreviewPane.js';
 import { ProjectMenu } from './ProjectMenu.js';
 
 type Tab = 'preview' | 'code' | 'database' | 'gates';
+
+const PHASE_STEPS: readonly { key: BuildPhase; label: string; hint: string }[] = [
+	{ key: 'interview', label: 'Interview', hint: 'No approved concept yet — the model asks, one question at a time' },
+	{ key: 'scaffold', label: 'Scaffold', hint: 'Concept approved (spec/concept.md) — first build in progress' },
+	{ key: 'iterate', label: 'Iterate', hint: 'The module exists — extending against the approved concept' },
+];
+
+/**
+ * The build-phase ladder, as a stepper. Renders ONLY server-derived state
+ * (workspace facts: spec/concept.md, src/module.ts) — the same facts that
+ * decide which skills the model carries, so what the user sees IS what the
+ * generator is loaded for.
+ */
+function PhaseStepper(props: { phase: BuildPhase }) {
+	const cur = PHASE_STEPS.findIndex((s) => s.key === props.phase);
+	return (
+		<div className="phase-stepper" role="group" aria-label="build phase">
+			{PHASE_STEPS.map((s, i) => (
+				<span
+					key={s.key}
+					title={s.hint}
+					className={`phase-step ${i < cur ? 'done' : ''} ${i === cur ? 'current' : ''}`}
+				>
+					{i < cur ? '✓ ' : ''}{s.label}
+				</span>
+			))}
+		</div>
+	);
+}
 
 /**
  * The builder mark (logo/builder-mark-*.svg), inlined so the hammer head themes
@@ -47,6 +76,10 @@ function toggleTheme(): void {
 
 export function App() {
 	const [session, setSession] = useState<SessionInfo | null>(null);
+	// The ladder position shown by the stepper. Sourced ONLY from server truth:
+	// the session payload at load, then `phase` events during turns — never
+	// inferred client-side, so the stepper cannot show a state that isn't real.
+	const [phase, setPhase] = useState<BuildPhase | null>(null);
 	const [items, setItems] = useState<ChatItem[]>([]);
 	const [busy, setBusy] = useState(false);
 	const [tab, setTab] = useState<Tab>('preview');
@@ -102,7 +135,13 @@ export function App() {
 	}
 
 	const refreshSession = useCallback(() => {
-		void api.session().then(setSession, () => setSession(null));
+		void api.session().then(
+			(s) => {
+				setSession(s);
+				setPhase(s.phase);
+			},
+			() => setSession(null),
+		);
 	}, []);
 
 	/** Full reload: session + persisted history. Runs at boot (resume — "pick up
@@ -133,6 +172,12 @@ export function App() {
 			await streamTurn(
 				message,
 				(e) => {
+					// Phase events feed the stepper, not the transcript — a line per
+					// turn start would be noise; the stepper is the visualization.
+					if (e.type === 'phase') {
+						setPhase(e.phase);
+						return;
+					}
 					if (e.type === 'gates') sawGates = true;
 					if (e.type === 'thinking') setWorkLabel('thinking');
 					else if (e.type === 'tool-call') setWorkLabel(`${e.tool}: ${e.summary.slice(0, 60)}`);
@@ -204,11 +249,7 @@ export function App() {
 						{session.repoMode === 'project' ? 'own repo · main' : 'scoped · monorepo'}
 					</Badge>
 				)}
-				{session && (
-					<Badge status={session.conceptApproved ? 'success' : 'info'}>
-						{session.conceptApproved ? 'concept approved' : 'interview — no concept yet'}
-					</Badge>
-				)}
+				{phase && <PhaseStepper phase={phase} />}
 				{session?.modelError && <Badge status="danger">model unavailable</Badge>}
 				<span className="spacer" />
 				<button className="icon-btn" onClick={toggleTheme} title="Toggle light/dark theme">◐</button>

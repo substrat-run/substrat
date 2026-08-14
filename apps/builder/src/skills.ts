@@ -12,29 +12,20 @@
  * passed to the generator as its stable, cacheable prefix (§5.4); the generator's
  * workspace is rooted at the project, and everything outside it is a
  * WorkspacePathError by construction.
+ *
+ * WHICH files: the builder-distilled set in `phase.ts`'s SKILL_MANIFEST (D-54)
+ * — not the repo's Claude Code skills, which assume monorepo access and denied
+ * tools. WHICH of them ride a given turn is the phase ladder (also phase.ts):
+ * prefix content changes only at phase boundaries, so each phase's prefix stays
+ * byte-stable and caches independently.
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-
-/**
- * Builder-DISTILLED skills, not the repo's Claude Code skills. The originals
- * (`.claude/skills/{substrat,new-vertical}/SKILL.md`) are written for an agent
- * with monorepo access and were 2.8× the size — worse, much of them is wrong
- * here: "read demos/callout/…" points at files a project-rooted workspace
- * cannot read, the deploy CLI and curl-driving are denied tools, and the
- * module rules duplicate DEFAULT_SYSTEM. These two carry only what the
- * sandboxed model can act on: the engine coverage map + concept template
- * (interview) and inline code shapes replacing the unreachable reference
- * files (build). Same knowledge, different audience — keep them in sync with
- * the originals when the platform's surfaces change.
- */
-const SKILL_PATHS = [
-	'apps/builder/skills/interview.md', // phase 1: interview → concept the user approves
-	'apps/builder/skills/build.md', // phase 2: approved concept → working vertical
-];
+import { SKILL_MANIFEST } from './phase.js';
 
 export interface LoadedSkills {
-	readonly skills: readonly string[];
+	/** file path (manifest key) → content, for phase.ts `skillsForPhase`. */
+	readonly byFile: ReadonlyMap<string, string>;
 	readonly loaded: readonly string[];
 	readonly missing: readonly string[];
 }
@@ -42,16 +33,16 @@ export interface LoadedSkills {
 /** Reads the skill documents from the studio's own checkout. Missing files are
  * reported, not fatal — a studio without skills still runs, just dumber. */
 export async function loadSkills(studioRoot: string): Promise<LoadedSkills> {
-	const skills: string[] = [];
+	const byFile = new Map<string, string>();
 	const loaded: string[] = [];
 	const missing: string[] = [];
-	for (const rel of SKILL_PATHS) {
+	for (const { file } of SKILL_MANIFEST) {
 		try {
-			skills.push(await readFile(join(studioRoot, rel), 'utf8'));
-			loaded.push(rel);
+			byFile.set(file, await readFile(join(studioRoot, file), 'utf8'));
+			loaded.push(file);
 		} catch {
-			missing.push(rel);
+			missing.push(file);
 		}
 	}
-	return { skills, loaded, missing };
+	return { byFile, loaded, missing };
 }

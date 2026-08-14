@@ -86,6 +86,13 @@ export type BuildEvent =
 	 */
 	| { readonly type: 'project-named'; readonly name: string }
 	/**
+	 * The build-phase ladder position — emitted by the STUDIO (not the model),
+	 * derived from workspace facts (does spec/concept.md exist; does
+	 * src/module.ts), at turn start and again when a turn's work moves it. The
+	 * UI's phase stepper renders only these, so it shows real state.
+	 */
+	| { readonly type: 'phase'; readonly phase: 'interview' | 'scaffold' | 'iterate' }
+	/**
 	 * Turn accounting — what §4.4 says actually dominates the bill. Totals are
 	 * summed across ALL tool-loop steps of the turn. `cachedInputTokens` is the
 	 * slice of input read from the provider's prompt cache (~10% price on
@@ -132,6 +139,8 @@ export function formatEvent(e: BuildEvent): string {
 			return `plan: ${e.summary} (${e.files.length} files, ${e.dependencies.length} deps, ${e.assumptions.length} assumptions)`;
 		case 'project-named':
 			return `✓ project named "${e.name}"`;
+		case 'phase':
+			return `· phase: ${e.phase}`;
 		case 'thinking':
 			return '· thinking…';
 		case 'usage':

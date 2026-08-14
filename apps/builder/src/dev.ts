@@ -28,6 +28,7 @@ import {
 	standaloneGates,
 } from '@substrat-run/builder-workspace';
 import { loadEnvFiles } from './env.js';
+import { detectPhase, skillsForPhase } from './phase.js';
 import { loadSkills } from './skills.js';
 import {
 	DEFAULT_MODEL,
@@ -138,7 +139,7 @@ async function main(): Promise<number> {
 		model: model.model,
 		label: model.label,
 		maxSteps: args.maxSteps,
-		skills: skills.skills,
+		skills: skillsForPhase(skills.byFile, await detectPhase(projectWs)),
 		explainError: explainProviderError(chosen.spec.split(':')[0] ?? 'anthropic'),
 	});
 
