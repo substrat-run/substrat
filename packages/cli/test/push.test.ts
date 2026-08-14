@@ -95,6 +95,21 @@ describe('wranglerConfigFor — the Substrat→Cloudflare mapping (D-38)', () =>
     const cfg = wranglerConfigFor(runtimeNeeds.parse({ entry: 'a.ts' }));
     expect(cfg.compatibility_date).toBe(RUNTIME_BASELINE);
   });
+
+  it('the baseline is MAINTAINED (#636): red once it falls ~6 months behind today', () => {
+    // Deliberately a time-triggered failure, not a warning: a stale baseline silently
+    // downgrades every wrangler-path vertical that migrates to runtimeNeeds, and a
+    // warning in CI logs is exactly the "no diff surfaced anywhere" this exists to end.
+    // Remedy: advance RUNTIME_BASELINE in @substrat-run/contracts (a platform release —
+    // verticals pick it up on their next push), keeping it a few weeks behind today.
+    const ageDays = (Date.now() - Date.parse(RUNTIME_BASELINE)) / 86_400_000;
+    expect(
+      ageDays,
+      `RUNTIME_BASELINE (${RUNTIME_BASELINE}) is ${Math.floor(ageDays)} days old — advance it (#636)`,
+    ).toBeLessThan(180);
+    // …and never ahead of today: builders' installed wrangler/workerd must know the date.
+    expect(ageDays).toBeGreaterThan(14);
+  });
 });
 
 describe('readRuntimeNeeds', () => {
@@ -328,6 +343,24 @@ describe('resolveWranglerConfig — the push preflight', () => {
     expect(() => resolveWranglerConfig(dir)).toThrow(/substrat\.runtimeNeeds/);
     expect(() => resolveWranglerConfig(dir)).toThrow(/"entry": "src\/worker\.ts"/);
     expect(() => resolveWranglerConfig(dir)).not.toThrow(/ENOENT/);
+  });
+
+  it('REFUSES a runtimeNeeds push whose ignored wrangler.jsonc pins a NEWER date (#636)', () => {
+    // The D-38 migration trap: deriving from the baseline would move a live worker's
+    // compatibility date backwards, switching off runtime defaults with no diff anywhere.
+    const dir = scratch({ name: 'x', substrat: { runtimeNeeds: { entry: 'src/worker.ts' } } });
+    writeFileSync(join(dir, 'wrangler.jsonc'), '{ "main": "src/worker.ts", "compatibility_date": "2099-01-01" }');
+    expect(() => resolveWranglerConfig(dir)).toThrow(/BACKWARDS/);
+    expect(() => resolveWranglerConfig(dir)).toThrow(/2099-01-01/);
+    expect(() => resolveWranglerConfig(dir)).toThrow(new RegExp(RUNTIME_BASELINE));
+  });
+
+  it('a wrangler.jsonc at or behind the baseline stays an ignored no-op beside runtimeNeeds', () => {
+    const dir = scratch({ name: 'x', substrat: { runtimeNeeds: { entry: 'src/worker.ts' } } });
+    writeFileSync(join(dir, 'wrangler.jsonc'), '{ "main": "old.ts", "compatibility_date": "2025-06-01" }');
+    const { cfg, needs } = resolveWranglerConfig(dir);
+    expect(needs?.entry).toBe('src/worker.ts');
+    expect(cfg.compatibility_date).toBe(RUNTIME_BASELINE);
   });
 });
 

@@ -15,8 +15,17 @@ import { declaredSurface } from './routing.js';
  * The runtime baseline a `runtimeNeeds` vertical builds against — the platform picks the
  * compatibility date, the builder never does. Advancing it is a platform release concern
  * (re-push under the new baseline), exactly like a kernel upgrade.
+ *
+ * MAINTAINED, not set-and-forget (#636): a stale baseline is the hand-copied-duplicate
+ * disease D-38 exists to kill, one level up — while it sits still, hand-authored
+ * wrangler-path dates advance past it, and the D-38 migration itself becomes a silent
+ * compatibility DOWNGRADE for those verticals. Two guards hold the line mechanically:
+ * a staleness test (packages/cli/test/push.test.ts) goes red when this date falls more
+ * than ~6 months behind, and `resolveWranglerConfig` refuses a `runtimeNeeds` push whose
+ * ignored wrangler.jsonc carries a NEWER date than this baseline. Keep advances a few
+ * weeks behind today so builders' installed wrangler/workerd always know the date.
  */
-export const RUNTIME_BASELINE = '2025-01-01';
+export const RUNTIME_BASELINE = '2026-06-01';
 
 /**
  * One of the vertical's OWN stores: a durable state class the code exports, reached in the

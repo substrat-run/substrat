@@ -381,6 +381,31 @@ export function resolveWranglerConfig(
   const needs = readRuntimeNeeds(dir);
   const hasWranglerFile = existsSync(join(dir, 'wrangler.jsonc'));
   if (needs && hasWranglerFile) {
+    // The D-38 migration guard (#636): the derived config pins the PLATFORM's baseline, so
+    // a hand-authored date newer than it would move a live worker's compatibility date
+    // BACKWARDS on the next promote — default-on runtime flags between the two dates switch
+    // off with no diff surfaced anywhere. Refuse rather than warn: a warning in CI logs is
+    // exactly "no diff surfaced". ISO dates compare lexically.
+    let authoredDate: string | undefined;
+    try {
+      authoredDate = readJsonc(join(dir, 'wrangler.jsonc')).compatibility_date as string | undefined;
+    } catch {
+      // an unparseable wrangler.jsonc is already ignored on this path; nothing to compare
+    }
+    if (authoredDate && authoredDate > RUNTIME_BASELINE) {
+      throw new Error(
+        [
+          `wrangler.jsonc pins compatibility_date "${authoredDate}", but substrat.runtimeNeeds derives its`,
+          `config from the platform baseline RUNTIME_BASELINE = "${RUNTIME_BASELINE}" — this push would move the`,
+          `worker's compatibility date BACKWARDS, silently switching off runtime defaults between the two dates.`,
+          '',
+          '  Either the platform baseline is stale — advance RUNTIME_BASELINE in',
+          '  @substrat-run/contracts (a platform release concern, #636) — or, if serving under',
+          '  the older baseline is intended, delete wrangler.jsonc to state that the platform',
+          '  picks the runtime baseline (D-38).',
+        ].join('\n'),
+      );
+    }
     console.log('note: substrat.runtimeNeeds is set — wrangler.jsonc is ignored for this push');
   }
   if (!needs && !hasWranglerFile) {
@@ -438,7 +463,9 @@ export async function push(
   ];
   const migrations = (cfg.migrations as { new_sqlite_classes?: string[] }[] | undefined) ?? [];
   const doClasses = migrations.flatMap((m) => m.new_sqlite_classes ?? []);
-  const compatibilityDate = (cfg.compatibility_date as string | undefined) ?? '2025-01-01';
+  // A hand-authored config that states no date gets the platform baseline, same as the
+  // derived path — never a second hard-coded date drifting on its own (#636).
+  const compatibilityDate = (cfg.compatibility_date as string | undefined) ?? RUNTIME_BASELINE;
   // Flags travel with the bundle: a vertical needing `nodejs_compat` (Better Auth, node
   // built-ins) can't start without them, and the runtime rejects the upload.
   const compatibilityFlags = (cfg.compatibility_flags as string[] | undefined) ?? [];
