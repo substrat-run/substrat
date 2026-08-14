@@ -1,5 +1,76 @@
 # @substrat-run/connector-scrive
 
+## 0.7.0
+
+### Minor Changes
+
+- 181e69b: fix: the signature request chooses how a party authenticates — `se_bankid` is no longer hardcoded
+
+  Every document `connector-scrive` had ever sent was refused by Scrive:
+
+  ```
+  scrive start failed: HTTP 409
+  Authentication to sign for participant #1 requires valid personal number field.
+  ```
+
+  The connector picked the authentication method from the party's `kind` — `se_bankid` for any
+  external signatory — and Scrive's BankID auth-to-sign will not start without a `personal_number`
+  on the party. Substrat deliberately supplies none: a party's `ref` is an opaque `DataSubjectId`
+  because design rule B6 says a personnummer never reaches the kernel, the events or the audit
+  trail. So the connector demanded something the caller could neither see nor satisfy, and a
+  production tenant lost a fortnight of contracts to it.
+
+  - **`signatureRequestParty.authLevel`** — `basic` (the provider establishes control of a contact
+    address) or `strong` (a national eID), defaulting to `basic`. Deliberately _not_ the provider's
+    vocabulary: `se_bankid` is Scrive's word and belongs in the connector that speaks to Scrive,
+    or an engine serving several providers would be handing verticals one provider's enum. Stored
+    nullable (migration `0003-party-auth-level`) so rows written earlier read as the default, and
+    resolved onto `protocol.signatures-requested` so no consumer re-derives it.
+  - **`ScriveConnectorOptions.defaultAuthMethod`** — what `basic` means for this connection,
+    `'standard'` by default. That default is the fix. A deployment that supplies personal numbers
+    by other means can set `'se_bankid'` and keep the old behaviour deliberately.
+  - **`strong` is refused before any egress**, with a sentence naming why it cannot be satisfied,
+    instead of being sent for Scrive to answer with a bare `409` that reached nobody. The
+    resolution happens _before_ `documents/new`, so a refusal leaves no orphan draft at the
+    provider — the earlier draft of this fix threw while building the `update` body, and a
+    retrying delivery would have littered one document per attempt.
+
+  Callers need no change: a party that says nothing gets `basic`, which is what `standard` already
+  meant for principals. **What this does not do** is carry a party's contact detail (ask 1 of the
+  issue) — that needs a lawful carrier for direct PII from module code to a connector, which does
+  not exist and is tracked separately. Until it does, `strong` is reachable only by a deployment
+  supplying personal numbers by other means.
+
+### Patch Changes
+
+- 6ac51d1: docs: every package has a README, and the one on npm stops lying about the initializer
+
+  `create-substrat`'s published README said "The initializer is not released yet. This package
+  prints a pointer to the docs and exits. It does not scaffold anything." That has been false
+  since the template landed — `index.js` copies the full template tree and generates
+  `package.json`, `tsconfig.json`, `vitest.config.ts`, `.gitignore` and a project README. The
+  text on npm was telling readers the entry point to Substrat doesn't work. It also instructed
+  `pnpm add … zod`, contradicting the rule the same package's generated `package.json` comment
+  states — Zod schemas don't compose across copies, so `z` comes from `@substrat-run/contracts`
+  and zod is never installed directly.
+
+  - **Every package now has a README**, including the three that were public on npm without one
+    (`vertical-auth`, `oidc-rp`, `psl`) and the monorepo-internal `engine-test-kit` and `ui`.
+  - **Every README links substrat.net** — `boundary-lint`, `vertical-host`, `engine-invites` and
+    `connector-scrive` each gained the documentation pointer in the shape its README already
+    used.
+  - **The docs site covers the package list**: new `/reference/vertical-auth`, `/reference/psl`
+    and `/reference/create-substrat` pages, all three in the sidebar.
+
+  README-only for the packages listed here; a patch is what carries the corrected text to npm.
+  `vertical-host`'s README changed too but is deliberately not bumped — it is in the `fixed`
+  group, and a documentation link is not worth a seven-package lockstep release. It ships with
+  that group's next version.
+
+- Updated dependencies [c19e371]
+  - @substrat-run/contracts@0.64.0
+  - @substrat-run/kernel@0.64.0
+
 ## 0.6.1
 
 ### Patch Changes

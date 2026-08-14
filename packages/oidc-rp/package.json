@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/oidc-rp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Substrat OIDC relying party — Authorization-Code + PKCE, workerd-safe (jose + Web Crypto). Shared by the platform apps (console, dashboard) and by @substrat-run/vertical-auth's RP provider.",
   "license": "AGPL-3.0-only",
   "type": "module",
