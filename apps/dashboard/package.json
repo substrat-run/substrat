@@ -23,6 +23,7 @@
     "@substrat-run/demo-callout": "workspace:^",
     "@substrat-run/demo-manyfold": "workspace:^",
     "@substrat-run/demo-meridian": "workspace:^",
+    "@substrat-run/engine-absence": "workspace:^",
     "@substrat-run/engine-invites": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",
     "@substrat-run/engine-protocol": "workspace:^",

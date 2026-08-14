@@ -119,8 +119,9 @@ host.defineOperation('acme/create-order', async (ctx, input) => {
 | [Invoicing](/engines/invoicing/) | `@substrat-run/engine-invoicing` | invoice-basis accumulation from billable events, immutability on export |
 | [Protocols](/engines/protocol/) | `@substrat-run/engine-protocol` | protocols/checklists with the sign → immutable invariant, verifiable content hash |
 | [Invites](/engines/invites/) | `@substrat-run/engine-invites` | single-use invitations to join an org with a role — invited → accepted; the plaintext identifier is never stored, the per-scope salted hash is |
+| [Absence](/engines/absence/) | `@substrat-run/engine-absence` | the append-only absence ledger over an opaque subject — balance as a fold, approval as the only mint for bookings, per-type floors |
 
-All five are **product seeds**, extracted from the demo verticals — small deliberately,
+All six are **product seeds**, extracted from the demo verticals — small deliberately,
 hardened as real verticals consume them.
 
 The booking engine is the one **second invariant shape**: where a work order is a *state
@@ -133,14 +134,16 @@ shape — and a *third*, [an HR vertical](/guide/what-is-substrat#current-status
 again for employee **onboarding checklists**, bound to an `employee` ref instead of a work
 order. Same engine, three shapes; that is the reuse thesis holding.
 
-Planned next, in the order verticals force them: **scheduling/dispatch**, **ticketing**
-(ärende), and an **absence / entry-ledger engine**. The last is the sharpest current
-candidate: the *append-only, a-correction-is-a-new-entry, current-value-is-a-fold* shape
-shows up three times already — work-order time & material, HR leave balances, and HR
-project time — which is exactly the "second consumer, different shape" signal that an
-invariant is ready to extract (its generic core may even belong in the kernel as a
-ledger-entries attachment contract; the domain semantics — accrual, approval, floors —
-stay in the engine).
+The absence engine is the newest extraction, and the second run of the protocol engine's
+proof: its *append-only, a-correction-is-a-new-entry, current-value-is-a-fold* shape was
+written vertical-first inside the HR demo, and extracted only when a second consumer with
+a different shape — field-crew resource planning, where the subject is a plannable
+`resource` rather than an employee — forced the line. (The question of whether the
+generic entries-against-a-ref core belongs in the kernel was considered and settled:
+it stays engine-private until a non-absence consumer wants the raw ledger shape.)
+
+Planned next, in the order verticals force them: **scheduling/dispatch** and
+**ticketing** (ärende).
 
 ## How these pages are organized
 

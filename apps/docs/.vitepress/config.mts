@@ -107,6 +107,7 @@ function guideSidebar() {
         engineSidebar('invoicing', 'Invoicing'),
         engineSidebar('protocol', 'Protocols'),
         engineSidebar('invites', 'Invites'),
+        engineSidebar('absence', 'Absence'),
       ],
     },
     {

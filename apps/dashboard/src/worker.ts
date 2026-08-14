@@ -18,6 +18,7 @@ import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, q
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
+import { absenceModule } from '@substrat-run/engine-absence';
 import { workorderModule } from '@substrat-run/engine-workorder';
 import { invoicingModule } from '@substrat-run/engine-invoicing';
 import { invitesModule } from '@substrat-run/engine-invites';
@@ -71,9 +72,10 @@ const teamCookieOpts = (origin: string) => ({
 // the app verticals into this deployment's ScopeDO (see the file header), so every
 // module a catalog entry needs must be here: Documents (protocol), Callout — the
 // field-service vertical composing workorder + invoicing + protocol — and Meridian,
-// the HR vertical (its core domain is vertical code on the kernel; it composes
-// protocol for onboarding only).
-const MODULES = [dashboardModule, invitesModule, protocolModule, workorderModule, invoicingModule, calloutModule, meridianModule, manyfoldModule];
+// the HR vertical (it composes protocol for onboarding and absence for the
+// leave ledger since the #634 extraction; absence must register BEFORE meridian
+// so its tables exist when meridian's 0003 handoff migration runs).
+const MODULES = [dashboardModule, invitesModule, protocolModule, absenceModule, workorderModule, invoicingModule, calloutModule, meridianModule, manyfoldModule];
 export const ScopeDO = defineScopeDO(MODULES, {});
 export { ControlPlaneDO };
 

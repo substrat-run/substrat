@@ -5,16 +5,16 @@
 
 # Permission snapshot — @substrat-run/demo-meridian
 
-22 keys · 2 modules · 3 roles
+22 keys · 3 modules · 3 roles
 
 ## 1. Registry — every key a registered manifest declares
 
 | Key | Description | Declared by |
 | --- | --- | --- |
-| `absence:approve` | Approve or reject a leave request — approval books the ledger (managers, HR admin) | `@substrat-run/demo-meridian` |
-| `absence:configure` | Define leave types and grant accruals to employees (HR admin) | `@substrat-run/demo-meridian` |
-| `absence:read` | Read absence balances, ledger, and requests | `@substrat-run/demo-meridian` |
-| `absence:request` | Request time off (employees, narrowed to their own record) | `@substrat-run/demo-meridian` |
+| `absence:approve` | Decide requests; cancel an approved absence | `@substrat-run/engine-absence` |
+| `absence:configure` | Configure leave types; record accrual/correction/carryover entries | `@substrat-run/engine-absence` |
+| `absence:read` | Read balances, requests, entries and availability | `@substrat-run/engine-absence` |
+| `absence:request` | Request absence (entity-narrowed: for one subject) | `@substrat-run/engine-absence` |
 | `employee:manage` | Create and read employee records, including salary/national id (HR admin) | `@substrat-run/demo-meridian` |
 | `expense:approve` | Approve or reject an expense (managers, HR admin) | `@substrat-run/demo-meridian` |
 | `expense:read` | Read expenses | `@substrat-run/demo-meridian` |
@@ -88,7 +88,7 @@ schedule can do exactly this and no more.
 
 | Operation | Cadence | System principal | Permissions |
 | --- | --- | --- | --- |
-| `hr/expire-stale-requests` | every 1440 min | `system:@substrat-run/demo-meridian` | `absence:approve` |
+| `absence/expire-stale` | every 1440 min | `system:@substrat-run/engine-absence` | `absence:approve` |
 
 ## 6. Not covered by this artifact
 

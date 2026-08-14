@@ -20,19 +20,34 @@ import {
   PROTOCOL_PERM as PROTO,
   type ProtocolInstanceRow,
 } from '@substrat-run/engine-protocol';
+import {
+  balanceAsOf,
+  configureLeaveType,
+  decideAbsence,
+  entriesInWindow,
+  listEntries,
+  listRequests as listAbsenceRequests,
+  recordEntry,
+  requestAbsence,
+  type AbsenceEntry,
+  type AbsenceRequest,
+  type AbsenceSubject,
+} from '@substrat-run/engine-absence';
 import { HR_PERM, meridianManifest } from './manifest.js';
 import { meridianMigrations } from './migrations.js';
 
 // ============================================================================
-// The Meridian vertical (spec/concept.md): employees, leave types, the
-// APPEND-ONLY absence ledger, the leave-approval state machine, project time
-// reporting, expenses, and the payroll export. Onboarding is the protocol
-// engine, composed. Nothing here is engine-owned yet — the absence/time ledger
-// is the extraction candidate (§5), written vertical-first so consumer #2
-// (Callout/bikeshop wanting vacation) can force it out cleanly.
+// The Meridian vertical (spec/concept.md): employees, leave types, project
+// time reporting, expenses, and the payroll export. Onboarding is the protocol
+// engine, composed — and absence IS `engine-absence` now (§5's extraction,
+// forced by consumer #2, #634): the append-only ledger, the approval state
+// machine, the balance floor and the absence.* events live in the engine.
+// This vertical keeps the directory, the leave-type VOCABULARY
+// (hr_leave_types: labels, kinds, statutory days), and the screens.
 //
-// The line kept honest now (§5.1): every ledger entry binds to an opaque
-// `(employee, id)` ref the VERTICAL owns, never an engine-owned employee table.
+// The §5.1 line, now structural: every engine call names its subject as the
+// opaque `(employee, id)` ref this vertical owns — the engine never reads
+// hr_employees, and this module never touches absence_* tables.
 //
 // The declarative surface (HR_PERM, manifest) lives in manifest.ts; the
 // migration journal in migrations.ts. This file is operations + wiring.
@@ -78,7 +93,7 @@ export interface LedgerRow {
   id: string;
   employee_id: string;
   leave_type_key: string;
-  entry_kind: 'accrual' | 'booking' | 'correction' | 'carryover';
+  entry_kind: 'accrual' | 'booking' | 'correction' | 'carryover' | 'reversal';
   delta: string;
   effective_date: string;
   request_id: string | null;
@@ -158,15 +173,45 @@ function leaveTypeMustExist(ctx: OperationContext, key: string): LeaveTypeRow {
   return row;
 }
 
-/** Balance for one (employee, leave type) = fold of ledger deltas. Pure. */
-function balanceOf(ctx: OperationContext, employeeId: string, leaveTypeKey: string): string {
-  return ctx.sql
-    .query<{ delta: string }>(
-      'SELECT delta FROM hr_absence_ledger WHERE employee_id = ? AND leave_type_key = ?',
-      [employeeId, leaveTypeKey],
-    )
-    .reduce((sum, r) => addDecimal(sum, r.delta), '0');
-}
+/**
+ * The engine-absence subject for one employee (D-B in engine-absence.md): the
+ * opaque ref this vertical owns, plus the employee id as the DataSubjectId —
+ * the SAME id every hr.* event already shreds on, so erasure stays one key.
+ */
+const absenceSubjectOf = (employeeId: string): AbsenceSubject => ({
+  ref: employeeRef(employeeId),
+  dataSubjectId: dataSubjectId.parse(employeeId),
+});
+
+// The engine speaks camelCase records; this vertical's API shipped snake_case
+// rows. The mappers keep the HTTP surface byte-stable across the extraction.
+const ledgerRowOf = (e: AbsenceEntry): LedgerRow => ({
+  id: e.id,
+  employee_id: e.subject.entityId,
+  leave_type_key: e.leaveTypeKey,
+  entry_kind: e.entryKind,
+  delta: e.delta,
+  effective_date: e.effectiveDate,
+  request_id: e.requestId,
+  note: e.note,
+  created_by: e.createdBy,
+  created_at: e.createdAt,
+});
+
+const requestRowOf = (r: AbsenceRequest): LeaveRequestRow => ({
+  id: r.id,
+  employee_id: r.subject.entityId,
+  leave_type_key: r.leaveTypeKey,
+  start_date: r.startDate,
+  end_date: r.endDate,
+  days: r.days,
+  status: r.status,
+  decided_by: r.decidedBy,
+  decided_at: r.decidedAt,
+  note: r.note,
+  created_by: r.createdBy,
+  created_at: r.createdAt,
+});
 
 // ---------------------------------------------------------------------------
 // Directory (HR admin)
@@ -281,6 +326,9 @@ const defineLeaveTypeOp: OperationHandler<z.infer<typeof defineLeaveTypeInput>, 
        VALUES (?, ?, ?, ?, ?)`,
       [input.key, input.label, input.kind, input.annualDays ?? null, new Date().toISOString()],
     );
+    // Same transaction: the vocabulary row here, the POLICY registration in the
+    // engine (floor 0 — Sweden's förskottssemester would be a negative floor).
+    configureLeaveType(ctx, { key: input.key });
     return ctx.sql.query<LeaveTypeRow>('SELECT * FROM hr_leave_types WHERE key = ?', [input.key])[0]!;
   };
 
@@ -317,25 +365,19 @@ export const accrueInput = z.object({
 const accrueOp: OperationHandler<z.infer<typeof accrueInput>, LedgerRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(HR_PERM.absenceConfigure));
   const input = accrueInput.parse(raw);
+  // Directory + vocabulary checks stay HERE — the engine cannot dereference the
+  // subject ref and never reads hr_employees/hr_leave_types.
   getEmployee(ctx, input.employeeId);
   leaveTypeMustExist(ctx, input.leaveTypeKey);
-  const id = ulid();
-  const now = new Date().toISOString();
-  ctx.sql.exec(
-    `INSERT INTO hr_absence_ledger
-       (id, employee_id, leave_type_key, entry_kind, delta, effective_date, request_id, note, created_by, created_at)
-     VALUES (?, ?, ?, 'accrual', ?, ?, NULL, ?, ?, ?)`,
-    [id, input.employeeId, input.leaveTypeKey, input.days, input.effectiveDate ?? now.slice(0, 10), input.note ?? null, ctx.principal, now],
-  );
-  ctx.emit({
-    type: 'hr.absence-accrued',
-    schemaVersion: 1,
-    entity: employeeRef(input.employeeId),
-    piiClass: 'pseudonymous',
-    subjectId: dataSubjectId.parse(input.employeeId),
-    payload: { ledgerId: id, employeeId: input.employeeId, leaveTypeKey: input.leaveTypeKey, days: input.days },
+  const entry = recordEntry(ctx, {
+    subject: absenceSubjectOf(input.employeeId),
+    leaveTypeKey: input.leaveTypeKey,
+    entryKind: 'accrual',
+    delta: input.days,
+    effectiveDate: input.effectiveDate ?? new Date().toISOString().slice(0, 10),
+    note: input.note,
   });
-  return ctx.sql.query<LedgerRow>('SELECT * FROM hr_absence_ledger WHERE id = ?', [id])[0]!;
+  return ledgerRowOf(entry);
 };
 
 // ---------------------------------------------------------------------------
@@ -350,15 +392,14 @@ const balanceOp: OperationHandler<
   // Per-entity check: HR admin/manager pass on the node role; an employee passes
   // only for their OWN record, via the entity-narrowed grant.
   assertAllowed(await ctx.check(HR_PERM.absenceRead, employeeRef(employeeId)));
-  const keys = ctx.sql.query<{ leave_type_key: string }>(
-    'SELECT DISTINCT leave_type_key FROM hr_absence_ledger WHERE employee_id = ? ORDER BY leave_type_key',
-    [employeeId],
-  );
+  const keys = [
+    ...new Set(listEntries(ctx, { subject: employeeRef(employeeId) }).map((e) => e.leaveTypeKey)),
+  ].sort();
   return {
     employeeId,
-    balances: keys.map((k) => ({
-      leaveTypeKey: k.leave_type_key,
-      balance: balanceOf(ctx, employeeId, k.leave_type_key),
+    balances: keys.map((leaveTypeKey) => ({
+      leaveTypeKey,
+      balance: balanceAsOf(ctx, { subject: employeeRef(employeeId), leaveTypeKey }),
     })),
   };
 };
@@ -380,22 +421,16 @@ const requestLeaveOp: OperationHandler<z.infer<typeof requestLeaveInput>, LeaveR
   assertAllowed(await ctx.check(HR_PERM.absenceRequest, employeeRef(input.employeeId)));
   getEmployee(ctx, input.employeeId);
   leaveTypeMustExist(ctx, input.leaveTypeKey);
-  const id = ulid();
-  ctx.sql.exec(
-    `INSERT INTO hr_leave_requests
-       (id, employee_id, leave_type_key, start_date, end_date, days, status, note, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'requested', ?, ?, ?)`,
-    [id, input.employeeId, input.leaveTypeKey, input.startDate, input.endDate, input.days, input.note ?? null, ctx.principal, new Date().toISOString()],
+  return requestRowOf(
+    requestAbsence(ctx, {
+      subject: absenceSubjectOf(input.employeeId),
+      leaveTypeKey: input.leaveTypeKey,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      days: input.days,
+      note: input.note,
+    }),
   );
-  ctx.emit({
-    type: 'hr.leave-requested',
-    schemaVersion: 1,
-    entity: employeeRef(input.employeeId),
-    piiClass: 'pseudonymous',
-    subjectId: dataSubjectId.parse(input.employeeId),
-    payload: { requestId: id, employeeId: input.employeeId, leaveTypeKey: input.leaveTypeKey, days: input.days, startDate: input.startDate, endDate: input.endDate },
-  });
-  return ctx.sql.query<LeaveRequestRow>('SELECT * FROM hr_leave_requests WHERE id = ?', [id])[0]!;
 };
 
 export const decideLeaveInput = z.object({
@@ -410,104 +445,18 @@ const decideLeaveOp: OperationHandler<
 > = async (ctx, raw) => {
   assertAllowed(await ctx.check(HR_PERM.absenceApprove));
   const input = decideLeaveInput.parse(raw);
-  const req = ctx.sql.query<LeaveRequestRow>('SELECT * FROM hr_leave_requests WHERE id = ?', [
-    input.requestId,
-  ])[0];
-  if (!req) throw new Error(`leave request not found: ${input.requestId}`);
-  // The state machine cannot skip: only a 'requested' leave can be decided.
-  if (req.status !== 'requested') {
-    throw new Error(`leave request ${req.id} is '${req.status}' — only a requested leave can be decided`);
-  }
-  const now = new Date().toISOString();
-
-  if (input.decision === 'reject') {
-    ctx.sql.exec(
-      `UPDATE hr_leave_requests SET status = 'rejected', decided_by = ?, decided_at = ?, note = COALESCE(?, note) WHERE id = ?`,
-      [ctx.principal, now, input.note ?? null, req.id],
-    );
-    ctx.emit({
-      type: 'hr.leave-decided',
-      schemaVersion: 1,
-      entity: employeeRef(req.employee_id),
-      piiClass: 'pseudonymous',
-      subjectId: dataSubjectId.parse(req.employee_id),
-      payload: { requestId: req.id, employeeId: req.employee_id, decision: 'rejected', bookingId: null },
-    });
-    return { request: getRequest(ctx, req.id), booking: null };
-  }
-
-  // Approve: the no-negative-beyond-policy invariant (floor = 0). Only the
-  // booking of an APPROVED request touches the ledger.
-  const balance = balanceOf(ctx, req.employee_id, req.leave_type_key);
-  if (compareDecimal(addDecimal(balance, negate(req.days)), '0') < 0) {
-    throw new Error(
-      `insufficient balance: ${balance} day(s) of '${req.leave_type_key}', request needs ${req.days}`,
-    );
-  }
-  const bookingId = ulid();
-  ctx.sql.exec(
-    `INSERT INTO hr_absence_ledger
-       (id, employee_id, leave_type_key, entry_kind, delta, effective_date, request_id, note, created_by, created_at)
-     VALUES (?, ?, ?, 'booking', ?, ?, ?, ?, ?, ?)`,
-    [bookingId, req.employee_id, req.leave_type_key, negate(req.days), req.start_date, req.id, input.note ?? null, ctx.principal, now],
-  );
-  ctx.sql.exec(
-    `UPDATE hr_leave_requests SET status = 'approved', decided_by = ?, decided_at = ? WHERE id = ?`,
-    [ctx.principal, now, req.id],
-  );
-  ctx.emit({
-    type: 'hr.leave-decided',
-    schemaVersion: 1,
-    entity: employeeRef(req.employee_id),
-    piiClass: 'pseudonymous',
-    subjectId: dataSubjectId.parse(req.employee_id),
-    payload: { requestId: req.id, employeeId: req.employee_id, decision: 'approved', bookingId, days: req.days },
-  });
-  return {
-    request: getRequest(ctx, req.id),
-    booking: ctx.sql.query<LedgerRow>('SELECT * FROM hr_absence_ledger WHERE id = ?', [bookingId])[0]!,
-  };
+  // The engine owns the whole transition: the no-skip guard, the floor check at
+  // decision time, and the rule that only an APPROVED request books the ledger.
+  const { request, booking } = decideAbsence(ctx, input);
+  return { request: requestRowOf(request), booking: booking ? ledgerRowOf(booking) : null };
 };
 
-// A DATE-TRIGGERED rule with no caller but the passage of time (#383): a leave
-// still `requested` once its start date has passed can no longer be approved, so
-// the platform sweep cancels it — attributed to the schedule (`{ system }`), never
-// to a manager who never touched it. Idempotent (only `requested` rows past their
-// start) and paged (a bounded batch per pass), so a backlog drains over passes
-// rather than blowing one invoke.
-const expireStaleRequestsOp: OperationHandler<undefined, { expired: number }> = async (ctx) => {
-  assertAllowed(await ctx.check(HR_PERM.absenceApprove));
-  const today = new Date().toISOString().slice(0, 10); // start_date is a YYYY-MM-DD date
-  const stale = ctx.sql.query<LeaveRequestRow>(
-    `SELECT * FROM hr_leave_requests
-       WHERE status = 'requested' AND start_date < ?
-       ORDER BY start_date LIMIT 100`,
-    [today],
-  );
-  const now = new Date().toISOString();
-  for (const req of stale) {
-    ctx.sql.exec(
-      `UPDATE hr_leave_requests
-          SET status = 'cancelled', decided_at = ?,
-              note = COALESCE(note, 'auto-expired: start date passed before approval')
-        WHERE id = ?`,
-      [now, req.id],
-    );
-    ctx.emit({
-      type: 'hr.leave-expired',
-      schemaVersion: 1,
-      entity: employeeRef(req.employee_id),
-      piiClass: 'pseudonymous',
-      subjectId: dataSubjectId.parse(req.employee_id),
-      payload: { requestId: req.id, employeeId: req.employee_id, startDate: req.start_date },
-    });
-  }
-  return { expired: stale.length };
-};
+// The stale-request expiry (#383) moved to the engine with the ledger: the
+// engine's manifest declares the `absence/expire-stale` schedule, so the sweep
+// cancels an unapproved leave past its start date under
+// `{ system: '@substrat-run/engine-absence' }` — no vertical code involved.
 
-function getRequest(ctx: OperationContext, id: string): LeaveRequestRow {
-  return ctx.sql.query<LeaveRequestRow>('SELECT * FROM hr_leave_requests WHERE id = ?', [id])[0]!;
-}
+const requestStatus = z.enum(['requested', 'approved', 'rejected', 'cancelled']);
 
 const listRequestsOp: OperationHandler<z.infer<typeof statusFilterInput> | undefined, LeaveRequestRow[]> = async (
   ctx,
@@ -515,22 +464,17 @@ const listRequestsOp: OperationHandler<z.infer<typeof statusFilterInput> | undef
 ) => {
   assertAllowed(await ctx.check(HR_PERM.absenceRead));
   const { status } = statusFilterInput.parse(raw ?? {});
-  return status
-    ? ctx.sql.query<LeaveRequestRow>(
-        'SELECT * FROM hr_leave_requests WHERE status = ? ORDER BY created_at',
-        [status],
-      )
-    : ctx.sql.query<LeaveRequestRow>('SELECT * FROM hr_leave_requests ORDER BY created_at');
+  const rows = listAbsenceRequests(ctx, {
+    status: status === undefined ? undefined : requestStatus.parse(status),
+  }).map(requestRowOf);
+  return rows.reverse(); // the shipped order: created_at ascending
 };
 
 /** One employee's own requests — the self-service path (entity-checked). */
 const myRequestsOp: OperationHandler<z.infer<typeof employeeIdInput>, LeaveRequestRow[]> = async (ctx, input) => {
   const { employeeId } = employeeIdInput.parse(input);
   assertAllowed(await ctx.check(HR_PERM.absenceRead, employeeRef(employeeId)));
-  return ctx.sql.query<LeaveRequestRow>(
-    'SELECT * FROM hr_leave_requests WHERE employee_id = ? ORDER BY created_at DESC',
-    [employeeId],
-  );
+  return listAbsenceRequests(ctx, { subject: employeeRef(employeeId) }).map(requestRowOf);
 };
 
 // ---------------------------------------------------------------------------
@@ -736,12 +680,13 @@ const payrollExportOp: OperationHandler<z.infer<typeof payrollExportInput>, Payr
   const expenses = ctx.sql.query<ExpenseRow>(
     `SELECT * FROM hr_expenses WHERE status = 'approved' ORDER BY created_at`,
   );
-  const absenceRows = ctx.sql.query<{ employee_id: string; leave_type_key: string; days: string }>(
-    `SELECT employee_id, leave_type_key, delta AS days FROM hr_absence_ledger
-     WHERE entry_kind = 'booking' AND effective_date >= ? AND effective_date <= ?
-     ORDER BY employee_id`,
-    [input.fromDate, input.toDate],
-  );
+  // Booked absence in the window, through the engine's window read — the same
+  // composition seam Egeryds' planner uses, pointed at payroll here.
+  const absenceRows = entriesInWindow(ctx, {
+    from: input.fromDate,
+    to: input.toDate,
+    entryKind: 'booking',
+  });
   // Mark the exported expenses so a re-run never double-counts them.
   for (const e of expenses) {
     ctx.sql.exec(`UPDATE hr_expenses SET status = 'exported' WHERE id = ?`, [e.id]);
@@ -757,7 +702,7 @@ const payrollExportOp: OperationHandler<z.infer<typeof payrollExportInput>, Payr
     fromDate: input.fromDate,
     toDate: input.toDate,
     expenses: expenses.map((e) => ({ employeeId: e.employee_id, amount: e.amount, currency: e.currency, category: e.category })),
-    absence: absenceRows.map((a) => ({ employeeId: a.employee_id, leaveTypeKey: a.leave_type_key, days: negate(a.days) })),
+    absence: absenceRows.map((a) => ({ employeeId: a.subject.entityId, leaveTypeKey: a.leaveTypeKey, days: negate(a.delta) })),
   };
 };
 
@@ -1027,7 +972,6 @@ export const meridianModule: ModuleRegistration = {
     'hr/balance': balanceOp as never,
     'hr/request-leave': requestLeaveOp as never,
     'hr/decide-leave': decideLeaveOp as never,
-    'hr/expire-stale-requests': expireStaleRequestsOp as never,
     'hr/list-requests': listRequestsOp as never,
     'hr/my-requests': myRequestsOp as never,
     'hr/create-project': createProjectOp as never,
