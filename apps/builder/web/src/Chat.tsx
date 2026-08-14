@@ -118,7 +118,7 @@ function eventLine(e: BuildEvent): { text: string; cls: string } {
 		case 'needs-review':
 			return { text: `⚠ ${e.kind} diff needs review`, cls: 'error' };
 		case 'usage':
-			return { text: `${e.steps} steps · ${e.inputTokens}+${e.outputTokens} tokens`, cls: '' };
+			return { text: usageLine(e), cls: '' };
 		case 'plan':
 			return { text: `plan: ${e.summary} (${e.files.length} files)`, cls: '' };
 		case 'thinking':
@@ -128,6 +128,26 @@ function eventLine(e: BuildEvent): { text: string; cls: string } {
 		default:
 			return { text: JSON.stringify(e), cls: '' };
 	}
+}
+
+/** 1234 → "1.2k", 1234567 → "1.2M" — token counts, not bytes. */
+function fmtTok(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+	return String(n);
+}
+
+/**
+ * The per-turn bill, honestly labelled: the cached share is what the provider
+ * served from prompt cache (~10% price on Anthropic). No cache figure means the
+ * provider reported none — "not measured", never "0%".
+ */
+function usageLine(e: Extract<BuildEvent, { type: 'usage' }>): string {
+	const cached =
+		e.cachedInputTokens != null && e.inputTokens > 0
+			? ` (${Math.round((100 * e.cachedInputTokens) / e.inputTokens)}% cached)`
+			: '';
+	return `${e.steps} step${e.steps === 1 ? '' : 's'} · ${fmtTok(e.inputTokens)} in${cached} · ${fmtTok(e.outputTokens)} out`;
 }
 
 /**
@@ -213,6 +233,31 @@ function WorkingIndicator(props: { label: string; silentForS: number }) {
 		<div className="working">
 			<span className="dots"><i /><i /><i /></span>
 			{props.label}…
+		</div>
+	);
+}
+
+/**
+ * Session total under the transcript — the sum of every turn's usage event in
+ * THIS browser session (reloads start at zero; the per-turn lines in the
+ * transcript remain the durable record). Hidden until something was measured.
+ */
+function SessionUsage(props: { items: ChatItem[] }) {
+	let inTok = 0;
+	let outTok = 0;
+	let cached = 0;
+	for (const it of props.items) {
+		if (it.kind === 'event' && it.e.type === 'usage') {
+			inTok += it.e.inputTokens;
+			outTok += it.e.outputTokens;
+			cached += it.e.cachedInputTokens ?? 0;
+		}
+	}
+	if (inTok + outTok === 0) return null;
+	const pct = cached > 0 && inTok > 0 ? ` · ${Math.round((100 * cached) / inTok)}% cached` : '';
+	return (
+		<div className="evt session-usage">
+			session: {fmtTok(inTok)} in · {fmtTok(outTok)} out{pct}
 		</div>
 	);
 }
@@ -325,6 +370,7 @@ export function Chat(props: {
 				)}
 				<div ref={bottom} />
 			</div>
+			<SessionUsage items={props.items} />
 			<div className="composer">
 				<textarea
 					rows={2}

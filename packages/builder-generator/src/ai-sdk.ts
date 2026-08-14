@@ -75,6 +75,121 @@ export function apiErrorFacts(err: unknown): ApiErrorFacts {
 	};
 }
 
+type CachePO = { anthropic: { cacheControl: { type: 'ephemeral' } } };
+const CACHE_PO: CachePO = { anthropic: { cacheControl: { type: 'ephemeral' } } };
+
+/**
+ * Per-step breakpoint advance (Anthropic dialect). The tool loop re-sends the
+ * whole growing transcript on every step; without a moving breakpoint each step
+ * re-bills all prior steps' tool traffic at full price — roughly quadratic in
+ * steps. Strategy: keep the assembly-time breakpoints on the two system
+ * messages, strip any previous per-step mark, and mark the current last
+ * message, so each step reads everything before it from cache and writes one
+ * new increment. Never more than 3 concurrent breakpoints (Anthropic allows 4).
+ */
+export function withMovingBreakpoint(messages: ModelMessage[]): ModelMessage[] {
+	const out = messages.map((m): ModelMessage => {
+		if (m.role === 'system') return m;
+		if ((m.providerOptions as CachePO | undefined)?.anthropic?.cacheControl) {
+			const { providerOptions: _drop, ...rest } = m;
+			return rest as ModelMessage;
+		}
+		return m;
+	});
+	const last = out[out.length - 1];
+	if (last && last.role !== 'system') {
+		out[out.length - 1] = { ...last, providerOptions: CACHE_PO } as ModelMessage;
+	}
+	return out;
+}
+
+/**
+ * Stale-payload pruning for providers WITHOUT placeable cache breakpoints
+ * (OpenAI-compatible dialects) — there, every byte of transcript is re-billed
+ * at full price each step, so dead payloads are pure waste. A payload is dead
+ * once a later call touches the same target: an old write_file body is
+ * superseded by the next write/read of that path, an old read result by a
+ * later read, an old run_command log by re-running the same command. Only the
+ * newest payload per target keeps its bytes; older ones become one-line stubs.
+ * Pruning mutates only newly-superseded entries, so the transcript prefix
+ * stays byte-stable for providers that do implicit prefix caching.
+ *
+ * NOT used on the Anthropic dialect: there the cache makes old payloads cheap,
+ * and rewriting history would invalidate it — worse than leaving them.
+ */
+export function pruneStalePayloads(messages: ModelMessage[]): ModelMessage[] {
+	// Pass 1: assign each payload-bearing call/result a sequence per target key.
+	const keyOfCall = (toolName: string, input: unknown): string | null => {
+		const path = (input as { path?: unknown } | null)?.path;
+		if ((toolName === 'write_file' || toolName === 'read_file') && typeof path === 'string')
+			return `${toolName === 'write_file' ? 'file' : 'file'}:${path}`;
+		const cmd = (input as { cmd?: unknown } | null)?.cmd;
+		if (toolName === 'run_command' && typeof cmd === 'string') return `cmd:${cmd}`;
+		return null;
+	};
+	const callKey = new Map<string, string>(); // toolCallId -> key
+	const callSeq = new Map<string, number>(); // toolCallId -> seq (result shares it)
+	const lastSeq = new Map<string, number>(); // key -> newest seq
+	let seq = 0;
+	const seqs = new Map<string, number>(); // "<mi>:<pi>" -> seq
+	messages.forEach((m, mi) => {
+		if (!Array.isArray(m.content)) return;
+		m.content.forEach((p, pi) => {
+			if (m.role === 'assistant' && p.type === 'tool-call') {
+				const key = keyOfCall(p.toolName, p.input);
+				if (!key) return;
+				callKey.set(p.toolCallId, key);
+				callSeq.set(p.toolCallId, seq);
+				seqs.set(`${mi}:${pi}`, seq);
+				lastSeq.set(key, seq);
+				seq += 1;
+			} else if (m.role === 'tool' && p.type === 'tool-result') {
+				// A result shares its call's seq — a call must never be "stale"
+				// merely because its own result follows it.
+				const s = callSeq.get(p.toolCallId);
+				if (s !== undefined) seqs.set(`${mi}:${pi}`, s);
+			}
+		});
+	});
+
+	// Pass 2: stub every payload whose key has a newer occurrence.
+	const STUB = '[superseded — a later call touched the same target; content dropped to save budget]';
+	const stale = (mi: number, pi: number, key: string | undefined): boolean => {
+		if (key === undefined) return false;
+		const s = seqs.get(`${mi}:${pi}`);
+		return s !== undefined && s < (lastSeq.get(key) ?? -1);
+	};
+	return messages.map((m, mi): ModelMessage => {
+		if (!Array.isArray(m.content)) return m;
+		let touched = false;
+		const content = m.content.map((p, pi) => {
+			if (m.role === 'assistant' && p.type === 'tool-call' && p.toolName === 'write_file') {
+				const input = p.input as { path?: string; content?: unknown };
+				if (
+					stale(mi, pi, callKey.get(p.toolCallId)) &&
+					typeof input?.content === 'string' &&
+					input.content.length > STUB.length
+				) {
+					touched = true;
+					return { ...p, input: { path: input.path, content: STUB } };
+				}
+			} else if (m.role === 'tool' && p.type === 'tool-result') {
+				const out = p.output as { type?: string; value?: unknown };
+				const heavy =
+					(out?.type === 'text' || out?.type === 'json') &&
+					typeof out.value === 'string' &&
+					out.value.length > STUB.length;
+				if (heavy && stale(mi, pi, callKey.get(p.toolCallId))) {
+					touched = true;
+					return { ...p, output: { type: out.type, value: STUB } };
+				}
+			}
+			return p;
+		});
+		return touched ? ({ ...m, content } as ModelMessage) : m;
+	});
+}
+
 const DEFAULT_SYSTEM = `You are building a Substrat vertical. THE WORKSPACE ROOT IS THE
 PROJECT — every path is relative to it (src/module.ts, spec/concept.md, test/…). You
 cannot read anything outside it, and you do not need to: everything about Substrat,
@@ -153,40 +268,44 @@ export class AiSdkGenerator implements VerticalGenerator {
 
 		const tools = workspaceTools({ workspace: input.workspace, emit });
 
-		// Prefix discipline (§5.4, finally implemented): the system prompt +
-		// skills are byte-stable per phase and marked cacheable on Anthropic —
-		// the tool loop re-sends everything on EVERY step (up to maxSteps model
-		// calls per turn), so an uncached prefix is billed dozens of times over.
-		// Volatile context (concept, workspace brief) goes in a separate system
-		// message AFTER the breakpoint; a second breakpoint rides the last
-		// history message so the growing conversation prefix caches too.
+		// Prefix discipline (§5.4): everything before the chat history must be
+		// byte-stable across turns, because a changed byte invalidates the cache
+		// for all that follows. So the prefix holds only the system prompt +
+		// skills (stable per phase) and the concept (stable once approved), each
+		// closing with an Anthropic breakpoint. The workspace brief changes
+		// EVERY turn — it rides in the final user message, after the history,
+		// where it can't break the conversation's cache.
 		const anthropic = this.#opts.label.startsWith('anthropic');
-		const cache = { anthropic: { cacheControl: { type: 'ephemeral' as const } } };
 
 		const stable = [this.#opts.system ?? DEFAULT_SYSTEM, ...(this.#opts.skills ?? [])].join(
 			'\n\n---\n\n',
 		);
-		const volatileCtx = [
+		const conceptCtx = [
 			`The vertical under construction lives at: ${input.verticalDir}`,
 			`Approved concept:\n${input.concept}`,
-			...(input.workspaceBrief ? [`Project map (current — do not re-discover it with list_files):\n${input.workspaceBrief}`] : []),
 		].join('\n\n---\n\n');
 
 		const history = (input.history ?? []).map(
 			(t): ModelMessage => ({ role: t.role, content: t.text }),
 		);
-		const lastHist = history[history.length - 1];
-		if (anthropic && lastHist) lastHist.providerOptions = cache;
+
+		const userText = input.workspaceBrief
+			? `Project map (current — trust it; never call list_files to re-discover it):\n${input.workspaceBrief}\n\n---\n\n${input.message}`
+			: input.message;
 
 		const messages: ModelMessage[] = [
 			{
 				role: 'system',
 				content: stable,
-				...(anthropic ? { providerOptions: cache } : {}),
+				...(anthropic ? { providerOptions: CACHE_PO } : {}),
 			},
-			{ role: 'system', content: volatileCtx },
+			{
+				role: 'system',
+				content: conceptCtx,
+				...(anthropic ? { providerOptions: CACHE_PO } : {}),
+			},
 			...history,
-			{ role: 'user', content: input.message },
+			{ role: 'user', content: userText },
 		];
 
 		let steps = 0;
@@ -210,6 +329,15 @@ export class AiSdkGenerator implements VerticalGenerator {
 				allowSystemInMessages: true,
 				tools,
 				stopWhen: stepCountIs(this.#opts.maxSteps ?? 40),
+				// Two step-economies, mutually exclusive by dialect (see the helpers):
+				// Anthropic gets a moving cache breakpoint; everyone else gets stale
+				// tool payloads pruned. Returned messages carry forward, so stubs
+				// persist and the next step only touches newly-superseded entries.
+				prepareStep: ({ messages: stepMessages }) => ({
+					messages: anthropic
+						? withMovingBreakpoint(stepMessages)
+						: pruneStalePayloads(stepMessages),
+				}),
 				// The SDK's default onError console.errors the whole object. We surface
 				// errors as BuildEvents, so the default is pure noise in a chat pane.
 				onError: () => {},
@@ -245,10 +373,21 @@ export class AiSdkGenerator implements VerticalGenerator {
 			while (queue.length) yield queue.shift() as BuildEvent;
 
 			if (!reported) {
-				const usage = await result.usage;
+				// totalUsage, not usage: `usage` is the FINAL step only, and a build
+				// turn is dozens of steps — the whole point of measuring is the loop.
+				const usage = await result.totalUsage;
 				inputTokens = usage.inputTokens ?? 0;
 				outputTokens = usage.outputTokens ?? 0;
-				yield { type: 'usage', inputTokens, outputTokens, steps };
+				const cacheRead = usage.inputTokenDetails.cacheReadTokens;
+				const cacheWrite = usage.inputTokenDetails.cacheWriteTokens;
+				yield {
+					type: 'usage',
+					inputTokens,
+					outputTokens,
+					steps,
+					...(cacheRead != null ? { cachedInputTokens: cacheRead } : {}),
+					...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
+				};
 			}
 		} catch (err) {
 			while (queue.length) yield queue.shift() as BuildEvent;
