@@ -1,0 +1,41 @@
+{
+  "name": "@substrat-run/builder-generator",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The builder studio's generator seam — provider-agnostic vertical generation over a Workspace (builder-studio.md §5)",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "packages/builder-generator"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "4.0.7",
+    "@ai-sdk/provider-utils": "5.0.27",
+    "@substrat-run/builder-workspace": "workspace:*",
+    "ai": "7.0.62",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -19,6 +19,7 @@
     "docs:build": "pnpm --filter @substrat-run/docs build",
     "docs:preview": "pnpm --filter @substrat-run/docs preview",
     "callout-demo": "pnpm --filter @substrat-run/demo-callout",
+    "builder": "pnpm --filter @substrat-run/builder",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm -r build && pnpm publish -r --access public --no-git-checks && changeset tag",

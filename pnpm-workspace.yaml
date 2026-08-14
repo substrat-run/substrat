@@ -7,3 +7,8 @@ packages:
   - "demos/*/admin"
   - "apps/*"
   - "apps/*/web"
+  # Builder-studio projects: gitignored, own nested git repos — but workspace
+  # members so `workspace:*` deps on the kernel/engines resolve and the per-
+  # project gates (`pnpm --filter ./.builder/projects/<n> …`) can run.
+  - ".builder/projects/*"
+  - ".builder/projects/*/app"
