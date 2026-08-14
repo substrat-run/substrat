@@ -32,6 +32,7 @@ import {
 	runGates,
 	runTurn,
 	standaloneGates,
+	workspaceBrief,
 	type SandboxLike,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
@@ -270,6 +271,13 @@ export class BuilderAgent extends DurableObject<Env> {
 		return skills;
 	}
 
+	/** Interview turns carry only the interview skill: the 269-line build skill
+	 * is dead weight before a concept exists, and each phase's prefix is
+	 * byte-stable so both cache independently. */
+	#skillsForPhase(all: string[], conceptApproved: boolean): string[] {
+		return conceptApproved ? all : all.slice(0, 1);
+	}
+
 	async #generator(spec: string, skills: string[]): Promise<VerticalGenerator> {
 		const resolved = resolveModelHosted(this.env, spec);
 		return new AiSdkGenerator({
@@ -297,7 +305,9 @@ export class BuilderAgent extends DurableObject<Env> {
 		const rootWs = this.#rootWs(sb);
 		let generator: VerticalGenerator;
 		try {
-			generator = await this.#generator(modelSpec, await this.#loadSkills(rootWs));
+			const allSkills = await this.#loadSkills(rootWs);
+			const phaseApproved = await this.#projectWs(sb, entry.dir).exists('spec/concept.md');
+			generator = await this.#generator(modelSpec, this.#skillsForPhase(allSkills, phaseApproved));
 		} catch (err) {
 			return json(422, { error: err instanceof HostedProviderError ? err.message : String(err) });
 		}
@@ -324,7 +334,8 @@ export class BuilderAgent extends DurableObject<Env> {
 				await this.#restoreProject(pair, entry);
 				await ensureVerticalRepo(rootWs, entry.dir);
 				const projectWs = this.#projectWs(sb, entry.dir);
-				const concept = (await projectWs.exists('spec/concept.md'))
+				const conceptApproved = await projectWs.exists('spec/concept.md');
+				const concept = conceptApproved
 					? await projectWs.readFile('spec/concept.md')
 					: '(no concept document yet — interview the builder before writing code)';
 
@@ -333,7 +344,10 @@ export class BuilderAgent extends DurableObject<Env> {
 					verticalDir: '.',
 					concept,
 					message,
-					history: state.history,
+					workspaceBrief: await workspaceBrief(rootWs, entry.dir).catch(() => undefined),
+					// Text-only history is lean by design; cap it so decade-long
+					// sessions do not grow the per-step bill without bound.
+					history: state.history.slice(-24),
 				})) {
 					if (event.type === 'project-named' && entry.nameSource !== 'user') {
 						entry.name = event.name;

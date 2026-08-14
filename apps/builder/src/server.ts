@@ -28,6 +28,7 @@ import {
 	runGates,
 	runTurn,
 	standaloneGates,
+	workspaceBrief,
 	type GateSpec,
 } from '@substrat-run/builder-workspace';
 import { devStatus, startDev, stopDev } from './devserver.js';
@@ -125,13 +126,16 @@ function ndjson(res: ServerResponse): (e: BuildEvent) => void {
 	return (e) => res.write(`${JSON.stringify(e)}\n`);
 }
 
-async function makeGenerator(spec: string): Promise<VerticalGenerator> {
+async function makeGenerator(spec: string, conceptApproved = true): Promise<VerticalGenerator> {
 	const resolved = await resolveModel(spec);
+	// Interview turns carry only the interview skill (§token-economy): each
+	// phase's prefix is byte-stable, so both cache independently.
+	const phaseSkills = conceptApproved ? skills.skills : skills.skills.slice(0, 1);
 	return new AiSdkGenerator({
 		model: resolved.model,
 		label: resolved.label,
 		maxSteps: MAX_STEPS,
-		skills: skills.skills,
+		skills: phaseSkills,
 		explainError: explainProviderError(spec.split(':')[0] ?? 'anthropic'),
 	});
 }
@@ -230,7 +234,8 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 
 	let generator: VerticalGenerator;
 	try {
-		generator = await makeGenerator(modelSpec);
+		const phaseApproved = await cur.projectWs.exists('spec/concept.md');
+		generator = await makeGenerator(modelSpec, phaseApproved);
 	} catch (err) {
 		return json(res, 422, { error: err instanceof ProviderError ? err.message : String(err) });
 	}
@@ -252,7 +257,8 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		}
 	}, 10_000);
 
-	const concept = (await cur.projectWs.exists('spec/concept.md'))
+	const conceptApproved = await cur.projectWs.exists('spec/concept.md');
+	const concept = conceptApproved
 		? await cur.projectWs.readFile('spec/concept.md')
 		: '(no concept document yet — interview the builder before writing code)';
 
@@ -262,7 +268,8 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			verticalDir: '.',
 			concept,
 			message,
-			history: cur.state.history,
+			workspaceBrief: await workspaceBrief(ws, cur.entry.dir).catch(() => undefined),
+			history: cur.state.history.slice(-24),
 			signal: abort.signal,
 		})) {
 			if (event.type === 'project-named') await applyAiName(event.name);

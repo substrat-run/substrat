@@ -43,6 +43,7 @@ export {
 	foreignChanges,
 	isGitRepo,
 	runTurn,
+	workspaceBrief,
 	type CommitOptions,
 	type EnsureRepoResult,
 	type RunTurnOptions,
