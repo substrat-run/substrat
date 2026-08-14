@@ -2,7 +2,7 @@
   "name": "@substrat-run/builder-workspace",
   "version": "0.0.0",
   "private": true,
-  "description": "The builder studio's workspace seam — one interface, a local implementation, and the tier-1 gate runner (builder-studio.md §3, §9.1)",
+  "description": "The builder studio's workspace seam \u2014 one interface, a local implementation, and the tier-1 gate runner (builder-studio.md \u00a73, \u00a79.1)",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -16,6 +16,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./edge": {
+      "types": "./dist/edge.d.ts",
+      "default": "./dist/edge.js"
     }
   },
   "bin": {

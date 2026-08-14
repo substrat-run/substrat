@@ -34,7 +34,7 @@ import {
 	standaloneGates,
 	type SandboxLike,
 	type Workspace,
-} from '@substrat-run/builder-workspace';
+} from '@substrat-run/builder-workspace/edge';
 import { HostedProviderError, resolveModelHosted, type ProviderSecrets } from './providers-worker.js';
 
 const REPO = '/workspace/substrat';

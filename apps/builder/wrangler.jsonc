@@ -2,6 +2,9 @@
 	"name": "substrat-builder",
 	"main": "src/worker.ts",
 	"compatibility_date": "2025-01-01",
+	// The sandbox SDK imports node:path/posix; the worker itself stays node-free
+	// (worker code imports builder-workspace/edge, never the node barrel).
+	"compatibility_flags": ["nodejs_compat"],
 	"observability": { "enabled": true },
 
 	// Staff-only (builder-studio.md §1.1): builder.substrat.net, same

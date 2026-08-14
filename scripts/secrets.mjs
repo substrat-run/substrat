@@ -142,7 +142,7 @@ const only = flag('only');
 const dryRun = has('dry-run');
 
 const workers = Object.entries(MANIFEST).filter(([name]) => !only || name === only);
-if (only && workers.length === 0) fail(`unknown --only worker '${only}' (control-plane | dashboard | router)`);
+if (only && workers.length === 0) fail(`unknown --only worker '${only}' (control-plane | builder | dashboard | router)`);
 
 function fail(msg) {
   console.error(`✗ ${msg}`);
