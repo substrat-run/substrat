@@ -103,15 +103,19 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Deploy builder studio
-        if: steps.gate.outputs.release == 'true'
-        run: pnpm --filter @substrat-run/builder cf:deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy docs
         if: steps.gate.outputs.release == 'true'
         run: pnpm --filter @substrat-run/docs cf:deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      # LAST deliberately: the builder is the newest deploy target (containers)
+      # and its failures must never block the platform apps or docs — learned
+      # when a missing Containers token scope stranded the docs deploy.
+      - name: Deploy builder studio
+        if: steps.gate.outputs.release == 'true'
+        run: pnpm --filter @substrat-run/builder cf:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      
