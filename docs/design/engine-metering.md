@@ -103,6 +103,18 @@ not people, and every event is `piiClass: 'none'`. A vertical that wants per-per
 usage attribution is metering people and should think hard, then hang its own side
 table off the entry id.
 
+The subject is also the **only** tag slot, and that is a boundary, stated twice:
+
+- **Subject ≠ meter dimension.** The meter key is the billing dimension (one frozen
+  kind/unit, one line per closed period); encoding a resource id into it
+  (`ai.tokens.input:msg-123`) explodes the registry and shatters the period lines. The
+  *which* goes in `subject`, the *what* in the meter key.
+- **Richer tagging is a vertical side table keyed by the entry id** (decision 28's
+  standard pattern) — `recordUsage` returns the entry, the vertical stores
+  `(entry.id, …)` in the same transaction. The dedupe key often *is* a resource id (a
+  turn id) and doubles as a free lookup handle, but its contract is idempotency —
+  nothing more is promised of it.
+
 ## 1. Surface
 
 Permissions: `metering:read`, `metering:record`, `metering:configure`,
