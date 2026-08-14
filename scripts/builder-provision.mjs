@@ -87,41 +87,30 @@ try {
 	}
 }
 
-// ── 2. versioning (CF API — no wrangler command exists) ─────────────────────
+// ── 2. versioning (dashboard-only: the v4 API has NO versioning endpoint —
+// learned by probing; R2 versioning is managed via the S3 API or the dash) ──
 console.log('Object versioning (the D-52 rollback trail)');
-const token = secrets.CF_API_TOKEN;
+const token = secrets.BUILDER_CF_API_TOKEN || secrets.CF_API_TOKEN;
 const account = secrets.CF_ACCOUNT_ID;
+if (!secrets.BUILDER_CF_API_TOKEN && secrets.CF_API_TOKEN) {
+	warn('using the control plane CF_API_TOKEN for R2 (no BUILDER_CF_API_TOKEN set) —');
+	warn('prefer a dedicated token with only Workers R2 Storage:Edit.');
+}
 if (!token || !account) {
-	warn(`CF_API_TOKEN / CF_ACCOUNT_ID not in ${envFile} — cannot check or enable.`);
-	warn('Enable manually: dash → R2 → substrat-builder-repos → Settings → Object versioning.');
-} else if (!bucketExists && DRY) {
-	act('would enable versioning after creating the bucket');
+	warn(`no R2-capable token in ${envFile} — cannot verify the bucket at all.`);
 } else {
-	const base = `https://api.cloudflare.com/client/v4/accounts/${account}/r2/buckets/${BUCKET}`;
-	const get = await fetch(`${base}/versioning`, {
-		headers: { authorization: `Bearer ${token}` },
-	});
-	const body = await get.json().catch(() => null);
-	if (get.ok && body?.result?.enabled === true) {
-		ok('versioning already enabled');
-	} else if (get.status === 404) {
-		warn('versioning endpoint not recognised by the API (shape may have moved) —');
-		warn('enable manually: dash → R2 → substrat-builder-repos → Settings.');
-	} else if (DRY) {
-		if (!get.ok) warn(`cannot read versioning state (HTTP ${get.status}) — token lacks R2 read; state unknown`);
-		else act('would enable versioning');
+	const r = await fetch(
+		`https://api.cloudflare.com/client/v4/accounts/${account}/r2/buckets`,
+		{ headers: { authorization: `Bearer ${token}` } },
+	);
+	const body = await r.json().catch(() => null);
+	const names = (body?.result?.buckets ?? []).map((b) => b.name);
+	if (body?.success && names.includes(BUCKET)) {
+		ok(`token verified against R2 (bucket visible)`);
 	} else {
-		const put = await fetch(`${base}/versioning`, {
-			method: 'PUT',
-			headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-			body: JSON.stringify({ enabled: true }),
-		});
-		if (put.ok) act('enabled versioning');
-		else {
-			warn(`enable failed (HTTP ${put.status}) — the token may lack R2 write.`);
-			warn('Enable manually: dash → R2 → substrat-builder-repos → Settings.');
-		}
+		warn(`token cannot list R2 buckets (HTTP ${r.status}) — check its permissions.`);
 	}
+	ok('rollback trail: app-level bundle history (R2 has NO object versioning — verified)');
 }
 
 // ── 3. secrets present (names only) ─────────────────────────────────────────
