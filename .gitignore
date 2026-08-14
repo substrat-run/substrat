@@ -26,3 +26,7 @@ demos/rally/.data/
 
 # Filled platform secret files (templates in secrets/*.example stay committed)
 secrets/*.env
+
+# Builder studio projects — each is its OWN git repo (builder-studio.md §4.6);
+# never part of this repo. The nested .git keeps their history out of ours.
+.builder/
