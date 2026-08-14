@@ -89,8 +89,16 @@ try {
 
 // ── 2. versioning (CF API — no wrangler command exists) ─────────────────────
 console.log('Object versioning (the D-52 rollback trail)');
-const token = secrets.CF_API_TOKEN;
+// Prefer a NARROW builder-ops token (R2:Edit only) over the control plane's
+// broad CF_API_TOKEN — the CP credential must not accrete scopes for builder
+// concerns. Fallback kept so a missing narrow token degrades to read-attempts,
+// never to silence.
+const token = secrets.BUILDER_CF_API_TOKEN || secrets.CF_API_TOKEN;
 const account = secrets.CF_ACCOUNT_ID;
+if (!secrets.BUILDER_CF_API_TOKEN && secrets.CF_API_TOKEN) {
+	warn('using the control plane CF_API_TOKEN for R2 (no BUILDER_CF_API_TOKEN set) —');
+	warn('prefer a dedicated token with only Workers R2 Storage:Edit.');
+}
 if (!token || !account) {
 	warn(`CF_API_TOKEN / CF_ACCOUNT_ID not in ${envFile} — cannot check or enable.`);
 	warn('Enable manually: dash → R2 → substrat-builder-repos → Settings → Object versioning.');
