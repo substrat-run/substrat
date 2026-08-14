@@ -22,19 +22,37 @@ export function ProjectMenu(props: {
 	const [draft, setDraft] = useState(props.name);
 	const [projects, setProjects] = useState<ProjectInfo[] | null>(null);
 	const [current, setCurrent] = useState<string | null>(null);
+	const [creating, setCreating] = useState(false);
+	const [newName, setNewName] = useState('');
 	const inputRef = useRef<HTMLInputElement>(null);
+	const newNameRef = useRef<HTMLInputElement>(null);
+	const menuRef = useRef<HTMLSpanElement>(null);
 
 	useEffect(() => setDraft(props.name), [props.name]);
 	useEffect(() => {
 		if (editing) inputRef.current?.select();
 	}, [editing]);
 	useEffect(() => {
-		if (open) {
-			void api.projects().then(({ current, projects }) => {
-				setCurrent(current);
-				setProjects(projects);
-			});
-		}
+		if (creating) newNameRef.current?.focus();
+	}, [creating]);
+	useEffect(() => {
+		if (!open) return;
+		void api.projects().then(({ current, projects }) => {
+			setCurrent(current);
+			setProjects(projects);
+		});
+		const onPointerDown = (e: PointerEvent) => {
+			if (!menuRef.current?.contains(e.target as Node)) setOpen(false);
+		};
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') setOpen(false);
+		};
+		document.addEventListener('pointerdown', onPointerDown);
+		document.addEventListener('keydown', onKeyDown);
+		return () => {
+			document.removeEventListener('pointerdown', onPointerDown);
+			document.removeEventListener('keydown', onKeyDown);
+		};
 	}, [open]);
 
 	async function saveName(): Promise<void> {
@@ -56,17 +74,13 @@ export function ProjectMenu(props: {
 	}
 
 	async function create(): Promise<void> {
-		setOpen(false);
-		// prompt() is deliberate spike pragmatism: no modal system exists yet and
-		// the name is optional — the AI proposes one at concept time anyway.
-		const name = window.prompt('Project name (leave empty to let the AI name it):') ?? undefined;
-		if (name === undefined) return; // cancelled
-		await api.createProject(name.trim() || undefined);
+		setCreating(false);
+		await api.createProject(newName.trim() || undefined);
 		props.onChanged();
 	}
 
 	return (
-		<span className="project-menu">
+		<span className="project-menu" ref={menuRef}>
 			{editing ? (
 				<input
 					ref={inputRef}
@@ -112,9 +126,43 @@ export function ProjectMenu(props: {
 							<span className="pd-dir mono">{p.dir.split('/').pop()}</span>
 						</button>
 					))}
-					<button className="pd-row pd-new" onClick={() => void create()}>
+					<button
+						className="pd-row pd-new"
+						onClick={() => {
+							setOpen(false);
+							setNewName('');
+							setCreating(true);
+						}}
+					>
 						＋ New project
 					</button>
+				</div>
+			)}
+			{creating && (
+				<div className="picker-backdrop" onClick={() => setCreating(false)}>
+					<div className="picker prompt-dialog" onClick={(e) => e.stopPropagation()}>
+						<h2>New project</h2>
+						<div className="sub">Leave the name empty to let the AI name it at concept time.</div>
+						<input
+							ref={newNameRef}
+							className="prompt-input"
+							placeholder="Project name (optional)"
+							value={newName}
+							onChange={(e) => setNewName(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === 'Enter') void create();
+								if (e.key === 'Escape') setCreating(false);
+							}}
+						/>
+						<div className="prompt-actions">
+							<button className="pill" onClick={() => setCreating(false)}>
+								Cancel
+							</button>
+							<button className="primary" onClick={() => void create()}>
+								Create
+							</button>
+						</div>
+					</div>
 				</div>
 			)}
 		</span>
