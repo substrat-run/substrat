@@ -1,5 +1,25 @@
 # @substrat-run/builder
 
+## 0.2.0
+
+### Minor Changes
+
+- 49d9a35: Cloudflare Workers AI as a builder model provider (OpenAI-compatible mode), local and hosted. The endpoint is account-scoped, so `CLOUDFLARE_AI_BASE_URL` carries the account id; the token is a dedicated `CLOUDFLARE_AI_API_TOKEN` with the Workers AI permission only — never wrangler's ambient deploy token. Model ids keep their catalog prefix: `@cf/…` runs on Cloudflare's network, bare `vendor/model` slugs are partner-served under unified billing (surfaced honestly in the model picker per D-53). Hosted secrets: `BUILDER_CLOUDFLARE_AI_BASE_URL` / `BUILDER_CLOUDFLARE_AI_API_TOKEN` in the secrets manifest.
+
+### Patch Changes
+
+- d77d0ac: R2 ops corrections: app-level ULID-keyed bundle history replaces the
+  nonexistent R2 object versioning (restore reads newest, legacy single-key
+  still readable, prune keeps 10); provision script prefers a narrow
+  BUILDER_CF_API_TOKEN and verifies it against R2 instead of guessing.
+- 45c8ee8: Provider errors name their real failure class (quota exhausted ≠ invalid key ≠
+  rate limit ≠ wrong region), keep the provider's own message, and say what to do
+  next — shared worker-safe explainer for the hosted DO and the local CLI.
+- 9ddd361: Token economy for builder turns: Anthropic prompt caching (stable system+skills prefix and last history message get ephemeral cacheControl breakpoints via system messages + `allowSystemInMessages`), a git-derived `workspaceBrief` project map so the model never re-lists the tree, phase-conditional skills (interview turns load only the first skill), history capped at the last 24 turns, and `read_file` responses capped at 24k chars (head+tail with a truncation marker).
+- Updated dependencies [9ddd361]
+  - @substrat-run/builder-generator@0.2.0
+  - @substrat-run/builder-workspace@0.2.0
+
 ## 0.1.0
 
 ### Minor Changes
