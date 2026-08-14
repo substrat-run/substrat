@@ -16,6 +16,8 @@ export interface ProviderSecrets {
 	ANTHROPIC_API_KEY?: string;
 	DASHSCOPE_API_KEY?: string;
 	DASHSCOPE_BASE_URL?: string;
+	CLOUDFLARE_AI_BASE_URL?: string;
+	CLOUDFLARE_AI_API_TOKEN?: string;
 	OPENAI_COMPATIBLE_BASE_URL?: string;
 	OPENAI_COMPATIBLE_API_KEY?: string;
 }
@@ -46,6 +48,22 @@ export function resolveModelHosted(
 			const p = createOpenAICompatible({ name: 'qwen', baseURL, apiKey: env.DASHSCOPE_API_KEY });
 			return { model: p(modelId), label: `qwen/${modelId}`, endpoint: baseURL };
 		}
+		case 'cloudflare': {
+			if (!env.CLOUDFLARE_AI_BASE_URL)
+				throw new HostedProviderError('CLOUDFLARE_AI_BASE_URL is not set as a worker secret');
+			if (!env.CLOUDFLARE_AI_API_TOKEN)
+				throw new HostedProviderError('CLOUDFLARE_AI_API_TOKEN is not set as a worker secret');
+			const p = createOpenAICompatible({
+				name: 'cloudflare',
+				baseURL: env.CLOUDFLARE_AI_BASE_URL,
+				apiKey: env.CLOUDFLARE_AI_API_TOKEN,
+			});
+			return {
+				model: p(modelId),
+				label: `cloudflare/${modelId}`,
+				endpoint: env.CLOUDFLARE_AI_BASE_URL,
+			};
+		}
 		case 'compat': {
 			if (!env.OPENAI_COMPATIBLE_BASE_URL)
 				throw new HostedProviderError('OPENAI_COMPATIBLE_BASE_URL is not set as a worker secret');
@@ -66,7 +84,7 @@ export function resolveModelHosted(
 			);
 		default:
 			throw new HostedProviderError(
-				`provider ${JSON.stringify(provider)} is not wired hosted. Available: anthropic, qwen, compat.`,
+				`provider ${JSON.stringify(provider)} is not wired hosted. Available: anthropic, qwen, cloudflare, compat.`,
 			);
 	}
 }
