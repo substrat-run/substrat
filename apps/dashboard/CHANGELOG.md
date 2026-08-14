@@ -1,5 +1,13 @@
 # @substrat-run/dashboard
 
+## 0.26.2
+
+### Patch Changes
+
+- Updated dependencies [49e8ede]
+  - @substrat-run/engine-absence@0.1.0
+  - @substrat-run/demo-meridian@0.5.0
+
 ## 0.26.1
 
 ### Patch Changes
