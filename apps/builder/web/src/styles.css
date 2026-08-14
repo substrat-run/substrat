@@ -88,6 +88,24 @@ code, pre, .mono { font-family: var(--font-mono, 'Geist Mono', ui-monospace, Men
 .pd-dir { font-size: 11.5px; color: var(--text-tertiary); }
 .pd-new { color: var(--text-brand); border-top: 1px solid var(--border-subtle); border-radius: 0 0 6px 6px; }
 
+/* new-project dialog — the picker modal shell, sized down to a single prompt */
+.prompt-dialog { width: min(420px, 92vw); }
+.prompt-input {
+	width: 100%; height: var(--control-h-md, 32px);
+	background: var(--surface-card); color: var(--text-primary);
+	border: 1px solid var(--border-default); border-radius: 6px; padding: 0 10px;
+	font: inherit; font-size: 13.5px;
+}
+.prompt-input::placeholder { color: var(--text-placeholder); }
+.prompt-input:focus { outline: none; border-color: var(--border-brand); box-shadow: var(--focus-ring); }
+.prompt-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.prompt-actions .primary {
+	height: 28px; border: 0; border-radius: 6px; padding: 0 12px;
+	background: var(--action-primary-bg); color: var(--action-primary-text);
+	font-weight: 500; font-size: 13px; cursor: pointer; font-family: inherit;
+}
+.prompt-actions .primary:hover { background: var(--action-primary-bg-hover); }
+
 /* ── layout ────────────────────────────────────────────────────────────────── */
 .main { flex: 1; display: grid; grid-template-columns: 360px 1fr; min-height: 0; }
 .chat-col {
