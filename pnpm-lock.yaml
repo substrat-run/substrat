@@ -1098,6 +1098,28 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/debug@4.1.13)(@types/node@26.1.1)(tsx@4.23.1)(yaml@2.9.0)
 
+  engines/metering:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:^
+        version: link:../../packages/kernel
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@substrat-run/engine-test-kit':
+        specifier: workspace:^
+        version: link:../../packages/engine-test-kit
+      typescript:
+        specifier: ^7.0.0
+        version: 7.0.2
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.1.1)(tsx@4.23.1)(yaml@2.9.0)
+
   engines/protocol:
     dependencies:
       '@substrat-run/contracts':
