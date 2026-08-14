@@ -35,6 +35,7 @@ import {
 	type SandboxLike,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
+import { explainProviderFailure } from './provider-errors.js';
 import { HostedProviderError, resolveModelHosted, type ProviderSecrets } from './providers-worker.js';
 
 const REPO = '/workspace/substrat';
@@ -272,11 +273,16 @@ export class BuilderAgent extends DurableObject<Env> {
 
 	async #generator(spec: string, skills: string[]): Promise<VerticalGenerator> {
 		const resolved = resolveModelHosted(this.env, spec);
+		const provider = spec.includes(':') ? (spec.split(':')[0] as string) : 'anthropic';
 		return new AiSdkGenerator({
 			model: resolved.model,
 			label: resolved.label,
 			maxSteps: 40,
 			skills,
+			// The incident behind this: an exhausted qwen weekly quota rendered as
+			// "API key is invalid" in the chat pane. Name the real class, keep the
+			// provider's message (it carries the reset time), say what to do next.
+			explainError: (err) => explainProviderFailure(provider, err, 'hosted'),
 		});
 	}
 

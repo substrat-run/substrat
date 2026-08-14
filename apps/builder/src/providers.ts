@@ -22,6 +22,7 @@
  */
 import type { LanguageModel } from 'ai';
 import { envHint } from './env.js';
+import { explainProviderFailure } from './provider-errors.js';
 
 interface DirectProvider {
 	readonly kind: 'direct';
@@ -279,6 +280,9 @@ export async function listModels(providerName: string): Promise<string[]> {
  */
 export function explainProviderError(providerName: string): (err: unknown) => string | null {
 	return (err: unknown) => {
+		// Shared classes first (quota, rate limit, model-not-exist, generic auth) —
+		// the local-specific region/endpoint detail below only refines 401/403.
+		const shared = explainProviderFailure(providerName, err, 'local');
 		const e = err as Record<string, unknown> | null;
 		const status = typeof e?.['statusCode'] === 'number' ? (e['statusCode'] as number) : undefined;
 		const url = typeof e?.['url'] === 'string' ? (e['url'] as string) : '';
@@ -301,7 +305,7 @@ export function explainProviderError(providerName: string): (err: unknown) => st
 			].join('\n');
 		}
 
-		if (status !== 401 && status !== 403) return null;
+		if (status !== 401 && status !== 403) return shared;
 
 		const spec = PROVIDERS[providerName];
 		const envVar = spec && 'envVar' in spec ? spec.envVar : undefined;
