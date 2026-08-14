@@ -874,3 +874,13 @@ nothing now and retrofitting them later costs a rewrite.
   subprocessor point is the one with teeth: it converts the pluggable provider seam (D-49) from a
   portability nicety into the mechanism that answers a procurement objection by configuration —
   EU-resident inference, a vendor veto, or a self-hosted model — instead of by losing the deal.
+- **D-54 — The generator's skills are builder-distilled documents owned by the studio
+  (`apps/builder/skills/`), not the repo's Claude Code skills.** The originals assume monorepo
+  access ("read `demos/callout/…`"), a deploy CLI, and curl — all unreachable or denied in the
+  project-rooted sandbox — and they duplicate the system prompt's module rules, so every turn
+  billed the same rules twice and pointed the model at files it cannot read. The distilled pair
+  carries the engine coverage map + concept template (interview phase) and inline code shapes
+  replacing the unreachable reference files (build phase), at roughly a third of the size.
+  Consequence accepted: a second document to keep in sync when platform surfaces change — the
+  studio's files say so in their header, and `evals/` (D-51) is the mechanism that catches a
+  drifted skill producing a vertical that no longer passes the gates.
