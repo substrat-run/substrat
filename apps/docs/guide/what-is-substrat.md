@@ -88,6 +88,8 @@ Substrat is pre-release (0.x). What exists today:
 | Invoicing engine | [`@substrat-run/engine-invoicing`](/engines/invoicing/) | Seed |
 | Protocol / checklist engine | [`@substrat-run/engine-protocol`](/engines/protocol/) | Seed |
 | Invites engine | [`@substrat-run/engine-invites`](/engines/invites/) | Seed |
+| Absence engine | [`@substrat-run/engine-absence`](/engines/absence/) | Seed |
+| Metering engine | [`@substrat-run/engine-metering`](/engines/metering/) | Seed |
 | Scrive connector (e-signing, BankID) | [`@substrat-run/connector-scrive`](/connectors/scrive) | Published `0.1.15` |
 | The `substrat` CLI — authenticated deploy (`login`, `push`) | [`@substrat-run/cli`](/guide/deploying) | Working |
 | Platform surfaces — [control plane](/platform/control-plane), [console](/platform/console), [router](/platform/router), [dashboard](/platform/dashboard) | private deployments | Working (self-serve deploy foundation) |

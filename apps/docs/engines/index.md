@@ -120,9 +120,11 @@ host.defineOperation('acme/create-order', async (ctx, input) => {
 | [Protocols](/engines/protocol/) | `@substrat-run/engine-protocol` | protocols/checklists with the sign → immutable invariant, verifiable content hash |
 | [Invites](/engines/invites/) | `@substrat-run/engine-invites` | single-use invitations to join an org with a role — invited → accepted; the plaintext identifier is never stored, the per-scope salted hash is |
 | [Absence](/engines/absence/) | `@substrat-run/engine-absence` | the append-only absence ledger over an opaque subject — balance as a fold, approval as the only mint for bookings, per-type floors |
+| [Metering](/engines/metering/) | `@substrat-run/engine-metering` | the billable-usage ledger — idempotent ingest, counters vs gauges, period close as frozen billing evidence; quantities, never prices |
 
-All six are **product seeds**, extracted from the demo verticals — small deliberately,
-hardened as real verticals consume them.
+All seven are **product seeds** — small deliberately, hardened as real verticals
+consume them. Six were extracted from the demo verticals; metering is the one exception,
+noted below.
 
 The booking engine is the one **second invariant shape**: where a work order is a *state
 machine*, a reservation is *allocation against capacity over an interval*. It is also the
@@ -141,6 +143,13 @@ a different shape — field-crew resource planning, where the subject is a plann
 `resource` rather than an employee — forced the line. (The question of whether the
 generic entries-against-a-ref core belongs in the kernel was considered and settled:
 it stays engine-private until a non-absence consumer wants the raw ledger shape.)
+
+The metering engine is the honest exception to the extraction rule: it was built
+engine-first, against a named first consumer (the platform's own builder portal, whose
+AI turns must be billed) with the second — vertical AI features — in sight rather than
+in hand. The decision log carries that caveat rather than glossing it; the discipline it
+follows instead is a design document reviewed before code, and the same
+one-invariant-set smallness as its extracted siblings.
 
 Planned next, in the order verticals force them: **scheduling/dispatch** and
 **ticketing** (ärende).

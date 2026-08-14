@@ -108,6 +108,7 @@ function guideSidebar() {
         engineSidebar('protocol', 'Protocols'),
         engineSidebar('invites', 'Invites'),
         engineSidebar('absence', 'Absence'),
+        engineSidebar('metering', 'Metering'),
       ],
     },
     {

@@ -1,0 +1,42 @@
+{
+  "name": "@substrat-run/engine-metering",
+  "version": "0.0.0",
+  "description": "Substrat engine: billable usage — an append-only, idempotent meter ledger (counters and gauges) whose closed periods are frozen billing evidence",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "engines/metering"
+  },
+  "homepage": "https://substrat.net/engines",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/kernel": "workspace:^",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.0",
+    "@substrat-run/engine-test-kit": "workspace:^",
+    "vitest": "^3.0.0"
+  }
+}
