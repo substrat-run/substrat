@@ -24,6 +24,13 @@ export interface GeneratorInput {
 	readonly concept: string;
 	/** This turn's message from the builder. */
 	readonly message: string;
+	/**
+	 * Host-computed project map (file list, recent commits, last diff) — cheap
+	 * git output that saves the model from re-discovering the project with
+	 * list_files/read_file every turn. Volatile: placed AFTER the cache
+	 * breakpoints, never inside the stable prefix.
+	 */
+	readonly workspaceBrief?: string;
 	/** Prior turns. Opaque to callers; each implementation owns its own shape. */
 	readonly history?: readonly GeneratorTurn[];
 	readonly signal?: AbortSignal;

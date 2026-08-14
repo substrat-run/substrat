@@ -183,3 +183,26 @@ export async function isGitRepo(ws: Workspace): Promise<boolean> {
 	const { exitCode } = await ws.exec('git rev-parse --is-inside-work-tree');
 	return exitCode === 0;
 }
+
+/**
+ * A cheap project map for the generator's per-turn context: file list, recent
+ * commits, last diffstat. Costs three git commands; saves the model from
+ * re-discovering the project with list_files/read_file every turn (the
+ * "it starts by indexing everything" cost). Volatile by nature — hosts place it
+ * after the prompt-cache breakpoints, never inside the stable prefix.
+ */
+export async function workspaceBrief(ws: Workspace, verticalDir: string): Promise<string> {
+	const ctx = (await ws.exists(`${verticalDir}/.git`))
+		? { cwd: verticalDir, scope: '.' }
+		: { cwd: '.', scope: verticalDir };
+	const run = async (cmd: string): Promise<string> =>
+		(await ws.exec(cmd, { cwd: ctx.cwd })).stdout.trim();
+	const files = await run(`git ls-files -- ${JSON.stringify(ctx.scope)}`);
+	const log = await run('git log --oneline -3');
+	const diff = await run('git diff --stat HEAD~1..HEAD 2>/dev/null || true');
+	return [
+		`Files:\n${files || '(none yet — fresh project)'}`,
+		`Recent commits:\n${log || '(none)'}`,
+		...(diff ? [`Changed last turn:\n${diff}`] : []),
+	].join('\n\n');
+}

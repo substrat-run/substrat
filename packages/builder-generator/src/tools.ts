@@ -60,7 +60,15 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 			execute: async ({ path }) => {
 				emit({ type: 'tool-call', tool: 'read_file', summary: path });
 				try {
-					return await ws.readFile(path);
+					const content = await ws.readFile(path);
+					// Cap what one read can cost: head + tail with an honest gap marker.
+					const CAP = 24_000;
+					if (content.length <= CAP) return content;
+					return (
+						content.slice(0, CAP / 2) +
+						`\n\n…[${content.length - CAP} chars omitted — re-read a narrower file or use run_command with grep]…\n\n` +
+						content.slice(-CAP / 2)
+					);
 				} catch (err) {
 					return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
 				}

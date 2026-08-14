@@ -79,8 +79,10 @@ const DEFAULT_SYSTEM = `You are building a Substrat vertical. THE WORKSPACE ROOT
 PROJECT — every path is relative to it (src/module.ts, spec/concept.md, test/…). You
 cannot read anything outside it, and you do not need to: everything about Substrat,
 the engines, and the reference patterns is in the skill documents included below.
-Do not begin a session by listing or reading files wholesale — read a file when you
-are about to change it.
+Each turn includes a current project map (files, recent commits, last diff) — trust
+it: never call list_files to discover structure, and read a file only when you are
+about to change it or the gates point at it. Re-reading files you wrote last turn
+wastes the builder's budget.
 
 Phases, in order:
 1. INTERVIEW. If the project has no approved spec/concept.md, your job this turn is
@@ -151,17 +153,39 @@ export class AiSdkGenerator implements VerticalGenerator {
 
 		const tools = workspaceTools({ workspace: input.workspace, emit });
 
-		const system = [
-			this.#opts.system ?? DEFAULT_SYSTEM,
-			...(this.#opts.skills ?? []),
+		// Prefix discipline (§5.4, finally implemented): the system prompt +
+		// skills are byte-stable per phase and marked cacheable on Anthropic —
+		// the tool loop re-sends everything on EVERY step (up to maxSteps model
+		// calls per turn), so an uncached prefix is billed dozens of times over.
+		// Volatile context (concept, workspace brief) goes in a separate system
+		// message AFTER the breakpoint; a second breakpoint rides the last
+		// history message so the growing conversation prefix caches too.
+		const anthropic = this.#opts.label.startsWith('anthropic');
+		const cache = { anthropic: { cacheControl: { type: 'ephemeral' as const } } };
+
+		const stable = [this.#opts.system ?? DEFAULT_SYSTEM, ...(this.#opts.skills ?? [])].join(
+			'\n\n---\n\n',
+		);
+		const volatileCtx = [
 			`The vertical under construction lives at: ${input.verticalDir}`,
 			`Approved concept:\n${input.concept}`,
+			...(input.workspaceBrief ? [`Project map (current — do not re-discover it with list_files):\n${input.workspaceBrief}`] : []),
 		].join('\n\n---\n\n');
 
+		const history = (input.history ?? []).map(
+			(t): ModelMessage => ({ role: t.role, content: t.text }),
+		);
+		const lastHist = history[history.length - 1];
+		if (anthropic && lastHist) lastHist.providerOptions = cache;
+
 		const messages: ModelMessage[] = [
-			...(input.history ?? []).map(
-				(t): ModelMessage => ({ role: t.role, content: t.text }),
-			),
+			{
+				role: 'system',
+				content: stable,
+				...(anthropic ? { providerOptions: cache } : {}),
+			},
+			{ role: 'system', content: volatileCtx },
+			...history,
 			{ role: 'user', content: input.message },
 		];
 
@@ -178,8 +202,12 @@ export class AiSdkGenerator implements VerticalGenerator {
 		try {
 			const result = streamText({
 				model: this.#opts.model,
-				system,
 				messages,
+				// v7 rejects role:'system' inside `messages` by default. We need system
+				// MESSAGES (not the `system` string param) because Anthropic prompt
+				// caching hangs cacheControl off per-message providerOptions — the
+				// stable prefix gets a breakpoint, the volatile context does not.
+				allowSystemInMessages: true,
 				tools,
 				stopWhen: stepCountIs(this.#opts.maxSteps ?? 40),
 				// The SDK's default onError console.errors the whole object. We surface
