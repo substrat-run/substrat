@@ -38,7 +38,13 @@ import {
 } from '@substrat-run/builder-workspace/edge';
 import { detectPhase, skillsForPhase, SKILL_MANIFEST } from './phase.js';
 import { explainProviderFailure } from './provider-errors.js';
-import { HostedProviderError, resolveModelHosted, type ProviderSecrets } from './providers-worker.js';
+import {
+	HostedProviderError,
+	hostedProviderCatalog,
+	listModelsHosted,
+	resolveModelHosted,
+	type ProviderSecrets,
+} from './providers-worker.js';
 import { reportTurnUsage } from './metering.js';
 
 const REPO = '/workspace/substrat';
@@ -516,6 +522,19 @@ export class BuilderAgent extends DurableObject<Env> {
 				await this.#rootWs(this.#sandbox(entry.id)).writeFile(path, content);
 				return json(200, { ok: true });
 			}
+			case 'GET /api/providers':
+				return json(200, hostedProviderCatalog(this.env));
+			case 'GET /api/models': {
+				const provider = url.searchParams.get('provider');
+				if (!provider) return json(400, { error: 'provider required' });
+				try {
+					return json(200, { models: await listModelsHosted(this.env, provider) });
+				} catch (err) {
+					return json(422, {
+						error: err instanceof HostedProviderError ? err.message : String(err),
+					});
+				}
+			}
 			case 'POST /api/model': {
 				if (this.#busy) return json(409, { error: 'cannot switch model mid-turn' });
 				const { spec } = (await req.json().catch(() => ({}))) as { spec?: string };
@@ -579,7 +598,7 @@ export class BuilderAgent extends DurableObject<Env> {
 			default:
 				return json(503, {
 					error:
-						'not hosted yet: /api/dev (preview processes) and /api/providers|models (picker catalog) land with the #626 follow-ups',
+						'not hosted yet: /api/dev (preview processes) lands with the #626 follow-ups',
 				});
 		}
 	}
