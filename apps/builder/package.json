@@ -32,6 +32,7 @@
 	},
 	"devDependencies": {
 		"@ai-sdk/anthropic": "^3.0.0",
+		"@substrat-run/adapter-sqlite": "workspace:*",
 		"@cloudflare/workers-types": "^4.20250109.0",
 		"@types/node": "^22.0.0",
 		"concurrently": "^9.0.0",
