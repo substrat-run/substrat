@@ -246,7 +246,7 @@ function QuestionBlock(props: {
 		return (
 			<div className="msg assistant q-block">
 				<Markdown text={q.question} />
-				<div className="model-list">
+				<div className="option-list">
 					{q.options.map((opt, i) => (
 						<button
 							key={i}
@@ -292,7 +292,7 @@ function QuestionBlock(props: {
 				))}
 			</div>
 			<Markdown text={q.question} />
-			<div className="model-list">
+			<div className="option-list">
 				{q.options.map((opt, i) => {
 					const val = `${i + 1}. ${opt}`;
 					return (
@@ -573,7 +573,7 @@ export function Chat(props: {
 							<div key={i} className="msg assistant">
 								<Markdown text={item.text} />
 								{opts && (
-									<div className="model-list" style={{ marginTop: 8 }}>
+									<div className="option-list" style={{ marginTop: 8 }}>
 										{opts.map((opt, n) => (
 											<button key={n} onClick={() => props.onSend(`${n + 1}. ${opt}`)}>
 												{n + 1}. {opt.length > 80 ? `${opt.slice(0, 77)}…` : opt}

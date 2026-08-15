@@ -55,6 +55,12 @@ export interface AiSdkGeneratorOptions {
 	 */
 	readonly temperature?: number;
 	/**
+	 * Nucleus sampling, same declaration path as temperature. Qwen needs 0.8:
+	 * without it the family falls into single-token repetition loops on long
+	 * agentic turns. Absent = the provider's own default.
+	 */
+	readonly topP?: number;
+	/**
 	 * Provider-specific settings, passed straight through. For Claude:
 	 * `{ anthropic: { thinking: { type: 'adaptive' } } }` — leave thinking ON;
 	 * with it disabled the model occasionally writes a tool call into visible
@@ -474,6 +480,7 @@ export class AiSdkGenerator implements VerticalGenerator {
 					// errors as BuildEvents, so the default is pure noise in a chat pane.
 					onError: () => {},
 					...(this.#opts.temperature !== undefined ? { temperature: this.#opts.temperature } : {}),
+					...(this.#opts.topP !== undefined ? { topP: this.#opts.topP } : {}),
 				...(hasProviderOptions ? { providerOptions } : {}),
 					...(input.signal ? { abortSignal: input.signal } : {}),
 				});
