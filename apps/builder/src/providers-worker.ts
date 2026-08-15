@@ -11,6 +11,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
+import { MODEL_PAIRS, type ModelPair } from './model-pairs.js';
 
 /** Structurally identical to hosting.ts `ProviderCatalogEntry` (and the web
  * client's `ProviderEntry`) — declared here because even a type-only import of
@@ -27,6 +28,8 @@ export interface HostedCatalogEntry {
 	readonly credential: { readonly envVar: string | null; readonly set: boolean };
 	readonly listable: boolean;
 	readonly suggested: readonly string[];
+	/** The `<provider>:auto` pair, when one is declared (model-pairs.ts). */
+	readonly pair?: ModelPair;
 }
 
 export interface ProviderSecrets {
@@ -165,6 +168,7 @@ export function hostedProviderCatalog(env: ProviderSecrets): HostedCatalogEntry[
 			credential: { envVar: 'ANTHROPIC_API_KEY', set: Boolean(env.ANTHROPIC_API_KEY) },
 			listable: false,
 			suggested: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-fable-5'],
+			...(MODEL_PAIRS['anthropic'] ? { pair: MODEL_PAIRS['anthropic'] } : {}),
 		},
 		{
 			name: 'qwen',
@@ -178,6 +182,7 @@ export function hostedProviderCatalog(env: ProviderSecrets): HostedCatalogEntry[
 			credential: { envVar: 'DASHSCOPE_API_KEY', set: Boolean(env.DASHSCOPE_API_KEY) },
 			listable: true,
 			suggested: [],
+			...(MODEL_PAIRS['qwen'] ? { pair: MODEL_PAIRS['qwen'] } : {}),
 		},
 		{
 			name: 'cloudflare',

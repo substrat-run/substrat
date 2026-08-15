@@ -53,6 +53,7 @@ import {
 	ProviderError,
 	resolveModel,
 } from './providers.js';
+import { resolveAutoSpec } from './model-pairs.js';
 import { detectPhase, interviewWriteGuard, skillsForPhase, type BuildPhase } from './phase.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
@@ -128,7 +129,9 @@ function ndjson(res: ServerResponse): (e: BuildEvent) => void {
 }
 
 async function makeGenerator(spec: string, phase: BuildPhase = 'iterate'): Promise<VerticalGenerator> {
-	const resolved = await resolveModel(spec);
+	// `<provider>:auto` becomes concrete here — fast for interview, strong for
+	// build (model-pairs.ts). The generator label carries what actually ran.
+	const resolved = await resolveModel(resolveAutoSpec(spec, phase));
 	// The phase ladder (phase.ts): prefix content changes only at phase
 	// boundaries, so each phase's prefix is byte-stable and caches independently.
 	const phaseSkills = skillsForPhase(skills.byFile, phase);
@@ -151,7 +154,8 @@ async function handleSession(res: ServerResponse): Promise<void> {
 	let endpointSource: string | undefined;
 	let modelError: string | null = null;
 	try {
-		const resolved = await resolveModel(modelSpec);
+		// Auto specs validate/display via their strong member (the build tier).
+		const resolved = await resolveModel(resolveAutoSpec(modelSpec, 'iterate'));
 		endpoint = resolved.endpoint;
 		endpointSource = resolved.endpointSource;
 	} catch (err) {
@@ -370,7 +374,9 @@ async function handleSetModel(req: IncomingMessage, res: ServerResponse): Promis
 	const { spec } = JSON.parse(await readBody(req)) as { spec?: string };
 	if (!spec) return json(res, 400, { error: 'spec required (provider:model)' });
 	try {
-		const resolved = await resolveModel(spec); // validates provider, credential, endpoint
+		// Validates provider, credential, endpoint; an auto spec validates via its
+		// strong member (both members share provider + credential by construction).
+		const resolved = await resolveModel(resolveAutoSpec(spec, 'iterate'));
 		modelSpec = spec;
 		// History survives a model switch by design: GeneratorTurn is provider-
 		// neutral (§5.2), so a session can continue on another model.

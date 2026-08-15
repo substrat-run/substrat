@@ -492,6 +492,20 @@ code, pre, .mono { font-family: var(--font-mono, 'Geist Mono', ui-monospace, Men
 	font-family: var(--font-mono, monospace);
 }
 .provider-body .data-note { font-size: 12px; color: var(--status-warning-fg); margin-bottom: 10px; }
+/* the provider's auto pair — one row, both members named */
+.auto-pair { margin-bottom: 10px; }
+.auto-pair button {
+	display: block; width: 100%; text-align: left;
+	background: var(--surface-card); border: 1px solid var(--border-default);
+	color: var(--text-primary); border-radius: 6px; padding: 6px 10px;
+	cursor: pointer; font-size: 12.5px; font-family: var(--font-mono, monospace);
+	transition: background 140ms cubic-bezier(0.16,1,0.3,1);
+}
+.auto-pair button:hover { background: var(--surface-hover); border-color: var(--border-brand); }
+.auto-pair button.current { border-color: var(--status-success-dot); color: var(--status-success-fg); }
+.auto-pair .role { color: var(--text-tertiary); font-family: inherit; }
+.auto-pair .loc { margin-top: 4px; }
+
 .free { display: flex; gap: 6px; margin-top: 8px; }
 .free input {
 	flex: 1; height: 28px; background: var(--surface-inset); color: var(--text-primary);

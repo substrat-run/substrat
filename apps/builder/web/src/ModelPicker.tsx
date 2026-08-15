@@ -77,6 +77,22 @@ export function ModelPicker(props: {
 									<div className="host">endpoint: {p.hosting.host}</div>
 									<div className="data-note">{p.hosting.dataNote}</div>
 
+									{p.pair && (
+										<div className="auto-pair">
+											<button
+												className={`${p.name}:auto` === props.current ? 'current' : ''}
+												onClick={() => void pick(`${p.name}:auto`)}
+											>
+												auto — {p.pair.fast} <span className="role">interview</span> ·{' '}
+												{p.pair.strong} <span className="role">build</span>
+											</button>
+											<div className="loc">
+												picks per phase: the fast model asks, the strong one writes code —
+												or pick a single model below to override
+											</div>
+										</div>
+									)}
+
 									{list === 'loading' && <div className="loc">listing models…</div>}
 									{list instanceof Error && <div className="err">{list.message}</div>}
 									{Array.isArray(list) && (
