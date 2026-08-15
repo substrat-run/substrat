@@ -289,6 +289,16 @@ export function App() {
 			</div>
 		);
 	}
+	// Nothing renders until the scope is settled: panes fetch on mount
+	// (PreviewPane polls /api/dev immediately), and before the team is pinned
+	// those requests would go out headerless and be refused with a 400.
+	if (!scoped) {
+		return (
+			<div className="app">
+				<div className="note">Resolving your teams…</div>
+			</div>
+		);
+	}
 
 	return (
 		<div className="app">
