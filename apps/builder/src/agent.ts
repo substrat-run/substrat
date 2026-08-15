@@ -36,7 +36,7 @@ import {
 	type SandboxLike,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
-import { detectPhase, skillsForPhase, SKILL_MANIFEST } from './phase.js';
+import { detectPhase, interviewWriteGuard, skillsForPhase, SKILL_MANIFEST } from './phase.js';
 import { explainProviderFailure } from './provider-errors.js';
 import {
 	HostedProviderError,
@@ -283,7 +283,7 @@ export class BuilderAgent extends DurableObject<Env> {
 		return skills;
 	}
 
-	async #generator(spec: string, skills: string[]): Promise<VerticalGenerator> {
+	async #generator(spec: string, skills: string[], interview: boolean): Promise<VerticalGenerator> {
 		const resolved = resolveModelHosted(this.env, spec);
 		const provider = spec.includes(':') ? (spec.split(':')[0] as string) : 'anthropic';
 		return new AiSdkGenerator({
@@ -295,6 +295,9 @@ export class BuilderAgent extends DurableObject<Env> {
 			// "API key is invalid" in the chat pane. Name the real class, keep the
 			// provider's message (it carries the reset time), say what to do next.
 			explainError: (err) => explainProviderFailure(provider, err, 'hosted'),
+			// Interview turns may write only spec/** — the ladder is mechanical,
+			// not a prompt hope (phase.ts explains the dead-end this prevents).
+			...(interview ? { denyWrite: interviewWriteGuard } : {}),
 		});
 	}
 
@@ -354,7 +357,11 @@ export class BuilderAgent extends DurableObject<Env> {
 				const phase = await detectPhase(projectWs);
 				emit({ type: 'phase', phase });
 				const allSkills = await this.#loadSkills(rootWs);
-				const generator = await this.#generator(modelSpec, skillsForPhase(allSkills, phase));
+				const generator = await this.#generator(
+					modelSpec,
+					skillsForPhase(allSkills, phase),
+					phase === 'interview',
+				);
 				const concept =
 					phase === 'interview'
 						? '(no concept document yet — interview the builder before writing code)'

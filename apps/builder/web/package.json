@@ -13,6 +13,8 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@substrat-run/ui": "workspace:*",
+    "dompurify": "^3.2.0",
+    "marked": "^15.0.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"
   },

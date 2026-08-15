@@ -22,6 +22,12 @@ export interface WorkspaceToolOptions {
 	readonly emit: (e: BuildEvent) => void;
 	/** Commands the model may not run — enforced here, not by prompting. */
 	readonly denyCommand?: (cmd: string) => string | null;
+	/**
+	 * Paths the model may not write this turn — enforced here, not by prompting.
+	 * The hosts use this to make the phase ladder mechanical: interview turns may
+	 * write only spec/**, so "code before the approved concept" cannot happen.
+	 */
+	readonly denyWrite?: (path: string) => string | null;
 }
 
 /**
@@ -83,6 +89,8 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 				content: z.string().describe('The complete file content'),
 			}),
 			execute: async ({ path, content }) => {
+				const refusal = opts.denyWrite?.(path);
+				if (refusal) return `REFUSED: ${refusal}`;
 				try {
 					await ws.writeFile(path, content);
 					emit({ type: 'file-written', path, bytes: content.length });
@@ -150,7 +158,7 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 
 		ask_user: tool({
 			description:
-				'Ask the builder ONE question and offer 2–5 concrete options to choose from. Use this during the interview phase instead of writing several questions into one message. After calling it, END YOUR TURN and wait — the answer arrives as the next user message (a bare number means that option).',
+				'Ask the builder ONE question and offer 2–5 concrete options to choose from. This is the ONLY way to ask — numbered options written into prose text render as an unclickable wall. One question per call; if 2–4 answers are genuinely coupled, make one call per question in the same turn and the UI shows them as tabs, answered together. The UI always adds a free-text "Other" answer, so never include an "Other"/"Custom" option yourself. When done asking, END YOUR TURN and wait — all answers arrive as the next user message.',
 			inputSchema: z.object({
 				question: z.string().describe('One question, plainly phrased'),
 				options: z
@@ -158,10 +166,15 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 					.min(2)
 					.max(5)
 					.describe('Concrete answers the builder can pick; the UI adds free-text automatically'),
+				header: z
+					.string()
+					.max(24)
+					.optional()
+					.describe('Short tab label (1–3 words, e.g. "Sharing", "Task detail") shown when several questions share a turn'),
 			}),
-			execute: async ({ question, options }) => {
-				emit({ type: 'question', question, options });
-				return 'Question shown to the builder. End your turn now; their choice arrives as the next message.';
+			execute: async ({ question, options, header }) => {
+				emit({ type: 'question', question, options, ...(header ? { header } : {}) });
+				return 'Question shown to the builder. Call ask_user again ONLY for a tightly-coupled follow-up (max 4 per turn); otherwise end your turn now — answers arrive together as the next message.';
 			},
 		}),
 

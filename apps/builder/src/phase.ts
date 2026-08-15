@@ -31,6 +31,24 @@ export async function detectPhase(projectWs: HasExists): Promise<BuildPhase> {
 	return 'iterate';
 }
 
+/**
+ * The write guard for interview turns — the ladder's teeth. The transcript that
+ * motivated it: a model presented the concept in prose, got approval, then
+ * scaffolded code without ever writing spec/concept.md — so the phase never
+ * left interview, the scaffold skills never loaded, and the session dead-ended.
+ * Refusing non-spec writes during interview turns makes that impossible; the
+ * refusal message tells the model the one action that unblocks it.
+ */
+export function interviewWriteGuard(path: string): string | null {
+	const p = path.replace(/^\.\//, '');
+	if (p === 'spec' || p.startsWith('spec/')) return null;
+	return (
+		'interview turns write only spec/** — when the builder approves the concept, ' +
+		'write spec/concept.md and end the turn; the scaffold begins next turn with ' +
+		'the scaffold references loaded'
+	);
+}
+
 export interface SkillManifestEntry {
 	/** Path relative to the STUDIO checkout root (the trusted side, §5.4). */
 	readonly file: string;

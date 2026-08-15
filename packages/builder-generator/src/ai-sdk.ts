@@ -52,6 +52,11 @@ export interface AiSdkGeneratorOptions {
 	 * any provider's semantics (D-49). Return null to fall back to the raw message.
 	 */
 	readonly explainError?: (err: unknown) => string | null;
+	/**
+	 * Paths write_file must refuse this turn (returns the reason). The hosts use
+	 * it to make the phase ladder mechanical — interview turns write only spec/**.
+	 */
+	readonly denyWrite?: (path: string) => string | null;
 }
 
 /** Best-effort extraction of the useful parts of an AI SDK API error. */
@@ -199,16 +204,27 @@ it: never call list_files to discover structure, and read a file only when you a
 about to change it or the gates point at it. Re-reading files you wrote last turn
 wastes the builder's budget.
 
-Phases, in order:
+Chat messages render as Markdown — write normal markdown (short paragraphs, bold,
+lists) and never rely on plain-text spacing for layout.
+
+Phases, in order. The ladder advances ONLY on workspace facts: spec/concept.md
+existing moves interview → scaffold; src/module.ts existing moves scaffold →
+iterate. A phase you claim but the files don't show does not exist.
 1. INTERVIEW. If the project has no approved spec/concept.md, your job this turn is
-   the interview, not code. Ask ONE question at a time with the ask_user tool,
-   offering 2–5 concrete options — then end your turn and wait. A bare number in
-   the reply means that option. Ask only the questions whose answers decide the
-   domain model (who uses it; the entity lifecycle; who must be DENIED what;
-   whether money or sign-off is involved). When you have enough, propose the
-   concept in prose for approval; write spec/concept.md only after the builder
-   agrees, and only then start code. In the turn where the concept is agreed,
-   also call set_project_name once with a short product name.
+   the interview, not code — during interview turns, write_file mechanically
+   refuses every path outside spec/. Questions go through the ask_user tool and
+   NEVER as numbered lists in prose text (prose options are not clickable). One
+   question per ask_user call; if 2–4 answers are genuinely coupled, make one
+   call per question in the same turn — the UI shows them as tabs and returns
+   all answers in one message. The UI always adds a free-text "Other" answer;
+   never offer an "Other" option yourself. Ask only the questions whose answers
+   decide the domain model (who uses it; the entity lifecycle; who must be
+   DENIED what; whether money or sign-off is involved). When you have enough,
+   propose the concept in prose for approval. In the turn where the builder
+   agrees: FIRST write spec/concept.md with write_file, then call
+   set_project_name once with a short product name, then confirm in a sentence
+   and END the turn, telling the builder to say "build it" (or anything) to
+   start — the scaffold begins next turn, with the scaffold references loaded.
 2. BUILD. On a substantial build turn (initial scaffold, a new feature) your FIRST
    act is one propose_plan call: the files you will touch, packages you will add,
    and 3-4 build assumptions phrased as assumption + alternative (surface shape,
@@ -266,7 +282,11 @@ export class AiSdkGenerator implements VerticalGenerator {
 			queue.push(e);
 		};
 
-		const tools = workspaceTools({ workspace: input.workspace, emit });
+		const tools = workspaceTools({
+			workspace: input.workspace,
+			emit,
+			...(this.#opts.denyWrite ? { denyWrite: this.#opts.denyWrite } : {}),
+		});
 
 		// Prefix discipline (§5.4): everything before the chat history must be
 		// byte-stable across turns, because a changed byte invalidates the cache

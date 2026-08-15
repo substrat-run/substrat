@@ -53,7 +53,7 @@ import {
 	ProviderError,
 	resolveModel,
 } from './providers.js';
-import { detectPhase, skillsForPhase, type BuildPhase } from './phase.js';
+import { detectPhase, interviewWriteGuard, skillsForPhase, type BuildPhase } from './phase.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -138,6 +138,9 @@ async function makeGenerator(spec: string, phase: BuildPhase = 'iterate'): Promi
 		maxSteps: MAX_STEPS,
 		skills: phaseSkills,
 		explainError: explainProviderError(spec.split(':')[0] ?? 'anthropic'),
+		// Interview turns may write only spec/** — the ladder is mechanical, not
+		// a prompt hope (phase.ts explains the dead-end this prevents).
+		...(phase === 'interview' ? { denyWrite: interviewWriteGuard } : {}),
 	});
 }
 
