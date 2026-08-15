@@ -17,7 +17,7 @@
  *   Commits are then path-scoped, because the tree may hold unrelated work.
  *   Kept for running the gates over monorepo demos; new projects never use it.
  */
-import { runGates, type GateRun, type GateSpec } from './gates.js';
+import { runGates, runInstall, type GateResult, type GateRun, type GateSpec } from './gates.js';
 import type { Workspace } from './workspace.js';
 
 const BOT_NAME = 'Substrat Builder Studio';
@@ -163,8 +163,31 @@ export interface RunTurnOptions {
 
 /** Run the gates, then commit. Call after every generator turn. */
 export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<TurnResult> {
-	const gates = await runGates(ws, opts.verticalDir, opts.gates, opts.onGateResult);
 	const files = await changedFiles(ws, opts.verticalDir);
+
+	// Host-owned install (gates.ts runInstall): run it when this turn touched a
+	// package manifest, or when the vertical has one but its deps were never
+	// installed (a fresh workspace member — the warm image predates it). Runs at
+	// the WORKSPACE root so workspace:* deps link. Skipped entirely otherwise, so
+	// interview and chat-only turns never pay for it.
+	const touchedManifest = files.some((f) => f === 'package.json' || f.endsWith('/package.json'));
+	const missingDeps =
+		(await ws.exists(`${opts.verticalDir}/package.json`)) &&
+		!(await ws.exists(`${opts.verticalDir}/node_modules`));
+	let install: GateResult | null = null;
+	if (touchedManifest || missingDeps) {
+		install = await runInstall(ws);
+		opts.onGateResult?.(install);
+	}
+
+	const gateRun = await runGates(ws, opts.verticalDir, opts.gates, opts.onGateResult);
+	const gates: GateRun = install
+		? {
+				results: [install, ...gateRun.results],
+				ok: gateRun.ok && install.status === 'passed',
+				durationMs: gateRun.durationMs + install.durationMs,
+			}
+		: gateRun;
 
 	const shouldCommit = files.length > 0 && (gates.ok || (opts.commitOnRed ?? true));
 	const trailer = gates.ok ? 'gates: green' : 'gates: red';

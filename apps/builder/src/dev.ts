@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import {
 	AiSdkGenerator,
 	formatEvent,
+	historyMarker,
 	type BuildEvent,
 	type GeneratorTurn,
 } from '@substrat-run/builder-generator';
@@ -225,6 +226,10 @@ async function main(): Promise<number> {
 					assistant += event.text;
 					sawText = true;
 				}
+				// Questions asked and step-ceiling cuts survive into durable history —
+				// the model's next turn must know both (events.ts historyMarker).
+				const marker = historyMarker(event);
+				if (marker) assistant += `${assistant ? '\n\n' : ''}${marker}`;
 			}
 			if (sawText) process.stdout.write('\n');
 			transcript.push({ role: 'user', text });

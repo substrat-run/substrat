@@ -17,6 +17,7 @@
 import type { Workspace } from './workspace.js';
 
 export type GateName =
+	| 'install'
 	| 'typecheck'
 	| 'boundary-lint'
 	| 'permissions'
@@ -162,6 +163,29 @@ export async function runGate(ws: Workspace, spec: GateSpec, verticalDir: string
 	const status: GateStatus = exitCode === 0 ? 'passed' : exitCode === 2 ? 'blocked' : 'failed';
 
 	return { name: spec.name, status, exitCode, durationMs, output: trimOutput(stdout, stderr) };
+}
+
+/**
+ * Dependency install is a HOST responsibility, not a model chore. A fresh
+ * project under `.builder/projects/*` becomes a workspace member after the
+ * image (or a local checkout) last ran `pnpm install`, so its `workspace:*`
+ * deps resolve only after another install — and leaving that to the model by
+ * prompt alone loses to the step ceiling, after which every gate fails with
+ * phantom module-not-found errors. `runTurn` calls this when the turn touched
+ * a package.json or the vertical has one with no node_modules. Reported as a
+ * GateResult so a genuinely failed install (bad version spec, registry down)
+ * reaches the model with pnpm's own output instead of as type errors.
+ */
+export async function runInstall(ws: Workspace): Promise<GateResult> {
+	const started = Date.now();
+	const { stdout, stderr, exitCode } = await ws.exec('pnpm install');
+	return {
+		name: 'install',
+		status: exitCode === 0 ? 'passed' : 'failed',
+		exitCode,
+		durationMs: Date.now() - started,
+		output: trimOutput(stdout, stderr),
+	};
 }
 
 export interface GateRun {
