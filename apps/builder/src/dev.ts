@@ -33,6 +33,7 @@ import {
 	type TurnResult,
 } from '@substrat-run/builder-workspace';
 import { loadEnvFiles } from './env.js';
+import { editToolFor } from './model-pairs.js';
 import { detectPhase, skillsForPhase } from './phase.js';
 import { loadSkills } from './skills.js';
 import {
@@ -146,6 +147,8 @@ async function main(): Promise<number> {
 		maxSteps: args.maxSteps,
 		skills: skillsForPhase(skills.byFile, await detectPhase(projectWs)),
 		explainError: explainProviderError(chosen.spec.split(':')[0] ?? 'anthropic'),
+		// Format-per-model (H1): frontier providers get search/replace edits.
+		editTool: editToolFor(chosen.spec),
 	});
 
 	/** The concept follows the project: flag file wins, else the project's spec. */

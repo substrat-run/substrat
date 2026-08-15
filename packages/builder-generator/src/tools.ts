@@ -14,6 +14,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import type { Workspace } from '@substrat-run/builder-workspace';
+import { applyEdit } from './edit.js';
 import type { BuildEvent } from './events.js';
 
 export interface WorkspaceToolOptions {
@@ -28,6 +29,11 @@ export interface WorkspaceToolOptions {
 	 * write only spec/**, so "code before the approved concept" cannot happen.
 	 */
 	readonly denyWrite?: (path: string) => string | null;
+	/**
+	 * Offer edit_file (strict search/replace, edit.ts). Off by default — the
+	 * host declares it per model (builder-harness.md H1, format-per-model).
+	 */
+	readonly editTool?: boolean;
 }
 
 /**
@@ -56,7 +62,49 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 	const { workspace: ws, emit } = opts;
 	const deny = opts.denyCommand ?? defaultDeny;
 
+	/**
+	 * Strict search/replace over one file (edit.ts — aider's pipeline: exact,
+	 * uniform-indent-shift, `...` elision; NO fuzzy apply). Failures return a
+	 * structured reflection the model corrects from; the gates would not catch
+	 * a fuzzily-misplaced edit until turn end, so guessing is never worth it.
+	 */
+	const editFile = tool({
+		description:
+			'Replace an exact section of an EXISTING file. Preferred over write_file for any small change to a file — never re-emit a whole file to change a few lines. oldString must match the current file contents exactly (every space, tab, indent, blank line); it must match exactly once unless replaceAll is true. A line containing only "..." in BOTH oldString and newString stands for an unchanged middle section. Read the file first if you have not seen its current contents this session.',
+		inputSchema: z.object({
+			path: z.string().describe('Path relative to the workspace root'),
+			oldString: z.string().describe('The exact current text to replace'),
+			newString: z.string().describe('The replacement text'),
+			replaceAll: z
+				.boolean()
+				.optional()
+				.describe('Replace every occurrence instead of requiring a unique match'),
+		}),
+		execute: async ({ path, oldString, newString, replaceAll }) => {
+			const refusal = opts.denyWrite?.(path);
+			if (refusal) return `REFUSED: ${refusal}`;
+			let content: string;
+			try {
+				content = await ws.readFile(path);
+			} catch {
+				return `ERROR: ${path} does not exist — edit_file changes existing files; use write_file to create one.`;
+			}
+			const outcome = applyEdit(path, content, oldString, newString, {
+				...(replaceAll !== undefined ? { replaceAll } : {}),
+			});
+			if (!outcome.ok) return `FAILED: ${outcome.reflection}`;
+			try {
+				await ws.writeFile(path, outcome.content);
+			} catch (err) {
+				return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
+			}
+			emit({ type: 'file-written', path, bytes: outcome.content.length });
+			return `edited ${path}: ${outcome.replaced} replacement${outcome.replaced === 1 ? '' : 's'} (${outcome.strategy}); file is now ${outcome.content.length} bytes`;
+		},
+	});
+
 	return {
+		...(opts.editTool ? { edit_file: editFile } : {}),
 		read_file: tool({
 			description:
 				'Read a UTF-8 file from the workspace. Call this before editing any file you have not already read this session — never guess a file\'s current contents.',

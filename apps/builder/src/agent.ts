@@ -36,7 +36,7 @@ import {
 	type SandboxLike,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
-import { resolveAutoSpec } from './model-pairs.js';
+import { editToolFor, resolveAutoSpec } from './model-pairs.js';
 import { detectPhase, interviewWriteGuard, skillsForPhase, SKILL_MANIFEST } from './phase.js';
 import { explainProviderFailure } from './provider-errors.js';
 import {
@@ -296,6 +296,9 @@ export class BuilderAgent extends DurableObject<Env> {
 			// "API key is invalid" in the chat pane. Name the real class, keep the
 			// provider's message (it carries the reset time), say what to do next.
 			explainError: (err) => explainProviderFailure(provider, err, 'hosted'),
+			// Format-per-model (H1): frontier providers get search/replace edits,
+			// weak/unknown models keep whole-file writes (model-pairs.ts).
+			editTool: editToolFor(spec),
 			// Interview turns may write only spec/** — the ladder is mechanical,
 			// not a prompt hope (phase.ts explains the dead-end this prevents).
 			...(interview ? { denyWrite: interviewWriteGuard } : {}),

@@ -40,6 +40,14 @@ export interface AiSdkGeneratorOptions {
 	 */
 	readonly maxRetries?: number;
 	/**
+	 * Offer the edit_file search/replace tool (builder-harness.md H1). Default
+	 * OFF: the host declares it per model (model-pairs.ts `editToolFor`) —
+	 * frontier models hold the exact-match format ~97–99% of the time, sub-tier
+	 * models collapse (aider's leaderboard), so weak models keep whole-file
+	 * writes by declaration rather than by failure.
+	 */
+	readonly editTool?: boolean;
+	/**
 	 * Provider-specific settings, passed straight through. For Claude:
 	 * `{ anthropic: { thinking: { type: 'adaptive' } } }` — leave thinking ON;
 	 * with it disabled the model occasionally writes a tool call into visible
@@ -134,8 +142,15 @@ export function pruneStalePayloads(messages: ModelMessage[]): ModelMessage[] {
 	// Pass 1: assign each payload-bearing call/result a sequence per target key.
 	const keyOfCall = (toolName: string, input: unknown): string | null => {
 		const path = (input as { path?: unknown } | null)?.path;
-		if ((toolName === 'write_file' || toolName === 'read_file') && typeof path === 'string')
-			return `${toolName === 'write_file' ? 'file' : 'file'}:${path}`;
+		// edit_file shares the file key: an edit changes the file, so an older
+		// read/write payload for that path is stale (the model must re-read
+		// before further exact-match edits anyway). Edit payloads themselves are
+		// small and are never stubbed — they only supersede.
+		if (
+			(toolName === 'write_file' || toolName === 'read_file' || toolName === 'edit_file') &&
+			typeof path === 'string'
+		)
+			return `file:${path}`;
 		const cmd = (input as { cmd?: unknown } | null)?.cmd;
 		if (toolName === 'run_command' && typeof cmd === 'string') return `cmd:${cmd}`;
 		return null;
@@ -275,6 +290,19 @@ Working method:
 
 Report what you did in one or two sentences. Do not narrate routine tool calls.`;
 
+/**
+ * Joined into the stable prefix ONLY when the edit_file tool is offered —
+ * prompting for an absent tool would send the model chasing it.
+ */
+const EDIT_GUIDANCE = `Editing files: for a small change to an existing file, use edit_file
+(exact search/replace) instead of re-emitting the whole file with write_file — whole-file
+rewrites of long files waste the builder's budget. oldString must match the file exactly,
+including every space and indent; keep it as short as uniqueness allows. A line containing
+only "..." in BOTH strings stands for an unchanged middle section, so you can anchor on a
+function's first and last lines without re-sending its body. write_file remains the right
+tool for NEW files and full rewrites. If an edit fails, the error tells you exactly why —
+fix that one block and retry; never fall back to write_file just to force a change through.`;
+
 export class AiSdkGenerator implements VerticalGenerator {
 	readonly id: string;
 	readonly #opts: AiSdkGeneratorOptions;
@@ -290,9 +318,11 @@ export class AiSdkGenerator implements VerticalGenerator {
 			queue.push(e);
 		};
 
+		const editTool = this.#opts.editTool ?? false;
 		const tools = workspaceTools({
 			workspace: input.workspace,
 			emit,
+			editTool,
 			...(this.#opts.denyWrite ? { denyWrite: this.#opts.denyWrite } : {}),
 		});
 
@@ -305,9 +335,14 @@ export class AiSdkGenerator implements VerticalGenerator {
 		// where it can't break the conversation's cache.
 		const anthropic = this.#opts.label.startsWith('anthropic');
 
-		const stable = [this.#opts.system ?? DEFAULT_SYSTEM, ...(this.#opts.skills ?? [])].join(
-			'\n\n---\n\n',
-		);
+		// Present only when the edit_file tool is (format-per-model, H1): a prompt
+		// naming an absent tool would send weak models chasing it. Stable per
+		// session — the model, and with it this block, never changes mid-project.
+		const stable = [
+			this.#opts.system ?? DEFAULT_SYSTEM,
+			...(editTool ? [EDIT_GUIDANCE] : []),
+			...(this.#opts.skills ?? []),
+		].join('\n\n---\n\n');
 		const conceptCtx = [
 			`The vertical under construction lives at: ${input.verticalDir}`,
 			`Approved concept:\n${input.concept}`,

@@ -33,6 +33,24 @@ export const MODEL_PAIRS: Readonly<Record<string, ModelPair>> = {
 	anthropic: { fast: 'claude-sonnet-5', strong: 'claude-opus-5' },
 };
 
+/**
+ * Format-per-model (builder-harness.md H1): which models get the edit_file
+ * search/replace tool. Aider's leaderboard puts frontier models at ~97–99%
+ * well-formed search/replace and shows sub-tier collapse (~68%), so weak and
+ * unknown models keep whole-file writes BY DECLARATION, not by failing at it.
+ * Provider-level is the honest granularity today — every model we serve from
+ * these providers is frontier-tier; local/compat/cloudflare ids are unknowable
+ * in advance. Refine to per-model when evals/ measures it (§9.6).
+ */
+const EDIT_TOOL_PROVIDERS = new Set(['anthropic', 'qwen', 'openai', 'google', 'mistral']);
+
+/** Whether a (concrete) spec's model should be offered edit_file. */
+export function editToolFor(spec: string): boolean {
+	const idx = spec.indexOf(':');
+	const provider = idx === -1 ? 'anthropic' : spec.slice(0, idx);
+	return EDIT_TOOL_PROVIDERS.has(provider);
+}
+
 /** The `<provider>:auto` pair a spec names, or null for a concrete spec. */
 export function pairFor(spec: string): { provider: string; pair: ModelPair } | null {
 	const idx = spec.indexOf(':');

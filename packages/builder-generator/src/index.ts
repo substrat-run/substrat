@@ -18,3 +18,5 @@ export { workspaceTools, type WorkspaceToolOptions, type WorkspaceTools } from '
 export { AiSdkGenerator, type AiSdkGeneratorOptions } from './ai-sdk.js';
 
 export { classifyProviderError, retryDelayMs, type RetryDecision } from './retry.js';
+
+export { applyEdit, type EditOutcome } from './edit.js';
