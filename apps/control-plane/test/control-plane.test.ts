@@ -87,7 +87,7 @@ describe('staff roster', () => {
 
   beforeAll(async () => {
     await env.AUTH_DB.exec(
-      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, revoked_at TEXT)',
+      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, added_by TEXT, revoked_at TEXT)',
     );
     const add = (email: string, actor: string, revokedAt: string | null) =>
       env.AUTH_DB.prepare(
@@ -195,7 +195,7 @@ describe('builder auth — live self-serve path', () => {
     // throws) and the request falls through to the BUILDER path. Empty: the builder is
     // deliberately not staff. In prod this table is a migration; here we seed it.
     await env.AUTH_DB.exec(
-      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, revoked_at TEXT)',
+      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, added_by TEXT, revoked_at TEXT)',
     );
     // Seed a tenant + link the OIDC identity to it, the way dashboard sign-up would.
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
@@ -336,5 +336,125 @@ describe('connection relay — /internal/connections/upsert', () => {
       }),
     });
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * The members surface (console → Members): the staff roster and the builder-studio
+ * invite list, managed over /api/members/*. What's under test: the fail-closed
+ * gate, grant/revoke/re-grant round-trips, attribution (`added_by` = the acting
+ * staff actor), and the two K-21 invariants — revocation tombstones, and a
+ * re-granted staff member KEEPS their actor so admin-log history stays attributed.
+ *
+ * Authenticated via the dev-actor stub (ALLOW_DEV_ACTOR, vitest.config.ts) — the
+ * same PlatformActorAuth seam a staff session resolves through in prod.
+ */
+describe('members surface (console → Members)', () => {
+  beforeAll(async () => {
+    // In prod both stores are migrations (0002, 0003); here we seed the schemas.
+    await env.AUTH_DB.exec(
+      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, added_by TEXT, revoked_at TEXT)',
+    );
+    await env.AUTH_DB.exec(
+      'CREATE TABLE IF NOT EXISTS builder_access (email TEXT PRIMARY KEY, name TEXT, added_by TEXT NOT NULL, added_at TEXT NOT NULL, revoked_at TEXT)',
+    );
+  });
+
+  it('fails closed without a platform actor', async () => {
+    const res = await SELF.fetch('https://cp.test/api/members');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists both stores', async () => {
+    const res = await SELF.fetch('https://cp.test/api/members', { headers: authed });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { staff: unknown[]; builder: unknown[] };
+    expect(Array.isArray(body.staff)).toBe(true);
+    expect(Array.isArray(body.builder)).toBe(true);
+  });
+
+  it('rejects a malformed email', async () => {
+    const res = await SELF.fetch('https://cp.test/api/members/builder', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'not-an-email' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('grants builder access — lowercased, attributed to the acting actor', async () => {
+    const res = await SELF.fetch('https://cp.test/api/members/builder', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'Martin@CaterBee.example', name: 'Martin' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      builder: { email: string; name: string | null; addedBy: string; revokedAt: string | null }[];
+    };
+    const row = body.builder.find((r) => r.email === 'martin@caterbee.example');
+    expect(row).toMatchObject({ name: 'Martin', addedBy: ACTOR, revokedAt: null });
+  });
+
+  it('revoke tombstones; re-grant clears the tombstone (K-21)', async () => {
+    const revoke = await SELF.fetch('https://cp.test/api/members/builder/revoke', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'martin@caterbee.example' }),
+    });
+    expect(revoke.status).toBe(200);
+    let body = (await revoke.json()) as { builder: { email: string; revokedAt: string | null }[] };
+    // Tombstoned, not deleted: the row is still listed as evidence.
+    expect(body.builder.find((r) => r.email === 'martin@caterbee.example')?.revokedAt).toEqual(
+      expect.any(String),
+    );
+
+    // Revoking an already-revoked (or unknown) grant is a 404, not a silent no-op.
+    const again = await SELF.fetch('https://cp.test/api/members/builder/revoke', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'martin@caterbee.example' }),
+    });
+    expect(again.status).toBe(404);
+
+    const regrant = await SELF.fetch('https://cp.test/api/members/builder', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'martin@caterbee.example' }),
+    });
+    expect(regrant.status).toBe(200);
+    body = (await regrant.json()) as { builder: { email: string; revokedAt: string | null }[] };
+    expect(body.builder.find((r) => r.email === 'martin@caterbee.example')?.revokedAt).toBeNull();
+  });
+
+  it('a re-granted staff member keeps their actor — history stays attributed', async () => {
+    const grant = await SELF.fetch('https://cp.test/api/members/staff', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'lin@substrat.example', name: 'Lin' }),
+    });
+    expect(grant.status).toBe(200);
+    const first = (
+      (await grant.json()) as { staff: { email: string; actor: string | null; addedBy: string | null }[] }
+    ).staff.find((r) => r.email === 'lin@substrat.example');
+    expect(first?.actor).toEqual(expect.any(String));
+    expect(first?.addedBy).toBe(ACTOR);
+
+    await SELF.fetch('https://cp.test/api/members/staff/revoke', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'lin@substrat.example' }),
+    });
+    const regrant = await SELF.fetch('https://cp.test/api/members/staff', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'lin@substrat.example' }),
+    });
+    const second = (
+      (await regrant.json()) as { staff: { email: string; actor: string | null; revokedAt: string | null }[] }
+    ).staff.find((r) => r.email === 'lin@substrat.example');
+    // The actor is that person's identity in the admin log forever — never re-minted.
+    expect(second?.actor).toBe(first?.actor);
+    expect(second?.revokedAt).toBeNull();
   });
 });

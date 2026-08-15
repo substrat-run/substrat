@@ -387,9 +387,13 @@ export function App() {
 						<button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>
 							Gates
 						</button>
-						<button className={tab === 'usage' ? 'active' : ''} onClick={() => setTab('usage')}>
-							Usage
-						</button>
+						{/* Studio-wide spend (cross-team until metering is per-team), so staff
+						    only; local mode (me null) is single-operator and keeps it. */}
+						{me?.staff !== false && (
+							<button className={tab === 'usage' ? 'active' : ''} onClick={() => setTab('usage')}>
+								Usage
+							</button>
+						)}
 					</nav>
 					<div className="pane">
 						{tab === 'preview' && <PreviewPane />}

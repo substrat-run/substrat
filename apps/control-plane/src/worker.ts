@@ -100,7 +100,8 @@ import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, type OidcEnv } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader } from './staff-auth.js';
-import { d1StaffRoster } from './staff-roster.js';
+import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
+import { grantBuilderAccess, listBuilderAccess, revokeBuilderAccess } from './builder-access.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
 import { builderTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
 
@@ -746,6 +747,33 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
  * neither → 401. Secure by default: a real deploy binds AUTH_DB and never sets
  * ALLOW_DEV_ACTOR.
  */
+/**
+ * Auth for the members surface (console → Members): STAFF sessions only. This
+ * deliberately does not reuse `authFor`'s reader stack — the service token and a
+ * builder session must never manage who has access. Dev actor stays, as the
+ * console's local stub (§6) and the workerd test's path.
+ */
+function membersAuthFor(env: Env): PlatformActorAuth {
+  const readers: PlatformActorAuth[] = [];
+  if (env.AUTH_DB) {
+    const roster = d1StaffRoster(env.AUTH_DB);
+    readers.push(sessionPlatformAuth(oidcStaffSessionReader(env), roster));
+    readers.push(sessionPlatformAuth(oidcStaffBearerReader(env), roster));
+  }
+  if (env.ALLOW_DEV_ACTOR === 'true') readers.push(UNSAFE_devPlatformActorAuth());
+  return firstPlatformActorAuth(...readers);
+}
+
+/**
+ * Enough to catch paste mistakes; the OIDC issuer is the authority on what an
+ * email really is. Lowercased here so every store read/write agrees on the key.
+ */
+function memberEmail(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const e = v.trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : null;
+}
+
 function authFor(env: Env): PlatformActorAuth {
   const readers: PlatformActorAuth[] = [];
   // Staff sign in: an OIDC session (AuthHero), gated by the D1 roster.
@@ -967,6 +995,81 @@ export default {
     // CLI calls this on `login` to store a default tenant, and to prompt when a user
     // belongs to several. Reads the same session (bearer or cookie) as the API.
     app.get('/api/auth/whoami', async (c) => c.json(await resolveWhoami(hostFor(c.env), c.env, c.req.raw)));
+
+    // The members surface (console → Members): who may act on the control plane
+    // (staff_actor) and who may use the builder studio (builder_access) — listed,
+    // granted, revoked. Lives here rather than in `control-plane-api` because the
+    // stores are THIS deployment's D1, not the directory: the published API has no
+    // roster vocabulary. Staff-gated (membersAuthFor); every mutation records the
+    // acting staff member in `added_by`. Registered before the /api router.
+    const membersAuth = membersAuthFor(env);
+    const membersGate = async (
+      request: Request,
+    ): Promise<{ db: D1Database; actor: PlatformActorId } | Response> => {
+      if (!env.AUTH_DB) return Response.json({ error: 'no roster store bound' }, { status: 501 });
+      const actor = await membersAuth(request);
+      if (!actor) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+      return { db: env.AUTH_DB, actor };
+    };
+    const members = async (db: D1Database) => ({
+      staff: await listStaff(db),
+      builder: await listBuilderAccess(db),
+    });
+
+    app.get('/api/members', async (c) => {
+      const gate = await membersGate(c.req.raw);
+      if (gate instanceof Response) return gate;
+      return c.json(await members(gate.db));
+    });
+
+    app.post('/api/members/staff', async (c) => {
+      const gate = await membersGate(c.req.raw);
+      if (gate instanceof Response) return gate;
+      const body = (await c.req.json().catch(() => ({}))) as { email?: unknown; name?: unknown };
+      const email = memberEmail(body.email);
+      if (!email) return c.json({ error: 'a valid email is required' }, 400);
+      const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name.trim() : undefined;
+      await grantStaff(gate.db, { email, ...(name ? { name } : {}), grantedBy: gate.actor });
+      return c.json(await members(gate.db));
+    });
+
+    app.post('/api/members/staff/revoke', async (c) => {
+      const gate = await membersGate(c.req.raw);
+      if (gate instanceof Response) return gate;
+      const body = (await c.req.json().catch(() => ({}))) as { email?: unknown };
+      const email = memberEmail(body.email);
+      if (!email) return c.json({ error: 'a valid email is required' }, 400);
+      const outcome = await revokeStaff(gate.db, email);
+      if (outcome === 'not-found') return c.json({ error: `${email} is not an active staff member` }, 404);
+      if (outcome === 'last-member') {
+        // An empty roster means NOBODY can act — including on this surface — and
+        // recovery is a raw wrangler statement under pressure. Refuse instead.
+        return c.json({ error: 'cannot revoke the last active staff member' }, 409);
+      }
+      return c.json(await members(gate.db));
+    });
+
+    app.post('/api/members/builder', async (c) => {
+      const gate = await membersGate(c.req.raw);
+      if (gate instanceof Response) return gate;
+      const body = (await c.req.json().catch(() => ({}))) as { email?: unknown; name?: unknown };
+      const email = memberEmail(body.email);
+      if (!email) return c.json({ error: 'a valid email is required' }, 400);
+      const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name.trim() : undefined;
+      await grantBuilderAccess(gate.db, { email, ...(name ? { name } : {}), grantedBy: gate.actor });
+      return c.json(await members(gate.db));
+    });
+
+    app.post('/api/members/builder/revoke', async (c) => {
+      const gate = await membersGate(c.req.raw);
+      if (gate instanceof Response) return gate;
+      const body = (await c.req.json().catch(() => ({}))) as { email?: unknown };
+      const email = memberEmail(body.email);
+      if (!email) return c.json({ error: 'a valid email is required' }, 400);
+      const outcome = await revokeBuilderAccess(gate.db, email);
+      if (outcome === 'not-found') return c.json({ error: `${email} does not have active builder access` }, 404);
+      return c.json(await members(gate.db));
+    });
 
     // The builder studio's membership lookup (builder-plane.md §4). The studio worker
     // verifies its OWN OIDC session (its session secret is not this worker's, so it

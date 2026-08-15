@@ -61,6 +61,8 @@ export interface TeamInfo {
 
 export interface MeInfo {
 	email: string | null;
+	/** Platform staff (vs an invited builder) — drives the studio-wide usage tab. */
+	staff: boolean;
 	teams: TeamInfo[];
 }
 

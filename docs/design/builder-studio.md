@@ -925,3 +925,23 @@ Supersedes "multi-tenant studio sessions" in §1's out-of-scope list. The studio
 Follow-ups this creates: per-team metering scopes (retiring the fixed studio node,
 src/metering.ts), the plan entitlement + a `builder:use` dashboard role key, and eager
 vertical registration so a project surfaces in the dashboard's Deployments view.
+
+## 15. Addendum — studio invites (2026-08-15)
+
+Refines §1.1's "staff-only, behind the staff roster": access is now **staff OR a
+console-granted invite**, still AND-ed with team membership (§14). The `builder_access`
+table (CP migration 0003, tombstone semantics per K-21) admits an email to the studio and
+**nothing else** — the coupling it breaks is that `staff_actor` was doing double duty, so
+letting a customer into the builder meant giving them the control plane. Grants live in the
+console's **Members** view beside the staff roster; every grant records the acting staff
+member (`added_by`).
+
+This does not reopen §6: an invite is issued one email at a time by staff, so promotion
+review stays "the reviewer is us" — it widens who can *drive a session*, not who can ship
+unreviewed. The plan-entitlement flag (builder-plane.md §"open questions") remains the real
+customer channel; when it lands, both lists reduce to one deliberate deletion.
+
+One consequence inside the studio: `/api/usage` (the studio-wide rollup, still the fixed
+metering node) is now **staff-only**, and `/api/me` carries `staff` so the SPA hides the
+Usage tab for invitees — a cross-team spend reading must not be an invited builder's view.
+Per-team metering (§14 follow-up) is what retires this restriction.

@@ -63,6 +63,32 @@ export interface RecentLogEvent {
   raw: unknown;
 }
 
+/** A staff roster row (CP `staff_actor`) — who may act on the control plane. */
+export interface StaffMember {
+  email: string;
+  /** Their identity in the admin log; null when the stored value is malformed. */
+  actor: string | null;
+  name: string | null;
+  addedAt: string;
+  /** Who granted it — null for rows that predate the Members surface. */
+  addedBy: string | null;
+  revokedAt: string | null;
+}
+
+/** A builder-studio invite (CP `builder_access`) — the studio, nothing else. */
+export interface BuilderMember {
+  email: string;
+  name: string | null;
+  addedBy: string;
+  addedAt: string;
+  revokedAt: string | null;
+}
+
+export interface MembersReading {
+  staff: StaffMember[];
+  builder: BuilderMember[];
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -407,6 +433,20 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // Refuses a non-admitted version below the seam.
     bindScopeVersion: (tenantId: TenantId, scopeId: ScopeId, versionId: string) =>
       post<Scope>(`/tenants/${tenantId}/scopes/${scopeId}/version`, { versionId }),
+
+    // -- members (console → Members) ----------------------------------------
+    // Who may act on the control plane (staff_actor) and who may use the builder
+    // studio (builder_access) — the CP worker's own D1, not the directory, so the
+    // routes live beside /api/auth/* rather than in control-plane-api. Every
+    // mutation returns the fresh reading: one round trip, no refetch.
+    listMembers: () => call<MembersReading>('/members'),
+    grantStaffAccess: (email: string, name?: string) =>
+      post<MembersReading>('/members/staff', { email, name }),
+    revokeStaffAccess: (email: string) => post<MembersReading>('/members/staff/revoke', { email }),
+    grantBuilderAccess: (email: string, name?: string) =>
+      post<MembersReading>('/members/builder', { email, name }),
+    revokeBuilderAccess: (email: string) =>
+      post<MembersReading>('/members/builder/revoke', { email }),
 
     // -- observability (design/observability.md §4.1) -----------------------
     // Proxied reads over the control plane's observability seam; 501 when no

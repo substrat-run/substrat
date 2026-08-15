@@ -11,21 +11,19 @@ export type ViewKey =
   | 'meters'
   | 'admin-log'
   | 'permissions'
+  | 'members'
   | 'failures'
   | 'settings';
 
-/**
- * The nav items with nothing behind them, rendered dead on purpose.
- *
- * Each needs a platform capability that does not exist, and the dependency is in
- * the tooltip rather than a backlog: a disabled item that says WHY is a design
- * artifact of what the control plane still owes. Never make these live without
- * the read path underneath — an admin console that lies about what it can see is
- * worse than one that admits the gap.
+/*
+ * There used to be a "Planned" nav stratum here — items with nothing behind
+ * them, rendered dead on purpose, each tooltip naming the capability the
+ * control plane still owed. Its last resident (Members) graduated when the
+ * staff-roster + builder-access write path landed (views/Members.tsx); bring
+ * the pattern back verbatim for the next owed capability rather than shipping
+ * a live item without its read path. (Per-tenant principal & grant enumeration
+ * is still owed and would be a different view.)
  */
-const PLANNED = [
-  { label: 'Members', icon: SubIcons.users, dep: 'Needs principal & grant enumeration — permission writes are one-way today' },
-] as const;
 
 export interface ConsoleShellProps {
   active: ViewKey;
@@ -103,7 +101,10 @@ export function ConsoleShell({
           },
           {
             title: 'Console',
-            items: [{ value: 'settings', label: 'Settings', icon: <SubIcon d={SubIcons.sliders} /> }],
+            items: [
+              { value: 'members', label: 'Members', icon: <SubIcon d={SubIcons.users} /> },
+              { value: 'settings', label: 'Settings', icon: <SubIcon d={SubIcons.sliders} /> },
+            ],
           },
         ]}
         footer={
@@ -167,64 +168,6 @@ export function ConsoleShell({
           </div>
         }
       />
-
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 96,
-          left: 0,
-          width: 'var(--sidebar-w)',
-          boxSizing: 'border-box',
-          padding: '0 8px',
-        }}
-      >
-        <div
-          style={{
-            fontSize: 11,
-            fontWeight: 500,
-            letterSpacing: '0.06em',
-            textTransform: 'uppercase',
-            color: 'var(--text-placeholder)',
-            padding: '0 10px 6px',
-          }}
-        >
-          Planned
-        </div>
-        {PLANNED.map((it) => (
-          <div
-            key={it.label}
-            title={it.dep}
-            aria-disabled
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              height: 32,
-              padding: '0 10px',
-              borderRadius: 6,
-              color: 'var(--text-placeholder)',
-              fontSize: 14,
-              cursor: 'not-allowed',
-            }}
-          >
-            <span style={{ display: 'inline-flex', width: 16 }}>
-              <SubIcon d={it.icon} />
-            </span>
-            <span style={{ flex: 1 }}>{it.label}</span>
-            <span
-              style={{
-                fontSize: 10,
-                fontFamily: 'var(--font-mono)',
-                border: '1px solid var(--border-default)',
-                borderRadius: 4,
-                padding: '1px 5px',
-              }}
-            >
-              soon
-            </span>
-          </div>
-        ))}
-      </div>
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         <header
