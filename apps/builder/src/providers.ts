@@ -272,6 +272,30 @@ export async function listModels(providerName: string): Promise<string[]> {
 	}
 	const key = provider.envVar ? process.env[provider.envVar] : undefined;
 
+	// Workers AI's OpenAI-compatible surface serves chat/completions and
+	// embeddings but NOT `GET /models` (405) — the catalog lives one level up,
+	// on the account API (`…/ai/v1` → `…/ai/models/search`), task-filtered so
+	// the picker offers models that can run a build turn. It lists Cloudflare's
+	// own `@cf/…` models only; partner-served `vendor/model` ids stay free-text.
+	if (providerName === 'cloudflare') {
+		const root = baseURL.replace(/\/$/, '').replace(/\/v1$/, '');
+		const names: string[] = [];
+		for (let page = 1; page <= 5; page++) {
+			const url = `${root}/models/search?task=${encodeURIComponent('Text Generation')}&per_page=100&page=${page}`;
+			const res = await fetch(url, { headers: key ? { Authorization: `Bearer ${key}` } : {} });
+			if (!res.ok) {
+				throw new ProviderError(`${root}/models/search returned HTTP ${res.status}`);
+			}
+			const body = (await res.json()) as { result?: Array<{ name?: unknown }> };
+			const batch = (body.result ?? [])
+				.map((m) => (typeof m.name === 'string' ? m.name : null))
+				.filter((n): n is string => n !== null);
+			names.push(...batch);
+			if (batch.length < 100) break;
+		}
+		return names.sort();
+	}
+
 	const res = await fetch(`${baseURL.replace(/\/$/, '')}/models`, {
 		headers: key ? { Authorization: `Bearer ${key}` } : {},
 	});

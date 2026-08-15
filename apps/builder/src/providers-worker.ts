@@ -236,6 +236,14 @@ export async function listModelsHosted(env: ProviderSecrets, provider: string): 
 				? env.CLOUDFLARE_AI_API_TOKEN
 				: env.OPENAI_COMPATIBLE_API_KEY;
 
+	// Workers AI's OpenAI-compatible surface serves chat/completions and
+	// embeddings but NOT `GET /models` (405) — the catalog lives one level up,
+	// on the account API. Note it lists Cloudflare's own `@cf/…` models only;
+	// partner-served `vendor/model` ids stay free-text.
+	if (provider === 'cloudflare') {
+		return await listCloudflareCatalog(baseURL, key);
+	}
+
 	const res = await fetch(`${baseURL.replace(/\/$/, '')}/models`, {
 		headers: key ? { Authorization: `Bearer ${key}` } : {},
 	});
@@ -247,4 +255,32 @@ export async function listModelsHosted(env: ProviderSecrets, provider: string): 
 		.map((m) => (typeof m.id === 'string' ? m.id : null))
 		.filter((id): id is string => id !== null)
 		.sort();
+}
+
+/**
+ * `GET {account}/ai/models/search?task=Text Generation`, derived from the
+ * OpenAI-compatible base (`…/ai/v1` → `…/ai`). Task-filtered server-side so the
+ * picker offers models that can actually run a build turn, not embeddings or
+ * speech. Paged defensively; the filtered catalog fits one page today.
+ */
+async function listCloudflareCatalog(baseURL: string, key: string | undefined): Promise<string[]> {
+	const root = baseURL.replace(/\/$/, '').replace(/\/v1$/, '');
+	const names: string[] = [];
+	for (let page = 1; page <= 5; page++) {
+		const url = `${root}/models/search?task=${encodeURIComponent('Text Generation')}&per_page=100&page=${page}`;
+		const res = await fetch(url, { headers: key ? { Authorization: `Bearer ${key}` } : {} });
+		if (!res.ok) {
+			throw new HostedProviderError(`${root}/models/search returned HTTP ${res.status}`);
+		}
+		const body = (await res.json()) as {
+			success?: boolean;
+			result?: Array<{ name?: unknown }>;
+		};
+		const batch = (body.result ?? [])
+			.map((m) => (typeof m.name === 'string' ? m.name : null))
+			.filter((n): n is string => n !== null);
+		names.push(...batch);
+		if (batch.length < 100) break;
+	}
+	return names.sort();
 }
