@@ -36,7 +36,7 @@ import {
 	type SandboxLike,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
-import { editToolFor, resolveAutoSpec } from './model-pairs.js';
+import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import { detectPhase, interviewWriteGuard, skillsForPhase, SKILL_MANIFEST } from './phase.js';
 import { explainProviderFailure } from './provider-errors.js';
 import {
@@ -299,6 +299,8 @@ export class BuilderAgent extends DurableObject<Env> {
 			// Format-per-model (H1): frontier providers get search/replace edits,
 			// weak/unknown models keep whole-file writes (model-pairs.ts).
 			editTool: editToolFor(spec),
+			// Sampling defaults per provider (H4): qwen wants 0.55, not SDK default.
+			...samplingFor(spec),
 			// Interview turns may write only spec/** — the ladder is mechanical,
 			// not a prompt hope (phase.ts explains the dead-end this prevents).
 			...(interview ? { denyWrite: interviewWriteGuard } : {}),

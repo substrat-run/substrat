@@ -51,6 +51,20 @@ export function editToolFor(spec: string): boolean {
 	return EDIT_TOOL_PROVIDERS.has(provider);
 }
 
+/**
+ * Sampling defaults per provider (builder-harness.md H4). Qwen's own
+ * recommendation — and opencode's shipped per-family table — is 0.55 for the
+ * qwen family; we currently send the SDK default (1.0) to our DEFAULT
+ * provider, which is measurably chattier and loopier on agentic runs.
+ * Anthropic/others: undefined — adaptive thinking dislikes a pinned
+ * temperature, and the SDK default is the provider's own.
+ */
+export function samplingFor(spec: string): { temperature?: number } {
+	const idx = spec.indexOf(':');
+	const provider = idx === -1 ? 'anthropic' : spec.slice(0, idx);
+	return provider === 'qwen' ? { temperature: 0.55 } : {};
+}
+
 /** The `<provider>:auto` pair a spec names, or null for a concrete spec. */
 export function pairFor(spec: string): { provider: string; pair: ModelPair } | null {
 	const idx = spec.indexOf(':');

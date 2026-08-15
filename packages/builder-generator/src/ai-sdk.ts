@@ -48,6 +48,12 @@ export interface AiSdkGeneratorOptions {
 	 */
 	readonly editTool?: boolean;
 	/**
+	 * Sampling temperature, when the host declares one per model (H4 —
+	 * model-pairs.ts `samplingFor`: qwen wants 0.55, not the SDK default).
+	 * Absent = the provider's own default.
+	 */
+	readonly temperature?: number;
+	/**
 	 * Provider-specific settings, passed straight through. For Claude:
 	 * `{ anthropic: { thinking: { type: 'adaptive' } } }` — leave thinking ON;
 	 * with it disabled the model occasionally writes a tool call into visible
@@ -335,6 +341,33 @@ export class AiSdkGenerator implements VerticalGenerator {
 		// where it can't break the conversation's cache.
 		const anthropic = this.#opts.label.startsWith('anthropic');
 
+		// Cache plumbing for the OpenAI dialect (H4): Anthropic gets placeable
+		// breakpoints (below); OpenAI's caching is automatic but shard-routed —
+		// a stable per-project promptCacheKey routes every request of a project
+		// to the same cache shard, and store:false keeps transcripts out of
+		// OpenAI's server-side response storage. Dialect knowledge, like the
+		// breakpoint helpers — not provider config (D-49 stays intact).
+		const openaiDialect = this.#opts.label.startsWith('openai/');
+		const providerOptions = {
+			...(openaiDialect
+				? {
+						openai: {
+							promptCacheKey: `substrat-builder:${input.verticalDir}`,
+							store: false,
+							...((this.#opts.providerOptions as Record<string, object> | undefined)?.[
+								'openai'
+							] ?? {}),
+						},
+					}
+				: {}),
+			...(openaiDialect
+				? Object.fromEntries(
+						Object.entries(this.#opts.providerOptions ?? {}).filter(([k]) => k !== 'openai'),
+					)
+				: (this.#opts.providerOptions ?? {})),
+		} as ProviderMetadata;
+		const hasProviderOptions = Object.keys(providerOptions).length > 0;
+
 		// Present only when the edit_file tool is (format-per-model, H1): a prompt
 		// naming an absent tool would send weak models chasing it. Stable per
 		// session — the model, and with it this block, never changes mid-project.
@@ -431,7 +464,8 @@ export class AiSdkGenerator implements VerticalGenerator {
 					// The SDK's default onError console.errors the whole object. We surface
 					// errors as BuildEvents, so the default is pure noise in a chat pane.
 					onError: () => {},
-					...(this.#opts.providerOptions ? { providerOptions: this.#opts.providerOptions } : {}),
+					...(this.#opts.temperature !== undefined ? { temperature: this.#opts.temperature } : {}),
+				...(hasProviderOptions ? { providerOptions } : {}),
 					...(input.signal ? { abortSignal: input.signal } : {}),
 				});
 

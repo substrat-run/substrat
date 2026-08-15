@@ -57,7 +57,7 @@ import {
 	ProviderError,
 	resolveModel,
 } from './providers.js';
-import { editToolFor, resolveAutoSpec } from './model-pairs.js';
+import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import { detectPhase, interviewWriteGuard, skillsForPhase, type BuildPhase } from './phase.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
@@ -148,6 +148,8 @@ async function makeGenerator(spec: string, phase: BuildPhase = 'iterate'): Promi
 		// Format-per-model (H1): frontier providers get search/replace edits,
 		// weak/unknown models keep whole-file writes (model-pairs.ts).
 		editTool: editToolFor(spec),
+		// Sampling defaults per provider (H4): qwen wants 0.55, not SDK default.
+		...samplingFor(spec),
 		// Interview turns may write only spec/** — the ladder is mechanical, not
 		// a prompt hope (phase.ts explains the dead-end this prevents).
 		...(phase === 'interview' ? { denyWrite: interviewWriteGuard } : {}),

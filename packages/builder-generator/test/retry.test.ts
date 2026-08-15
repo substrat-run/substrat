@@ -193,6 +193,15 @@ describe('AiSdkGenerator retry loop', () => {
 		expect(calls).toBe(3); // first attempt + 2 retries
 	});
 
+	it('passes a host-declared temperature through to the provider (H4)', async () => {
+		const model = new MockLanguageModelV3({ doStream: async () => okStream('ok') });
+		const gen = new AiSdkGenerator({ model, label: 'qwen/qwen3.8-max', temperature: 0.55 });
+		for await (const _ of gen.run(await input())) {
+			// drain
+		}
+		expect(model.doStreamCalls[0]?.temperature).toBe(0.55);
+	});
+
 	it('never retries context overflow', async () => {
 		const model = new MockLanguageModelV3({
 			doStream: async () => {
