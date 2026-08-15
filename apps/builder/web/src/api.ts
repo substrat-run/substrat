@@ -90,6 +90,15 @@ async function j<T>(res: Response): Promise<T> {
 	return body;
 }
 
+/** GET /api/snapshot — the working tree as one object (see api.snapshot). */
+export interface WorkspaceSnapshotInfo {
+	dir: string;
+	generatedAt: string;
+	files: Record<string, string>;
+	/** Present in the tree but not in `files` (binary or oversize). */
+	skipped: string[];
+}
+
 export interface UsageDay {
 	date: string;
 	input: number;
@@ -174,6 +183,17 @@ export const api = {
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ name }),
 		}).then((r) => j<ProjectInfo>(r)),
+	/**
+	 * The whole working tree in one response (path → content, relative to the
+	 * vertical dir) — the container-free read path. Null when the host has no
+	 * snapshot to give (pre-first-commit project, or an older server): callers
+	 * fall back to the per-directory `files`/`file` endpoints.
+	 */
+	snapshot: async (): Promise<WorkspaceSnapshotInfo | null> => {
+		const r = await f('/api/snapshot');
+		if (!r.ok) return null;
+		return (await r.json()) as WorkspaceSnapshotInfo;
+	},
 	files: (path: string) =>
 		f(`/api/files?path=${encodeURIComponent(path)}`).then((r) => j<{ entries: string[] }>(r)),
 	file: (path: string) =>

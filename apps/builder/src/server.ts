@@ -34,6 +34,7 @@ import {
 	repairNeeded,
 	runGates,
 	runTurn,
+	snapshotWorkspace,
 	standaloneGates,
 	workspaceBrief,
 	type GateSpec,
@@ -405,6 +406,22 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 	}
 }
 
+async function handleSnapshot(res: ServerResponse): Promise<void> {
+	// Same shape the hosted agent serves from R2; local disk is cheap enough to
+	// build it live per request, so it can never go stale.
+	try {
+		const snap = await snapshotWorkspace(ws, cur.entry.dir);
+		json(res, 200, {
+			dir: cur.entry.dir,
+			generatedAt: new Date().toISOString(),
+			files: snap.files,
+			skipped: snap.skipped,
+		});
+	} catch {
+		json(res, 404, { error: 'no snapshot yet' });
+	}
+}
+
 async function handleFiles(url: URL, res: ServerResponse): Promise<void> {
 	const path = url.searchParams.get('path') ?? cur.entry.dir;
 	try {
@@ -505,6 +522,8 @@ const server = createServer((req, res) => {
 			case 'POST /api/abort':
 				abort?.abort();
 				return json(res, 200, { ok: true });
+			case 'GET /api/snapshot':
+				return handleSnapshot(res);
 			case 'GET /api/files':
 				return handleFiles(url, res);
 			case 'GET /api/file':
