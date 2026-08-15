@@ -266,7 +266,6 @@ export function App() {
 	}
 
 	const provider = session?.modelSpec.split(':')[0] ?? '';
-	const model = session?.modelSpec.split(':')[1] ?? session?.modelSpec ?? '';
 	const slug = session?.vertical.split('/').pop() ?? '…';
 
 	// Hosted-mode dead ends, honestly stated: a membership lookup that failed is
@@ -323,15 +322,6 @@ export function App() {
 				{session?.modelError && <Badge status="danger">model unavailable</Badge>}
 				<span className="spacer" />
 				<button className="icon-btn" onClick={toggleTheme} title="Toggle light/dark theme">◐</button>
-				<button
-					className="model-chip"
-					onClick={() => setPickerOpen(true)}
-					title={session ? `${provider} · ${session.endpoint ?? 'default endpoint'}` : undefined}
-				>
-					{model}
-					<span className="where">{provider}</span>
-					<span className="chev">▾</span>
-				</button>
 				<span title="Requires the push seam (self-serve-deploy.md) — not wired yet">
 					<Button size="sm" disabled>Create preview PR</Button>
 				</span>
@@ -362,6 +352,10 @@ export function App() {
 						busy={busy}
 						liveness={{ label: workLabel, silentForS }}
 						queued={queued}
+						vertical={session?.vertical ?? null}
+						model={session?.modelSpec ?? '…'}
+						modelTitle={session ? `${provider} · ${session.endpoint ?? 'default endpoint'}` : undefined}
+						onOpenPicker={() => setPickerOpen(true)}
 						onToggleChip={toggleChip}
 						onSend={(m) => void send(m)}
 						onAbort={() => void api.abort()}
