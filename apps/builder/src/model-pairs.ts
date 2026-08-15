@@ -56,13 +56,16 @@ export function editToolFor(spec: string): boolean {
  * recommendation — and opencode's shipped per-family table — is 0.55 for the
  * qwen family; we currently send the SDK default (1.0) to our DEFAULT
  * provider, which is measurably chattier and loopier on agentic runs.
+ * topP 0.8 is Qwen's published qwen3-coder setting; without nucleus
+ * truncation the family degenerates into single-token repetition loops
+ * mid-turn (observed: long runs of underscores streamed as prose).
  * Anthropic/others: undefined — adaptive thinking dislikes a pinned
  * temperature, and the SDK default is the provider's own.
  */
-export function samplingFor(spec: string): { temperature?: number } {
+export function samplingFor(spec: string): { temperature?: number; topP?: number } {
 	const idx = spec.indexOf(':');
 	const provider = idx === -1 ? 'anthropic' : spec.slice(0, idx);
-	return provider === 'qwen' ? { temperature: 0.55 } : {};
+	return provider === 'qwen' ? { temperature: 0.55, topP: 0.8 } : {};
 }
 
 /** The `<provider>:auto` pair a spec names, or null for a concrete spec. */

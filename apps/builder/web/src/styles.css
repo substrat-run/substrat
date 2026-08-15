@@ -183,17 +183,22 @@ code, pre, .mono { font-family: var(--font-mono, 'Geist Mono', ui-monospace, Men
 .concept-doc h3 { font-size: 14px; margin: 16px 0 6px; }
 .concept-doc p, .concept-doc ul, .concept-doc ol { margin-bottom: 10px; }
 
-/* options (ask_user + inline fallback) */
+/* model picker pills (short ids — wrapping row is right there) */
 .model-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.model-list button {
+/* interview options (ask_user + inline fallback): sentence-length answers, one
+   per row — in a wrapping row, later options start mid-line and read as
+   randomly indented */
+.option-list { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.model-list button, .option-list button {
 	background: var(--surface-card); border: 1px solid var(--border-default);
 	color: var(--text-primary); border-radius: 6px; padding: 4px 10px;
 	cursor: pointer; font-size: 12.5px; font-family: inherit;
 	transition: background 140ms cubic-bezier(0.16,1,0.3,1);
 }
-.model-list button:hover { background: var(--surface-hover); border-color: var(--border-brand); }
-.model-list button:disabled { opacity: .55; cursor: default; }
-.model-list .current { border-color: var(--status-success-dot); color: var(--status-success-fg); }
+.option-list button { text-align: left; }
+.model-list button:hover, .option-list button:hover { background: var(--surface-hover); border-color: var(--border-brand); }
+.model-list button:disabled, .option-list button:disabled { opacity: .55; cursor: default; }
+.model-list .current, .option-list .current { border-color: var(--status-success-dot); color: var(--status-success-fg); }
 
 /* ── interview questions (single + tabbed) ─────────────────────────────────── */
 .q-block { display: flex; flex-direction: column; gap: 8px; }
