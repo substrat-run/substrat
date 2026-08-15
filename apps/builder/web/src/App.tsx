@@ -358,7 +358,18 @@ export function App() {
 						onOpenPicker={() => setPickerOpen(true)}
 						onToggleChip={toggleChip}
 						onSend={(m) => void send(m)}
-						onAbort={() => void api.abort()}
+						onAbort={() =>
+							void api.abort().catch((e: Error) => {
+								// A stop that did nothing must say so — the turn is still running.
+								setItems((it) => [
+									...it,
+									{
+										kind: 'event',
+										e: { type: 'error', message: `Stop failed: ${e.message}`, fatal: false },
+									},
+								]);
+							})
+						}
 					/>
 				</div>
 				<div className="right-col">

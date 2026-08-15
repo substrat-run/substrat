@@ -132,6 +132,8 @@ function sandboxLike(sb: Sandbox): SandboxLike {
 
 export class BuilderAgent extends DurableObject<Env> {
 	#busy = false;
+	/** The running turn's kill switch (POST /api/abort) — null while idle. */
+	#abort: AbortController | null = null;
 	#skills: Map<string, string> | null = null;
 
 	// ── storage (keys mirror the local .builder/ files) ───────────────────────
@@ -343,6 +345,8 @@ export class BuilderAgent extends DurableObject<Env> {
 		}
 
 		this.#busy = true;
+		this.#abort = new AbortController();
+		const signal = this.#abort.signal;
 		state.turnNo += 1;
 		// The turn's identity for metering: the dedupe key that makes a replayed
 		// usage report record nothing (#646).
@@ -400,6 +404,7 @@ export class BuilderAgent extends DurableObject<Env> {
 						// Text-only history is lean by design; cap it so decade-long
 						// sessions do not grow the per-step bill without bound.
 						history: [...state.history.slice(-24), ...transcript],
+						signal,
 					})) {
 						if (event.type === 'project-named' && entry.nameSource !== 'user') {
 							entry.name = event.name;
@@ -467,7 +472,10 @@ export class BuilderAgent extends DurableObject<Env> {
 				// and `blocked` gates never trigger repair (the checker crashed).
 				for (
 					let attempt = 1;
-					attempt <= MAX_GATE_REPAIRS && repairNeeded(turn.gates) && turn.changedFiles.length > 0;
+					attempt <= MAX_GATE_REPAIRS &&
+					repairNeeded(turn.gates) &&
+					turn.changedFiles.length > 0 &&
+					!signal.aborted;
 					attempt++
 				) {
 					await runPass(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
@@ -499,6 +507,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				entry.updatedAt = new Date().toISOString();
 				await this.#save(reg);
 				this.#busy = false;
+				this.#abort = null;
 				await writer.close().catch(() => undefined);
 			}
 		};
@@ -553,6 +562,12 @@ export class BuilderAgent extends DurableObject<Env> {
 			}
 			case 'POST /api/turn':
 				return this.#turn(req);
+			case 'POST /api/abort':
+				// Stops the MODEL, not the turn: the running pass ends, the repair
+				// loop stops, but gates + commit still run so the work done so far
+				// lands in the R2 bundle (same contract as the local server).
+				this.#abort?.abort();
+				return json(200, { ok: true });
 			case 'POST /api/gates': {
 				const { entry } = await this.#current();
 				const pair = this.#sandboxPair(entry.id);

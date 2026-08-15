@@ -185,7 +185,7 @@ export const api = {
 			body: JSON.stringify({ path, content }),
 		}).then((r) => j<{ ok: boolean }>(r)),
 	gates: () => f('/api/gates', { method: 'POST' }).then((r) => j<GateRun>(r)),
-	abort: () => f('/api/abort', { method: 'POST' }),
+	abort: () => f('/api/abort', { method: 'POST' }).then((r) => j<{ ok: boolean }>(r)),
 	devStatus: () =>
 		f('/api/dev').then((r) =>
 			j<{
