@@ -3,8 +3,8 @@
  * Assistant text merges into bubbles; everything else renders as event lines, so
  * the user sees files written, commands run, gates and commits as they happen.
  */
-import { useEffect, useRef, useState } from 'react';
-import type { BuildEvent, PlanAssumption } from './api.js';
+import { type DragEvent as ReactDragEvent, useEffect, useRef, useState } from 'react';
+import { api, type BuildEvent, type PlanAssumption } from './api.js';
 import { BuildPanel } from './BuildPanel.js';
 import { Markdown } from './Markdown.js';
 
@@ -380,21 +380,84 @@ function SessionUsage(props: { items: ChatItem[] }) {
 	);
 }
 
+/** A file staged for the next message — read client-side, saved to the project
+ * (attachments/<name>) via the existing file API only when the message sends. */
+interface Attachment {
+	name: string;
+	text: string;
+}
+
+/** Attachments are workspace files, so the generator reads them with its normal
+ * tools — which also bounds the honest v1: text only, small enough to be a spec
+ * or sample data, never a binary the model could not open anyway. */
+const MAX_ATTACHMENT_BYTES = 512 * 1024;
+
+function safeName(name: string): string {
+	return name.replace(/[^\w.-]+/g, '-');
+}
+
 export function Chat(props: {
 	items: ChatItem[];
 	busy: boolean;
 	liveness: { label: string; silentForS: number };
 	queued: readonly PlanAssumption[];
+	/** Project dir attachments are saved under; null before the session loads. */
+	vertical: string | null;
+	model: string;
+	modelTitle?: string | undefined;
+	onOpenPicker: () => void;
 	onToggleChip: (a: PlanAssumption) => void;
 	onSend: (message: string) => void;
 	onAbort: () => void;
 }) {
 	const [draft, setDraft] = useState('');
+	const [attachments, setAttachments] = useState<Attachment[]>([]);
+	const [attachErr, setAttachErr] = useState<string | null>(null);
+	const [sending, setSending] = useState(false);
+	const [dragging, setDragging] = useState(false);
+	// dragenter/dragleave fire per child element — only depth 0 means "left".
+	const dragDepth = useRef(0);
+	const fileInput = useRef<HTMLInputElement>(null);
 	const bottom = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
 		bottom.current?.scrollIntoView({ behavior: 'smooth' });
 	}, [props.items]);
+
+	async function addFiles(files: FileList | File[]): Promise<void> {
+		setAttachErr(null);
+		for (const f of Array.from(files)) {
+			if (f.size > MAX_ATTACHMENT_BYTES) {
+				setAttachErr(`${f.name}: too large (max ${MAX_ATTACHMENT_BYTES / 1024}KB)`);
+				continue;
+			}
+			const text = await f.text();
+			if (text.includes('\u0000')) {
+				setAttachErr(`${f.name}: binary files are not supported — attach text (specs, data, code)`);
+				continue;
+			}
+			const name = safeName(f.name);
+			setAttachments((a) => (a.some((x) => x.name === name) ? a : [...a, { name, text }]));
+		}
+	}
+
+	function dragEnter(e: ReactDragEvent<HTMLDivElement>): void {
+		if (!e.dataTransfer.types.includes('Files')) return;
+		e.preventDefault();
+		dragDepth.current += 1;
+		setDragging(true);
+	}
+	function dragLeave(): void {
+		dragDepth.current = Math.max(0, dragDepth.current - 1);
+		if (dragDepth.current === 0) setDragging(false);
+	}
+	function drop(e: ReactDragEvent<HTMLDivElement>): void {
+		if (!e.dataTransfer.types.includes('Files')) return;
+		e.preventDefault();
+		dragDepth.current = 0;
+		setDragging(false);
+		void addFiles(e.dataTransfer.files);
+	}
 
 	// The current turn = everything after the last user message. If it contains
 	// a plan event, the BuildPanel owns that turn's work events.
@@ -413,15 +476,53 @@ export function Chat(props: {
 		? props.items.findIndex((it, i) => i > lastUser && it.kind === 'event' && it.e.type === 'plan')
 		: -1;
 
-	function send(): void {
+	async function send(): Promise<void> {
 		const text = draft.trim();
-		if (!text || props.busy) return;
+		if (props.busy || sending) return;
+		if (!text && attachments.length === 0) return;
+		setAttachErr(null);
+		let message = text;
+		if (attachments.length > 0) {
+			// Save first, send after: the message references paths that must exist by
+			// the time the generator reads them. A failed save keeps draft + chips.
+			if (!props.vertical) {
+				setAttachErr('no active project to save attachments into');
+				return;
+			}
+			setSending(true);
+			try {
+				const paths: string[] = [];
+				for (const a of attachments) {
+					await api.saveFile(`${props.vertical}/attachments/${a.name}`, a.text);
+					paths.push(`attachments/${a.name}`);
+				}
+				message =
+					`${text ? `${text}\n\n` : ''}Attached file${paths.length === 1 ? '' : 's'} ` +
+					`(already saved in the project):\n${paths.map((p) => `- ${p}`).join('\n')}`;
+			} catch (e) {
+				setAttachErr(`attachment upload failed: ${(e as Error).message}`);
+				return;
+			} finally {
+				setSending(false);
+			}
+		}
 		setDraft('');
-		props.onSend(text);
+		setAttachments([]);
+		props.onSend(message);
 	}
 
+	const canSend = (draft.trim().length > 0 || attachments.length > 0) && !sending;
+
 	return (
-		<>
+		<div
+			className="chat-body"
+			onDragEnter={dragEnter}
+			onDragOver={(e) => {
+				if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+			}}
+			onDragLeave={dragLeave}
+			onDrop={drop}
+		>
 			<div className="messages">
 				{props.items.length === 0 && (
 					<div className="evt">What would you like to build today?</div>
@@ -496,25 +597,78 @@ export function Chat(props: {
 			</div>
 			<SessionUsage items={props.items} />
 			<div className="composer">
-				<textarea
-					rows={2}
-					placeholder={props.busy ? 'turn running…' : 'Describe what to build or change…'}
-					value={draft}
-					disabled={props.busy}
-					onChange={(e) => setDraft(e.target.value)}
-					onKeyDown={(e) => {
-						if (e.key === 'Enter' && !e.shiftKey) {
-							e.preventDefault();
-							send();
-						}
+				<div className={`composer-box ${dragging ? 'dragging' : ''}`}>
+					{attachments.length > 0 && (
+						<div className="attachments">
+							{attachments.map((a) => (
+								<span className="attachment-chip" key={a.name}>
+									{a.name}
+									<button
+										title="Remove attachment"
+										onClick={() => setAttachments((all) => all.filter((x) => x.name !== a.name))}
+									>
+										×
+									</button>
+								</span>
+							))}
+						</div>
+					)}
+					<textarea
+						rows={2}
+						placeholder={props.busy ? 'turn running…' : 'Describe what to build or change…'}
+						value={draft}
+						disabled={props.busy || sending}
+						onChange={(e) => setDraft(e.target.value)}
+						onKeyDown={(e) => {
+							if (e.key === 'Enter' && !e.shiftKey) {
+								e.preventDefault();
+								void send();
+							}
+						}}
+					/>
+					<div className="composer-row">
+						<button
+							className="attach-btn"
+							title="Attach files (or drop them anywhere in the chat)"
+							disabled={props.busy || sending}
+							onClick={() => fileInput.current?.click()}
+						>
+							+
+						</button>
+						<button className="composer-model" title={props.modelTitle} onClick={props.onOpenPicker}>
+							{props.model}
+							<span className="chev">▾</span>
+						</button>
+						<span style={{ flex: 1 }} />
+						{props.busy ? (
+							<button className="send-btn" title="Stop the turn" onClick={props.onAbort}>
+								■
+							</button>
+						) : (
+							<button
+								className="send-btn"
+								title="Send (Enter)"
+								disabled={!canSend}
+								onClick={() => void send()}
+							>
+								↑
+							</button>
+						)}
+					</div>
+				</div>
+				{attachErr && <div className="attach-err">{attachErr}</div>}
+				<input
+					ref={fileInput}
+					type="file"
+					multiple
+					hidden
+					onChange={(e) => {
+						if (e.target.files) void addFiles(e.target.files);
+						e.target.value = '';
 					}}
 				/>
-				{props.busy ? (
-					<button onClick={props.onAbort}>stop</button>
-				) : (
-					<button onClick={send} disabled={!draft.trim()}>send</button>
-				)}
 			</div>
-		</>
+			{dragging && <div className="drop-overlay">Drop files to attach</div>}
+		</div>
 	);
 }
