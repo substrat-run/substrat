@@ -107,6 +107,24 @@ business logic in routes. Read `PORT` from env (the studio sets it). seed.ts
 and server.ts are harness code — node imports are fine THERE, never in module
 code.
 
+Ids are BRANDED types (`PrincipalId`, `TenantId`, `ScopeId` — zod-branded
+strings from `@substrat-run/contracts`): a raw header/JSON string does not
+typecheck where the kernel expects one, and a bare `as` cast is the wrong fix.
+Brand at the boundary with the contracts schemas, and note `getScope` takes the
+principal FIRST:
+
+```ts
+import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
+// Cast entries loaded from the persisted JSON re-brand on load:
+const p = principalId.parse(entry.principal);
+const stub = await host.getScope(p, tenantId.parse(entry.tenantId), scopeId.parse(entry.scopeId));
+const result = await stub.invoke('app/op-name', input);
+```
+
+Ids minted in-process by seed/provisioning are already branded — pass them
+through; parse only what crossed a serialization boundary (headers, JSON
+files, env).
+
 **app/** (when the concept wants a UI): Vite + React served against the API,
 principal picker in the top bar, typed fetch wrappers over the routes, hash
 routing with view state in the URL (`#/…` — refresh must not lose the screen).

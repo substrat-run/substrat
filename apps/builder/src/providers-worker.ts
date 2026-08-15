@@ -12,6 +12,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
 import { MODEL_PAIRS, type ModelPair } from './model-pairs.js';
+import { qwenCacheFetch } from './qwen-cache.js';
 
 /** Structurally identical to hosting.ts `ProviderCatalogEntry` (and the web
  * client's `ProviderEntry`) — declared here because even a type-only import of
@@ -81,7 +82,14 @@ export function resolveModelHosted(
 			if (!env.DASHSCOPE_API_KEY)
 				throw new HostedProviderError('DASHSCOPE_API_KEY is not set as a worker secret');
 			const baseURL = env.DASHSCOPE_BASE_URL ?? QWEN_DEFAULT_BASE;
-			const p = createOpenAICompatible({ name: 'qwen', baseURL, apiKey: env.DASHSCOPE_API_KEY });
+			const p = createOpenAICompatible({
+				name: 'qwen',
+				baseURL,
+				apiKey: env.DASHSCOPE_API_KEY,
+				// Explicit context-cache markers, injected at the wire (qwen-cache.ts) —
+				// the flash tier caches nothing without them.
+				fetch: qwenCacheFetch(),
+			});
 			return { model: p(modelId), label: `qwen/${modelId}`, endpoint: baseURL };
 		}
 		case 'cloudflare': {
