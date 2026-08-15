@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+	continuationPrompt,
 	gateRepairPrompt,
 	gateReport,
 	repairNeeded,
@@ -104,5 +105,14 @@ describe('gateRepairPrompt', () => {
 		expect(prompt).toContain('repair attempt 1/2');
 		expect(prompt).toContain('gates are the oracle');
 		expect(prompt).toContain('typecheck FAILED');
+	});
+});
+
+describe('continuationPrompt', () => {
+	it('carries the attempt counter and the resume-not-restart instruction', () => {
+		const prompt = continuationPrompt(1, 2);
+		expect(prompt).toContain('continuation 1/2');
+		expect(prompt).toContain('where you left off');
+		expect(prompt).toContain('not start over');
 	});
 });

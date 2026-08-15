@@ -25,9 +25,31 @@ The answers that decide the domain model — nothing else is worth a question:
    customer log in? Should a technician see pricing?
 4. Does money come out the other end — invoice, quote, receipt, nothing?
 5. Must anything be signed off or checked before a step can happen?
+6. **What does each persona look at?** Screens, not tech: a staff back-office,
+   a customer-facing portal, both, or API-only for now. Ask per persona from
+   the cast — a persona with no screen is either API-only or a missing piece.
+   The answer decides whether `app/` gets built at all, so silence here means
+   no UI, discovered too late.
 
 Never ask about tech, hosting, or databases. If the builder already described
 their app, confirm your reading instead of re-asking.
+
+## When you know enough — the readiness rule
+
+The list above is a checklist, not a script: keep interviewing, round after
+round, until every item is either answered by the builder or confirmed from
+their description. Do not propose the concept while any of them is open.
+
+The test before proposing: could you fill every concept section below from the
+builder's own words? **Anything you would have to invent — a persona, a
+lifecycle step, a denial rule, a screen — is not filler, it is your next
+question.** A concept padded with plausible inventions reads as agreed and
+becomes code nobody asked for; a shorter interview is never worth that.
+
+The converse also holds: never re-ask what is already answered, and never ask
+for detail below what the concept needs (exact field lists, wording, colours).
+Most interviews are 2–4 rounds. When everything is covered, say what you still
+assumed (if anything), then propose.
 
 ## The honest no
 
@@ -56,10 +78,14 @@ Written in the builder's own vocabulary (no platform internals). Sections:
    the shape right. Every human-readable string promised on an output artifact
    (an invoice line's "Konsulttid Anna") needs a named source table here —
    principals are ULIDs, so a promised name with no source is a missing table
-8. The scenario the test will replay — the happy path plus the denials that
+8. The screens — one line per persona: what they see and do on it (e.g.
+   "dispatcher: job board with status columns; customer: their own jobs only").
+   "API-only for now" is a valid answer, but it must be written down here —
+   an absent section means no UI gets built, silently
+9. The scenario the test will replay — the happy path plus the denials that
    prove isolation (wrong role denied; customer A sees theirs, B sees nothing;
    a cross-tenant attacker gets nothing)
-9. Out of scope / deferred
+10. Out of scope / deferred
 
 Present the concept in prose for approval first; write the file only after the
 builder agrees. Walk them through section 4 until they can answer, unaided:

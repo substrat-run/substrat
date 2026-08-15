@@ -22,12 +22,14 @@ import {
 	type VerticalGenerator,
 } from '@substrat-run/builder-generator';
 import {
+	continuationPrompt,
 	defaultGates,
 	ensureVerticalRepo,
 	foreignChanges,
 	gateRepairPrompt,
 	gateReport,
 	LocalWorkspace,
+	MAX_CONTINUATIONS,
 	MAX_GATE_REPAIRS,
 	repairNeeded,
 	runGates,
@@ -293,12 +295,13 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		const transcript: { role: 'user' | 'assistant'; text: string }[] = [];
 
 		/**
-		 * One generator pass; returns its assistant prose. `carriedReport` is the
-		 * previous TURN's red-gate state — first pass only; repair prompts already
-		 * embed the fresh report.
+		 * One generator pass; returns whether the step ceiling cut it mid-work.
+		 * `carriedReport` is the previous TURN's red-gate state — first pass only;
+		 * repair prompts already embed the fresh report.
 		 */
-		const runPass = async (text: string, carriedReport?: string): Promise<string> => {
+		const runPass = async (text: string, carriedReport?: string): Promise<boolean> => {
 			let prose = '';
+			let truncated = false;
 			for await (const event of generator.run({
 				workspace: cur.projectWs,
 				verticalDir: '.',
@@ -310,6 +313,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 				signal,
 			})) {
 				if (event.type === 'project-named') await applyAiName(event.name);
+				if (event.type === 'truncated') truncated = true;
 				emit(event);
 				if (event.type === 'assistant-text') prose += event.text;
 				// Questions asked and step-ceiling cuts survive into durable history —
@@ -319,7 +323,20 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			}
 			transcript.push({ role: 'user', text });
 			if (prose) transcript.push({ role: 'assistant', text: prose });
-			return prose;
+			return truncated;
+		};
+
+		// A truncated pass is "not done yet", not "done but broken" — continue it
+		// before the gates run, so the repair budget stays reserved for genuine
+		// breakage (gates.ts MAX_CONTINUATIONS). The cap is per turn: repair
+		// passes draw from the same continuation budget as the first pass.
+		let continuations = 0;
+		const runToCompletion = async (text: string, carriedReport?: string): Promise<void> => {
+			let truncated = await runPass(text, carriedReport);
+			while (truncated && continuations < MAX_CONTINUATIONS && !signal.aborted) {
+				continuations += 1;
+				truncated = await runPass(continuationPrompt(continuations, MAX_CONTINUATIONS));
+			}
 		};
 
 		/** Gates + commit for one pass (commit-per-turn lives above the seam, §3). */
@@ -337,7 +354,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			return turn;
 		};
 
-		await runPass(message, cur.state.lastGateReport);
+		await runToCompletion(message, cur.state.lastGateReport);
 		let turn = await runChecks(`studio turn ${cur.state.turnNo}: ${message.slice(0, 60)}`);
 
 		// Red gates are the model's problem, not the builder's (H5): drive capped
@@ -352,7 +369,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			!signal.aborted;
 			attempt++
 		) {
-			await runPass(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
+			await runToCompletion(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
 			turn = await runChecks(`studio turn ${cur.state.turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`);
 		}
 

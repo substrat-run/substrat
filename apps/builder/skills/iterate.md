@@ -1,7 +1,10 @@
 # Building well — patterns and truths for the project's whole life
 
 The gates that must pass every turn: `pnpm typecheck`, boundary-lint, and the
-scenario test.
+test suite (the scenario AND the server smoke — vitest runs every file under
+`test/`). The gates only measure what a test drives: green gates over an
+undriven surface prove nothing, so every surface you build gets a test the same
+turn, never later.
 
 ## Code patterns
 
@@ -47,3 +50,34 @@ anything:
   `'34894.8'` — asserting `'34894.80'` fails on a correct number.
 - Do not re-test engine invariants (state machines, append-only) — verified in
   the engines, inherited by you.
+- **Principal ids are `ulid()`-minted, never hand-written**: the kernel
+  Zod-validates the actor on every invoke/`ctx.emit`, so a readable string like
+  `usr-admin-001` fails deep inside the first mutation with a ZodError pointing
+  nowhere near the seed. Readability lives in the cast's `name` field, not the id.
+- **Grant every permission you check in the same edit that introduces it**: an
+  operation whose perm key no role holds fails only at scenario time, as a
+  baffling happy-path denial. New `ctx.check(APP_PERM.x)` → `x` appears in a
+  role in `ROLES` before the test runs.
+- **Qualify every column in a JOIN** (`app_task.id`, never bare `id`): the
+  second table's `id` makes SQLite error with "ambiguous column name" — write
+  queries qualified from the start rather than after the gate says so.
+- **Know which door the denial closes**: an op-level `assertAllowed` THROWS —
+  the attacker/wrong-role step asserts the pinned permission-denied rejection.
+  Only a portal proof-walk listing (per-entity `ctx.check`) returns a filtered —
+  possibly empty — list. Expecting `[]` from a throwing op, or a throw from a
+  walk, both read as "access control broken" when the code is right.
+
+## test/server.test.ts
+
+The scenario bypasses HTTP, so this file is the only thing standing between
+"gates green" and a server that does not actually serve. Build the same host +
+seed the scenario uses (temp dir), construct the Hono app via `mountApi` with
+the real `resolveStub`, and drive it with `app.request(path, { headers })` — no
+port, no process spawn. Minimum coverage, one assertion each:
+
+- happy path: a seeded persona's `x-principal` on one real route → 200 with a
+  body from the operation (proves boot wiring: host, seed, cast, stub);
+- no header → 401; unknown principal → 401; wrong-role persona on a guarded
+  route → 403 (proves the error mapping, not just the kernel);
+- a second request sees the first one's write (proves the host is built once
+  and persistent — a per-request or `:memory:` host fails exactly here).

@@ -22,11 +22,13 @@ import {
 	defaultGates,
 	ensureVerticalRepo,
 	foreignChanges,
+	continuationPrompt,
 	formatGateRun,
 	gateRepairPrompt,
 	gateReport,
 	isGitRepo,
 	LocalWorkspace,
+	MAX_CONTINUATIONS,
 	MAX_GATE_REPAIRS,
 	repairNeeded,
 	runTurn,
@@ -210,9 +212,10 @@ async function main(): Promise<number> {
 		// constants live in gates.ts so the two hosts cannot drift).
 		const transcript: GeneratorTurn[] = [];
 
-		const runPass = async (text: string, carriedReport?: string): Promise<void> => {
+		const runPass = async (text: string, carriedReport?: string): Promise<boolean> => {
 			let assistant = '';
 			let sawText = false;
+			let truncated = false;
 			for await (const event of generator.run({
 				workspace: projectWs,
 				verticalDir: '.',
@@ -222,6 +225,7 @@ async function main(): Promise<number> {
 				history: [...history, ...transcript],
 			})) {
 				render(event);
+				if (event.type === 'truncated') truncated = true;
 				if (event.type === 'assistant-text') {
 					assistant += event.text;
 					sawText = true;
@@ -234,6 +238,23 @@ async function main(): Promise<number> {
 			if (sawText) process.stdout.write('\n');
 			transcript.push({ role: 'user', text });
 			if (assistant) transcript.push({ role: 'assistant', text: assistant });
+			return truncated;
+		};
+
+		// A truncated pass is "not done yet", not "done but broken" — continue it
+		// before the gates run, so the repair budget stays reserved for genuine
+		// breakage (gates.ts MAX_CONTINUATIONS). Per-turn cap: repair passes draw
+		// from the same continuation budget as the first pass.
+		let continuations = 0;
+		const runToCompletion = async (text: string, carriedReport?: string): Promise<void> => {
+			let truncated = await runPass(text, carriedReport);
+			while (truncated && continuations < MAX_CONTINUATIONS) {
+				continuations += 1;
+				process.stdout.write(
+					`\n  step ceiling hit — continuation ${continuations}/${MAX_CONTINUATIONS}\n\n`,
+				);
+				truncated = await runPass(continuationPrompt(continuations, MAX_CONTINUATIONS));
+			}
 		};
 
 		// Commit-per-turn lives above the seam (§3), so it happens here — not in
@@ -260,7 +281,7 @@ async function main(): Promise<number> {
 			return turn;
 		};
 
-		await runPass(message, lastGateReport);
+		await runToCompletion(message, lastGateReport);
 		let turn = await runChecks(`studio turn ${turnNo}: ${message.slice(0, 60)}`);
 		for (
 			let attempt = 1;
@@ -268,7 +289,7 @@ async function main(): Promise<number> {
 			attempt++
 		) {
 			process.stdout.write(`\n  gates red — repair attempt ${attempt}/${MAX_GATE_REPAIRS}\n\n`);
-			await runPass(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
+			await runToCompletion(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
 			turn = await runChecks(`studio turn ${turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`);
 		}
 		lastGateReport = gateReport(turn.gates) ?? undefined;

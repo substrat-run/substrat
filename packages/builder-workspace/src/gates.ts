@@ -274,6 +274,32 @@ export function repairNeeded(run: GateRun): boolean {
 	return run.results.some((r) => r.status === 'failed');
 }
 
+/**
+ * Ceiling on host-driven continuation passes per turn (builder-harness.md H6).
+ * A pass that ends `truncated` was cut by the step ceiling mid-work — that is
+ * "not done yet", not "done but broken", so the host continues it BEFORE the
+ * gates run. Without this, a big scaffold spends the whole repair budget on
+ * mere continuation (the gates go red on incompleteness, and the repair
+ * prompt's "fix the failures" framing derails the model's own plan). Shared
+ * with MAX_GATE_REPAIRS the same billing logic: every pass is a full model
+ * run, so the cap is per TURN, not per pass.
+ */
+export const MAX_CONTINUATIONS = 2;
+
+/**
+ * The host-authored message driving one continuation pass. Kept here so all
+ * run modes send byte-identical instructions (same reasoning as
+ * `gateRepairPrompt`).
+ */
+export function continuationPrompt(attempt: number, maxAttempts: number): string {
+	return [
+		`[studio] Your last pass hit the step ceiling and was cut off mid-work (continuation ${attempt}/${maxAttempts}).`,
+		'Pick up exactly where you left off and finish the remaining work. Do not start over, do not ' +
+			're-plan, and do not re-read files you already wrote this turn. If everything you intended ' +
+			'is in fact complete, say so briefly and stop.',
+	].join('\n\n');
+}
+
 /** Per-failure output shown to the model. The tail is where compilers point. */
 const REPORT_OUTPUT_CAP = 4_000;
 
