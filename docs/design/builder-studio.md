@@ -475,7 +475,9 @@ The skills plus the manifest surface are a large, byte-stable prefix — cache i
 cacheable prefix is 512 tokens, so even the smaller preambles qualify. Keep the volatile parts
 (the user's message, the current diff) after the last breakpoint, and never interpolate a
 timestamp or session id into the stable head. This is the optimisation that actually moves the
-bill (§4.4).
+bill (§4.4). The concrete follow-through — what the loop already does, what we adopt from the
+opencode/models.dev research, and in what order — lives in
+[builder-harness.md](./builder-harness.md).
 
 ## 6. The blocker
 
