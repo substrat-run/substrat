@@ -214,10 +214,15 @@ async function main(): Promise<number> {
 	}
 
 	// The run artifact — compare two of these to judge a change (§9.6).
-	const cost = (r: EvalResult) => costOfSteps(chosen.spec, r.usage.stepUsage)?.listUsd ?? null;
+	// Priced against the CONCRETE spec: an auto pair resolves to its strong
+	// member for every non-interview phase, and eval turns are never interview
+	// turns (the concept is committed before turn 1), so one rate card fits.
+	const pricingSpec = resolveAutoSpec(chosen.spec, 'iterate');
+	const cost = (r: EvalResult) => costOfSteps(pricingSpec, r.usage.stepUsage)?.listUsd ?? null;
 	const report = {
 		ranAt: new Date().toISOString(),
 		modelSpec: chosen.spec,
+		pricedAs: pricingSpec,
 		maxSteps: args.maxSteps,
 		results: results.map((r) => ({ ...r, listCostUsd: cost(r) })),
 	};
