@@ -1,5 +1,65 @@
 # @substrat-run/builder
 
+## 0.5.0
+
+### Minor Changes
+
+- f151676: feat: the `builder` entitlement gates the studio + the console Members view
+
+  Granting someone the builder studio no longer means granting them the control
+  plane — and access follows the team, not an email list. The studio's gate is
+  now: platform staff OR membership in a tenant holding the `builder`
+  entitlement (granted per tenant in the console like any SKU; expiry applied at
+  read, so a lapsed trial closes the studio). The CP's identity-tenants lookup
+  returns each membership flagged with the entitlement; the studio resolves
+  teams once per request, dispatches only into usable ones, and serves a proper
+  HTML denied page for browsers (JSON for API callers) with a federated
+  switch-account link. The studio-wide `/api/usage` rollup becomes staff-only
+  (it is cross-team until metering is per-team) and the SPA hides the Usage tab
+  for non-staff via a new `staff` flag on `/api/me`.
+
+  The console's "Members" nav item graduates from Planned to a real view: the
+  staff roster with grant/revoke/re-grant over new staff-gated `/api/members*`
+  routes on the CP worker. Grants record the acting staff member (`added_by`,
+  CP migration 0003); a re-granted staff member keeps their actor so admin-log
+  history stays attributed; revoking the last active staff member is refused.
+  Design record: builder-studio.md §15.
+
+### Patch Changes
+
+- 022c8ab: Builder turn hardening — four fixes from the first hosted FamilyFlow run.
+
+  **Gate feedback reaches the hosted agent (H5 port).** The `BuilderAgent` DO now
+  does what the local server and dev CLI already did: a red run's `gateReport`
+  persists in project state and rides into the next turn's context, and every red
+  turn drives the capped in-turn repair loop. Previously the hosted model never
+  saw a failing gate's output — not even when the builder asked about it.
+
+  **`pnpm install` is a host responsibility.** `runTurn` installs mechanically
+  (new `runInstall`, reported as an `install` gate result) when the turn touched
+  a package.json or the vertical has one with no `node_modules` — a fresh
+  project under `.builder/projects/*` postdates the image's warm install, and
+  leaving the install to the model by prompt lost to the step ceiling, after
+  which every gate failed with phantom module-not-found errors. A failed install
+  reaches the model as pnpm's own output, not as type errors.
+
+  **Step-ceiling cuts are said out loud.** A clean stream end whose final step
+  still wanted tools means `stopWhen` truncated the turn: the generator now emits
+  a `truncated` event, and all three hosts spell it into durable history via the
+  shared `historyMarker` helper — a cut-off turn no longer reads as a finished
+  one to the UI or to the model's own next turn.
+
+  **`ask_user` discipline is enforced, not prompted.** The tool now refuses
+  duplicate questions (normalized text or tab header already asked this turn) and
+  the fifth question of a turn, with an actionable refusal. Questions asked also
+  persist into durable history as `[asked …]` markers, so later turns stop
+  re-asking what the builder already answered. (Observed: a fast interview model
+  asking 11 questions in one turn, three of them duplicates.)
+
+- Updated dependencies [022c8ab]
+  - @substrat-run/builder-workspace@0.4.0
+  - @substrat-run/builder-generator@0.6.0
+
 ## 0.4.0
 
 ### Minor Changes
