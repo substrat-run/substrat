@@ -32,7 +32,7 @@
  * naming #626 (ContainerWorkspace): the hosted studio is honest about not
  * being able to execute yet, rather than pretending with a broken loop.
  */
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { meteringModule } from '@substrat-run/engine-metering';
 import { studioUsage } from './metering.js';
@@ -179,12 +179,14 @@ app.get('/api/auth/denied', (c) =>
 
 /**
  * The gate. Order matters: OIDC session first, then access — platform staff
- * (one D1 read, short-circuits) or membership in a team holding the `builder`
- * entitlement (the directory lookup). The teams resolved here are stashed on
- * the context so /api/me and the per-team dispatch below reuse them instead of
- * re-walking the directory. For a non-staff user this is one CP subrequest per
- * request, assets included — acceptable at studio scale, and the alternative
- * (an ungated shell) would leak the app to any authenticated account.
+ * (one D1 read, and the decision is made: no directory walk on a staff asset
+ * request) or membership in a team holding the `builder` entitlement (the
+ * directory lookup, stashed on the context so /api/me and the per-team
+ * dispatch reuse it). For a NON-staff user this is one CP subrequest per
+ * request, assets included — acceptable at studio scale (the alternative, an
+ * ungated shell, would leak the app to any authenticated account); if it ever
+ * hurts, the fix is a short-TTL per-isolate cache keyed by user id, traded
+ * against revocation lag of the same TTL.
  */
 app.use('*', async (c, next) => {
 	const token = readCookie(c.req.header('cookie') ?? null, SESSION_COOKIE);
@@ -197,23 +199,38 @@ app.use('*', async (c, next) => {
 		return c.json({ error: 'not signed in' }, 401);
 	}
 	const staff = await isStaff(c.env, user.email);
-	const teams = await teamsFor(c.env, user.id);
-	// Staff act in any of their memberships; everyone else only in entitled ones.
-	const usable = staff ? teams : teams.filter((t) => t.entitled);
-	if (!staff && usable.length === 0) {
-		// Same split as the 401 above: a page for browsers, JSON for API callers.
-		// Still names the email, never the app (header comment: fail closed).
-		const detail = `The builder studio is not enabled for ${user.email ?? 'this account'}'s team yet.`;
-		if (c.req.header('accept')?.includes('text/html')) {
-			return c.html(deniedPage(detail), 403);
+	// Staff are decided by the one D1 read above — no directory walk on their
+	// asset requests. Only a non-staff user needs teams AT THE GATE (their access
+	// IS the entitled set); the walk is deferred for staff until a route that
+	// actually needs teams (usableTeams below).
+	let usable: Team[] | null = null;
+	if (!staff) {
+		usable = (await teamsFor(c.env, user.id)).filter((t) => t.entitled);
+		if (usable.length === 0) {
+			// Same split as the 401 above: a page for browsers, JSON for API callers.
+			// Still names the email, never the app (header comment: fail closed).
+			const detail = `The builder studio is not enabled for ${user.email ?? 'this account'}'s team yet.`;
+			if (c.req.header('accept')?.includes('text/html')) {
+				return c.html(deniedPage(detail), 403);
+			}
+			return c.json({ error: detail }, 403);
 		}
-		return c.json({ error: detail }, 403);
 	}
 	c.set('user' as never, user as never);
 	c.set('staff' as never, staff as never);
 	c.set('teams' as never, usable as never);
 	await next();
 });
+
+/** The teams the caller may act in: membership AND (entitlement OR staff).
+ * Non-staff: the gate already resolved and filtered them. Staff: resolved here,
+ * on the routes that need them — every membership is usable (the bypass). */
+async function usableTeams(c: Context<{ Bindings: Env }>): Promise<Team[]> {
+	const cached = c.get('teams' as never) as Team[] | null;
+	if (cached) return cached;
+	const user = c.get('user' as never) as SessionUser;
+	return await teamsFor(c.env, user.id);
+}
 
 /** The studio's usage rollup (#646) — served by the worker, not the agent DO:
  * the ledger lives in the SCOPE DO and the worker holds that binding. Still
@@ -237,7 +254,7 @@ app.get('/api/me', async (c) => {
 	return c.json({
 		email: user.email ?? null,
 		staff: c.get('staff' as never) as boolean,
-		teams: c.get('teams' as never) as Team[],
+		teams: await usableTeams(c),
 	});
 });
 
@@ -250,8 +267,7 @@ app.get('/api/me', async (c) => {
 app.all('/api/*', async (c) => {
 	const selected = c.req.header(TENANT_HEADER)?.trim();
 	if (!selected) return c.json({ error: `${TENANT_HEADER} header (a team id) is required` }, 400);
-	// The gate's usable set: membership AND (entitlement OR staff) already applied.
-	const teams = c.get('teams' as never) as Team[];
+	const teams = await usableTeams(c);
 	const team = teams.find((t) => t.id === selected);
 	if (!team) return c.json({ error: `not a member of team '${selected}'` }, 403);
 	const id = c.env.BUILDER_AGENT.idFromName(team.id);
