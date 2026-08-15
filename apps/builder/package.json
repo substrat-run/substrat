@@ -10,6 +10,7 @@
 		"ui": "concurrently -k -n api,web -c yellow,cyan \"tsx src/server.ts\" \"pnpm --filter @substrat-run/builder-web dev\"",
 		"api": "tsx src/server.ts",
 		"gates": "tsx src/gates-cli.ts",
+		"evals": "tsx src/evals-cli.ts",
 		"models": "tsx src/models-cli.ts",
 		"build": "tsc -p tsconfig.json",
 		"typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json",

@@ -1,0 +1,9 @@
+{
+	"operations": ["paveworks/open-job", "paveworks/complete-job", "paveworks/issue-invoice"],
+	"roles": {
+		"foreman": ["job:manage", "job:read"],
+		"crew": ["job:read"],
+		"accounting": ["job:read", "invoice:issue"]
+	},
+	"files": ["src/module.ts", "src/seed.ts", "test"]
+}

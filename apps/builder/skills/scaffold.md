@@ -98,7 +98,11 @@ Seed: provision tenant+scope(s), define roles per tenant from engine PERM +
 APP_PERM, assign them, create entities via `stub.invoke` (never raw SQL),
 entity-narrowed grants for portal principals, persist the cast (principal ids +
 names) to a JSON file so restarts reuse it. **Seed two tenants** — the second
-is the attacker the scenario needs. Export `MODULES` and a `ROLES` map.
+is the attacker the scenario needs. Export `MODULES` and
+`ROLES: RoleDefinition[]` (from `@substrat-run/contracts` — `{ key, permissions,
+source: 'vertical' }`, the same table `defineRole` is fed) so the permission
+surface is a build-time fact tooling can read, not something buried in seed
+calls.
 
 **src/server.ts** — thin Hono wrapper: `x-principal` header → cast lookup →
 `getScope` → `invoke`; one route per operation (`POST /api/<op>`);
