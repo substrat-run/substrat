@@ -41,6 +41,15 @@ Who may act on the control plane lives in the `staff_actor` table in D1
 before this every operator shared one hardcoded actor and the trail could not
 tell them apart.
 
+**The managed surface is the console's Members view** (`/api/members*` on this
+worker, staff-session gated): grant and revoke for the staff roster. Grants made
+there record the acting staff member (`added_by`,
+`migrations/0003_staff_added_by.sql`), a re-granted member keeps their actor, and
+revoking the last active staff member is refused. (Builder-studio access is NOT a
+roster here: it is the `builder` entitlement on the tenant, granted in the console
+like any SKU and read by the studio via the identity-tenants lookup.) The raw
+statements below remain the bootstrap/recovery path:
+
 ```sh
 # grant access
 wrangler d1 execute substrat-control-plane-auth --command \
@@ -57,8 +66,8 @@ Mint the actor with any ULID generator; it is that person's identity in the audi
 log forever, so it must never be reused or changed.
 
 An empty roster means nobody can act — fail-closed is the correct posture, and
-recovery is the grant statement above. A managed surface for this belongs in the
-console and is not built yet.
+recovery is the grant statement above (which is why the console refuses to revoke
+the final member: recovery must never be the only path).
 
 **The roster also gates account creation.** Better Auth's sign-up endpoint is
 public by default and is mounted on this origin, so before #47 anyone reaching

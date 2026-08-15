@@ -61,6 +61,49 @@ export interface ResolvedTenant {
 }
 
 /**
+ * The entitlement key that turns the builder STUDIO on for a tenant
+ * (builder-plane.md §7's "entitlement flag, presumably" — now actual). Granted
+ * from the console like any SKU (TenantDetail → Grant entitlement); expiry is
+ * honoured at read below, so a lapsed trial reads as not entitled. Deliberately
+ * NOT consulted by the CLI/whoami path: self-serve push stays roster-free
+ * (Vercel-style, the header comment above) — this key gates the hosted studio
+ * surface, not the ability to push.
+ */
+export const BUILDER_ENTITLEMENT = 'builder';
+
+/** A membership decorated with whether that tenant holds the studio entitlement. */
+export interface StudioTenant extends ResolvedTenant {
+  entitled: boolean;
+}
+
+/**
+ * The studio's membership + entitlement read (`/internal/builder/identity-tenants`):
+ * the same directory walk as `builderTenantsFor`, each tenant flagged with whether
+ * it currently holds [[BUILDER_ENTITLEMENT]]. Expiry applies here — the kernel
+ * only enforces it at its own per-invoke gate, and `listEntitlements` deliberately
+ * keeps lapsed rows visible for renewal, so this read must not mistake a lapsed
+ * trial for access.
+ */
+export async function studioTenantsFor(
+  host: ScopeHost,
+  user: Pick<SessionUser, 'id'>,
+): Promise<StudioTenant[]> {
+  const tenants = await builderTenantsFor(host, user);
+  const now = new Date().toISOString();
+  return await Promise.all(
+    tenants.map(async (t) => {
+      const grants = await host.admin.listEntitlements(BUILDER_RESOLVER, t.id);
+      const entitled = grants.some(
+        (g) =>
+          g.entitlementKey === BUILDER_ENTITLEMENT &&
+          (g.expiresAt === null || g.expiresAt > now),
+      );
+      return { ...t, entitled };
+    }),
+  );
+}
+
+/**
  * The tenants a session's user belongs to (for `GET /api/auth/whoami` and the reader).
  * Reads the shared identity directory; empty when the user has not signed up yet.
  */

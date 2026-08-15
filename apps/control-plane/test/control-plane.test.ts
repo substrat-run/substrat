@@ -87,7 +87,7 @@ describe('staff roster', () => {
 
   beforeAll(async () => {
     await env.AUTH_DB.exec(
-      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, revoked_at TEXT)',
+      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, added_by TEXT, revoked_at TEXT)',
     );
     const add = (email: string, actor: string, revokedAt: string | null) =>
       env.AUTH_DB.prepare(
@@ -186,6 +186,8 @@ describe('builder auth — live self-serve path', () => {
   const RESOLVER = platformActorId.parse('01JZ000000000000000000BDR1');
   const userId = ulid();
   const email = 'builder@acme.example';
+  // Hoisted so the identity-tenants (studio entitlement) tests below can grant to it.
+  const t = tenantId.parse(ulid());
 
   const sessionFor = (id: string, mail: string): Promise<string> =>
     mintSession(oidcEnv, { id, email: mail, name: 'Builder' });
@@ -195,11 +197,10 @@ describe('builder auth — live self-serve path', () => {
     // throws) and the request falls through to the BUILDER path. Empty: the builder is
     // deliberately not staff. In prod this table is a migration; here we seed it.
     await env.AUTH_DB.exec(
-      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, revoked_at TEXT)',
+      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, added_by TEXT, revoked_at TEXT)',
     );
     // Seed a tenant + link the OIDC identity to it, the way dashboard sign-up would.
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
-    const t = tenantId.parse(ulid());
     await host.admin.createTenant(RESOLVER, { id: t, slug: 'acme-co', name: 'Acme Co' });
     await host.admin.registerIdentityPool(RESOLVER, { provider: PROVIDER, topology: 'central', tenantId: null });
     await host.admin.linkIdentity(RESOLVER, {
@@ -267,6 +268,58 @@ describe('builder auth — live self-serve path', () => {
     });
     // No builder tenant → the reader declines → the API falls through to 401.
     expect(res.status).toBe(401);
+  });
+
+  /**
+   * The studio's membership lookup (`/internal/builder/identity-tenants`) with the
+   * `builder` ENTITLEMENT flag — the gate the hosted studio enforces. Access is a
+   * property of the TEAM (granted in the console like any SKU), so what's under
+   * test: the service-token gate, the flag flipping with grant, and expiry applied
+   * at read (the kernel only enforces expiry at its own per-invoke gate, and
+   * listEntitlements keeps lapsed rows visible — the lookup must not mistake a
+   * lapsed trial for access).
+   */
+  const lookup = async () => {
+    const res = await SELF.fetch('https://cp.test/internal/builder/identity-tenants', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-service-token': 'test-service-token' },
+      body: JSON.stringify({ externalId: userId }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { tenants: { slug: string; entitled: boolean }[] };
+    return body.tenants.find((x) => x.slug === 'acme-co');
+  };
+
+  it('identity-tenants refuses without the service token (fail closed)', async () => {
+    const res = await SELF.fetch('https://cp.test/internal/builder/identity-tenants', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ externalId: userId }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('a membership without the builder entitlement is listed, not entitled', async () => {
+    expect(await lookup()).toMatchObject({ entitled: false });
+  });
+
+  it('granting the builder entitlement to the TENANT entitles the membership', async () => {
+    const grant = await SELF.fetch(`https://cp.test/api/tenants/${t}/entitlements/builder`, {
+      method: 'PUT',
+      headers: authed,
+    });
+    expect(grant.ok).toBe(true);
+    expect(await lookup()).toMatchObject({ entitled: true });
+  });
+
+  it('an expired grant reads as not entitled — a lapsed trial closes the studio', async () => {
+    const lapse = await SELF.fetch(`https://cp.test/api/tenants/${t}/entitlements/builder`, {
+      method: 'PUT',
+      headers: authed,
+      body: JSON.stringify({ expiresAt: new Date(Date.now() - 60_000).toISOString() }),
+    });
+    expect(lapse.ok).toBe(true);
+    expect(await lookup()).toMatchObject({ entitled: false });
   });
 });
 
@@ -336,5 +389,85 @@ describe('connection relay — /internal/connections/upsert', () => {
       }),
     });
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * The members surface (console → Members): the staff roster over /api/members*.
+ * What's under test: the fail-closed gate, grant/revoke round-trips, attribution
+ * (`added_by` = the acting staff actor), and the two K-21 invariants — revocation
+ * tombstones, and a re-granted staff member KEEPS their actor so admin-log
+ * history stays attributed.
+ *
+ * Authenticated via the dev-actor stub (ALLOW_DEV_ACTOR, vitest.config.ts) — the
+ * same PlatformActorAuth seam a staff session resolves through in prod. (The
+ * builder studio is deliberately NOT here: studio access is the `builder`
+ * entitlement on the tenant — see the identity-tenants tests above.)
+ */
+describe('members surface (console → Members)', () => {
+  beforeAll(async () => {
+    // In prod the store is migrations 0002 + 0003; here we seed the schema.
+    await env.AUTH_DB.exec(
+      'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, added_by TEXT, revoked_at TEXT)',
+    );
+  });
+
+  it('fails closed without a platform actor', async () => {
+    const res = await SELF.fetch('https://cp.test/api/members');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists the roster', async () => {
+    const res = await SELF.fetch('https://cp.test/api/members', { headers: authed });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { staff: unknown[] };
+    expect(Array.isArray(body.staff)).toBe(true);
+  });
+
+  it('rejects a malformed email', async () => {
+    const res = await SELF.fetch('https://cp.test/api/members/staff', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'not-an-email' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('a re-granted staff member keeps their actor — history stays attributed', async () => {
+    const grant = await SELF.fetch('https://cp.test/api/members/staff', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'Lin@Substrat.example', name: 'Lin' }),
+    });
+    expect(grant.status).toBe(200);
+    const first = (
+      (await grant.json()) as { staff: { email: string; actor: string | null; addedBy: string | null }[] }
+    ).staff.find((r) => r.email === 'lin@substrat.example'); // lowercased at the boundary
+    expect(first?.actor).toEqual(expect.any(String));
+    expect(first?.addedBy).toBe(ACTOR);
+
+    const revoke = await SELF.fetch('https://cp.test/api/members/staff/revoke', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'lin@substrat.example' }),
+    });
+    expect(revoke.status).toBe(200);
+    // Tombstoned, not deleted: the row is still listed as evidence.
+    const revoked = (
+      (await revoke.json()) as { staff: { email: string; revokedAt: string | null }[] }
+    ).staff.find((r) => r.email === 'lin@substrat.example');
+    expect(revoked?.revokedAt).toEqual(expect.any(String));
+
+    const regrant = await SELF.fetch('https://cp.test/api/members/staff', {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ email: 'lin@substrat.example' }),
+    });
+    const second = (
+      (await regrant.json()) as { staff: { email: string; actor: string | null; revokedAt: string | null }[] }
+    ).staff.find((r) => r.email === 'lin@substrat.example');
+    // The actor is that person's identity in the admin log forever — never re-minted.
+    expect(second?.actor).toBe(first?.actor);
+    expect(second?.revokedAt).toBeNull();
   });
 });

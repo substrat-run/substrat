@@ -100,9 +100,9 @@ import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, type OidcEnv } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader } from './staff-auth.js';
-import { d1StaffRoster } from './staff-roster.js';
+import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
-import { builderTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
+import { studioTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
 
 /** The placeholder scope-DO class: kernel only, no modules. */
 export const ScopeDO = defineScopeDO([], {});
@@ -746,6 +746,33 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
  * neither → 401. Secure by default: a real deploy binds AUTH_DB and never sets
  * ALLOW_DEV_ACTOR.
  */
+/**
+ * Auth for the members surface (console → Members): STAFF sessions only. This
+ * deliberately does not reuse `authFor`'s reader stack — the service token and a
+ * builder session must never manage who has access. Dev actor stays, as the
+ * console's local stub (§6) and the workerd test's path.
+ */
+function membersAuthFor(env: Env): PlatformActorAuth {
+  const readers: PlatformActorAuth[] = [];
+  if (env.AUTH_DB) {
+    const roster = d1StaffRoster(env.AUTH_DB);
+    readers.push(sessionPlatformAuth(oidcStaffSessionReader(env), roster));
+    readers.push(sessionPlatformAuth(oidcStaffBearerReader(env), roster));
+  }
+  if (env.ALLOW_DEV_ACTOR === 'true') readers.push(UNSAFE_devPlatformActorAuth());
+  return firstPlatformActorAuth(...readers);
+}
+
+/**
+ * Enough to catch paste mistakes; the OIDC issuer is the authority on what an
+ * email really is. Lowercased here so every store read/write agrees on the key.
+ */
+function memberEmail(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const e = v.trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : null;
+}
+
 function authFor(env: Env): PlatformActorAuth {
   const readers: PlatformActorAuth[] = [];
   // Staff sign in: an OIDC session (AuthHero), gated by the D1 roster.
@@ -968,12 +995,65 @@ export default {
     // belongs to several. Reads the same session (bearer or cookie) as the API.
     app.get('/api/auth/whoami', async (c) => c.json(await resolveWhoami(hostFor(c.env), c.env, c.req.raw)));
 
+    // The members surface (console → Members): the staff roster (staff_actor) —
+    // listed, granted, revoked. Lives here rather than in `control-plane-api`
+    // because the store is THIS deployment's D1, not the directory: the published
+    // API has no roster vocabulary. Staff-gated (membersAuthFor); every mutation
+    // records the acting staff member in `added_by`. Registered before the /api
+    // router. (Builder-studio access is NOT an email list here — it is the
+    // `builder` entitlement on the tenant, granted like any SKU; builder-auth.ts.)
+    const membersAuth = membersAuthFor(env);
+    const membersGate = async (
+      request: Request,
+    ): Promise<{ db: D1Database; actor: PlatformActorId } | Response> => {
+      if (!env.AUTH_DB) return Response.json({ error: 'no roster store bound' }, { status: 501 });
+      const actor = await membersAuth(request);
+      if (!actor) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+      return { db: env.AUTH_DB, actor };
+    };
+    const members = async (db: D1Database) => ({ staff: await listStaff(db) });
+
+    app.get('/api/members', async (c) => {
+      const gate = await membersGate(c.req.raw);
+      if (gate instanceof Response) return gate;
+      return c.json(await members(gate.db));
+    });
+
+    app.post('/api/members/staff', async (c) => {
+      const gate = await membersGate(c.req.raw);
+      if (gate instanceof Response) return gate;
+      const body = (await c.req.json().catch(() => ({}))) as { email?: unknown; name?: unknown };
+      const email = memberEmail(body.email);
+      if (!email) return c.json({ error: 'a valid email is required' }, 400);
+      const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name.trim() : undefined;
+      await grantStaff(gate.db, { email, ...(name ? { name } : {}), grantedBy: gate.actor });
+      return c.json(await members(gate.db));
+    });
+
+    app.post('/api/members/staff/revoke', async (c) => {
+      const gate = await membersGate(c.req.raw);
+      if (gate instanceof Response) return gate;
+      const body = (await c.req.json().catch(() => ({}))) as { email?: unknown };
+      const email = memberEmail(body.email);
+      if (!email) return c.json({ error: 'a valid email is required' }, 400);
+      const outcome = await revokeStaff(gate.db, email);
+      if (outcome === 'not-found') return c.json({ error: `${email} is not an active staff member` }, 404);
+      if (outcome === 'last-member') {
+        // An empty roster means NOBODY can act — including on this surface — and
+        // recovery is a raw wrangler statement under pressure. Refuse instead.
+        return c.json({ error: 'cannot revoke the last active staff member' }, 409);
+      }
+      return c.json(await members(gate.db));
+    });
+
     // The builder studio's membership lookup (builder-plane.md §4). The studio worker
     // verifies its OWN OIDC session (its session secret is not this worker's, so it
     // cannot ride `/api/auth/whoami`), then asks this directory which tenants that
-    // login builds for — the same `builderTenantsFor` read whoami does session-side.
-    // Service-token gated, the dashboard's credential class: an unset token refuses,
-    // never bypasses, and the response is directory facts only (id, slug, name).
+    // login builds for — the same directory walk whoami does session-side, each
+    // tenant flagged with whether it holds the `builder` entitlement (the studio's
+    // gate; expiry applied at read). Service-token gated, the dashboard's credential
+    // class: an unset token refuses, never bypasses, and the response is directory
+    // facts only (id, slug, name, entitled).
     app.post('/internal/builder/identity-tenants', async (c) => {
       const gate = c.env.SERVICE_TOKEN
         ? await serviceTokenAuth(c.env.SERVICE_TOKEN, SERVICE_ACTOR)(c.req.raw)
@@ -983,7 +1063,7 @@ export default {
       if (typeof body.externalId !== 'string' || body.externalId === '') {
         return c.json({ error: 'externalId (the OIDC subject) is required' }, 400);
       }
-      return c.json({ tenants: await builderTenantsFor(hostFor(c.env), { id: body.externalId }) });
+      return c.json({ tenants: await studioTenantsFor(hostFor(c.env), { id: body.externalId }) });
     });
 
     // The router kick (platform-intents.md §"router kick"). When a vertical's response

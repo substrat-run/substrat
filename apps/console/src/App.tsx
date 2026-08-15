@@ -13,6 +13,7 @@ import { Domains } from './views/Domains';
 import { Meters } from './views/Meters';
 import { Observability } from './views/Observability';
 import { Login } from './views/Login';
+import { Members } from './views/Members';
 import { OpsFailures } from './views/OpsFailures';
 import { Permissions } from './views/Permissions';
 import { ScopeDetail } from './views/ScopeDetail';
@@ -64,6 +65,7 @@ const VIEWS: ViewKey[] = [
   'meters',
   'admin-log',
   'permissions',
+  'members',
   'failures',
   'settings',
 ];
@@ -288,7 +290,7 @@ export function App() {
         : undefined;
 
   const crumbs: BreadcrumbItem[] = [
-    { label: view === 'settings' ? 'Console' : view === 'failures' ? 'Operations' : 'Fleet' },
+    { label: view === 'settings' || view === 'members' ? 'Console' : view === 'failures' ? 'Operations' : 'Fleet' },
     { label: view === 'admin-log' ? 'Admin log' : view[0]!.toUpperCase() + view.slice(1), onClick: clearDetail },
     ...(detailCrumb ? [detailCrumb] : []),
   ];
@@ -451,6 +453,7 @@ export function App() {
       {view === 'admin-log' && <AdminLog api={api} tenants={tenantMap} />}
       {view === 'failures' && <OpsFailures api={api} tenants={tenantMap} initialVertical={failuresVertical} />}
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}
+      {view === 'members' && <Members api={api} onToast={notify} />}
       {view === 'settings' && <Settings api={api} onToast={notify} />}
 
       {toast && (

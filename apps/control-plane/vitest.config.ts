@@ -22,6 +22,9 @@ export default defineWorkersConfig({
           bindings: {
             ALLOW_DEV_ACTOR: 'true',
             SESSION_SECRET: 'test-session-secret-32-bytes-min-xxxxx',
+            // Lets the identity-tenants test call the studio's membership lookup the
+            // way the builder worker does (service-token gated, never bypassed).
+            SERVICE_TOKEN: 'test-service-token',
             // 32 fixed bytes, base64 — lets the scrive-ingress test seed a sealed
             // connection credential the worker's `secretBoxFor` can open.
             SECRET_BOX_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',

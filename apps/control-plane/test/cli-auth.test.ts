@@ -23,7 +23,7 @@ function sessionFor(email: string): Promise<string> {
 
 async function seedRoster(email: string, actor: string): Promise<void> {
   await env.AUTH_DB.exec(
-    'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, revoked_at TEXT)',
+    'CREATE TABLE IF NOT EXISTS staff_actor (email TEXT PRIMARY KEY, actor TEXT NOT NULL, name TEXT, added_at TEXT NOT NULL, added_by TEXT, revoked_at TEXT)',
   );
   await env.AUTH_DB.prepare(
     'INSERT OR REPLACE INTO staff_actor (email, actor, name, added_at, revoked_at) VALUES (?, ?, NULL, ?, NULL)',

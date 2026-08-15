@@ -925,3 +925,32 @@ Supersedes "multi-tenant studio sessions" in §1's out-of-scope list. The studio
 Follow-ups this creates: per-team metering scopes (retiring the fixed studio node,
 src/metering.ts), the plan entitlement + a `builder:use` dashboard role key, and eager
 vertical registration so a project surfaces in the dashboard's Deployments view.
+
+## 15. Addendum — the studio entitlement (2026-08-15)
+
+Resolves builder-plane.md §7's "an entitlement flag, presumably" and refines §1.1's
+"staff-only, behind the staff roster": studio access is now **staff OR membership in a
+tenant holding the `builder` entitlement**, still AND-ed with team membership (§14).
+The entitlement is granted per tenant in the console like any SKU (TenantDetail →
+Grant entitlement), supports the plan fields (#33 — a trial is a grant with an
+expiry, and expiry is applied at the identity-tenants read, so a lapsed trial closes
+the studio without any revocation act), and grants **nothing on the control plane** —
+the coupling that had to break was `staff_actor` doing double duty as both "may act
+on the platform" and "may use the studio".
+
+Access follows the TEAM, deliberately — not a platform-side email list (one was
+drafted and dropped before shipping): the studio is a product a tenant holds, staff
+decide which tenants hold it, and the tenant's own membership (dashboard invites)
+decides who is inside. The planned narrowing is a per-member `builder:use` dashboard
+role key on top of the entitlement; until it exists, every member of an entitled
+team can build, which is the honest v1 of team-scoped access.
+
+**§6 is narrowed, not reopened**: entitlements are staff-granted one tenant at a
+time, and promotion stays staff-gated — the entitlement widens who can *drive a
+session*, never who can ship unreviewed. Making the entitlement self-serve
+(purchasable) is the §6 decision, and it remains a decision, not a deploy.
+
+One consequence inside the studio: `/api/usage` (the studio-wide rollup, still the
+fixed metering node) is now **staff-only**, and `/api/me` carries `staff` so the SPA
+hides the Usage tab for non-staff — a cross-team spend reading must not be a team
+builder's view. Per-team metering (§14 follow-up) is what retires this restriction.
