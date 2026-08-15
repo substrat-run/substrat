@@ -15,6 +15,10 @@ import { api, type ProjectInfo, type UsageDay, type UsageReport } from './api.js
 
 const fmt = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 const full = new Intl.NumberFormat('en');
+const usd = new Intl.NumberFormat('en', { style: 'currency', currency: 'USD' });
+
+/** Server cost strings are exact decimals; Number() only for display rounding. */
+const money = (s: string | null) => (s === null ? '—' : usd.format(Number(s)));
 
 /** The window's days, oldest first, zero-filled — silence is a 0-height day, not a missing one. */
 function fillDays(daily: UsageDay[], windowDays: number): UsageDay[] {
@@ -202,9 +206,45 @@ export function UsagePane() {
 					<div className="usage-tile-value">{fmt.format(allTime)}</div>
 					<div className="usage-tile-sub">tokens</div>
 				</div>
+				<div className="usage-tile">
+					<div className="usage-tile-label">All-time cost</div>
+					<div className="usage-tile-value">{money(report.cost.billedUsd)}</div>
+					<div className="usage-tile-sub">
+						{report.cost.unpricedTokens > 0
+							? `+ ${fmt.format(report.cost.unpricedTokens)} unpriced tokens`
+							: `incl. ${report.markupPercent}% markup`}
+					</div>
+				</div>
 			</div>
 
 			<DailyChart days={fillDays(report.daily, report.windowDays)} />
+
+			<table className="usage-table">
+				<thead>
+					<tr>
+						<th>Model</th>
+						<th>Input</th>
+						<th>Output</th>
+						<th>List</th>
+						<th>Billed</th>
+					</tr>
+				</thead>
+				<tbody>
+					{report.byModel.map((m) => (
+						<tr key={m.model ?? '(unattributed)'}>
+							<td>{m.model ?? 'unattributed (pre-model entries)'}</td>
+							<td>{full.format(m.input)}</td>
+							<td>{full.format(m.output)}</td>
+							<td>{money(m.listUsd)}</td>
+							<td>{money(m.billedUsd)}</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+			<div className="usage-footnote">
+				Billed = provider list price + {report.markupPercent}% markup. Models without a rate card
+				entry show “—” and count toward unpriced tokens.
+			</div>
 
 			<table className="usage-table">
 				<thead>

@@ -397,6 +397,9 @@ const server = createServer((req, res) => {
 					totals: { input: 0, output: 0 },
 					daily: [],
 					byProject: [],
+					byModel: [],
+					cost: { listUsd: '0', billedUsd: '0', unpricedTokens: 0 },
+					markupPercent: 20,
 					windowDays: 30,
 					generatedAt: new Date().toISOString(),
 				});

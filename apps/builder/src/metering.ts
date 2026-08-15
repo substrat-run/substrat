@@ -15,9 +15,10 @@
  * metering outage must never fail the turn; a miss is logged, and the dedupe
  * key makes any retry safe.
  */
-import { permissionKey, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { addDecimal, permissionKey, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { meteringModule, PERM as METERING_PERM } from '@substrat-run/engine-metering';
+import { MARKUP_PERCENT, costOf, normalizeModelSpec } from './pricing.js';
 
 /** The studio's fixed node — valid ULIDs, same shape as Meridian's DEV_NODE. */
 export const STUDIO_NODE = {
@@ -34,11 +35,28 @@ const STUDIO_RECORDER = principalId.parse('01JZ0000000000000000STD003');
 
 const STUDIO_ROLE = 'studio-metering';
 
-/** The two turn meters. Registered idempotently on every provision. */
-export const METERS = {
-	input: 'ai.tokens.input',
-	output: 'ai.tokens.output',
-} as const;
+/**
+ * Meter keys carry the MODEL as the billing dimension (engine-metering:
+ * "subject ≠ meter dimension" — anything that changes the price must be part
+ * of the key, so each model aggregates to its own period line and the rate
+ * card in pricing.ts can price it). `<model>` is the normalized
+ * `provider:modelId`. The pre-model keys (`ai.tokens.input`/`.output`, #646
+ * v0) still exist in the ledger; reads fold them in as unattributed.
+ */
+const SIDES = ['input', 'output'] as const;
+type Side = (typeof SIDES)[number];
+
+const meterKey = (side: Side, model: string): string => `ai.tokens.${side}.${model}`;
+
+/** null = not a token meter; model null = a pre-model v0 key. */
+function parseMeterKey(key: string): { side: Side; model: string | null } | null {
+	for (const side of SIDES) {
+		const flat = `ai.tokens.${side}`;
+		if (key === flat) return { side, model: null };
+		if (key.startsWith(`${flat}.`)) return { side, model: key.slice(flat.length + 1) };
+	}
+	return null;
+}
 
 export interface StudioEnv {
 	SCOPE: DurableObjectNamespace;
@@ -80,10 +98,8 @@ function ensureStudio(env: StudioEnv): Promise<void> {
 			],
 			ownerRoleKey: STUDIO_ROLE,
 		});
-		const scope = await host.getScope(STUDIO_RECORDER, STUDIO_NODE.tenantId, STUDIO_NODE.scopeId);
-		for (const key of [METERS.input, METERS.output]) {
-			await scope.invoke('metering/configure-meter', { key, kind: 'counter', unit: 'tokens' });
-		}
+		// Meters are per-model and configured lazily by recordTurnUsage — a new
+		// model id must never require a deploy to start metering.
 	})().catch((err) => {
 		ready = null; // a failed bootstrap must not poison every later turn
 		throw err;
@@ -95,6 +111,8 @@ export interface TurnUsage {
 	readonly projectId: string;
 	/** The turn's ulid — the dedupe key, so a replayed report can never double-bill. */
 	readonly turnId: string;
+	/** The turn's model spec (`qwen:qwen3.8-max`, `claude-opus-5`, …) — normalized here. */
+	readonly model: string;
 	readonly inputTokens: number;
 	readonly outputTokens: number;
 }
@@ -111,11 +129,16 @@ export async function recordTurnUsage(env: StudioEnv, usage: TurnUsage): Promise
 		STUDIO_NODE.tenantId,
 		STUDIO_NODE.scopeId,
 	);
+	const model = normalizeModelSpec(usage.model);
 	const subject = { entityType: 'builder-project', entityId: usage.projectId };
-	for (const [meter, qty] of [
-		[METERS.input, usage.inputTokens],
-		[METERS.output, usage.outputTokens],
+	for (const [side, qty] of [
+		['input', usage.inputTokens],
+		['output', usage.outputTokens],
 	] as const) {
+		const meter = meterKey(side, model);
+		// configureMeter is an idempotent upsert; kind/unit are identical for
+		// every token meter, so re-configuring an existing key is a no-op.
+		await scope.invoke('metering/configure-meter', { key: meter, kind: 'counter', unit: 'tokens' });
 		await scope.invoke('metering/record', {
 			meter,
 			qty: String(qty),
@@ -165,12 +188,28 @@ export interface UsageByProject {
 	turns: number;
 }
 
+export interface UsageByModel {
+	/** Normalized `provider:modelId`; null for pre-model v0 entries. */
+	model: string | null;
+	input: number;
+	output: number;
+	/** Provider list price in USD; null when the model has no rate card entry. */
+	listUsd: string | null;
+	/** What the studio charges: list + 20% markup; null when unpriced. */
+	billedUsd: string | null;
+}
+
 export interface UsageReport {
 	totals: { input: number; output: number };
 	/** Oldest-first, one row per UTC day with any usage, capped to the window. */
 	daily: UsageDay[];
 	/** Largest spend first. */
 	byProject: UsageByProject[];
+	/** Largest spend first. All-time, priced by the rate card (pricing.ts). */
+	byModel: UsageByModel[];
+	/** Sums over the PRICED rows only; unpricedTokens is the honest remainder. */
+	cost: { listUsd: string; billedUsd: string; unpricedTokens: number };
+	markupPercent: number;
 	windowDays: number;
 	generatedAt: string;
 }
@@ -194,12 +233,13 @@ export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<Usag
 	const totals = { input: 0, output: 0 };
 	const byDay = new Map<string, UsageDay>();
 	const byProject = new Map<string, UsageByProject>();
+	const byModel = new Map<string | null, { model: string | null; input: number; output: number }>();
 	const windowStart = new Date(Date.now() - windowDays * 86_400_000).toISOString();
 
 	for (const e of entries) {
-		const side =
-			e.meterKey === METERS.input ? 'input' : e.meterKey === METERS.output ? 'output' : null;
-		if (!side) continue;
+		const parsed = parseMeterKey(e.meterKey);
+		if (!parsed) continue;
+		const { side, model } = parsed;
 		const qty = Number(e.qty);
 		totals[side] += qty;
 
@@ -216,12 +256,33 @@ export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<Usag
 		// Each turn records both meters under one dedupe key — count it once.
 		if (side === 'input') proj.turns += 1;
 		byProject.set(projectId, proj);
+
+		const m = byModel.get(model) ?? { model, input: 0, output: 0 };
+		m[side] += qty;
+		byModel.set(model, m);
 	}
+
+	// Price each model row off the rate card; the totals only ever sum PRICED
+	// rows — an unpriced model shows as tokens, never as a guessed $0.
+	const cost = { listUsd: '0', billedUsd: '0', unpricedTokens: 0 };
+	const modelRows = [...byModel.values()].map((m): UsageByModel => {
+		const priced = m.model === null ? null : costOf(m.model, m.input, m.output);
+		if (priced) {
+			cost.listUsd = addDecimal(cost.listUsd, priced.listUsd);
+			cost.billedUsd = addDecimal(cost.billedUsd, priced.billedUsd);
+		} else {
+			cost.unpricedTokens += m.input + m.output;
+		}
+		return { ...m, listUsd: priced?.listUsd ?? null, billedUsd: priced?.billedUsd ?? null };
+	});
 
 	return {
 		totals,
 		daily: [...byDay.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
 		byProject: [...byProject.values()].sort((a, b) => b.input + b.output - (a.input + a.output)),
+		byModel: modelRows.sort((a, b) => b.input + b.output - (a.input + a.output)),
+		cost,
+		markupPercent: MARKUP_PERCENT,
 		windowDays,
 		generatedAt: new Date().toISOString(),
 	};
