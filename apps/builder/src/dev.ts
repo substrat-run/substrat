@@ -22,10 +22,15 @@ import {
 	ensureVerticalRepo,
 	foreignChanges,
 	formatGateRun,
+	gateRepairPrompt,
+	gateReport,
 	isGitRepo,
 	LocalWorkspace,
+	MAX_GATE_REPAIRS,
+	repairNeeded,
 	runTurn,
 	standaloneGates,
+	type TurnResult,
 } from '@substrat-run/builder-workspace';
 import { loadEnvFiles } from './env.js';
 import { detectPhase, skillsForPhase } from './phase.js';
@@ -174,6 +179,8 @@ async function main(): Promise<number> {
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
 	const history: GeneratorTurn[] = [];
 	let turnNo = 0;
+	/** Red-gate report carried to the next turn's context (H5) — unset while green. */
+	let lastGateReport: string | undefined;
 
 	for (;;) {
 		const message = (await rl.question('› ')).trim();
@@ -191,48 +198,73 @@ async function main(): Promise<number> {
 		}
 
 		turnNo += 1;
-		let assistant = '';
-		let sawText = false;
 
-		for await (const event of generator.run({
-			workspace: projectWs,
-			verticalDir: '.',
-			concept: await currentConcept(),
-			message,
-			history,
-		})) {
-			render(event);
-			if (event.type === 'assistant-text') {
-				assistant += event.text;
-				sawText = true;
+		// Same shape as the server's handleTurn: pass → checks → capped repair
+		// loop, with repair prompts recorded verbatim in history (H5; the policy
+		// constants live in gates.ts so the two hosts cannot drift).
+		const transcript: GeneratorTurn[] = [];
+
+		const runPass = async (text: string, carriedReport?: string): Promise<void> => {
+			let assistant = '';
+			let sawText = false;
+			for await (const event of generator.run({
+				workspace: projectWs,
+				verticalDir: '.',
+				concept: await currentConcept(),
+				message: text,
+				...(carriedReport ? { gateReport: carriedReport } : {}),
+				history: [...history, ...transcript],
+			})) {
+				render(event);
+				if (event.type === 'assistant-text') {
+					assistant += event.text;
+					sawText = true;
+				}
 			}
-		}
-		if (sawText) process.stdout.write('\n');
+			if (sawText) process.stdout.write('\n');
+			transcript.push({ role: 'user', text });
+			if (assistant) transcript.push({ role: 'assistant', text: assistant });
+		};
 
 		// Commit-per-turn lives above the seam (§3), so it happens here — not in
 		// the generator and not in the workspace.
-		const turn = await runTurn(ws, {
-			verticalDir: args.vertical,
-			message: `studio turn ${turnNo}: ${message.slice(0, 60)}`,
-			gates: gateSet,
-		});
-		process.stdout.write(`${formatGateRun(turn.gates)}\n`);
-		if (turn.commit) {
-			process.stdout.write(`  committed ${turn.commit.slice(0, 8)} (${turn.changedFiles.length} files)\n`);
-		} else {
-			process.stdout.write('  nothing to commit\n');
-		}
-		if (!turn.gates.ok) {
-			for (const r of turn.gates.results) {
-				if (r.status === 'failed' || r.status === 'blocked') {
-					process.stdout.write(`\n--- ${r.name} (exit ${r.exitCode}) ---\n${r.output.slice(-2000)}\n`);
+		const runChecks = async (label: string): Promise<TurnResult> => {
+			const turn = await runTurn(ws, {
+				verticalDir: args.vertical,
+				message: label,
+				gates: gateSet,
+			});
+			process.stdout.write(`${formatGateRun(turn.gates)}\n`);
+			if (turn.commit) {
+				process.stdout.write(`  committed ${turn.commit.slice(0, 8)} (${turn.changedFiles.length} files)\n`);
+			} else {
+				process.stdout.write('  nothing to commit\n');
+			}
+			if (!turn.gates.ok) {
+				for (const r of turn.gates.results) {
+					if (r.status === 'failed' || r.status === 'blocked') {
+						process.stdout.write(`\n--- ${r.name} (exit ${r.exitCode}) ---\n${r.output.slice(-2000)}\n`);
+					}
 				}
 			}
+			return turn;
+		};
+
+		await runPass(message, lastGateReport);
+		let turn = await runChecks(`studio turn ${turnNo}: ${message.slice(0, 60)}`);
+		for (
+			let attempt = 1;
+			attempt <= MAX_GATE_REPAIRS && repairNeeded(turn.gates) && turn.changedFiles.length > 0;
+			attempt++
+		) {
+			process.stdout.write(`\n  gates red — repair attempt ${attempt}/${MAX_GATE_REPAIRS}\n\n`);
+			await runPass(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
+			turn = await runChecks(`studio turn ${turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`);
 		}
+		lastGateReport = gateReport(turn.gates) ?? undefined;
 		process.stdout.write('\n');
 
-		history.push({ role: 'user', text: message });
-		if (assistant) history.push({ role: 'assistant', text: assistant });
+		history.push(...transcript);
 	}
 
 	rl.close();

@@ -195,6 +195,103 @@ export async function runGates(
 	};
 }
 
+// ── feeding the oracle back to the model (builder-harness.md H5) ─────────────
+//
+// The gates run at turn end, but their verdict must not die in the UI: the
+// model is the only party who can act on a red typecheck, and the studio's
+// audience (a non-technical builder) can do nothing with raw lint output. Two
+// consumers share these helpers, and the POLICY lives here — above the seam —
+// so the server and the dev CLI cannot drift:
+//
+//   1. `gateReport(run)` — the model-facing report of a red run, carried into
+//      the NEXT turn's volatile context (rides with the workspace brief).
+//   2. `gateRepairPrompt(run, n, max)` — the host-authored message that drives
+//      an in-turn repair attempt. Recorded in the durable history verbatim, so
+//      the transcript stays truthful about who said what.
+
+/**
+ * Ceiling on host-driven repair attempts per turn. Every attempt is a full
+ * billable model run, so this cap is a billing control as much as a safety
+ * one — after it, the red state is surfaced honestly instead of silently
+ * burning the builder's budget (aider caps its edit reflections at 3 for the
+ * same reason).
+ */
+export const MAX_GATE_REPAIRS = 2;
+
+/**
+ * True when a repair attempt could help: at least one gate FAILED. `blocked`
+ * (exit 2) is deliberately excluded — it means the checker could not do its
+ * job, and asking the model to "fix" that trains it to fix the wrong thing
+ * (same reasoning as the status split above).
+ */
+export function repairNeeded(run: GateRun): boolean {
+	return run.results.some((r) => r.status === 'failed');
+}
+
+/** Per-failure output shown to the model. The tail is where compilers point. */
+const REPORT_OUTPUT_CAP = 4_000;
+
+/**
+ * Gates whose failure is DRIFT of a committed golden file, not broken code.
+ * The fix is regenerating the artifact — after which the diff is a
+ * needs-review event for the human (builder-studio §9.1), never something to
+ * hand-edit until the checker goes quiet.
+ */
+const DRIFT_HINTS: Partial<Record<GateName, string>> = {
+	permissions:
+		'this gate compares committed PERMISSIONS.md against MODULES + ROLES — regenerate it ' +
+		'(pnpm lint:permissions, without --check) instead of hand-editing; the resulting diff ' +
+		'goes to human review',
+	api:
+		'this gate compares the committed API document against the operation catalog — regenerate ' +
+		'it (pnpm lint:api, without --check) instead of hand-editing; the resulting diff goes to ' +
+		'human review',
+};
+
+/**
+ * The model-facing report of a red gate run, or null when there is nothing a
+ * model should act on (all green/skipped, or only blocked). Failed gates carry
+ * their trimmed output; blocked gates are listed as facts with an explicit
+ * do-not-fix note.
+ */
+export function gateReport(run: GateRun): string | null {
+	const failed = run.results.filter((r) => r.status === 'failed');
+	if (failed.length === 0) return null;
+	const blocked = run.results.filter((r) => r.status === 'blocked');
+	const sections = failed.map((r) => {
+		const hint = DRIFT_HINTS[r.name];
+		const output =
+			r.output.length > REPORT_OUTPUT_CAP
+				? `…[${r.output.length - REPORT_OUTPUT_CAP} chars trimmed]…\n${r.output.slice(-REPORT_OUTPUT_CAP)}`
+				: r.output;
+		return [
+			`── ${r.name} FAILED (exit ${r.exitCode})${hint ? ` — ${hint}` : ''}`,
+			output || '(no output)',
+		].join('\n');
+	});
+	if (blocked.length) {
+		sections.push(
+			`── blocked (the checker could not run — this is NOT a code problem; do not try to fix it): ` +
+				blocked.map((r) => r.name).join(', '),
+		);
+	}
+	return sections.join('\n\n');
+}
+
+/**
+ * The host-authored message driving one repair attempt. Kept in one place so
+ * both run modes send byte-identical instructions.
+ */
+export function gateRepairPrompt(run: GateRun, attempt: number, maxAttempts: number): string {
+	return [
+		`[studio] The tier-1 gates ran after your changes and are RED (repair attempt ${attempt}/${maxAttempts}).`,
+		gateReport(run) ?? '(no failing gates — nothing to repair)',
+		'Fix the failures above now. The gates are the oracle, not your own judgement: change the ' +
+			'code until they pass, do not argue with them and do not weaken or delete tests to get ' +
+			'green. If a failure is golden-file drift, regenerate the artifact as its hint says.',
+	].join('\n\n');
+}
+
 /** One-line-per-gate summary for a terminal or a chat pane. */
 export function formatGateRun(run: GateRun): string {
 	const glyph: Record<GateStatus, string> = {

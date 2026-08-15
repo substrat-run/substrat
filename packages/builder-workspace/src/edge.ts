@@ -26,6 +26,10 @@ export {
 export {
 	defaultGates,
 	formatGateRun,
+	gateRepairPrompt,
+	gateReport,
+	MAX_GATE_REPAIRS,
+	repairNeeded,
 	runGate,
 	runGates,
 	standaloneGates,

@@ -38,7 +38,8 @@ Two forces make this worth a document now:
 opencode is the strongest open reference for both problems: it is a production agent harness whose
 entire model story sits on models.dev, and its session loop encodes several years of accumulated
 cost tricks. The research confirmed our loop independently arrived at several of them (§3.1) —
-which is validation, not wasted work — and found four genuine gaps (§4).
+which is validation, not wasted work — and found four genuine gaps (§4), plus one defect of our
+own the comparison made visible (H5: the tier-1 gates' verdict never reaches the model).
 
 **Non-goals, stated first:** we are not adopting opencode's provider layer (its 66 KB
 `transform.ts` exists because it supports 185 providers; our seven-provider table in
@@ -223,6 +224,34 @@ session's requests to one cache shard); and per-family temperature defaults — 
 **0.55 for qwen** (0.6–1.0 for kimi/glm), where we send nothing on our *default provider*. The
 temperature row is a quality lever, not a cost one, but it lives in the same providerOptions plumb.
 
+**H5 — red gates never reach the model (our own defect, surfaced by the comparison).** The
+tier-1 gates run after every turn (builder-studio §9.1), but their verdict died at the UI and the
+commit trailer: durable history carried only user + assistant text, and `workspaceBrief` is
+`git log --oneline`, which drops the `gates: red` trailer. The model could leave the tree red and
+open the next turn believing everything was fine — an oracle nobody reads is not an oracle. The
+fix is two-part, and the *audience* is why the studio handles it rather than the builder: a
+non-technical builder can do nothing with a raw typecheck error.
+
+1. **Feed-forward:** a red run's report (`gateReport` in `gates.ts` — failed gates with trimmed
+   output tails) persists in project state and rides into the next turn's volatile context,
+   beside the workspace brief. Deleted the moment the tree goes green.
+2. **Capped in-turn repair loop:** after a red run, the host re-invokes the generator with a
+   structured repair prompt (`gateRepairPrompt`) and re-runs the gates — aider's
+   reflection-with-a-cap shape at turn scale. `MAX_GATE_REPAIRS = 2`; every attempt is a full
+   billable model run, so the cap is a billing control as much as a safety one. The loop stops
+   early when an attempt changes no files (no progress), and never triggers on a chat-only turn
+   over a pre-existing red tree.
+
+Carve-outs, both load-bearing: **`blocked` never triggers repair** — exit 2 means the checker
+could not run, and asking the model to "fix" that trains it to fix the wrong thing; and
+**golden-file drift is not a failure to silence** — the permissions/api gates' repair hint says
+regenerate the artifact (never hand-edit it until the checker quiets), after which the diff is
+the human checkpoint of builder-studio §6/§9.1. Repair prompts are recorded verbatim as user
+turns in durable history, so the transcript stays truthful about who said what. Policy and
+wording live in `gates.ts`, above the workspace seam, so the server and the dev CLI cannot
+drift. Not built here: a dedicated `needs-review` emission for regenerated golden files, and any
+UI affordance marking repair passes — both ride on later UI work.
+
 **Smaller, take-if-passing-by:** spool over-cap tool output to a workspace file with a preview
 (instead of dropping the middle — OpenHands and opencode both do this); repair tool-name case
 mismatches locally instead of burning a round-trip; `store: false` on OpenAI requests; a
@@ -244,12 +273,13 @@ Order chosen so billing correctness lands before optimisation, and each step fee
 | # | Item | Why this position | Status |
 |---|---|---|---|
 | 1 | §2.2 snapshot generator (models.dev × LiteLLM cross-check) + rate card from snapshot: cache rates **and qwen context tiers** | billing integrity — the tier gap is an active undercharge; unblocks 3 and 5 | ☑ |
-| 2 | H2 retry/backoff | turn survival — protects every other investment; self-contained | ☐ |
+| 2 | H2 retry/backoff | turn survival — protects every other investment; self-contained | ☑ |
 | 3 | H1 edit tool: strict apply + structured reflection (aider shape), format-per-model | biggest bill lever; weak models keep `write_file` by declaration, not by failure | ☐ |
 | 4 | H4 cache key + qwen temperature | one-liners, default-provider quality | ☐ |
 | 5 | H3 overflow → condense-and-retry (one code path), eager only off-Anthropic | needs `limit.context` from 1; cache-invalidation tradeoff says measure before defaulting on | ☐ |
 | 6 | §2.3 credential-gated picker; `tool_call` filter on the Cloudflare list | UX correctness, not cost | ☐ |
 | 7 | §2.3 family-based pairs | wait until the model list outgrows hand-editing | ☐ |
+| 8 | H5 gate feedback: report into next-turn context + capped repair loop | the oracle must reach the model; step 1 was a live defect, not an optimisation | ☑ |
 
 Each row lands as its own PR against this doc; the row's checkbox flips in the same PR. Evals
 (builder-studio §9.6) are the referee for H1 and any claim that a harness change helped — token
