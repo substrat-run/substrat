@@ -19,7 +19,7 @@ export type ViewKey =
  * There used to be a "Planned" nav stratum here — items with nothing behind
  * them, rendered dead on purpose, each tooltip naming the capability the
  * control plane still owed. Its last resident (Members) graduated when the
- * staff-roster + builder-access write path landed (views/Members.tsx); bring
+ * staff-roster write path landed (views/Members.tsx); bring
  * the pattern back verbatim for the next owed capability rather than shipping
  * a live item without its read path. (Per-tenant principal & grant enumeration
  * is still owed and would be a different view.)

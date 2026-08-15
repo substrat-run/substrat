@@ -75,18 +75,8 @@ export interface StaffMember {
   revokedAt: string | null;
 }
 
-/** A builder-studio invite (CP `builder_access`) — the studio, nothing else. */
-export interface BuilderMember {
-  email: string;
-  name: string | null;
-  addedBy: string;
-  addedAt: string;
-  revokedAt: string | null;
-}
-
 export interface MembersReading {
   staff: StaffMember[];
-  builder: BuilderMember[];
 }
 
 export class ApiError extends Error {
@@ -435,18 +425,15 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       post<Scope>(`/tenants/${tenantId}/scopes/${scopeId}/version`, { versionId }),
 
     // -- members (console → Members) ----------------------------------------
-    // Who may act on the control plane (staff_actor) and who may use the builder
-    // studio (builder_access) — the CP worker's own D1, not the directory, so the
-    // routes live beside /api/auth/* rather than in control-plane-api. Every
-    // mutation returns the fresh reading: one round trip, no refetch.
+    // Who may act on the control plane (staff_actor) — the CP worker's own D1,
+    // not the directory, so the routes live beside /api/auth/* rather than in
+    // control-plane-api. Every mutation returns the fresh reading: one round
+    // trip, no refetch. (Builder-studio access is NOT managed here — it is the
+    // `builder` entitlement on the tenant, granted like any SKU.)
     listMembers: () => call<MembersReading>('/members'),
     grantStaffAccess: (email: string, name?: string) =>
       post<MembersReading>('/members/staff', { email, name }),
     revokeStaffAccess: (email: string) => post<MembersReading>('/members/staff/revoke', { email }),
-    grantBuilderAccess: (email: string, name?: string) =>
-      post<MembersReading>('/members/builder', { email, name }),
-    revokeBuilderAccess: (email: string) =>
-      post<MembersReading>('/members/builder/revoke', { email }),
 
     // -- observability (design/observability.md §4.1) -----------------------
     // Proxied reads over the control plane's observability seam; 501 when no

@@ -3,14 +3,15 @@
  *
  * AUTH IS THE POINT OF THIS FILE. Two gates, both fail closed:
  *
- * 1. OIDC (AuthHero, via @substrat-run/oidc-rp) + an access list in the control
- *    plane's auth D1 (read-only here): platform staff (`staff_actor`,
- *    builder-studio.md §1.1) or a console-granted studio invite
- *    (`builder_access`, CP migration 0003 — the console's Members view manages
- *    it). The invite decouples "may use the studio" from "may act on the
- *    control plane"; both lists stay an AND-gate with team membership until the
- *    builder entitlement flag exists on plans (builder-plane.md §7 open
- *    question) — dropping them is then a deliberate act, not a side effect.
+ * 1. OIDC (AuthHero, via @substrat-run/oidc-rp) + ACCESS: platform staff
+ *    (`staff_actor` in the CP's auth D1, read-only here — builder-studio.md
+ *    §1.1) or membership in a team holding the `builder` ENTITLEMENT
+ *    (builder-plane.md §7, resolved by the identity-tenants lookup below;
+ *    granted per tenant in the console like any SKU, expiry applied CP-side).
+ *    Access follows the team, never a platform-side email list — the studio is
+ *    a product a tenant holds, and holding it grants nothing on the control
+ *    plane. Staff bypass the entitlement (they can enter any of their teams);
+ *    a per-member `builder:use` role is the planned narrowing (§15).
  * 2. Team membership (builder-studio.md §14): every studio URL and API call is
  *    scoped to a TEAM (= tenant, dashboard-teams.md), and each team gets its
  *    own BuilderAgent DO — `idFromName(tenantId)`, mirroring the per-tenant
@@ -71,12 +72,15 @@ export interface Team {
 	id: string;
 	slug: string;
 	name: string;
+	/** Whether the tenant holds the `builder` entitlement (CP applies expiry at read). */
+	entitled: boolean;
 }
 
 /**
  * The teams (= tenants, dashboard-teams.md) this login builds for, from the
- * shared directory. One subrequest per API call that needs it (assets don't);
- * the CP answers from its own DO, so this is a directory read, not a fan-out.
+ * shared directory — each flagged with the `builder` entitlement (the studio's
+ * gate). One subrequest per request that needs it; the CP answers from its own
+ * DO, so this is a directory read, not a fan-out.
  */
 async function teamsFor(env: Env, sub: string): Promise<Team[]> {
 	const res = await env.CONTROL_PLANE_SVC.fetch(
@@ -106,32 +110,15 @@ function readCookie(header: string | null, name: string): string | undefined {
 	return undefined;
 }
 
-/**
- * The access check, fail closed: platform staff (same `staff_actor` table, same
- * semantics as the control plane) OR a console-granted studio invite
- * (`builder_access`, CP migration 0003 — managed from the console's Members
- * view). The invite grants THIS surface and nothing else; staff keep implicit
- * access. Both are AND-ed with team membership below, and both are the interim
- * until the plan-entitlement flag exists (builder-plane.md §7).
- */
-async function studioAccessFor(
-	env: Env,
-	email: string | undefined,
-): Promise<'staff' | 'invited' | null> {
-	if (!email) return null;
-	const e = email.toLowerCase();
-	const staff = await env.AUTH_DB.prepare(
+/** Roster check — same table, same fail-closed semantics as the control plane. */
+async function isStaff(env: Env, email: string | undefined): Promise<boolean> {
+	if (!email) return false;
+	const row = await env.AUTH_DB.prepare(
 		'SELECT actor FROM staff_actor WHERE email = ? AND revoked_at IS NULL',
 	)
-		.bind(e)
+		.bind(email.toLowerCase())
 		.first<{ actor: string }>();
-	if (staff !== null) return 'staff';
-	const invited = await env.AUTH_DB.prepare(
-		'SELECT email FROM builder_access WHERE email = ? AND revoked_at IS NULL',
-	)
-		.bind(e)
-		.first<{ email: string }>();
-	return invited !== null ? 'invited' : null;
+	return row !== null;
 }
 
 function escapeHtml(s: string): string {
@@ -190,7 +177,15 @@ app.get('/api/auth/denied', (c) =>
 	c.html(deniedPage('Login failed. The builder studio needs a Substrat account with access.'), 403),
 );
 
-/** The gate. Order matters: OIDC session first, then roster. */
+/**
+ * The gate. Order matters: OIDC session first, then access — platform staff
+ * (one D1 read, short-circuits) or membership in a team holding the `builder`
+ * entitlement (the directory lookup). The teams resolved here are stashed on
+ * the context so /api/me and the per-team dispatch below reuse them instead of
+ * re-walking the directory. For a non-staff user this is one CP subrequest per
+ * request, assets included — acceptable at studio scale, and the alternative
+ * (an ungated shell) would leak the app to any authenticated account.
+ */
 app.use('*', async (c, next) => {
 	const token = readCookie(c.req.header('cookie') ?? null, SESSION_COOKIE);
 	const user: SessionUser | null = await verifySession(c.env, token);
@@ -201,18 +196,22 @@ app.use('*', async (c, next) => {
 		}
 		return c.json({ error: 'not signed in' }, 401);
 	}
-	const access = await studioAccessFor(c.env, user.email);
-	if (!access) {
+	const staff = await isStaff(c.env, user.email);
+	const teams = await teamsFor(c.env, user.id);
+	// Staff act in any of their memberships; everyone else only in entitled ones.
+	const usable = staff ? teams : teams.filter((t) => t.entitled);
+	if (!staff && usable.length === 0) {
 		// Same split as the 401 above: a page for browsers, JSON for API callers.
 		// Still names the email, never the app (header comment: fail closed).
-		const detail = `The builder studio is invite-only. ${user.email ?? 'This account'} does not have access yet.`;
+		const detail = `The builder studio is not enabled for ${user.email ?? 'this account'}'s team yet.`;
 		if (c.req.header('accept')?.includes('text/html')) {
 			return c.html(deniedPage(detail), 403);
 		}
 		return c.json({ error: detail }, 403);
 	}
 	c.set('user' as never, user as never);
-	c.set('access' as never, access as never);
+	c.set('staff' as never, staff as never);
+	c.set('teams' as never, usable as never);
 	await next();
 });
 
@@ -220,9 +219,9 @@ app.use('*', async (c, next) => {
  * the ledger lives in the SCOPE DO and the worker holds that binding. Still
  * STUDIO-WIDE (the fixed metering node, src/metering.ts): per-team ledgers are
  * the follow-up that retires that node — until then the reading is cross-team,
- * so it is STAFF-ONLY: an invited builder must not see other teams' spend. */
+ * so it is STAFF-ONLY: a team's builder must not see other teams' spend. */
 app.get('/api/usage', async (c) => {
-	if ((c.get('access' as never) as string) !== 'staff') {
+	if (!(c.get('staff' as never) as boolean)) {
 		return c.json({ error: 'usage is staff-only until it is per-team' }, 403);
 	}
 	return c.json(await studioUsage(c.env));
@@ -230,14 +229,15 @@ app.get('/api/usage', async (c) => {
 
 /** Who am I, and which teams can I build for. The SPA calls this first; a 404
  * from the local server (mode A) is its cue that there are no teams to pick.
- * `staff` drives what the SPA offers (the studio-wide usage tab), never what
- * the worker enforces — the /api/usage gate above is the enforcement. */
+ * The teams are the gate's usable set (entitled ones, all for staff); `staff`
+ * drives what the SPA offers (the studio-wide usage tab), never what the
+ * worker enforces — the /api/usage gate above is the enforcement. */
 app.get('/api/me', async (c) => {
 	const user = c.get('user' as never) as SessionUser;
 	return c.json({
 		email: user.email ?? null,
-		staff: (c.get('access' as never) as string) === 'staff',
-		teams: await teamsFor(c.env, user.id),
+		staff: c.get('staff' as never) as boolean,
+		teams: c.get('teams' as never) as Team[],
 	});
 });
 
@@ -248,10 +248,10 @@ app.get('/api/me', async (c) => {
  * before the DO is ever addressed. Fail closed: no header, no dispatch.
  */
 app.all('/api/*', async (c) => {
-	const user = c.get('user' as never) as SessionUser;
 	const selected = c.req.header(TENANT_HEADER)?.trim();
 	if (!selected) return c.json({ error: `${TENANT_HEADER} header (a team id) is required` }, 400);
-	const teams = await teamsFor(c.env, user.id);
+	// The gate's usable set: membership AND (entitlement OR staff) already applied.
+	const teams = c.get('teams' as never) as Team[];
 	const team = teams.find((t) => t.id === selected);
 	if (!team) return c.json({ error: `not a member of team '${selected}'` }, 403);
 	const id = c.env.BUILDER_AGENT.idFromName(team.id);

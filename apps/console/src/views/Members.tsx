@@ -1,24 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Badge, Button, Card, Input, Table } from '../components';
 import type { TableColumn } from '../components';
-import type { Api, BuilderMember, MembersReading, StaffMember } from '../lib/api';
+import type { Api, MembersReading, StaffMember } from '../lib/api';
 
 /**
- * Members — who has access to what (the nav item that was "Planned" until the
- * write path existed).
+ * Members — who may act on the control plane (the nav item that was "Planned"
+ * until the write path existed).
  *
- * Two lists, deliberately separate because they grant DIFFERENT things:
+ * One list on purpose: the staff roster (`staff_actor`, #42) — this console,
+ * the CLI, every audited admin capability. Each human gets a stable
+ * `PlatformActorId` the admin log names them by, minted on first grant and
+ * never reused; re-granting a revoked member keeps their actor so
+ * pre-revocation history stays attributed.
  *
- * - **Platform staff** (`staff_actor`, #42): may act on the control plane —
- *   this console, the CLI, every audited admin capability. Each human gets a
- *   stable `PlatformActorId` the admin log names them by, minted on first
- *   grant and never reused; re-granting a revoked member keeps their actor so
- *   pre-revocation history stays attributed.
- * - **Builder studio** (`builder_access`, migration 0003): may sign in to
- *   builder.substrat.net — and nothing else. This is the interim for customer
- *   access to the builder until the plan-entitlement flag exists
- *   (builder-plane.md §7). Staff have implicit studio access, so nobody needs
- *   to appear in both lists.
+ * What is deliberately NOT here: builder-studio access. That is the `builder`
+ * ENTITLEMENT on the tenant (granted from the tenant's detail page like any
+ * SKU) — access to the studio follows the team that holds the product, never a
+ * platform-side email list, and it grants nothing on the control plane.
  *
  * Revocation tombstones rather than deletes (K-21): revoked rows stay listed —
  * "who has access" must also answer "who HAD access, and when did it end".
@@ -55,13 +53,11 @@ function MemberCell({ email, name }: { email: string; name: string | null }) {
   );
 }
 
-/** One list's add form — email (required) + display name, then one grant call. */
+/** The add form — email (required) + display name, then one grant call. */
 function AddMember({
-  label,
   busy,
   onAdd,
 }: {
-  label: string;
   busy: boolean;
   onAdd: (email: string, name?: string) => Promise<void>;
 }) {
@@ -89,7 +85,7 @@ function AddMember({
         <Input value={name} placeholder="Name (optional)" onChange={(e) => setName(e.target.value)} />
       </div>
       <Button disabled={busy || !email.trim()} onClick={() => void submit()}>
-        {label}
+        Grant platform access
       </Button>
     </form>
   );
@@ -124,15 +120,9 @@ export function Members({ api, onToast }: MembersProps) {
 
   // The roster doubles as the actor directory: `addedBy` (a PlatformActorId)
   // renders as the granting member's name/email where the roster knows it.
-  const byActor = useMemo(() => {
-    const m = new Map<string, StaffMember>();
-    for (const s of reading?.staff ?? []) if (s.actor) m.set(s.actor, s);
-    return m;
-  }, [reading]);
-
   const grantedBy = (actor: string | null) => {
     if (!actor) return <span style={{ color: 'var(--text-placeholder)' }}>—</span>;
-    const s = byActor.get(actor);
+    const s = reading?.staff.find((r) => r.actor === actor);
     return s ? (
       <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>{s.name ?? s.email}</span>
     ) : (
@@ -190,46 +180,13 @@ export function Members({ api, onToast }: MembersProps) {
     },
   ];
 
-  const builderColumns: TableColumn<BuilderMember>[] = [
-    { header: 'Member', render: (r) => <MemberCell email={r.email} name={r.name} /> },
-    { header: 'Added', render: (r) => <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>{when(r.addedAt)}</span> },
-    { header: 'By', render: (r) => grantedBy(r.addedBy) },
-    { header: 'Status', render: (r) => <StatusCell revokedAt={r.revokedAt} /> },
-    {
-      header: '',
-      align: 'right',
-      render: (r) =>
-        r.revokedAt === null ? (
-          <Button
-            variant="danger"
-            disabled={busy}
-            onClick={() =>
-              void run(() => api.revokeBuilderAccess(r.email), 'Builder access revoked', r.email)
-            }
-          >
-            Revoke
-          </Button>
-        ) : (
-          <Button
-            disabled={busy}
-            onClick={() =>
-              void run(() => api.grantBuilderAccess(r.email), 'Builder access re-granted', r.email)
-            }
-          >
-            Re-grant
-          </Button>
-        ),
-    },
-  ];
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Card
         title="Platform staff"
-        description="May act on the control plane — this console, the CLI, every audited admin capability. Each member acts under their own actor id; the admin log names them by it."
+        description="May act on the control plane — this console, the CLI, every audited admin capability. Each member acts under their own actor id; the admin log names them by it. Staff also enter the builder studio for any of their teams."
       >
         <AddMember
-          label="Grant platform access"
           busy={busy}
           onAdd={(email, name) =>
             run(() => api.grantStaffAccess(email, name), 'Platform access granted', email)
@@ -238,22 +195,14 @@ export function Members({ api, onToast }: MembersProps) {
         <Table columns={staffColumns} rows={reading?.staff ?? []} />
       </Card>
 
-      <Card
-        title="Builder studio"
-        description="May sign in to the hosted builder studio — and nothing else. The interim for customer access until the plan entitlement exists (builder-plane.md §7); platform staff have implicit access and are not listed here."
-      >
-        <AddMember
-          label="Grant builder access"
-          busy={busy}
-          onAdd={(email, name) =>
-            run(() => api.grantBuilderAccess(email, name), 'Builder access granted', email)
-          }
-        />
-        <Table
-          columns={builderColumns}
-          rows={reading?.builder ?? []}
-          emptyText="No builder invites yet. Grant one to admit someone to the studio without any control-plane access."
-        />
+      <Card title="Builder studio access">
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', maxWidth: 560, lineHeight: '19px' }}>
+          Not an email list. The studio is a product a <em>team</em> holds: grant the{' '}
+          <code style={{ fontFamily: 'var(--font-mono)' }}>builder</code> entitlement on the tenant
+          (Tenants → tenant → Grant entitlement) and every member of that team can build — with no
+          control-plane access implied. Revoke the entitlement (or let a trial expire) and the studio
+          closes for the whole team.
+        </p>
       </Card>
     </div>
   );

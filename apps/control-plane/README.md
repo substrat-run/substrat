@@ -42,12 +42,13 @@ before this every operator shared one hardcoded actor and the trail could not
 tell them apart.
 
 **The managed surface is the console's Members view** (`/api/members*` on this
-worker, staff-session gated): grant and revoke for both the staff roster and the
-builder-studio invite list (`builder_access`, `migrations/0003_builder_access.sql`
-— studio access WITHOUT control-plane access; the builder worker reads both
-tables). Grants made there record the acting staff member (`added_by`), a
-re-granted member keeps their actor, and revoking the last active staff member is
-refused. The raw statements below remain the bootstrap/recovery path:
+worker, staff-session gated): grant and revoke for the staff roster. Grants made
+there record the acting staff member (`added_by`,
+`migrations/0003_staff_added_by.sql`), a re-granted member keeps their actor, and
+revoking the last active staff member is refused. (Builder-studio access is NOT a
+roster here: it is the `builder` entitlement on the tenant, granted in the console
+like any SKU and read by the studio via the identity-tenants lookup.) The raw
+statements below remain the bootstrap/recovery path:
 
 ```sh
 # grant access

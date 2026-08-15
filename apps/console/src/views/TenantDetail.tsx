@@ -55,7 +55,7 @@ function storeRows(stores: TenantStores | null, runtime: PlatformRuntime | null)
  * says so rather than implying the platform validated it. Granting an unknown key
  * silently does nothing useful; that is worth not hiding.
  */
-const KNOWN_SKUS = ['workorder', 'invoicing', 'protocol', 'shop'];
+const KNOWN_SKUS = ['workorder', 'invoicing', 'protocol', 'shop', 'builder'];
 
 /** The ref is the row's whole point, so it carries the link — and stays readable as a
  *  plain id when there is no runtime to link into (self-host, or an unconfigured CP). */
