@@ -6,6 +6,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BuildEvent, PlanAssumption } from './api.js';
 import { BuildPanel } from './BuildPanel.js';
+import { Markdown } from './Markdown.js';
+
+type QuestionEvent = Extract<BuildEvent, { type: 'question' }>;
 
 export type ChatItem =
 	| { kind: 'user'; text: string }
@@ -28,9 +31,11 @@ const GROUPABLE = new Set<BuildEvent['type']>(['tool-call', 'file-written', 'com
 
 type Rendered =
 	| { kind: 'item'; item: ChatItem; index: number }
-	| { kind: 'group'; events: BuildEvent[]; index: number };
+	| { kind: 'group'; events: BuildEvent[]; index: number }
+	| { kind: 'questions'; events: QuestionEvent[]; index: number };
 
-/** Batches consecutive groupable events; everything else passes through. */
+/** Batches consecutive groupable events and consecutive questions (one turn's
+ * ask_user calls become one tabbed block); everything else passes through. */
 function groupItems(items: ChatItem[]): Rendered[] {
 	const out: Rendered[] = [];
 	for (let i = 0; i < items.length; i++) {
@@ -39,6 +44,18 @@ function groupItems(items: ChatItem[]): Rendered[] {
 			const last = out[out.length - 1];
 			if (last?.kind === 'group') last.events.push(item.e);
 			else out.push({ kind: 'group', events: [item.e], index: i });
+		} else if (item.kind === 'event' && item.e.type === 'question') {
+			// Group across intervening thinking rows (they render as nothing), so a
+			// reasoning burst between two ask_user calls doesn't split the tabs.
+			let j = out.length - 1;
+			while (j >= 0) {
+				const r = out[j];
+				if (r?.kind === 'item' && r.item.kind === 'event' && r.item.e.type === 'thinking') j--;
+				else break;
+			}
+			const anchor = out[j];
+			if (anchor?.kind === 'questions') anchor.events.push(item.e);
+			else out.push({ kind: 'questions', events: [item.e], index: i });
 		} else {
 			out.push({ kind: 'item', item, index: i });
 		}
@@ -121,6 +138,8 @@ function eventLine(e: BuildEvent): { text: string; cls: string } {
 			return { text: usageLine(e), cls: '' };
 		case 'plan':
 			return { text: `plan: ${e.summary} (${e.files.length} files)`, cls: '' };
+		case 'project-named':
+			return { text: `✓ project named "${e.name}"`, cls: 'commit' };
 		case 'thinking':
 			return { text: 'thinking…', cls: '' };
 		case 'phase':
@@ -175,34 +194,126 @@ export function extractInlineOptions(text: string): string[] | null {
 	return null;
 }
 
-/**
- * A model question with clickable options (the ask_user tool, §interview).
- * Clicking sends "N. <option>" — the number survives so a typed bare number
- * means the same thing, and the transcript reads identically either way.
- */
-function Question(props: {
-	e: Extract<BuildEvent, { type: 'question' }>;
-	answered: boolean;
-	onPick: (text: string) => void;
-}) {
+/** The always-present free-text answer — the "Other" the options don't cover. */
+function OtherAnswer(props: { onSubmit: (text: string) => void }) {
+	const [text, setText] = useState('');
+	function submit(): void {
+		const t = text.trim();
+		if (!t) return;
+		setText('');
+		props.onSubmit(t);
+	}
 	return (
-		<div className="msg assistant">
-			<div style={{ marginBottom: 8 }}>{props.e.question}</div>
-			<div className="model-list">
-				{props.e.options.map((opt, i) => (
+		<div className="q-other">
+			<input
+				value={text}
+				placeholder="Other — type your own answer…"
+				onChange={(e) => setText(e.target.value)}
+				onKeyDown={(e) => {
+					if (e.key === 'Enter') submit();
+				}}
+			/>
+			<button disabled={!text.trim()} onClick={submit}>
+				use
+			</button>
+		</div>
+	);
+}
+
+/**
+ * One turn's ask_user calls (the interview). A single question keeps the
+ * classic layout: clicking an option sends "N. <option>" immediately, so a
+ * typed bare number means the same thing. Several questions render as tabs —
+ * answers are collected per tab (options or free text), and one combined
+ * message is sent when all are answered, mirroring how the model asked them.
+ */
+function QuestionBlock(props: {
+	events: readonly QuestionEvent[];
+	answered: boolean;
+	onSend: (text: string) => void;
+}) {
+	const qs = props.events;
+	const [active, setActive] = useState(0);
+	const [answers, setAnswers] = useState<Record<number, string>>({});
+
+	if (qs.length === 1) {
+		const q = qs[0] as QuestionEvent;
+		return (
+			<div className="msg assistant q-block">
+				<Markdown text={q.question} />
+				<div className="model-list">
+					{q.options.map((opt, i) => (
+						<button
+							key={i}
+							disabled={props.answered}
+							onClick={() => props.onSend(`${i + 1}. ${opt}`)}
+						>
+							{i + 1}. {opt}
+						</button>
+					))}
+				</div>
+				{!props.answered && <OtherAnswer onSubmit={props.onSend} />}
+			</div>
+		);
+	}
+
+	const activeIdx = Math.min(active, qs.length - 1);
+	const q = qs[activeIdx] as QuestionEvent;
+	const done = qs.filter((_, i) => answers[i] != null).length;
+
+	function record(i: number, a: string): void {
+		const next = { ...answers, [i]: a };
+		setAnswers(next);
+		const open = qs.findIndex((_, k) => next[k] == null);
+		if (open !== -1) setActive(open);
+	}
+
+	function sendAll(): void {
+		props.onSend(qs.map((qq, i) => `${qq.header ?? qq.question} → ${answers[i]}`).join('\n'));
+	}
+
+	return (
+		<div className="q-block q-multi">
+			<div className="q-tabs">
+				{qs.map((qq, i) => (
 					<button
 						key={i}
-						disabled={props.answered}
-						onClick={() => props.onPick(`${i + 1}. ${opt}`)}
+						className={`q-tab ${i === activeIdx ? 'active' : ''} ${answers[i] != null ? 'answered' : ''}`}
+						onClick={() => setActive(i)}
 					>
-						{i + 1}. {opt}
+						{answers[i] != null ? '✓ ' : ''}
+						{qq.header ?? `Q${i + 1}`}
 					</button>
 				))}
 			</div>
+			<Markdown text={q.question} />
+			<div className="model-list">
+				{q.options.map((opt, i) => {
+					const val = `${i + 1}. ${opt}`;
+					return (
+						<button
+							key={i}
+							disabled={props.answered}
+							className={answers[activeIdx] === val ? 'current' : ''}
+							onClick={() => record(activeIdx, val)}
+						>
+							{i + 1}. {opt}
+						</button>
+					);
+				})}
+			</div>
 			{!props.answered && (
-				<div className="evt" style={{ padding: '6px 0 0' }}>
-					…or type your own answer below
-				</div>
+				<>
+					<OtherAnswer onSubmit={(t) => record(activeIdx, t)} />
+					<div className="q-footer">
+						<span>
+							{done}/{qs.length} answered
+						</span>
+						<button className="q-send" disabled={done < qs.length} onClick={sendAll}>
+							Send answers
+						</button>
+					</div>
+				</>
 			)}
 		</div>
 	);
@@ -311,7 +422,20 @@ export function Chat(props: {
 					<div className="evt">What would you like to build today?</div>
 				)}
 				{groupItems(props.items).map((r) => {
-					const isLast = r.index + (r.kind === 'group' ? r.events.length : 1) >= props.items.length;
+					const isLast = r.index + (r.kind === 'item' ? 1 : r.events.length) >= props.items.length;
+					// The interview block: live until the user's answer lands (a user
+					// message after it) or a turn is running.
+					if (r.kind === 'questions') {
+						const answered = props.busy || r.index < lastUser;
+						return (
+							<QuestionBlock
+								key={r.index}
+								events={r.events}
+								answered={answered}
+								onSend={props.onSend}
+							/>
+						);
+					}
 					// A plan-governed turn: the panel renders once (at the plan event's
 					// position) and owns every work event after it in this turn.
 					if (planAt !== -1 && r.index >= planAt) {
@@ -341,7 +465,7 @@ export function Chat(props: {
 						const opts = live ? extractInlineOptions(item.text) : null;
 						return (
 							<div key={i} className="msg assistant">
-								{item.text}
+								<Markdown text={item.text} />
 								{opts && (
 									<div className="model-list" style={{ marginTop: 8 }}>
 										{opts.map((opt, n) => (
@@ -352,13 +476,6 @@ export function Chat(props: {
 									</div>
 								)}
 							</div>
-						);
-					}
-					if (item.e.type === 'question') {
-						// Only the last question is live; earlier ones are transcript.
-						const answered = props.busy || !isLast;
-						return (
-							<Question key={i} e={item.e} answered={answered} onPick={props.onSend} />
 						);
 					}
 					// The WorkingIndicator is the live tail; thinking rows as text would

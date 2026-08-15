@@ -70,14 +70,16 @@ export type BuildEvent =
 	| { readonly type: 'thinking' }
 	/**
 	 * The model asked the builder one question, with concrete options. The UI
-	 * renders the options clickable; a click (or a typed number) becomes the next
-	 * user message. This is how the interview phase stays one-question-at-a-time
-	 * instead of a wall of questions.
+	 * renders the options clickable, always adds a free-text "Other" answer, and
+	 * groups several question events from one turn into tabs — so the interview
+	 * never degrades into a wall of prose questions.
 	 */
 	| {
 			readonly type: 'question';
 			readonly question: string;
 			readonly options: readonly string[];
+			/** Short tab label (≤ 3 words) for when several questions share a turn. */
+			readonly header?: string;
 	  }
 	/**
 	 * The model proposed a project name (the set_project_name tool) — called once,

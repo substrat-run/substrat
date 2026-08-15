@@ -13,13 +13,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, streamTurn, type BuildPhase, type PlanAssumption, type SessionInfo } from './api.js';
 import { appendEvent, Chat, type ChatItem } from './Chat.js';
 import { CodePane } from './CodePane.js';
+import { ConceptPane } from './ConceptPane.js';
 import { GatesPane } from './GatesPane.js';
 import { ModelPicker } from './ModelPicker.js';
 import { PreviewPane } from './PreviewPane.js';
 import { ProjectMenu } from './ProjectMenu.js';
 import { UsagePane } from './UsagePane.js';
 
-type Tab = 'preview' | 'code' | 'database' | 'gates' | 'usage';
+type Tab = 'preview' | 'concept' | 'code' | 'database' | 'gates' | 'usage';
 
 const PHASE_STEPS: readonly { key: BuildPhase; label: string; hint: string }[] = [
 	{ key: 'interview', label: 'Interview', hint: 'No approved concept yet — the model asks, one question at a time' },
@@ -180,6 +181,11 @@ export function App() {
 						return;
 					}
 					if (e.type === 'gates') sawGates = true;
+					// The moment the interview lands the concept, show it — this is the
+					// document the whole interview exists to produce.
+					if (e.type === 'file-written' && e.path.endsWith('spec/concept.md')) {
+						setTab('concept');
+					}
 					if (e.type === 'thinking') setWorkLabel('thinking');
 					else if (e.type === 'tool-call') setWorkLabel(`${e.tool}: ${e.summary.slice(0, 60)}`);
 					else if (e.type === 'file-written') setWorkLabel(`writing ${e.path}`);
@@ -303,6 +309,9 @@ export function App() {
 						<button className={tab === 'preview' ? 'active' : ''} onClick={() => setTab('preview')}>
 							Preview
 						</button>
+						<button className={tab === 'concept' ? 'active' : ''} onClick={() => setTab('concept')}>
+							Concept
+						</button>
 						<button className={tab === 'code' ? 'active' : ''} onClick={() => setTab('code')}>
 							Code
 						</button>
@@ -321,6 +330,9 @@ export function App() {
 					</nav>
 					<div className="pane">
 						{tab === 'preview' && <PreviewPane />}
+						{tab === 'concept' && session && (
+							<ConceptPane vertical={session.vertical} refreshKey={refreshKey} />
+						)}
 						{tab === 'code' && session && (
 							<CodePane vertical={session.vertical} refreshKey={refreshKey} />
 						)}
