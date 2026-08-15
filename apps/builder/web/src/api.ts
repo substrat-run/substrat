@@ -76,6 +76,9 @@ export interface UsageByModel {
 	model: string | null;
 	input: number;
 	output: number;
+	/** Cache slices of `input`, when the provider reported them (0 otherwise). Optional: older API responses predate them. */
+	cacheRead?: number;
+	cacheWrite?: number;
 	/** USD decimal strings; null when the model has no rate card entry. */
 	listUsd: string | null;
 	billedUsd: string | null;

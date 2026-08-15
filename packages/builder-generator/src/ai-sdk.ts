@@ -21,7 +21,7 @@ import {
 	type ModelMessage,
 	type ProviderMetadata,
 } from 'ai';
-import type { BuildEvent } from './events.js';
+import type { BuildEvent, StepUsage } from './events.js';
 import type { GeneratorInput, VerticalGenerator } from './generator.js';
 import { workspaceTools } from './tools.js';
 
@@ -331,6 +331,10 @@ export class AiSdkGenerator implements VerticalGenerator {
 		let steps = 0;
 		let inputTokens = 0;
 		let outputTokens = 0;
+		// Per-request usage, one entry per step — the host needs it because tier
+		// pricing is all-or-nothing per REQUEST (pricing happens host-side; this
+		// file stays provider- and price-agnostic per D-49).
+		const stepUsage: StepUsage[] = [];
 		// Once the provider has failed, the SDK also rejects `usage` with a vague
 		// "No output generated" — reporting both turns one problem into two.
 		let reported = false;
@@ -379,9 +383,21 @@ export class AiSdkGenerator implements VerticalGenerator {
 					case 'reasoning-start':
 						yield { type: 'thinking' };
 						break;
-					case 'finish-step':
+					case 'finish-step': {
 						steps += 1;
+						const u = part.usage;
+						if (u.inputTokens != null || u.outputTokens != null) {
+							const cacheRead = u.inputTokenDetails.cacheReadTokens;
+							const cacheWrite = u.inputTokenDetails.cacheWriteTokens;
+							stepUsage.push({
+								inputTokens: u.inputTokens ?? 0,
+								outputTokens: u.outputTokens ?? 0,
+								...(cacheRead != null ? { cachedInputTokens: cacheRead } : {}),
+								...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
+							});
+						}
 						break;
+					}
 					case 'error':
 						reported = true;
 						yield { type: 'error', message: explain(part.error), fatal: true };
@@ -407,6 +423,7 @@ export class AiSdkGenerator implements VerticalGenerator {
 					steps,
 					...(cacheRead != null ? { cachedInputTokens: cacheRead } : {}),
 					...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
+					...(stepUsage.length ? { stepUsage } : {}),
 				};
 			}
 		} catch (err) {

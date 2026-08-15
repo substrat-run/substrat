@@ -398,6 +398,15 @@ export class BuilderAgent extends DurableObject<Env> {
 								model: modelSpec,
 								inputTokens: event.inputTokens,
 								outputTokens: event.outputTokens,
+								...(event.cachedInputTokens != null
+									? { cachedInputTokens: event.cachedInputTokens }
+									: {}),
+								...(event.cacheWriteTokens != null
+									? { cacheWriteTokens: event.cacheWriteTokens }
+									: {}),
+								// The per-step split — required for tier-correct pricing
+								// (pricing.ts: tier selection is per request, not per turn).
+								...(event.stepUsage ? { stepUsage: event.stepUsage } : {}),
 							}),
 						);
 					}

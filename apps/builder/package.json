@@ -1,40 +1,43 @@
 {
-  "name": "@substrat-run/builder",
-  "version": "0.2.2",
-  "private": true,
-  "description": "The builder studio — chat → vertical. Terminal driver today; Worker + chat pane to come (builder-studio.md §7).",
-  "license": "AGPL-3.0-only",
-  "type": "module",
-  "scripts": {
-    "dev": "tsx src/dev.ts",
-    "ui": "concurrently -k -n api,web -c yellow,cyan \"tsx src/server.ts\" \"pnpm --filter @substrat-run/builder-web dev\"",
-    "api": "tsx src/server.ts",
-    "gates": "tsx src/gates-cli.ts",
-    "models": "tsx src/models-cli.ts",
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json",
-    "cf:deploy": "pnpm --filter @substrat-run/builder-web build && wrangler deploy"
-  },
-  "dependencies": {
-    "@ai-sdk/openai-compatible": "3.0.30",
-    "@cloudflare/sandbox": "0.12.5",
-    "@substrat-run/builder-generator": "workspace:*",
-    "@substrat-run/builder-workspace": "workspace:*",
-    "@substrat-run/adapter-cloudflare": "workspace:*",
-    "@substrat-run/contracts": "workspace:*",
-    "@substrat-run/engine-metering": "workspace:*",
-    "@substrat-run/kernel": "workspace:*",
-    "@substrat-run/oidc-rp": "workspace:*",
-    "ai": "7.0.62",
-    "hono": "^4.6.0"
-  },
-  "devDependencies": {
-    "@ai-sdk/anthropic": "^3.0.0",
-    "@cloudflare/workers-types": "^4.20250109.0",
-    "@types/node": "^22.0.0",
-    "concurrently": "^9.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^7.0.0",
-    "wrangler": "^4.123.0"
-  }
+	"name": "@substrat-run/builder",
+	"version": "0.2.2",
+	"private": true,
+	"description": "The builder studio — chat → vertical. Terminal driver today; Worker + chat pane to come (builder-studio.md §7).",
+	"license": "AGPL-3.0-only",
+	"type": "module",
+	"scripts": {
+		"dev": "tsx src/dev.ts",
+		"ui": "concurrently -k -n api,web -c yellow,cyan \"tsx src/server.ts\" \"pnpm --filter @substrat-run/builder-web dev\"",
+		"api": "tsx src/server.ts",
+		"gates": "tsx src/gates-cli.ts",
+		"models": "tsx src/models-cli.ts",
+		"build": "tsc -p tsconfig.json",
+		"typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json",
+		"cf:deploy": "pnpm --filter @substrat-run/builder-web build && wrangler deploy",
+		"test": "vitest run",
+		"update-rate-card": "node scripts/update-rate-card.mjs"
+	},
+	"dependencies": {
+		"@ai-sdk/openai-compatible": "3.0.30",
+		"@cloudflare/sandbox": "0.12.5",
+		"@substrat-run/adapter-cloudflare": "workspace:*",
+		"@substrat-run/builder-generator": "workspace:*",
+		"@substrat-run/builder-workspace": "workspace:*",
+		"@substrat-run/contracts": "workspace:*",
+		"@substrat-run/engine-metering": "workspace:*",
+		"@substrat-run/kernel": "workspace:*",
+		"@substrat-run/oidc-rp": "workspace:*",
+		"ai": "7.0.62",
+		"hono": "^4.6.0"
+	},
+	"devDependencies": {
+		"@ai-sdk/anthropic": "^3.0.0",
+		"@cloudflare/workers-types": "^4.20250109.0",
+		"@types/node": "^22.0.0",
+		"concurrently": "^9.0.0",
+		"tsx": "^4.19.0",
+		"typescript": "^7.0.0",
+		"vitest": "^3.2.7",
+		"wrangler": "^4.123.0"
+	}
 }

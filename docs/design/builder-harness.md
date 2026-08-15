@@ -243,7 +243,7 @@ Order chosen so billing correctness lands before optimisation, and each step fee
 
 | # | Item | Why this position | Status |
 |---|---|---|---|
-| 1 | §2.2 snapshot generator (models.dev × LiteLLM cross-check) + rate card from snapshot: cache rates **and qwen context tiers** | billing integrity — the tier gap is an active undercharge; unblocks 3 and 5 | ☐ |
+| 1 | §2.2 snapshot generator (models.dev × LiteLLM cross-check) + rate card from snapshot: cache rates **and qwen context tiers** | billing integrity — the tier gap is an active undercharge; unblocks 3 and 5 | ☑ |
 | 2 | H2 retry/backoff | turn survival — protects every other investment; self-contained | ☐ |
 | 3 | H1 edit tool: strict apply + structured reflection (aider shape), format-per-model | biggest bill lever; weak models keep `write_file` by declaration, not by failure | ☐ |
 | 4 | H4 cache key + qwen temperature | one-liners, default-provider quality | ☐ |

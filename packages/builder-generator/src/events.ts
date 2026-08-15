@@ -109,8 +109,27 @@ export type BuildEvent =
 			readonly steps: number;
 			readonly cachedInputTokens?: number;
 			readonly cacheWriteTokens?: number;
+			/**
+			 * Per-request breakdown, one entry per tool-loop step. Present so the
+			 * host can price tiered rate cards correctly — tier selection is
+			 * all-or-nothing per REQUEST, and the turn totals above land in a tier
+			 * no single request reached. Absent when the provider reports no
+			 * per-step usage; consumers fall back to the totals.
+			 */
+			readonly stepUsage?: readonly StepUsage[];
 	  }
 	| { readonly type: 'error'; readonly message: string; readonly fatal: boolean };
+
+/**
+ * One provider request's token counts. `inputTokens` is the request's TOTAL
+ * input as the provider reported it, including the cached slices.
+ */
+export interface StepUsage {
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cachedInputTokens?: number;
+	readonly cacheWriteTokens?: number;
+}
 
 export type BuildEventOf<T extends BuildEvent['type']> = Extract<BuildEvent, { type: T }>;
 
