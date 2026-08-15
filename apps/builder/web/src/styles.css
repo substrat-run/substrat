@@ -547,3 +547,4 @@ code, pre, .mono { font-family: var(--font-mono, 'Geist Mono', ui-monospace, Men
 .usage-table td { padding: 5px 14px 5px 0; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); }
 .usage-table td:first-child { color: var(--text-primary); }
 .usage-table th:not(:first-child), .usage-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.usage-footnote { font-size: 11.5px; color: var(--text-tertiary); margin: -8px 0 4px; }

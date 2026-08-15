@@ -391,6 +391,7 @@ export class BuilderAgent extends DurableObject<Env> {
 							reportTurnUsage(this.env, {
 								projectId: entry.id,
 								turnId,
+								model: modelSpec,
 								inputTokens: event.inputTokens,
 								outputTokens: event.outputTokens,
 							}),

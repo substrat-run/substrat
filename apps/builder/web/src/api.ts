@@ -69,10 +69,23 @@ export interface UsageByProject {
 	turns: number;
 }
 
+export interface UsageByModel {
+	/** Normalized `provider:modelId`; null for entries recorded before the model dimension existed. */
+	model: string | null;
+	input: number;
+	output: number;
+	/** USD decimal strings; null when the model has no rate card entry. */
+	listUsd: string | null;
+	billedUsd: string | null;
+}
+
 export interface UsageReport {
 	totals: { input: number; output: number };
 	daily: UsageDay[];
 	byProject: UsageByProject[];
+	byModel: UsageByModel[];
+	cost: { listUsd: string; billedUsd: string; unpricedTokens: number };
+	markupPercent: number;
 	windowDays: number;
 	generatedAt: string;
 }
