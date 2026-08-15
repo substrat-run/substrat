@@ -48,6 +48,8 @@ export interface ProviderEntry {
 	credential: { envVar: string | null; set: boolean };
 	listable: boolean;
 	suggested: string[];
+	/** The `<provider>:auto` pair — fast (interview) + strong (build) — when declared. */
+	pair?: { fast: string; strong: string };
 }
 
 async function j<T>(res: Response): Promise<T> {

@@ -36,6 +36,7 @@ import {
 	type SandboxLike,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
+import { resolveAutoSpec } from './model-pairs.js';
 import { detectPhase, interviewWriteGuard, skillsForPhase, SKILL_MANIFEST } from './phase.js';
 import { explainProviderFailure } from './provider-errors.js';
 import {
@@ -322,7 +323,8 @@ export class BuilderAgent extends DurableObject<Env> {
 		// container's disk is empty until restore (detecting before it loaded
 		// interview skills for mature projects).
 		try {
-			resolveModelHosted(this.env, modelSpec);
+			// Auto specs validate via their strong member (same provider/credential).
+			resolveModelHosted(this.env, resolveAutoSpec(modelSpec, 'iterate'));
 		} catch (err) {
 			return json(422, { error: err instanceof HostedProviderError ? err.message : String(err) });
 		}
@@ -357,8 +359,10 @@ export class BuilderAgent extends DurableObject<Env> {
 				const phase = await detectPhase(projectWs);
 				emit({ type: 'phase', phase });
 				const allSkills = await this.#loadSkills(rootWs);
+				// `<provider>:auto` becomes concrete per phase (model-pairs.ts) —
+				// fast for interview, strong for build turns.
 				const generator = await this.#generator(
-					modelSpec,
+					resolveAutoSpec(modelSpec, phase),
 					skillsForPhase(allSkills, phase),
 					phase === 'interview',
 				);

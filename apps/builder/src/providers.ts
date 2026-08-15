@@ -122,8 +122,14 @@ export const PROVIDERS: Readonly<Record<string, ProviderSpec>> = {
 	},
 };
 
-/** The default: Opus 5 runs adaptive thinking without being asked (§5.3). */
-export const DEFAULT_MODEL = 'anthropic:claude-opus-5';
+/**
+ * The default: the qwen auto pair (model-pairs.ts) — fast for interview turns,
+ * strong for build turns. Chosen while the studio is in its testing era: cheap,
+ * and weak-model runs are adversarial QA for the mechanical guards (a weak
+ * model is what exposed the concept.md dead end). The hosted studio's default
+ * stays Anthropic-strong; revisit both once evals/ measures gate pass-rates.
+ */
+export const DEFAULT_MODEL = 'qwen:auto';
 
 export interface ResolvedModel {
 	readonly model: LanguageModel;
@@ -174,7 +180,7 @@ export async function resolveModel(spec: string): Promise<ResolvedModel> {
 	if (!provider) {
 		throw new ProviderError(
 			`unknown provider ${JSON.stringify(providerName)}. Known:\n${knownProviders()}\n` +
-				`  Use provider:model, e.g. ${DEFAULT_MODEL}`,
+				`  Use provider:model, e.g. anthropic:claude-opus-5 — or provider:auto for a declared pair`,
 		);
 	}
 	if (!modelId) throw new ProviderError(`no model id in ${JSON.stringify(spec)}`);

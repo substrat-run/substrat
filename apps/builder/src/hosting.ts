@@ -6,6 +6,7 @@
  * a provider + its effective endpoint into a human-readable hosting statement.
  * Deliberately factual — vendor, place, host — not marketing.
  */
+import { MODEL_PAIRS, type ModelPair } from './model-pairs.js';
 import { PROVIDERS } from './providers.js';
 
 export interface HostingInfo {
@@ -131,11 +132,14 @@ export interface ProviderCatalogEntry {
 	/** True when models can be listed live from the endpoint (`/models`). */
 	readonly listable: boolean;
 	readonly suggested: readonly string[];
+	/** The `<provider>:auto` pair, when one is declared (model-pairs.ts). */
+	readonly pair?: ModelPair;
 }
 
 export function providerCatalog(): ProviderCatalogEntry[] {
 	return Object.entries(PROVIDERS).map(([name, spec]) => {
 		const envVar = 'envVar' in spec ? (spec.envVar ?? null) : null;
+		const pair = MODEL_PAIRS[name];
 		return {
 			name,
 			kind: spec.kind,
@@ -143,6 +147,7 @@ export function providerCatalog(): ProviderCatalogEntry[] {
 			credential: { envVar, set: envVar === null || Boolean(process.env[envVar]) },
 			listable: spec.kind === 'compatible',
 			suggested: suggestedModels(name),
+			...(pair ? { pair } : {}),
 		};
 	});
 }
