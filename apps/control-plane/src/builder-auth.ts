@@ -66,7 +66,7 @@ export interface ResolvedTenant {
  */
 export async function builderTenantsFor(
   host: ScopeHost,
-  user: SessionUser,
+  user: Pick<SessionUser, 'id'>,
 ): Promise<ResolvedTenant[]> {
   const admin = host.admin;
   // The pool must exist to ask which tenants a login is in (central topology). Idempotent.

@@ -1,16 +1,26 @@
 /**
  * The hosted builder studio worker — builder.substrat.net (#625).
  *
- * AUTH IS THE POINT OF THIS FILE (builder-studio.md §1.1: staff-only, unlisted).
- * In mode A the loopback binding was the auth; on a public hostname the gate is
- * OIDC (AuthHero, via @substrat-run/oidc-rp — the platform-apps pattern) plus
- * the SAME staff roster the control plane consults (D1 `staff_actor`, bound
- * read-only here). Fail closed: authenticated is not authorized — an
- * un-rostered login gets a 403 naming the email, never the app.
+ * AUTH IS THE POINT OF THIS FILE. Two gates, both fail closed:
+ *
+ * 1. OIDC (AuthHero, via @substrat-run/oidc-rp) + the control plane's staff
+ *    roster (D1 `staff_actor`, read-only) — builder-studio.md §1.1. The roster
+ *    stays as an AND-gate until the builder entitlement flag exists on plans
+ *    (builder-plane.md §7 open question); dropping it is then a one-line,
+ *    deliberate act, not a side effect of the teams work.
+ * 2. Team membership (builder-studio.md §14): every studio URL and API call is
+ *    scoped to a TEAM (= tenant, dashboard-teams.md), and each team gets its
+ *    own BuilderAgent DO — `idFromName(tenantId)`, mirroring the per-tenant
+ *    IdentityDO pattern. Membership is resolved from the shared control-plane
+ *    directory (the identity links the dashboard mirrors in) via the
+ *    service-binding call below; the `x-substrat-tenant` header names which
+ *    membership a request acts in. The pre-teams shared instance
+ *    (`idFromName('studio')`) is deliberately abandoned, not migrated —
+ *    nothing in it was worth saving (2026-08-15).
  *
  * EVERYTHING routes through the worker (`run_worker_first: true`): the SPA
- * shell itself is staff-only, so even assets are behind the gate. The only
- * anonymous surface is the OIDC login flow.
+ * shell itself is gated, so even assets are behind auth. The only anonymous
+ * surface is the OIDC login flow.
  *
  * Scope of the shell (#625): auth + SPA + the BuilderAgent DO carrying the
  * durable session state (projects, history, names). Endpoints that need a
@@ -44,6 +54,44 @@ export interface Env extends OidcEnv {
 	/** The studio's own kernel scope (#646) — usage metering lives here. */
 	SCOPE: DurableObjectNamespace;
 	ASSETS: Fetcher;
+	/** The shared control plane — membership lookups over the service binding. */
+	CONTROL_PLANE_SVC: Fetcher;
+	/** The control plane's SERVICE_TOKEN, under the studio's name for it (the
+	 * dashboard precedent: CP_SERVICE_TOKEN in secrets.mjs). */
+	CP_SERVICE_TOKEN?: string;
+}
+
+/** The tenant-selection header — same name, same meaning as the CP API's. */
+const TENANT_HEADER = 'x-substrat-tenant';
+
+export interface Team {
+	id: string;
+	slug: string;
+	name: string;
+}
+
+/**
+ * The teams (= tenants, dashboard-teams.md) this login builds for, from the
+ * shared directory. One subrequest per API call that needs it (assets don't);
+ * the CP answers from its own DO, so this is a directory read, not a fan-out.
+ */
+async function teamsFor(env: Env, sub: string): Promise<Team[]> {
+	const res = await env.CONTROL_PLANE_SVC.fetch(
+		'https://control-plane/internal/builder/identity-tenants',
+		{
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				'x-service-token': env.CP_SERVICE_TOKEN ?? '',
+			},
+			body: JSON.stringify({ externalId: sub }),
+		},
+	);
+	if (!res.ok) {
+		throw new Error(`membership lookup failed: ${res.status} ${await res.text().catch(() => '')}`);
+	}
+	const body = (await res.json()) as { tenants: Team[] };
+	return body.tenants;
 }
 
 function readCookie(header: string | null, name: string): string | undefined {
@@ -97,13 +145,33 @@ app.use('*', async (c, next) => {
 });
 
 /** The studio's usage rollup (#646) — served by the worker, not the agent DO:
- * the ledger lives in the SCOPE DO and the worker holds that binding. */
+ * the ledger lives in the SCOPE DO and the worker holds that binding. Still
+ * STUDIO-WIDE (the fixed metering node, src/metering.ts): per-team ledgers are
+ * the follow-up that retires that node — acceptable meanwhile only because the
+ * staff AND-gate above keeps every viewer on the roster. */
 app.get('/api/usage', async (c) => c.json(await studioUsage(c.env)));
 
-/** Session/state endpoints live on the DO — one named instance, the studio's
- * single home, mirroring the one-process local server it replaces. */
+/** Who am I, and which teams can I build for. The SPA calls this first; a 404
+ * from the local server (mode A) is its cue that there are no teams to pick. */
+app.get('/api/me', async (c) => {
+	const user = c.get('user' as never) as SessionUser;
+	return c.json({ email: user.email ?? null, teams: await teamsFor(c.env, user.id) });
+});
+
+/**
+ * Session/state endpoints live on the DO — ONE PER TEAM (`idFromName(tenantId)`),
+ * so projects, history, and names partition by tenant. The header names which
+ * membership the call acts in; anything not in the caller's own list is refused
+ * before the DO is ever addressed. Fail closed: no header, no dispatch.
+ */
 app.all('/api/*', async (c) => {
-	const id = c.env.BUILDER_AGENT.idFromName('studio');
+	const user = c.get('user' as never) as SessionUser;
+	const selected = c.req.header(TENANT_HEADER)?.trim();
+	if (!selected) return c.json({ error: `${TENANT_HEADER} header (a team id) is required` }, 400);
+	const teams = await teamsFor(c.env, user.id);
+	const team = teams.find((t) => t.id === selected);
+	if (!team) return c.json({ error: `not a member of team '${selected}'` }, 403);
+	const id = c.env.BUILDER_AGENT.idFromName(team.id);
 	return await c.env.BUILDER_AGENT.get(id).fetch(c.req.raw);
 });
 
