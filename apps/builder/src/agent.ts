@@ -38,6 +38,7 @@ import {
 	repairNeeded,
 	runGates,
 	runTurn,
+	snapshotWorkspace,
 	standaloneGates,
 	workspaceBrief,
 	type SandboxLike,
@@ -272,6 +273,34 @@ export class BuilderAgent extends DurableObject<Env> {
 		}
 	}
 
+	// ── tree snapshots — the container-free read path for the SPA ─────────────
+
+	/** One JSON object of the working tree next to the bundles: rebuilt at
+	 * commit time, patched on studio saves, served whole by GET /api/snapshot.
+	 * Overwritten in place (unlike bundles) — history lives in the bundles. */
+	#snapshotKey(entry: ProjectEntry): string {
+		return `${this.#bundlePrefix(entry)}snapshot.json`;
+	}
+
+	/** Best-effort by design: the snapshot is a read cache over the committed
+	 * tree — a failed rebuild must never fail the turn that produced the commit. */
+	async #saveSnapshot(sb: SandboxLike, entry: ProjectEntry): Promise<void> {
+		try {
+			const snap = await snapshotWorkspace(this.#rootWs(sb), entry.dir);
+			await this.env.PROJECT_REPOS.put(
+				this.#snapshotKey(entry),
+				JSON.stringify({
+					dir: entry.dir,
+					generatedAt: new Date().toISOString(),
+					files: snap.files,
+					skipped: snap.skipped,
+				}),
+			);
+		} catch {
+			/* the per-file fallback endpoints still work */
+		}
+	}
+
 	#rootWs(sb: SandboxLike): Workspace {
 		return new ContainerWorkspace({ sandbox: sb, root: REPO, id: 'container:repo' });
 	}
@@ -477,6 +506,9 @@ export class BuilderAgent extends DurableObject<Env> {
 						// The commit is only durable once bundled (§4.5): container disk
 						// is the cache, R2 is where the repo rests.
 						await this.#saveBundle(pair, entry);
+						// The SPA's container-free read path — refresh it while the
+						// container is provably awake and at the commit it just made.
+						await this.#saveSnapshot(pair.sb, entry);
 					}
 					return turn;
 				};
@@ -594,6 +626,28 @@ export class BuilderAgent extends DurableObject<Env> {
 				await ensureVerticalRepo(rootWs, entry.dir);
 				return json(200, await runGates(rootWs, entry.dir, standaloneGates(entry.dir)));
 			}
+			case 'GET /api/snapshot': {
+				// The whole working tree in ONE response, served from R2 — the sandbox
+				// container stays asleep. Miss (legacy project, or none committed since
+				// this landed) → build once from the container and cache it; a project
+				// with no repo at all is an honest 404 and the SPA falls back to the
+				// per-directory endpoints below.
+				const { entry } = await this.#current();
+				const cached = await this.env.PROJECT_REPOS.get(this.#snapshotKey(entry));
+				if (cached) {
+					return new Response(cached.body, {
+						headers: { 'content-type': 'application/json' },
+					});
+				}
+				const pair = this.#sandboxPair(entry.id);
+				await this.#restoreProject(pair, entry).catch(() => undefined);
+				const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${REPO}/${entry.dir}/.git`)}`);
+				if (probe.exitCode !== 0) return json(404, { error: 'no snapshot yet' });
+				await this.#saveSnapshot(pair.sb, entry);
+				const built = await this.env.PROJECT_REPOS.get(this.#snapshotKey(entry));
+				if (!built) return json(404, { error: 'no snapshot yet' });
+				return new Response(built.body, { headers: { 'content-type': 'application/json' } });
+			}
 			case 'GET /api/files': {
 				const { entry } = await this.#current();
 				const path = url.searchParams.get('path') ?? entry.dir;
@@ -628,6 +682,19 @@ export class BuilderAgent extends DurableObject<Env> {
 				if (!path.startsWith(`${entry.dir}/`))
 					return json(403, { error: `writes are limited to ${entry.dir}/` });
 				await this.#rootWs(this.#sandbox(entry.id)).writeFile(path, content);
+				// Patch the stored snapshot so a reload before the next commit still
+				// shows this save. Best-effort: absent snapshot → next commit builds it.
+				try {
+					const key = this.#snapshotKey(entry);
+					const obj = await this.env.PROJECT_REPOS.get(key);
+					if (obj) {
+						const snap = (await obj.json()) as { files: Record<string, string> };
+						snap.files[path.slice(entry.dir.length + 1)] = content;
+						await this.env.PROJECT_REPOS.put(key, JSON.stringify(snap));
+					}
+				} catch {
+					/* read path falls back to per-file endpoints */
+				}
 				return json(200, { ok: true });
 			}
 			case 'GET /api/providers':

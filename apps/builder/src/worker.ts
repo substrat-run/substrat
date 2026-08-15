@@ -82,7 +82,22 @@ export interface Team {
  * gate). One subrequest per request that needs it; the CP answers from its own
  * DO, so this is a directory read, not a fan-out.
  */
+/** Per-isolate membership cache — the trade the gate comment below names:
+ * every file-tree click was paying a CP subrequest, so memberships are held
+ * for TEAMS_TTL_MS and revocation lags by at most that. Isolate-local by
+ * design: no cross-user leakage beyond what teamsFor itself returns per sub. */
+const TEAMS_TTL_MS = 60_000;
+const teamsCache = new Map<string, { teams: Team[]; until: number }>();
+
 async function teamsFor(env: Env, sub: string): Promise<Team[]> {
+	const hit = teamsCache.get(sub);
+	if (hit && hit.until > Date.now()) return hit.teams;
+	const teams = await teamsForUncached(env, sub);
+	teamsCache.set(sub, { teams, until: Date.now() + TEAMS_TTL_MS });
+	return teams;
+}
+
+async function teamsForUncached(env: Env, sub: string): Promise<Team[]> {
 	const res = await env.CONTROL_PLANE_SVC.fetch(
 		'https://control-plane/internal/builder/identity-tenants',
 		{
@@ -182,11 +197,11 @@ app.get('/api/auth/denied', (c) =>
  * (one D1 read, and the decision is made: no directory walk on a staff asset
  * request) or membership in a team holding the `builder` entitlement (the
  * directory lookup, stashed on the context so /api/me and the per-team
- * dispatch reuse it). For a NON-staff user this is one CP subrequest per
+ * dispatch reuse it). For a NON-staff user this is one directory lookup per
  * request, assets included — acceptable at studio scale (the alternative, an
- * ungated shell, would leak the app to any authenticated account); if it ever
- * hurts, the fix is a short-TTL per-isolate cache keyed by user id, traded
- * against revocation lag of the same TTL.
+ * ungated shell, would leak the app to any authenticated account); lookups go
+ * through the TEAMS_TTL_MS cache above, so the CP subrequest is paid once per
+ * isolate per TTL, traded against revocation lag of the same TTL.
  */
 app.use('*', async (c, next) => {
 	const token = readCookie(c.req.header('cookie') ?? null, SESSION_COOKIE);

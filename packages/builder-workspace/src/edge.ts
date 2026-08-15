@@ -56,3 +56,9 @@ export {
 	type RunTurnOptions,
 	type TurnResult,
 } from './turn.js';
+
+export {
+	SNAPSHOT_MAX_FILE_BYTES,
+	snapshotWorkspace,
+	type WorkspaceSnapshot,
+} from './snapshot.js';
