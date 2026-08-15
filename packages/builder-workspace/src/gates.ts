@@ -8,11 +8,18 @@
  * (§9.4) — so this runner never reports a gate as passing on anything softer
  * than a zero exit code.
  *
- * Exit-code convention, inherited from boundary-lint and api-diff:
+ * Exit-code convention, owned by Substrat's OWN checkers (boundary-lint,
+ * lint:permissions, lint:api):
  *   0 = fine · 1 = drift/violation · 2 = the tool could not do its job
  * A `2` is reported as `blocked`, not `failed`: it means we learned nothing, and
  * treating "the checker crashed" as "the code is bad" trains the agent to
  * "fix" the wrong thing.
+ *
+ * That convention is opt-in PER GATE (`exitConvention: 'substrat'`) because
+ * external tools do not speak it: tsc exits 2 on ordinary type errors, so a
+ * blanket "2 = blocked" silently disarmed the repair loop for exactly the gate
+ * that fails most — the model was told "this is NOT a code problem" about its
+ * own type errors. Default: every nonzero exit is a plain failure.
  */
 import type { Workspace } from './workspace.js';
 
@@ -44,6 +51,14 @@ export interface GateSpec {
 	/** When present and false at run time, the gate is skipped with `note`. */
 	readonly appliesWhen?: (ws: Workspace, verticalDir: string) => Promise<boolean>;
 	readonly note?: string;
+	/**
+	 * Exit-code dialect. `'substrat'` = the 0/1/2 convention above (2 → blocked);
+	 * only our own checkers speak it. Absent = binary: any nonzero exit is
+	 * `failed`. Misclassifying a crashed external checker as failed shows the
+	 * model some noise; the reverse (tsc's exit-2 type errors as blocked) mutes
+	 * the repair loop entirely — so binary is the default.
+	 */
+	readonly exitConvention?: 'substrat';
 }
 
 /**
@@ -55,11 +70,12 @@ export interface GateSpec {
 export function defaultGates(verticalDir: string): GateSpec[] {
 	return [
 		{ name: 'typecheck', cmd: 'pnpm -r typecheck' },
-		{ name: 'boundary-lint', cmd: 'node tools/boundary-lint.mjs' },
-		{ name: 'permissions', cmd: 'pnpm lint:permissions --check' },
+		{ name: 'boundary-lint', cmd: 'node tools/boundary-lint.mjs', exitConvention: 'substrat' },
+		{ name: 'permissions', cmd: 'pnpm lint:permissions --check', exitConvention: 'substrat' },
 		{
 			name: 'api',
 			cmd: 'pnpm lint:api --check',
+			exitConvention: 'substrat',
 			// api-diff is opt-in per vertical (api-surface.md §3): a vertical without
 			// src/api.ts simply is not documented yet, which is not a failure.
 			appliesWhen: async (ws) => await ws.exists(`${verticalDir}/src/api.ts`),
@@ -108,6 +124,7 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			cmd: `node packages/boundary-lint/dist/cli.js --root ${projectDir}`,
 			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src`),
 			note: 'no src/ yet',
+			exitConvention: 'substrat',
 		},
 		{
 			name: 'permissions',
@@ -160,7 +177,12 @@ export async function runGate(ws: Workspace, spec: GateSpec, verticalDir: string
 	const started = Date.now();
 	const { stdout, stderr, exitCode } = await ws.exec(spec.cmd);
 	const durationMs = Date.now() - started;
-	const status: GateStatus = exitCode === 0 ? 'passed' : exitCode === 2 ? 'blocked' : 'failed';
+	const status: GateStatus =
+		exitCode === 0
+			? 'passed'
+			: spec.exitConvention === 'substrat' && exitCode === 2
+				? 'blocked'
+				: 'failed';
 
 	return { name: spec.name, status, exitCode, durationMs, output: trimOutput(stdout, stderr) };
 }

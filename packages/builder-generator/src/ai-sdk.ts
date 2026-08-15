@@ -348,6 +348,14 @@ export class AiSdkGenerator implements VerticalGenerator {
 		// where it can't break the conversation's cache.
 		const anthropic = this.#opts.label.startsWith('anthropic');
 
+		// The qwen dialect also has a working prompt cache — but its explicit
+		// markers cannot ride providerOptions (DashScope wants them on content
+		// BLOCKS; the openai-compatible provider only spreads message-level), so
+		// the HOST injects them at the wire (apps/builder qwenCacheFetch). What
+		// this file owes that cache: a byte-stable transcript. No pruning — same
+		// reasoning as the Anthropic branch below.
+		const qwenDialect = this.#opts.label.startsWith('qwen/');
+
 		// Cache plumbing for the OpenAI dialect (H4): Anthropic gets placeable
 		// breakpoints (below); OpenAI's caching is automatic but shard-routed —
 		// a stable per-project promptCacheKey routes every request of a project
@@ -465,14 +473,19 @@ export class AiSdkGenerator implements VerticalGenerator {
 					tools,
 					stopWhen: stepCountIs(Math.max(1, maxSteps - steps)),
 					maxRetries: 0,
-					// Two step-economies, mutually exclusive by dialect (see the helpers):
-					// Anthropic gets a moving cache breakpoint; everyone else gets stale
-					// tool payloads pruned. Returned messages carry forward, so stubs
-					// persist and the next step only touches newly-superseded entries.
+					// Step-economies, mutually exclusive by dialect (see the helpers):
+					// Anthropic gets a moving cache breakpoint; qwen passes through
+					// untouched (its markers are injected at the wire by the host, and
+					// its cache needs the byte-stable transcript); everyone else gets
+					// stale tool payloads pruned. Returned messages carry forward, so
+					// stubs persist and the next step only touches newly-superseded
+					// entries.
 					prepareStep: ({ messages: stepMessages }) => {
 						const prepared = anthropic
 							? withMovingBreakpoint(stepMessages)
-							: pruneStalePayloads(stepMessages);
+							: qwenDialect
+								? stepMessages
+								: pruneStalePayloads(stepMessages);
 						resumeMessages = prepared;
 						return { messages: prepared };
 					},

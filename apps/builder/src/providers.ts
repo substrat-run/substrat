@@ -23,6 +23,7 @@
 import type { LanguageModel } from 'ai';
 import { envHint } from './env.js';
 import { explainProviderFailure } from './provider-errors.js';
+import { qwenCacheFetch } from './qwen-cache.js';
 
 interface DirectProvider {
 	readonly kind: 'direct';
@@ -239,12 +240,16 @@ export async function resolveModel(spec: string): Promise<ResolvedModel> {
 			name: string;
 			baseURL: string;
 			apiKey?: string;
+			fetch?: typeof globalThis.fetch;
 		}) => (id: string) => LanguageModel
 	)({
 		name: providerName,
 		baseURL,
 		// Local runtimes ignore this but the client still wants a value.
 		apiKey: provider.envVar ? process.env[provider.envVar] : 'local',
+		// Explicit context-cache markers, injected at the wire (qwen-cache.ts) —
+		// the flash tier caches nothing without them.
+		...(providerName === 'qwen' ? { fetch: qwenCacheFetch() } : {}),
 	});
 
 	return {
