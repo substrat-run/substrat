@@ -23,6 +23,7 @@ import {
 	type ProviderMetadata,
 } from 'ai';
 import type { BuildEvent, BuildEventOf, StepUsage } from './events.js';
+import { condenseTranscript, type CondenseResult } from './condense.js';
 import type { GeneratorInput, VerticalGenerator } from './generator.js';
 import { classifyProviderError, retryDelayMs } from './retry.js';
 import { workspaceTools } from './tools.js';
@@ -425,7 +426,9 @@ export class AiSdkGenerator implements VerticalGenerator {
 
 		const maxSteps = this.#opts.maxSteps ?? 40;
 		const maxRetries = this.#opts.maxRetries ?? 5;
+		const MAX_CONDENSATIONS = 2;
 		let attempt = 0;
+		let condensations = 0;
 		// The exact transcript of the most recent request, captured in
 		// prepareStep AFTER the dialect transform — on retry it IS the failed
 		// request's input, so resuming re-issues that request and nothing else.
@@ -433,9 +436,10 @@ export class AiSdkGenerator implements VerticalGenerator {
 
 		// One iteration per provider attempt. A transient failure classifies,
 		// backs off, and resumes from the failed request (builder-harness.md H2)
-		// — one mid-turn 529 must not kill 30 steps of work. Overflow and client
-		// errors stay fatal; the SDK's own pre-stream retry is disabled
-		// (maxRetries: 0) so delays never compound.
+		// — one mid-turn 529 must not kill 30 steps of work. A context overflow
+		// condenses the transcript and resumes (H3: mechanical, reactive-only,
+		// escalation-capped). Client errors stay fatal; the SDK's own pre-stream
+		// retry is disabled (maxRetries: 0) so delays never compound.
 		while (true) {
 			let streamError: unknown = null;
 			try {
@@ -517,6 +521,36 @@ export class AiSdkGenerator implements VerticalGenerator {
 			}
 
 			const decision = classifyProviderError(streamError);
+
+			// Context overflow (H3): drop old tool payloads and re-issue the failed
+			// request. Escalation-capped, and gated on a MEANINGFUL shrink (≥10%) —
+			// re-sending a barely-smaller transcript is a spin, not a recovery. An
+			// overflow with nothing to drop (oversized prefix, first request) falls
+			// through to the fatal path with the provider's own message.
+			if (decision.overflow && condensations < MAX_CONDENSATIONS && resumeMessages) {
+				const before: number = JSON.stringify(resumeMessages).length;
+				// Escalation ladder (OpenHands' shape): first preserve the working-set
+				// tail; if that frees too little — or the whole transcript IS the tail
+				// — drop every droppable payload. Only then give up.
+				const gentle: CondenseResult | null = condenseTranscript(resumeMessages);
+				const condensed: CondenseResult | null =
+					gentle && gentle.savedChars >= before * 0.1
+						? gentle
+						: condenseTranscript(resumeMessages, { keepTail: 0 });
+				if (condensed && condensed.savedChars >= before * 0.1) {
+					condensations += 1;
+					resumeMessages = condensed.messages;
+					yield {
+						type: 'retry',
+						attempt: condensations,
+						maxAttempts: MAX_CONDENSATIONS,
+						delayMs: 0,
+						reason: 'context overflow — condensed old tool output',
+					};
+					continue;
+				}
+			}
+
 			if (decision.retryable && attempt < maxRetries && !input.signal?.aborted) {
 				attempt += 1;
 				const delayMs = retryDelayMs(attempt, decision);

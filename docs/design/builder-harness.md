@@ -276,7 +276,7 @@ Order chosen so billing correctness lands before optimisation, and each step fee
 | 2 | H2 retry/backoff | turn survival — protects every other investment; self-contained | ☑ |
 | 3 | H1 edit tool: strict apply + structured reflection (aider shape), format-per-model | biggest bill lever; weak models keep `write_file` by declaration, not by failure | ☑ |
 | 4 | H4 cache key + qwen temperature | one-liners, default-provider quality | ☑ |
-| 5 | H3 overflow → condense-and-retry (one code path), eager only off-Anthropic | needs `limit.context` from 1; cache-invalidation tradeoff says measure before defaulting on | ☐ |
+| 5 | H3 overflow → condense-and-retry (one code path), eager only off-Anthropic | needs `limit.context` from 1; cache-invalidation tradeoff says measure before defaulting on | ☑ (reactive-only: mechanical condenser fires on actual overflow — maximal reluctance on every dialect; proactive token-threshold trigger deferred until evals can weigh it against the cache cost) |
 | 6 | §2.3 credential-gated picker; `tool_call` filter on the Cloudflare list | UX correctness, not cost | ☐ |
 | 7 | §2.3 family-based pairs | wait until the model list outgrows hand-editing | ☐ |
 | 8 | H5 gate feedback: report into next-turn context + capped repair loop | the oracle must reach the model; step 1 was a live defect, not an optimisation | ☑ |
