@@ -144,6 +144,11 @@ function eventLine(e: BuildEvent): { text: string; cls: string } {
 			return { text: 'thinking…', cls: '' };
 		case 'phase':
 			return { text: `phase: ${e.phase}`, cls: '' };
+		case 'retry':
+			return {
+				text: `${e.reason} — retrying in ${Math.round(e.delayMs / 1000)}s (${e.attempt}/${e.maxAttempts})`,
+				cls: '',
+			};
 		case 'error':
 			return { text: e.message, cls: 'error' };
 		default:

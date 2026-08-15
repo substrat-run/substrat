@@ -118,6 +118,18 @@ export type BuildEvent =
 			 */
 			readonly stepUsage?: readonly StepUsage[];
 	  }
+	/**
+	 * A transient provider failure mid-turn, about to be retried — the turn is
+	 * alive. `attempt` is 1-based over `maxAttempts` retries; the UI shows it so
+	 * a 30-second overloaded pause reads as patience, not a hang.
+	 */
+	| {
+			readonly type: 'retry';
+			readonly attempt: number;
+			readonly maxAttempts: number;
+			readonly delayMs: number;
+			readonly reason: string;
+	  }
 	| { readonly type: 'error'; readonly message: string; readonly fatal: boolean };
 
 /**
@@ -170,6 +182,8 @@ export function formatEvent(e: BuildEvent): string {
 					? ` (${Math.round((100 * e.cachedInputTokens) / e.inputTokens)}% cached)`
 					: ''
 			}`;
+		case 'retry':
+			return `! ${e.reason} — retrying in ${Math.round(e.delayMs / 1000)}s (${e.attempt}/${e.maxAttempts})`;
 		case 'error':
 			return `${e.fatal ? '✗' : '!'} ${e.message}`;
 	}

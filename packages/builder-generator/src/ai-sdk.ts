@@ -18,11 +18,13 @@ import {
 	stepCountIs,
 	streamText,
 	type LanguageModel,
+	type LanguageModelUsage,
 	type ModelMessage,
 	type ProviderMetadata,
 } from 'ai';
-import type { BuildEvent, StepUsage } from './events.js';
+import type { BuildEvent, BuildEventOf, StepUsage } from './events.js';
 import type { GeneratorInput, VerticalGenerator } from './generator.js';
+import { classifyProviderError, retryDelayMs } from './retry.js';
 import { workspaceTools } from './tools.js';
 
 export interface AiSdkGeneratorOptions {
@@ -31,6 +33,12 @@ export interface AiSdkGeneratorOptions {
 	readonly label: string;
 	/** Ceiling on tool-loop steps per turn. Also the runaway backstop. */
 	readonly maxSteps?: number;
+	/**
+	 * Retries per turn on TRANSIENT provider failures (429/5xx/network), with
+	 * retry-after honored and jittered backoff (retry.ts). Default 5. The turn
+	 * resumes from the failed request; overflow and client errors never retry.
+	 */
+	readonly maxRetries?: number;
 	/**
 	 * Provider-specific settings, passed straight through. For Claude:
 	 * `{ anthropic: { thinking: { type: 'adaptive' } } }` — leave thinking ON;
@@ -309,9 +317,19 @@ export class AiSdkGenerator implements VerticalGenerator {
 			(t): ModelMessage => ({ role: t.role, content: t.text }),
 		);
 
-		const userText = input.workspaceBrief
-			? `Project map (current — trust it; never call list_files to re-discover it):\n${input.workspaceBrief}\n\n---\n\n${input.message}`
-			: input.message;
+		const userText = [
+			...(input.workspaceBrief
+				? [
+						`Project map (current — trust it; never call list_files to re-discover it):\n${input.workspaceBrief}`,
+					]
+				: []),
+			...(input.gateReport
+				? [
+						`Tier-1 gates are RED from the previous turn — the tree is broken until these pass. Getting them green is part of whatever you do next:\n${input.gateReport}`,
+					]
+				: []),
+			input.message,
+		].join('\n\n---\n\n');
 
 		const messages: ModelMessage[] = [
 			{
@@ -329,106 +347,181 @@ export class AiSdkGenerator implements VerticalGenerator {
 		];
 
 		let steps = 0;
-		let inputTokens = 0;
-		let outputTokens = 0;
 		// Per-request usage, one entry per step — the host needs it because tier
 		// pricing is all-or-nothing per REQUEST (pricing happens host-side; this
 		// file stays provider- and price-agnostic per D-49).
 		const stepUsage: StepUsage[] = [];
-		// Once the provider has failed, the SDK also rejects `usage` with a vague
-		// "No output generated" — reporting both turns one problem into two.
-		let reported = false;
 
 		const explain = (err: unknown): string =>
 			this.#opts.explainError?.(err) ?? apiErrorFacts(err).message;
 
-		try {
-			const result = streamText({
-				model: this.#opts.model,
-				messages,
-				// v7 rejects role:'system' inside `messages` by default. We need system
-				// MESSAGES (not the `system` string param) because Anthropic prompt
-				// caching hangs cacheControl off per-message providerOptions — the
-				// stable prefix gets a breakpoint, the volatile context does not.
-				allowSystemInMessages: true,
-				tools,
-				stopWhen: stepCountIs(this.#opts.maxSteps ?? 40),
-				// Two step-economies, mutually exclusive by dialect (see the helpers):
-				// Anthropic gets a moving cache breakpoint; everyone else gets stale
-				// tool payloads pruned. Returned messages carry forward, so stubs
-				// persist and the next step only touches newly-superseded entries.
-				prepareStep: ({ messages: stepMessages }) => ({
-					messages: anthropic
-						? withMovingBreakpoint(stepMessages)
-						: pruneStalePayloads(stepMessages),
-				}),
-				// The SDK's default onError console.errors the whole object. We surface
-				// errors as BuildEvents, so the default is pure noise in a chat pane.
-				onError: () => {},
-				...(this.#opts.providerOptions ? { providerOptions: this.#opts.providerOptions } : {}),
-				...(input.signal ? { abortSignal: input.signal } : {}),
-			});
+		const maxSteps = this.#opts.maxSteps ?? 40;
+		const maxRetries = this.#opts.maxRetries ?? 5;
+		let attempt = 0;
+		// The exact transcript of the most recent request, captured in
+		// prepareStep AFTER the dialect transform — on retry it IS the failed
+		// request's input, so resuming re-issues that request and nothing else.
+		let resumeMessages: ModelMessage[] | null = null;
 
-			for await (const part of result.fullStream) {
-				// Side effects recorded by the tools themselves come out first, so the
-				// UI sees "wrote file" before the prose that describes it.
+		// One iteration per provider attempt. A transient failure classifies,
+		// backs off, and resumes from the failed request (builder-harness.md H2)
+		// — one mid-turn 529 must not kill 30 steps of work. Overflow and client
+		// errors stay fatal; the SDK's own pre-stream retry is disabled
+		// (maxRetries: 0) so delays never compound.
+		while (true) {
+			let streamError: unknown = null;
+			try {
+				const result = streamText({
+					model: this.#opts.model,
+					messages: resumeMessages ?? messages,
+					// v7 rejects role:'system' inside `messages` by default. We need system
+					// MESSAGES (not the `system` string param) because Anthropic prompt
+					// caching hangs cacheControl off per-message providerOptions — the
+					// stable prefix gets a breakpoint, the volatile context does not.
+					allowSystemInMessages: true,
+					tools,
+					stopWhen: stepCountIs(Math.max(1, maxSteps - steps)),
+					maxRetries: 0,
+					// Two step-economies, mutually exclusive by dialect (see the helpers):
+					// Anthropic gets a moving cache breakpoint; everyone else gets stale
+					// tool payloads pruned. Returned messages carry forward, so stubs
+					// persist and the next step only touches newly-superseded entries.
+					prepareStep: ({ messages: stepMessages }) => {
+						const prepared = anthropic
+							? withMovingBreakpoint(stepMessages)
+							: pruneStalePayloads(stepMessages);
+						resumeMessages = prepared;
+						return { messages: prepared };
+					},
+					// The SDK's default onError console.errors the whole object. We surface
+					// errors as BuildEvents, so the default is pure noise in a chat pane.
+					onError: () => {},
+					...(this.#opts.providerOptions ? { providerOptions: this.#opts.providerOptions } : {}),
+					...(input.signal ? { abortSignal: input.signal } : {}),
+				});
+
+				for await (const part of result.fullStream) {
+					// Side effects recorded by the tools themselves come out first, so the
+					// UI sees "wrote file" before the prose that describes it.
+					while (queue.length) yield queue.shift() as BuildEvent;
+
+					switch (part.type) {
+						case 'text-delta':
+							yield { type: 'assistant-text', text: part.text };
+							break;
+						// Presence only, one per reasoning burst — a truthful "thinking…"
+						// for the turn's opening silence. Content is never forwarded.
+						case 'reasoning-start':
+							yield { type: 'thinking' };
+							break;
+						case 'finish-step': {
+							steps += 1;
+							const u = part.usage;
+							if (u.inputTokens != null || u.outputTokens != null) {
+								const cacheRead = u.inputTokenDetails.cacheReadTokens;
+								const cacheWrite = u.inputTokenDetails.cacheWriteTokens;
+								stepUsage.push({
+									inputTokens: u.inputTokens ?? 0,
+									outputTokens: u.outputTokens ?? 0,
+									...(cacheRead != null ? { cachedInputTokens: cacheRead } : {}),
+									...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
+								});
+							}
+							break;
+						}
+						case 'error':
+							streamError = part.error ?? new Error('provider stream error');
+							break;
+						default:
+							break;
+					}
+				}
 				while (queue.length) yield queue.shift() as BuildEvent;
 
-				switch (part.type) {
-					case 'text-delta':
-						yield { type: 'assistant-text', text: part.text };
-						break;
-					// Presence only, one per reasoning burst — a truthful "thinking…"
-					// for the turn's opening silence. Content is never forwarded.
-					case 'reasoning-start':
-						yield { type: 'thinking' };
-						break;
-					case 'finish-step': {
-						steps += 1;
-						const u = part.usage;
-						if (u.inputTokens != null || u.outputTokens != null) {
-							const cacheRead = u.inputTokenDetails.cacheReadTokens;
-							const cacheWrite = u.inputTokenDetails.cacheWriteTokens;
-							stepUsage.push({
-								inputTokens: u.inputTokens ?? 0,
-								outputTokens: u.outputTokens ?? 0,
-								...(cacheRead != null ? { cachedInputTokens: cacheRead } : {}),
-								...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
-							});
-						}
-						break;
-					}
-					case 'error':
-						reported = true;
-						yield { type: 'error', message: explain(part.error), fatal: true };
-						break;
-					default:
-						break;
+				if (streamError === null) {
+					yield this.#usageEvent(result, steps, stepUsage);
+					return;
 				}
+			} catch (err) {
+				while (queue.length) yield queue.shift() as BuildEvent;
+				streamError = err;
 			}
-			while (queue.length) yield queue.shift() as BuildEvent;
 
-			if (!reported) {
-				// totalUsage, not usage: `usage` is the FINAL step only, and a build
-				// turn is dozens of steps — the whole point of measuring is the loop.
-				const usage = await result.totalUsage;
-				inputTokens = usage.inputTokens ?? 0;
-				outputTokens = usage.outputTokens ?? 0;
-				const cacheRead = usage.inputTokenDetails.cacheReadTokens;
-				const cacheWrite = usage.inputTokenDetails.cacheWriteTokens;
-				yield {
-					type: 'usage',
-					inputTokens,
-					outputTokens,
-					steps,
-					...(cacheRead != null ? { cachedInputTokens: cacheRead } : {}),
-					...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
-					...(stepUsage.length ? { stepUsage } : {}),
-				};
+			const decision = classifyProviderError(streamError);
+			if (decision.retryable && attempt < maxRetries && !input.signal?.aborted) {
+				attempt += 1;
+				const delayMs = retryDelayMs(attempt, decision);
+				yield { type: 'retry', attempt, maxAttempts: maxRetries, delayMs, reason: decision.reason };
+				await abortableSleep(delayMs, input.signal);
+				if (input.signal?.aborted) return;
+				continue;
 			}
-		} catch (err) {
-			while (queue.length) yield queue.shift() as BuildEvent;
-			if (!reported) yield { type: 'error', message: explain(err), fatal: true };
+
+			// Exhausted or non-retryable. Steps that DID finish were billed by the
+			// provider — meter them before the fatal error, never silently drop.
+			if (stepUsage.length) yield this.#usageEvent(null, steps, stepUsage);
+			yield { type: 'error', message: explain(streamError), fatal: true };
+			return;
 		}
 	}
+
+	/**
+	 * The turn's usage event. With retries a turn spans several streams, so the
+	 * per-step records are the ground truth: totals are their SUM (a failed
+	 * attempt's finished steps were still billed). `result.totalUsage` is only
+	 * consulted when no step reported usage — and never after a failure, where
+	 * the SDK rejects it with a vague "No output generated".
+	 */
+	async #usageEvent(
+		result: { totalUsage: PromiseLike<LanguageModelUsage> } | null,
+		steps: number,
+		stepUsage: readonly StepUsage[],
+	): Promise<BuildEventOf<'usage'>> {
+		if (stepUsage.length === 0 && result) {
+			const usage = await result.totalUsage;
+			const cacheRead = usage.inputTokenDetails.cacheReadTokens;
+			const cacheWrite = usage.inputTokenDetails.cacheWriteTokens;
+			return {
+				type: 'usage',
+				inputTokens: usage.inputTokens ?? 0,
+				outputTokens: usage.outputTokens ?? 0,
+				steps,
+				...(cacheRead != null ? { cachedInputTokens: cacheRead } : {}),
+				...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
+			};
+		}
+		let inputTokens = 0;
+		let outputTokens = 0;
+		let cacheRead: number | undefined;
+		let cacheWrite: number | undefined;
+		for (const s of stepUsage) {
+			inputTokens += s.inputTokens;
+			outputTokens += s.outputTokens;
+			if (s.cachedInputTokens != null) cacheRead = (cacheRead ?? 0) + s.cachedInputTokens;
+			if (s.cacheWriteTokens != null) cacheWrite = (cacheWrite ?? 0) + s.cacheWriteTokens;
+		}
+		return {
+			type: 'usage',
+			inputTokens,
+			outputTokens,
+			steps,
+			...(cacheRead != null ? { cachedInputTokens: cacheRead } : {}),
+			...(cacheWrite != null ? { cacheWriteTokens: cacheWrite } : {}),
+			...(stepUsage.length ? { stepUsage: [...stepUsage] } : {}),
+		};
+	}
+}
+
+/** Sleep that ends early on abort — a cancelled turn must not serve out its backoff. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) return resolve();
+		const t = setTimeout(done, ms);
+		function done(): void {
+			clearTimeout(t);
+			signal?.removeEventListener('abort', done);
+			resolve();
+		}
+		signal?.addEventListener('abort', done);
+	});
 }
