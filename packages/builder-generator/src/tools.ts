@@ -58,9 +58,25 @@ function defaultDeny(cmd: string): string | null {
 	return null;
 }
 
+/** Interview discipline, enforced (see ask_user): the prompt already says 4. */
+export const MAX_QUESTIONS_PER_TURN = 4;
+
+/** Case/whitespace/punctuation-insensitive key for duplicate detection. */
+function normalizeQuestion(s: string): string {
+	return s
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, ' ')
+		.trim();
+}
+
 export function workspaceTools(opts: WorkspaceToolOptions) {
 	const { workspace: ws, emit } = opts;
 	const deny = opts.denyCommand ?? defaultDeny;
+	// Per-generator-pass question ledger (workspaceTools is built once per run).
+	// Survives mid-turn provider retries — already-executed calls are not re-run
+	// on resume — and resets on the next pass, which is a NEW conversation turn.
+	const askedQuestions = new Set<string>();
+	const askedHeaders = new Set<string>();
 
 	/**
 	 * Strict search/replace over one file (edit.ts — aider's pipeline: exact,
@@ -221,6 +237,20 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 					.describe('Short tab label (1–3 words, e.g. "Sharing", "Task detail") shown when several questions share a turn'),
 			}),
 			execute: async ({ question, options, header }) => {
+				// Mechanical guards, because the prompt-level ones are ignored under
+				// pressure (observed: a fast interview model asking 11 questions in
+				// one turn, three of them duplicates). Refusals — not truncation — so
+				// the model learns WHY inside the same turn.
+				const key = normalizeQuestion(question);
+				const tab = header ? normalizeQuestion(header) : null;
+				if (askedQuestions.has(key) || (tab !== null && askedHeaders.has(tab))) {
+					return 'REFUSED: you already asked this question this turn. Do not re-ask — end your turn now; every answer arrives together in the next user message.';
+				}
+				if (askedQuestions.size >= MAX_QUESTIONS_PER_TURN) {
+					return `REFUSED: question limit reached (${MAX_QUESTIONS_PER_TURN} per turn). End your turn now and wait for the answers; ask any remaining questions next turn.`;
+				}
+				askedQuestions.add(key);
+				if (tab !== null) askedHeaders.add(tab);
 				emit({ type: 'question', question, options, ...(header ? { header } : {}) });
 				return 'Question shown to the builder. Call ask_user again ONLY for a tightly-coupled follow-up (max 4 per turn); otherwise end your turn now — answers arrive together as the next message.';
 			},

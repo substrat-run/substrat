@@ -17,6 +17,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { join } from 'node:path';
 import {
 	AiSdkGenerator,
+	historyMarker,
 	type BuildEvent,
 	type VerticalGenerator,
 } from '@substrat-run/builder-generator';
@@ -311,6 +312,10 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 				if (event.type === 'project-named') await applyAiName(event.name);
 				emit(event);
 				if (event.type === 'assistant-text') prose += event.text;
+				// Questions asked and step-ceiling cuts survive into durable history —
+				// the model's next turn must know both (events.ts historyMarker).
+				const marker = historyMarker(event);
+				if (marker) prose += `${prose ? '\n\n' : ''}${marker}`;
 			}
 			transcript.push({ role: 'user', text });
 			if (prose) transcript.push({ role: 'assistant', text: prose });

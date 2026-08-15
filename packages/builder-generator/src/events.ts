@@ -130,6 +130,13 @@ export type BuildEvent =
 			readonly delayMs: number;
 			readonly reason: string;
 	  }
+	/**
+	 * The tool loop hit the per-turn step ceiling while the model still wanted
+	 * to act (final finishReason `tool-calls`). Without this, a cut-off turn is
+	 * indistinguishable from a finished one — to the builder AND to the model's
+	 * own next turn, which then reasons over silently unfinished work.
+	 */
+	| { readonly type: 'truncated'; readonly steps: number; readonly maxSteps: number }
 	| { readonly type: 'error'; readonly message: string; readonly fatal: boolean };
 
 /**
@@ -184,7 +191,28 @@ export function formatEvent(e: BuildEvent): string {
 			}`;
 		case 'retry':
 			return `! ${e.reason} — retrying in ${Math.round(e.delayMs / 1000)}s (${e.attempt}/${e.maxAttempts})`;
+		case 'truncated':
+			return `! turn cut off at the ${e.maxSteps}-step ceiling — work may be unfinished`;
 		case 'error':
 			return `${e.fatal ? '✗' : '!'} ${e.message}`;
+	}
+}
+
+/**
+ * The durable-history record of an event, or null for events that need none.
+ * Hosts keep text-only history (assistant prose), which silently drops what the
+ * model DID: the questions it asked (so later turns re-ask them) and the fact
+ * that a turn was cut off (so later turns treat unfinished work as finished).
+ * Every host appends these markers to the turn's assistant text — one shared
+ * spelling, so the transcripts cannot drift between run modes.
+ */
+export function historyMarker(e: BuildEvent): string | null {
+	switch (e.type) {
+		case 'question':
+			return `[asked${e.header ? ` ${e.header}` : ''}: ${e.question}]`;
+		case 'truncated':
+			return `[this turn was cut off at the ${e.maxSteps}-step ceiling — the work above may be unfinished]`;
+		default:
+			return null;
 	}
 }

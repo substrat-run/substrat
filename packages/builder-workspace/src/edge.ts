@@ -32,6 +32,7 @@ export {
 	repairNeeded,
 	runGate,
 	runGates,
+	runInstall,
 	standaloneGates,
 	type GateName,
 	type GateResult,

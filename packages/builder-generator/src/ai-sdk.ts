@@ -420,6 +420,11 @@ export class AiSdkGenerator implements VerticalGenerator {
 		// pricing is all-or-nothing per REQUEST (pricing happens host-side; this
 		// file stays provider- and price-agnostic per D-49).
 		const stepUsage: StepUsage[] = [];
+		// The final step's finishReason. 'tool-calls' after a clean stream end
+		// means stopWhen cut the loop while the model still wanted tools — the
+		// turn is unfinished, and both the UI and the next turn's history must
+		// say so (the 'truncated' event below).
+		let lastFinishReason: string | null = null;
 
 		const explain = (err: unknown): string =>
 			this.#opts.explainError?.(err) ?? apiErrorFacts(err).message;
@@ -489,6 +494,7 @@ export class AiSdkGenerator implements VerticalGenerator {
 							break;
 						case 'finish-step': {
 							steps += 1;
+							lastFinishReason = part.finishReason;
 							const u = part.usage;
 							if (u.inputTokens != null || u.outputTokens != null) {
 								const cacheRead = u.inputTokenDetails.cacheReadTokens;
@@ -512,6 +518,12 @@ export class AiSdkGenerator implements VerticalGenerator {
 				while (queue.length) yield queue.shift() as BuildEvent;
 
 				if (streamError === null) {
+					// A clean end with the model still mid-tool-call = stopWhen fired:
+					// the step ceiling cut the turn, it did not finish (H6). Said out
+					// loud, because a silent cut reads as "done" everywhere downstream.
+					if (lastFinishReason === 'tool-calls') {
+						yield { type: 'truncated', steps, maxSteps };
+					}
 					yield this.#usageEvent(result, steps, stepUsage);
 					return;
 				}

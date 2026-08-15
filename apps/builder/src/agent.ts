@@ -22,6 +22,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, type Sandbox } from '@cloudflare/sandbox';
 import {
 	AiSdkGenerator,
+	historyMarker,
 	type BuildEvent,
 	type GeneratorTurn,
 	type VerticalGenerator,
@@ -29,11 +30,16 @@ import {
 import {
 	ContainerWorkspace,
 	ensureVerticalRepo,
+	gateRepairPrompt,
+	gateReport,
+	MAX_GATE_REPAIRS,
+	repairNeeded,
 	runGates,
 	runTurn,
 	standaloneGates,
 	workspaceBrief,
 	type SandboxLike,
+	type TurnResult,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
@@ -76,6 +82,8 @@ interface Registry {
 interface ProjectState {
 	history: GeneratorTurn[];
 	turnNo: number;
+	/** Red-gate report carried into the next turn's context (H5) — unset while green. */
+	lastGateReport?: string;
 }
 
 /** ULID, Web-Crypto only — same wire shape as kernel `ulid()`. */
@@ -352,7 +360,6 @@ export class BuilderAgent extends DurableObject<Env> {
 		}, 10_000);
 
 		const run = async (): Promise<void> => {
-			let assistant = '';
 			try {
 				// The container's disk may be fresh (slept): restore from the R2
 				// bundle first (clone at HEAD, §4.5), then ensure — both idempotent.
@@ -376,68 +383,110 @@ export class BuilderAgent extends DurableObject<Env> {
 						? '(no concept document yet — interview the builder before writing code)'
 						: await projectWs.readFile('spec/concept.md');
 
-				for await (const event of generator.run({
-					workspace: projectWs,
-					verticalDir: '.',
-					concept,
-					message,
-					workspaceBrief: await workspaceBrief(rootWs, entry.dir).catch(() => undefined),
-					// Text-only history is lean by design; cap it so decade-long
-					// sessions do not grow the per-step bill without bound.
-					history: state.history.slice(-24),
-				})) {
-					if (event.type === 'project-named' && entry.nameSource !== 'user') {
-						entry.name = event.name;
-						entry.nameSource = 'ai';
-						entry.updatedAt = new Date().toISOString();
-						await this.#save(reg);
+				// Same shape as the local server's handleTurn: pass → checks → capped
+				// repair loop (H5; the policy constants live in gates.ts so the hosts
+				// cannot drift). Repair prompts are recorded verbatim as user turns.
+				const transcript: GeneratorTurn[] = [];
+
+				const runPass = async (text: string, carriedReport?: string): Promise<void> => {
+					let assistant = '';
+					for await (const event of generator.run({
+						workspace: projectWs,
+						verticalDir: '.',
+						concept,
+						message: text,
+						workspaceBrief: await workspaceBrief(rootWs, entry.dir).catch(() => undefined),
+						...(carriedReport ? { gateReport: carriedReport } : {}),
+						// Text-only history is lean by design; cap it so decade-long
+						// sessions do not grow the per-step bill without bound.
+						history: [...state.history.slice(-24), ...transcript],
+					})) {
+						if (event.type === 'project-named' && entry.nameSource !== 'user') {
+							entry.name = event.name;
+							entry.nameSource = 'ai';
+							entry.updatedAt = new Date().toISOString();
+							await this.#save(reg);
+						}
+						if (event.type === 'usage') {
+							// Best-effort by design: the turn's product is the commit, and
+							// the meter must never take it down. waitUntil, not await — the
+							// record rides out past the stream close if it must.
+							this.ctx.waitUntil(
+								reportTurnUsage(this.env, {
+									projectId: entry.id,
+									turnId,
+									model: modelSpec,
+									inputTokens: event.inputTokens,
+									outputTokens: event.outputTokens,
+									...(event.cachedInputTokens != null
+										? { cachedInputTokens: event.cachedInputTokens }
+										: {}),
+									...(event.cacheWriteTokens != null
+										? { cacheWriteTokens: event.cacheWriteTokens }
+										: {}),
+									// The per-step split — required for tier-correct pricing
+									// (pricing.ts: tier selection is per request, not per turn).
+									...(event.stepUsage ? { stepUsage: event.stepUsage } : {}),
+								}),
+							);
+						}
+						emit(event);
+						if (event.type === 'assistant-text') assistant += event.text;
+						// Questions asked and step-ceiling cuts survive into durable
+						// history — the model's next turn must know both.
+						const marker = historyMarker(event);
+						if (marker) assistant += `${assistant ? '\n\n' : ''}${marker}`;
 					}
-					if (event.type === 'usage') {
-						// Best-effort by design: the turn's product is the commit, and
-						// the meter must never take it down. waitUntil, not await — the
-						// record rides out past the stream close if it must.
-						this.ctx.waitUntil(
-							reportTurnUsage(this.env, {
-								projectId: entry.id,
-								turnId,
-								model: modelSpec,
-								inputTokens: event.inputTokens,
-								outputTokens: event.outputTokens,
-								...(event.cachedInputTokens != null
-									? { cachedInputTokens: event.cachedInputTokens }
-									: {}),
-								...(event.cacheWriteTokens != null
-									? { cacheWriteTokens: event.cacheWriteTokens }
-									: {}),
-								// The per-step split — required for tier-correct pricing
-								// (pricing.ts: tier selection is per request, not per turn).
-								...(event.stepUsage ? { stepUsage: event.stepUsage } : {}),
-							}),
-						);
+					transcript.push({ role: 'user', text });
+					if (assistant) transcript.push({ role: 'assistant', text: assistant });
+				};
+
+				const runChecks = async (label: string): Promise<TurnResult> => {
+					const turn = await runTurn(rootWs, {
+						verticalDir: entry.dir,
+						message: label,
+						gates: standaloneGates(entry.dir),
+						onGateResult: (result) => emit({ type: 'check', result }),
+					});
+					emit({ type: 'gates', run: turn.gates });
+					if (turn.commit) {
+						emit({ type: 'commit', sha: turn.commit, summary: `${turn.changedFiles.length} files` });
+						// The commit is only durable once bundled (§4.5): container disk
+						// is the cache, R2 is where the repo rests.
+						await this.#saveBundle(pair, entry);
 					}
-					emit(event);
-					if (event.type === 'assistant-text') assistant += event.text;
+					return turn;
+				};
+
+				await runPass(message, state.lastGateReport);
+				let turn = await runChecks(`studio turn ${state.turnNo}: ${message.slice(0, 60)}`);
+
+				// Red gates are the model's problem, not the builder's (H5): capped
+				// repair attempts, only while attempts make progress (changed files) —
+				// a chat-only turn over a pre-existing red tree must not burn budget,
+				// and `blocked` gates never trigger repair (the checker crashed).
+				for (
+					let attempt = 1;
+					attempt <= MAX_GATE_REPAIRS && repairNeeded(turn.gates) && turn.changedFiles.length > 0;
+					attempt++
+				) {
+					await runPass(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
+					turn = await runChecks(
+						`studio turn ${state.turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`,
+					);
 				}
 
-				const turn = await runTurn(rootWs, {
-					verticalDir: entry.dir,
-					message: `studio turn ${state.turnNo}: ${message.slice(0, 60)}`,
-					gates: standaloneGates(entry.dir),
-					onGateResult: (result) => emit({ type: 'check', result }),
-				});
-				emit({ type: 'gates', run: turn.gates });
-				if (turn.commit) {
-					emit({ type: 'commit', sha: turn.commit, summary: `${turn.changedFiles.length} files` });
-					// The commit is only durable once bundled (§4.5): container disk
-					// is the cache, R2 is where the repo rests.
-					await this.#saveBundle(pair, entry);
-				}
+				// Whatever survived the loop is the report the NEXT turn opens with —
+				// deleted the moment the tree goes green.
+				const report = gateReport(turn.gates);
+				if (report) state.lastGateReport = report;
+				else delete state.lastGateReport;
+
 				const after = await detectPhase(projectWs);
 				if (after !== phase) emit({ type: 'phase', phase: after });
 				await this.ctx.storage.put(`phase:${entry.id}`, after);
 
-				state.history.push({ role: 'user', text: message });
-				if (assistant) state.history.push({ role: 'assistant', text: assistant });
+				state.history.push(...transcript);
 			} catch (err) {
 				emit({
 					type: 'error',
