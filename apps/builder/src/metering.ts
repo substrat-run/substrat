@@ -18,7 +18,14 @@
 import { addDecimal, permissionKey, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { meteringModule, PERM as METERING_PERM } from '@substrat-run/engine-metering';
-import { MARKUP_PERCENT, costOf, normalizeModelSpec } from './pricing.js';
+import {
+	MARKUP_PERCENT,
+	costOf,
+	costOfSteps,
+	normalizeModelSpec,
+	withMarkup,
+	type StepTokens,
+} from './pricing.js';
 
 /** The studio's fixed node — valid ULIDs, same shape as Meridian's DEV_NODE. */
 export const STUDIO_NODE = {
@@ -43,10 +50,18 @@ const STUDIO_ROLE = 'studio-metering';
  * `provider:modelId`. The pre-model keys (`ai.tokens.input`/`.output`, #646
  * v0) still exist in the ledger; reads fold them in as unattributed.
  */
-const SIDES = ['input', 'output'] as const;
+const SIDES = ['input', 'output', 'cacheRead', 'cacheWrite'] as const;
 type Side = (typeof SIDES)[number];
 
 const meterKey = (side: Side, model: string): string => `ai.tokens.${side}.${model}`;
+
+/**
+ * The turn's provider LIST cost in USD, computed at RECORD time from the
+ * per-step usage — the only place tier selection can be done correctly
+ * (pricing.ts: all-or-nothing per request). Stored as a decimal-string
+ * counter; the markup is presentation policy, applied at read.
+ */
+const costKey = (model: string): string => `ai.cost.usd.${model}`;
 
 /** null = not a token meter; model null = a pre-model v0 key. */
 function parseMeterKey(key: string): { side: Side; model: string | null } | null {
@@ -56,6 +71,11 @@ function parseMeterKey(key: string): { side: Side; model: string | null } | null
 		if (key.startsWith(`${flat}.`)) return { side, model: key.slice(flat.length + 1) };
 	}
 	return null;
+}
+
+/** The model of a cost meter, or null for any other key. */
+function parseCostKey(key: string): string | null {
+	return key.startsWith('ai.cost.usd.') ? key.slice('ai.cost.usd.'.length) : null;
 }
 
 export interface StudioEnv {
@@ -115,6 +135,15 @@ export interface TurnUsage {
 	readonly model: string;
 	readonly inputTokens: number;
 	readonly outputTokens: number;
+	/** Turn totals; absent = the provider reported nothing, never zero. */
+	readonly cachedInputTokens?: number;
+	readonly cacheWriteTokens?: number;
+	/**
+	 * Per-request breakdown from the generator's usage event. When present,
+	 * cost is priced per step (tier selection is per request); when absent the
+	 * turn totals price as one pseudo-request — exact for single-tier cards.
+	 */
+	readonly stepUsage?: readonly StepTokens[];
 }
 
 /**
@@ -131,17 +160,51 @@ export async function recordTurnUsage(env: StudioEnv, usage: TurnUsage): Promise
 	);
 	const model = normalizeModelSpec(usage.model);
 	const subject = { entityType: 'builder-project', entityId: usage.projectId };
-	for (const [side, qty] of [
+	const sides: Array<[Side, number | undefined]> = [
 		['input', usage.inputTokens],
 		['output', usage.outputTokens],
-	] as const) {
+		// Cache sides only when measured — absence means "not reported", and a
+		// recorded 0 would falsely claim the turn ran cache-cold.
+		['cacheRead', usage.cachedInputTokens],
+		['cacheWrite', usage.cacheWriteTokens],
+	];
+	for (const [side, qty] of sides) {
+		if (qty === undefined && side !== 'input' && side !== 'output') continue;
 		const meter = meterKey(side, model);
 		// configureMeter is an idempotent upsert; kind/unit are identical for
 		// every token meter, so re-configuring an existing key is a no-op.
 		await scope.invoke('metering/configure-meter', { key: meter, kind: 'counter', unit: 'tokens' });
 		await scope.invoke('metering/record', {
 			meter,
-			qty: String(qty),
+			qty: String(qty ?? 0),
+			subject,
+			dedupeKey: usage.turnId,
+		});
+	}
+
+	// Cost is priced HERE, where the per-step split still exists — the ledger's
+	// token sums cannot be tier-priced after aggregation (pricing.ts header).
+	// An unpriced model records no cost entry: the read side reports its tokens
+	// as unpriced, never a guessed $0.
+	const steps: readonly StepTokens[] = usage.stepUsage?.length
+		? usage.stepUsage
+		: [
+				{
+					inputTokens: usage.inputTokens,
+					outputTokens: usage.outputTokens,
+					...(usage.cachedInputTokens != null
+						? { cachedInputTokens: usage.cachedInputTokens }
+						: {}),
+					...(usage.cacheWriteTokens != null ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
+				},
+			];
+	const cost = costOfSteps(model, steps);
+	if (cost) {
+		const meter = costKey(model);
+		await scope.invoke('metering/configure-meter', { key: meter, kind: 'counter', unit: 'usd' });
+		await scope.invoke('metering/record', {
+			meter,
+			qty: cost.listUsd,
 			subject,
 			dedupeKey: usage.turnId,
 		});
@@ -193,6 +256,9 @@ export interface UsageByModel {
 	model: string | null;
 	input: number;
 	output: number;
+	/** Cache slices of `input`, when the provider reported them (0 otherwise). */
+	cacheRead: number;
+	cacheWrite: number;
 	/** Provider list price in USD; null when the model has no rate card entry. */
 	listUsd: string | null;
 	/** What the studio charges: list + 20% markup; null when unpriced. */
@@ -233,14 +299,34 @@ export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<Usag
 	const totals = { input: 0, output: 0 };
 	const byDay = new Map<string, UsageDay>();
 	const byProject = new Map<string, UsageByProject>();
-	const byModel = new Map<string | null, { model: string | null; input: number; output: number }>();
+	const byModel = new Map<
+		string | null,
+		{ model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number }
+	>();
+	/** Model → summed record-time list cost. Only models with cost entries. */
+	const costByModel = new Map<string, string>();
 	const windowStart = new Date(Date.now() - windowDays * 86_400_000).toISOString();
 
+	const modelRow = (model: string | null) => {
+		const row = byModel.get(model) ?? { model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+		byModel.set(model, row);
+		return row;
+	};
+
 	for (const e of entries) {
+		const costModel = parseCostKey(e.meterKey);
+		if (costModel !== null) {
+			costByModel.set(costModel, addDecimal(costByModel.get(costModel) ?? '0', e.qty));
+			continue;
+		}
 		const parsed = parseMeterKey(e.meterKey);
 		if (!parsed) continue;
 		const { side, model } = parsed;
 		const qty = Number(e.qty);
+		modelRow(model)[side] += qty;
+		// Cache sides are slices OF input, already counted there — they roll up
+		// per model only; adding them to totals/daily/projects would double-count.
+		if (side !== 'input' && side !== 'output') continue;
 		totals[side] += qty;
 
 		if (e.occurredAt >= windowStart) {
@@ -256,17 +342,21 @@ export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<Usag
 		// Each turn records both meters under one dedupe key — count it once.
 		if (side === 'input') proj.turns += 1;
 		byProject.set(projectId, proj);
-
-		const m = byModel.get(model) ?? { model, input: 0, output: 0 };
-		m[side] += qty;
-		byModel.set(model, m);
 	}
 
-	// Price each model row off the rate card; the totals only ever sum PRICED
-	// rows — an unpriced model shows as tokens, never as a guessed $0.
+	// Price each model row: prefer the record-time cost entries (per-step tier
+	// and cache pricing, #663); fall back to flat totals pricing only for rows
+	// recorded before cost meters existed. Totals only ever sum PRICED rows —
+	// an unpriced model shows as tokens, never as a guessed $0.
 	const cost = { listUsd: '0', billedUsd: '0', unpricedTokens: 0 };
 	const modelRows = [...byModel.values()].map((m): UsageByModel => {
-		const priced = m.model === null ? null : costOf(m.model, m.input, m.output);
+		const recorded = m.model === null ? undefined : costByModel.get(m.model);
+		const priced =
+			recorded !== undefined
+				? { listUsd: recorded, billedUsd: withMarkup(recorded) }
+				: m.model === null
+					? null
+					: costOf(m.model, m.input, m.output);
 		if (priced) {
 			cost.listUsd = addDecimal(cost.listUsd, priced.listUsd);
 			cost.billedUsd = addDecimal(cost.billedUsd, priced.billedUsd);

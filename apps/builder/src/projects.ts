@@ -95,6 +95,12 @@ export function rename(entry: ProjectEntry, name: string, source: NameSource): b
 export interface ProjectState {
 	history: GeneratorTurn[];
 	turnNo: number;
+	/**
+	 * Red-gate report from the last completed turn (gates.ts `gateReport`).
+	 * Present only while the tree is red; fed into the next turn's context so
+	 * the model never opens a turn blind to its own oracle.
+	 */
+	lastGateReport?: string;
 }
 
 function stateFile(id: string): string {

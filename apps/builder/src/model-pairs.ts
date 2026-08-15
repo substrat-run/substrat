@@ -33,6 +33,38 @@ export const MODEL_PAIRS: Readonly<Record<string, ModelPair>> = {
 	anthropic: { fast: 'claude-sonnet-5', strong: 'claude-opus-5' },
 };
 
+/**
+ * Format-per-model (builder-harness.md H1): which models get the edit_file
+ * search/replace tool. Aider's leaderboard puts frontier models at ~97–99%
+ * well-formed search/replace and shows sub-tier collapse (~68%), so weak and
+ * unknown models keep whole-file writes BY DECLARATION, not by failing at it.
+ * Provider-level is the honest granularity today — every model we serve from
+ * these providers is frontier-tier; local/compat/cloudflare ids are unknowable
+ * in advance. Refine to per-model when evals/ measures it (§9.6).
+ */
+const EDIT_TOOL_PROVIDERS = new Set(['anthropic', 'qwen', 'openai', 'google', 'mistral']);
+
+/** Whether a (concrete) spec's model should be offered edit_file. */
+export function editToolFor(spec: string): boolean {
+	const idx = spec.indexOf(':');
+	const provider = idx === -1 ? 'anthropic' : spec.slice(0, idx);
+	return EDIT_TOOL_PROVIDERS.has(provider);
+}
+
+/**
+ * Sampling defaults per provider (builder-harness.md H4). Qwen's own
+ * recommendation — and opencode's shipped per-family table — is 0.55 for the
+ * qwen family; we currently send the SDK default (1.0) to our DEFAULT
+ * provider, which is measurably chattier and loopier on agentic runs.
+ * Anthropic/others: undefined — adaptive thinking dislikes a pinned
+ * temperature, and the SDK default is the provider's own.
+ */
+export function samplingFor(spec: string): { temperature?: number } {
+	const idx = spec.indexOf(':');
+	const provider = idx === -1 ? 'anthropic' : spec.slice(0, idx);
+	return provider === 'qwen' ? { temperature: 0.55 } : {};
+}
+
 /** The `<provider>:auto` pair a spec names, or null for a concrete spec. */
 export function pairFor(spec: string): { provider: string; pair: ModelPair } | null {
 	const idx = spec.indexOf(':');

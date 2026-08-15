@@ -31,6 +31,13 @@ export interface GeneratorInput {
 	 * breakpoints, never inside the stable prefix.
 	 */
 	readonly workspaceBrief?: string;
+	/**
+	 * Red-gate report carried over from the last completed turn (gates.ts
+	 * `gateReport`). Present only while the tree is red: the gates are the
+	 * oracle (§9.1) and their verdict must reach the model, not just the UI.
+	 * Volatile like the brief — rides after the cache breakpoints.
+	 */
+	readonly gateReport?: string;
 	/** Prior turns. Opaque to callers; each implementation owns its own shape. */
 	readonly history?: readonly GeneratorTurn[];
 	readonly signal?: AbortSignal;

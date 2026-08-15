@@ -24,7 +24,11 @@ import {
 	defaultGates,
 	ensureVerticalRepo,
 	foreignChanges,
+	gateRepairPrompt,
+	gateReport,
 	LocalWorkspace,
+	MAX_GATE_REPAIRS,
+	repairNeeded,
 	runGates,
 	runTurn,
 	standaloneGates,
@@ -53,7 +57,7 @@ import {
 	ProviderError,
 	resolveModel,
 } from './providers.js';
-import { resolveAutoSpec } from './model-pairs.js';
+import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import { detectPhase, interviewWriteGuard, skillsForPhase, type BuildPhase } from './phase.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
@@ -141,6 +145,11 @@ async function makeGenerator(spec: string, phase: BuildPhase = 'iterate'): Promi
 		maxSteps: MAX_STEPS,
 		skills: phaseSkills,
 		explainError: explainProviderError(spec.split(':')[0] ?? 'anthropic'),
+		// Format-per-model (H1): frontier providers get search/replace edits,
+		// weak/unknown models keep whole-file writes (model-pairs.ts).
+		editTool: editToolFor(spec),
+		// Sampling defaults per provider (H4): qwen wants 0.55, not SDK default.
+		...samplingFor(spec),
 		// Interview turns may write only spec/** — the ladder is mechanical, not
 		// a prompt hope (phase.ts explains the dead-end this prevents).
 		...(phase === 'interview' ? { denyWrite: interviewWriteGuard } : {}),
@@ -250,9 +259,9 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 
 	busy = true;
 	abort = new AbortController();
+	const signal = abort.signal;
 	cur.state.turnNo += 1;
 	const emit = ndjson(res);
-	let assistant = '';
 
 	// Transport heartbeat: a bare newline every 10s. NOT a BuildEvent — it
 	// carries no claim about progress, only "this request is still alive" (the
@@ -275,37 +284,83 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		// real state — emitted at turn start, and again at the end if the turn's
 		// work moved the ladder (concept landed, module landed).
 		emit({ type: 'phase', phase });
-		for await (const event of generator.run({
-			workspace: cur.projectWs,
-			verticalDir: '.',
-			concept,
-			message,
-			workspaceBrief: await workspaceBrief(ws, cur.entry.dir).catch(() => undefined),
-			history: cur.state.history.slice(-24),
-			signal: abort.signal,
-		})) {
-			if (event.type === 'project-named') await applyAiName(event.name);
-			emit(event);
-			if (event.type === 'assistant-text') assistant += event.text;
+
+		// This turn's exchanges, appended to durable history at the end. Repair
+		// prompts are recorded verbatim as user turns — the transcript stays
+		// truthful about who said what, and alternation survives for providers
+		// that require it.
+		const transcript: { role: 'user' | 'assistant'; text: string }[] = [];
+
+		/**
+		 * One generator pass; returns its assistant prose. `carriedReport` is the
+		 * previous TURN's red-gate state — first pass only; repair prompts already
+		 * embed the fresh report.
+		 */
+		const runPass = async (text: string, carriedReport?: string): Promise<string> => {
+			let prose = '';
+			for await (const event of generator.run({
+				workspace: cur.projectWs,
+				verticalDir: '.',
+				concept,
+				message: text,
+				workspaceBrief: await workspaceBrief(ws, cur.entry.dir).catch(() => undefined),
+				...(carriedReport ? { gateReport: carriedReport } : {}),
+				history: [...cur.state.history.slice(-24), ...transcript],
+				signal,
+			})) {
+				if (event.type === 'project-named') await applyAiName(event.name);
+				emit(event);
+				if (event.type === 'assistant-text') prose += event.text;
+			}
+			transcript.push({ role: 'user', text });
+			if (prose) transcript.push({ role: 'assistant', text: prose });
+			return prose;
+		};
+
+		/** Gates + commit for one pass (commit-per-turn lives above the seam, §3). */
+		const runChecks = async (label: string): ReturnType<typeof runTurn> => {
+			const turn = await runTurn(ws, {
+				verticalDir: cur.entry.dir,
+				message: label,
+				gates: cur.gateSet,
+				onGateResult: (result) => emit({ type: 'check', result }),
+			});
+			emit({ type: 'gates', run: turn.gates });
+			if (turn.commit) {
+				emit({ type: 'commit', sha: turn.commit, summary: `${turn.changedFiles.length} files` });
+			}
+			return turn;
+		};
+
+		await runPass(message, cur.state.lastGateReport);
+		let turn = await runChecks(`studio turn ${cur.state.turnNo}: ${message.slice(0, 60)}`);
+
+		// Red gates are the model's problem, not the builder's (H5): drive capped
+		// repair attempts, but only while attempts make progress (changed files) —
+		// a chat-only turn over a pre-existing red tree must not burn budget, and
+		// `blocked` gates never trigger repair (the checker crashed, not the code).
+		for (
+			let attempt = 1;
+			attempt <= MAX_GATE_REPAIRS &&
+			repairNeeded(turn.gates) &&
+			turn.changedFiles.length > 0 &&
+			!signal.aborted;
+			attempt++
+		) {
+			await runPass(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
+			turn = await runChecks(`studio turn ${cur.state.turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`);
 		}
 
-		// Commit-per-turn lives above the seam (§3). Per-gate results stream so
-		// the post-text gates window ticks instead of sitting silent.
-		const turn = await runTurn(ws, {
-			verticalDir: cur.entry.dir,
-			message: `studio turn ${cur.state.turnNo}: ${message.slice(0, 60)}`,
-			gates: cur.gateSet,
-			onGateResult: (result) => emit({ type: 'check', result }),
-		});
-		emit({ type: 'gates', run: turn.gates });
-		if (turn.commit) {
-			emit({ type: 'commit', sha: turn.commit, summary: `${turn.changedFiles.length} files` });
-		}
+		// Whatever survived the loop is the report the NEXT turn opens with —
+		// deleted the moment the tree goes green.
+		const report = gateReport(turn.gates);
+		if (report) cur.state.lastGateReport = report;
+		else delete cur.state.lastGateReport;
+
 		const after = await detectPhase(cur.projectWs);
 		if (after !== phase) emit({ type: 'phase', phase: after });
 
-		cur.state.history.push({ role: 'user', text: message });
-		if (assistant) cur.state.history.push({ role: 'assistant', text: assistant });
+		cur.state.history.push(...transcript);
 	} catch (err) {
 		emit({
 			type: 'error',

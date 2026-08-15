@@ -36,7 +36,7 @@ import {
 	type SandboxLike,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
-import { resolveAutoSpec } from './model-pairs.js';
+import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import { detectPhase, interviewWriteGuard, skillsForPhase, SKILL_MANIFEST } from './phase.js';
 import { explainProviderFailure } from './provider-errors.js';
 import {
@@ -296,6 +296,11 @@ export class BuilderAgent extends DurableObject<Env> {
 			// "API key is invalid" in the chat pane. Name the real class, keep the
 			// provider's message (it carries the reset time), say what to do next.
 			explainError: (err) => explainProviderFailure(provider, err, 'hosted'),
+			// Format-per-model (H1): frontier providers get search/replace edits,
+			// weak/unknown models keep whole-file writes (model-pairs.ts).
+			editTool: editToolFor(spec),
+			// Sampling defaults per provider (H4): qwen wants 0.55, not SDK default.
+			...samplingFor(spec),
 			// Interview turns may write only spec/** — the ladder is mechanical,
 			// not a prompt hope (phase.ts explains the dead-end this prevents).
 			...(interview ? { denyWrite: interviewWriteGuard } : {}),
@@ -398,6 +403,15 @@ export class BuilderAgent extends DurableObject<Env> {
 								model: modelSpec,
 								inputTokens: event.inputTokens,
 								outputTokens: event.outputTokens,
+								...(event.cachedInputTokens != null
+									? { cachedInputTokens: event.cachedInputTokens }
+									: {}),
+								...(event.cacheWriteTokens != null
+									? { cacheWriteTokens: event.cacheWriteTokens }
+									: {}),
+								// The per-step split — required for tier-correct pricing
+								// (pricing.ts: tier selection is per request, not per turn).
+								...(event.stepUsage ? { stepUsage: event.stepUsage } : {}),
 							}),
 						);
 					}
