@@ -1,0 +1,8 @@
+{
+	"operations": ["fixline/create-ticket", "fixline/price-ticket", "fixline/close-ticket"],
+	"roles": {
+		"office": ["ticket:manage", "ticket:price", "ticket:read"],
+		"technician": ["ticket:read"]
+	},
+	"files": ["src/module.ts", "src/seed.ts", "test"]
+}
