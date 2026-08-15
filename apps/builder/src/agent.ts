@@ -29,9 +29,11 @@ import {
 } from '@substrat-run/builder-generator';
 import {
 	ContainerWorkspace,
+	continuationPrompt,
 	ensureVerticalRepo,
 	gateRepairPrompt,
 	gateReport,
+	MAX_CONTINUATIONS,
 	MAX_GATE_REPAIRS,
 	repairNeeded,
 	runGates,
@@ -388,8 +390,9 @@ export class BuilderAgent extends DurableObject<Env> {
 				// cannot drift). Repair prompts are recorded verbatim as user turns.
 				const transcript: GeneratorTurn[] = [];
 
-				const runPass = async (text: string, carriedReport?: string): Promise<void> => {
+				const runPass = async (text: string, carriedReport?: string): Promise<boolean> => {
 					let assistant = '';
+					let truncated = false;
 					for await (const event of generator.run({
 						workspace: projectWs,
 						verticalDir: '.',
@@ -431,6 +434,7 @@ export class BuilderAgent extends DurableObject<Env> {
 							);
 						}
 						emit(event);
+						if (event.type === 'truncated') truncated = true;
 						if (event.type === 'assistant-text') assistant += event.text;
 						// Questions asked and step-ceiling cuts survive into durable
 						// history — the model's next turn must know both.
@@ -439,6 +443,20 @@ export class BuilderAgent extends DurableObject<Env> {
 					}
 					transcript.push({ role: 'user', text });
 					if (assistant) transcript.push({ role: 'assistant', text: assistant });
+					return truncated;
+				};
+
+				// A truncated pass is "not done yet", not "done but broken" — continue
+				// it before the gates run, so the repair budget stays reserved for
+				// genuine breakage (gates.ts MAX_CONTINUATIONS). Per-turn cap: repair
+				// passes draw from the same continuation budget as the first pass.
+				let continuations = 0;
+				const runToCompletion = async (text: string, carriedReport?: string): Promise<void> => {
+					let truncated = await runPass(text, carriedReport);
+					while (truncated && continuations < MAX_CONTINUATIONS) {
+						continuations += 1;
+						truncated = await runPass(continuationPrompt(continuations, MAX_CONTINUATIONS));
+					}
 				};
 
 				const runChecks = async (label: string): Promise<TurnResult> => {
@@ -458,7 +476,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					return turn;
 				};
 
-				await runPass(message, state.lastGateReport);
+				await runToCompletion(message, state.lastGateReport);
 				let turn = await runChecks(`studio turn ${state.turnNo}: ${message.slice(0, 60)}`);
 
 				// Red gates are the model's problem, not the builder's (H5): capped
@@ -470,7 +488,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					attempt <= MAX_GATE_REPAIRS && repairNeeded(turn.gates) && turn.changedFiles.length > 0;
 					attempt++
 				) {
-					await runPass(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
+					await runToCompletion(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
 					turn = await runChecks(
 						`studio turn ${state.turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`,
 					);

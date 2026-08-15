@@ -24,10 +24,12 @@ export {
 } from './container.js';
 
 export {
+	continuationPrompt,
 	defaultGates,
 	formatGateRun,
 	gateRepairPrompt,
 	gateReport,
+	MAX_CONTINUATIONS,
 	MAX_GATE_REPAIRS,
 	repairNeeded,
 	runGate,

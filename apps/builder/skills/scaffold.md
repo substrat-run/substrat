@@ -13,8 +13,8 @@ it back to the builder — do not invent it here.
 workspace member — this resolves). Typical set: `contracts`, `kernel`,
 `adapter-sqlite`, plus the engines composed. Scripts: `"typecheck": "tsc -p
 tsconfig.json --noEmit"`, `"test": "vitest run"`, `"dev": "tsx src/server.ts"`.
-devDependencies: `typescript`, `tsx`, `vitest`, `hono`, `@types/node`. Run
-`pnpm install` via run_command after changing package.json.
+devDependencies: `typescript`, `tsx`, `vitest`, `hono`, `@hono/node-server`,
+`@types/node`. Run `pnpm install` via run_command after changing package.json.
 
 ## The files
 
@@ -104,12 +104,26 @@ source: 'vertical' }`, the same table `defineRole` is fed) so the permission
 surface is a build-time fact tooling can read, not something buried in seed
 calls.
 
-**src/server.ts** — thin Hono wrapper: `x-principal` header → cast lookup →
-`getScope` → `invoke`; one route per operation (`POST /api/<op>`);
-`PermissionDenied` → 403, refused transitions/guards → 409, unknown → 404. No
-business logic in routes. Read `PORT` from env (the studio sets it). seed.ts
-and server.ts are harness code — node imports are fine THERE, never in module
-code.
+**src/routes.ts + src/server.ts** — the HTTP surface, split so tests can drive
+it (the Callout reference uses exactly this shape):
+
+- `routes.ts` exports `mountApi(app: Hono, resolveStub: (c) => Promise<ScopeStub>)`
+  — one explicit route per operation (`POST /api/<noun>`, never a generic
+  `/api/:op` passthrough), each a thin wrapper over one `stub.invoke`. Shared
+  `app.onError`: `PermissionDenied` → 403, refused transitions/guards → 409,
+  unknown entity/scope/operation → 404, else 400. No business logic in routes.
+- `server.ts` is only the boot harness: build the host ONCE at startup on a
+  persistent `.data/` dir (never `:memory:`, never per request — data must
+  survive between requests), run the seed, load the persisted cast, then
+  `resolveStub` = `x-principal` header → cast entry → `getScope`. Missing or
+  unknown header → 401. Serve with `serve` from `@hono/node-server` (Hono's
+  `app.fetch` takes a web `Request` — do not hand-wire `node:http` to it). Read
+  `PORT` from env (the studio sets it).
+
+seed.ts and server.ts are harness code — node imports are fine THERE, never in
+module code. The scenario test bypasses HTTP entirely, so `test/server.test.ts`
+(see the iterate skill) is the only proof this layer works — write it in the
+same turn as routes.ts, not later.
 
 Ids are BRANDED types (`PrincipalId`, `TenantId`, `ScopeId` — zod-branded
 strings from `@substrat-run/contracts`): a raw header/JSON string does not
@@ -129,7 +143,9 @@ Ids minted in-process by seed/provisioning are already branded — pass them
 through; parse only what crossed a serialization boundary (headers, JSON
 files, env).
 
-**app/** (when the concept wants a UI): Vite + React served against the API,
-principal picker in the top bar, typed fetch wrappers over the routes, hash
-routing with view state in the URL (`#/…` — refresh must not lose the screen).
-Keep it in `app/` with its own package.json; the API proxies or serves it.
+**app/** — built whenever the concept's Screens section names one (only an
+explicit "API-only" skips it), in the scaffold, not deferred: Vite + React
+served against the API, one view per line of the Screens section, principal
+picker in the top bar, typed fetch wrappers over the routes, hash routing with
+view state in the URL (`#/…` — refresh must not lose the screen). Keep it in
+`app/` with its own package.json; the API proxies or serves it.
