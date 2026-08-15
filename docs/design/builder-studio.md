@@ -895,3 +895,31 @@ nothing now and retrofitting them later costs a rewrite.
   prompt cache from byte one — anything finer-grained than a phase belongs behind a read
   tool, not in the prefix. The ladder is monotonic in practice; a deliberate re-design
   (deleting/rewriting the concept) moves it backward honestly, because the facts moved.
+
+## 14. Addendum — studio teams (2026-08-15)
+
+Supersedes "multi-tenant studio sessions" in §1's out-of-scope list. The studio is now
+**team-scoped**, the dashboard's model verbatim (dashboard-teams.md: team = tenant):
+
+- **URL**: the first path segment is the team slug (`builder.substrat.net/<team-slug>`),
+  exactly the dashboard's scheme — slugs carry a ULID tail, so they can never shadow a
+  reserved segment. The SPA rewrites an absent/unknown slug to the remembered (else first)
+  membership; a pasted link always lands in the team it names.
+- **One BuilderAgent DO per team** (`idFromName(tenantId)`), mirroring the per-tenant
+  IdentityDO pattern: projects, chat history, and names partition by tenant. The pre-teams
+  shared instance (`idFromName('studio')`) was deliberately abandoned, not migrated —
+  nothing in it was worth saving.
+- **Membership is the dashboard's**: the worker verifies its own OIDC session, then asks
+  the shared control plane (`POST /internal/builder/identity-tenants`, service-token
+  gated, over a service binding) which tenants that login builds for — the same
+  `builderTenantsFor` read `/api/auth/whoami` does session-side, reachable because the
+  studio cannot share the CP's session secret. Every `/api/*` call names its team via
+  `x-substrat-tenant`; a team outside the caller's own memberships is refused before the
+  DO is addressed.
+- **The staff roster stays as an AND-gate** until the builder entitlement flag exists on
+  plans (builder-plane.md §"open questions"). Dropping it is then a one-line deliberate
+  act — the teams work never widens access by itself.
+
+Follow-ups this creates: per-team metering scopes (retiring the fixed studio node,
+src/metering.ts), the plan entitlement + a `builder:use` dashboard role key, and eager
+vertical registration so a project surfaces in the dashboard's Deployments view.

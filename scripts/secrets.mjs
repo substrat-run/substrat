@@ -79,6 +79,9 @@ const MANIFEST = {
       OIDC_CLIENT_ID: 'BUILDER_OIDC_CLIENT_ID',
       OIDC_CLIENT_SECRET: 'BUILDER_OIDC_CLIENT_SECRET',
       SESSION_SECRET: 'BUILDER_SESSION_SECRET',
+      // The control plane's SERVICE_TOKEN, under the studio's name for it —
+      // membership lookups (/internal/builder/identity-tenants), dashboard-style.
+      CP_SERVICE_TOKEN: 'SERVICE_TOKEN',
       // Model-provider keys (#626): the DO resolves models from these — the
       // container/image NEVER carries them (§5.3, §10). D-53: each provider is
       // a disclosed subprocessor of the customer's code.

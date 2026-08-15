@@ -15,12 +15,18 @@
 
 	// EVERYTHING through the worker: the SPA shell itself is staff-only, so
 	// assets are behind the auth gate too — unlike the dashboard, which scopes
-	// run_worker_first to /api/*.
+	// run_worker_first to /api/*. Unknown paths (team-slug deep links like
+	// /acme-x1y2z3) fall back to index.html so the client router resolves them.
 	"assets": {
 		"directory": "web/dist",
 		"binding": "ASSETS",
+		"not_found_handling": "single-page-application",
 		"run_worker_first": true
 	},
+
+	// The shared control plane — membership lookups (which teams does this
+	// login build for), authenticated with CP_SERVICE_TOKEN like the dashboard.
+	"services": [{ "binding": "CONTROL_PLANE_SVC", "service": "substrat-control-plane" }],
 
 	"durable_objects": {
 		"bindings": [
@@ -69,7 +75,8 @@
 	]
 
 	// Secrets (scripts/secrets.mjs, secrets/platform.<env>.env):
-	//   OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, SESSION_SECRET
+	//   OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, SESSION_SECRET,
+	//   CP_SERVICE_TOKEN (= the control plane's SERVICE_TOKEN)
 	// Provider keys (ANTHROPIC_API_KEY etc.) arrive with #626 — the shell
 	// holds no model credentials at all.
 }

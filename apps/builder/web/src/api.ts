@@ -52,6 +52,36 @@ export interface ProviderEntry {
 	pair?: { fast: string; strong: string };
 }
 
+/** A team (= tenant, dashboard-teams.md) the signed-in user builds for. */
+export interface TeamInfo {
+	id: string;
+	slug: string;
+	name: string;
+}
+
+export interface MeInfo {
+	email: string | null;
+	teams: TeamInfo[];
+}
+
+/**
+ * The team every API call acts in — hosted mode only. `App` pins it after
+ * `/api/me` resolves (from the URL's team slug); the local server (mode A) has
+ * no teams, so it stays null there and requests carry no header.
+ */
+let teamId: string | null = null;
+export function setApiTeam(id: string | null): void {
+	teamId = id;
+}
+
+/** All studio calls go through here: `fetch` + the team-selection header. */
+function f(input: string, init?: RequestInit): Promise<Response> {
+	if (!teamId) return window.fetch(input, init);
+	const headers = new Headers(init?.headers);
+	headers.set('x-substrat-tenant', teamId);
+	return window.fetch(input, { ...init, headers });
+}
+
 async function j<T>(res: Response): Promise<T> {
 	const body = (await res.json()) as T & { error?: string };
 	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -93,55 +123,66 @@ export interface UsageReport {
 }
 
 export const api = {
-	session: () => fetch('/api/session').then((r) => j<SessionInfo>(r)),
-	usage: () => fetch('/api/usage').then((r) => j<UsageReport>(r)),
-	providers: () => fetch('/api/providers').then((r) => j<ProviderEntry[]>(r)),
+	/**
+	 * Who am I + which teams. Null means "no team scoping here": the local
+	 * server (mode A) has no such route and 404s. Anything else non-OK is a
+	 * real error (a hosted studio that cannot resolve memberships must say so,
+	 * not quietly behave like local mode and then 400 on every call).
+	 */
+	me: async (): Promise<MeInfo | null> => {
+		const r = await f('/api/me');
+		if (r.status === 404) return null;
+		return j<MeInfo>(r);
+	},
+	session: () => f('/api/session').then((r) => j<SessionInfo>(r)),
+	usage: () => f('/api/usage').then((r) => j<UsageReport>(r)),
+	providers: () => f('/api/providers').then((r) => j<ProviderEntry[]>(r)),
 	models: (provider: string) =>
-		fetch(`/api/models?provider=${encodeURIComponent(provider)}`).then((r) =>
+		f(`/api/models?provider=${encodeURIComponent(provider)}`).then((r) =>
 			j<{ models: string[] }>(r),
 		),
 	setModel: (spec: string) =>
-		fetch('/api/model', {
+		f('/api/model', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ spec }),
 		}).then((r) => j<{ spec: string; endpoint?: string }>(r)),
 	history: () =>
-		fetch('/api/history').then((r) => j<Array<{ role: 'user' | 'assistant'; text: string }>>(r)),
+		f('/api/history').then((r) => j<Array<{ role: 'user' | 'assistant'; text: string }>>(r)),
 	projects: () =>
-		fetch('/api/projects').then((r) => j<{ current: string; projects: ProjectInfo[] }>(r)),
+		f('/api/projects').then((r) => j<{ current: string; projects: ProjectInfo[] }>(r)),
 	createProject: (name?: string) =>
-		fetch('/api/projects', {
+		f('/api/projects', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ name }),
 		}).then((r) => j<ProjectInfo>(r)),
 	selectProject: (id: string) =>
-		fetch('/api/projects/select', {
+		f('/api/projects/select', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ id }),
 		}).then((r) => j<ProjectInfo>(r)),
 	renameProject: (name: string) =>
-		fetch('/api/project', {
+		f('/api/project', {
 			method: 'PUT',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ name }),
 		}).then((r) => j<ProjectInfo>(r)),
 	files: (path: string) =>
-		fetch(`/api/files?path=${encodeURIComponent(path)}`).then((r) => j<{ entries: string[] }>(r)),
+		f(`/api/files?path=${encodeURIComponent(path)}`).then((r) => j<{ entries: string[] }>(r)),
 	file: (path: string) =>
-		fetch(`/api/file?path=${encodeURIComponent(path)}`).then((r) => j<{ content: string }>(r)),
+		f(`/api/file?path=${encodeURIComponent(path)}`).then((r) => j<{ content: string }>(r)),
 	saveFile: (path: string, content: string) =>
-		fetch('/api/file', {
+		f('/api/file', {
 			method: 'PUT',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ path, content }),
 		}).then((r) => j<{ ok: boolean }>(r)),
-	gates: () => fetch('/api/gates', { method: 'POST' }).then((r) => j<GateRun>(r)),
-	abort: () => fetch('/api/abort', { method: 'POST' }),
+	gates: () => f('/api/gates', { method: 'POST' }).then((r) => j<GateRun>(r)),
+	abort: () => f('/api/abort', { method: 'POST' }),
 	devStatus: () =>
-		fetch('/api/dev').then((r) =>
+		f('/api/dev').then((r) =>
 			j<{
 				state: 'stopped' | 'starting' | 'running' | 'error';
 				url: string | null;
@@ -151,13 +192,13 @@ export const api = {
 			}>(r),
 		),
 	dev: (action: 'start' | 'stop') =>
-		fetch('/api/dev', {
+		f('/api/dev', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ action }),
 		}).then((r) => j<{ state: string }>(r)),
 	metric: (data: Record<string, unknown>) =>
-		fetch('/api/metrics', {
+		f('/api/metrics', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify(data),
@@ -176,7 +217,7 @@ export async function streamTurn(
 	 * Events prove progress; activity only proves the request is still alive. */
 	onActivity?: () => void,
 ): Promise<void> {
-	const res = await fetch('/api/turn', {
+	const res = await f('/api/turn', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ message }),

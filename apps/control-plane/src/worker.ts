@@ -102,7 +102,7 @@ import { transportFor, senderFor } from './email.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader } from './staff-auth.js';
 import { d1StaffRoster } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
-import { oidcBuilderReader, resolveWhoami } from './builder-auth.js';
+import { builderTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
 
 /** The placeholder scope-DO class: kernel only, no modules. */
 export const ScopeDO = defineScopeDO([], {});
@@ -967,6 +967,24 @@ export default {
     // CLI calls this on `login` to store a default tenant, and to prompt when a user
     // belongs to several. Reads the same session (bearer or cookie) as the API.
     app.get('/api/auth/whoami', async (c) => c.json(await resolveWhoami(hostFor(c.env), c.env, c.req.raw)));
+
+    // The builder studio's membership lookup (builder-plane.md §4). The studio worker
+    // verifies its OWN OIDC session (its session secret is not this worker's, so it
+    // cannot ride `/api/auth/whoami`), then asks this directory which tenants that
+    // login builds for — the same `builderTenantsFor` read whoami does session-side.
+    // Service-token gated, the dashboard's credential class: an unset token refuses,
+    // never bypasses, and the response is directory facts only (id, slug, name).
+    app.post('/internal/builder/identity-tenants', async (c) => {
+      const gate = c.env.SERVICE_TOKEN
+        ? await serviceTokenAuth(c.env.SERVICE_TOKEN, SERVICE_ACTOR)(c.req.raw)
+        : null;
+      if (!gate) return c.json({ error: 'service token required' }, 403);
+      const body = (await c.req.json().catch(() => ({}))) as { externalId?: unknown };
+      if (typeof body.externalId !== 'string' || body.externalId === '') {
+        return c.json({ error: 'externalId (the OIDC subject) is required' }, 400);
+      }
+      return c.json({ tenants: await builderTenantsFor(hostFor(c.env), { id: body.externalId }) });
+    });
 
     // The router kick (platform-intents.md §"router kick"). When a vertical's response
     // carried `x-substrat-platform-request`, the router — the one hop that already knows the

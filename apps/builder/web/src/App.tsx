@@ -10,7 +10,7 @@
  */
 import { Badge, Button } from '@substrat-run/ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, streamTurn, type BuildPhase, type PlanAssumption, type SessionInfo } from './api.js';
+import { api, setApiTeam, streamTurn, type BuildPhase, type MeInfo, type PlanAssumption, type SessionInfo, type TeamInfo } from './api.js';
 import { appendEvent, Chat, type ChatItem } from './Chat.js';
 import { CodePane } from './CodePane.js';
 import { ConceptPane } from './ConceptPane.js';
@@ -18,6 +18,7 @@ import { GatesPane } from './GatesPane.js';
 import { ModelPicker } from './ModelPicker.js';
 import { PreviewPane } from './PreviewPane.js';
 import { ProjectMenu } from './ProjectMenu.js';
+import { rememberedTeam, rememberTeam, TeamMenu } from './TeamMenu.js';
 import { UsagePane } from './UsagePane.js';
 
 type Tab = 'preview' | 'concept' | 'code' | 'database' | 'gates' | 'usage';
@@ -77,6 +78,15 @@ function toggleTheme(): void {
 }
 
 export function App() {
+	/**
+	 * Team resolution (hosted mode): undefined = resolving, null = the local
+	 * server (mode A — no teams, no header), an object = hosted with the
+	 * memberships listed. Resolved BEFORE any project/session call so every
+	 * request carries the right `x-substrat-tenant` from the first fetch.
+	 */
+	const [me, setMe] = useState<MeInfo | null | undefined>(undefined);
+	const [team, setTeam] = useState<TeamInfo | null>(null);
+	const [meError, setMeError] = useState<string | null>(null);
 	const [session, setSession] = useState<SessionInfo | null>(null);
 	// The ladder position shown by the stepper. Sourced ONLY from server truth:
 	// the session payload at load, then `phase` events during turns — never
@@ -157,9 +167,35 @@ export function App() {
 		setRefreshKey((k) => k + 1);
 	}, [refreshSession]);
 
+	// Boot: resolve teams first. The URL's first segment is the team slug
+	// (dashboard-style: /<team-slug>); an absent or unknown slug falls back to
+	// the remembered team, then the first membership, and the URL is rewritten
+	// to match — so a pasted link always lands in the team it names.
 	useEffect(() => {
-		reloadProject();
-	}, [reloadProject]);
+		void api.me().then(
+			(m) => {
+				setMe(m);
+				if (!m || m.teams.length === 0) return; // local mode, or no memberships
+				const slugInUrl = window.location.pathname.split('/').filter(Boolean)[0];
+				const picked =
+					m.teams.find((t) => t.slug === slugInUrl) ??
+					m.teams.find((t) => t.id === rememberedTeam()) ??
+					m.teams[0]!;
+				if (picked.slug !== slugInUrl) window.history.replaceState(null, '', `/${picked.slug}`);
+				rememberTeam(picked.id);
+				setApiTeam(picked.id);
+				setTeam(picked);
+			},
+			(e) => setMeError(e instanceof Error ? e.message : String(e)),
+		);
+	}, []);
+
+	// Load the project only once the scope is settled — local mode (me === null)
+	// or a pinned team. Before that, any /api call would race the team header.
+	const scoped = me === null || team !== null;
+	useEffect(() => {
+		if (scoped) reloadProject();
+	}, [scoped, reloadProject]);
 
 	async function send(message: string): Promise<void> {
 		setBusy(true);
@@ -233,6 +269,27 @@ export function App() {
 	const model = session?.modelSpec.split(':')[1] ?? session?.modelSpec ?? '';
 	const slug = session?.vertical.split('/').pop() ?? '…';
 
+	// Hosted-mode dead ends, honestly stated: a membership lookup that failed is
+	// an error (NOT silently treated as local mode), and an account with no team
+	// yet has nowhere to build — teams are created in the dashboard.
+	if (meError) {
+		return (
+			<div className="app">
+				<div className="note">Could not resolve your teams: {meError}. Reload to retry.</div>
+			</div>
+		);
+	}
+	if (me && me.teams.length === 0) {
+		return (
+			<div className="app">
+				<div className="note">
+					Your account has no team yet. Create one in the dashboard, then come back — builder
+					projects live in a team.
+				</div>
+			</div>
+		);
+	}
+
 	return (
 		<div className="app">
 			<header className="header">
@@ -240,6 +297,12 @@ export function App() {
 				<h1>
 					<span className="wm-builder">Builder</span> <span className="wm-studio">Studio</span>
 				</h1>
+				{me && team && (
+					<>
+						<span className="sep">·</span>
+						<TeamMenu teams={me.teams} current={team} busy={busy} />
+					</>
+				)}
 				<span className="sep">·</span>
 				{session ? (
 					<ProjectMenu
