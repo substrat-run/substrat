@@ -281,13 +281,18 @@ describe('scrive connector — outbound dispatch', () => {
       expect(doc!.parties.every((p) => p.hasPersonalNumber)).toBe(true);
     });
 
-    it('still cannot deliver: no party carries an address (#687 item 1)', async () => {
+    it('cannot deliver to a COUNTERPARTY: no party carries an address (#687 item 1)', async () => {
       // The gap that outlives this fix, stated where it will fail loudly when it
       // closes. `strictDelivery` makes the mock apply the testbed's OTHER `start`
-      // rule — a party with no `email` field cannot be invited — which no party
-      // this connector builds can satisfy, at either auth level. So the flow is
-      // blocked on a contact carrier, never on the auth level, and the refusal
-      // removed above was never what stood between a request and a signature.
+      // rule — a party who must be INVITED and carries no `email` field cannot be
+      // reached — which no party this connector builds can satisfy, at either auth
+      // level. So the flow is blocked on a contact carrier, never on the auth
+      // level, and the refusal removed above was never what stood between a
+      // request and a signature.
+      //
+      // The set matters: this one names a real counterparty, so participant #2 is
+      // someone Scrive must invite. The test below is the same gap with the other
+      // party set, and it does NOT fail.
       //
       // One attempt, so the failure lands in the dead-letter record immediately
       // rather than after eight backoffs a test cannot advance through.
@@ -296,14 +301,67 @@ describe('scrive connector — outbound dispatch', () => {
       await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, { strictDelivery: true });
       rmSync(discarded, { recursive: true, force: true });
 
+      const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
+        templateKey: 'anstallningsavtal',
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      });
+      await stub.invoke('protocol/bind-document', {
+        instanceId: inst.id,
+        contentRef: { entityType: 'employment-terms', entityId: '01JTERMS000000000000000AUT' },
+        contentHash: '11'.repeat(32),
+      });
       // The operation SUCCEEDS — the freeze is committed and the request rows
       // exist. Only the delivery fails, and this time the reason is the provider's.
-      await issueAt('basic');
+      await stub.invoke('protocol/request-signatures', {
+        instanceId: inst.id,
+        method: 'scrive',
+        parties: [
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Anställd', kind: 'external' },
+        ],
+      });
 
       const [dead] = await host.executorDeadLetters(t, s);
       expect(dead!.eventType).toBe('protocol.signatures-requested');
       expect(dead!.error).toMatch(/409/);
       expect(dead!.error).toMatch(/requires valid email field/);
+      // Participant #2 — the counterparty — and ONLY #2. #1 is the author, whom
+      // Scrive never invites, so its missing address is not what refused this
+      // document. A refusal naming both would be the mock inventing a rule.
+      expect(dead!.error).toMatch(/participant #2/);
+      expect(dead!.error).not.toMatch(/participant #1/);
+    });
+
+    it('a LONE party becomes the author: the document starts and invites nobody (#687)', async () => {
+      // The control case, and the trap. `requestSignatures` resolves the issuing
+      // party unconditionally — the declared one, else the FIRST — so a caller
+      // that names only counterparties has one of them silently made the issuer,
+      // and this connector maps `primary` to `is_author`. Scrive never invites the
+      // author, so the delivery rule the test above trips does not reach it: the
+      // document starts, journals a document id, reports itself sent for
+      // signature, and reaches nobody. Production got here without anyone choosing
+      // it (Scrive doc 9222115557586247373).
+      //
+      // So "no document this connector builds can start" is false, and stating it
+      // as an unconditional refusal would have hidden the worse of the two
+      // failures behind the louder one. When #687 item 1 lands its invariant —
+      // no document goes out with nobody to deliver to — THIS is the assertion
+      // that must be changed deliberately, because a contact field alone does not
+      // close it: an author is uninvitable whatever address it carries.
+      const discarded = dir;
+      await host.close();
+      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, { strictDelivery: true });
+      rmSync(discarded, { recursive: true, force: true });
+
+      await issueAt('basic'); // one party, no declared issuer
+
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.status).toBe('pending'); // it STARTED
+      expect(doc!.parties).toHaveLength(1);
+      expect(doc!.parties[0]!.isAuthor).toBe(true); // …as the sender's own side
+      expect(doc!.parties[0]!.email).toBeNull(); // …with nobody to deliver to
+      expect(await host.executorDeadLetters(t, s)).toEqual([]); // …and no complaint
     });
   });
 

@@ -40,6 +40,8 @@ interface MockDocument {
     hasPersonalNumber: boolean;
     /** The `email` field's value, or null when the party carried none. */
     email: string | null;
+    /** The sending account. Scrive never invites it, so it needs no address. */
+    isAuthor: boolean;
   }[];
 }
 
@@ -47,18 +49,21 @@ export interface ScriveMockOptions {
   /** Reject every call with this HTTP status — the failure path on demand. */
   failWith?: number;
   /**
-   * Validate `start`'s DELIVERY rule as the real testbed does: a party with no
-   * `email` field cannot be invited, and `start` answers 409
-   * `invalid_invitation_delivery_info` (probed live, #687).
+   * Validate `start`'s DELIVERY rule as the real testbed does: a party who must
+   * be INVITED and carries no `email` field cannot be reached, and `start`
+   * answers 409 `invalid_invitation_delivery_info` (probed live, #687).
    *
-   * Default OFF, and the default is the honest one rather than the convenient one:
-   * this connector sends no address on any party, so the real Scrive refuses every
-   * document it has ever built — at `basic` as much as at `strong`. Enforcing it by
-   * default would fail every dispatch test with a gap none of them is about.
+   * The author is exempt — it is the sending account, and Scrive never invites
+   * it. That exemption is the whole shape of the bug: because this connector
+   * sends no address on any party, a set with a real counterparty is refused
+   * loudly, while a set whose only party is the author STARTS and delivers to
+   * nobody. Production reached the second case without anyone choosing it.
    *
-   * `test/dispatch.test.ts` turns it on for the one test that states that gap. When
-   * a party can carry a contact (#687 item 1), this option should become the
-   * behaviour and disappear.
+   * Default OFF: no party this connector builds carries an address, so enforcing
+   * the rule by default would fail every dispatch test with a gap none of them is
+   * about. `test/dispatch.test.ts` turns it on for the two tests that state the
+   * gap — the refusal AND the control case that starts. When a party can carry a
+   * contact (#687 item 1), this option should become the behaviour and disappear.
    */
   strictDelivery?: boolean;
   /**
@@ -270,6 +275,7 @@ export class ScriveMock {
               // Presence, not value — that is exactly the rule `start` applies.
               hasPersonalNumber: p.fields.some((f) => f.type === 'personal_number'),
               email: email === undefined ? null : String(email),
+              isAuthor: p.is_author === true,
             };
           });
         }
@@ -297,7 +303,14 @@ export class ScriveMock {
               details: { field: { type: 'personal_number' }, participant: i + 1 },
             });
           }
-          if (this.strictDelivery && !p.email) {
+          // The author is the sending account: Scrive has nobody to invite it TO,
+          // so it needs no address and this rule does not reach it. Production
+          // proved the exemption the hard way — a document whose only party was
+          // the author STARTED, reported itself sent, and invited nobody
+          // (#687 comment; Scrive doc 9222115557586247373). Applying the rule to
+          // every party would make the mock refuse the one case that must not be
+          // refused, and hide the case that actually hurts.
+          if (this.strictDelivery && !p.isAuthor && !p.email) {
             errors.push({
               type: 'invalid_invitation_delivery_info',
               details: { field: { type: 'email' }, participant: i + 1 },
