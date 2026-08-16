@@ -45,6 +45,7 @@ export type {
 } from './scope-host.js';
 export {
   attachmentBlobKey,
+  entitlementDenial,
   backoffAt,
   parseValidationRecords,
   resolveRetryPolicy,

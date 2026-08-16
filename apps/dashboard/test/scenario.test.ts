@@ -282,6 +282,23 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     ]);
   });
 
+  it('installEntitlements: derives the BARE key from a workspace-prefixed slug (#691)', () => {
+    // A builder-pushed vertical's registry slug carries its workspace: `t-<tail>/<bare>`.
+    // `manifest.entitlementKey` is /^[a-z0-9-]+$/, so granting the prefixed form grants a
+    // key the gate can never match — dormant until the first projection flips the scope to
+    // strict, then every gated operation denies.
+    expect(installEntitlements('t-0wv2mwk4j5/crm-eff')).toEqual(['crm-eff']);
+    expect(installEntitlements('acme/helpdesk', undefined, [])).toEqual(['helpdesk']);
+    // A DECLARED set is authoritative and passes through untouched — that is the escape
+    // hatch for a vertical whose entitlementKey diverges from its slug.
+    expect(installEntitlements('t-0wv2mwk4j5/crm-eff', ['egeryds', 'absence'])).toEqual([
+      'egeryds',
+      'absence',
+    ]);
+    // Degenerate slugs never yield an empty key — an empty grant is the #443 failure.
+    expect(installEntitlements('helpdesk/')).toEqual(['helpdesk/']);
+  });
+
   it('delivers the Identity choice as substrat:auth AFTER the hostname binds; a delivery failure fails the app', async () => {
     const acme = await bootstrap('acme-auth-choice');
     const configured: Array<{ scopeId: string; entries: Array<{ key: string; value: string }> }> = [];

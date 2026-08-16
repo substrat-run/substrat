@@ -1850,6 +1850,33 @@ export function attachmentBlobKey(scopeId: string, attachmentId: string): string
 }
 
 /**
+ * The §4.3 entitlement-gate denial, worded identically wherever the gate lives — the
+ * coordinator against the shared CP, a scope DO against its projection, the SQLite
+ * adapter against its directory.
+ *
+ * It names BOTH sides (#691). The required key alone reads as "buy the SKU", which sent
+ * the 2026-08-15 Egeryds lockout down the wrong path for half a day: the tenant held four
+ * keys, just under a workspace-prefixed name the manifest could never match. Required-vs-held
+ * IS the diagnosis, so the message that reports the denial should carry it — a key that is
+ * *nearly* right (prefixed, misspelled, expired) is invisible until you can see both lists.
+ *
+ * `held` is every key projected for the tenant, expired ones included and marked: a lapsed
+ * grant denies exactly like an absent one, and "you have it, it ran out" is a different fix
+ * from "you never had it".
+ */
+export function entitlementDenial(
+  operation: string,
+  requiredKey: string,
+  held: readonly { key: string; expired: boolean }[],
+): string {
+  const inventory =
+    held.length === 0
+      ? 'none'
+      : held.map((h) => (h.expired ? `${h.key} (expired)` : h.key)).join(', ');
+  return `operation not entitled: ${operation} — tenant does not hold '${requiredKey}'; holds: ${inventory}`;
+}
+
+/**
  * Read a hostname row's stored `validation_records` — the DNS records Cloudflare
  * returned while a custom hostname was being issued.
  *

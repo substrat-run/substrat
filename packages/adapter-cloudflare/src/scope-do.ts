@@ -39,6 +39,7 @@ import {
   ulid,
   assertAllowed,
   assertReadOnlyQuery,
+  entitlementDenial,
   platformRequestHistoryQuery,
   PermissionDenied,
   type ConsumerHandler,
@@ -779,8 +780,25 @@ export function defineScopeDO(
           )
           .toArray()[0];
         if (!held) {
+          // The whole projected set, so the denial names required AND held (#691).
+          // Only read on the failure path — the hot path stays the single lookup above.
+          const now = new Date().toISOString();
+          const all = this.sql
+            .exec(
+              `SELECT entitlement_key, expires_at FROM _substrat_entitlements
+               WHERE tenant_id = ? ORDER BY entitlement_key`,
+              tenantId,
+            )
+            .toArray() as { entitlement_key: string; expires_at: string | null }[];
           throw new Error(
-            `operation not entitled: ${operation} — tenant does not hold '${requiredEntitlement}'`,
+            entitlementDenial(
+              operation,
+              requiredEntitlement,
+              all.map((r) => ({
+                key: r.entitlement_key,
+                expired: r.expires_at !== null && r.expires_at <= now,
+              })),
+            ),
           );
         }
       }

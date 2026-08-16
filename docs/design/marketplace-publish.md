@@ -88,6 +88,31 @@ derived-from-`ROLES`" question in favour of the small manifest field.)
 (the auth-server) makes no scope grants, so it declares none — its `envSpec` is its install
 surface (§4).
 
+### Declaring `entitlements` when the key diverges from the slug (#691)
+
+`installEntitlements` grants the **declared** set when there is one, else derives from the
+slug's bare last segment. That default is only right when the vertical follows the convention
+`manifest.entitlementKey === <bare slug>`. When they diverge — Egeryds ships slug `crm-eff`
+with `entitlementKey: 'egeryds'` — no derivation can bridge the gap, because **the manifest
+never reaches the control plane**: `push` sends what the CLI reads from `package.json`, and
+the CP never evaluates module code. The vertical must therefore declare it:
+
+```json
+{ "substrat": { "entitlements": ["egeryds", "absence"] } }
+```
+
+The set is every key the install should grant — the vertical's own plus each composed
+engine's, since **each engine a vertical composes adds a key** (`engine-absence` → `absence`).
+Adopting an engine without adding its key leaves that engine's operations denying while the
+rest of the vertical works, which is a legitimate SKU gate and therefore *not* something the
+platform can refuse the install over.
+
+Get it wrong and the failure is latent, not immediate: an un-projected scope trusts upstream,
+and the flip to strict enforcement is one-way, triggered by the **first** projection carrying
+entitlements (a `fanOut`, a reconcile, a re-provision). So a mismatch planted at install
+detonates arbitrarily later, from an unrelated action. The denial names required *and* held
+keys precisely so that gap reads at a glance.
+
 ## 4. Capabilities, not kinds — verticals provide/require, connections wire them
 
 "Dispatch vs standalone" is the wrong axis — both are verticals/workers. What differs is the

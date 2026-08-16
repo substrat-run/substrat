@@ -110,6 +110,7 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
+  entitlementDenial,
   foldMeterReading,
   parseValidationRecords,
   resolveScopeRecord,
@@ -2110,9 +2111,19 @@ export class CloudflareScopeHost implements ScopeHost {
         // its PROJECTED entitlements (#304). One or the other enforces, never neither.
         const requiredKey = operationEntitlement.get(operation);
         if (requiredKey && !(await cp.tenantHoldsEntitlement(tenantId, requiredKey))) {
+          // Required AND held (#691) — a second CP read, but only on the denial path.
+          const now = new Date().toISOString();
+          const all = await cp.listEntitlements(tenantId).catch(() => []);
           return Promise.reject(
             new Error(
-              `operation not entitled: ${operation} — tenant does not hold '${requiredKey}'`,
+              entitlementDenial(
+                operation,
+                requiredKey,
+                all.map((r) => ({
+                  key: r.entitlement_key,
+                  expired: r.expires_at !== null && r.expires_at <= now,
+                })),
+              ),
             ),
           );
         }
