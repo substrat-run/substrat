@@ -78,14 +78,29 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
    directory — a control-plane-less vertical worker (scope-local-permissions.md Phase 3) cannot
    sweep until its connections are reachable from its runtime.
 
-2. **No party carries an address, so no document can be delivered — nothing this connector
-   sends can start.** Probed against the testbed
-   ([#687](https://github.com/substrat-run/substrat/issues/687)): a party with only a name draws
-   `409 invalid_invitation_delivery_info` — *"Invitation delivery for participant #2 requires
-   valid email field"* — at `basic` as much as at `strong`. `protocol.signatures-requested`
-   carries no contact, and `ScriveParty.email` is therefore never populated. This is the live
-   blocker, and it is one carrier away (`docs/design/signature-contact-carrier.md`); every other
-   caveat here is downstream of it.
+2. **No party carries an address, so no counterparty can be invited.** Probed against the
+   testbed ([#687](https://github.com/substrat-run/substrat/issues/687)): a party with only a
+   name draws `409 invalid_invitation_delivery_info` — *"Invitation delivery for participant #2
+   requires valid email field"* — at `basic` as much as at `strong`.
+   `protocol.signatures-requested` carries no contact, and `ScriveParty.email` is therefore never
+   populated. This is the live blocker, and it is one carrier away
+   (`docs/design/signature-contact-carrier.md`); every other caveat here is downstream of it.
+
+   Read the participant number: **#2**, not #1. Scrive never invites the **author** — it is the
+   sending account — so the rule does not reach it, and the gap splits in two:
+
+   | party set | what happens |
+   |---|---|
+   | a real counterparty to invite | refused at `start` — loud, retried, journalled |
+   | only the author (see below) | **starts, reports itself sent, delivers to nobody** |
+
+   The second row is reachable without anyone choosing it. `requestSignatures` resolves the
+   issuing party unconditionally — the declared one, else the **first** — so a caller naming only
+   counterparties has one of them silently made the issuer, and this connector maps `primary` to
+   `is_author`. Production reached it that way. A contact field alone will not close it: an
+   author is uninvitable whatever address it carries, so the carrier needs the companion
+   invariant that no document goes out with nobody to deliver to. Both rows are asserted in
+   `test/dispatch.test.ts`, the second one so that closing it is a deliberate edit.
 
 3. **The live BankID signing round-trip is unverified.** The outbound lifecycle is checked
    against `api-testbed.scrive.com`, but `se_bankid`-to-sign is **disabled on the testbed
