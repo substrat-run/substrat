@@ -1,5 +1,12 @@
 # @substrat-run/control-plane
 
+## 0.11.1
+
+### Patch Changes
+
+- Updated dependencies [edd764c]
+  - @substrat-run/connector-scrive@0.8.0
+
 ## 0.11.0
 
 ### Minor Changes
