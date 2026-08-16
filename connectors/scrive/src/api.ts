@@ -135,11 +135,18 @@ export interface ScriveParty {
   name: string;
   email?: string;
   /**
-   * Swedish personnummer, when the flow authenticates to sign with BankID.
+   * Swedish personnummer, when the sender happens to know it.
    *
-   * Passed THROUGH to the provider and never persisted by us: it is `direct`
-   * PII, and `engine-protocol` stores an opaque `DataSubjectId` as the signatory
-   * instead. The provider needs it; our tables must not have it.
+   * **Optional even for BankID**, which is the whole finding of
+   * [#687](https://github.com/substrat-run/substrat/issues/687): what Scrive
+   * validates on `start` is that the party *has* a `personal_number` field, not
+   * that it holds a value. `update` below therefore sends an EMPTY one for every
+   * `se_bankid` party, and the signatory completes it at signing time.
+   *
+   * When it is supplied it is passed THROUGH to the provider and never persisted
+   * by us: it is `direct` PII, and `engine-protocol` stores an opaque
+   * `DataSubjectId` as the signatory instead. The provider needs it; our tables
+   * must not have it.
    */
   personalNumber?: string;
   /** `se_bankid` for Swedish BankID; `standard` otherwise. */
@@ -188,10 +195,22 @@ const asJson = async (
     // Scrive's error body is JSON with `error_message`; surface it rather than a
     // bare status, because "This feature is disabled" is the difference between a
     // bug and an account setting.
+    //
+    // `start` can fail for SEVERAL reasons at once and reports them in
+    // `error_details.explanations`, of which `error_message` is only the first —
+    // so a document blocked by both a missing field and an account setting used to
+    // read as one problem, and fixing it produced the next single sentence (#687).
+    // Every explanation is joined, because the operator reading this through the
+    // delivery-attempt history (#618) has no other way to see the rest.
     let detail = body.slice(0, 400);
     try {
-      const parsed = JSON.parse(body) as { error_message?: string };
-      if (parsed.error_message) detail = parsed.error_message;
+      const parsed = JSON.parse(body) as {
+        error_message?: string;
+        error_details?: { explanations?: string[] };
+      };
+      const all = parsed.error_details?.explanations ?? [];
+      if (all.length > 1) detail = all.join(' ');
+      else if (parsed.error_message) detail = parsed.error_message;
     } catch {
       /* not JSON; keep the raw slice */
     }
@@ -335,8 +354,20 @@ export class ScriveApi {
               fields: [
                 { type: 'name', order: 1, value: p.name },
                 ...(p.email ? [{ type: 'email', value: p.email }] : []),
-                ...(p.personalNumber
-                  ? [{ type: 'personal_number', value: p.personalNumber }]
+                // BankID-to-sign needs the FIELD, not a value (#687). Probed
+                // against the testbed: a party carrying `personal_number: ''`
+                // draws exactly the same `start` errors as one carrying a real
+                // personnummer, and a party carrying no such field draws
+                // `invalid_authentication_to_sign_info` on top of them. So the
+                // empty field is what makes `strong` dispatchable at all, and
+                // the signatory fills it in during the BankID ceremony.
+                //
+                // No flags: Scrive stores every field `is_obligatory: true,
+                // should_be_filled_by_sender: false` by default, which is
+                // already what this wants — verified by reading the party back
+                // from `get` after `update`.
+                ...(p.authenticationMethodToSign === 'se_bankid' || p.personalNumber
+                  ? [{ type: 'personal_number', value: p.personalNumber ?? '' }]
                   : []),
               ],
             })),

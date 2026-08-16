@@ -31,12 +31,36 @@ interface MockDocument {
   title: string;
   callbackUrl: string | null;
   file: { name: string; bytes: number } | null;
-  parties: { id: string; name: string; signTime: string | null; auth: string }[];
+  parties: {
+    id: string;
+    name: string;
+    signTime: string | null;
+    auth: string;
+    /** Whether `update` carried a `personal_number` field — value irrelevant (#687). */
+    hasPersonalNumber: boolean;
+    /** The `email` field's value, or null when the party carried none. */
+    email: string | null;
+  }[];
 }
 
 export interface ScriveMockOptions {
   /** Reject every call with this HTTP status — the failure path on demand. */
   failWith?: number;
+  /**
+   * Validate `start`'s DELIVERY rule as the real testbed does: a party with no
+   * `email` field cannot be invited, and `start` answers 409
+   * `invalid_invitation_delivery_info` (probed live, #687).
+   *
+   * Default OFF, and the default is the honest one rather than the convenient one:
+   * this connector sends no address on any party, so the real Scrive refuses every
+   * document it has ever built — at `basic` as much as at `strong`. Enforcing it by
+   * default would fail every dispatch test with a gap none of them is about.
+   *
+   * `test/dispatch.test.ts` turns it on for the one test that states that gap. When
+   * a party can carry a contact (#687 item 1), this option should become the
+   * behaviour and disappear.
+   */
+  strictDelivery?: boolean;
   /**
    * Fired when a signing event lands on a document that has an
    * `api_callback_url` — the provider-side POST the real Scrive makes on status
@@ -58,10 +82,12 @@ export class ScriveMock {
   private seq = 0;
   failWith: number | undefined;
   private readonly onCallback: ScriveMockOptions['onCallback'];
+  private readonly strictDelivery: boolean;
 
   constructor(options: ScriveMockOptions = {}) {
     this.failWith = options.failWith;
     this.onCallback = options.onCallback;
+    this.strictDelivery = options.strictDelivery ?? false;
   }
 
   /** Simulate a party completing BankID. The provider-side event we cannot cause for real. */
@@ -234,12 +260,18 @@ export class ScriveMock {
             // here rather than silently against the real API.
             return respond(400, { error_message: `exactly one author required, got ${authors}` });
           }
-          doc.parties = patch.parties.map((p, i) => ({
-            id: `party-${i}`,
-            name: String(p.fields.find((f) => f.type === 'name')?.value ?? ''),
-            signTime: null,
-            auth: p.authentication_method_to_sign,
-          }));
+          doc.parties = patch.parties.map((p, i) => {
+            const email = p.fields.find((f) => f.type === 'email')?.value;
+            return {
+              id: `party-${i}`,
+              name: String(p.fields.find((f) => f.type === 'name')?.value ?? ''),
+              signTime: null,
+              auth: p.authentication_method_to_sign,
+              // Presence, not value — that is exactly the rule `start` applies.
+              hasPersonalNumber: p.fields.some((f) => f.type === 'personal_number'),
+              email: email === undefined ? null : String(email),
+            };
+          });
         }
         return respond(200, this.wire(doc));
       }
@@ -250,6 +282,41 @@ export class ScriveMock {
           return respond(409, { error: 'mock: cannot start a document with no file' });
         }
         if (doc.parties.length === 0) return respond(409, { error: 'mock: no parties' });
+
+        // The two `start` rules probed against the real testbed (#687). Scrive
+        // answers with a LIST of errors and a leading `error_message`; the shape is
+        // reproduced because the connector's readable-failure path (#618) shows
+        // that text to an operator verbatim.
+        const errors: { type: string; details: Record<string, unknown> }[] = [];
+        doc.parties.forEach((p, i) => {
+          // BankID-to-sign needs the FIELD; an empty value satisfies it, and the
+          // signatory fills it in at signing time.
+          if (p.auth === 'se_bankid' && !p.hasPersonalNumber) {
+            errors.push({
+              type: 'invalid_authentication_to_sign_info',
+              details: { field: { type: 'personal_number' }, participant: i + 1 },
+            });
+          }
+          if (this.strictDelivery && !p.email) {
+            errors.push({
+              type: 'invalid_invitation_delivery_info',
+              details: { field: { type: 'email' }, participant: i + 1 },
+            });
+          }
+        });
+        if (errors.length > 0) {
+          const explain = (e: (typeof errors)[number]) =>
+            e.type === 'invalid_authentication_to_sign_info'
+              ? `Authentication to sign for participant #${String(e.details.participant)} requires valid personal number field.`
+              : `Invitation delivery for participant #${String(e.details.participant)} requires valid email field.`;
+          return respond(409, {
+            error_details: { document_id: doc.id, errors, explanations: errors.map(explain) },
+            error_message: explain(errors[0]!),
+            error_type: 'document_state_error',
+            http_code: 409,
+          });
+        }
+
         doc.status = 'pending';
         return respond(200, this.wire(doc));
       }
