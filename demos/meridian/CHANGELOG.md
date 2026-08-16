@@ -1,5 +1,12 @@
 # @substrat-run/demo-hr
 
+## 0.5.1
+
+### Patch Changes
+
+- Updated dependencies [edd764c]
+  - @substrat-run/connector-scrive@0.8.0
+
 ## 0.5.0
 
 ### Minor Changes
