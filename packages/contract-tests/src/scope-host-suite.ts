@@ -3631,6 +3631,37 @@ export function scopeHostContractSuite(
       await host.admin.revokeEntitlement(staff, t4, 'billed');
     });
 
+    it('names required AND held keys in the denial, marking expired ones (#691)', async () => {
+      const stub = await host.getScope(alice, t4, s4);
+
+      // Holding nothing: the denial says so, rather than leaving "held" to the imagination.
+      await expect(stub.invoke('billed/act')).rejects.toThrow(/holds: none/);
+
+      // The Egeryds shape (#691): the tenant DOES hold keys — just not under the name the
+      // manifest declares. Required-alone reads as "buy the SKU" and sends you shopping;
+      // required-vs-held shows a near-miss at a glance, which is the actual diagnosis.
+      await host.admin.grantEntitlement(staff, t4, 't-0wv2mwk4j5/billed');
+      await host.admin.grantEntitlement(staff, t4, 'workorder');
+      const err = await stub.invoke('billed/act').then(
+        () => null,
+        (e: Error) => e.message,
+      );
+      expect(err).toMatch(/does not hold 'billed'/);
+      expect(err).toMatch(/t-0wv2mwk4j5\/billed/);
+      expect(err).toMatch(/workorder/);
+
+      // An expired grant denies like an absent one — but "you had it, it lapsed" is a
+      // different fix from "you never had it", so the inventory distinguishes them.
+      await host.admin.grantEntitlement(staff, t4, 'billed', {
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+      await expect(stub.invoke('billed/act')).rejects.toThrow(/billed \(expired\)/);
+
+      await host.admin.revokeEntitlement(staff, t4, 'billed');
+      await host.admin.revokeEntitlement(staff, t4, 't-0wv2mwk4j5/billed');
+      await host.admin.revokeEntitlement(staff, t4, 'workorder');
+    });
+
     it('round-trips plan fields, preserves them on a bare re-grant, clears on null (#33)', async () => {
       await host.admin.grantEntitlement(staff, t4, 'billed', {
         expiresAt: new Date(Date.now() + 3_600_000).toISOString(),

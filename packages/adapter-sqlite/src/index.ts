@@ -132,6 +132,7 @@ import {
   assertAllowed,
   assertReadOnlyQuery,
   attachmentBlobKey,
+  entitlementDenial,
   foldMeterReading,
   parseValidationRecords,
   resolveScopeRecord,
@@ -2370,7 +2371,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (requiredKey && !this.tenantHoldsEntitlement(tenantId, requiredKey)) {
           return Promise.reject(
             new Error(
-              `operation not entitled: ${operation} — tenant does not hold '${requiredKey}'`,
+              entitlementDenial(operation, requiredKey, this.heldEntitlements(tenantId)),
             ),
           );
         }
@@ -3011,6 +3012,19 @@ export class SqliteScopeHost implements ScopeHost {
         )
         .get(tenantId, key, new Date().toISOString()) !== undefined
     );
+  }
+
+  /** Every key the tenant is granted, expiry flagged — the "held" half of a denial (#691). */
+  private heldEntitlements(tenantId: TenantId): { key: string; expired: boolean }[] {
+    const now = new Date().toISOString();
+    return (
+      this.directory
+        .prepare(
+          `SELECT entitlement_key, expires_at FROM _substrat_entitlements
+           WHERE tenant_id = ? ORDER BY entitlement_key`,
+        )
+        .all(tenantId) as { entitlement_key: string; expires_at: string | null }[]
+    ).map((r) => ({ key: r.entitlement_key, expired: r.expires_at !== null && r.expires_at <= now }));
   }
 
   private buildAdmin(): HostAdmin {

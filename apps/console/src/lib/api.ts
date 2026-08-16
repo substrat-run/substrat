@@ -213,13 +213,20 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     tenantStores: (id: TenantId) => call<TenantStores>(`/tenants/${id}/stores`),
 
     listEntitlements: (id: TenantId) => call<EntitlementGrant[]>(`/tenants/${id}/entitlements`),
+    // The key rides in the PATH, so it is encoded (#691). `entitlementGrant` accepts any
+    // non-empty string — looser than the manifest's `/^[a-z0-9-]+$/` — precisely so a
+    // legacy grant like `t-0wv2mwk4j5/crm-eff` round-trips. Unencoded, its slash forked the
+    // route and the console could neither grant nor REVOKE the very rows that needed
+    // cleaning up, which is what forced the hand-curl.
     grantEntitlement: (id: TenantId, key: string, plan?: EntitlementGrantInput) =>
-      call<EntitlementGrant[]>(`/tenants/${id}/entitlements/${key}`, {
+      call<EntitlementGrant[]>(`/tenants/${id}/entitlements/${encodeURIComponent(key)}`, {
         method: 'PUT',
         body: plan === undefined ? undefined : JSON.stringify(plan),
       }),
     revokeEntitlement: (id: TenantId, key: string) =>
-      call<EntitlementGrant[]>(`/tenants/${id}/entitlements/${key}`, { method: 'DELETE' }),
+      call<EntitlementGrant[]>(`/tenants/${id}/entitlements/${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+      }),
 
     // §5's meters 1 and 2 (#38) — tenants + effective-active scopes, and the entitlement
     // store grouped by SKU and tier. Computed platform-side because the billable rule

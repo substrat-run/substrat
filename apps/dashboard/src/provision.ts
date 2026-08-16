@@ -171,13 +171,31 @@ export async function provisionDashboard(
  * whose registry row carries no `entitlements` used to resolve to `[]`, which defeated
  * every `?? [slug]` fallback downstream — so the installing tenant held ZERO
  * entitlements and the vertical's own gate failed closed on its very first operation.
+ *
+ * The fallback takes the slug's BARE last segment (#691). A builder-pushed vertical's
+ * registry slug is workspace-prefixed (`t-0wv2mwk4j5/crm-eff`, api.ts `registerVertical`),
+ * but `manifest.entitlementKey` is `/^[a-z0-9-]+$/` — a slash is not a legal key, so the
+ * prefixed form is a value the thing it claims to derive from can never equal. Granting it
+ * plants a mismatch that stays dormant until the first projection flips the scope to strict
+ * enforcement, then denies every gated operation. De-prefixing is retroactive: it repairs
+ * already-pushed verticals on their next install without a re-push.
+ *
+ * This fixes the CONVENTION-following case (key === bare slug). A vertical whose
+ * `entitlementKey` diverges from its slug still has to declare `substrat.entitlements` in
+ * package.json — the manifest never reaches the control plane, so no derivation can guess
+ * it. The denial message names both sides so that case diagnoses itself.
  */
 export function installEntitlements(
   verticalSlug: string,
   ...declared: Array<readonly string[] | undefined>
 ): string[] {
   for (const set of declared) if (set && set.length > 0) return [...set];
-  return [verticalSlug];
+  return [bareSlug(verticalSlug)];
+}
+
+/** The entitlement-key-legal tail of a possibly workspace-prefixed registry slug. */
+function bareSlug(verticalSlug: string): string {
+  return verticalSlug.split('/').pop() || verticalSlug;
 }
 
 /**
