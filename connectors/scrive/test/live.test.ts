@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { ScriveApi, type ScriveSecret } from '../src/api.js';
+import { ScriveApi, type ScriveParty, type ScriveSecret } from '../src/api.js';
 
 /**
  * The real thing — this talks to `api-testbed.scrive.com`.
@@ -14,10 +14,18 @@ import { ScriveApi, type ScriveSecret } from '../src/api.js';
  * is the author's reading of the docs on both sides of the call.
  *
  * What it can prove today: new → setfile → update → get, authenticated, with the
- * real request encodings. What it deliberately does NOT do: `start` with
- * `se_bankid`, because BankID-to-sign is disabled on the testbed account (start
- * returns 409). It uses `standard` auth so the lifecycle runs; the BankID
- * round-trip waits on that account setting.
+ * real request encodings, plus what `start` VALIDATES about a BankID party (#687).
+ *
+ * What it still cannot prove: a completed BankID signature. `se_bankid`-to-sign is
+ * disabled on this testbed account, so `start` always answers 409
+ * `authentication_to_sign_method_disabled` and no document here ever reaches
+ * `pending`. That single error is exactly what makes the start tests below useful:
+ * every OTHER error in Scrive's list is one the connector's party shape controls,
+ * so their absence is a real assertion about the request we send. Enabling BankID
+ * on the account is what the round-trip waits on.
+ *
+ * Nothing here is delivered to anyone: every document either fails to start or is
+ * cancelled and deleted, and no party carries a real address.
  */
 
 const dir = dirname(fileURLToPath(import.meta.url));
@@ -85,6 +93,36 @@ function tinyPdf(): Uint8Array {
   return bytes;
 }
 
+/**
+ * The calls made outside `ScriveApi` — the ones that read a status or a raw body,
+ * which the connector's `ConnectorConnection.fetch` deliberately does not expose.
+ */
+const rawFetch = (globalThis as unknown as { fetch: typeof fetch }).fetch;
+
+const authHeader = (c: ScriveSecret) =>
+  `oauth_signature_method="PLAINTEXT", oauth_consumer_key="${c.clientId}", ` +
+  `oauth_token="${c.tokenId}", oauth_signature="${c.clientSecret}&${c.tokenSecret}"`;
+
+const post = (path: string, init: RequestInit = {}) =>
+  rawFetch(`${creds!.baseUrl}/api/v2/${path}`, {
+    method: 'POST',
+    ...init,
+    headers: { authorization: authHeader(creds!), ...(init.headers ?? {}) },
+  });
+
+/** Good testbed citizen: cancel a started document, then trash and delete it. */
+async function discard(documentId: string): Promise<void> {
+  for (const action of ['cancel', 'trash', 'delete']) {
+    // `cancel` 409s on a document that never started — expected, and not a failure
+    // of the test that called this.
+    await post(`documents/${documentId}/${action}`).catch(() => undefined);
+  }
+}
+
+// Every test here makes several real round trips; vitest's 5s default is not a
+// timeout, it is a coin toss on network latency.
+const NET = 30_000;
+
 describe.skipIf(!creds)('scrive connector — LIVE testbed', () => {
   /**
    * The two reads the inspection surface (#605) rests on. Exactly the check the mock
@@ -149,17 +187,115 @@ describe.skipIf(!creds)('scrive connector — LIVE testbed', () => {
     expect(file.length).toBeGreaterThan(0);
     expect(new TextDecoder().decode(file.slice(0, 5))).toBe('%PDF-');
 
-    // Good testbed citizen: trash + delete via the real fetch.
-    const conn = liveConnection(creds!);
-    for (const action of ['trash', 'delete']) {
-      await conn.fetch(`${creds!.baseUrl}/api/v2/documents/${doc.id}/${action}`, {
-        method: 'POST',
-        headers: {
-          authorization:
-            `oauth_signature_method="PLAINTEXT", oauth_consumer_key="${creds!.clientId}", ` +
-            `oauth_token="${creds!.tokenId}", oauth_signature="${creds!.clientSecret}&${creds!.tokenSecret}"`,
-        },
+    await discard(doc.id);
+  }, NET);
+
+  /**
+   * `start`, which the suite never called before — and the 409 that stopped every
+   * production contract lived only there (#687).
+   *
+   * Scrive answers a refused `start` with a LIST of errors, which is what makes
+   * these assertions possible: the account-level `authentication_to_sign_method_disabled`
+   * is present in all three cases and cannot be avoided from here, while every other
+   * entry is one the party shape controls. So what is actually being asserted is
+   * which errors are ABSENT.
+   */
+  describe('what `start` validates about a BankID party (#687)', () => {
+    /** new → setfile → update, with the counterparty shaped by the caller. */
+    const prepare = async (counterparty: ScriveParty) => {
+      const api = new ScriveApi(liveConnection(creds!) as never, creds!.baseUrl);
+      const doc = await api.createDocument();
+      await api.setFile(doc.id, 'live-test.pdf', tinyPdf());
+      await api.update(doc.id, {
+        title: 'Substrat live test — start validation',
+        parties: [
+          { name: 'Sender', authenticationMethodToSign: 'standard', isAuthor: true, isSignatory: true },
+          counterparty,
+        ],
       });
-    }
+      return { api, id: doc.id };
+    };
+
+    /** The error TYPES Scrive listed, or `[]` if it accepted the document. */
+    const startErrors = async (id: string): Promise<string[]> => {
+      const res = await post(`documents/${id}/start`);
+      if (res.ok) return [];
+      const body = JSON.parse(await res.text()) as {
+        error_details?: { errors?: { type: string }[] };
+      };
+      return (body.error_details?.errors ?? []).map((e) => e.type);
+    };
+
+    it('accepts an EMPTY personal_number — the field is what it wants, not a value', async () => {
+      // What `ScriveApi.update` now sends for every `se_bankid` party. No
+      // `invalid_authentication_to_sign_info`: the empty field satisfied the check
+      // exactly as a real personnummer does, which is the finding this connector
+      // change rests on. The delivery error remains because no party carries an
+      // address yet (#687 item 1) — the one thing still between a request and a
+      // signature.
+      const { id } = await prepare({
+        name: 'Counterparty',
+        authenticationMethodToSign: 'se_bankid',
+        isSignatory: true,
+      });
+      const errors = await startErrors(id);
+      expect(errors).not.toContain('invalid_authentication_to_sign_info');
+      expect(errors).toContain('invalid_invitation_delivery_info');
+      // The account setting, which no request shape can talk its way out of.
+      expect(errors).toContain('authentication_to_sign_method_disabled');
+      await discard(id);
+    }, NET);
+
+    it('rejects a BankID party carrying no personal_number field at all', async () => {
+      // The control the assertion above needs: without the field the error IS
+      // raised, so its absence there is the empty field doing the work rather than
+      // Scrive never having minded. `update` cannot express this shape any more —
+      // it adds the field for every BankID party — so the body goes out raw.
+      const api = new ScriveApi(liveConnection(creds!) as never, creds!.baseUrl);
+      const doc = await api.createDocument();
+      await api.setFile(doc.id, 'live-test.pdf', tinyPdf());
+      const document = {
+        title: 'Substrat live test — no personal_number',
+        parties: [
+          {
+            is_author: true,
+            is_signatory: true,
+            authentication_method_to_sign: 'standard',
+            fields: [{ type: 'name', order: 1, value: 'Sender' }],
+          },
+          {
+            is_author: false,
+            is_signatory: true,
+            authentication_method_to_sign: 'se_bankid',
+            fields: [
+              { type: 'name', order: 1, value: 'Counterparty' },
+              { type: 'email', value: 'nobody@substrat.test' },
+            ],
+          },
+        ],
+      };
+      const updated = await post(`documents/${doc.id}/update`, {
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: `document=${encodeURIComponent(JSON.stringify(document))}`,
+      });
+      expect(updated.status).toBe(200);
+
+      expect(await startErrors(doc.id)).toContain('invalid_authentication_to_sign_info');
+      await discard(doc.id);
+    }, NET);
+
+    it('reports every reason at once, not just the first (`asJson`)', async () => {
+      // Two problems, two sentences. `error_message` carries only the first, so an
+      // operator reading the delivery-attempt history (#618) would fix one, retry,
+      // and meet the next — which is how the account setting stayed hidden behind
+      // the missing field for three production contracts.
+      const { api, id } = await prepare({
+        name: 'Counterparty',
+        authenticationMethodToSign: 'se_bankid',
+        isSignatory: true,
+      });
+      await expect(api.start(id)).rejects.toThrow(/disabled[\s\S]*email|email[\s\S]*disabled/i);
+      await discard(id);
+    }, NET);
   });
 });

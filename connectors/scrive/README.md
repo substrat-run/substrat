@@ -14,7 +14,9 @@ Two halves, both built and tested against the real testbed API.
 document and sends it for signature. The connector (only for `method: 'scrive'`) turns that into a
 Scrive document: **create → set file → set parties → start**. Each party's authentication method
 comes from the request's provider-agnostic `authLevel` (`basic` → `standard`, the default;
-`strong` → `se_bankid`), falling back to the connection's `defaultAuthMethod`.
+`strong` → `se_bankid`), falling back to the connection's `defaultAuthMethod`. A `se_bankid` party
+is sent an **empty** `personal_number` field, which is all Scrive's auth-to-sign check wants — the
+signatory fills it in during the ceremony, and no personnummer ever enters this platform.
 It records each dispatch in a directory-side ledger (`putConnectorState`, keyed by the connection)
 so an at-least-once redelivery skips instead of creating a *second* document — duplicate legal
 paperwork to real signatories. Directory-side because a connector runs *inside* the scope's
@@ -76,24 +78,36 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
    directory — a control-plane-less vertical worker (scope-local-permissions.md Phase 3) cannot
    sweep until its connections are reachable from its runtime.
 
-2. **The live BankID signing round-trip is unverified, and `authLevel: 'strong'` is refused.**
-   The outbound lifecycle is checked against `api-testbed.scrive.com`, but `se_bankid`-to-sign is
-   **disabled on the testbed account** (`start` → 409), so the actual signature — and Scrive's
-   real signed-`get` party shape and order — have only been exercised against `ScriveMock`.
-   Because the reconcile fails closed on a party-shape mismatch, a wrong assumption *skips*
-   (visibly, in the sweep result), never mis-records. It stays a `0.x` release for this reason.
+2. **No party carries an address, so no document can be delivered — nothing this connector
+   sends can start.** Probed against the testbed
+   ([#687](https://github.com/substrat-run/substrat/issues/687)): a party with only a name draws
+   `409 invalid_invitation_delivery_info` — *"Invitation delivery for participant #2 requires
+   valid email field"* — at `basic` as much as at `strong`. `protocol.signatures-requested`
+   carries no contact, and `ScriveParty.email` is therefore never populated. This is the live
+   blocker, and it is one carrier away (`docs/design/signature-contact-carrier.md`); every other
+   caveat here is downstream of it.
 
-   Separately, Scrive's BankID auth-to-sign requires a `personal_number` on the party, and
-   Substrat carries none: a personnummer would have to ride `protocol.signatures-requested` into
-   `_substrat_outbox` and `_substrat_platform_requests` — kernel spine rows a vertical may
-   neither write nor erase (rule 3) — and design rule B6 forbids one reaching the kernel, the
-   events or the audit trail at all. So a request asking for `authLevel: 'strong'` is **refused
-   before any egress**, with a sentence saying why, rather than sent for Scrive to answer
-   `409 … requires valid personal number field`. Until a lawful carrier for direct PII exists
-   ([#620](https://github.com/substrat-run/substrat/issues/620)), BankID-to-sign is reachable only
-   by a deployment that supplies personal numbers by other means and sets `defaultAuthMethod`.
+3. **The live BankID signing round-trip is unverified.** The outbound lifecycle is checked
+   against `api-testbed.scrive.com`, but `se_bankid`-to-sign is **disabled on the testbed
+   account** (`start` → 409 `authentication_to_sign_method_disabled`), so the actual signature —
+   and Scrive's real signed-`get` party shape and order — have only been exercised against
+   `ScriveMock`. Because the reconcile fails closed on a party-shape mismatch, a wrong assumption
+   *skips* (visibly, in the sweep result), never mis-records. It stays a `0.x` release for this
+   reason.
 
-3. **It sends an attestation sheet, not the avtal.** A one-page PDF naming the template, the
+   What is **no longer** true: that `authLevel: 'strong'` cannot be satisfied. `0.7.0` refused it
+   before egress, reasoning that Scrive's BankID auth-to-sign needs a `personal_number` on the
+   party and Substrat may carry no personnummer (design rule B6 — it reaches neither the kernel,
+   the events, nor the audit trail). The requirement is real; the inference was wrong. Scrive
+   validates that the field is **present**, not that it holds a value: an empty
+   `personal_number` draws exactly the same `start` errors as a filled one, and the signatory
+   completes it during the BankID ceremony. `update` sends that empty field for every
+   `se_bankid` party, `strong` maps straight through, and no PII carrier is needed for the auth
+   level. (BankID agrees on direction: since API v6 it does not accept a `personalNumber` from
+   the relying party at all.) `test/live.test.ts` asserts this against the testbed, including the
+   control case that shows the error returning when the field is absent.
+
+4. **It sends an attestation sheet, not the avtal.** A one-page PDF naming the template, the
    parties, and the content hash the signature refers to — honest for a hash-attestation model,
    but not the contract itself. Rendering the real document belongs to the **vertical** (a
    connector cannot read another module's tables), and it needs a document store that does not
@@ -110,10 +124,18 @@ version, written from the docs, was wrong in three ways one live call exposed at
   their id and status is re-read
 - **`setfile` is `multipart/form-data`**, not a base64 body
 
-`test/live.test.ts` runs the real lifecycle (`new → setfile → update → get`) when
-`connectors/scrive/.dev.vars` holds a complete OAuth1 credential, and **skips** otherwise — so CI
-without secrets stays offline and a local run against the testbed verifies the actual API. It uses
-`standard` auth because `se_bankid`-to-sign is disabled on the account (see caveat 2).
+`test/live.test.ts` runs the real lifecycle (`new → setfile → update → get`) and what `start`
+validates, when `connectors/scrive/.dev.vars` holds a complete OAuth1 credential; it **skips**
+otherwise — so CI without secrets stays offline and a local run against the testbed verifies the
+actual API. Nothing it creates is delivered: no document reaches `pending` (the account setting in
+caveat 3 sees to that), no party carries a real address, and every document is cancelled and
+deleted.
+
+The `start` tests read Scrive's error **list** rather than a single message, which is what lets
+them assert the interesting thing — which errors are *absent*. `authentication_to_sign_method_disabled`
+is present in all of them and cannot be avoided from this account; everything else is controlled
+by the party shape the connector builds. That the suite never called `start` at all is why the
+`personal_number` 409 was discoverable only in production.
 
 ## Testing
 

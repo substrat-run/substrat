@@ -24,6 +24,7 @@ import {
   scriveCallbackPath,
   type ScriveConnectorOptions,
   type ScriveDispatchState,
+  type ScriveMockOptions,
 } from '../src/index.js';
 
 /**
@@ -56,9 +57,10 @@ describe('scrive connector — outbound dispatch', () => {
    */
   const boot = async (
     connectorOptions: Partial<ScriveConnectorOptions & { retry: ConnectorOptions }> = {},
+    mockOptions: ScriveMockOptions = {},
   ) => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scrive-'));
-    scrive = new ScriveMock();
+    scrive = new ScriveMock(mockOptions);
 
     staff = platformActorId.parse(ulid());
     t = tenantId.parse(ulid());
@@ -216,10 +218,10 @@ describe('scrive connector — outbound dispatch', () => {
   });
 
   // #620. The connector hardcoded `se_bankid` for external parties, which Scrive
-  // will not start without a `personal_number` on the party — one this platform
-  // deliberately never supplies (B6: a personnummer reaches neither the kernel nor
-  // the events nor the audit trail). The result was a requirement the caller could
-  // neither see nor satisfy, and a production tenant whose every contract failed.
+  // will not start without a `personal_number` FIELD on the party. The result was a
+  // requirement the caller could neither see nor satisfy, and a production tenant
+  // whose every contract failed. #687 then measured what that field actually
+  // demands — presence, not a value — so `strong` no longer has to be refused.
   describe('the authentication method comes from the caller (#620)', () => {
     /** Issue a set whose single external party asks for `level`. */
     const issueAt = async (level?: 'basic' | 'strong') => {
@@ -261,30 +263,47 @@ describe('scrive connector — outbound dispatch', () => {
       expect(doc!.parties.map((p) => p.auth)).toEqual(['se_bankid']);
     });
 
-    it("refuses 'strong' before any egress, naming why it cannot be satisfied", async () => {
-      // One attempt, so the refusal lands in the dead-letter record immediately
+    it("dispatches 'strong' as BankID, carrying the EMPTY personal_number field (#687)", async () => {
+      // This used to be "refuses 'strong' before any egress". The refusal was
+      // reasoned from a true observation — Scrive 409s a BankID party with no
+      // `personal_number` — and a false inference: that satisfying it needs a
+      // personnummer, which this platform may not carry. Probed against the
+      // testbed, an EMPTY field draws exactly the same errors as a filled one, so
+      // the field costs no PII and the signatory completes it during the ceremony.
+      await issueAt('strong');
+
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.status).toBe('pending'); // it starts — no refusal, no 409
+      expect(doc!.parties.map((p) => p.auth)).toEqual(['se_bankid']);
+      // The mock enforces the rule the testbed enforces: presence, not value.
+      // Without `update` sending the empty field this assertion — and `start` —
+      // would both fail.
+      expect(doc!.parties.every((p) => p.hasPersonalNumber)).toBe(true);
+    });
+
+    it('still cannot deliver: no party carries an address (#687 item 1)', async () => {
+      // The gap that outlives this fix, stated where it will fail loudly when it
+      // closes. `strictDelivery` makes the mock apply the testbed's OTHER `start`
+      // rule — a party with no `email` field cannot be invited — which no party
+      // this connector builds can satisfy, at either auth level. So the flow is
+      // blocked on a contact carrier, never on the auth level, and the refusal
+      // removed above was never what stood between a request and a signature.
+      //
+      // One attempt, so the failure lands in the dead-letter record immediately
       // rather than after eight backoffs a test cannot advance through.
       const discarded = dir;
       await host.close();
-      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } });
+      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, { strictDelivery: true });
       rmSync(discarded, { recursive: true, force: true });
 
-      // The operation still SUCCEEDS — the freeze is committed and the request rows
-      // exist. Only the DELIVERY refuses, exactly as a provider failure would; the
-      // difference is that the reason is ours, and it is a sentence.
-      await issueAt('strong');
-
-      // Nothing was sent, and — the point of resolving up front — no draft document
-      // was left behind at the provider for a retry to duplicate.
-      expect(scrive.documents.size).toBe(0);
+      // The operation SUCCEEDS — the freeze is committed and the request rows
+      // exist. Only the delivery fails, and this time the reason is the provider's.
+      await issueAt('basic');
 
       const [dead] = await host.executorDeadLetters(t, s);
       expect(dead!.eventType).toBe('protocol.signatures-requested');
-      expect(dead!.error).toMatch(/authLevel 'strong'/);
-      expect(dead!.error).toMatch(/personal number/);
-      // The old behaviour, for contrast: Scrive's own `409 … requires valid personal
-      // number field`, raised only after a document had been created.
-      expect(dead!.error).not.toMatch(/409/);
+      expect(dead!.error).toMatch(/409/);
+      expect(dead!.error).toMatch(/requires valid email field/);
     });
   });
 
