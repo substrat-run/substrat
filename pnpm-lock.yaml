@@ -1382,9 +1382,6 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
-      '@substrat-run/model-emit':
-        specifier: workspace:*
-        version: link:../model-emit
       typescript:
         specifier: ^7.0.0
         version: 7.0.2

@@ -16,6 +16,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Before the build, because a cycle makes the build's result a coin flip:
+      # pnpm cannot order one, so it builds the members in parallel and whether
+      # that passes depends on which tsc wins. Reading the declared graph gives
+      # the same answer every time, and names the cycle instead of a stray TS2307.
+      - run: node tools/workspace-cycles.mjs
       - run: pnpm -r build
       # The layer rules run from packages/boundary-lint (published as
       # @substrat-run/boundary-lint), so they need the build above — the repo
