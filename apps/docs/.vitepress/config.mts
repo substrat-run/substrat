@@ -94,6 +94,7 @@ function guideSidebar() {
         { text: 'Snapshots & test copies', link: '/concepts/snapshots' },
         { text: 'The deploy model', link: '/concepts/deploying' },
         { text: 'Reads & scaling', link: '/concepts/reads' },
+        { text: 'The model', link: '/concepts/model' },
         { text: 'Modules & the manifest', link: '/concepts/modules' },
         { text: 'Money', link: '/concepts/money' },
       ],

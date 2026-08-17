@@ -128,5 +128,13 @@ Two phases, in order. **Design** with the **substrat** skill
 and land a reviewable `DESIGN.md` / `spec/concept.md` the user approves *before any code*.
 Then **build** with the **new-vertical** skill (`.claude/skills/new-vertical/SKILL.md`),
 which turns that approved design into a working vertical. Reference implementation:
-`demos/callout` (spec in `demos/callout/spec/`, module in `src/module.ts`, world in
-`src/seed.ts`, scenario test in `test/scenario.test.ts`).
+`demos/callout` (spec in `demos/callout/spec/`, **declared model in `src/entities.ts` +
+`src/operations.ts`**, module in `src/module.ts`, world in `src/seed.ts`, scenario test in
+`test/scenario.test.ts`).
+
+A vertical declares **what exists** — entities, operations, permissions — in one typed
+module, and the compiler checks the joins between them: a parent naming no entity, an
+`entityIdFrom` naming no output field, a payload carrying an `erasable` field are compile
+errors. `pnpm lint:model --check` gates the emitted `model.json`, as `lint:permissions` gates
+the permission surface. See `docs/concepts/model.md` (published at
+[substrat.net/concepts/model](https://substrat.net/concepts/model)).

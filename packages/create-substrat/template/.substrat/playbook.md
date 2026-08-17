@@ -222,7 +222,62 @@ Approval of the design is what unlocks Step 5. Until you have it, you are still 
 
 ---
 
-## Step 5 — Reshape the reference
+## Step 5 — Declare the model
+
+The design is approved. Before reshaping any code, declare **what exists** in
+`spec/model.ts`: entities, the operations over them, and the permissions those operations
+check. One TypeScript module, and the compiler checks the joins between them.
+
+```ts
+import { defineEntities, defineOperations, emitModel } from '@substrat-run/contracts';
+import { z } from '@substrat-run/contracts';
+
+export const entities = defineEntities({
+  customer: {
+    table: 'acme_customers',
+    fields: z.object({ id: z.string(), number: z.string(), name: z.string() }),
+    key: ['number'],
+    erasable: ['name'],
+  },
+  site: { table: 'acme_sites', fields: z.object({ id: z.string(), customer_id: z.string() }), parents: ['customer'] },
+});
+
+export const PERMISSIONS = ['customer:manage'] as const;
+
+export const operations = defineOperations(entities, PERMISSIONS)({
+  'acme/create-customer': {
+    summary: 'Register a customer',
+    permission: 'customer:manage',
+    input: z.object({ number: z.string(), name: z.string() }),
+    output: entities.customer.fields,
+    emits: { entity: 'customer', entityIdFrom: 'id', type: 'acme.customer-created', schemaVersion: 1, piiClass: 'none' },
+  },
+});
+
+export const model = emitModel(entities);
+```
+
+These are compile errors, not lints: a `parents` naming no entity, a `permission` that is
+not declared, an `entityIdFrom` naming no field of that operation's `output`, a `payload`
+carrying a field the entity marks `erasable`, a `{var}` in an HTTP path that names no input
+field. All before a handler exists.
+
+Field names mirror the SQL columns, snake_case included — a prettier naming here is a second
+description of the same rows. Not every table is an entity: an entity is something the
+platform can point at (attachments hang off one, grants narrow to one, events are about one).
+
+Behaviour stays prose in `DESIGN.md`. Inventing a way to declare a state *transition* means
+the boundary slipped.
+
+Full reference: https://substrat.net/concepts/model
+
+**Do not edit `spec/model.ts` while reshaping the code.** If a handler cannot return what the
+model declares, that is real information — say so and stop, rather than reshaping the model
+to make the build pass.
+
+---
+
+## Step 6 — Reshape the reference
 
 The design is approved. The scaffold already contains a working vertical in `src/` + `test/` —
 the bike-repair shop. **Read it first** (it's your Callout: the real, green implementation of
@@ -314,7 +369,7 @@ closed-door assertion with a control proving a neighbouring door is still open.
 
 ---
 
-## Step 6 — Run it
+## Step 7 — Run it
 
 Build confidence in this order, and **show the user the output of each**:
 
@@ -336,7 +391,7 @@ and typed wrappers over the routes. Ask first — it roughly doubles the work.
 
 ---
 
-## Step 7 — The two checkpoints. STOP HERE.
+## Step 8 — The two checkpoints. STOP HERE.
 
 **You may never self-approve these. Present them and wait.** The design gate (Step 4) already
 took the user's approval of *what* to build; these confirm that the code matches it.
@@ -357,7 +412,7 @@ and who can see other tenants' data?* A permission diff nobody understands is th
 
 ---
 
-## Step 8 — Deploy (optional)
+## Step 9 — Deploy (optional)
 
 Only if the user asks. Local-first is a legitimate stopping point.
 
@@ -389,7 +444,7 @@ cross-tenant hole with a UI.
 
 ---
 
-## Step 9 — Leave the project competent
+## Step 10 — Leave the project competent
 
 The next session — in any tool — starts cold. The scaffold already ships `AGENTS.md`,
 `CLAUDE.md`, and the Cursor/opencode command stubs, so the rules and this flow survive. Your

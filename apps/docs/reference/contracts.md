@@ -151,3 +151,24 @@ attachment item that could reach a customer portal.
 The package is semver'd and every event and manifest carries explicit schema versions.
 Pre-1.0, shapes change without notice; from the first shipped vertical onward, breaking
 changes to emitted schemas are CI-diffed and linted.
+
+## The model
+
+One TypeScript module declares a vertical's entities, operations and permissions; the
+compiler checks the joins between them. Full walkthrough in
+[The model](/concepts/model).
+
+| export | what it does |
+|---|---|
+| `defineEntities` | declares entities — `table`, `fields`, `parents`, `key`, `erasable`. `parents` is checked against the map's own keys; `key` and `erasable` against each entity's own fields |
+| `defineOperations(entities, permissions, engines?)` | declares operations against those entities, a declared permission set, and any composed engine registries |
+| `manifestEntities(entities, refs)` | composes the entity-referencing manifest fragments; derives `entityRelations` from each entity's `parents` |
+| `permissionsUsedBy` · `eventsEmittedBy` | derive the manifest's `permissions` and `events.emits` from the operations |
+| `emitModel` | renders the registry to deterministic JSON — the artifact `pnpm lint:model --check` gates |
+| `EntityRow<T, K>` | a declared entity's row type, for `ctx.sql.query<…>` |
+| `OperationImpl<Ops, Ctx>` | the handler map an operation set requires; bind with `satisfies` |
+| `journalColumns(sql)` | test tooling — columns per table from a migration journal, following `ADD COLUMN`, `DROP TABLE` and `RENAME TO` |
+
+`model.json` is for consumers that must not execute your code, or that want diffability. A
+code generator reads the TypeScript: `z.toJSONSchema` drops `.refine()` and `.brand()`, so a
+generator reading the JSON would emit validators weaker than you declared.
