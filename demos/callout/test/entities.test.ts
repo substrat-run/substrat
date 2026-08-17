@@ -65,7 +65,7 @@ describe('emitted model', () => {
   it('is deterministic and covers every declared entity', () => {
     const model = emitModel(calloutEntities);
     expect(Object.keys(model.entities)).toEqual(['customer', 'facility']);
-    expect(model.entities.facility?.parent).toBe('customer');
+    expect(model.entities.facility?.parents).toEqual(['customer']);
     expect(JSON.stringify(emitModel(calloutEntities))).toBe(JSON.stringify(model));
   });
 

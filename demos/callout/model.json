@@ -92,7 +92,9 @@
         ],
         "additionalProperties": false
       },
-      "parent": "customer",
+      "parents": [
+        "customer"
+      ],
       "erasable": [
         "address"
       ]

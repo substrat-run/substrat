@@ -33,11 +33,18 @@ export interface EntityDef<Names extends string = string> {
   /** The row shape. Field names are what `key`, `searchables` and events check against. */
   readonly fields: z.ZodObject<z.ZodRawShape>;
   /**
-   * The parent entity permission flows along (design doc §4.2 rule 3).
-   * Checked against the declared entities — a typo is a compile error, where
-   * today it is a silently dead edge.
+   * The parent entity types permission may flow along (design doc §4.2 rule 3).
+   * Checked against the declared entities — a typo is a compile error, where it
+   * used to be a silently dead edge.
+   *
+   * **Plural, and an array even for one.** `entityRelations` is an ALLOWLIST,
+   * not an assertion: the kernel accumulates permitted parents into a *set* per
+   * entity type and `ctx.link` checks membership. `reservation` already hangs
+   * off both `resource` and `member`; `protocol` off both `workorder` and
+   * `employee`. Singular `parent` said "the parent", which is not what the
+   * kernel means and cannot express the real cases.
    */
-  readonly parent?: Names;
+  readonly parents?: readonly Names[];
   /** Natural key, if any. Must name fields that exist. */
   readonly key?: readonly string[];
   /** Fields an erasure must be able to reach (§12). Must name fields that exist. */
@@ -90,7 +97,8 @@ export type EntityName<T> = keyof T & string;
 export interface EmittedEntity {
   readonly table: string;
   readonly fields: Record<string, unknown>;
-  readonly parent?: string;
+  /** The permitted parent types, sorted. One shape, always. */
+  readonly parents?: readonly string[];
   readonly key?: readonly string[];
   readonly erasable?: readonly string[];
 }
@@ -116,7 +124,7 @@ export function emitModel<T extends Record<string, EntityDef>>(entities: T): Emi
     out[name] = {
       table: e.table,
       fields,
-      ...(e.parent ? { parent: e.parent } : {}),
+      ...(e.parents?.length ? { parents: [...e.parents].sort() } : {}),
       ...(e.key ? { key: [...e.key].sort() } : {}),
       ...(e.erasable ? { erasable: [...e.erasable].sort() } : {}),
     };
@@ -138,8 +146,9 @@ export function entityRelationsOf<T extends Record<string, EntityDef>>(
   return Object.keys(entities)
     .sort()
     .flatMap((name) => {
-      const parent = entities[name]?.parent;
-      return parent ? [{ entityType: name, parentType: parent }] : [];
+      const parents = entities[name]?.parents;
+      if (!parents?.length) return [];
+      return [...parents].sort().map((parentType) => ({ entityType: name, parentType }));
     });
 }
 
@@ -203,7 +212,7 @@ type EntityRefs<T extends Record<string, EntityDef>, M> = {
    * once `foreignParents` (below) is used instead.
    *
    * Both become fully checkable when engines export their entity-type constants
-   * (#696 item 3), at which point these two fields collapse back into `parent`.
+   * (#696 item 3), at which point these two fields collapse back into `parents`.
    */
   readonly foreignChildren?: readonly {
     readonly entityType: string;

@@ -73,6 +73,6 @@ describe('the manifest edges', () => {
 
   it('emits every declared entity, deterministically', () => {
     expect(Object.keys(handlebarModel.entities)).toEqual(['bike', 'customer']);
-    expect(handlebarModel.entities.bike?.parent).toBe('customer');
+    expect(handlebarModel.entities.bike?.parents).toEqual(['customer']);
   });
 });

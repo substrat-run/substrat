@@ -50,7 +50,7 @@ export const handlebarEntities = defineEntities({
       created_at: z.string(),
     }),
     /** Permission flows bike → customer; `entityRelations` is derived from this. */
-    parent: 'customer',
+    parents: ['customer'],
     /**
      * A frame number identifies a bike, and a bike identifies its owner — it is
      * the serial a police report quotes. Pseudonymous rather than direct, but
