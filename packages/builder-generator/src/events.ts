@@ -29,6 +29,14 @@ export interface PlanAssumption {
 	readonly reversalCost: 'high' | 'medium' | 'low';
 }
 
+/**
+ * The build-phase ladder. Defined HERE rather than in `apps/builder/src/phase.ts`
+ * only because a package cannot import from an app — the ladder's semantics live
+ * there, and it re-exports this. One definition either way: it was written out
+ * twice before, and the two drifted the moment a phase was added.
+ */
+export type BuildPhase = 'interview' | 'model' | 'scaffold' | 'iterate';
+
 export type BuildEvent =
 	/** Assistant prose destined for the chat pane. */
 	| { readonly type: 'assistant-text'; readonly text: string }
@@ -93,7 +101,7 @@ export type BuildEvent =
 	 * src/module.ts), at turn start and again when a turn's work moves it. The
 	 * UI's phase stepper renders only these, so it shows real state.
 	 */
-	| { readonly type: 'phase'; readonly phase: 'interview' | 'scaffold' | 'iterate' }
+	| { readonly type: 'phase'; readonly phase: BuildPhase }
 	/**
 	 * Turn accounting — what §4.4 says actually dominates the bill. Totals are
 	 * summed across ALL tool-loop steps of the turn. `cachedInputTokens` is the

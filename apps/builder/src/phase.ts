@@ -11,9 +11,12 @@
  * two hosts cannot drift on what a phase means.
  */
 
-export type BuildPhase = 'interview' | 'scaffold' | 'iterate';
+import type { BuildPhase } from '@substrat-run/builder-generator';
 
-export const PHASES: readonly BuildPhase[] = ['interview', 'scaffold', 'iterate'];
+/** Re-exported: the ladder's semantics live here, the type lives where the event needs it. */
+export type { BuildPhase };
+
+export const PHASES: readonly BuildPhase[] = ['interview', 'model', 'scaffold', 'iterate'];
 
 /** The slice of Workspace this module needs — keeps it importable anywhere. */
 interface HasExists {
@@ -21,14 +24,26 @@ interface HasExists {
 }
 
 /**
- * interview → no approved concept yet; scaffold → concept approved, no module
- * code yet; iterate → the module exists and the project's own files are the
- * reference. Paths are relative to the PROJECT workspace root.
+ * interview → no approved concept yet; **model** → concept approved, no declared
+ * model yet; scaffold → model approved, no module code yet; iterate → the module
+ * exists and the project's own files are the reference. Paths are relative to
+ * the PROJECT workspace root.
+ *
+ * The model phase (#680) exists because the build was making design decisions
+ * and stabilising them through the gates at the same time. Entities, operations,
+ * permissions and returns are decided ONCE, in an artifact a human approves,
+ * before any handler is written.
  */
 export async function detectPhase(projectWs: HasExists): Promise<BuildPhase> {
 	if (!(await projectWs.exists('spec/concept.md'))) return 'interview';
+	if (!(await projectWs.exists('spec/model.ts'))) return 'model';
 	if (!(await projectWs.exists('src/module.ts'))) return 'scaffold';
 	return 'iterate';
+}
+
+/** Phases whose turns write the spec rather than the code. */
+export function isSpecPhase(phase: BuildPhase): boolean {
+	return phase === 'interview' || phase === 'model';
 }
 
 /**
@@ -44,8 +59,46 @@ export function interviewWriteGuard(path: string): string | null {
 	if (p === 'spec' || p.startsWith('spec/')) return null;
 	return (
 		'interview turns write only spec/** — when the builder approves the concept, ' +
-		'write spec/concept.md and end the turn; the scaffold begins next turn with ' +
-		'the scaffold references loaded'
+		'write spec/concept.md and end the turn; the model phase begins next turn ' +
+		'with the model references loaded'
+	);
+}
+
+/**
+ * The model phase writes only the spec, for the same reason interview does.
+ */
+export function modelWriteGuard(path: string): string | null {
+	const p = path.replace(/^\.\//, '');
+	if (p === 'spec' || p.startsWith('spec/')) return null;
+	return (
+		'model turns write only spec/** — declare the entities and operations in ' +
+		'spec/model.ts and end the turn; the scaffold begins next turn, and it ' +
+		'transcribes this model rather than re-deciding it'
+	);
+}
+
+/**
+ * The MIRROR of the spec guards, and the mechanical half of the direction rule:
+ * the model changes because the business changed or was misunderstood, never to
+ * accommodate what got built.
+ *
+ * Downstream may FALSIFY the model — a handler that cannot return what the model
+ * declares is real information — but it may not AUTHOR it. Without this a
+ * failing build can quietly redraw the contract at continuation 14 and everything
+ * agrees again, which is how 159 operations come to match a model that is wrong
+ * 51 times.
+ *
+ * A genuine modelling error therefore STOPS the build rather than being worked
+ * around: re-enter the model phase, where the change is visible and approved.
+ */
+export function buildWriteGuard(path: string): string | null {
+	const p = path.replace(/^\.\//, '');
+	if (!/^spec\/model\./.test(p)) return null;
+	return (
+		'build turns cannot write spec/model.* — the model changes only from ' +
+		'upstream (a requirement, a corrected understanding of the domain), never ' +
+		'to make a build pass. If the model is genuinely wrong, say so and stop: ' +
+		'it is corrected in the model phase, not here'
 	);
 }
 
@@ -65,6 +118,7 @@ export interface SkillManifestEntry {
 export const SKILL_MANIFEST: readonly SkillManifestEntry[] = [
 	{ file: 'apps/builder/skills/platform.md', phases: ['interview', 'scaffold', 'iterate'] },
 	{ file: 'apps/builder/skills/interview.md', phases: ['interview'] },
+	{ file: 'apps/builder/skills/model.md', phases: ['model'] },
 	{ file: 'apps/builder/skills/scaffold.md', phases: ['scaffold'] },
 	{ file: 'apps/builder/skills/iterate.md', phases: ['scaffold', 'iterate'] },
 ];

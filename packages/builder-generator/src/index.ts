@@ -2,7 +2,7 @@
  * The builder studio's generator seam.
  * Design: docs/design/builder-studio.md §5 (the provider seam), D-49.
  */
-export type { BuildEvent, BuildEventOf, PlanAssumption, StepUsage } from './events.js';
+export type { BuildEvent, BuildEventOf, BuildPhase, PlanAssumption, StepUsage } from './events.js';
 export { formatEvent, historyMarker } from './events.js';
 
 export {

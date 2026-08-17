@@ -46,7 +46,16 @@ import {
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import { detectPhase, interviewWriteGuard, skillsForPhase, SKILL_MANIFEST } from './phase.js';
+import type { BuildPhase } from './phase.js';
+import {
+	buildWriteGuard,
+	detectPhase,
+	interviewWriteGuard,
+	isSpecPhase,
+	modelWriteGuard,
+	skillsForPhase,
+	SKILL_MANIFEST,
+} from './phase.js';
 import { explainProviderFailure } from './provider-errors.js';
 import {
 	HostedProviderError,
@@ -325,7 +334,7 @@ export class BuilderAgent extends DurableObject<Env> {
 		return skills;
 	}
 
-	async #generator(spec: string, skills: string[], interview: boolean): Promise<VerticalGenerator> {
+	async #generator(spec: string, skills: string[], phase: BuildPhase): Promise<VerticalGenerator> {
 		const resolved = resolveModelHosted(this.env, spec);
 		const provider = spec.includes(':') ? (spec.split(':')[0] as string) : 'anthropic';
 		return new AiSdkGenerator({
@@ -342,9 +351,16 @@ export class BuilderAgent extends DurableObject<Env> {
 			editTool: editToolFor(spec),
 			// Sampling defaults per provider (H4): qwen wants 0.55, not SDK default.
 			...samplingFor(spec),
-			// Interview turns may write only spec/** — the ladder is mechanical,
-			// not a prompt hope (phase.ts explains the dead-end this prevents).
-			...(interview ? { denyWrite: interviewWriteGuard } : {}),
+			// The ladder is mechanical, not a prompt hope (phase.ts explains the
+			// dead-end this prevents). Spec phases write only spec/**; build phases
+			// may write anything EXCEPT the model — that mirror is the direction
+			// rule, and it is what stops a failing build redrawing the contract.
+			denyWrite:
+				phase === 'interview'
+					? interviewWriteGuard
+					: phase === 'model'
+						? modelWriteGuard
+						: buildWriteGuard,
 		});
 	}
 
@@ -411,7 +427,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				const generator = await this.#generator(
 					resolveAutoSpec(modelSpec, phase),
 					skillsForPhase(allSkills, phase),
-					phase === 'interview',
+					phase,
 				);
 				const concept =
 					phase === 'interview'

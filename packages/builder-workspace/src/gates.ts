@@ -25,6 +25,7 @@ import type { Workspace } from './workspace.js';
 
 export type GateName =
 	| 'install'
+	| 'model'
 	| 'typecheck'
 	| 'boundary-lint'
 	| 'permissions'
@@ -110,6 +111,18 @@ export function defaultGates(verticalDir: string): GateSpec[] {
 export function standaloneGates(projectDir: string): GateSpec[] {
 	const pkg = async (ws: Workspace): Promise<boolean> => await ws.exists(`${projectDir}/package.json`);
 	return [
+		{
+			// The model phase's gate (#680). Typechecking `spec/model.ts` IS the
+			// check: `defineEntities` / `defineOperations` carry the reference
+			// integrity in their types, so a parent that names no entity, an
+			// `entityIdFrom` that names no output field, or a payload carrying an
+			// erasable field are all compile errors here — before a line of the
+			// module exists.
+			name: 'model',
+			cmd: `pnpm --filter ./${projectDir} exec tsc --noEmit spec/model.ts`,
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/spec/model.ts`),
+			note: 'no spec/model.ts yet — the model phase has not run',
+		},
 		{
 			name: 'typecheck',
 			cmd: `pnpm --filter ./${projectDir} typecheck`,
