@@ -54,12 +54,22 @@ type CheckedPath<O> = O extends { http: { path: infer P } }
  * a rule that refuses correct code trains people to route around it, which is
  * how a PII rule stops being obeyed.
  */
-type ErasableOf<Entities, O> = O extends { emits: { entity: infer N } }
+type ErasableOf<Entities, Engines, O> = O extends { emits: { entity: infer N } }
   ? N extends keyof Entities
     ? Entities[N] extends { erasable: readonly (infer F)[] }
       ? F & string
       : never
-    : never
+    : // The event may be about a COMPOSED ENGINE's entity, in which case the
+      // erasable set is the engine's — its declaration, not ours.
+      Engines extends readonly (infer R)[]
+      ? R extends Record<string, EntityDef>
+        ? N extends keyof R
+          ? R[N] extends { erasable: readonly (infer F)[] }
+            ? F & string
+            : never
+          : never
+        : never
+      : never
   : never;
 
 /**
@@ -91,7 +101,7 @@ type OpAuthority<O, PermKey extends string> = O extends { narrows: unknown }
  * clean and enforces nothing — see `test/operations.test.ts`, which exists to
  * prove they still bite.
  */
-type OperationShape<O, Entities, PermKey extends string> = {
+type OperationShape<O, Entities, Engines, PermKey extends string> = {
   /** One line, imperative — what invoking this does. Feeds the API document. */
   readonly summary: string;
   /**
@@ -122,8 +132,22 @@ type OperationShape<O, Entities, PermKey extends string> = {
     readonly path: CheckedPath<O>;
   };
   readonly emits?: {
-    /** The entity the event is about — a declared entity. */
-    readonly entity: keyof Entities & string;
+    /**
+     * The entity the event is about — one of THIS module's entities, or one of a
+     * composed engine's.
+     *
+     * The engine case is the normal shape of composition, not an edge: a
+     * vertical that drives an engine emits about the thing the engine owns. A
+     * production vertical's `contract/checklist-toggle` emits about `protocol`,
+     * which belongs to engine-protocol — and could not be declared until
+     * `defineOperations` learned the engines.
+     *
+     * Inlined rather than via an alias: TypeScript prints an alias unresolved,
+     * so the diagnostic would name it instead of listing the entities (#705).
+     */
+    readonly entity:
+      | (keyof Entities & string)
+      | (Engines extends readonly (infer R)[] ? (R extends Record<string, EntityDef> ? keyof R & string : never) : never);
     /**
      * Which OUTPUT field carries that entity's id.
      *
@@ -140,7 +164,7 @@ type OperationShape<O, Entities, PermKey extends string> = {
      * `erasable`. Immutable events are the one place in a scope an erasure
      * cannot reach.
      */
-    readonly payload?: readonly Exclude<OutputKeys<O>, ErasableOf<Entities, O>>[];
+    readonly payload?: readonly Exclude<OutputKeys<O>, ErasableOf<Entities, Engines, O>>[];
   } & PiiShape<O, OutputKeys<O>>;
   /**
    * Per-field permission on the projection: omission, not denial. The caller
@@ -180,10 +204,11 @@ type OperationShape<O, Entities, PermKey extends string> = {
 export function defineOperations<
   const Entities extends Record<string, EntityDef>,
   const Perms extends readonly string[],
->(_entities: Entities, _permissions: Perms) {
+  const Engines extends readonly Record<string, EntityDef>[] = [],
+>(_entities: Entities, _permissions: Perms, _engines?: Engines) {
   return <
     const Ops extends {
-      readonly [K in keyof Ops]: OperationShape<Ops[K], Entities, Perms[number]>;
+      readonly [K in keyof Ops]: OperationShape<Ops[K], Entities, Engines, Perms[number]>;
     },
   >(
     operations: Ops,

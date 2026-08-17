@@ -280,3 +280,96 @@ ops({
     gates: { amount: 'customer:amount' },
   },
 });
+
+// ---------------------------------------------------------------------------
+// COMPOSED ENGINES — an event about an entity the ENGINE owns.
+//
+// Found by migrating a 159-operation production vertical: its
+// `contract/checklist-toggle` emits about `protocol`, which belongs to
+// engine-protocol. Neither reference demo caught it because neither emits any
+// event at all (`emits: []` in both manifests) — so `emits.entity` had never
+// been exercised against a real vertical.
+// ---------------------------------------------------------------------------
+
+/** Stands in for an engine's exported registry. */
+const engineRegistry = defineEntities({
+  protocol: {
+    table: 'protocol_instances_v2',
+    fields: z.object({ id: z.string(), instance_ref: z.string() }),
+    erasable: ['instance_ref'],
+  },
+});
+
+const composed = defineOperations(entities, PERMS, [engineRegistry]);
+
+// The engine's entity resolves.
+composed({
+  'contract/checklist-toggle': {
+    summary: 'Toggle a checklist item on a protocol instance',
+    permission: 'customer:manage',
+    input: z.object({ instanceId: z.string() }),
+    output: z.object({ instanceId: z.string(), done: z.boolean() }),
+    emits: {
+      entity: 'protocol',
+      entityIdFrom: 'instanceId',
+      type: 'fsk.contract-checklist-toggled',
+      schemaVersion: 1,
+      piiClass: 'none',
+    },
+  },
+});
+
+// --- an entity that is neither ours nor a composed engine's -----------------
+composed({
+  'x/do': {
+    summary: 's',
+    permission: 'customer:manage',
+    input: z.object({}),
+    output: z.object({ id: z.string() }),
+    emits: {
+      // @ts-expect-error 'protocl' is neither a local entity nor a composed engine's
+      entity: 'protocl',
+      entityIdFrom: 'id',
+      type: 'x.done',
+      schemaVersion: 1,
+      piiClass: 'none',
+    },
+  },
+});
+
+// --- an engine that is NOT composed contributes no names --------------------
+ops({
+  'x/do': {
+    summary: 's',
+    permission: 'customer:manage',
+    input: z.object({}),
+    output: z.object({ id: z.string() }),
+    emits: {
+      // @ts-expect-error `ops` was built without engines, so 'protocol' is unknown
+      entity: 'protocol',
+      entityIdFrom: 'id',
+      type: 'x.done',
+      schemaVersion: 1,
+      piiClass: 'none',
+    },
+  },
+});
+
+// --- the ENGINE's erasable set governs a payload about the engine's entity --
+composed({
+  'x/do': {
+    summary: 's',
+    permission: 'customer:manage',
+    input: z.object({}),
+    output: z.object({ id: z.string(), instance_ref: z.string() }),
+    emits: {
+      entity: 'protocol',
+      entityIdFrom: 'id',
+      type: 'x.done',
+      schemaVersion: 1,
+      piiClass: 'none',
+      // @ts-expect-error 'instance_ref' is @erasable on the ENGINE's protocol entity
+      payload: ['id', 'instance_ref'],
+    },
+  },
+});
