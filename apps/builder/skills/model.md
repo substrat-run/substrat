@@ -124,6 +124,22 @@ import { workOrder, workorderEntities } from '@substrat-run/engine-workorder';
 `workOrder` is what an operation **returns**; `workorderRow` is what the engine
 **stores**, and they are different shapes. Return the published one.
 
+### Some engines are composed by EVENT, not by call
+
+Check whether the engine exports in-scope functions. If it does not — `invoicing`
+is the case — you **cannot call it**, and no amount of trying will work: its
+tables are private (rule 4) and a vertical cannot invoke another module's
+operation from inside its own.
+
+Compose it by *emitting* instead. Completing a work order is what makes an
+invoice basis appear; the vertical then reads it back through the engine's own
+operations, or consumes the engine's event into its own side table keyed by the
+engine's id.
+
+So an operation like "issue the invoice" is the vertical's **sign-off on its own
+row**, not a call into the engine. Declare its `output` as something this
+vertical owns.
+
 ## When you are done
 
 Write `spec/model.ts` and stop. Say briefly what you declared and what you

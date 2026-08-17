@@ -79,8 +79,17 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   on an engine entity adds its **own side table keyed by the engine's id** — never a
   column upstream. One-time extraction handoffs use an explicit
   `boundary-lint-allow R5` … `boundary-lint-end R5` comment block (reviewable escape hatch).
-- Engine operations are thin: the permission check + one exported in-scope function.
-  All engine logic lives in composable exports so verticals extend by composition, never fork.
+- An engine is composed **by call** or **by event**, and that decides its shape.
+  - **By call** (workorder, protocol, booking): operations are thin — the permission
+    check + one exported in-scope function. All logic lives in composable exports, so a
+    vertical wraps it inside its own transaction and extends by composition, never forks.
+  - **By event** (invoicing): the vertical *emits*, the engine consumes, and the vertical
+    reads the result back through the engine's own operations or by consuming its events
+    (side table keyed by the engine's id, per decision 28). There are deliberately **no
+    in-scope exports** — the engine is the only writer of its rows, which is what keeps
+    invariants like immutable-after-export safe from a half-finished caller.
+  Which mode an engine is, is a fact about its exports; state it in the engine's header
+  so an absence reads as intent rather than an omission.
 - Engine surfaces evolve **additively only**: new operation inputs are optional with
   behavior-preserving defaults; emitted event payload fields are frozen once shipped —
   rename/remove/retype means a `schemaVersion` bump (dual-emit through a deprecation
