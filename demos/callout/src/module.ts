@@ -5,8 +5,12 @@ import {
   moneyOf,
   mulMoney,
   type EntityRef,
+  type EntityRow,
   type Money,
+  type OperationImpl,
 } from '@substrat-run/contracts';
+import { calloutEntities } from './entities.js';
+import { calloutOperations } from './operations.js';
 import {
   assertAllowed,
   ulid,
@@ -40,22 +44,14 @@ import {
 // migration journal in migrations.ts. This file is operations + wiring.
 // ============================================================================
 
-export interface CustomerRow {
-  id: string;
-  number: string;
-  name: string;
-  org_ref: string | null;
-  created_at: string;
-}
-
-export interface FacilityRow {
-  id: string;
-  customer_id: string;
-  name: string;
-  address: string | null;
-  access_note: string | null;
-  created_at: string;
-}
+/**
+ * The row types come FROM the registry (#697/#707). They were hand-written
+ * interfaces, which made the schema described three times — the DDL, the
+ * registry, and these. `EntityRow` collapses the third into the second; the
+ * remaining two are held together by `test/entities.test.ts`.
+ */
+export type CustomerRow = EntityRow<typeof calloutEntities, 'customer'>;
+export type FacilityRow = EntityRow<typeof calloutEntities, 'facility'>;
 
 export interface PriceRow {
   article: string;
@@ -339,20 +335,37 @@ const whoamiOp: OperationHandler<undefined, WhoAmI> = async (ctx) => {
   return { role };
 };
 
+/**
+ * The handlers bound to `calloutOperations`. `satisfies` is the drift detector:
+ * change a declared return and tsc names the method whose handler no longer
+ * agrees. An operation declared but not implemented, or implemented but not
+ * declared, is an error here too.
+ */
+const declaredOperations = {
+  'callout/whoami': whoamiOp,
+  'callout/create-customer': createCustomerOp,
+  'callout/list-customers': listCustomersOp,
+  'callout/create-facility': createFacilityOp,
+  'callout/price-list': priceListOp,
+  'callout/timeline': timelineOp,
+} satisfies OperationImpl<typeof calloutOperations, OperationContext>;
+
 export const calloutModule: ModuleRegistration = {
   manifest: calloutManifest,
   migrations: calloutMigrations,
   operations: {
-    'callout/whoami': whoamiOp as never,
-    'callout/create-customer': createCustomerOp as never,
-    'callout/list-customers': listCustomersOp as never,
-    'callout/create-facility': createFacilityOp as never,
+    // BOUND to the declaration (#707): input and return are checked against
+    // `calloutOperations` at the exact method. The `as never` casts these used
+    // to carry were never necessary — `OperationHandler<never, unknown>` accepts
+    // any handler by contravariance — they simply threw the types away.
+    ...(declaredOperations as Record<string, OperationHandler<never, unknown>>),
+    // Not yet declared: these return ENGINE types, and declaring an `output` for
+    // them would mean transcribing the engine's shape into Zod here. See
+    // operations.ts.
     'callout/upsert-price': upsertPriceOp as never,
-    'callout/price-list': priceListOp as never,
     'callout/create-workorder': createWorkOrderOp as never,
     'callout/complete-workorder': completeWorkOrderOp as never,
     'callout/instantiate-protocol': instantiateProtocolOp as never,
     'callout/portal-orders': portalOrdersOp as never,
-    'callout/timeline': timelineOp as never,
   },
 };
