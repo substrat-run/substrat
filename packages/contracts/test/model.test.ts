@@ -25,7 +25,7 @@ const entities = defineEntities({
   contract: {
     table: 'vertical_contract',
     fields: z.object({ id: z.string(), customerId: z.string(), status: z.string() }),
-    parent: 'customer',
+    parents: ['customer'],
   },
 });
 
@@ -42,7 +42,7 @@ describe('entity registry', () => {
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
     expect(Object.keys(a.entities)).toEqual(['contract', 'customer']);
     expect(a.entities.customer?.table).toBe('vertical_customer');
-    expect(a.entities.contract?.parent).toBe('customer');
+    expect(a.entities.contract?.parents).toEqual(['customer']);
     // Field schemas travel as JSON Schema — the same conversion the OpenAPI
     // builder uses, so there is no second schema language in the pipeline.
     expect(a.entities.customer?.fields).toMatchObject({ type: 'object' });
@@ -82,7 +82,7 @@ defineEntities({
     table: 't_contract',
     fields: z.object({ id: z.string() }),
     // @ts-expect-error 'custmer' is not a declared entity
-    parent: 'custmer',
+    parents: ['custmer'],
   },
 });
 

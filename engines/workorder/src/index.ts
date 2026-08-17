@@ -8,8 +8,10 @@ import {
   moneyOf,
   permissionKey,
   type EntityRef,
+  type EntityRow,
   type Money,
 } from '@substrat-run/contracts';
+import { workorderEntities } from './entities.js';
 import {
   assertAllowed,
   ulid,
@@ -139,22 +141,12 @@ export const createWorkOrderInput = z.object({
 });
 export type CreateWorkOrderInput = z.infer<typeof createWorkOrderInput>;
 
-interface OrderRow {
-  id: string;
-  number: number;
-  facility_type: string;
-  facility_id: string;
-  customer_type: string;
-  customer_id: string;
-  kind: string;
-  title: string;
-  description: string | null;
-  status: 'planned' | 'in_progress' | 'completed' | 'closed';
-  assigned_to: string | null;
-  created_by: string;
-  created_at: string;
-  completed_at: string | null;
-}
+/**
+ * DERIVED from the entity registry (`entities.ts`) rather than written beside
+ * it. The registry is what a vertical imports for the row's Zod schema, and two
+ * descriptions of one row is how they come to disagree.
+ */
+type OrderRow = EntityRow<typeof workorderEntities, 'workorder'>;
 
 export interface WorkOrder {
   id: string;

@@ -50,7 +50,7 @@ export const calloutEntities = defineEntities({
       created_at: z.string(),
     }),
     /** Permission flows facility → customer; `entityRelations` is derived from this. */
-    parent: 'customer',
+    parents: ['customer'],
     /** A site address for a private customer is their home address. */
     erasable: ['address'],
   },

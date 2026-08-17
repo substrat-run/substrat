@@ -37,7 +37,9 @@
         ],
         "additionalProperties": false
       },
-      "parent": "customer",
+      "parents": [
+        "customer"
+      ],
       "erasable": [
         "frame_no"
       ]
