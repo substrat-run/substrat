@@ -500,12 +500,149 @@ export type GuardPredicate = (
   input: unknown,
 ) => void | Promise<void>;
 
-export interface ModuleRegistration {
+/**
+ * What an engine exports so a VERTICAL can consume its events with types (#696):
+ * event type → payload shape, plus any sets of events that report the same fact
+ * by different routes.
+ *
+ * ```ts
+ * export type ProtocolEvents = {
+ *   events: {
+ *     'protocol.signed': ProtocolSignedPayload;
+ *     'protocol.countersigned': ProtocolCountersignedPayload;
+ *   };
+ *   completionGroups: { signature: 'protocol.signed' | 'protocol.countersigned' };
+ * };
+ * ```
+ *
+ * TYPES ONLY — nothing here exists at runtime. The runtime contract is still the
+ * fat payload and **the consumer's own Zod parse**: importing a producer's
+ * validator is what turns version skew into a crash instead of a tolerated
+ * absence. These types are for the compiler, not the boundary.
+ *
+ * VERTICAL-FACING ONLY. An engine consuming a sibling's event must NOT reach for
+ * this — R1 (star topology) forbids the import, and the defensive parse is what
+ * lets it ride out #128's dual-emit window. `engine-invoicing` consuming
+ * `workorder.completed` with its own Zod view is the correct shape and stays so.
+ */
+export type EventContract = {
+  readonly events: Record<string, unknown>;
+  /**
+   * group name → the union of event types in it. A consumer that handles one
+   * member must handle all: completion often rides on whichever event happens
+   * to arrive LAST, so handling a subset silently strands the entity.
+   */
+  readonly completionGroups?: Record<string, string>;
+};
+
+type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (k: infer I) => void
+  ? I
+  : never;
+
+type AllEvents<C extends readonly EventContract[]> = UnionToIntersection<C[number]['events']>;
+
+/** Every event type the declared engines emit. */
+export type EventTypeOf<C extends readonly EventContract[]> = keyof AllEvents<C> & string;
+
+/** The payload an engine declares for one of its event types. */
+export type EventPayloadOf<C extends readonly EventContract[], K extends EventTypeOf<C>> = AllEvents<C>[K];
+
+/**
+ * A consumer whose `event.payload` is the producer's declared shape rather than
+ * `unknown`. Same two-argument signature as `ConsumerHandler`, so this is purely
+ * a narrowing.
+ */
+export type TypedConsumerHandler<P> = (
+  ctx: OperationContext,
+  event: Omit<DomainEvent, 'payload'> & { payload: P },
+) => void | Promise<void>;
+
+type AllGroups<C extends readonly EventContract[]> = UnionToIntersection<
+  Extract<C[number], { completionGroups: Record<string, string> }>['completionGroups']
+>;
+
+/**
+ * Every member of any completion group already partly handled.
+ * The `[…] extends [never]` bracketing is load-bearing — a naked `extends never`
+ * distributes and silently yields `never` for every group, disabling the check.
+ */
+type RequiredCompanions<C extends readonly EventContract[], Handled extends string> = {
+  [G in keyof AllGroups<C>]: [Extract<AllGroups<C>[G] & string, Handled>] extends [never]
+    ? never
+    : AllGroups<C>[G] & string;
+}[keyof AllGroups<C>];
+
+type MissingCompanions<C extends readonly EventContract[], Handled extends string> = Exclude<
+  RequiredCompanions<C, Handled>,
+  Handled
+>;
+
+/**
+ * `unknown` when every completion group is fully handled; otherwise DEMANDS the
+ * missing members, so the compiler names the event that was missed.
+ */
+type Completeness<C extends readonly EventContract[], Handled extends string> = [
+  MissingCompanions<C, Handled>,
+] extends [never]
+  ? unknown
+  : { readonly [M in MissingCompanions<C, Handled>]: TypedConsumerHandler<never> };
+
+/** eventType → typed handler, for the engines a vertical declares. */
+export type TypedConsumers<C extends readonly EventContract[]> = {
+  readonly [K in EventTypeOf<C>]?: TypedConsumerHandler<EventPayloadOf<C, K>>;
+};
+
+/**
+ * The consumer map, typed against the engines a module composes (#696).
+ *
+ * With no declared engines this is exactly what it always was — an untyped
+ * `Record<string, ConsumerHandler>` — so every existing module keeps compiling
+ * unchanged. Declare engines and three things become compile errors: an event
+ * type no declared engine emits, a payload field the producer does not send,
+ * and a completion group handled only in part.
+ */
+export type ConsumersOf<C extends readonly EventContract[]> = [C] extends [readonly []]
+  ? Record<string, ConsumerHandler>
+  : TypedConsumers<C>;
+
+/**
+ * Inference site for the completeness check.
+ *
+ * `ModuleRegistration` is an interface, so it cannot see WHICH event keys a
+ * module wrote — and completeness is a question about exactly that. This helper
+ * captures them:
+ *
+ * ```ts
+ * consumers: consumersFor<[ProtocolEvents]>()({
+ *   'protocol.signed': async (ctx, event) => { … },
+ *   'protocol.countersigned': async (ctx, event) => { … },
+ * })
+ * ```
+ *
+ * Omit the second and it does not compile: *Property '"protocol.countersigned"'
+ * is missing*.
+ */
+type ConsumerMap<C extends readonly EventContract[], H> = {
+  readonly [K in keyof H]: K extends EventTypeOf<C> ? TypedConsumerHandler<EventPayloadOf<C, K>> : never;
+};
+
+export function consumersFor<const C extends readonly EventContract[]>() {
+  return <const H extends ConsumerMap<C, H>>(handlers: H & Completeness<C, keyof H & string>): H => handlers;
+}
+
+export interface ModuleRegistration<C extends readonly EventContract[] = []> {
   manifest: ModuleManifest;
   migrations?: SqlMigration[];
   operations?: Record<string, OperationHandler<never, unknown>>;
-  /** eventType → handler; the types must appear in manifest.events.consumes. */
-  consumers?: Record<string, ConsumerHandler>;
+  /**
+   * eventType → handler; the types must appear in manifest.events.consumes.
+   *
+   * Untyped by default. A vertical that declares the engines it composes —
+   * `ModuleRegistration<[ProtocolEvents]>` — gets typed payloads, rejection of
+   * event types nobody emits, and (via `consumersFor`) rejection of a
+   * half-handled completion group. See `EventContract` (#696).
+   */
+  consumers?: ConsumersOf<C>;
   /**
    * Named guard predicates this module contributes to the host — the code half
    * of `manifest.guards`. Names are module-namespaced like operations
