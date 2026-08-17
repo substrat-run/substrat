@@ -82,8 +82,8 @@ export const calloutManifest = moduleManifest.parse({
     ],
     // The protocol engine is entity-agnostic; THIS vertical hangs protocols off
     // work orders, so it declares the permission-walk edge. Both names belong to
-    // engines, so neither is checkable here — see `foreignRelations`.
-    foreignRelations: [{ entityType: 'protocol', parentType: 'workorder' }],
+    // engines, so neither is checkable here.
+    foreignChildren: [{ entityType: 'protocol', parentType: 'workorder' }],
   }),
   entitlementKey: 'callout',
   envSpec: CALLOUT_ENV,
