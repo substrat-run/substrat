@@ -10,6 +10,8 @@ import {
   type EntityRef,
   type Money,
 } from '@substrat-run/contracts';
+import { protocolEntities } from '@substrat-run/engine-protocol';
+import { workorderEntities } from '@substrat-run/engine-workorder';
 import { handlebarEntities } from './entities.js';
 import {
   assertAllowed,
@@ -73,13 +75,14 @@ export const bikeShopManifest = moduleManifest.parse({
       { entityType: 'customer', readPermission: 'customer:manage' },
       { entityType: 'bike', readPermission: 'bike:manage' },
     ],
-    // MIXED: the child is engine-workorder's, the parent is ours — so the parent
-    // IS checked. The engine links workorder → <facility ref>; in this vertical
-    // that ref is a bike, and only this vertical knows it.
-    foreignChildOf: [{ entityType: 'workorder', parentType: 'bike' }],
-    // Neither side is ours: engine-protocol is entity-agnostic and hangs its
-    // instances off whatever the vertical says.
-    foreignChildren: [{ entityType: 'protocol', parentType: 'workorder' }],
+    // Edges involving an engine's entity. Both sides are checked against the
+    // composed registries: the engine links workorder → <facility ref>, and in
+    // this vertical that ref is a bike — something only this vertical knows.
+    engines: [protocolEntities, workorderEntities],
+    relations: [
+      { entityType: 'workorder', parentType: 'bike' },
+      { entityType: 'protocol', parentType: 'workorder' },
+    ],
   }),
   // MILESTONE C — the manifest-declared guard (engine-protocol.md §6, kernel
   // open question 11). Handlebar's pickup rule: a repair is not closed until

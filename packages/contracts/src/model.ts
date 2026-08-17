@@ -188,53 +188,38 @@ type EntityRefs<T extends Record<string, EntityDef>, M> = {
     : never;
   readonly entityViews?: readonly { readonly entityType: keyof T & string; readonly view: string }[];
   /**
-   * Parent edges whose CHILD this module does not own.
+   * The engine registries this module composes, so relation edges naming their
+   * entities can be checked.
+   */
+  readonly engines?: readonly Record<string, EntityDef>[];
+  /**
+   * Parent edges involving an entity this module does not own.
    *
    * A vertical legitimately declares these: an engine is entity-agnostic, so
    * only the vertical knows that a work order hangs off a bike, or a protocol
-   * off a work order. The child name belongs to an engine and cannot be checked
-   * here — but the PARENT often can be, and throwing that away would be giving
-   * up a check we hold.
+   * off a work order. **Both sides are checked** against the local entities plus
+   * every entity of every registry in `engines`.
    *
-   * So the parent is checked whenever it is one of this module's own entities:
+   * Local-to-local edges do not belong here — they are DERIVED from the
+   * entities' own `parents`, and declaring one twice is how two descriptions of
+   * a fact come to disagree.
    *
-   * ```ts
-   * foreignChildren: [
-   *   { entityType: 'workorder', parentType: 'bike' },      // parent CHECKED
-   *   { entityType: 'protocol', parentType: 'workorder' },  // parent foreign too
-   * ]
-   * ```
-   *
-   * `parentType` accepts a declared entity name or an arbitrary string, and a
-   * typo that happens to look like neither is still accepted — TypeScript cannot
-   * express "one of these, or any other string, but tell me which". What it does
-   * buy is autocomplete on the local names and a compile error on the mixed edge
-   * once `foreignParents` (below) is used instead.
-   *
-   * Both become fully checkable when engines export their entity-type constants
-   * (#696 item 3), at which point these two fields collapse back into `parents`.
+   * This replaces the `foreignChildOf` / `foreignChildren` pair, which existed
+   * only because foreign names were uncheckable. They are now, so the split has
+   * nothing left to say.
    */
-  readonly foreignChildren?: readonly {
-    readonly entityType: string;
-    readonly parentType: (keyof T & string) | (string & {});
-  }[];
-  /**
-   * The mixed edge, stated so the checkable half IS checked: a child this module
-   * does not own, hanging off a parent it does. `parentType` here is strictly a
-   * declared entity — a typo is a compile error.
-   *
-   * `bike_shop`'s `workorder → bike` is the case: `workorder` is the engine's,
-   * `bike` is the vertical's, and the vertical is the only place that knows the
-   * edge exists.
-   */
-  readonly foreignChildOf?: readonly {
-    readonly entityType: string;
-    // `keyof T & string` inline rather than via `EntityName<T>`: an alias is
-    // printed unresolved in the error, so the diagnostic names the alias
-    // instead of the entities. Written this way it lists them.
-    readonly parentType: keyof T & string;
+  readonly relations?: readonly {
+    // Inlined rather than via a `ComposedName<T, M>` alias: TypeScript prints an
+    // alias UNRESOLVED, so the diagnostic would name the alias and dump the
+    // whole entity map instead of listing the names (learned in #705).
+    readonly entityType: (keyof T & string) | (M extends { engines: readonly (infer R)[] } ? NamesOf<R> : never);
+    readonly parentType: (keyof T & string) | (M extends { engines: readonly (infer R)[] } ? NamesOf<R> : never);
   }[];
 };
+
+/** Every entity name in one registry. */
+type NamesOf<R> = R extends Record<string, EntityDef> ? keyof R & string : never;
+
 
 /**
  * Compose the entity-referencing manifest fragments against the registry.
@@ -274,13 +259,9 @@ export function manifestEntities<
     attachmentTargets: (refs.attachmentTargets ?? []) as NonNullable<M['attachmentTargets']> | [],
     searchables: refs.searchables as M['searchables'],
     // Derived edges first, then the ones this module cannot check.
-    entityRelations: [
-      ...entityRelationsOf(entities),
-      // Checked parent, foreign child — the mixed edge.
-      ...(refs.foreignChildOf ?? []),
-      // Neither side checkable here.
-      ...(refs.foreignChildren ?? []),
-    ],
+    // Local edges are derived from the entities' own `parents`; edges involving
+    // a composed engine's entity are declared, and both sides are checked.
+    entityRelations: [...entityRelationsOf(entities), ...(refs.relations ?? [])],
     ui: { entityViews: refs.entityViews as M['entityViews'] },
   };
 }

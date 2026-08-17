@@ -152,17 +152,38 @@ manifestEntities(entities, {
 });
 
 // ---------------------------------------------------------------------------
-// THE MIXED EDGE, found by the second adopter. `workorder → bike` in handlebar:
-// the child is the engine's, the parent is the vertical's. Treating both as
-// unchecked strings threw away a check we hold, so the checkable half is checked.
+// FOREIGN RELATIONS — both sides checked against local + composed engines.
+// This replaced the foreignChildOf/foreignChildren pair, which existed only
+// because foreign names could not be checked.
 // ---------------------------------------------------------------------------
-manifestEntities(entities, {
-  // @ts-expect-error 'custmer' is not a declared entity — the parent IS checked here
-  foreignChildOf: [{ entityType: 'workorder', parentType: 'custmer' }],
+
+/** Stands in for an engine's exported registry. */
+const engineEntities = defineEntities({
+  workorder: { table: 'workorder_orders', fields: z.object({ id: z.string() }) },
 });
 
-// The child is deliberately unchecked: it belongs to an engine.
+// The mixed edge — foreign child, local parent. Both names resolve.
 manifestEntities(entities, {
-  foreignChildOf: [{ entityType: 'workorder', parentType: 'customer' }],
-  foreignChildren: [{ entityType: 'protocol', parentType: 'workorder' }],
+  engines: [engineEntities],
+  relations: [{ entityType: 'workorder', parentType: 'customer' }],
+});
+
+// --- the CHILD must resolve -------------------------------------------------
+manifestEntities(entities, {
+  engines: [engineEntities],
+  // @ts-expect-error 'workordr' is neither a local entity nor a composed engine's
+  relations: [{ entityType: 'workordr', parentType: 'customer' }],
+});
+
+// --- the PARENT must resolve ------------------------------------------------
+manifestEntities(entities, {
+  engines: [engineEntities],
+  // @ts-expect-error 'custmer' is neither a local entity nor a composed engine's
+  relations: [{ entityType: 'workorder', parentType: 'custmer' }],
+});
+
+// --- an engine that is NOT composed contributes no names --------------------
+manifestEntities(entities, {
+  // @ts-expect-error engineEntities is not in `engines`, so 'workorder' is unknown
+  relations: [{ entityType: 'workorder', parentType: 'customer' }],
 });

@@ -10,6 +10,11 @@ import {
   type EntityRow,
 } from '@substrat-run/contracts';
 import { protocolEntities } from './entities.js';
+
+// The entity registry is PUBLIC: a composing vertical imports it to check
+// relation edges naming this engine's entities, and to declare an operation's
+// output without transcribing this engine's shape.
+export { protocolEntities, protocolInstanceRow } from './entities.js';
 import {
   assertAllowed,
   ulid,
