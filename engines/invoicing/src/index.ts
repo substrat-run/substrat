@@ -6,8 +6,15 @@ import {
   moduleManifest,
   moneyOf,
   permissionKey,
+  type EntityRow,
   type Money,
 } from '@substrat-run/contracts';
+import { invoicingEntities, underlagLine } from './entities.js';
+
+// The entity registry is PUBLIC: every demo composes this engine, and a vertical
+// declaring an operation that returns an invoice basis needs the schema rather
+// than a retyped copy of it.
+export { invoicingEntities, underlagLine, underlagRow } from './entities.js';
 import {
   assertAllowed,
   ulid,
@@ -208,36 +215,15 @@ const timesheetClosedPayload = z.object({
   total: money,
 });
 
-export interface UnderlagRow {
-  id: string;
-  number: number;
-  customer_type: string;
-  customer_id: string;
-  status: 'open' | 'exported';
-  created_at: string;
-  exported_at: string | null;
-}
+/**
+ * DERIVED from the entity registry (`entities.ts`), as is `UnderlagLine`. They
+ * were hand-written interfaces, so the schema was described twice — and a
+ * vertical that wanted to declare a return against either had to write it a
+ * third time.
+ */
+export type UnderlagRow = EntityRow<typeof invoicingEntities, 'underlag'>;
 
-export interface UnderlagLine {
-  id: string;
-  underlag_id: string;
-  // The delivery that produced this line — `workorder`/`order`/`timesheet` + its
-  // id. Always known; also the idempotency key each consumer dedups on (#328).
-  document_type: string;
-  document_id: string;
-  // What the line itself is — `time`/`material`. Per-line provenance, carried
-  // only where the producer supplies it (the workorder path); NULL otherwise.
-  source_type: string | null;
-  source_id: string | null;
-  article: string;
-  description: string;
-  qty: string;
-  unit: string;
-  unit_price_amount: string;
-  currency: string;
-  line_total_amount: string;
-  created_at: string;
-}
+export type UnderlagLine = z.infer<typeof underlagLine>;
 
 /**
  * The underlag's total, as Money.

@@ -3,37 +3,13 @@
  * Until migrations are derived from the registry, this holds them to each other.
  */
 import { describe, expect, it } from 'vitest';
+import { journalColumns } from '@substrat-run/contracts';
 import { workorderEntities } from '../src/entities.js';
 import { workorderModule } from '../src/index.js';
 
-function columnsFromJournal(): Map<string, Set<string>> {
-  const tables = new Map<string, Set<string>>();
-  const sql = (workorderModule.migrations ?? []).map((m) => m.sql).join('\n');
-  for (const [, table, body] of sql.matchAll(
-    /CREATE TABLE (?:IF NOT EXISTS )?([a-z_][a-z0-9_]*)\s*\(([\s\S]*?)\n\s*\);/gi,
-  )) {
-    if (!table || !body) continue;
-    const cols = new Set<string>();
-    let depth = 0;
-    for (const raw of body.split('\n')) {
-      const line = raw.trim();
-      const atTop = depth === 0;
-      depth += (line.match(/\(/g) ?? []).length - (line.match(/\)/g) ?? []).length;
-      if (!atTop) continue;
-      if (!line || line.startsWith('--') || /^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i.test(line)) continue;
-      const name = /^([a-z_][a-z0-9_]*)\b/i.exec(line)?.[1];
-      if (name) cols.add(name);
-    }
-    tables.set(table, cols);
-  }
-  for (const [, table, col] of sql.matchAll(/ALTER TABLE ([a-z_][a-z0-9_]*)\s+ADD COLUMN\s+([a-z_][a-z0-9_]*)/gi)) {
-    if (table && col) tables.get(table)?.add(col);
-  }
-  return tables;
-}
 
 describe('the registry agrees with the migration journal', () => {
-  const journal = columnsFromJournal();
+  const journal = journalColumns((workorderModule.migrations ?? []).map((m) => m.sql).join('\n'));
 
   it('parsed the journal at all', () => {
     expect(journal.size).toBeGreaterThan(0);
