@@ -1,4 +1,9 @@
 import { entityRef, moduleManifest, permissionKey, type OrgId } from '@substrat-run/contracts';
+
+// The entity registry is PUBLIC: a vertical composing this engine needs the
+// entity-type constants its relation edges name, and the row schema to declare
+// an operation's output against without retyping this engine's shape.
+export { invitation, invitesEntities, invitationRow } from './entities.js';
 import {
   assertAllowed,
   ulid,
