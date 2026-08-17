@@ -1,3 +1,25 @@
+/**
+ * engine-invoicing — composed **by event**, not by call.
+ *
+ * There are deliberately no in-scope exports. A vertical does not build an invoice
+ * basis; it completes a work order (or places an order, or closes a period) and
+ * this engine's consumers build the basis from that event's fat payload. The
+ * vertical reads the result back through `invoicing/list` / `invoicing/get`, or by
+ * consuming `invoicing.underlag-updated` into a side table keyed by the underlag's
+ * id (decision 28).
+ *
+ * That absence is the design. This engine is the ONLY writer of its rows, which is
+ * what keeps `exported` genuinely immutable: a caller cannot export an underlag
+ * half-way through a delivery that is still appending lines to it. Extracting
+ * `exportUnderlag` for a vertical to call would hand out exactly that race.
+ *
+ * The thin-operation rule in CLAUDE.md is about engines composed by call — where a
+ * vertical wraps the engine inside its own transaction. Here the operations ARE the
+ * surface, and their logic living in them is correct rather than an omission.
+ *
+ * `demos/callout`'s scenario asserts this shape: "star topology observed: the
+ * invoicing engine consumed the event", then reads the basis via `invoicing/list`.
+ */
 import { z } from 'zod';
 import {
   addMoney,
