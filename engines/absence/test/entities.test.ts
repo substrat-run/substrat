@@ -3,7 +3,7 @@
  * `journalColumns` is shared (contracts) — three engines had drifting copies.
  */
 import { describe, expect, it } from 'vitest';
-import { journalColumns } from '@substrat-run/contracts';
+import { journalColumns } from '@substrat-run/model-emit';
 import { absenceEntities } from '../src/entities.js';
 import { absenceModule } from '../src/index.js';
 

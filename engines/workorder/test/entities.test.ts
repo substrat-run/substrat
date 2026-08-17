@@ -3,7 +3,7 @@
  * Until migrations are derived from the registry, this holds them to each other.
  */
 import { describe, expect, it } from 'vitest';
-import { journalColumns } from '@substrat-run/contracts';
+import { journalColumns } from '@substrat-run/model-emit';
 import { workorderEntities } from '../src/entities.js';
 import { workorderModule } from '../src/index.js';
 

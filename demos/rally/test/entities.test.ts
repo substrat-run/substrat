@@ -3,7 +3,7 @@
  * Until migrations are derived from the registry, this holds them to each other.
  */
 import { describe, expect, it } from 'vitest';
-import { journalColumns } from '@substrat-run/contracts';
+import { journalColumns } from '@substrat-run/model-emit';
 import { rallyEntities, rallyModel } from '../src/entities.js';
 import { rallyModule } from '../src/module.js';
 

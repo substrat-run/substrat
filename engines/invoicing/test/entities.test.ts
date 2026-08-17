@@ -7,7 +7,7 @@
  * would have reported the pre-rebuild columns forever.
  */
 import { describe, expect, it } from 'vitest';
-import { journalColumns } from '@substrat-run/contracts';
+import { journalColumns } from '@substrat-run/model-emit';
 import { invoicingEntities, underlagLine } from '../src/entities.js';
 import { invoicingModule } from '../src/index.js';
 
