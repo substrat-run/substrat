@@ -1,4 +1,6 @@
-import { moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
+import { manifestEntities, moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
+import { protocolEntities } from '@substrat-run/engine-protocol';
+import { meridianEntities } from './entities.js';
 import { PERM as ABSENCE_PERM } from '@substrat-run/engine-absence';
 
 // ============================================================================
@@ -107,13 +109,17 @@ export const meridianManifest = moduleManifest.parse({
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
   // The #383 stale-leave expiry schedule moved to engine-absence's manifest
   // (`absence/expire-stale`) together with the state machine it polices.
-  attachmentTargets: [{ entityType: 'employee', readPermission: 'absence:read' }],
-  entityRelations: [
+  // Entity names checked against the registry (#697); entityRelations DERIVED
+  // from the entities' own `parents`, and the engine edge checked against
+  // engine-protocol's registry.
+  ...manifestEntities(meridianEntities, {
+    engines: [protocolEntities],
+    attachmentTargets: [{ entityType: 'employee', readPermission: 'absence:read' }],
     // Onboarding checklists (protocol engine) hang off employees; THIS vertical
     // owns that vocabulary, so it declares the permission-walk edge — which is
     // also what lets an employee's own-record grant reach their onboarding fill.
-    { entityType: 'protocol', parentType: 'employee' },
-  ],
+    relations: [{ entityType: 'protocol', parentType: 'employee' }],
+  }),
   entitlementKey: 'meridian',
   envSpec: MERIDIAN_ENV,
   // This app can DELEGATE sign-in to an OIDC issuer (manifest `requires`, #427): at

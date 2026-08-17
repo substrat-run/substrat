@@ -6,11 +6,13 @@ import {
   moneyOf,
   mulDecimal,
   mulMoney,
+  manifestEntities,
   moduleManifest,
   permissionKey,
   type EntityRef,
   type Money,
 } from '@substrat-run/contracts';
+import { shopEntities } from './entities.js';
 import {
   assertAllowed,
   PermissionDenied,
@@ -69,16 +71,15 @@ export const shopManifest = moduleManifest.parse({
     consumes: [],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
-  attachmentTargets: [
-    { entityType: 'product', readPermission: 'shop:browse' },
-    { entityType: 'order', readPermission: 'order:read' },
-  ],
-  entityRelations: [
-    { entityType: 'variant', parentType: 'product' },
-    // Portal walk: an entity-narrowed order:read grant on a customer resolves to
-    // that customer's orders (design doc §4.2 rule 3).
-    { entityType: 'order', parentType: 'customer' },
-  ],
+  // Entity names checked against the registry (#697). Both edges —
+  // variant → product and order → customer — are DERIVED from the entities'
+  // own `parents` rather than restated here.
+  ...manifestEntities(shopEntities, {
+    attachmentTargets: [
+      { entityType: 'product', readPermission: 'shop:browse' },
+      { entityType: 'order', readPermission: 'order:read' },
+    ],
+  }),
   entitlementKey: 'shop',
 });
 

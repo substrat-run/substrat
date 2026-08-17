@@ -1,0 +1,140 @@
+{
+  "entities": {
+    "employee": {
+      "table": "hr_employees",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "national_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "principal_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "name",
+          "email",
+          "national_id",
+          "principal_ref",
+          "started_at",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "number"
+      ],
+      "erasable": [
+        "email",
+        "name",
+        "national_id"
+      ]
+    },
+    "employment-terms": {
+      "table": "hr_employment_terms",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "employee_id": {
+            "type": "string"
+          },
+          "role_title": {
+            "type": "string"
+          },
+          "monthly_salary": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "scope_pct": {
+            "type": "string"
+          },
+          "start_date": {
+            "type": "string"
+          },
+          "notice_months": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "employee_id",
+          "role_title",
+          "monthly_salary",
+          "currency",
+          "scope_pct",
+          "start_date",
+          "notice_months",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "employee"
+      ],
+      "erasable": [
+        "monthly_salary"
+      ]
+    }
+  }
+}
