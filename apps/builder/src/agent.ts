@@ -49,6 +49,7 @@ import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import type { BuildPhase } from './phase.js';
 import {
 	buildWriteGuard,
+	buildContext,
 	detectPhase,
 	interviewWriteGuard,
 	isSpecPhase,
@@ -429,10 +430,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					skillsForPhase(allSkills, phase),
 					phase,
 				);
-				const concept =
-					phase === 'interview'
-						? '(no concept document yet — interview the builder before writing code)'
-						: await projectWs.readFile('spec/concept.md');
+				const concept = await buildContext(projectWs, phase);
 
 				// Same shape as the local server's handleTurn: pass → checks → capped
 				// repair loop (H5; the policy constants live in gates.ts so the hosts

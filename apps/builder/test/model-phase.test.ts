@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  buildContext,
   buildWriteGuard,
   detectPhase,
   interviewWriteGuard,
@@ -85,5 +86,36 @@ describe('the direction rule — build turns cannot author the model', () => {
     // `spec/models/` and `spec/model-notes.md` are not the model.
     expect(buildWriteGuard('spec/models/extra.ts')).toBeNull();
     expect(buildWriteGuard('spec/model-notes.md')).toBeNull();
+  });
+});
+
+describe('build context (#681)', () => {
+  const ws = (files: Record<string, string>) => ({
+    exists: async (p: string) => p in files,
+    readFile: async (p: string) => files[p] ?? '',
+  });
+
+  it('interview turns get no concept', async () => {
+    expect(await buildContext(ws({}), 'interview')).toContain('no concept document yet');
+  });
+
+  it('model turns get the concept but NOT the model', async () => {
+    // The model phase is writing that file; handing it back would invite an
+    // edit-in-place loop rather than a considered declaration.
+    const out = await buildContext(ws({ 'spec/concept.md': 'C', 'spec/model.ts': 'M' }), 'model');
+    expect(out).toBe('C');
+  });
+
+  it('build turns get the concept AND the model, marked approved', async () => {
+    const out = await buildContext(ws({ 'spec/concept.md': 'C', 'spec/model.ts': 'M' }), 'scaffold');
+    expect(out).toContain('C');
+    expect(out).toContain('M');
+    expect(out).toMatch(/transcribe, do not re-derive/i);
+  });
+
+  it('tolerates a project that predates the model phase', async () => {
+    // Existing projects have a concept and no model; they must keep building.
+    const out = await buildContext(ws({ 'spec/concept.md': 'C' }), 'iterate');
+    expect(out).toBe('C');
   });
 });
