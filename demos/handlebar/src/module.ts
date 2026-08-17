@@ -8,11 +8,14 @@ import {
   mulMoney,
   permissionKey,
   type EntityRef,
+  type EntityRow,
+  type OperationImpl,
   type Money,
 } from '@substrat-run/contracts';
 import { protocolEntities } from '@substrat-run/engine-protocol';
 import { workorderEntities } from '@substrat-run/engine-workorder';
 import { handlebarEntities } from './entities.js';
+import { handlebarOperations, startConditionReportInput } from './operations.js';
 import {
   assertAllowed,
   ulid,
@@ -153,21 +156,12 @@ export const bikeShopMigrations = [
   },
 ];
 
-export interface CustomerRow {
-  id: string;
-  number: string;
-  name: string;
-  phone: string | null;
-  created_at: string;
-}
-
-export interface BikeRow {
-  id: string;
-  customer_id: string;
-  label: string;
-  frame_no: string | null;
-  created_at: string;
-}
+/**
+ * DERIVED from the registry (#697/#707). These were hand-written interfaces, so
+ * the schema was described three times — the DDL, the registry, and here.
+ */
+export type CustomerRow = EntityRow<typeof handlebarEntities, 'customer'>;
+export type BikeRow = EntityRow<typeof handlebarEntities, 'bike'>;
 
 export interface PriceRow {
   article: string;
@@ -348,11 +342,6 @@ const completeRepairOp: OperationHandler<
  * policy — the engine's default `protocol/*` bindings are used directly,
  * exactly like `workorder/assign`.
  */
-const startConditionReportInput = z.object({
-  orderId: z.string().min(1),
-  templateKey: z.string().min(1).default('tillstandsrapport'),
-});
-
 const startConditionReportOp: OperationHandler<
   z.infer<typeof startConditionReportInput>,
   ProtocolInstanceRow
@@ -418,20 +407,28 @@ const timelineOp: OperationHandler<
   );
 };
 
+/** The handlers bound to `handlebarOperations`. `satisfies` is the drift detector. */
+const declaredOperations = {
+  'bike-shop/create-customer': createCustomerOp,
+  'bike-shop/list-customers': listCustomersOp,
+  'bike-shop/register-bike': registerBikeOp,
+  'bike-shop/upsert-price': upsertPriceOp,
+  'bike-shop/price-list': priceListOp,
+  'bike-shop/create-repair': createRepairOp,
+  'bike-shop/start-condition-report': startConditionReportOp,
+  'bike-shop/complete-repair': completeRepairOp,
+  'bike-shop/close-repair': closeRepairOp,
+  'bike-shop/portal-repairs': portalRepairsOp,
+  'bike-shop/timeline': timelineOp,
+} satisfies OperationImpl<typeof handlebarOperations, OperationContext>;
+
 export const bikeShopModule: ModuleRegistration = {
   manifest: bikeShopManifest,
   migrations: bikeShopMigrations,
   operations: {
-    'bike-shop/create-customer': createCustomerOp as never,
-    'bike-shop/list-customers': listCustomersOp as never,
-    'bike-shop/register-bike': registerBikeOp as never,
-    'bike-shop/upsert-price': upsertPriceOp as never,
-    'bike-shop/price-list': priceListOp as never,
-    'bike-shop/create-repair': createRepairOp as never,
-    'bike-shop/start-condition-report': startConditionReportOp as never,
-    'bike-shop/complete-repair': completeRepairOp as never,
-    'bike-shop/close-repair': closeRepairOp as never,
-    'bike-shop/portal-repairs': portalRepairsOp as never,
-    'bike-shop/timeline': timelineOp as never,
+    // ALL of them bound to the declaration (#707): input and return checked at
+    // the exact method. The `as never` casts these carried were never necessary
+    // — OperationHandler<never, unknown> accepts any handler by contravariance.
+    ...(declaredOperations as Record<string, OperationHandler<never, unknown>>),
   },
 };
