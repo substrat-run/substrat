@@ -55,5 +55,12 @@ export const workorderEntities = defineEntities({
   },
 });
 
-/** The row shape, for a vertical declaring an operation that returns one. */
+/**
+ * The STORED row shape. Not what operations return — `workOrder` is that.
+ *
+ * The two differ: this carries `facility_type` / `facility_id` as separate
+ * snake_case columns, where the published type composes them into one
+ * `EntityRef` and uses camelCase. An earlier version of this comment said this
+ * schema was for declaring an operation's `output`, which was wrong.
+ */
 export const workorderRow = workorderEntities.workorder.fields;

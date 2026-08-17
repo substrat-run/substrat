@@ -10,7 +10,7 @@ import {
   type OperationImpl,
 } from '@substrat-run/contracts';
 import { calloutEntities } from './entities.js';
-import { calloutOperations } from './operations.js';
+import { calloutOperations, instantiateProtocolInput } from './operations.js';
 import {
   assertAllowed,
   ulid,
@@ -263,12 +263,6 @@ const completeWorkOrderOp: OperationHandler<
  * carry no Callout policy — the engine's default `protocol/*` bindings are
  * used directly, exactly like `workorder/assign`.
  */
-const instantiateProtocolInput = z.object({
-  templateKey: z.string().min(1),
-  entityType: z.literal('workorder'), // Callout policy: protocols live on work orders
-  entityId: z.string().min(1),
-});
-
 const instantiateProtocolOp: OperationHandler<
   z.infer<typeof instantiateProtocolInput>,
   ProtocolInstanceRow
@@ -346,7 +340,12 @@ const declaredOperations = {
   'callout/create-customer': createCustomerOp,
   'callout/list-customers': listCustomersOp,
   'callout/create-facility': createFacilityOp,
+  'callout/upsert-price': upsertPriceOp,
   'callout/price-list': priceListOp,
+  'callout/create-workorder': createWorkOrderOp,
+  'callout/complete-workorder': completeWorkOrderOp,
+  'callout/instantiate-protocol': instantiateProtocolOp,
+  'callout/portal-orders': portalOrdersOp,
   'callout/timeline': timelineOp,
 } satisfies OperationImpl<typeof calloutOperations, OperationContext>;
 
@@ -354,18 +353,10 @@ export const calloutModule: ModuleRegistration = {
   manifest: calloutManifest,
   migrations: calloutMigrations,
   operations: {
-    // BOUND to the declaration (#707): input and return are checked against
-    // `calloutOperations` at the exact method. The `as never` casts these used
-    // to carry were never necessary — `OperationHandler<never, unknown>` accepts
-    // any handler by contravariance — they simply threw the types away.
+    // ALL of them bound to the declaration (#707): input and return are checked
+    // against `calloutOperations` at the exact method. The `as never` casts these
+    // used to carry were never necessary — `OperationHandler<never, unknown>`
+    // accepts any handler by contravariance — they simply threw the types away.
     ...(declaredOperations as Record<string, OperationHandler<never, unknown>>),
-    // Not yet declared: these return ENGINE types, and declaring an `output` for
-    // them would mean transcribing the engine's shape into Zod here. See
-    // operations.ts.
-    'callout/upsert-price': upsertPriceOp as never,
-    'callout/create-workorder': createWorkOrderOp as never,
-    'callout/complete-workorder': completeWorkOrderOp as never,
-    'callout/instantiate-protocol': instantiateProtocolOp as never,
-    'callout/portal-orders': portalOrdersOp as never,
   },
 };
