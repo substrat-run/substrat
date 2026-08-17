@@ -368,14 +368,6 @@ type RegisteredEffector =
       handler: ConnectorHandler;
       retry: Required<ExecutorRetryPolicy>;
       timeoutMs: number;
-      /**
-       * The provider slug this connector operates — `ConnectorOptions.provider`, else
-       * the registration id. Already the routing key for a CP-less host's platform
-       * intent; also what resolves WHICH connection `ctx.openAttachment` reads as
-       * (#711), so a dispatch-time read is gated on the same credential the handler
-       * is about to use rather than on whatever it happened to open first.
-       */
-      provider: string;
     };
 
 interface ConnectionRow {
@@ -1228,21 +1220,26 @@ export class SqliteScopeHost implements ScopeHost {
       handler,
       retry: resolveRetryPolicy(options),
       timeoutMs: options?.timeoutMs ?? 30_000,
-      provider: options?.provider ?? id,
     });
   }
 
   /**
    * Build the context a connector runs with. Tenant and vertical are AMBIENT —
    * taken from the event's scope, never from an argument — so a connector cannot
-   * reach a credential another vertical connected even by accident. `provider` is
-   * ambient for the same reason: it is the registration's own slug, so the identity
-   * a dispatch-time read is authorized as cannot be chosen by the handler.
+   * reach a credential another vertical connected even by accident.
+   *
+   * `holdsActor` says whether the CALLER is already inside `rt.actor.enqueue`. It
+   * decides how the connection's attachment read is built and nothing else: from
+   * `dispatchExecutors` (true) the surface must not re-enqueue or the scope wedges;
+   * from `dispatchConnector` (false) nothing is held, so the read takes an ordinary
+   * serialized turn like every other reader. Getting this from the call site rather
+   * than assuming the worse case is what keeps the platform-dispatch path under the
+   * K-6 serialization the adapter promises.
    */
   private connectorContext(
     rt: ScopeRuntime,
     timeoutMs: number,
-    provider: string,
+    holdsActor: boolean,
   ): ConnectorContext {
     const vertical =
       (
@@ -1257,35 +1254,6 @@ export class SqliteScopeHost implements ScopeHost {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
       vertical: vertical ?? '',
-      // The outbound read (#711). Built REENTRANT: this runs inside the scope's
-      // actor task (dispatchExecutors is called from within `enqueue`), so the
-      // ordinary surface — which re-enqueues per verb — would wedge the scope
-      // rather than answer. Nothing else about it is different: same target gate,
-      // checked as the connection, same sha256 witness over the bytes.
-      openAttachment: async (attachmentId: string) => {
-        if (provider === '') {
-          throw new Error(
-            `this dispatch carries no provider slug, so there is no connection to authorize an ` +
-              `attachment read as — pass { provider } to dispatchConnector (#711)`,
-          );
-        }
-        if (!vertical) {
-          throw new Error(
-            `scope ${rt.scopeId} is bound to no vertical, so it has no connection namespace — ` +
-              `provision it with a vertical before using connectors`,
-          );
-        }
-        const open = await admin.openConnection(rt.tenantId, vertical, provider);
-        if (!open) {
-          throw new Error(
-            `no live '${provider}' connection for tenant ${rt.tenantId} / vertical '${vertical}'`,
-          );
-        }
-        const store = this.attachmentStore(rt.tenantId, vertical);
-        return this.buildAttachments(rt, { kind: 'connection', id: open.id }, store, {
-          reentrant: true,
-        }).open(attachmentId);
-      },
       connection: async (provider: string) => {
         if (!vertical) {
           throw new Error(
@@ -1301,6 +1269,23 @@ export class SqliteScopeHost implements ScopeHost {
         }
         return {
           ...open,
+          // The outbound read (#711), on THIS connection — so it is authorized as
+          // the credential the handler actually opened, and cannot drift from it.
+          //
+          // `reentrant` is the whole subtlety. Inside `dispatchExecutors` we are
+          // already in this scope's actor task, and the ordinary surface re-enqueues
+          // per verb: the nested task would wait on the task holding it and the
+          // invoke would never return (`test/connector-reads.test.ts`). Outside it —
+          // `dispatchConnector` — nothing is held, so the read takes an ordinary
+          // serialized turn and stays under K-6 like every other reader. Assuming
+          // the reentrant case everywhere would have dropped serialization on a path
+          // that never needed it.
+          openAttachment: async (attachmentId: string) => {
+            const store = this.attachmentStore(rt.tenantId, vertical);
+            return this.buildAttachments(rt, { kind: 'connection', id: open.id }, store, {
+              reentrant: holdsActor,
+            }).open(attachmentId);
+          },
           fetch: async (input, init) => {
             try {
               const res = await fetchImpl(input, {
@@ -2581,10 +2566,9 @@ export class SqliteScopeHost implements ScopeHost {
         this.causedBy = event.id;
         try {
           if (executor.kind === 'connector') {
-            await executor.handler(
-              this.connectorContext(rt, executor.timeoutMs, executor.provider),
-              event,
-            );
+            // `true`: dispatchExecutors is only ever reached from inside
+            // `rt.actor.enqueue` (invoke's post-commit tail, or drainDue).
+            await executor.handler(this.connectorContext(rt, executor.timeoutMs, true), event);
           } else {
             await executor.handler(this.admin, event);
           }
@@ -2662,7 +2646,7 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     handler: ConnectorHandler,
     event: DomainEvent,
-    options?: { timeoutMs?: number; provider?: string },
+    options?: { timeoutMs?: number },
   ): Promise<void> {
     // The platform half of a routed `connector:<provider>` intent (#574 phase 3): run
     // ONE delivery with this host's directory, credentials and egress, no journal — the
@@ -2673,10 +2657,9 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     this.causedBy = event.id;
     try {
-      await handler(
-        this.connectorContext(rt, options?.timeoutMs ?? 30_000, options?.provider ?? ''),
-        event,
-      );
+      // `false`: this path deliberately does NOT enqueue, so nothing is held and
+      // the connection's reads take an ordinary serialized turn.
+      await handler(this.connectorContext(rt, options?.timeoutMs ?? 30_000, false), event);
     } finally {
       this.causedBy = null;
     }

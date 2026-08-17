@@ -13,7 +13,6 @@ import {
   archiveScopePayload,
   provisionTenantPayload,
   setEntitlementsPayload,
-  CONNECTOR_DISPATCH_KIND_PREFIX,
   connectorDispatchPayload,
   type PlatformActorId,
   type PlatformRequest,
@@ -597,16 +596,7 @@ export function connectorDispatchHandler(deps: ConnectorDispatchDeps): PlatformR
         ctx.scopeId,
         deps.connector,
         payload.event,
-        {
-          ...(deps.timeoutMs === undefined ? {} : { timeoutMs: deps.timeoutMs }),
-          // #711: which credential a dispatch-time attachment read is authorized as.
-          // Taken from the intent's own kind (`connector:scrive`) rather than from a
-          // second config field — the kind is what routed this handler here, so the
-          // two cannot drift apart.
-          ...(request.kind.startsWith(CONNECTOR_DISPATCH_KIND_PREFIX)
-            ? { provider: request.kind.slice(CONNECTOR_DISPATCH_KIND_PREFIX.length) }
-            : {}),
-        },
+        deps.timeoutMs === undefined ? undefined : { timeoutMs: deps.timeoutMs },
       );
     } catch (e) {
       // #618: a 4xx is the provider telling the CALLER its request is wrong, and attempt 101

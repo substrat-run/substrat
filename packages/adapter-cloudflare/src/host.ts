@@ -1021,6 +1021,7 @@ export class CloudflareScopeHost implements ScopeHost {
     });
   }
 
+
   /**
    * Build the context a connector runs with. Tenant and vertical are AMBIENT —
    * taken from the event's scope, never from an argument — so a connector cannot
@@ -1030,7 +1031,6 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     timeoutMs: number,
-    ambientProvider: string,
   ): Promise<ConnectorContext> {
     const scope = await this.cp.getScopeRecord(tenantId, scopeId);
     const vertical = scope?.vertical ?? null;
@@ -1041,32 +1041,6 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId,
       scopeId,
       vertical: vertical ?? '',
-      // The outbound read (#711). No reentrancy hazard here — a connector runs on
-      // the COORDINATOR, never inside the ScopeDO, so this is an ordinary RPC. What
-      // it does need is the delegated read verb when the serving deployment is
-      // elsewhere (#574): a control plane holds the directory and the credential but
-      // not the vertical's R2, so the bytes have to come back over the seam.
-      openAttachment: async (attachmentId: string) => {
-        if (ambientProvider === '') {
-          throw new Error(
-            `this dispatch carries no provider slug, so there is no connection to authorize an ` +
-              `attachment read as — pass { provider } to dispatchConnector (#711)`,
-          );
-        }
-        if (!vertical) {
-          throw new Error(
-            `scope ${scopeId} is bound to no vertical, so it has no connection namespace — ` +
-              `provision it with a vertical before using connectors`,
-          );
-        }
-        const open = await admin.openConnection(tenantId, vertical, ambientProvider);
-        if (!open) {
-          throw new Error(
-            `no live '${ambientProvider}' connection for tenant ${tenantId} / vertical '${vertical}'`,
-          );
-        }
-        return (await this.getConnectorAttachments(open.id, scopeId)).open(attachmentId);
-      },
       connection: async (provider: string) => {
         if (!vertical) {
           throw new Error(
@@ -1082,6 +1056,16 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         return {
           ...open,
+          // The outbound read (#711), on THIS connection — authorized as the
+          // credential the handler actually opened, so it cannot drift from it.
+          //
+          // No reentrancy hazard here: a connector runs on the COORDINATOR, never
+          // inside the ScopeDO, so this is an ordinary RPC. What it does need is the
+          // delegated read verb when the serving deployment is elsewhere (#574) —
+          // the control plane holds the directory and the credential but not the
+          // vertical's R2, so the bytes come back over the seam.
+          openAttachment: (attachmentId: string) =>
+            this.getConnectorAttachments(open.id, scopeId).then((a) => a.open(attachmentId)),
           fetch: async (input, init) => {
             try {
               const res = await fetchImpl(input, {
@@ -1159,12 +1143,7 @@ export class CloudflareScopeHost implements ScopeHost {
             report.routedToPlatform! += 1;
           } else if (executor.kind === 'connector') {
             await executor.handler(
-              await this.connectorContext(
-                tenantId,
-                scopeId,
-                executor.timeoutMs,
-                executor.provider,
-              ),
+              await this.connectorContext(tenantId, scopeId, executor.timeoutMs),
               event,
             );
             await stub.recordExecutorAttempt(event.id, deliveryId, null, null);
@@ -1210,7 +1189,7 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     handler: ConnectorHandler,
     event: DomainEvent,
-    options?: { timeoutMs?: number; provider?: string },
+    options?: { timeoutMs?: number },
   ): Promise<void> {
     // The platform half of a routed delivery (#574 phase 3). The same lifecycle gate as
     // `drainDue` — a suspended scope's routed intent waits, it does not execute — and the
@@ -1221,12 +1200,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.causedBy = event.id;
     try {
       await handler(
-        await this.connectorContext(
-          tenantId,
-          scopeId,
-          options?.timeoutMs ?? 30_000,
-          options?.provider ?? '',
-        ),
+        await this.connectorContext(tenantId, scopeId, options?.timeoutMs ?? 30_000),
         event,
       );
     } finally {

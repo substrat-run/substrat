@@ -134,7 +134,8 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
    ```
 
    `protocol.signatures-requested` then carries `documentAttachmentId`, and `create` opens it
-   (`ctx.openAttachment`) and sends those bytes under the vertical's own filename. With nothing
+   (`conn.openAttachment`, on the very connection it is about to send with) and puts those
+   bytes out under the vertical's own filename. With nothing
    bound, today's one-page sheet goes out unchanged — the template, the parties, and the content
    hash — which stays the honest artifact for a caller that renders nothing.
 
@@ -170,9 +171,10 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
    - on the hosted Cloudflare path only `upload` crossed the `/internal` seam, so the control
      plane held the credential while the vertical held the bytes.
 
-   Both are closed: `ConnectorContext.openAttachment` is the reentrant-safe read, and `open`
-   now crosses the delegation seam beside `upload`. `list` deliberately does not — see the third
-   bullet above.
+   Both are closed: `ScopedConnectorConnection.openAttachment` — the read hangs off the
+   connection `ctx.connection(provider)` returns, so it is authorized as the credential the
+   dispatch is actually using and cannot drift from it — and `open` now crosses the delegation
+   seam beside `upload`. `list` deliberately does not; see the third bullet above.
 
 ## Verified against the testbed
 

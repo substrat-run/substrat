@@ -46,16 +46,36 @@ outbound leg needed a read that did not exist, in two different ways:
   dispatch wedged the scope, silently, forever. `dispatchConnector` does *not*
   enqueue, so a naive implementation works on the routed path and hangs under
   `invoke`/`drainDue`. Pinned in `adapter-sqlite/test/connector-reads.test.ts`.
+
+  The adapter is therefore *told* which case it is in rather than assuming the
+  worse one. Building the read reentrant everywhere would work, and would quietly
+  drop the platform-dispatch path out of K-6 serialization: a read on the same
+  SQLite connection while another task holds a transaction open sees that task's
+  uncommitted rows. There is a test in which the actor is deliberately busy and
+  the read must wait for it — that wait is the serialization, made visible.
 - on the hosted Cloudflare path only `upload` crossed the `/internal` connector
   seam, so the control plane held the credential while the vertical held the bytes.
 
-New in the kernel: **`ConnectorContext.openAttachment(id)`** — reads only, by id
-only, authorized as the connection against the target's `readPermission`.
-`ScopeHost.dispatchConnector` gains `options.provider`, which is what a routed
-delivery authorizes that read as (taken from the intent's own `connector:<slug>`
-kind, so the two cannot drift). `ConnectorDelegation` gains `openAttachment`, backed
-by `GET /internal/connector-attachment/:id` (raw bytes, record in a header — a
-contract is megabytes and base64 in JSON would inflate it for nothing).
+New in the kernel: **`ScopedConnectorConnection`** — what `ctx.connection(provider)`
+returns inside a dispatch — with **`openAttachment(id)`**: reads only, by id only,
+gated by the target's `readPermission` against that connection's own grants.
+
+It hangs off the connection rather than the context deliberately, and the first cut
+of this change got it wrong in a way worth recording. Authorizing the read against
+an ambient "the provider this connector is registered under" is a *second name* for
+the credential the handler already holds, and two names for one fact is how they come
+to disagree: `registerScriveConnector({ id: 'scrive-eu' })` opens its credential as
+`'scrive'` and would have read as `'scrive-eu'` — the egress half kept working while
+every contract's document half failed with `no live 'scrive-eu' connection`. Handing
+the door to whoever holds the credential makes that unrepresentable, and removes the
+ambient-provider plumbing (and a `dispatchConnector` option) entirely. A connection
+reopened *outside* a dispatch — a credential probe, a poll driver — has no scope to
+read from and stays a plain `ConnectorConnection`, so the type says which is which
+instead of handing out a method that would have to throw.
+
+`ConnectorDelegation` gains `openAttachment`, backed by
+`GET /internal/connector-attachment/:id` (raw bytes, record in a header — a contract
+is megabytes and base64 in JSON would inflate it for nothing).
 
 `engine-protocol` gains migration `0004-bound-document` and an optional
 `documentAttachmentId` on `bindDocument`, carried additively onto

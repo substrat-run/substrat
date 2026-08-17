@@ -57,7 +57,7 @@ describe('scrive connector — outbound dispatch', () => {
    * `defaultAuthMethod`) rather than only the shipped default.
    */
   const boot = async (
-    connectorOptions: Partial<ScriveConnectorOptions & { retry: ConnectorOptions }> = {},
+    connectorOptions: Partial<ScriveConnectorOptions & { id: string; retry: ConnectorOptions }> = {},
     mockOptions: ScriveMockOptions = {},
     /** #711: withhold the connection's read grant, to see the fallback it causes. */
     world: { grantConnectionRead?: boolean } = {},
@@ -575,6 +575,29 @@ describe('scrive connector — outbound dispatch', () => {
           documentAttachmentId: ulid(),
         }),
       ).rejects.toThrow(/no attachment/);
+    });
+
+    it('reads as the credential it sends with, not as its registration id', async () => {
+      // The trap this seam nearly shipped with. `registerScriveConnector` takes an
+      // `id`, and the handler opens its credential by the literal provider name
+      // `'scrive'`. An earlier cut of #711 authorized the attachment read against
+      // the REGISTRATION's slug instead — so `id: 'scrive-eu'` left the egress half
+      // working and the document half failing with "no live 'scrive-eu' connection",
+      // and every contract quietly dead-lettered while the connector looked healthy.
+      //
+      // Two names for one fact is how they come to disagree. The read now hangs off
+      // the connection the handler opened, which is the only thing that can be
+      // authorized correctly by construction — this test is what holds it there.
+      const discarded = dir;
+      await host.close();
+      await boot({ id: 'scrive-eu' });
+      rmSync(discarded, { recursive: true, force: true });
+
+      const { instanceId, record } = await issueWithDocument();
+
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.file!.bytes).toBe(AVTAL.byteLength);
+      expect((await dispatchState(instanceId))!.documentAttachmentId).toBe(record.id);
     });
 
     it('sends NOTHING rather than the wrong paper when the connection cannot read', async () => {

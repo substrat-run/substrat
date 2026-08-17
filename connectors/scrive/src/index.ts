@@ -327,10 +327,12 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // to sign again — with an id there is nothing to pick between, and the sealed
     // copy does not exist when the binding is made.
     //
-    // Read through `ctx.openAttachment`, not `host.getConnectorAttachments`: this
+    // Read through `conn.openAttachment`, not `host.getConnectorAttachments`: this
     // runs inside the scope's dispatch, and on the pure adapter that surface
-    // re-enters the scope actor and wedges it (#711). Gated on the connection's
-    // own `protocol:read` grant, like every other door a connection walks through.
+    // re-enters the scope actor and wedges it (#711). On the connection, so the
+    // read is authorized as the very credential this dispatch is using — the same
+    // `conn` the document is about to be sent with, gated on its own
+    // `protocol:read` grant like every other door a connection walks through.
     // Fall back only when NOTHING was named. Once a vertical has said which bytes
     // its signatory must see, sending different paper instead is the exact failure
     // this seam exists to end — quieter than a refusal and worse, because a document
@@ -340,7 +342,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // written only after `start`, the retry that follows the fix sends the right one.
     let bound = null;
     if (payload.documentAttachmentId) {
-      bound = await ctx.openAttachment(payload.documentAttachmentId);
+      bound = await conn.openAttachment(payload.documentAttachmentId);
       if (!bound) {
         throw new Error(
           `instance ${payload.instanceId} was frozen bound to attachment ` +

@@ -38,6 +38,9 @@ describe('connector attachment reads during dispatch (#711)', () => {
     dir = undefined;
   });
 
+  /** Promises a `doc/hold` invocation parks on, keyed so a test can release its own. */
+  const holds = new Map<string, Promise<void>>();
+
   const DOC_READ = permissionKey.parse('doc:read');
   const DOC_WRITE = permissionKey.parse('doc:write');
   const DOC_SEND = permissionKey.parse('doc:send');
@@ -69,6 +72,13 @@ describe('connector attachment reads during dispatch (#711)', () => {
     operations: {
       // The mutation whose event the connector answers — the shape every outbound
       // connector rides: an operation commits, and the delivery goes out after it.
+      // Holds the scope's actor open until the test releases it — the way to see
+      // whether another reader queues behind it or walks past it.
+      'doc/hold': (async (ctx, input: { key: string }) => {
+        assertAllowed(await ctx.check(DOC_SEND));
+        await holds.get(input.key);
+        return { held: true };
+      }) as OperationHandler<never, unknown>,
       'doc/send': (async (ctx, input: { docId: string }) => {
         assertAllowed(await ctx.check(DOC_SEND));
         ctx.emit({
@@ -102,13 +112,11 @@ describe('connector attachment reads during dispatch (#711)', () => {
       fetch: async () => new Response('{}', { status: 200 }),
     });
     host.registerModule(docMod);
-    // `provider` names the credential this connector operates — the same slug that
-    // routes a CP-less host's intent, and (since #711) what a dispatch-time read is
-    // authorized as. Deliberately different from the registration id here, so the
-    // read cannot be passing by accident on the id.
+    // The registration id is deliberately NOT the provider slug: the connector asks
+    // for its credential by name (`ctx.connection('provider')`) and the read hangs
+    // off that connection, so nothing here can be passing by accident on the id.
     host.registerConnector('outbound', 'doc.send-requested', (ctx) => connector(ctx), {
       maxAttempts: 1,
-      provider: 'provider',
     });
 
     const staff = platformActorId.parse(ulid());
@@ -220,14 +228,14 @@ describe('connector attachment reads during dispatch (#711)', () => {
   });
 
   /**
-   * The seam: `ctx.openAttachment` reads without re-entering the actor. Same
+   * The seam: `conn.openAttachment` reads without re-entering the actor. Same
    * permission gate, same bytes, same integrity check — it simply does not queue
    * behind itself.
    */
-  it('reads the vertical’s own document during dispatch through ctx.openAttachment', async () => {
+  it('reads the vertical’s own document during dispatch through conn.openAttachment', async () => {
     let seen: OpenedAttachment | null | undefined;
     const { host, record, stub } = await world(async (ctx) => {
-      seen = await ctx.openAttachment(record.id);
+      seen = await (await ctx.connection('provider')).openAttachment(record.id);
     });
 
     await stub.invoke('doc/send', { docId: 'd1' });
@@ -239,11 +247,72 @@ describe('connector attachment reads during dispatch (#711)', () => {
     await host.close();
   });
 
+  /**
+   * The OTHER dispatch path, and the reason the reentrancy is a parameter rather
+   * than an assumption.
+   *
+   * `dispatchConnector` — the platform half of a routed `connector:<provider>`
+   * intent — deliberately does not enqueue, so a connector running there holds
+   * nothing. Building the read reentrant everywhere would work, and would quietly
+   * drop this path out of the strict serialization the adapter promises (K-6): a
+   * read on the same SQLite connection while another task has a transaction open
+   * sees that task's uncommitted rows.
+   *
+   * So the adapter is told which case it is in. Here the actor is deliberately
+   * busy, and the read must WAIT for it — that wait is the serialization, visible.
+   */
+  it('takes an ordinary serialized turn when dispatched outside the actor', async () => {
+    let release!: () => void;
+    holds.set('k', new Promise<void>((r) => { release = r; }));
+
+    let read: OpenedAttachment | null | undefined;
+    const { host, t, s, record, stub } = await world(async (ctx) => {
+      read = await (await ctx.connection('provider')).openAttachment(record.id);
+    });
+
+    // Occupy the actor. `doc/hold` parks mid-operation, so the scope's task queue
+    // is not empty until the test says so.
+    const held = stub.invoke('doc/hold', { key: 'k' });
+    await new Promise((r) => setTimeout(r, 30));
+
+    const dispatched = host.dispatchConnector(
+      t,
+      s,
+      // The same handler `world` was given; dispatchConnector takes it directly.
+      async (ctx) => {
+        read = await (await ctx.connection('provider')).openAttachment(record.id);
+      },
+      {
+        id: ulid(),
+        type: 'doc.send-requested',
+        schemaVersion: 1,
+        tenantId: t,
+        scopeId: s,
+        entity: { entityType: 'doc', entityId: 'd1' },
+        piiClass: 'none',
+        subjectId: null,
+        actor: { system: 'test' },
+        occurredAt: new Date().toISOString(),
+        payload: { docId: 'd1' },
+      } as never,
+    );
+
+    // Queued, not jumped: nothing has been read while the actor is occupied.
+    expect(await within(200, dispatched)).toBe('timeout');
+    expect(read).toBeUndefined();
+
+    release();
+    await held;
+    await dispatched;
+    expect(new TextDecoder().decode(read!.body)).toBe('%PDF-1.4 the real avtal');
+    await host.close();
+  }, 20_000);
+
   /** An id this scope does not know is `null`, not a throw — the caller falls back. */
   it('answers null for an unknown attachment id', async () => {
     let seen: OpenedAttachment | null | undefined;
     const { host, stub } = await world(async (ctx) => {
-      seen = await ctx.openAttachment(ulid());
+      seen = await (await ctx.connection('provider')).openAttachment(ulid());
     });
     await stub.invoke('doc/send', { docId: 'd1' });
     expect(seen).toBeNull();
@@ -260,7 +329,7 @@ describe('connector attachment reads during dispatch (#711)', () => {
     const { host, record, stub } = await world(
       async (ctx) => {
         try {
-          await ctx.openAttachment(record.id);
+          await (await ctx.connection('provider')).openAttachment(record.id);
         } catch (err) {
           error = err instanceof Error ? err.message : String(err);
         }

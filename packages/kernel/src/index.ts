@@ -10,6 +10,7 @@ export type {
   ExecutorHandler,
   ExecutorRetryPolicy,
   ConnectorConnection,
+  ScopedConnectorConnection,
   ConnectorContext,
   ConnectorHandler,
   ConnectorOptions,
