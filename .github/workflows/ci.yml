@@ -30,6 +30,12 @@ jobs:
       # opted-in vertical's OpenAPI document from its operation catalog and fail
       # on drift — a surface change must appear in the PR diff.
       - run: pnpm lint:api --check
+      # The entity-model checkpoint (#697): re-emit each adopting vertical's
+      # model.json from its declared entities and fail on drift — a changed table,
+      # a renamed field or a moved parent edge must appear in the PR diff. Exits 2
+      # if no vertical declares entities, so the checkpoint can never pass by
+      # scanning nothing.
+      - run: pnpm lint:model --check
       # The playbook-sync checkpoint: the create-substrat template playbook is a
       # hand-adapted copy of the substrat skill, so fail if the skill moved without
       # a human re-reconciling the playbook (tools/playbook-sync.mts).

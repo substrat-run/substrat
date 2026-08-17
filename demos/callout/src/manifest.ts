@@ -1,4 +1,5 @@
-import { moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
+import { manifestEntities, moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
+import { calloutEntities } from './entities.js';
 
 /**
  * Callout's ORDINARY declared environment — the deployment-default half of its auth
@@ -71,16 +72,19 @@ export const calloutManifest = moduleManifest.parse({
   // @substrat-run/engine-protocol at milestone B (engine-protocol.md §2).
   events: { emits: [], consumes: [] },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
-  attachmentTargets: [
-    { entityType: 'customer', readPermission: 'customer:manage' },
-    { entityType: 'facility', readPermission: 'facility:manage' },
-  ],
-  entityRelations: [
-    { entityType: 'facility', parentType: 'customer' },
-    // The protocol engine is entity-agnostic; THIS vertical hangs protocols
-    // off work orders, so it declares the permission-walk edge.
-    { entityType: 'protocol', parentType: 'workorder' },
-  ],
+  // Entity names checked against `calloutEntities` (#697), and
+  // `entityRelations` DERIVED from the entities' `parent` declarations rather
+  // than written a second time.
+  ...manifestEntities(calloutEntities, {
+    attachmentTargets: [
+      { entityType: 'customer', readPermission: 'customer:manage' },
+      { entityType: 'facility', readPermission: 'facility:manage' },
+    ],
+    // The protocol engine is entity-agnostic; THIS vertical hangs protocols off
+    // work orders, so it declares the permission-walk edge. Both names belong to
+    // engines, so neither is checkable here — see `foreignRelations`.
+    foreignRelations: [{ entityType: 'protocol', parentType: 'workorder' }],
+  }),
   entitlementKey: 'callout',
   envSpec: CALLOUT_ENV,
   // This app can DELEGATE sign-in to an OIDC issuer (manifest `requires`, #427): at

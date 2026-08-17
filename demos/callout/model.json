@@ -1,0 +1,101 @@
+{
+  "entities": {
+    "customer": {
+      "table": "callout_customers",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "org_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "name",
+          "org_ref",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "number"
+      ],
+      "erasable": [
+        "name"
+      ]
+    },
+    "facility": {
+      "table": "callout_facilities",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "customer_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "access_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "customer_id",
+          "name",
+          "address",
+          "access_note",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parent": "customer",
+      "erasable": [
+        "address"
+      ]
+    }
+  }
+}
