@@ -1,9 +1,21 @@
-import { defineOperations } from '@substrat-run/contracts';
+import { defineOperations, money } from '@substrat-run/contracts';
+import { protocolInstanceRow } from '@substrat-run/engine-protocol';
+import { billableLine, workOrder } from '@substrat-run/engine-workorder';
 import { z } from 'zod';
 import { calloutEntities } from './entities.js';
 
 /** The permission keys operations may require. Mirrors `SC_PERM` in manifest.ts. */
 export const CALLOUT_PERMISSIONS = ['customer:manage', 'facility:manage'] as const;
+
+/**
+ * Callout policy: protocols live on work orders. Declared here and parsed by the
+ * handler — the SAME object, which is the point of the model being TypeScript.
+ */
+export const instantiateProtocolInput = z.object({
+  templateKey: z.string().min(1),
+  entityType: z.literal('workorder'),
+  entityId: z.string().min(1),
+});
 
 /** A price-list row. A table, not an entity — so its shape lives here, not in the registry. */
 const priceRow = z.object({
@@ -19,24 +31,19 @@ const priceRow = z.object({
 /**
  * Callout's declared operation surface (#707).
  *
- * ## Six of eleven, deliberately
+ * ## Eleven of eleven
  *
- * The operations that return an ENGINE type — `create-workorder`,
- * `complete-workorder`, `instantiate-protocol`, `portal-orders` — are absent,
- * and the reason is worth stating rather than leaving as a gap.
+ * Four of these return ENGINE types, and until the engines exported Zod schemas
+ * for them a vertical could only have declared an `output` by transcribing the
+ * engine's shape into Zod here — a description held in agreement by nothing, and
+ * a wrong one worse than the `unknown` it replaced because it looks
+ * authoritative. `protocolInstanceRow`, `workOrder` and `billableLine` removed
+ * that, so the whole surface is declared.
  *
- * `output` is a Zod schema, so declaring one for `WorkOrder` or
- * `ProtocolInstanceRow` would mean **transcribing the engine's type into Zod
- * here**. That is a fourth description of a shape the engine already owns, kept
- * in agreement by nothing — and transcription is precisely the cost that decided
- * the model's notation (#680). A wrong transcription would be worse than the
- * `unknown` it replaced, because it would look authoritative.
- *
- * The real fix is engines exporting Zod schemas for their row types, the same
- * shape as #696's event contracts. Until then this follows the rule #695 arrived
- * at from measuring a production app: **declare a return where a caller branches
- * on it**, and leave the rest honestly opaque. They declared 54 of 159; this is
- * 6 of 11, and the split is a finding rather than an omission.
+ * Note `workOrder`, NOT `workorderRow`: the engine stores `facility_type` and
+ * `facility_id` as two snake_case columns and publishes one `EntityRef` in
+ * camelCase. The row and the published type are different shapes, and only the
+ * second is what an operation returns.
  *
  * `ApiOperationDoc.output` already carries the same "adopted incrementally" note.
  */
@@ -87,6 +94,49 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
     permission: 'customer:manage',
     output: z.array(priceRow),
     http: { method: 'GET', path: '/price-list' },
+  },
+  'callout/upsert-price': {
+    summary: 'Create or update a price-list article',
+    permission: 'customer:manage',
+    input: z.object({
+      article: z.string(),
+      description: z.string(),
+      unit: z.string(),
+      priceAmount: z.string(),
+      currency: z.string().optional(),
+      minQty: z.string().optional(),
+      internal: z.boolean().optional(),
+    }),
+    output: priceRow,
+  },
+  'callout/create-workorder': {
+    summary: 'Open a work order against a facility',
+    permission: 'customer:manage',
+    input: z.object({
+      facilityId: z.string(),
+      kind: z.string(),
+      title: z.string(),
+      description: z.string().optional(),
+    }),
+    output: workOrder,
+  },
+  'callout/complete-workorder': {
+    summary: 'Complete a work order and price its billable lines',
+    permission: 'customer:manage',
+    input: z.object({ orderId: z.string() }),
+    output: z.object({ order: workOrder, billable: z.array(billableLine), total: money }),
+  },
+  'callout/instantiate-protocol': {
+    summary: 'Instantiate a protocol against an entity',
+    permission: 'customer:manage',
+    // The handler's own schema, not a restatement of it.
+    input: instantiateProtocolInput,
+    output: protocolInstanceRow,
+  },
+  'callout/portal-orders': {
+    summary: "The work orders visible to the caller's portal",
+    narrows: { reason: 'a portal caller sees their own orders, not a denial' },
+    output: z.array(workOrder),
   },
   'callout/timeline': {
     summary: 'The event timeline for one entity',

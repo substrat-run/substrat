@@ -153,20 +153,35 @@ export type CreateWorkOrderInput = z.infer<typeof createWorkOrderInput>;
  */
 type OrderRow = EntityRow<typeof workorderEntities, 'workorder'>;
 
-export interface WorkOrder {
-  id: string;
-  number: number;
-  facility: EntityRef;
-  customer: EntityRef;
-  kind: string;
-  title: string;
-  description: string | null;
-  status: OrderRow['status'];
-  assignedTo: string | null;
-  createdBy: string;
-  createdAt: string;
-  completedAt: string | null;
-}
+/**
+ * A work order as this engine PUBLISHES it — not as it stores it.
+ *
+ * Schema first, interface derived, matching `billableLine` and
+ * `createWorkOrderInput` above. A vertical declaring an operation that returns a
+ * work order uses this schema for its `output`; without it the vertical would
+ * have to transcribe this shape into Zod, which is a description held in
+ * agreement by nothing.
+ *
+ * Deliberately NOT the row (`workorderRow`). The stored row carries
+ * `facility_type` / `facility_id` as two snake_case columns; the published type
+ * carries one `EntityRef` and camelCase names. `status` is taken from the
+ * registry so storage and domain cannot disagree about the state set.
+ */
+export const workOrder = z.object({
+  id: z.string(),
+  number: z.number(),
+  facility: entityRef,
+  customer: entityRef,
+  kind: z.string(),
+  title: z.string(),
+  description: z.string().nullable(),
+  status: workorderEntities.workorder.fields.shape.status,
+  assignedTo: z.string().nullable(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  completedAt: z.string().nullable(),
+});
+export type WorkOrder = z.infer<typeof workOrder>;
 
 export interface TimeEntry {
   id: string;
