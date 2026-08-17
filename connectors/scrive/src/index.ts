@@ -301,8 +301,10 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // The artifact. NOT the avtal — this connector cannot read the vertical's
     // content, and should not learn its vocabulary in order to try. It renders
     // an attestation sheet naming what is being signed and the hash it is
-    // identified by. A real contract needs the vertical's own rendering plus a
-    // document store, and neither exists (see README).
+    // identified by. A real contract needs the vertical's own rendering handed
+    // to this call; the document store it would ride is NOT missing, whatever
+    // this comment used to claim — `reconcileScriveDispatch` below already lands
+    // the sealed PDF through it (#473, #476 step 2). See README caveat 4.
     const pdf = renderPdf({
       title: `${payload.templateKey} v${payload.templateVersion}`,
       lines: [

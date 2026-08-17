@@ -125,8 +125,20 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
 4. **It sends an attestation sheet, not the avtal.** A one-page PDF naming the template, the
    parties, and the content hash the signature refers to — honest for a hash-attestation model,
    but not the contract itself. Rendering the real document belongs to the **vertical** (a
-   connector cannot read another module's tables), and it needs a document store that does not
-   exist yet (`attachmentTargets` is declared in the manifest contract and implemented nowhere).
+   connector cannot read another module's tables), and `create` has no way to be handed one: it
+   calls `renderPdf` unconditionally.
+
+   What is **no longer** true: that the document store does not exist. `attachmentTargets` is
+   implemented in both adapters — bytes to the per-tenant blob store, metadata in
+   `_substrat_attachments`, permission-gated per declared entity type with a spine event in the
+   same transaction (#473, `packages/adapter-sqlite/test/attachments.test.ts`). **This connector
+   already uses it**: `reconcileScriveDispatch` lands the sealed signed PDF through
+   `getConnectorAttachments` on the `protocol` target (#476 step 2). A store the return path
+   writes to cannot be missing on the outbound one.
+
+   So the remaining gap is this connector's, not the platform's: a vertical can already bind its
+   rendered avtal to an entity, and `create` should send that when present, falling back to the
+   attestation sheet when it is absent. Raised as R4 on #687, to be filed separately.
 
 ## Verified against the testbed
 
