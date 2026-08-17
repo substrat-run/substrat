@@ -3,12 +3,15 @@ import { listInvites, revokeInvite, sendInvite, type Invitation } from '@substra
 import {
   dataSubjectId,
   orgId as orgIdSchema,
+  manifestEntities,
   moduleManifest,
   moneyOf,
   permissionKey,
   type EntityRef,
   type Money,
 } from '@substrat-run/contracts';
+import { bookingEntities } from '@substrat-run/engine-booking';
+import { rallyEntities } from './entities.js';
 import {
   assertAllowed,
   ulid,
@@ -98,12 +101,15 @@ export const rallyManifest = moduleManifest.parse({
     consumes: [{ type: 'invites.accepted', schemaVersion: 1 }],
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
-  attachmentTargets: [{ entityType: 'member', readPermission: 'rally:manage-members' }],
-  // The portal walk is reservation → member: a player reaches their own booking
-  // through an entity-narrowed grant on their member record. The engine already
-  // declares reservation → resource for its own link; a reservation therefore
-  // has two declared parents, and the proof walk follows the member edge.
-  entityRelations: [{ entityType: 'reservation', parentType: 'member' }],
+  ...manifestEntities(rallyEntities, {
+    engines: [bookingEntities],
+    attachmentTargets: [{ entityType: 'member', readPermission: 'rally:manage-members' }],
+    // The portal walk is reservation → member: a player reaches their own booking
+    // through an entity-narrowed grant on their member record. The engine already
+    // declares reservation → resource for its own link; a reservation therefore
+    // has two declared parents, and the proof walk follows the member edge.
+    relations: [{ entityType: 'reservation', parentType: 'member' }],
+  }),
   entitlementKey: 'rallypoint',
 });
 

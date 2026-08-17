@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "manyfold-entry": {
+      "table": "manyfold_entry",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type_key": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "draft_rev": {
+            "type": "number"
+          },
+          "published_rev": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type_key",
+          "status",
+          "slug",
+          "draft_rev",
+          "published_rev",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

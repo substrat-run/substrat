@@ -1,0 +1,222 @@
+{
+  "entities": {
+    "customer": {
+      "table": "shop_customers",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "org_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "name",
+          "org_ref",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "number"
+      ],
+      "erasable": [
+        "name"
+      ]
+    },
+    "order": {
+      "table": "shop_orders",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "number"
+          },
+          "cart_id": {
+            "type": "string"
+          },
+          "customer_id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "placed",
+              "fulfilled",
+              "closed",
+              "cancelled"
+            ]
+          },
+          "payment_method": {
+            "type": "string"
+          },
+          "discount_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtotal_amount": {
+            "type": "string"
+          },
+          "discount_amount": {
+            "type": "string"
+          },
+          "total_amount": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "placed_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "cart_id",
+          "customer_id",
+          "owner",
+          "status",
+          "payment_method",
+          "discount_code",
+          "subtotal_amount",
+          "discount_amount",
+          "total_amount",
+          "currency",
+          "placed_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "customer"
+      ]
+    },
+    "product": {
+      "table": "shop_products",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "roast": {
+            "type": "number"
+          },
+          "published": {
+            "type": "number"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "origin",
+          "notes",
+          "roast",
+          "published",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "slug"
+      ]
+    },
+    "variant": {
+      "table": "shop_variants",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "product_id": {
+            "type": "string"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "grind": {
+            "type": "string"
+          },
+          "size_label": {
+            "type": "string"
+          },
+          "price_amount": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "product_id",
+          "sku",
+          "grind",
+          "size_label",
+          "price_amount",
+          "currency",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "product"
+      ],
+      "key": [
+        "sku"
+      ]
+    }
+  }
+}

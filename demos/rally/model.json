@@ -1,0 +1,60 @@
+{
+  "entities": {
+    "member": {
+      "table": "rally_members",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "party_ref": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "party_ref",
+          "name",
+          "phone",
+          "level",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "party_ref"
+      ],
+      "erasable": [
+        "name",
+        "phone"
+      ]
+    }
+  }
+}
