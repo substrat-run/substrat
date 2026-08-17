@@ -7,7 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { defineEntities, emitTables, journalColumns } from '../src/index.js';
+import { defineEntities, jsonColumn } from '@substrat-run/contracts';
+import { emitTables, journalColumns } from '../src/index.js';
 
 const entities = defineEntities({
   customer: {
@@ -117,5 +118,38 @@ describe('it refuses rather than guesses', () => {
     }) as unknown as Record<string, { table: string; fields: z.ZodObject<z.ZodRawShape>; key: string[] }>;
     bad.thing!.key = ['nope'];
     expect(() => emitTables(bad as never)).toThrow(/names 'nope'/);
+  });
+});
+
+describe('jsonColumn', () => {
+  const withJson = defineEntities({
+    activity: {
+      table: 'acme_activities',
+      fields: z.object({
+        id: z.string(),
+        machine_req: jsonColumn('a requirement document the vertical parses itself'),
+        geometry: jsonColumn('a route geometry — modelling its interior says nothing useful').nullable(),
+      }),
+    },
+  });
+
+  it('becomes TEXT — SQLite has no JSON type', () => {
+    const sql = emitTables(withJson);
+    expect(sql).toContain('machine_req TEXT NOT NULL');
+    expect(sql).toContain('geometry TEXT');
+    expect(sql).not.toContain('geometry TEXT NOT NULL');
+  });
+
+  it('a bare z.unknown() is still an error', () => {
+    // Deliberately opaque and not-yet-modelled must stay distinguishable, or the
+    // first quietly becomes cover for the second.
+    const bare = defineEntities({
+      thing: { table: 't', fields: z.object({ id: z.string(), blob: z.unknown() }) },
+    });
+    expect(() => emitTables(bare)).toThrow(/cannot map thing\.blob/);
+  });
+
+  it('demands a reason', () => {
+    expect(() => jsonColumn('  ')).toThrow(/needs a reason/);
   });
 });

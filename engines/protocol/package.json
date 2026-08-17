@@ -35,6 +35,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@substrat-run/model-emit": "workspace:*",
     "typescript": "^7.0.0",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/engine-test-kit": "workspace:^",

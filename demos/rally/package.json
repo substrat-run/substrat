@@ -29,6 +29,7 @@
     "better-auth": "^1.6.23"
   },
   "devDependencies": {
+    "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",

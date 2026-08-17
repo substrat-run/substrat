@@ -19,7 +19,7 @@
  * silently — for anything reaching a migration, absent must be loud.
  */
 import { z } from 'zod';
-import type { EntityDef } from './model.js';
+import { JSON_COLUMN, type EntityDef } from '@substrat-run/contracts';
 
 /** What a column becomes, before nullability and constraints. */
 interface Column {
@@ -74,6 +74,13 @@ function columnFor(name: string, schema: z.ZodTypeAny, where: string): Column {
     if (!values.length) throw new Error(`emit-sql: ${where} is an enum with no values`);
     const list = values.map((v) => `'${v.replace(/'/g, "''")}'`).join(',');
     return { name, type: 'TEXT', nullable, check: `CHECK (${name} IN (${list}))` };
+  }
+
+  // A column declared with `jsonColumn(because)` — deliberately opaque, stored
+  // as TEXT because SQLite has no JSON type. A bare `z.unknown()` still falls
+  // through to the error below, so opacity is always something someone chose.
+  if ((inner as { description?: string }).description?.startsWith(JSON_COLUMN)) {
+    return { name, type: 'TEXT', nullable };
   }
 
   // Refuse rather than guess. A column emitted from a shape this does not

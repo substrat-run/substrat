@@ -56,6 +56,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@substrat-run/model-emit": "workspace:*",
     "@cloudflare/workers-types": "^5.20260731.1",
     "@scalar/api-reference": "^1.64.0",
     "@types/better-sqlite3": "^9.6.0",

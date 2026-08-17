@@ -3,7 +3,7 @@
  * `journalColumns` is shared (contracts) — three engines had drifting copies.
  */
 import { describe, expect, it } from 'vitest';
-import { journalColumns } from '@substrat-run/contracts';
+import { journalColumns } from '@substrat-run/model-emit';
 import { invitation, invitationRow, invitesEntities } from '../src/entities.js';
 import { invitesModule } from '../src/index.js';
 

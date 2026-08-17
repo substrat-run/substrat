@@ -11,7 +11,7 @@
  * differently. What must agree is what the database ends up with.
  */
 import { describe, expect, it } from 'vitest';
-import { emitTables, journalColumns } from '@substrat-run/contracts';
+import { emitTables, journalColumns } from '@substrat-run/model-emit';
 import { calloutEntities } from '../src/entities.js';
 import { calloutMigrations } from '../src/migrations.js';
 

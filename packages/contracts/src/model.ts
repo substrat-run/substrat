@@ -286,59 +286,26 @@ export type EntityRow<T extends Record<string, EntityDef>, K extends keyof T> = 
     : never
   : never;
 
+
+/** Marker prefix on a JSON column's description. Read by the DDL emitter. */
+export const JSON_COLUMN = 'substrat:json:';
+
 /**
- * Column names per table, read out of a migration journal's SQL.
+ * A column holding arbitrary JSON.
  *
- * **Test tooling**, exported because three engines had hand-rolled a copy and
- * the copies had already drifted — none followed `RENAME TO`, so a journal that
- * rebuilds a table under a temporary name would report the pre-rebuild columns
- * forever.
+ * Some columns genuinely hold a document — a requirement blob, a set of ids, a
+ * geometry — and modelling their interior would be a second description of
+ * something the vertical parses itself. A production vertical has 19 such fields
+ * across 10 tables, which is what promoted this from "plausible" to real.
  *
- * It exists because a registry and a journal are two descriptions of one schema
- * until migrations are derived from the registry. Holding them to each other is
- * what keeps that duplication safe in the meantime.
+ * The `because` is required, and that is the point: `z.unknown()` on its own is
+ * still an ERROR to the emitter, so a JSON column can never appear because
+ * somebody could not think of a type. Deliberately opaque and not-yet-modelled
+ * have to be distinguishable, or the first quietly becomes cover for the second.
  *
- * Handles what real journals do: multi-line `CHECK (...)` constraints (tracked
- * by paren depth, so a continuation line is not read as a column), `ADD COLUMN`,
- * `DROP TABLE`, and `RENAME TO` — append-only journals rebuild a table by
- * creating a `_new`, copying, dropping the original and renaming onto its name.
+ * Stored as TEXT — SQLite has no JSON type, only functions over TEXT.
  */
-export function journalColumns(sql: string): Map<string, Set<string>> {
-  const tables = new Map<string, Set<string>>();
-
-  for (const [, table, body] of sql.matchAll(
-    /CREATE TABLE (?:IF NOT EXISTS )?([a-z_][a-z0-9_]*)\s*\(([\s\S]*?)\n\s*\);/gi,
-  )) {
-    if (!table || !body) continue;
-    const cols = new Set<string>();
-    let depth = 0;
-    for (const raw of body.split('\n')) {
-      const line = raw.trim();
-      const atTop = depth === 0;
-      depth += (line.match(/\(/g) ?? []).length - (line.match(/\)/g) ?? []).length;
-      if (!atTop) continue;
-      if (!line || line.startsWith('--') || /^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i.test(line)) continue;
-      const name = /^([a-z_][a-z0-9_]*)\b/i.exec(line)?.[1];
-      if (name) cols.add(name);
-    }
-    tables.set(table, cols);
-  }
-
-  // Replayed in statement order: a journal may add a column and later rename the
-  // table, or rename onto a name it has just dropped.
-  for (const m of sql.matchAll(
-    /(?:ALTER TABLE ([a-z_][a-z0-9_]*)\s+ADD COLUMN\s+([a-z_][a-z0-9_]*))|(?:ALTER TABLE ([a-z_][a-z0-9_]*)\s+RENAME TO\s+([a-z_][a-z0-9_]*))|(?:DROP TABLE (?:IF EXISTS )?([a-z_][a-z0-9_]*))/gi,
-  )) {
-    const [, addTable, addCol, fromTable, toTable, dropped] = m;
-    if (addTable && addCol) tables.get(addTable)?.add(addCol);
-    else if (dropped) tables.delete(dropped);
-    else if (fromTable && toTable) {
-      const cols = tables.get(fromTable);
-      if (cols) {
-        tables.delete(fromTable);
-        tables.set(toTable, cols);
-      }
-    }
-  }
-  return tables;
+export function jsonColumn(because: string): z.ZodType {
+  if (!because.trim()) throw new Error('jsonColumn(because) needs a reason — that is what it is for');
+  return z.unknown().describe(`${JSON_COLUMN}${because}`);
 }

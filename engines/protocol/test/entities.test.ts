@@ -11,7 +11,7 @@
  * rather than the intermediate `_v2` name.
  */
 import { describe, expect, it } from 'vitest';
-import { journalColumns } from '@substrat-run/contracts';
+import { journalColumns } from '@substrat-run/model-emit';
 import { protocolEntities } from '../src/entities.js';
 import { protocolModule } from '../src/index.js';
 

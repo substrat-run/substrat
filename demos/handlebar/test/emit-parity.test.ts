@@ -11,7 +11,7 @@
  * differently. What must agree is what the database ends up with.
  */
 import { describe, expect, it } from 'vitest';
-import { emitTables, journalColumns } from '@substrat-run/contracts';
+import { emitTables, journalColumns } from '@substrat-run/model-emit';
 import { handlebarEntities } from '../src/entities.js';
 import { bikeShopModule } from '../src/module.js';
 
