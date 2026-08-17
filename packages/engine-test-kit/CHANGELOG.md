@@ -1,5 +1,15 @@
 # @substrat-run/engine-test-kit
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [ce44df8]
+- Updated dependencies [ce44df8]
+  - @substrat-run/contracts@0.71.0
+  - @substrat-run/adapter-sqlite@0.71.0
+  - @substrat-run/kernel@0.71.0
+
 ## 0.1.2
 
 ### Patch Changes

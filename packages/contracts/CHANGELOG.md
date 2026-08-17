@@ -1,5 +1,67 @@
 # @substrat-run/contracts
 
+## 0.71.0
+
+### Minor Changes
+
+- ce44df8: `emitTables` — DDL derived from the entity registry, the first deterministic emitter.
+
+  Every adopter currently hand-writes its `CREATE TABLE` and keeps a test holding it
+  to the registry. That test exists _because_ the duplication does; deriving the DDL
+  is what deletes both.
+
+  It reproduces the hand-written journals exactly. `emit-parity.test.ts` in Callout
+  and Handlebar compares the emitted schema against the checked-in migrations by
+  COLUMN SET — not by string, since whitespace, column order and `REFERENCES`
+  placement are incidental — and every entity matches.
+
+  - an `id` becomes `TEXT PRIMARY KEY **NOT NULL**`
+  - `key` becomes `UNIQUE`
+  - `parents` becomes a real `REFERENCES` clause when the entity declares the
+    matching `<parent>_id` column, and is skipped when it does not
+  - an enum becomes `CHECK (col IN (…))`; a boolean becomes `INTEGER`, since SQLite
+    has none
+
+  **It is stricter than the hand-written schemas, and the parity test asserts it.**
+  In SQLite a non-INTEGER primary key does NOT imply `NOT NULL`, so `id TEXT PRIMARY
+KEY` accepts a NULL id — a hole every `vertical_*` table in this repo has. The
+  emitter cannot produce it.
+
+  **It reads the TypeScript, never `model.json`.** `z.toJSONSchema` drops `.refine()`
+  and `.brand()`, so an emitter reading the JSON would emit a schema weaker than the
+  model declares.
+
+  **It refuses rather than guesses.** A Zod shape it cannot map throws, naming the
+  field. #695's 18 broken events came from an emitter defaulting instead — applied
+  uniformly, silently, eighteen times.
+
+  Not included: the derived journal (versioning, released-entry freezing,
+  expand/contract). This emits a schema, not a migration history — that is the
+  bottom-right cell of the plan's lifecycle table and it is unbuilt everywhere.
+
+- ce44df8: Build-time tooling moves out of `contracts` into `@substrat-run/model-emit`.
+
+  `emitTables` and `journalColumns` are things you **run to build**, not vocabulary a
+  vertical imports at runtime. Leaving them in `contracts` put an emitter in the
+  runtime dependency graph of every vertical that declares a model — tree-shaking
+  usually saves you, and "usually" is the wrong guarantee for a package described as
+  _the shared vocabulary_.
+
+  **Apache-2.0**, like the rest of the build surface. LICENSING.md's line is whether
+  a package is the substrate you run to serve (AGPL — kernel, adapters,
+  control-plane-api, engines) or something you build with (Apache — contracts,
+  templates, the CLI). A generator is the second, and it never touches a network.
+
+  **`jsonColumn` stays in `contracts`.** It looks like tooling because only the
+  emitter reads it, but you _write_ it in your model — it is vocabulary, and the
+  boundary is what you author, not who consumes it.
+
+  The two exports belong together: the emitter's claim is "what this emits is what
+  the database ends up with", and the reader is how that gets checked. They are held
+  to each other rather than each to a hand-written string.
+
+  Thirteen test files across six engines and five demos pick up a devDependency.
+
 ## 0.70.0
 
 ### Minor Changes
@@ -2426,7 +2488,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
