@@ -1,5 +1,111 @@
 # @substrat-run/engine-workorder
 
+## 0.4.0
+
+### Minor Changes
+
+- aaf41b8: **BREAKING:** `foreignChildOf` / `foreignChildren` collapse into `relations`, with both sides checked.
+
+  Those two existed for one reason: a relation edge naming an engine's entity could
+  not be checked, so the pair at least made _which half_ was unchecked visible. Now
+  that engines export their registries, both halves are checkable and the split has
+  nothing left to say.
+
+  ```ts
+  ...manifestEntities(handlebarEntities, {
+    engines: [protocolEntities, workorderEntities],
+    relations: [
+      { entityType: 'workorder', parentType: 'bike' },
+      { entityType: 'protocol', parentType: 'workorder' },
+    ],
+  })
+  ```
+
+  A typo in either position, in either an engine's name or the vertical's, is now a
+  compile error that lists the composed set:
+
+  ```
+  Type '"protocl"' is not assignable to type '"bike" | "customer" | "protocol" | "workorder"'.
+    Did you mean '"protocol"'?
+  ```
+
+  Local-to-local edges stay **derived** from the entities' own `parents` and do not
+  belong in `relations` — declaring one twice is how two descriptions of a fact come
+  to disagree.
+
+  **Fix:** the engines' entity registries were not exported.
+
+  `protocolEntities` / `protocolInstanceRow` (#712) and `workorderEntities` /
+  `workorderRow` (#713) were declared and used internally to derive each engine's
+  row type, but never re-exported from the package entry point — so the composing
+  vertical they exist for could not import them. They are public now, which is what
+  made this change possible at all.
+
+- b9dbda9: **BREAKING:** `EntityDef.parent` becomes `parents`, and takes an array.
+
+  `entityRelations` is an **allowlist, not an assertion**. The kernel accumulates
+  permitted parents into a _set_ per entity type
+  (`adapter-sqlite/src/index.ts:1348-1352`) and `ctx.link` checks membership — so an
+  entity legitimately has more than one, and two already do:
+
+  | entity        | parents                 | declared by                 |
+  | ------------- | ----------------------- | --------------------------- |
+  | `reservation` | `resource`, `member`    | engine-booking, rally       |
+  | `protocol`    | `workorder`, `employee` | callout/handlebar, meridian |
+
+  Singular `parent` said _"the parent"_, which is not what the kernel means and
+  cannot express those. It had not bitten only because each parent is declared by a
+  different module, so no single registry needed both.
+
+  Renamed rather than widened to `Names | readonly Names[]`: a union leaves
+  consumers handling two shapes forever, and the plural name is the one that is
+  true. Migration is mechanical — `parent: 'customer'` → `parents: ['customer']` —
+  and the emitted `model.json` carries an array now, so the artifact of record has
+  one shape for anything reading it.
+
+  ***
+
+  **engine-workorder declares its entity and exports its row schema.**
+
+  A composing vertical could not get the entity-type constant its permission-walk
+  edges name, nor a Zod schema for the row a declared operation returns — the same
+  two gaps engine-protocol just closed. `OrderRow` is now derived from the registry
+  rather than written beside it.
+
+  One entity, three tables: `workorder` is what the platform points at; time
+  entries and material lines are rows this engine owns and totals.
+
+  It declares **no `parents`**, deliberately. The parent is the vertical's noun —
+  Callout takes the manifest's `facility`, Handlebar hangs work orders off a bike —
+  and the manifest's hand-written `facility` edge stays until foreign entity names
+  become checkable.
+
+- 09852a9: `WorkOrder` becomes schema-first, and the row schema's docs stop overclaiming.
+
+  `workorderRow` was described as "the row shape, for a vertical declaring an
+  operation that returns one". The first half is true and the second is not: the
+  engine **stores** `facility_type` / `facility_id` as two snake_case columns and
+  **publishes** one `EntityRef` in camelCase. A vertical declaring
+  `output: workorderRow` would have been declaring the wrong shape, and confidently.
+
+  `workOrder` is the published type, exported as a Zod schema with the interface
+  derived from it — matching `billableLine` and `createWorkOrderInput`, which were
+  already schema-first. `status` is taken from the entity registry, so storage and
+  domain cannot disagree about the state set.
+
+  The row schema keeps its place; its documentation now says what it is, and names
+  `workOrder` as what operations return.
+
+### Patch Changes
+
+- Updated dependencies [60789c8]
+- Updated dependencies [aaf41b8]
+- Updated dependencies [a05cd4d]
+- Updated dependencies [b9dbda9]
+- Updated dependencies [4eb532b]
+  - @substrat-run/contracts@0.68.0
+  - @substrat-run/kernel@0.68.0
+
 ## 0.3.65
 
 ### Patch Changes
@@ -597,7 +703,7 @@
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

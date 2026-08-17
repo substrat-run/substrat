@@ -1,5 +1,182 @@
 # @substrat-run/engine-protocol
 
+## 0.7.0
+
+### Minor Changes
+
+- aaf41b8: **BREAKING:** `foreignChildOf` / `foreignChildren` collapse into `relations`, with both sides checked.
+
+  Those two existed for one reason: a relation edge naming an engine's entity could
+  not be checked, so the pair at least made _which half_ was unchecked visible. Now
+  that engines export their registries, both halves are checkable and the split has
+  nothing left to say.
+
+  ```ts
+  ...manifestEntities(handlebarEntities, {
+    engines: [protocolEntities, workorderEntities],
+    relations: [
+      { entityType: 'workorder', parentType: 'bike' },
+      { entityType: 'protocol', parentType: 'workorder' },
+    ],
+  })
+  ```
+
+  A typo in either position, in either an engine's name or the vertical's, is now a
+  compile error that lists the composed set:
+
+  ```
+  Type '"protocl"' is not assignable to type '"bike" | "customer" | "protocol" | "workorder"'.
+    Did you mean '"protocol"'?
+  ```
+
+  Local-to-local edges stay **derived** from the entities' own `parents` and do not
+  belong in `relations` — declaring one twice is how two descriptions of a fact come
+  to disagree.
+
+  **Fix:** the engines' entity registries were not exported.
+
+  `protocolEntities` / `protocolInstanceRow` (#712) and `workorderEntities` /
+  `workorderRow` (#713) were declared and used internally to derive each engine's
+  row type, but never re-exported from the package entry point — so the composing
+  vertical they exist for could not import them. They are public now, which is what
+  made this change possible at all.
+
+- 701de69: The engine declares its entity, and exports the row schema a vertical needs.
+
+  Two things a composing vertical could not get before:
+
+  **The entity-type constant.** Callout declares `{ entityType: 'protocol',
+parentType: 'workorder' }` and Handlebar `{ entityType: 'workorder', parentType:
+'bike' }` — permission-walk edges naming entities the vertical does not own. Both
+  sides are unchecked strings today, and a typo is a silently dead edge that
+  permission never flows along.
+
+  **The row schema.** `output` in a declared operation (#707) is a Zod schema, so a
+  vertical operation returning a `ProtocolInstanceRow` would have to transcribe
+  this engine's shape into Zod — a description kept in agreement by nothing.
+  `protocolInstanceRow` removes the transcription instead of asking every vertical
+  to get it right. That is what blocked five of Callout's eleven operations from
+  declaring a return.
+
+  `ProtocolInstanceRow` is now **derived** from the registry rather than written
+  beside it, so the engine's own row interface and the exported schema cannot
+  disagree. Types only — no runtime change, no schema change.
+
+  **One entity, eight tables.** `protocol` is the only thing here the platform can
+  point at: attachments hang off it, grants narrow to it, verticals declare
+  relation edges to it. Templates, responses, signatures and signature requests are
+  rows this engine owns and operates on, never the subject of an `EntityRef`.
+
+  It declares **no `parent`**, and that absence is the design: the engine is
+  entity-agnostic, so an instance binds to whatever the vertical says and only the
+  vertical knows where protocols hang.
+
+  `test/entities.test.ts` holds the registry to the migration journal — the two are
+  descriptions of one schema until migrations are derived from the registry. Its
+  parser tracks paren depth so a multi-line `CHECK (...)` constraint is not read as
+  a column, and it asserts it parsed something before comparing.
+
+- 4eb532b: The signatory is sent the contract, not an attestation sheet (#711).
+
+  `connector-scrive`'s `create` rendered its own document unconditionally: one page
+  naming the template, the parties and the content hash. Honest paper for a
+  hash-attestation model, and the wrong paper for a contract — what landed in a
+  counterparty's inbox was a list of identifiers, and they were asked to sign it
+  with BankID. There was no way for a caller to supply the real one.
+
+  **The seam.** A vertical uploads its rendered document onto the protocol instance
+  and names it when binding; the freeze event carries the id; the connector opens it
+  and sends those bytes:
+
+  ```ts
+  const doc = await attachments.upload({ entity: { entityType: 'protocol', entityId }, … });
+  await scope.invoke('protocol/bind-document', { instanceId, contentRef, contentHash,
+                                                 documentAttachmentId: doc.id });
+  ```
+
+  Bind nothing and today's sheet goes out unchanged, byte for byte — a vertical that
+  renders nothing keeps working with no change.
+
+  **By id, never by search.** The return path lands the sealed _signed_ copy on the
+  same instance, so a connector that picked "the document on this instance" could
+  mail a counterparty their own signed contract to sign again. Naming an id makes
+  that unrepresentable rather than merely unlikely, and removes the only real design
+  question the issue raised.
+
+  **What the platform was actually missing.** The attachment store has existed since
+  #473 and this connector already wrote through it on the return path — but the
+  outbound leg needed a read that did not exist, in two different ways:
+
+  - on `adapter-sqlite` a connector runs INSIDE the scope's actor task
+    (`dispatchExecutors` is called from within `enqueue`), and every verb of the
+    ordinary attachment surface re-enqueues on that actor — so reading from a
+    dispatch wedged the scope, silently, forever. `dispatchConnector` does _not_
+    enqueue, so a naive implementation works on the routed path and hangs under
+    `invoke`/`drainDue`. Pinned in `adapter-sqlite/test/connector-reads.test.ts`.
+
+    The adapter is therefore _told_ which case it is in rather than assuming the
+    worse one. Building the read reentrant everywhere would work, and would quietly
+    drop the platform-dispatch path out of K-6 serialization: a read on the same
+    SQLite connection while another task holds a transaction open sees that task's
+    uncommitted rows. There is a test in which the actor is deliberately busy and
+    the read must wait for it — that wait is the serialization, made visible.
+
+  - on the hosted Cloudflare path only `upload` crossed the `/internal` connector
+    seam, so the control plane held the credential while the vertical held the bytes.
+
+  New in the kernel: **`ScopedConnectorConnection`** — what `ctx.connection(provider)`
+  returns inside a dispatch — with **`openAttachment(id)`**: reads only, by id only,
+  gated by the target's `readPermission` against that connection's own grants.
+
+  It hangs off the connection rather than the context deliberately, and the first cut
+  of this change got it wrong in a way worth recording. Authorizing the read against
+  an ambient "the provider this connector is registered under" is a _second name_ for
+  the credential the handler already holds, and two names for one fact is how they come
+  to disagree: `registerScriveConnector({ id: 'scrive-eu' })` opens its credential as
+  `'scrive'` and would have read as `'scrive-eu'` — the egress half kept working while
+  every contract's document half failed with `no live 'scrive-eu' connection`. Handing
+  the door to whoever holds the credential makes that unrepresentable, and removes the
+  ambient-provider plumbing (and a `dispatchConnector` option) entirely. A connection
+  reopened _outside_ a dispatch — a credential probe, a poll driver — has no scope to
+  read from and stays a plain `ConnectorConnection`, so the type says which is which
+  instead of handing out a method that would have to throw.
+
+  `ConnectorDelegation` gains `openAttachment`, backed by
+  `GET /internal/connector-attachment/:id` (raw bytes, record in a header — a contract
+  is megabytes and base64 in JSON would inflate it for nothing).
+
+  `engine-protocol` gains migration `0004-bound-document` and an optional
+  `documentAttachmentId` on `bindDocument`, carried additively onto
+  `protocol.content-bound` (with the kernel's own `sha256`), `protocol.signatures-requested`
+  and `protocol.signed`. `bindDocument` refuses an attachment that is not on the
+  instance being bound — the reconciliation belongs where the document and the hash
+  are first named together.
+
+  **Permission diff.** A connection now needs `protocol:read` to send the vertical's
+  document. Meridian's `connectScrive` grants it, and also `protocol:attach`, which
+  was missing — the sealed-copy landing has been failing there and reporting itself
+  as a `skipped` reason rather than an error, so nobody was told.
+
+  **Not a silent fallback.** A named-but-unreadable document is a hard failure. Once
+  a vertical has said which bytes its signatory must see, substituting other paper is
+  quieter than a refusal and worse, because a document still goes out and someone
+  still signs it. The dispatch dead-letters; the ledger row is written only after
+  `start`, so the retry after the fix sends the right document.
+
+  `engine-test-kit` gains an opt-in `attachments` option — an engine's declared
+  `attachmentTargets` could not be exercised there at all before, because the
+  harness's scope had no vertical and so no blob store.
+
+### Patch Changes
+
+- Updated dependencies [60789c8]
+- Updated dependencies [aaf41b8]
+- Updated dependencies [a05cd4d]
+- Updated dependencies [b9dbda9]
+- Updated dependencies [4eb532b]
+  - @substrat-run/contracts@0.68.0
+  - @substrat-run/kernel@0.68.0
+
 ## 0.6.3
 
 ### Patch Changes
@@ -728,7 +905,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

@@ -1,5 +1,151 @@
 # @substrat-run/contracts
 
+## 0.68.0
+
+### Minor Changes
+
+- 60789c8: `input` becomes omittable, and the model gains `EntityRow` / `OperationImpl` — all three found by the first adopter.
+
+  **`input` is optional now.** Three of Callout's six declarable operations take no
+  body, and a required `z.object({})` cannot say so: a handler accepting only
+  `undefined` is not assignable to one accepting `{}`. Omitting `input` means no
+  body, and the handler takes `undefined` — mirroring `ApiOperationDoc.input`
+  ("Omit = no body") rather than inventing a second vocabulary. `inputOptional`
+  remains for the different case of a body that may also be absent.
+
+  **`OperationImpl<Ops, Ctx>`** is the handler map a declared operation set
+  requires — CRM-EFF's `satisfies Impl` seam, which is what makes a declaration
+  binding rather than decorative. A handler whose input or return disagrees with
+  the declaration is an error at the exact method, as is an operation declared and
+  not implemented, or implemented and not declared. `Ctx` is a parameter because
+  contracts sits below the kernel and must not import it.
+
+  **`EntityRow<T, K>`** is a declared entity's row type — what `ctx.sql.query`
+  returns for it. `ctx.sql.query` leaves `T` to the vertical, so every vertical
+  hand-writes row interfaces and the schema ends up described three times: the DDL,
+  the registry, and `interface CustomerRow`. This collapses the third into the
+  second.
+
+- aaf41b8: **BREAKING:** `foreignChildOf` / `foreignChildren` collapse into `relations`, with both sides checked.
+
+  Those two existed for one reason: a relation edge naming an engine's entity could
+  not be checked, so the pair at least made _which half_ was unchecked visible. Now
+  that engines export their registries, both halves are checkable and the split has
+  nothing left to say.
+
+  ```ts
+  ...manifestEntities(handlebarEntities, {
+    engines: [protocolEntities, workorderEntities],
+    relations: [
+      { entityType: 'workorder', parentType: 'bike' },
+      { entityType: 'protocol', parentType: 'workorder' },
+    ],
+  })
+  ```
+
+  A typo in either position, in either an engine's name or the vertical's, is now a
+  compile error that lists the composed set:
+
+  ```
+  Type '"protocl"' is not assignable to type '"bike" | "customer" | "protocol" | "workorder"'.
+    Did you mean '"protocol"'?
+  ```
+
+  Local-to-local edges stay **derived** from the entities' own `parents` and do not
+  belong in `relations` — declaring one twice is how two descriptions of a fact come
+  to disagree.
+
+  **Fix:** the engines' entity registries were not exported.
+
+  `protocolEntities` / `protocolInstanceRow` (#712) and `workorderEntities` /
+  `workorderRow` (#713) were declared and used internally to derive each engine's
+  row type, but never re-exported from the package entry point — so the composing
+  vertical they exist for could not import them. They are public now, which is what
+  made this change possible at all.
+
+- a05cd4d: The operation surface of the model — `defineOperations` (#707).
+
+  #697 declared the entities. This declares what can be _done_ to them, and checks
+  the joins that are unchecked strings today. Thirteen compile-time checks, each
+  with a failing case in `test/operations.test.ts`:
+
+  **Authority** — `permission` names a _declared_ key (a typo becomes a
+  suggestion); an operation carries `permission` **XOR** `narrows`, never both and
+  never neither; `narrows` must state a reason.
+
+  **Surface** — `input` is the Zod object the handler already parses, so there is
+  no transcription step; every `{var}` in an `http` path names a real input field;
+  `gates` name a field of the output and a declared permission.
+
+  **`output` is #695 Ask 2**, and it arrives here rather than as separate work.
+  Inference documents accidents — one inferred return carried `contacts?:
+undefined`, an artefact of an early return, which generation would have cemented
+  into the published API. It is also the prerequisite for the API/UI lane split
+  (#682/#683): Wasp gets away without declared returns _because it has no lanes_.
+
+  **Events** — the marquee defects:
+
+  - `entityIdFrom` names a field of the **output**. The #695 defect: 18 operations
+    emitted `entityId: String(result.id)` on objects answering with `contractId` /
+    `runId` / `instanceId`, because for a mutation writing a child the event is
+    about the parent.
+  - `piiClass` is mandatory, and `subjectId` is required whenever it is not
+    `'none'` — the same invariant `events.ts` enforces with a `superRefine` at
+    runtime, moved to compile time.
+  - a `payload` field marked `erasable` on **the entity the event is about** is
+    refused (§12). Resolving through `emits.entity` makes this exact: a `name`
+    erasable on `customer` does not stop an event about an `office` carrying its
+    own. A check that refuses correct code trains people to route around it.
+
+  `permissionsUsedBy` and `eventsEmittedBy` derive the manifest's `permissions` and
+  `events.emits` from the operations rather than having them written twice.
+
+  **A composer, not a second `defineModel`.** `defineOperations` sits beside
+  `defineEntities`, so each half stays independently adoptable — which is what let
+  the entity half ship and be taken up by two verticals before this existed.
+
+  Additive: nothing declares operations yet, no manifest changes shape, the whole
+  monorepo builds and typechecks unaltered.
+
+- b9dbda9: **BREAKING:** `EntityDef.parent` becomes `parents`, and takes an array.
+
+  `entityRelations` is an **allowlist, not an assertion**. The kernel accumulates
+  permitted parents into a _set_ per entity type
+  (`adapter-sqlite/src/index.ts:1348-1352`) and `ctx.link` checks membership — so an
+  entity legitimately has more than one, and two already do:
+
+  | entity        | parents                 | declared by                 |
+  | ------------- | ----------------------- | --------------------------- |
+  | `reservation` | `resource`, `member`    | engine-booking, rally       |
+  | `protocol`    | `workorder`, `employee` | callout/handlebar, meridian |
+
+  Singular `parent` said _"the parent"_, which is not what the kernel means and
+  cannot express those. It had not bitten only because each parent is declared by a
+  different module, so no single registry needed both.
+
+  Renamed rather than widened to `Names | readonly Names[]`: a union leaves
+  consumers handling two shapes forever, and the plural name is the one that is
+  true. Migration is mechanical — `parent: 'customer'` → `parents: ['customer']` —
+  and the emitted `model.json` carries an array now, so the artifact of record has
+  one shape for anything reading it.
+
+  ***
+
+  **engine-workorder declares its entity and exports its row schema.**
+
+  A composing vertical could not get the entity-type constant its permission-walk
+  edges name, nor a Zod schema for the row a declared operation returns — the same
+  two gaps engine-protocol just closed. `OrderRow` is now derived from the registry
+  rather than written beside it.
+
+  One entity, three tables: `workorder` is what the platform points at; time
+  entries and material lines are rows this engine owns and totals.
+
+  It declares **no `parents`**, deliberately. The parent is the vertical's noun —
+  Callout takes the manifest's `facility`, Handlebar hangs work orders off a bike —
+  and the manifest's hand-written `facility` edge stays until foreign entity names
+  become checkable.
+
 ## 0.67.0
 
 ### Minor Changes
@@ -2219,7 +2365,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
