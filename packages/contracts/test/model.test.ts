@@ -150,3 +150,19 @@ manifestEntities(entities, {
   // @ts-expect-error 'status' is a field of contract, not of customer
   searchables: [{ entityType: 'customer', fields: ['status'] }],
 });
+
+// ---------------------------------------------------------------------------
+// THE MIXED EDGE, found by the second adopter. `workorder → bike` in handlebar:
+// the child is the engine's, the parent is the vertical's. Treating both as
+// unchecked strings threw away a check we hold, so the checkable half is checked.
+// ---------------------------------------------------------------------------
+manifestEntities(entities, {
+  // @ts-expect-error 'custmer' is not a declared entity — the parent IS checked here
+  foreignChildOf: [{ entityType: 'workorder', parentType: 'custmer' }],
+});
+
+// The child is deliberately unchecked: it belongs to an engine.
+manifestEntities(entities, {
+  foreignChildOf: [{ entityType: 'workorder', parentType: 'customer' }],
+  foreignChildren: [{ entityType: 'protocol', parentType: 'workorder' }],
+});

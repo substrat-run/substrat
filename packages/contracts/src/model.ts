@@ -147,10 +147,19 @@ export function entityRelationsOf<T extends Record<string, EntityDef>>(
 // The manifest, checked against the registry.
 // ---------------------------------------------------------------------------
 
-/** The entity-referencing half of a manifest, narrowed to declared entities. */
+/**
+ * The entity-referencing half of a manifest, narrowed to declared entities.
+ *
+ * Entity-name positions are written `keyof T & string` inline rather than as
+ * `EntityName<T>`. A type ALIAS is printed unresolved in diagnostics — the error
+ * names the alias and inlines the whole entity map — where the inline form lists
+ * the actual names:
+ *
+ *     Type '"bkie"' is not assignable to type '"bike" | "customer"'.
+ */
 type EntityRefs<T extends Record<string, EntityDef>, M> = {
   readonly attachmentTargets?: readonly {
-    readonly entityType: EntityName<T>;
+    readonly entityType: keyof T & string;
     readonly readPermission: string;
     readonly writePermission?: string;
   }[];
@@ -162,28 +171,60 @@ type EntityRefs<T extends Record<string, EntityDef>, M> = {
   readonly searchables?: M extends { searchables: infer S }
     ? {
         readonly [I in keyof S]: S[I] extends { entityType: infer N }
-          ? N extends EntityName<T>
+          ? N extends keyof T & string
             ? { readonly entityType: N; readonly fields: readonly EntityFields<T[N]>[] }
             : never
           : never;
       }
     : never;
-  readonly entityViews?: readonly { readonly entityType: EntityName<T>; readonly view: string }[];
+  readonly entityViews?: readonly { readonly entityType: keyof T & string; readonly view: string }[];
   /**
-   * Parent edges between entities this module does NOT own.
+   * Parent edges whose CHILD this module does not own.
    *
    * A vertical legitimately declares these: an engine is entity-agnostic, so
-   * only the vertical knows that protocols hang off work orders. Both names
-   * belong to engines, so neither can be checked against the local registry —
-   * and pretending otherwise by accepting them into `parent` would make the
-   * checked case indistinguishable from the unchecked one.
+   * only the vertical knows that a work order hangs off a bike, or a protocol
+   * off a work order. The child name belongs to an engine and cannot be checked
+   * here — but the PARENT often can be, and throwing that away would be giving
+   * up a check we hold.
    *
-   * Deliberately a separate field, so the unchecked edges are visible as a
-   * short list rather than hidden among the checked ones. They become checkable
-   * when engines export their entity-type constants (#696 item 3), at which
-   * point this field takes those constants instead of `string`.
+   * So the parent is checked whenever it is one of this module's own entities:
+   *
+   * ```ts
+   * foreignChildren: [
+   *   { entityType: 'workorder', parentType: 'bike' },      // parent CHECKED
+   *   { entityType: 'protocol', parentType: 'workorder' },  // parent foreign too
+   * ]
+   * ```
+   *
+   * `parentType` accepts a declared entity name or an arbitrary string, and a
+   * typo that happens to look like neither is still accepted — TypeScript cannot
+   * express "one of these, or any other string, but tell me which". What it does
+   * buy is autocomplete on the local names and a compile error on the mixed edge
+   * once `foreignParents` (below) is used instead.
+   *
+   * Both become fully checkable when engines export their entity-type constants
+   * (#696 item 3), at which point these two fields collapse back into `parent`.
    */
-  readonly foreignRelations?: readonly { readonly entityType: string; readonly parentType: string }[];
+  readonly foreignChildren?: readonly {
+    readonly entityType: string;
+    readonly parentType: (keyof T & string) | (string & {});
+  }[];
+  /**
+   * The mixed edge, stated so the checkable half IS checked: a child this module
+   * does not own, hanging off a parent it does. `parentType` here is strictly a
+   * declared entity — a typo is a compile error.
+   *
+   * `bike_shop`'s `workorder → bike` is the case: `workorder` is the engine's,
+   * `bike` is the vertical's, and the vertical is the only place that knows the
+   * edge exists.
+   */
+  readonly foreignChildOf?: readonly {
+    readonly entityType: string;
+    // `keyof T & string` inline rather than via `EntityName<T>`: an alias is
+    // printed unresolved in the error, so the diagnostic names the alias
+    // instead of the entities. Written this way it lists them.
+    readonly parentType: keyof T & string;
+  }[];
 };
 
 /**
@@ -224,7 +265,13 @@ export function manifestEntities<
     attachmentTargets: (refs.attachmentTargets ?? []) as NonNullable<M['attachmentTargets']> | [],
     searchables: refs.searchables as M['searchables'],
     // Derived edges first, then the ones this module cannot check.
-    entityRelations: [...entityRelationsOf(entities), ...(refs.foreignRelations ?? [])],
+    entityRelations: [
+      ...entityRelationsOf(entities),
+      // Checked parent, foreign child — the mixed edge.
+      ...(refs.foreignChildOf ?? []),
+      // Neither side checkable here.
+      ...(refs.foreignChildren ?? []),
+    ],
     ui: { entityViews: refs.entityViews as M['entityViews'] },
   };
 }

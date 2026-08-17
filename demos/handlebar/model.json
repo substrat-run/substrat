@@ -1,0 +1,91 @@
+{
+  "entities": {
+    "bike": {
+      "table": "bike_shop_bikes",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "customer_id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "frame_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "customer_id",
+          "label",
+          "frame_no",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parent": "customer",
+      "erasable": [
+        "frame_no"
+      ]
+    },
+    "customer": {
+      "table": "bike_shop_customers",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "name",
+          "phone",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "number"
+      ],
+      "erasable": [
+        "name",
+        "phone"
+      ]
+    }
+  }
+}

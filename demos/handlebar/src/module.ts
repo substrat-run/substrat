@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   compareDecimal,
   addDecimal,
+  manifestEntities,
   moduleManifest,
   moneyOf,
   mulMoney,
@@ -9,6 +10,7 @@ import {
   type EntityRef,
   type Money,
 } from '@substrat-run/contracts';
+import { handlebarEntities } from './entities.js';
 import {
   assertAllowed,
   ulid,
@@ -63,21 +65,22 @@ export const bikeShopManifest = moduleManifest.parse({
   ],
   events: { emits: [], consumes: [] },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
-  attachmentTargets: [
-    { entityType: 'customer', readPermission: 'customer:manage' },
-    { entityType: 'bike', readPermission: 'bike:manage' },
-  ],
-  // The permission walk for the portal is workorder → bike → customer. The
-  // engine links workorder → <facility ref>; in this vertical that ref is a
-  // bike, so the vertical declares BOTH edges (spec/concept.md §3). The
-  // protocol engine is entity-agnostic, so the vertical also declares
-  // protocol → workorder: the customer's entity-narrowed counter-sign grant
-  // resolves along protocol → workorder → bike → customer.
-  entityRelations: [
-    { entityType: 'bike', parentType: 'customer' },
-    { entityType: 'workorder', parentType: 'bike' },
-    { entityType: 'protocol', parentType: 'workorder' },
-  ],
+  // Entity names checked against `handlebarEntities` (#697). `bike → customer`
+  // is DERIVED from the entity's `parent`; the two engine-crossing edges are
+  // split by which half can be checked.
+  ...manifestEntities(handlebarEntities, {
+    attachmentTargets: [
+      { entityType: 'customer', readPermission: 'customer:manage' },
+      { entityType: 'bike', readPermission: 'bike:manage' },
+    ],
+    // MIXED: the child is engine-workorder's, the parent is ours — so the parent
+    // IS checked. The engine links workorder → <facility ref>; in this vertical
+    // that ref is a bike, and only this vertical knows it.
+    foreignChildOf: [{ entityType: 'workorder', parentType: 'bike' }],
+    // Neither side is ours: engine-protocol is entity-agnostic and hangs its
+    // instances off whatever the vertical says.
+    foreignChildren: [{ entityType: 'protocol', parentType: 'workorder' }],
+  }),
   // MILESTONE C — the manifest-declared guard (engine-protocol.md §6, kernel
   // open question 11). Handlebar's pickup rule: a repair is not closed until
   // the customer has COUNTER-SIGNED the tillståndsrapport — i.e. accepted, on
