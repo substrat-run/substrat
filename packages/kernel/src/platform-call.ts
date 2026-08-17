@@ -35,6 +35,18 @@ export function secretMatches(presented: string | null, expected: string): boole
 export const PLATFORM_SECRET_HEADER = 'x-substrat-platform';
 
 /**
+ * The RESPONSE header carrying an attachment's metadata record when the vertical
+ * hands its bytes back over the connector seam (#711).
+ *
+ * The bytes are the body — a rendered contract is megabytes, and base64 in a JSON
+ * envelope would inflate and re-encode it on both ends for nothing. The record is
+ * small, fixed-shape and needs no streaming, so it rides a header. Not a secret and
+ * not a privilege: the caller has already passed the platform-secret gate, and the
+ * far end has already run the permission check that decided it may see any of this.
+ */
+export const CONNECTOR_ATTACHMENT_RECORD_HEADER = 'x-substrat-attachment';
+
+/**
  * The RESPONSE header a vertical sets when the operation it just ran enqueued
  * platform requests (`ctx.requestPlatform`). The router — the one hop that sees
  * every response — reads it and kicks an immediate drain of that scope (#381),

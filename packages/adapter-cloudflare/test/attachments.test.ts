@@ -236,6 +236,106 @@ describe('attachment surface (cloudflare host)', () => {
     expect([...bucket.objs.keys()]).toEqual([]); // compensating delete ran
   });
 
+  // -- a connection READING during a dispatch (#711): the outbound leg ---------
+
+  /**
+   * The other direction, and the one that had no coverage on this adapter until it
+   * was looked for: a connector, mid-dispatch, opening the document the vertical
+   * rendered so it can put those bytes in front of a signatory.
+   *
+   * Everything about it is different from the write above. It runs inside a
+   * dispatch rather than top-level; it is authorized as the connection the handler
+   * OPENED (`ctx.connection(provider)`), not one named by a caller; and it goes
+   * through the real ScopeDO for the metadata and R2 for the bytes. Reading the
+   * code said it worked. That is the standard that shipped two defects in this
+   * change already, so here it runs.
+   */
+  const dispatchReading = async (opts: { grantRead: boolean }) => {
+    const w = await world();
+    const connId = ulid();
+    await w.host.admin.createConnection(staff, {
+      id: connId as never,
+      tenantId: w.t,
+      vertical: 'docs',
+      provider: 'signer',
+      label: 'signer',
+      secret: { accessToken: 'x' },
+    });
+    if (opts.grantRead) {
+      await w.host.admin.grantToConnection(staff, {
+        connectionId: connId,
+        permission: PERM_READ, // the target's READ key — the #711 grant
+        node: { tenantId: w.t, scopeId: w.s },
+        grantedBy: staff,
+      });
+    }
+    // The vertical's own rendered document, landed by a person, on the instance.
+    const rec = await (await w.host.attachments(w.editor, w.t, w.s)).upload({
+      entity: { entityType: 'item', entityId: 'i1' },
+      filename: 'avtal.pdf',
+      contentType: 'application/pdf',
+      visibility: 'customer',
+      body: bytes('%PDF-1.4 the avtal'),
+    });
+    return { ...w, connId, rec };
+  };
+
+  it('opens the vertical’s document from inside a dispatch, as the connection it opened', async () => {
+    const { host, t, s, editor, rec } = await dispatchReading({ grantRead: true });
+
+    let seen: { body: Uint8Array; record: { filename: string } } | null = null;
+    let failed: string | undefined;
+    host.registerConnector(
+      'signer',
+      'perm.acted',
+      async (ctx) => {
+        try {
+          // The credential the handler asks for BY NAME — and the same object the
+          // read hangs off, so the two cannot name different connections.
+          const conn = await ctx.connection('signer');
+          seen = (await conn.openAttachment(rec.id)) as never;
+        } catch (err) {
+          failed = err instanceof Error ? err.message : String(err);
+        }
+      },
+      { provider: 'signer' },
+    );
+
+    const scope = await host.getScope(editor, t, s);
+    await scope.invoke('perm/authorized-emit', { permission: PERM_USE });
+    await host.drainDue(t, s);
+
+    expect(failed).toBeUndefined();
+    expect(seen).not.toBeNull();
+    expect(new TextDecoder().decode(seen!.body)).toBe('%PDF-1.4 the avtal');
+    expect(seen!.record.filename).toBe('avtal.pdf');
+  });
+
+  it('refuses the dispatch-time read when the connection was never granted the read key', async () => {
+    // Fail closed, and specifically NOT null — `null` means "this scope does not
+    // know that id" and tells a connector to fall back. A refusal must not be
+    // mistaken for an absence, or a missing grant would quietly send other paper.
+    const { host, t, s, editor, rec } = await dispatchReading({ grantRead: false });
+
+    let outcome: unknown = 'never ran';
+    host.registerConnector(
+      'signer',
+      'perm.acted',
+      async (ctx) => {
+        const conn = await ctx.connection('signer');
+        outcome = await conn.openAttachment(rec.id).catch((e: unknown) => `refused: ${String(e)}`);
+      },
+      { provider: 'signer' },
+    );
+
+    const scope = await host.getScope(editor, t, s);
+    await scope.invoke('perm/authorized-emit', { permission: PERM_USE });
+    await host.drainDue(t, s);
+
+    expect(String(outcome)).toMatch(/^refused:/);
+    expect(outcome).not.toBeNull();
+  });
+
   it('refuses loudly when no R2 client / bucket resolver is configured', async () => {
     const bare = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
     const t = tenantId.parse(ulid());

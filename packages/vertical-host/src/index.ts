@@ -25,7 +25,11 @@
 import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { assertPlatformCall, PlatformCallError } from '@substrat-run/kernel';
+import {
+  assertPlatformCall,
+  CONNECTOR_ATTACHMENT_RECORD_HEADER,
+  PlatformCallError,
+} from '@substrat-run/kernel';
 import {
   z,
   scopeId as scopeIdOf,
@@ -135,6 +139,13 @@ export interface VerticalScopeHost {
       body: Uint8Array;
     },
   ): Promise<unknown>;
+  /** The outbound read (#711) — the vertical's own document, handed back by id. */
+  connectorAttachmentOpenLocal(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    attachmentId: string,
+  ): Promise<{ record: unknown; body: Uint8Array; contentType: string } | null>;
   connectorGrantLocal(
     connectionId: ConnectionId,
     scopeId: ScopeId,
@@ -472,6 +483,31 @@ export function mountPlatformSurface<Env extends object>(
       },
     );
     return c.json(record as Record<string, unknown>, 201);
+  });
+
+  // The bytes leg, OUTBOUND (#711): the platform runs this vertical's signing
+  // connector and has to send the document the vertical rendered — but the metadata
+  // row is in this deployment's ScopeDO and the object in this deployment's R2, so
+  // the platform can only ask. Answered with the raw bytes and the record in a
+  // header, rather than base64 in JSON, so a multi-megabyte contract costs no
+  // re-encoding on either side.
+  //
+  // `404` means "this scope does not know that id" — a distinct answer from a
+  // refusal, which comes back as the permission check's own error. Read-gated at the
+  // far end like any other caller: the target's `readPermission`, checked against
+  // this connection's delivered tuple.
+  app.get('/internal/connector-attachment/:attachmentId', async (c) => {
+    const connection = connectionIdOf.parse(c.req.query('connectionId'));
+    const t = tenantIdOf.parse(c.req.query('tenantId'));
+    const s = scopeIdOf.parse(c.req.query('scopeId'));
+    const opened = await deps
+      .hostFor(c.env)
+      .connectorAttachmentOpenLocal(connection, t, s, c.req.param('attachmentId'));
+    if (!opened) return c.body(null, 404);
+    return c.body(opened.body as unknown as ArrayBuffer, 200, {
+      'content-type': opened.contentType,
+      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: JSON.stringify(opened.record),
+    });
   });
 
   // Grant delivery (#574): the scope-level `connection:<id>` tuple the two verbs above

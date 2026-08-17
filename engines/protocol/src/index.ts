@@ -348,6 +348,27 @@ export const protocolMigrations = [
         CHECK (auth_level IS NULL OR auth_level IN ('basic','strong'));
     `,
   },
+  {
+    // #711: WHICH bytes the signatory is shown. `bound_hash` says what the
+    // signature attests to; this says what the counterparty reads while making
+    // it, and until now the two could not be the same thing — a signing
+    // connector had no way to be handed the vertical's rendered document, so it
+    // sent an attestation sheet of identifiers instead.
+    //
+    // An attachment id, not a blob: the bytes already have a home (#473), with a
+    // kernel-computed sha256, a permission gate, and a spine row that travels
+    // with the scope. This column only names which one.
+    //
+    // Nullable, and stays nullable: a protocol whose content is a checklist, or
+    // whose vertical renders nothing, binds no document and is not lesser for
+    // it. Every row written before this migration reads as "none", which is
+    // exactly what it was.
+    version: '0004-bound-document',
+    sql: `
+      ALTER TABLE protocol_instances
+        ADD COLUMN document_attachment_id TEXT;
+    `,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1002,6 +1023,19 @@ export const bindDocumentInput = z.object({
   contentRef: entityRef,
   /** The hash the VERTICAL computed over its own rows, per `hashRecipe`. */
   contentHash: z.string().regex(/^[0-9a-f]{64}$/, 'contentHash must be lowercase hex SHA-256'),
+  /**
+   * The RENDERED document — an attachment on this instance holding the bytes a
+   * signatory will be shown (#711). Optional, and absence is a complete answer:
+   * a vertical that renders nothing keeps the behaviour it had, and a signing
+   * connector falls back to its own attestation sheet.
+   *
+   * Naming an id rather than searching for one is deliberate. A connector that
+   * had to PICK among an instance's attachments would need a rule, and the
+   * return path lands the sealed signed copy on this same instance — so a wrong
+   * rule mails a counterparty their own signed contract to sign again. The
+   * caller says which bytes; nothing downstream has to guess.
+   */
+  documentAttachmentId: z.string().min(1).nullable().optional(),
 });
 export type BindDocumentInput = z.infer<typeof bindDocumentInput>;
 
@@ -1012,6 +1046,17 @@ export type BindDocumentInput = z.infer<typeof bindDocumentInput>;
  * each rebind moves the hash the signature will be taken over.
  *
  * Once frozen, this fails like any other write to frozen content.
+ *
+ * **Where the document and the hash are reconciled** (#711). `contentHash` is
+ * what the signature attests to; `documentAttachmentId` is what the counterparty
+ * reads while making it. Nothing downstream can tell whether they describe the
+ * same thing — the connector sees bytes and a hash it cannot recompute, because
+ * the recipe runs over the vertical's own rows. So the check belongs here, at the
+ * moment both are named together, and it is the one this engine can actually
+ * make: the attachment must exist and must be attached to THIS instance. That
+ * refuses the accidents (a stale id, another instance's paperwork, an id from a
+ * different scope) without pretending to verify a hash recipe the engine has
+ * never been able to run.
  */
 export function bindDocument(
   ctx: OperationContext,
@@ -1030,10 +1075,45 @@ export function bindDocument(
     );
   }
 
+  // The rendered document, when one is named. A spine READ (`_substrat_attachments`
+  // is kernel-owned and never written from here) — the same read a timeline
+  // projection makes, used to refuse a binding that names bytes belonging to
+  // something else. `documentSha256` travels on the event so a consumer learns which
+  // bytes were bound without a second read; the kernel computed it at upload.
+  let documentSha256: string | null = null;
+  const documentAttachmentId = input.documentAttachmentId ?? null;
+  if (documentAttachmentId !== null) {
+    const attachment = ctx.sql.query<{ entity_type: string; entity_id: string; sha256: string }>(
+      'SELECT entity_type, entity_id, sha256 FROM _substrat_attachments WHERE id = ?',
+      [documentAttachmentId],
+    )[0];
+    if (!attachment) {
+      throw new Error(
+        `no attachment ${documentAttachmentId} in this scope — upload the rendered document ` +
+          `to the protocol instance before binding it`,
+      );
+    }
+    if (attachment.entity_type !== 'protocol' || attachment.entity_id !== instance.id) {
+      throw new Error(
+        `attachment ${documentAttachmentId} is attached to ` +
+          `${attachment.entity_type}/${attachment.entity_id}, not to protocol/${instance.id} — ` +
+          `a document must be bound to the instance it will be signed on`,
+      );
+    }
+    documentSha256 = attachment.sha256;
+  }
+
   ctx.sql.exec(
     `UPDATE protocol_instances
-     SET content_ref_type = ?, content_ref_id = ?, bound_hash = ? WHERE id = ?`,
-    [input.contentRef.entityType, input.contentRef.entityId, input.contentHash, instance.id],
+     SET content_ref_type = ?, content_ref_id = ?, bound_hash = ?, document_attachment_id = ?
+     WHERE id = ?`,
+    [
+      input.contentRef.entityType,
+      input.contentRef.entityId,
+      input.contentHash,
+      documentAttachmentId,
+      instance.id,
+    ],
   );
   ctx.emit({
     type: 'protocol.content-bound',
@@ -1047,6 +1127,10 @@ export function bindDocument(
       documentType: content.documentType,
       contentRef: input.contentRef,
       boundHash: input.contentHash,
+      // #711, additive: null on every binding that names no rendered document,
+      // which is every binding made before this field existed.
+      documentAttachmentId,
+      documentSha256,
       entity: { entityType: instance.entity_type, entityId: instance.entity_id },
     },
   });
@@ -1216,6 +1300,12 @@ export async function requestSignatures(
           ? { entityType: instance.content_ref_type, entityId: instance.content_ref_id }
           : null,
       boundHash: instance.bound_hash,
+      // WHICH bytes to send (#711). Fat, like everything else here: a connector
+      // opens this id and puts those bytes in front of the signatory, and falls
+      // back to rendering something of its own when it is null. Frozen with the
+      // rest of the request — the instance is `pending_signature` from the line
+      // above, so a rebind can no longer move it.
+      documentAttachmentId: instance.document_attachment_id,
       parties: requests.map((r) => ({
         requestId: r.id,
         label: r.party_label,
@@ -1514,6 +1604,10 @@ function emitSignatureEvent(
         ? { entityType: instance.content_ref_type, entityId: instance.content_ref_id }
         : null,
     boundHash: instance.bound_hash,
+    // #711: the document the signatory was SHOWN, so a consumer of `protocol.signed`
+    // can put the same bytes in front of a human reading the timeline. Null for a
+    // checklist, and for every document bound before the seam existed.
+    documentAttachmentId: instance.document_attachment_id,
     // fat payload: the frozen answers travel with the event (checklist kind)
     responses: args.responses ?? {},
     signatory: signatoryOf(signature),

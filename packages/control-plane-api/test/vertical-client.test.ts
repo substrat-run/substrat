@@ -43,6 +43,91 @@ describe('VerticalClient — transport rejections become diagnosable 502s (#391)
     );
   });
 
+  /**
+   * The outbound attachment read (#711). Two halves — this client and
+   * `mountPlatformSurface`'s `GET /internal/connector-attachment/:id` — have to
+   * agree on a wire format that is deliberately NOT JSON: bytes in the body, the
+   * record in a header, because a contract is megabytes and base64 would inflate
+   * and re-encode it on both ends. A format nobody tests is a format that drifts.
+   */
+  describe('connectorOpenAttachment (#711)', () => {
+    const bytes = new TextEncoder().encode('%PDF-1.4 the avtal');
+    const record = {
+      id: 'att-1',
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      filename: 'avtal.pdf',
+      contentType: 'application/pdf',
+      size: bytes.byteLength,
+      sha256: 'a'.repeat(64),
+      visibility: 'customer',
+      createdBy: '01JCONN0000000000000000000',
+      createdAt: '2026-08-17T00:00:00.000Z',
+    };
+    const args = {
+      connectionId: '01JCONN0000000000000000000' as never,
+      tenantId: t,
+      scopeId: s,
+      attachmentId: 'att-1',
+    };
+
+    it('reads the bytes from the body and the record from the header', async () => {
+      let url = '';
+      const client = new VerticalClient({
+        fetch: (async (u: string) => {
+          url = u;
+          return new Response(bytes, {
+            status: 200,
+            headers: {
+              'content-type': 'application/pdf',
+              'x-substrat-attachment': JSON.stringify(record),
+            },
+          });
+        }) as unknown as typeof fetch,
+        platformSecret: 'secret',
+      });
+
+      const opened = await client.connectorOpenAttachment(args);
+      expect(new TextDecoder().decode(opened!.body)).toBe('%PDF-1.4 the avtal');
+      expect(opened!.record.filename).toBe('avtal.pdf');
+      expect(opened!.contentType).toBe('application/pdf');
+      // The id rides the PATH and is encoded — an id with a slash in it must not
+      // silently become a different route.
+      expect(url).toContain('/internal/connector-attachment/att-1?');
+      expect(url).toContain(`scopeId=${s}`);
+    });
+
+    it('answers null on 404, so a connector falls back rather than failing', async () => {
+      const client = new VerticalClient({
+        fetch: (async () => new Response(null, { status: 404 })) as unknown as typeof fetch,
+        platformSecret: 'secret',
+      });
+      await expect(client.connectorOpenAttachment(args)).resolves.toBeNull();
+    });
+
+    it('refuses bytes that arrive without the record that witnesses them', async () => {
+      // The header carries the sha256 the far end checked the bytes against. A 200
+      // without it is a wire-format disagreement, and treating the body as good
+      // anyway would send unverified bytes to a signatory.
+      const client = new VerticalClient({
+        fetch: (async () =>
+          new Response(bytes, { status: 200, headers: { 'content-type': 'application/pdf' } })) as unknown as typeof fetch,
+        platformSecret: 'secret',
+      });
+      await expect(client.connectorOpenAttachment(args)).rejects.toThrow(/x-substrat-attachment/);
+    });
+
+    it("a refusal is still the vertical's own answer", async () => {
+      const client = new VerticalClient({
+        fetch: (async () =>
+          new Response(JSON.stringify({ error: 'permission denied: protocol:read' }), {
+            status: 403,
+          })) as unknown as typeof fetch,
+        platformSecret: 'secret',
+      });
+      await expect(client.connectorOpenAttachment(args)).rejects.toThrow(/protocol:read/);
+    });
+  });
+
   it("a non-ok RESPONSE is still the vertical's own answer, not a 502", async () => {
     const client = new VerticalClient({
       fetch: (async () =>

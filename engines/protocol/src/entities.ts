@@ -32,7 +32,12 @@ import { z } from 'zod';
  */
 export const protocolEntities = defineEntities({
   protocol: {
-    table: 'protocol_instances_v2',
+    // The table as it exists AFTER the journal runs. 0002 builds
+    // `protocol_instances_v2` and then renames it over `protocol_instances`, so
+    // the `_v2` name is a step in a migration, never a table a live scope has.
+    // Naming it here read fine while nothing touched the renamed table; #711's
+    // `ALTER TABLE protocol_instances` is what made the difference visible.
+    table: 'protocol_instances',
     fields: z.object({
       id: z.string(),
       template_key: z.string(),
@@ -51,6 +56,12 @@ export const protocolEntities = defineEntities({
       content_ref_id: z.string().nullable(),
       /** Document kind: the hash the VERTICAL computed over its own rows. */
       bound_hash: z.string().nullable(),
+      /**
+       * Document kind: the attachment holding the bytes a signatory is SHOWN (#711).
+       * Distinct from `bound_hash`, which is what the signature attests to — see
+       * `bindDocument` for the check that keeps the two describing one document.
+       */
+      document_attachment_id: z.string().nullable(),
       /** Set when content freezes — the hash every signature must match. */
       frozen_hash: z.string().nullable(),
       frozen_at: z.string().nullable(),

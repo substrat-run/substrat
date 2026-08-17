@@ -398,6 +398,59 @@ export interface ConnectorConnection extends OpenConnection {
 }
 
 /**
+ * A connection opened INSIDE a dispatch (#711) — `ctx.connection(provider)`.
+ *
+ * Strictly more than a `ConnectorConnection`, and the difference is a scope. A
+ * dispatch happens *for* one scope, which is ambient in the context, so a
+ * connection opened there can reach that scope's attachments. A connection
+ * reopened top-level — a probe of a candidate credential, a poll driver
+ * rebuilding egress from the directory — has no such scope, and the type says so
+ * rather than handing out a method that would have to throw.
+ */
+export interface ScopedConnectorConnection extends ConnectorConnection {
+  /**
+   * Read ONE attachment's bytes from the scope this delivery is for (#711) — the
+   * outbound mirror of `getConnectorAttachments`, which is the return path's door.
+   *
+   * A signing connector sends a document. Until this existed it could only send a
+   * document it RENDERED ITSELF, because `create` had no way to be handed the
+   * vertical's own file: the bytes were in the attachment store, and the store was
+   * unreachable from inside a dispatch. So a Swedish counterparty was asked to sign
+   * a page of identifiers with BankID rather than the contract.
+   *
+   * **On the connection, for the same reason `fetch` is.** The read is authorized as
+   * a connection, and the only connection it can correctly be authorized as is the
+   * one the handler opened — this object. An ambient "the provider this connector is
+   * registered under" would be a second name for the same thing, and two names for
+   * one fact is how they come to disagree: `registerScriveConnector({ id: 'scrive-eu' })`
+   * opens its credential as `'scrive'` and would have read as `'scrive-eu'`, so the
+   * egress half kept working while the document half failed on every contract.
+   * Handing the door to whoever holds the credential makes that unrepresentable.
+   *
+   * **Why not `getConnectorAttachments` from in here.** On the pure adapter a
+   * connector runs INSIDE the scope's actor task, and every verb of that surface
+   * re-enqueues on the same actor — the nested task waits on the task holding it,
+   * and the invoke never returns. (Pinned in `connector-reads.test.ts`.) The adapter
+   * builds this read to suit where it is running: reentrant when the caller already
+   * holds the actor, ordinary and serialized when it does not.
+   *
+   * **Reads only, and only by id.** No `list`, deliberately. A connector that
+   * SEARCHES for the document to send has to have a rule for picking among several
+   * — and the return path lands the sealed signed copy on the same entity, so a
+   * wrong rule mails the counterparty their own signed contract to sign again.
+   * Naming the id makes that unrepresentable: the caller says which bytes, the
+   * event carries it, and nothing has to be disambiguated. Writes stay top-level
+   * (`getConnectorAttachments().upload`), where a spine event and its consumers
+   * have a transaction to live in.
+   *
+   * Gated by the target's `readPermission` checked against this connection's
+   * `connection:<id>` grants. `null` for an id the scope does not know — a caller
+   * falls back rather than failing a dispatch over a missing file.
+   */
+  openAttachment(attachmentId: string): Promise<OpenedAttachment | null>;
+}
+
+/**
  * What a connector sees. Strictly more than an executor: an executor effects
  * something in the DIRECTORY, a connector effects something in the OUTSIDE
  * WORLD, and only the second needs a per-tenant credential and egress.
@@ -417,7 +470,7 @@ export interface ConnectorContext {
    * there is none: a connector that runs without a credential would otherwise
    * fail later, further from the cause.
    */
-  connection(provider: string): Promise<ConnectorConnection>;
+  connection(provider: string): Promise<ScopedConnectorConnection>;
 }
 
 export type ConnectorHandler = (ctx: ConnectorContext, event: DomainEvent) => void | Promise<void>;

@@ -23,7 +23,9 @@ import type {
   TenantStoreHandle,
   Visibility,
 } from '@substrat-run/contracts';
-import { PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
+import { attachmentRecord } from '@substrat-run/contracts';
+import type { OpenedAttachment } from '@substrat-run/kernel';
+import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
 import { ControlPlaneError } from './client.js';
 
 /**
@@ -401,6 +403,56 @@ export class VerticalClient {
     );
     if (!res.ok) throw await this.refusal('connector-attachment', res);
     return this.parseInternal<AttachmentRecord>('connector-attachment', '/internal/connector-attachment', res);
+  }
+
+  /**
+   * Fetch ONE attachment's bytes back OUT of the vertical's deployment as a CONNECTION
+   * (#711) — the outbound leg. The platform runs the vertical's signing connector and
+   * must send the document the VERTICAL rendered; it holds the credential, the vertical
+   * holds the bytes.
+   *
+   * Raw bytes in the body, the record in a header — a contract is megabytes and base64
+   * in a JSON envelope would inflate and re-encode it for nothing. `404` is "this scope
+   * does not know that id", answered as `null` so a caller falls back to rendering its
+   * own document rather than failing a dispatch; a refusal is still a throw.
+   */
+  async connectorOpenAttachment(input: {
+    connectionId: ConnectionId;
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    attachmentId: string;
+  }): Promise<OpenedAttachment | null> {
+    const q = new URLSearchParams({
+      connectionId: input.connectionId,
+      tenantId: input.tenantId,
+      scopeId: input.scopeId,
+    });
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const path = `/internal/connector-attachment/${encodeURIComponent(input.attachmentId)}`;
+    const res = await this.reach('connector-attachment-open', () =>
+      this.options.fetch(`${base}${path}?${q}`, {
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) throw await this.refusal('connector-attachment-open', res);
+    const raw = res.headers.get(CONNECTOR_ATTACHMENT_RECORD_HEADER);
+    if (!raw) {
+      throw new Error(
+        `connector-attachment-open: the vertical answered ${res.status} with no ` +
+          `${CONNECTOR_ATTACHMENT_RECORD_HEADER} header — the bytes cannot be trusted without ` +
+          `the record that witnesses them (#711)`,
+      );
+    }
+    // Parsed, not cast: the record carries the sha256 the bytes are checked against at
+    // the far end, and a shape this side invented would witness nothing.
+    const record = attachmentRecord.parse(JSON.parse(raw));
+    const body = new Uint8Array(await res.arrayBuffer());
+    return {
+      record,
+      body,
+      contentType: res.headers.get('content-type') ?? record.contentType,
+    };
   }
 
   /**

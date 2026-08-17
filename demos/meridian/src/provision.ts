@@ -171,12 +171,29 @@ export async function connectScrive(
     label: 'Scrive (testbed)',
     secret: input.secret,
   });
-  await host.admin.grantToConnection(staff, {
-    connectionId: id,
-    permission: PROTO.recordSignature,
-    node: { tenantId: input.tenantId, scopeId: input.scopeId },
-    grantedBy: staff,
-  });
+  // What the connection may do in the scope, and nothing more. Three keys, each
+  // for one leg of the round trip — a permission-diff line apiece, and every one
+  // of them narrowed to this scope.
+  for (const permission of [
+    // Inbound: record a signature the provider reports (#97).
+    PROTO.recordSignature,
+    // Inbound: land the sealed signed PDF on the instance (#476 step 2). This was
+    // MISSING — the reconcile has been trying to attach and reporting the refusal
+    // as a `skipped` reason in its result, which is the designed behaviour and
+    // means nobody was told.
+    PROTO.attach,
+    // Outbound: read the document the vertical bound, so the counterparty is sent
+    // the avtal rather than an attestation sheet (#711). Without this the dispatch
+    // refuses rather than substituting other paper.
+    PROTO.read,
+  ]) {
+    await host.admin.grantToConnection(staff, {
+      connectionId: id,
+      permission,
+      node: { tenantId: input.tenantId, scopeId: input.scopeId },
+      grantedBy: staff,
+    });
+  }
   return id;
 }
 

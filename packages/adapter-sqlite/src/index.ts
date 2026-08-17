@@ -1227,8 +1227,20 @@ export class SqliteScopeHost implements ScopeHost {
    * Build the context a connector runs with. Tenant and vertical are AMBIENT —
    * taken from the event's scope, never from an argument — so a connector cannot
    * reach a credential another vertical connected even by accident.
+   *
+   * `holdsActor` says whether the CALLER is already inside `rt.actor.enqueue`. It
+   * decides how the connection's attachment read is built and nothing else: from
+   * `dispatchExecutors` (true) the surface must not re-enqueue or the scope wedges;
+   * from `dispatchConnector` (false) nothing is held, so the read takes an ordinary
+   * serialized turn like every other reader. Getting this from the call site rather
+   * than assuming the worse case is what keeps the platform-dispatch path under the
+   * K-6 serialization the adapter promises.
    */
-  private connectorContext(rt: ScopeRuntime, timeoutMs: number): ConnectorContext {
+  private connectorContext(
+    rt: ScopeRuntime,
+    timeoutMs: number,
+    holdsActor: boolean,
+  ): ConnectorContext {
     const vertical =
       (
         this.directory
@@ -1257,6 +1269,23 @@ export class SqliteScopeHost implements ScopeHost {
         }
         return {
           ...open,
+          // The outbound read (#711), on THIS connection — so it is authorized as
+          // the credential the handler actually opened, and cannot drift from it.
+          //
+          // `reentrant` is the whole subtlety. Inside `dispatchExecutors` we are
+          // already in this scope's actor task, and the ordinary surface re-enqueues
+          // per verb: the nested task would wait on the task holding it and the
+          // invoke would never return (`test/connector-reads.test.ts`). Outside it —
+          // `dispatchConnector` — nothing is held, so the read takes an ordinary
+          // serialized turn and stays under K-6 like every other reader. Assuming
+          // the reentrant case everywhere would have dropped serialization on a path
+          // that never needed it.
+          openAttachment: async (attachmentId: string) => {
+            const store = this.attachmentStore(rt.tenantId, vertical);
+            return this.buildAttachments(rt, { kind: 'connection', id: open.id }, store, {
+              reentrant: holdsActor,
+            }).open(attachmentId);
+          },
           fetch: async (input, init) => {
             try {
               const res = await fetchImpl(input, {
@@ -1755,6 +1784,7 @@ export class SqliteScopeHost implements ScopeHost {
     rt: ScopeRuntime,
     subject: CheckSubject,
     store: TenantBlobStore,
+    opts: { reentrant?: boolean } = {},
   ): ScopeAttachments {
     const targetGate = (entityType: string): { read: PermissionKey; write: PermissionKey } => {
       const gate = this.attachmentTargets.get(entityType);
@@ -1785,7 +1815,10 @@ export class SqliteScopeHost implements ScopeHost {
     // One attachment mutation/read = one serialized scope task, transactional exactly
     // like an operation invoke (including K-35 denial recording and prompt dispatch of
     // the events it emitted).
-    const guarded = <T>(operation: string, fn: (ctx: OperationContext) => Promise<T>): Promise<T> =>
+    const serialized = <T>(
+      operation: string,
+      fn: (ctx: OperationContext) => Promise<T>,
+    ): Promise<T> =>
       rt.actor.enqueue(async () => {
         const ctx = this.operationContext(rt, subject);
         rt.db.exec('BEGIN IMMEDIATE');
@@ -1802,6 +1835,33 @@ export class SqliteScopeHost implements ScopeHost {
         await this.dispatchExecutors(rt);
         return result;
       });
+
+    /**
+     * The REENTRANT runner (#711): no `enqueue`, no `BEGIN`. Used only for the
+     * connector's dispatch-time read, which already runs inside the scope's actor
+     * task — taking a second turn there is the deadlock `connector-reads.test.ts`
+     * pins, and a transaction around a pure SELECT buys nothing that the enclosing
+     * task's serialization has not already bought.
+     *
+     * Safe only for reads, which is why only reads are ever handed a surface built
+     * this way: a write would need its own transaction and would emit a spine event
+     * whose consumers must dispatch, and neither can happen here. A denial is still
+     * recorded (K-35) — a fresh statement in autocommit, exactly as the serialized
+     * runner does it after its ROLLBACK.
+     */
+    const reentrant = async <T>(
+      operation: string,
+      fn: (ctx: OperationContext) => Promise<T>,
+    ): Promise<T> => {
+      try {
+        return await fn(this.operationContext(rt, subject));
+      } catch (err) {
+        if (err instanceof PermissionDenied) this.recordDenial(rt, subject, operation, err);
+        throw err;
+      }
+    };
+
+    const guarded = opts.reentrant ? reentrant : serialized;
 
     return {
       upload: async (input) => {
@@ -2506,7 +2566,9 @@ export class SqliteScopeHost implements ScopeHost {
         this.causedBy = event.id;
         try {
           if (executor.kind === 'connector') {
-            await executor.handler(this.connectorContext(rt, executor.timeoutMs), event);
+            // `true`: dispatchExecutors is only ever reached from inside
+            // `rt.actor.enqueue` (invoke's post-commit tail, or drainDue).
+            await executor.handler(this.connectorContext(rt, executor.timeoutMs, true), event);
           } else {
             await executor.handler(this.admin, event);
           }
@@ -2595,7 +2657,9 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     this.causedBy = event.id;
     try {
-      await handler(this.connectorContext(rt, options?.timeoutMs ?? 30_000), event);
+      // `false`: this path deliberately does NOT enqueue, so nothing is held and
+      // the connection's reads take an ordinary serialized turn.
+      await handler(this.connectorContext(rt, options?.timeoutMs ?? 30_000, false), event);
     } finally {
       this.causedBy = null;
     }

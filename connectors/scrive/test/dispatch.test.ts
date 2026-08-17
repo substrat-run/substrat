@@ -46,6 +46,7 @@ describe('scrive connector — outbound dispatch', () => {
   let t = tenantId.parse(ulid());
   let s = scopeId.parse(ulid());
   let stub: ScopeStub;
+  let principal: ReturnType<typeof principalId.parse>;
 
   const EMPLOYEE = { entityType: 'employee', entityId: '01JEMPLOYEE0000000000000AA' };
 
@@ -56,8 +57,10 @@ describe('scrive connector — outbound dispatch', () => {
    * `defaultAuthMethod`) rather than only the shipped default.
    */
   const boot = async (
-    connectorOptions: Partial<ScriveConnectorOptions & { retry: ConnectorOptions }> = {},
+    connectorOptions: Partial<ScriveConnectorOptions & { id: string; retry: ConnectorOptions }> = {},
     mockOptions: ScriveMockOptions = {},
+    /** #711: withhold the connection's read grant, to see the fallback it causes. */
+    world: { grantConnectionRead?: boolean } = {},
   ) => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scrive-'));
     scrive = new ScriveMock(mockOptions);
@@ -96,7 +99,7 @@ describe('scrive connector — outbound dispatch', () => {
       ...connectorOptions,
     });
 
-    const principal = principalId.parse(ulid());
+    principal = principalId.parse(ulid());
     await host.admin.createTenant(staff, { id: t, slug: 'nordljus', name: 'Nordljus' });
     for (const key of ['protocol', 'hr']) await host.admin.grantEntitlement(staff, t, key);
     await host.provisionScope(staff, {
@@ -113,6 +116,9 @@ describe('scrive connector — outbound dispatch', () => {
         PERM.bind,
         PERM.requestSignature,
         PERM.read,
+        // #711: an HR user uploads the rendered avtal onto the instance before
+        // sending it — the attachment target's write gate.
+        PERM.attach,
       ] as PermissionKey[],
       source: 'vertical',
     });
@@ -121,6 +127,14 @@ describe('scrive connector — outbound dispatch', () => {
       roleKey: 'hr',
       node: { tenantId: t, scopeId: s },
     });
+    // Where a rendered document's bytes live (#473). Without one the connector's
+    // attachment read has nowhere to read from, and the vertical nowhere to upload.
+    await host.provisionBlobStore(staff, {
+      tenantId: t,
+      vertical: 'meridian',
+      binding: 'ATTACHMENTS',
+    });
+
     connId = connectionId.parse(ulid());
     await host.admin.createConnection(staff, {
       id: connId,
@@ -130,6 +144,17 @@ describe('scrive connector — outbound dispatch', () => {
       label: 'Nordljus Scrive (testbed)',
       secret: { clientId: 'ci', clientSecret: 'cs', tokenId: 'ti', tokenSecret: 'ts' },
     });
+    // #711: the connection's own read grant — what lets the connector open the
+    // document the vertical bound. A permission-diff line, not an ambient power:
+    // without it the dispatch falls back to the attestation sheet (asserted below).
+    if (world.grantConnectionRead !== false) {
+      await host.admin.grantToConnection(staff, {
+        connectionId: connId,
+        permission: PERM.read,
+        node: { tenantId: t, scopeId: s },
+        grantedBy: staff,
+      });
+    }
 
     stub = await host.getScope(principal, t, s);
     await stub.invoke('protocol/define-template', {
@@ -362,6 +387,242 @@ describe('scrive connector — outbound dispatch', () => {
       expect(doc!.parties[0]!.isAuthor).toBe(true); // …as the sender's own side
       expect(doc!.parties[0]!.email).toBeNull(); // …with nobody to deliver to
       expect(await host.executorDeadLetters(t, s)).toEqual([]); // …and no complaint
+    });
+  });
+
+  /**
+   * What the signatory is actually shown (#711).
+   *
+   * The connector used to render its own one-page attestation sheet — the template
+   * name, the parties, the content hash — and send that, unconditionally, because
+   * `create` had no way to be handed anything else. Honest paper for a
+   * hash-attestation model, and the wrong paper for a contract: the obligations a
+   * Swedish counterparty is asked to put BankID to were nowhere on it.
+   *
+   * The seam is one field. The vertical uploads its rendered document onto the
+   * instance and names it when binding; the event carries the id; the connector
+   * opens it and sends those bytes. Everything below is that path, plus the two
+   * ways it declines to happen.
+   */
+  describe('the document the signatory is shown (#711)', () => {
+    /** The vertical's own rendering — real bytes, landed on the instance. */
+    const AVTAL = new TextEncoder().encode(
+      '%PDF-1.4 Anställningsavtal — §1 Lön: 42 000 kr/mån. §2 Uppsägningstid: 3 månader.',
+    );
+
+    /**
+     * Instantiate, upload the rendered avtal onto the instance, bind it, and send.
+     * `bind` decides whether the binding NAMES the document — the difference between
+     * an attachment that exists and one the signatory is shown.
+     */
+    const issueWithDocument = async (opts: { bind?: boolean } = {}) => {
+      const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
+        templateKey: 'anstallningsavtal',
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      });
+      // Uploaded as the HR user, on the engine's declared `protocol` target — the
+      // same door the return path lands the sealed copy through, from the other side.
+      const attachments = await host.attachments(principal, t, s);
+      const record = await attachments.upload({
+        entity: { entityType: 'protocol', entityId: inst.id },
+        filename: 'anstallningsavtal-nordljus.pdf',
+        contentType: 'application/pdf',
+        visibility: 'customer',
+        body: AVTAL,
+      });
+      await stub.invoke('protocol/bind-document', {
+        instanceId: inst.id,
+        contentRef: { entityType: 'employment-terms', entityId: '01JTERMS0000000000000007II' },
+        contentHash: 'cd'.repeat(32),
+        ...(opts.bind === false ? {} : { documentAttachmentId: record.id }),
+      });
+      const sent = await stub.invoke<{ instance: { id: string } }>(
+        'protocol/request-signatures',
+        {
+          instanceId: inst.id,
+          method: 'scrive',
+          parties: [
+            { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+            { label: 'Anställd', kind: 'external' },
+          ],
+        },
+      );
+      return { instanceId: inst.id, record, sent };
+    };
+
+    it('sends the vertical’s own document when the binding names one', async () => {
+      const { instanceId, record } = await issueWithDocument();
+
+      const [doc] = [...scrive.documents.values()];
+      // The bytes at the provider ARE the avtal — not a sheet about it. The mock
+      // records what it was given, so this is the assertion the whole issue is
+      // about: byte length and filename both come from the vertical.
+      expect(doc!.file!.bytes).toBe(AVTAL.byteLength);
+      expect(doc!.file!.name).toBe('anstallningsavtal-nordljus.pdf');
+
+      // And the ledger records WHICH document went out, so an operator can tell a
+      // real contract from a fallback sheet after the fact.
+      const state = await dispatchState(instanceId);
+      expect(state!.documentAttachmentId).toBe(record.id);
+    });
+
+    it('falls back to the attestation sheet when nothing is bound — byte for byte', async () => {
+      // The acceptance criterion that protects every existing caller: a vertical
+      // with nothing to render must keep working, unchanged. Compare against the
+      // no-document path in the suite above rather than a hardcoded size, so a
+      // change to `renderPdf` cannot make this pass by drifting with it.
+      const { instanceId } = await issueWithDocument({ bind: false });
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.status).toBe('pending');
+      expect(doc!.file!.bytes).toBeGreaterThan(0);
+      expect(doc!.file!.bytes).not.toBe(AVTAL.byteLength);
+      expect(doc!.file!.name).toBe('anstallningsavtal.pdf'); // the connector's own naming
+
+      // An uploaded attachment that was never BOUND is not a document to send. It
+      // exists on the instance — the vertical put it there — and the connector still
+      // sends its own sheet, because nothing named it.
+      expect((await dispatchState(instanceId))!.documentAttachmentId).toBeUndefined();
+    });
+
+    it('cannot pick up the sealed SIGNED copy the return path lands on the same instance', async () => {
+      // The one design question this issue raised. Outbound and inbound write to
+      // the same attachment target, so a connector that SEARCHED for "the document
+      // on this instance" could send a counterparty their own signed contract to
+      // sign again. It cannot happen here, and not by a rule that could be got
+      // wrong: the binding names an id, and this asserts the id is honoured even
+      // when a decoy that a search would have preferred (newer, PDF, on the same
+      // instance, plausibly named) is sitting right there.
+      const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
+        templateKey: 'anstallningsavtal',
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      });
+      const attachments = await host.attachments(principal, t, s);
+      const real = await attachments.upload({
+        entity: { entityType: 'protocol', entityId: inst.id },
+        filename: 'anstallningsavtal.pdf',
+        contentType: 'application/pdf',
+        visibility: 'customer',
+        body: AVTAL,
+      });
+      const decoy = await attachments.upload({
+        entity: { entityType: 'protocol', entityId: inst.id },
+        filename: 'signed-9999.pdf',
+        contentType: 'application/pdf',
+        visibility: 'customer',
+        body: new TextEncoder().encode('%PDF-1.4 a SEALED copy — must never be sent out'),
+      });
+      expect(decoy.id > real.id).toBe(true); // newer: what "list, take the first" would find
+
+      await stub.invoke('protocol/bind-document', {
+        instanceId: inst.id,
+        contentRef: { entityType: 'employment-terms', entityId: '01JTERMS0000000000000008SS' },
+        contentHash: 'cd'.repeat(32),
+        documentAttachmentId: real.id,
+      });
+      await stub.invoke('protocol/request-signatures', {
+        instanceId: inst.id,
+        method: 'scrive',
+        parties: [{ label: 'Anställd', kind: 'external' }],
+      });
+
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.file!.bytes).toBe(AVTAL.byteLength);
+      expect((await dispatchState(inst.id))!.documentAttachmentId).toBe(real.id);
+    });
+
+    it('refuses a binding that names an attachment on another instance', async () => {
+      // The engine's own check, at the only point where the document and the hash
+      // are named together. Refuses the accidents — a stale id, another instance's
+      // paperwork — without pretending to verify a hash recipe it cannot run.
+      const a = await stub.invoke<{ id: string }>('protocol/instantiate', {
+        templateKey: 'anstallningsavtal',
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      });
+      // A second employee: one open protocol per entity, and this test needs two
+      // live instances so the attachment genuinely belongs somewhere else.
+      const b = await stub.invoke<{ id: string }>('protocol/instantiate', {
+        templateKey: 'anstallningsavtal',
+        entityType: EMPLOYEE.entityType,
+        entityId: '01JEMPLOYEE0000000000000BB',
+      });
+      const elsewhere = await (
+        await host.attachments(principal, t, s)
+      ).upload({
+        entity: { entityType: 'protocol', entityId: b.id },
+        filename: 'someone-elses.pdf',
+        contentType: 'application/pdf',
+        visibility: 'customer',
+        body: AVTAL,
+      });
+
+      await expect(
+        stub.invoke('protocol/bind-document', {
+          instanceId: a.id,
+          contentRef: { entityType: 'employment-terms', entityId: '01JTERMS0000000000000009XX' },
+          contentHash: 'cd'.repeat(32),
+          documentAttachmentId: elsewhere.id,
+        }),
+      ).rejects.toThrow(/not to protocol\//);
+
+      await expect(
+        stub.invoke('protocol/bind-document', {
+          instanceId: a.id,
+          contentRef: { entityType: 'employment-terms', entityId: '01JTERMS0000000000000009XX' },
+          contentHash: 'cd'.repeat(32),
+          documentAttachmentId: ulid(),
+        }),
+      ).rejects.toThrow(/no attachment/);
+    });
+
+    it('reads as the credential it sends with, not as its registration id', async () => {
+      // The trap this seam nearly shipped with. `registerScriveConnector` takes an
+      // `id`, and the handler opens its credential by the literal provider name
+      // `'scrive'`. An earlier cut of #711 authorized the attachment read against
+      // the REGISTRATION's slug instead — so `id: 'scrive-eu'` left the egress half
+      // working and the document half failing with "no live 'scrive-eu' connection",
+      // and every contract quietly dead-lettered while the connector looked healthy.
+      //
+      // Two names for one fact is how they come to disagree. The read now hangs off
+      // the connection the handler opened, which is the only thing that can be
+      // authorized correctly by construction — this test is what holds it there.
+      const discarded = dir;
+      await host.close();
+      await boot({ id: 'scrive-eu' });
+      rmSync(discarded, { recursive: true, force: true });
+
+      const { instanceId, record } = await issueWithDocument();
+
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.file!.bytes).toBe(AVTAL.byteLength);
+      expect((await dispatchState(instanceId))!.documentAttachmentId).toBe(record.id);
+    });
+
+    it('sends NOTHING rather than the wrong paper when the connection cannot read', async () => {
+      // Authority is the connection's own, so a bound document stays unreadable
+      // until an operator grants `protocol:read`. The tempting behaviour here is to
+      // shrug and send the attestation sheet — and it is the wrong one. The vertical
+      // has stated which bytes its signatory must see; substituting different paper
+      // is quieter than a refusal and worse, because a document still goes out and a
+      // counterparty still signs it.
+      //
+      // So this dead-letters. The operator sees the missing grant, and because the
+      // dispatch ledger is only written after `start`, the retry that follows the
+      // fix sends the real document rather than being skipped as already done.
+      const discarded = dir;
+      await host.close();
+      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, {}, { grantConnectionRead: false });
+      rmSync(discarded, { recursive: true, force: true });
+
+      const { instanceId } = await issueWithDocument();
+
+      expect(scrive.documents.size).toBe(0); // nothing reached the provider
+      expect(await dispatchState(instanceId)).toBeUndefined(); // …so nothing is "done"
+      const [dead] = await host.executorDeadLetters(t, s);
+      expect(dead!.eventType).toBe('protocol.signatures-requested');
+      expect(dead!.error).toMatch(/protocol:read|permission|denied/i);
     });
   });
 

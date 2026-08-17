@@ -501,6 +501,68 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     expect(new TextDecoder().decode(seen.upload!.body)).toBe('pdf bytes');
   });
 
+  /**
+   * The outbound leg (#711): the platform runs this vertical's signing connector
+   * and must send the document the VERTICAL rendered, whose bytes live here.
+   *
+   * Raw bytes in the body with the record in a header, rather than base64 in JSON —
+   * a contract is megabytes, and re-encoding it on both ends buys nothing. So the
+   * shape of the response is load-bearing, and this is what holds it.
+   */
+  it('connector-attachment GET: bytes in the body, record in the header', async () => {
+    const bytes = new TextEncoder().encode('%PDF-1.4 the avtal');
+    let asked: unknown[] = [];
+    const host = fakeHost({
+      connectorAttachmentOpenLocal: async (...args: unknown[]) => {
+        asked = args;
+        return {
+          record: {
+            id: 'att-1',
+            entity: { entityType: 'protocol', entityId: 'p1' },
+            filename: 'avtal.pdf',
+            contentType: 'application/pdf',
+            size: bytes.byteLength,
+            sha256: 'a'.repeat(64),
+            visibility: 'customer',
+            createdBy: CONN,
+            createdAt: '2026-08-17T00:00:00.000Z',
+          },
+          body: bytes,
+          contentType: 'application/pdf',
+        };
+      },
+    });
+    const q = `connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`;
+    const res = await appWith(host).request(
+      `/internal/connector-attachment/att-1?${q}`,
+      { headers: authed() },
+      ENV,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/pdf');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    const record = JSON.parse(res.headers.get('x-substrat-attachment')!) as { filename: string };
+    expect(record.filename).toBe('avtal.pdf');
+    // The id comes from the PATH, and tenant/scope/connection from the query — all
+    // four reach the host, so nothing is read from a body the platform never sends.
+    expect(asked).toEqual([CONN, TENANT, SCOPE, 'att-1']);
+  });
+
+  it('connector-attachment GET: an id this scope does not know is a 404, not an error', async () => {
+    // Distinct from a refusal on purpose: `null` lets a connector fall back rather
+    // than fail a dispatch over a missing file, and only a 404 can say that without
+    // being confused for the vertical being broken.
+    const host = fakeHost({ connectorAttachmentOpenLocal: async () => null });
+    const q = `connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`;
+    const res = await appWith(host).request(
+      `/internal/connector-attachment/nope?${q}`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(404);
+  });
+
   it('connector-attachment: a body-less form is a 400 naming the field', async () => {
     const form = new FormData();
     form.append('meta', JSON.stringify({}));

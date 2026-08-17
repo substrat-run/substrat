@@ -10,6 +10,7 @@ export type {
   ExecutorHandler,
   ExecutorRetryPolicy,
   ConnectorConnection,
+  ScopedConnectorConnection,
   ConnectorContext,
   ConnectorHandler,
   ConnectorOptions,
@@ -86,6 +87,7 @@ export {
   PlatformCallError,
   PLATFORM_SECRET_HEADER,
   PLATFORM_REQUEST_HEADER,
+  CONNECTOR_ATTACHMENT_RECORD_HEADER,
 } from './platform-call.js';
 export {
   PLATFORM_REQUEST_COLUMNS,
