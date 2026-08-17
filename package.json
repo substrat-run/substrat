@@ -10,6 +10,7 @@
     "build": "pnpm -r build",
     "lint:boundaries": "node tools/boundary-lint.mjs",
     "lint:permissions": "tsx tools/permission-diff.mts",
+    "lint:model": "tsx tools/model-diff.mts",
     "lint:api": "tsx tools/api-diff.mts",
     "lint:playbook": "tsx tools/playbook-sync.mts",
     "substrat": "node packages/cli/dist/cli.js",

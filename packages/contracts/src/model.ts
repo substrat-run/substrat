@@ -169,6 +169,21 @@ type EntityRefs<T extends Record<string, EntityDef>, M> = {
       }
     : never;
   readonly entityViews?: readonly { readonly entityType: EntityName<T>; readonly view: string }[];
+  /**
+   * Parent edges between entities this module does NOT own.
+   *
+   * A vertical legitimately declares these: an engine is entity-agnostic, so
+   * only the vertical knows that protocols hang off work orders. Both names
+   * belong to engines, so neither can be checked against the local registry —
+   * and pretending otherwise by accepting them into `parent` would make the
+   * checked case indistinguishable from the unchecked one.
+   *
+   * Deliberately a separate field, so the unchecked edges are visible as a
+   * short list rather than hidden among the checked ones. They become checkable
+   * when engines export their entity-type constants (#696 item 3), at which
+   * point this field takes those constants instead of `string`.
+   */
+  readonly foreignRelations?: readonly { readonly entityType: string; readonly parentType: string }[];
 };
 
 /**
@@ -208,7 +223,8 @@ export function manifestEntities<
   return {
     attachmentTargets: (refs.attachmentTargets ?? []) as NonNullable<M['attachmentTargets']> | [],
     searchables: refs.searchables as M['searchables'],
-    entityRelations: entityRelationsOf(entities),
+    // Derived edges first, then the ones this module cannot check.
+    entityRelations: [...entityRelationsOf(entities), ...(refs.foreignRelations ?? [])],
     ui: { entityViews: refs.entityViews as M['entityViews'] },
   };
 }
