@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/model-emit",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Build-time tooling over a Substrat model — DDL emitted from the entity registry, and the journal reader that holds it honest",
   "license": "Apache-2.0",
   "repository": {
@@ -18,7 +18,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
@@ -28,6 +30,11 @@
     "@substrat-run/contracts": "workspace:*",
     "zod": "^4.0.0"
   },
-  "devDependencies": { "typescript": "^7.0.0", "vitest": "^3.0.0" },
-  "publishConfig": { "access": "public" }
+  "devDependencies": {
+    "typescript": "^7.0.0",
+    "vitest": "^3.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

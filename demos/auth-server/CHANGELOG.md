@@ -1,5 +1,14 @@
 # @substrat-run/demo-auth-server
 
+## 0.2.57
+
+### Patch Changes
+
+- Updated dependencies [ce44df8]
+- Updated dependencies [ce44df8]
+  - @substrat-run/contracts@0.71.0
+  - @substrat-run/kernel@0.71.0
+
 ## 0.2.56
 
 ### Patch Changes
