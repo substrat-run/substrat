@@ -1,5 +1,34 @@
 # @substrat-run/demo-bike-shop
 
+## 0.0.68
+
+### Patch Changes
+
+- 2421781: Handlebar declares all eleven operations and binds every handler.
+
+  The second adopter of `defineOperations`, and the first that could declare its
+  whole surface on the first pass: every engine type it returns — `workOrder`,
+  `billableLine`, `protocolInstanceRow`, `money` — already has an exported schema,
+  so nothing here transcribes an engine's shape.
+
+  `CustomerRow` and `BikeRow` are now derived from the entity registry rather than
+  hand-written beside it, and `startConditionReportInput` moved next to the
+  declaration so the model and the handler share one object.
+
+- Updated dependencies [60789c8]
+- Updated dependencies [aaf41b8]
+- Updated dependencies [701de69]
+- Updated dependencies [a05cd4d]
+- Updated dependencies [b9dbda9]
+- Updated dependencies [4eb532b]
+- Updated dependencies [09852a9]
+  - @substrat-run/contracts@0.68.0
+  - @substrat-run/engine-protocol@0.7.0
+  - @substrat-run/engine-workorder@0.4.0
+  - @substrat-run/kernel@0.68.0
+  - @substrat-run/adapter-sqlite@0.68.0
+  - @substrat-run/engine-invoicing@0.5.24
+
 ## 0.0.67
 
 ### Patch Changes
