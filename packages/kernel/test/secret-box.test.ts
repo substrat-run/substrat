@@ -44,7 +44,8 @@ describe('webCryptoSecretBox', () => {
     // the JSON parse above it would be what failed — much later, and elsewhere.
     const sealed = await box.seal('secret');
     const bytes = [...atob(sealed.ciphertext)].map((c) => c.charCodeAt(0));
-    bytes[bytes.length - 1] ^= 0xff;
+    // noUncheckedIndexedAccess: the seal above guarantees a non-empty buffer.
+    bytes[bytes.length - 1] = (bytes.at(-1) ?? 0) ^ 0xff;
     const tampered = btoa(String.fromCharCode(...bytes));
     await expect(box.open({ keyId: 'k1', ciphertext: tampered })).rejects.toThrow();
   });
