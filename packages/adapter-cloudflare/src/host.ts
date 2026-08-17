@@ -123,6 +123,7 @@ import {
   type BlobStoreRecord,
   type ScopeAttachments,
   type AttachmentUploadInput,
+  type OpenedAttachment,
   type TenantBlobStore,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
@@ -777,6 +778,29 @@ export interface ConnectorDelegation {
     vertical: string;
     upload: AttachmentUploadInput;
   }): Promise<AttachmentRecord>;
+  /**
+   * Fetch ONE attachment's bytes back OUT of the serving deployment, as the
+   * connection (#711) — the outbound leg's mirror of `uploadAttachment`.
+   *
+   * Needed because a signing connector has to send the vertical's own rendered
+   * document, and the platform that runs the connector holds the credential but
+   * not the bytes: the metadata row lives in the vertical's ScopeDO and the object
+   * in the vertical's R2, neither of which the control plane can reach. So the read
+   * crosses the same `/internal` seam the write does, permission-checked at the far
+   * end against the connection's own grant.
+   *
+   * By id only. There is deliberately no delegated `list`: a connector that
+   * searched for the document to send would need a rule for picking among an
+   * instance's attachments, and the return path lands the sealed signed copy on
+   * that same instance.
+   */
+  openAttachment(args: {
+    connectionId: ConnectionId;
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    attachmentId: string;
+  }): Promise<OpenedAttachment | null>;
   /** Write the scope-local `connection:<id>` grant tuple in the serving deployment. */
   grant(args: {
     connectionId: ConnectionId;
@@ -1006,6 +1030,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     timeoutMs: number,
+    ambientProvider: string,
   ): Promise<ConnectorContext> {
     const scope = await this.cp.getScopeRecord(tenantId, scopeId);
     const vertical = scope?.vertical ?? null;
@@ -1016,6 +1041,32 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId,
       scopeId,
       vertical: vertical ?? '',
+      // The outbound read (#711). No reentrancy hazard here — a connector runs on
+      // the COORDINATOR, never inside the ScopeDO, so this is an ordinary RPC. What
+      // it does need is the delegated read verb when the serving deployment is
+      // elsewhere (#574): a control plane holds the directory and the credential but
+      // not the vertical's R2, so the bytes have to come back over the seam.
+      openAttachment: async (attachmentId: string) => {
+        if (ambientProvider === '') {
+          throw new Error(
+            `this dispatch carries no provider slug, so there is no connection to authorize an ` +
+              `attachment read as — pass { provider } to dispatchConnector (#711)`,
+          );
+        }
+        if (!vertical) {
+          throw new Error(
+            `scope ${scopeId} is bound to no vertical, so it has no connection namespace — ` +
+              `provision it with a vertical before using connectors`,
+          );
+        }
+        const open = await admin.openConnection(tenantId, vertical, ambientProvider);
+        if (!open) {
+          throw new Error(
+            `no live '${ambientProvider}' connection for tenant ${tenantId} / vertical '${vertical}'`,
+          );
+        }
+        return (await this.getConnectorAttachments(open.id, scopeId)).open(attachmentId);
+      },
       connection: async (provider: string) => {
         if (!vertical) {
           throw new Error(
@@ -1108,7 +1159,12 @@ export class CloudflareScopeHost implements ScopeHost {
             report.routedToPlatform! += 1;
           } else if (executor.kind === 'connector') {
             await executor.handler(
-              await this.connectorContext(tenantId, scopeId, executor.timeoutMs),
+              await this.connectorContext(
+                tenantId,
+                scopeId,
+                executor.timeoutMs,
+                executor.provider,
+              ),
               event,
             );
             await stub.recordExecutorAttempt(event.id, deliveryId, null, null);
@@ -1154,7 +1210,7 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     handler: ConnectorHandler,
     event: DomainEvent,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; provider?: string },
   ): Promise<void> {
     // The platform half of a routed delivery (#574 phase 3). The same lifecycle gate as
     // `drainDue` — a suspended scope's routed intent waits, it does not execute — and the
@@ -1165,7 +1221,12 @@ export class CloudflareScopeHost implements ScopeHost {
     this.causedBy = event.id;
     try {
       await handler(
-        await this.connectorContext(tenantId, scopeId, options?.timeoutMs ?? 30_000),
+        await this.connectorContext(
+          tenantId,
+          scopeId,
+          options?.timeoutMs ?? 30_000,
+          options?.provider ?? '',
+        ),
         event,
       );
     } finally {
@@ -1675,24 +1736,34 @@ export class CloudflareScopeHost implements ScopeHost {
       );
     }
     await this.cp.validateScopeAccess(conn.tenant_id as TenantId, scopeId);
-    // #574: same delegation as getConnectorScope. Only `upload` crosses the seam in
-    // phase 1 — it is the one verb the reconcile path needs (landing the sealed PDF);
-    // the read/remove verbs fail loudly rather than pretending.
+    // #574: same delegation as getConnectorScope. `upload` is the verb the reconcile
+    // path needs (landing the sealed PDF) and `open` the one the outbound path needs
+    // (sending the vertical's own document, #711). `list` and `remove` still fail
+    // loudly rather than pretending — and `list` stays undelegated on purpose, not
+    // for want of plumbing: a connector picks the document it sends by id, so a
+    // search seam would only create the ambiguity the id design removes.
     if (this.connectorDelegation) {
       const delegation = this.connectorDelegation;
       const tenant = conn.tenant_id as TenantId;
       const vertical = conn.vertical;
       const notDelegated = (verb: string) => async (): Promise<never> => {
         throw new Error(
-          `connector attachment ${verb} is not delegated (#574 phase 1) — only upload ` +
-            `crosses the /internal seam to the serving deployment`,
+          `connector attachment ${verb} is not delegated (#574) — upload and open are the ` +
+            `verbs that cross the /internal seam to the serving deployment`,
         );
       };
       return {
         upload: (upload) =>
           delegation.uploadAttachment({ connectionId, tenantId: tenant, scopeId, vertical, upload }),
+        open: (attachmentId) =>
+          delegation.openAttachment({
+            connectionId,
+            tenantId: tenant,
+            scopeId,
+            vertical,
+            attachmentId,
+          }),
         list: notDelegated('list'),
-        open: notDelegated('open'),
         remove: notDelegated('remove'),
       };
     }
@@ -4294,6 +4365,26 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface({ connectionId }, tenantId, scopeId, store).upload(upload);
+  }
+
+  /**
+   * Hand ONE attachment's bytes back to the platform as a CONNECTION (#711) — the
+   * read half of the bytes leg. Gated exactly like the write: the target's
+   * `readPermission`, checked in this scope's own DO against the connection's
+   * delivered `connection:<id>` tuple. `null` for an id this scope does not know,
+   * so a caller falls back rather than failing a dispatch over a missing file.
+   */
+  async connectorAttachmentOpenLocal(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    attachmentId: string,
+  ): Promise<OpenedAttachment | null> {
+    await this.migrateAndRecord(scopeId);
+    const store = await this.resolveAttachmentStore(tenantId);
+    return this.buildAttachmentSurface({ connectionId }, tenantId, scopeId, store).open(
+      attachmentId,
+    );
   }
 
   /**

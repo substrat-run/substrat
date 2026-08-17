@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { EntityRef } from '@substrat-run/contracts';
+import { platformActorId, principalId, type EntityRef } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
@@ -44,6 +44,10 @@ describe('engine-protocol', () => {
       // edge, and the kernel refuses `ctx.link` without it. The harness plays
       // the vertical's part.
       entityRelations: [{ entityType: 'protocol', parentType: 'workorder' }],
+      // #711: the engine declares a `protocol` attachment target, and a rendered
+      // document is bound through it. Bytes need the per-tenant store the platform
+      // mints for a vertical, so the harness plays that part too.
+      attachments: true,
     });
     staff = await h.as([
       PERM.create,
@@ -347,6 +351,170 @@ describe('engine-protocol', () => {
       expect(signedA.signature.content_hash).not.toBe(signedB.signature.content_hash);
       expect(signedA.instance.bound_hash).toBe(HASH_A);
       expect(signedB.instance.bound_hash).toBe(HASH_B);
+    });
+
+    /**
+     * The RENDERED document (#711) — which bytes a signatory is shown, as opposed
+     * to `boundHash`, which is what the signature attests to. Two different facts,
+     * and before this the engine could only carry the second, so a signing
+     * connector had nothing to send but a sheet of identifiers.
+     *
+     * Tested against real attachments through the real kernel path — the harness's
+     * own principal is minted here because the upload has to be a genuine
+     * `_substrat_attachments` row with a kernel-computed sha256. A hand-forged row
+     * would prove only that the SELECT below matches what the test wrote.
+     */
+    describe('the rendered document (#711)', () => {
+      const AVTAL_BYTES = new TextEncoder().encode('%PDF-1.4 §1 Lön: 42 000 kr/mån');
+
+      /** A principal holding the doc permissions, plus the scope's attachment surface. */
+      const uploader = async () => {
+        const staffActor = platformActorId.parse(ulid());
+        const who = principalId.parse(ulid());
+        const roleKey = `att-${ulid().toLowerCase()}`;
+        await h.host.admin.defineRole(staffActor, h.tenant, {
+          key: roleKey,
+          permissions: [PERM.read, PERM.attach, PERM.create, PERM.bind, PERM.requestSignature],
+          source: 'vertical',
+        });
+        await h.host.admin.assignRole(staffActor, {
+          principalId: who,
+          roleKey,
+          node: { tenantId: h.tenant, scopeId: h.scope },
+        });
+        return {
+          stub: await h.host.getScope(who, h.tenant, h.scope),
+          attachments: await h.host.attachments(who, h.tenant, h.scope),
+        };
+      };
+
+      it('binds the attachment, and carries it onto the freeze event', async () => {
+        const { stub, attachments } = await uploader();
+        await stub.invoke('protocol/define-template', {
+          key: 'avtal-doc',
+          title: 'Avtal',
+          content: { kind: 'document', documentType: 'avtal', hashRecipe: 'sha256 over terms' },
+        });
+        const inst = await stub.invoke<ProtocolInstanceRow>('protocol/instantiate', {
+          templateKey: 'avtal-doc',
+          entityType: BIKE.entityType,
+          entityId: '01JWORKORDER0000000000000D1',
+        });
+        const record = await attachments.upload({
+          entity: { entityType: 'protocol', entityId: inst.id },
+          filename: 'avtal.pdf',
+          contentType: 'application/pdf',
+          visibility: 'customer',
+          body: AVTAL_BYTES,
+        });
+
+        const bound = await stub.invoke<ProtocolInstanceRow>('protocol/bind-document', {
+          instanceId: inst.id,
+          contentRef: AVTAL,
+          contentHash: HASH_A,
+          documentAttachmentId: record.id,
+        });
+        expect(bound.document_attachment_id).toBe(record.id);
+
+        // The binding event says which bytes, and witnesses them: the sha256 comes
+        // from the attachment row, so a consumer learns what was bound without a
+        // second read and cannot be told a hash the kernel did not compute.
+        const [contentBound] = h.eventsOfType('protocol.content-bound');
+        expect((contentBound!.payload as { documentAttachmentId: string }).documentAttachmentId).toBe(
+          record.id,
+        );
+        expect((contentBound!.payload as { documentSha256: string }).documentSha256).toBe(
+          record.sha256,
+        );
+
+        // And the freeze carries it to whoever dispatches the signature request —
+        // fat, so a connector never needs a cross-module read to know what to send.
+        await stub.invoke('protocol/request-signatures', {
+          instanceId: inst.id,
+          method: 'scrive',
+          parties: [{ label: 'Beställare', kind: 'external' }],
+        });
+        const [requested] = h.eventsOfType('protocol.signatures-requested');
+        expect(
+          (requested!.payload as { documentAttachmentId: string | null }).documentAttachmentId,
+        ).toBe(record.id);
+      });
+
+      it('stays null when no document is named — the field is optional, not implied', async () => {
+        // The acceptance criterion that protects every caller who renders nothing.
+        // A protocol with no rendered document is not a lesser one; it is what every
+        // instance bound before this field existed looks like.
+        await defineAvtal();
+        const inst = await instantiateAvtal('01JWORKORDER0000000000000D2');
+        const bound = await staff.invoke<ProtocolInstanceRow>('protocol/bind-document', {
+          instanceId: inst.id,
+          contentRef: AVTAL,
+          contentHash: HASH_A,
+        });
+        expect(bound.document_attachment_id).toBeNull();
+        const [contentBound] = h.eventsOfType('protocol.content-bound');
+        expect(
+          (contentBound!.payload as { documentAttachmentId: string | null }).documentAttachmentId,
+        ).toBeNull();
+        expect((contentBound!.payload as { documentSha256: string | null }).documentSha256).toBeNull();
+      });
+
+      it('refuses an attachment that belongs to another instance, or to nothing', async () => {
+        // The engine's own check, made at the only point where the document and the
+        // hash are named together. It refuses the accidents — a stale id, another
+        // instance's paperwork — without pretending to verify a hash recipe it has
+        // never been able to run.
+        const { stub, attachments } = await uploader();
+        await stub.invoke('protocol/define-template', {
+          key: 'avtal-doc-2',
+          title: 'Avtal',
+          content: { kind: 'document', documentType: 'avtal', hashRecipe: 'sha256 over terms' },
+        });
+        const mine = await stub.invoke<ProtocolInstanceRow>('protocol/instantiate', {
+          templateKey: 'avtal-doc-2',
+          entityType: BIKE.entityType,
+          entityId: '01JWORKORDER0000000000000D3',
+        });
+        const theirs = await stub.invoke<ProtocolInstanceRow>('protocol/instantiate', {
+          templateKey: 'avtal-doc-2',
+          entityType: BIKE.entityType,
+          entityId: '01JWORKORDER0000000000000D4',
+        });
+        const elsewhere = await attachments.upload({
+          entity: { entityType: 'protocol', entityId: theirs.id },
+          filename: 'someone-elses.pdf',
+          contentType: 'application/pdf',
+          visibility: 'customer',
+          body: AVTAL_BYTES,
+        });
+
+        await expect(
+          stub.invoke('protocol/bind-document', {
+            instanceId: mine.id,
+            contentRef: AVTAL,
+            contentHash: HASH_A,
+            documentAttachmentId: elsewhere.id,
+          }),
+        ).rejects.toThrow(/not to protocol\//);
+
+        await expect(
+          stub.invoke('protocol/bind-document', {
+            instanceId: mine.id,
+            contentRef: AVTAL,
+            contentHash: HASH_A,
+            documentAttachmentId: ulid(),
+          }),
+        ).rejects.toThrow(/no attachment/);
+
+        // A refused binding leaves the instance alone. The check runs before the
+        // UPDATE and the whole operation rolls back, so there is no half-write —
+        // a bound hash with the document rejected would be the worst of both.
+        const after = await stub.invoke<{ instance: ProtocolInstanceRow }>('protocol/get', {
+          instanceId: mine.id,
+        });
+        expect(after.instance.document_attachment_id).toBeNull();
+        expect(after.instance.bound_hash).toBeNull();
+      });
     });
 
     it('a signed document is frozen: the binding cannot move under the signature', async () => {

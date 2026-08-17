@@ -94,6 +94,53 @@ function tinyPdf(): Uint8Array {
 }
 
 /**
+ * A PDF standing in for the VERTICAL's own rendering (#711) — deliberately not the
+ * shape this file or the connector generates: multiple text lines, a document-info
+ * object, and WinAnsi-encoded åäö, which is how a Swedish avtal actually renders and
+ * a byte range a UTF-8 assumption mangles.
+ *
+ * The point is not fidelity to any particular vertical's renderer. It is that the
+ * bytes Scrive is asked to accept were produced by something else, which is the only
+ * thing about this path a provider can be asked to confirm.
+ */
+function verticalPdf(heading: string): Uint8Array {
+  const lines = [
+    heading,
+    'Mellan Nordljus AB (arbetsgivare) och den anställde.',
+    '§2 Uppsägningstid: 3 månader. §3 Semester: 30 dagar.',
+    'Undertecknas med BankID.',
+  ];
+  const content = [
+    'BT /F1 14 Tf 72 780 Td 18 TL',
+    ...lines.map((l) => `(${l.replace(/([()\\])/g, '\\$1')}) Tj T*`),
+    'ET',
+  ].join('\n');
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    '<< /Producer (the vertical, not this connector) /Title (Anstallningsavtal) >>',
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offs: number[] = [];
+  objs.forEach((b, i) => {
+    offs.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${b}\nendobj\n`;
+  });
+  const x = pdf.length;
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offs) pdf += `${String(o).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R /Info 6 0 R >>\nstartxref\n${x}\n%%EOF\n`;
+  // Latin-1 truncation IS the WinAnsi encoding for this subset — å ä ö land on
+  // 0xE5/0xE4/0xF6, which is exactly what /WinAnsiEncoding above declares.
+  const bytes = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i += 1) bytes[i] = pdf.charCodeAt(i) & 0xff;
+  return bytes;
+}
+
+/**
  * The calls made outside `ScriveApi` — the ones that read a status or a raw body,
  * which the connector's `ConnectorConnection.fetch` deliberately does not expose.
  */
@@ -186,6 +233,52 @@ describe.skipIf(!creds)('scrive connector — LIVE testbed', () => {
     const file = await api.getMainFile(doc.id);
     expect(file.length).toBeGreaterThan(0);
     expect(new TextDecoder().decode(file.slice(0, 5))).toBe('%PDF-');
+
+    await discard(doc.id);
+  }, NET);
+
+  /**
+   * The attachment path (#711), against the real API.
+   *
+   * The test above sends `tinyPdf()` — a sheet this test file generates, the same
+   * shape the connector's own `renderPdf` fallback produces. That proves the API
+   * accepts OUR paper. It says nothing about the case the seam exists for: a PDF
+   * this codebase did not author, arriving from the vertical's attachment store,
+   * arbitrary in size, structure and producer.
+   *
+   * So this sends one deliberately unlike a generated sheet — a real page stream
+   * with WinAnsi åäö, an embedded metadata object, and a filename the vertical
+   * chose. What it proves is the part only the provider can answer: Scrive takes a
+   * document it did not see us build, and hands back a sealed copy of it.
+   *
+   * What it does NOT prove — stated so nobody reads more into a green run — is the
+   * platform half: that the bytes reached the connector from the attachment store.
+   * That is not a provider question and is pinned where it belongs, against the real
+   * kernel path, in `test/dispatch.test.ts` and `adapter-sqlite/test/connector-reads.test.ts`.
+   */
+  it('accepts a document the connector did not render (#711)', async () => {
+    const api = new ScriveApi(liveConnection(creds!) as never, creds!.baseUrl);
+    const doc = await api.createDocument();
+
+    // åäö in WinAnsi — the encoding a Swedish avtal actually renders in, and a
+    // byte range a UTF-8 assumption mangles.
+    const avtal = verticalPdf('Anställningsavtal — §1 Lön: 42 000 kr/mån');
+    expect(avtal.length).toBeGreaterThan(tinyPdf().length); // genuinely a different document
+
+    await api.setFile(doc.id, 'anställningsavtal-nordljus.pdf', avtal);
+    await api.update(doc.id, {
+      title: 'Substrat live test — vertical document',
+      parties: [
+        { name: 'Sender', authenticationMethodToSign: 'standard', isAuthor: true, isSignatory: true },
+      ],
+    });
+
+    // Scrive re-seals what it stores, so the bytes back are not the bytes sent —
+    // asserting equality would be asserting a falsehood. What holds is that a
+    // document exists, is a PDF, and carries our content's weight.
+    const sealed = await api.getMainFile(doc.id);
+    expect(new TextDecoder().decode(sealed.slice(0, 5))).toBe('%PDF-');
+    expect(sealed.length).toBeGreaterThan(0);
 
     await discard(doc.id);
   }, NET);

@@ -122,23 +122,57 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
    the relying party at all.) `test/live.test.ts` asserts this against the testbed, including the
    control case that shows the error returning when the field is absent.
 
-4. **It sends an attestation sheet, not the avtal.** A one-page PDF naming the template, the
-   parties, and the content hash the signature refers to — honest for a hash-attestation model,
-   but not the contract itself. Rendering the real document belongs to the **vertical** (a
-   connector cannot read another module's tables), and `create` has no way to be handed one: it
-   calls `renderPdf` unconditionally.
+4. **It sends the vertical's document when one is bound, and its own attestation sheet when
+   none is** ([#711](https://github.com/substrat-run/substrat/issues/711)). Rendering the real
+   document belongs to the **vertical** — a connector cannot read another module's tables — so
+   the vertical uploads its rendered file onto the protocol instance and names it when binding:
 
-   What is **no longer** true: that the document store does not exist. `attachmentTargets` is
-   implemented in both adapters — bytes to the per-tenant blob store, metadata in
-   `_substrat_attachments`, permission-gated per declared entity type with a spine event in the
-   same transaction (#473, `packages/adapter-sqlite/test/attachments.test.ts`). **This connector
-   already uses it**: `reconcileScriveDispatch` lands the sealed signed PDF through
-   `getConnectorAttachments` on the `protocol` target (#476 step 2). A store the return path
-   writes to cannot be missing on the outbound one.
+   ```ts
+   const doc = await attachments.upload({ entity: { entityType: 'protocol', entityId }, … });
+   await scope.invoke('protocol/bind-document', { instanceId, contentRef, contentHash,
+                                                  documentAttachmentId: doc.id });
+   ```
 
-   So the remaining gap is this connector's, not the platform's: a vertical can already bind its
-   rendered avtal to an entity, and `create` should send that when present, falling back to the
-   attestation sheet when it is absent. Raised as R4 on #687, to be filed separately.
+   `protocol.signatures-requested` then carries `documentAttachmentId`, and `create` opens it
+   (`ctx.openAttachment`) and sends those bytes under the vertical's own filename. With nothing
+   bound, today's one-page sheet goes out unchanged — the template, the parties, and the content
+   hash — which stays the honest artifact for a caller that renders nothing.
+
+   Three things worth knowing about the shape:
+
+   - **The connection needs `protocol:read`** (`grantToConnection`), on top of
+     `protocol:record-signature` and `protocol:attach`. It is a permission-diff line.
+   - **A bound-but-unreadable document is a hard failure, not a quiet fallback.** Once a
+     vertical has said which bytes its signatory must see, sending different paper instead is
+     the exact failure this closed — quieter than a refusal and worse, because a document still
+     goes out and a counterparty still signs it. So a missing grant or a deleted attachment
+     dead-letters; the ledger row is written only after `start`, so the retry after the fix
+     sends the right document.
+   - **The id is named, never searched for.** The return path lands the sealed SIGNED copy on
+     this same instance, so a connector that picked "the document on this instance" could mail a
+     counterparty their own signed contract to sign again. Naming an id makes that
+     unrepresentable rather than merely unlikely.
+
+   What is signed is still the **hash**: this changes the bytes shown to the signatory, not the
+   identity of what the signature attests to. `bindDocument` is where the two are reconciled —
+   it refuses an attachment that is not on the instance being bound, and carries the kernel's
+   own `sha256` of the bytes onto `protocol.content-bound`.
+
+   What was **never** true, in either direction: this caveat first said the store did not exist,
+   then that only the connector was missing a line. `attachmentTargets` has been implemented in
+   both adapters since #473, and this connector already wrote through it on the return path — so
+   the store was never missing. But the outbound leg needed a read the platform genuinely did not
+   have, and neither reading told the truth about where the work was:
+
+   - on `adapter-sqlite` a connector runs INSIDE the scope's actor task, and the ordinary
+     attachment surface re-enqueues per verb — reading from a dispatch wedged the scope
+     (`packages/adapter-sqlite/test/connector-reads.test.ts` pins it);
+   - on the hosted Cloudflare path only `upload` crossed the `/internal` seam, so the control
+     plane held the credential while the vertical held the bytes.
+
+   Both are closed: `ConnectorContext.openAttachment` is the reentrant-safe read, and `open`
+   now crosses the delegation seam beside `upload`. `list` deliberately does not — see the third
+   bullet above.
 
 ## Verified against the testbed
 
@@ -151,8 +185,9 @@ version, written from the docs, was wrong in three ways one live call exposed at
   their id and status is re-read
 - **`setfile` is `multipart/form-data`**, not a base64 body
 
-`test/live.test.ts` runs the real lifecycle (`new → setfile → update → get`) and what `start`
-validates, when `connectors/scrive/.dev.vars` holds a complete OAuth1 credential; it **skips**
+`test/live.test.ts` runs the real lifecycle (`new → setfile → update → get`), what `start`
+validates, and that Scrive accepts a document this codebase did not render (caveat 4), when
+`connectors/scrive/.dev.vars` holds a complete OAuth1 credential; it **skips**
 otherwise — so CI without secrets stays offline and a local run against the testbed verifies the
 actual API. Nothing it creates is delivered: no document reaches `pending` (the account setting in
 caveat 3 sees to that), no party carries a real address, and every document is cancelled and

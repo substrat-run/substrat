@@ -180,6 +180,16 @@ export interface ScriveDispatchState {
     /** The substrat signatory, when known up front; null when identity is only learned at signing. */
     ref: string | null;
   }[];
+  /**
+   * The attachment whose bytes were SENT (#711), when the vertical bound one — absent
+   * when the signatory was shown this connector's own attestation sheet.
+   *
+   * Recorded because it is the only durable answer to "what did the counterparty
+   * actually read": Scrive holds the bytes but not their provenance, and the instance's
+   * binding can be re-bound after the dispatch. The activity projection reads it, which
+   * is how an operator tells a real contract from a fallback sheet at a glance.
+   */
+  documentAttachmentId?: string;
   /** Requests already recorded by a prior poll — so a re-poll is a no-op, not a double. */
   recordedRequestIds?: string[];
   /**
@@ -216,6 +226,10 @@ const signaturesRequested = z.object({
   templateVersion: z.number().int(),
   contentHash: z.string().min(1),
   boundHash: z.string().nullable().optional(),
+  // #711: which attachment holds the bytes to send. Optional as well as nullable —
+  // an event emitted by an engine older than 0004 carries no such field, and reads
+  // the same as one that bound no document: fall back to the rendered sheet.
+  documentAttachmentId: z.string().nullable().optional(),
   method: z.string().min(1),
   parties: z.array(
     z.object({
@@ -298,26 +312,61 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
 
     const api = new ScriveApi(conn, baseUrl);
 
-    // The artifact. NOT the avtal — this connector cannot read the vertical's
-    // content, and should not learn its vocabulary in order to try. It renders
-    // an attestation sheet naming what is being signed and the hash it is
-    // identified by. A real contract needs the vertical's own rendering handed
-    // to this call; the document store it would ride is NOT missing, whatever
-    // this comment used to claim — `reconcileScriveDispatch` below already lands
-    // the sealed PDF through it (#473, #476 step 2). See README caveat 4.
-    const pdf = renderPdf({
-      title: `${payload.templateKey} v${payload.templateVersion}`,
-      lines: [
-        `Instans: ${payload.instanceId}`,
-        `Innehållshash (SHA-256): ${payload.contentHash}`,
-        ...(payload.boundHash ? [`Dokumenthash: ${payload.boundHash}`] : []),
-        '',
-        'Parter:',
-        ...payload.parties.map((p) => `  ${p.label} (${p.signatureKind})`),
-        '',
-        'Signaturen avser innehållet som identifieras av hashen ovan.',
-      ],
-    });
+    // The artifact — the vertical's own document when it bound one (#711),
+    // otherwise the attestation sheet this connector renders itself.
+    //
+    // The fallback is not a lesser path, it is the honest one for a caller with
+    // nothing to render: a page naming the template, the parties and the hash the
+    // signature refers to. What was wrong was that it was the ONLY path. A
+    // contract's obligations are not on that page, and a Swedish counterparty
+    // asked to put BankID to it should refuse.
+    //
+    // The event names the attachment; this does not go looking for one. The
+    // return path lands the sealed SIGNED copy on this same instance, so a
+    // connector that searched could send a counterparty their own signed contract
+    // to sign again — with an id there is nothing to pick between, and the sealed
+    // copy does not exist when the binding is made.
+    //
+    // Read through `ctx.openAttachment`, not `host.getConnectorAttachments`: this
+    // runs inside the scope's dispatch, and on the pure adapter that surface
+    // re-enters the scope actor and wedges it (#711). Gated on the connection's
+    // own `protocol:read` grant, like every other door a connection walks through.
+    // Fall back only when NOTHING was named. Once a vertical has said which bytes
+    // its signatory must see, sending different paper instead is the exact failure
+    // this seam exists to end — quieter than a refusal and worse, because a document
+    // still goes out and a counterparty still signs. So a named-but-unreadable
+    // document is a hard failure: it dead-letters, the operator sees it (a missing
+    // `protocol:read` grant, a removed attachment), and because the ledger row is
+    // written only after `start`, the retry that follows the fix sends the right one.
+    let bound = null;
+    if (payload.documentAttachmentId) {
+      bound = await ctx.openAttachment(payload.documentAttachmentId);
+      if (!bound) {
+        throw new Error(
+          `instance ${payload.instanceId} was frozen bound to attachment ` +
+            `${payload.documentAttachmentId}, which this scope no longer holds — refusing to ` +
+            `send an attestation sheet in place of the document the vertical bound`,
+        );
+      }
+    }
+    const pdf =
+      bound?.body ??
+      renderPdf({
+        title: `${payload.templateKey} v${payload.templateVersion}`,
+        lines: [
+          `Instans: ${payload.instanceId}`,
+          `Innehållshash (SHA-256): ${payload.contentHash}`,
+          ...(payload.boundHash ? [`Dokumenthash: ${payload.boundHash}`] : []),
+          '',
+          'Parter:',
+          ...payload.parties.map((p) => `  ${p.label} (${p.signatureKind})`),
+          '',
+          'Signaturen avser innehållet som identifieras av hashen ovan.',
+        ],
+      });
+    // Scrive shows the filename nowhere a signatory reads, but it is what an
+    // operator sees in the provider's archive — so carry the vertical's own.
+    const filename = bound?.record.filename ?? `${payload.templateKey}.pdf`;
 
     // The capability token (#96): minted per dispatch, stored in the ledger row,
     // and laid into the callback URL — the URL is the only authentication a
@@ -325,7 +374,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     const webhookToken = options.callbackUrl ? mintCallbackToken() : undefined;
 
     const doc = await api.createDocument();
-    await api.setFile(doc.id, `${payload.templateKey}.pdf`, pdf);
+    await api.setFile(doc.id, filename, pdf);
     await api.update(doc.id, {
       title: `${payload.templateKey} v${payload.templateVersion}`,
       ...(options.callbackUrl && webhookToken
@@ -386,6 +435,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
         kind: p.kind,
         ref: p.ref,
       })),
+      ...(bound ? { documentAttachmentId: bound.record.id } : {}),
       ...(webhookToken ? { webhookToken } : {}),
       dispatchedAt: event.occurredAt,
     };
@@ -876,6 +926,15 @@ export async function scriveConnectionActivity(
           value: done.has(p.requestId) ? 'signature recorded' : 'awaiting signature',
         })),
         { label: 'Content hash', value: state.contentHash },
+        // #711: which paper went out. Worth a line of its own precisely because the
+        // fallback is silent otherwise — a tenant whose vertical stopped binding a
+        // document would keep sending attestation sheets and nothing would say so.
+        {
+          label: 'Document sent',
+          value: state.documentAttachmentId
+            ? 'the vertical’s own document'
+            : 'attestation sheet (no document was bound)',
+        },
         ...(state.sealedAttachmentId ? [{ label: 'Sealed copy', value: 'stored on the instance' }] : []),
         ...(live?.mtime ? [{ label: 'Provider last change', value: live.mtime }] : []),
       ],

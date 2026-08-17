@@ -157,8 +157,8 @@ describe('connector write-back (#574)', () => {
     const s = scopeId.parse(ulid());
     const connId = ulid();
 
-    type Recorded = { grant: unknown[]; invoke: unknown[]; upload: unknown[] };
-    const recorded: Recorded = { grant: [], invoke: [], upload: [] };
+    type Recorded = { grant: unknown[]; invoke: unknown[]; upload: unknown[]; open: unknown[] };
+    const recorded: Recorded = { grant: [], invoke: [], upload: [], open: [] };
     const delegation: ConnectorDelegation = {
       invoke: async (a) => {
         recorded.invoke.push(a);
@@ -176,6 +176,27 @@ describe('connector write-back (#574)', () => {
           visibility: a.upload.visibility,
           createdBy: a.connectionId,
           createdAt: new Date().toISOString(),
+        } as never;
+      },
+      // #711: the outbound leg — the vertical's own document, fetched back by id.
+      openAttachment: async (a) => {
+        recorded.open.push(a);
+        if (a.attachmentId === 'missing') return null;
+        const body = new TextEncoder().encode('%PDF-1.4 the avtal');
+        return {
+          record: {
+            id: a.attachmentId,
+            entity: { entityType: 'protocol', entityId: 'p1' },
+            filename: 'avtal.pdf',
+            contentType: 'application/pdf',
+            size: body.byteLength,
+            sha256: 'a'.repeat(64),
+            visibility: 'customer',
+            createdBy: a.connectionId,
+            createdAt: new Date().toISOString(),
+          },
+          body,
+          contentType: 'application/pdf',
         } as never;
       },
       grant: async (a) => {
@@ -261,7 +282,7 @@ describe('connector write-back (#574)', () => {
       expect(recorded.invoke).toHaveLength(1);
     });
 
-    it('routes attachment upload through the delegation; the other verbs fail loudly', async () => {
+    it('routes attachment upload and open through the delegation; the rest fail loudly', async () => {
       const att = await hostFor().getConnectorAttachments(connId as never, s);
       const rec = await att.upload({
         entity: { entityType: 'item', entityId: 'i1' },
@@ -272,8 +293,23 @@ describe('connector write-back (#574)', () => {
       });
       expect(rec.createdBy).toBe(connId);
       expect(recorded.upload).toHaveLength(1);
+
+      // #711: `open` crosses the seam too — the platform runs the vertical's signing
+      // connector and must send the document the VERTICAL rendered, whose bytes live
+      // in the vertical's own R2 and DO, not here.
+      const opened = await att.open('att-1');
+      expect(new TextDecoder().decode(opened!.body)).toBe('%PDF-1.4 the avtal');
+      expect(recorded.open).toEqual([
+        { connectionId: connId, tenantId: t, scopeId: s, vertical: 'docs', attachmentId: 'att-1' },
+      ]);
+      // An id the vertical does not know is `null`, not a throw — a caller falls back
+      // rather than failing a dispatch over a missing file.
+      await expect(att.open('missing')).resolves.toBeNull();
+
+      // `list` stays undelegated ON PURPOSE, not for want of plumbing: a connector
+      // names the document it sends by id, so a search seam would only reintroduce
+      // the ambiguity the id design removes (#711).
       await expect(att.list({ entityType: 'item', entityId: 'i1' })).rejects.toThrow(/not delegated/);
-      await expect(att.open('x')).rejects.toThrow(/not delegated/);
       await expect(att.remove('x')).rejects.toThrow(/not delegated/);
     });
   });

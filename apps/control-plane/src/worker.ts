@@ -597,6 +597,16 @@ function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
         scopeId: a.scopeId,
         ...a.upload,
       }),
+    // #711: the outbound leg. The vertical rendered the contract; this deployment holds
+    // the provider credential but neither the metadata row nor the object, so the bytes
+    // come back over the same seam the sealed copy goes out on.
+    openAttachment: async (a) =>
+      (await clientFor(a.tenantId, a.scopeId)).connectorOpenAttachment({
+        connectionId: a.connectionId,
+        tenantId: a.tenantId,
+        scopeId: a.scopeId,
+        attachmentId: a.attachmentId,
+      }),
     grant: async (a) =>
       (await clientFor(a.tenantId, a.scopeId)).connectorGrant({
         connectionId: a.connectionId,

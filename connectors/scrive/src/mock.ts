@@ -30,6 +30,15 @@ interface MockDocument {
   status: 'preparation' | 'pending' | 'closed' | 'canceled' | 'timedout' | 'rejected';
   title: string;
   callbackUrl: string | null;
+  /**
+   * The uploaded file as the multipart envelope declared it: the filename from the
+   * `content-disposition`, and the payload's own length — NOT the envelope's.
+   *
+   * Both matter since #711. The connector now sends either the vertical's rendered
+   * document or its own attestation sheet, and "which one went out" is exactly the
+   * question a test has to be able to ask; an envelope length shared by both, or a
+   * hardcoded filename, cannot answer it.
+   */
   file: { name: string; bytes: number } | null;
   parties: {
     id: string;
@@ -232,10 +241,10 @@ export class ScriveMock {
       if (!doc) return respond(404, { error: `mock: unknown document ${id}` });
 
       if (action === 'setfile') {
-        // The real body is multipart/form-data bytes (a Uint8Array), not a
-        // string — the length is all the mock needs to know a file arrived.
-        const size = typeof init?.body === 'string' ? init.body.length : (init?.body?.length ?? 0);
-        doc.file = { name: 'document.pdf', bytes: size };
+        // The real body is multipart/form-data bytes (a Uint8Array), not a string.
+        // Unwrap the envelope rather than measuring it: the filename and the
+        // payload's own length are what a caller can assert something about.
+        doc.file = parseMultipartFile(init?.body);
         return respond(200, this.wire(doc));
       }
       if (action === 'update') {
@@ -336,4 +345,33 @@ export class ScriveMock {
       return respond(200, this.wire(doc));
     };
   }
+}
+
+/**
+ * Pull the filename and the file's OWN byte length out of a one-file
+ * `multipart/form-data` body — the shape `ScriveApi.setFile` builds.
+ *
+ * The mock used to record the whole envelope's length under a hardcoded name, which
+ * was enough while every document was the same generated sheet. Since #711 a
+ * document is either the vertical's own file or the connector's fallback, and
+ * telling the two apart is the point — so the mock unwraps what the real API would.
+ *
+ * Deliberately lenient: a body it cannot parse still records SOMETHING (the raw
+ * length, under an empty name) rather than throwing. A mock that fails a test by
+ * refusing to parse teaches nothing about the connector.
+ */
+function parseMultipartFile(body: unknown): { name: string; bytes: number } {
+  if (typeof body === 'string') return { name: '', bytes: body.length };
+  if (!(body instanceof Uint8Array)) return { name: '', bytes: 0 };
+  // Latin-1, so every byte round-trips as exactly one code unit and the offsets
+  // below stay index-accurate on a payload that is not valid UTF-8 — which a real
+  // PDF never is.
+  let text = '';
+  for (const b of body) text += String.fromCharCode(b);
+  const head = /^--(\S+)\r\n(?:[^\r\n]*\r\n)*?\r\n/.exec(text);
+  const name = /filename="([^"]*)"/.exec(text)?.[1] ?? '';
+  if (!head) return { name, bytes: body.length };
+  const start = head[0].length;
+  const end = text.lastIndexOf(`\r\n--${head[1]!}--`);
+  return { name, bytes: (end === -1 ? body.length : end) - start };
 }

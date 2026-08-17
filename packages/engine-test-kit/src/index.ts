@@ -210,6 +210,20 @@ export interface EngineHarnessOptions {
    * not an obstacle to route around.
    */
   entityRelations?: { entityType: string; parentType: string }[];
+  /**
+   * Bind the scope to a vertical and mint that vertical's attachment blob store.
+   *
+   * Off by default, and opt-in rather than always-on because a scope with no
+   * vertical is the leaner fixture and every test that predates this needs
+   * nothing from one. Turn it on to test an engine's `attachmentTargets`: bytes
+   * live in the per-tenant store the PLATFORM provisions for (tenant, vertical),
+   * so without a vertical there is nowhere for an attachment to go and
+   * `host.attachments(...)` refuses — which is correct, and used to mean an
+   * engine's declared attachment targets could not be exercised here at all.
+   *
+   * The harness plays the vertical's part, exactly as `entityRelations` does.
+   */
+  attachments?: boolean | { vertical: string };
 }
 
 /**
@@ -232,10 +246,27 @@ export async function engineHarness(opts: EngineHarnessOptions): Promise<EngineH
   const keys = opts.entitlements ?? modules.map((m) => m.manifest.entitlementKey).filter((k): k is string => !!k);
   for (const key of [...new Set(keys)]) await host.admin.grantEntitlement(staff, t, key);
 
-  await host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu' });
+  const vertical =
+    opts.attachments === undefined || opts.attachments === false
+      ? undefined
+      : opts.attachments === true
+        ? 'kit'
+        : opts.attachments.vertical;
+  await host.provisionScope(staff, {
+    tenantId: t,
+    scopeId: s,
+    jurisdiction: 'eu',
+    ...(vertical ? { vertical } : {}),
+  });
   // Provisioned rows are inert until confirmed (K-31). In a harness the platform and
   // the vertical are the same process, so the confirmation is immediate.
   await host.admin.activateScope(staff, t, s);
+  // The per-tenant attachment store, minted by the platform for (tenant, vertical) —
+  // the same shape a real deployment provisions, so `host.attachments` resolves it
+  // by the same rule (`ATTACHMENTS` is the documented binding name).
+  if (vertical) {
+    await host.provisionBlobStore(staff, { tenantId: t, vertical, binding: 'ATTACHMENTS' });
+  }
 
   /**
    * One throwaway role per permission set — roles are cheap, isolation is not.
