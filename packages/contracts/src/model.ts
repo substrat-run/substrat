@@ -275,3 +275,23 @@ export function manifestEntities<
     ui: { entityViews: refs.entityViews as M['entityViews'] },
   };
 }
+
+/**
+ * The row type of a declared entity — what `ctx.sql.query` returns for it.
+ *
+ * `ctx.sql.query` leaves `T` to the vertical, so every handler writes its own
+ * row interface and the schema ends up described three times: the DDL, the
+ * registry, and a hand-written `interface CustomerRow`. This collapses the
+ * third into the second.
+ *
+ * ```ts
+ * export type CustomerRow = EntityRow<typeof calloutEntities, 'customer'>;
+ * ```
+ */
+export type EntityRow<T extends Record<string, EntityDef>, K extends keyof T> = T[K] extends {
+  fields: infer F;
+}
+  ? F extends z.ZodObject<z.ZodRawShape>
+    ? z.infer<F>
+    : never
+  : never;

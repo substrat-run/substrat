@@ -94,7 +94,20 @@ type OpAuthority<O, PermKey extends string> = O extends { narrows: unknown }
 type OperationShape<O, Entities, PermKey extends string> = {
   /** One line, imperative — what invoking this does. Feeds the API document. */
   readonly summary: string;
-  readonly input: z.ZodObject<z.ZodRawShape>;
+  /**
+   * The request body — the SAME Zod object the handler parses.
+   *
+   * **Omitted means no body at all**, and the handler then takes `undefined`.
+   * Found by the first adopter: three of Callout's six operations take no input,
+   * and a required `z.object({})` cannot say so — a handler accepting only
+   * `undefined` is not assignable to one accepting `{}`.
+   *
+   * This mirrors `ApiOperationDoc.input` ("Omit = no body") rather than
+   * inventing a second vocabulary for the same fact.
+   */
+  readonly input?: z.ZodObject<z.ZodRawShape>;
+  /** True when the handler accepts a body but also accepts none (filter-style reads). */
+  readonly inputOptional?: boolean;
   /**
    * Declared, not inferred (#695 Ask 2). Inference documents accidents: one
    * inferred return carried `contacts?: undefined`, an artefact of an early
@@ -207,3 +220,36 @@ export function eventsEmittedBy(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([type, schemaVersion]) => ({ type, schemaVersion }));
 }
+
+/**
+ * The handler map a declared operation set requires — CRM-EFF's `satisfies Impl`
+ * seam, which is what makes the declaration BINDING rather than decorative.
+ *
+ * ```ts
+ * export const operations = { … } satisfies OperationImpl<typeof calloutOps, OperationContext>;
+ * ```
+ *
+ * Four things become compile errors at the exact method: a handler whose input
+ * disagrees with the declared `input`, one whose return disagrees with the
+ * declared `output`, an operation declared and not implemented, and one
+ * implemented and not declared.
+ *
+ * `Ctx` is a parameter rather than `OperationContext` because contracts is below
+ * the kernel and must not import it. The vertical supplies it.
+ */
+export type OperationImpl<Ops, Ctx> = {
+  [K in keyof Ops]: Ops[K] extends { output: infer O }
+    ? O extends z.ZodType
+      ? (ctx: Ctx, input: ImplInput<Ops[K]>) => z.infer<O> | Promise<z.infer<O>>
+      : never
+    : never;
+};
+
+/** No declared `input` means the handler takes `undefined`. */
+type ImplInput<O> = O extends { input: infer I }
+  ? I extends z.ZodType
+    ? O extends { inputOptional: true }
+      ? z.infer<I> | undefined
+      : z.infer<I>
+    : undefined
+  : undefined;
