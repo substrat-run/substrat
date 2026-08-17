@@ -1,4 +1,6 @@
 import { manifestEntities, moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
+import { protocolEntities } from '@substrat-run/engine-protocol';
+import { workorderEntities } from '@substrat-run/engine-workorder';
 import { calloutEntities } from './entities.js';
 
 /**
@@ -82,8 +84,9 @@ export const calloutManifest = moduleManifest.parse({
     ],
     // The protocol engine is entity-agnostic; THIS vertical hangs protocols off
     // work orders, so it declares the permission-walk edge. Both names belong to
-    // engines, so neither is checkable here.
-    foreignChildren: [{ entityType: 'protocol', parentType: 'workorder' }],
+    // engines — and are now checked against their registries.
+    engines: [protocolEntities, workorderEntities],
+    relations: [{ entityType: 'protocol', parentType: 'workorder' }],
   }),
   entitlementKey: 'callout',
   envSpec: CALLOUT_ENV,
