@@ -7,7 +7,9 @@ import {
   permissionKey,
   principalId,
   type EntityRef,
+  type EntityRow,
 } from '@substrat-run/contracts';
+import { protocolEntities } from './entities.js';
 import {
   assertAllowed,
   ulid,
@@ -457,27 +459,13 @@ export interface ProtocolTemplateRow {
   created_at: string;
 }
 
-export interface ProtocolInstanceRow {
-  id: string;
-  template_key: string;
-  template_version: number;
-  entity_type: string;
-  entity_id: string;
-  status: 'open' | 'pending_signature' | 'signed' | 'voided';
-  created_by: string;
-  created_at: string;
-  voided_by: string | null;
-  voided_reason: string | null;
-  voided_at: string | null;
-  /** Document kind: the vertical entity holding the real content. */
-  content_ref_type: string | null;
-  content_ref_id: string | null;
-  /** Document kind: the hash the VERTICAL computed over its own rows. */
-  bound_hash: string | null;
-  /** Set when content freezes — the hash every signature must match. */
-  frozen_hash: string | null;
-  frozen_at: string | null;
-}
+/**
+ * A protocol instance row — DERIVED from the entity registry (`entities.ts`)
+ * rather than written beside it. The registry is what a vertical imports to get
+ * the Zod schema for a declared operation's `output`, and two descriptions of
+ * one row is how they come to disagree.
+ */
+export type ProtocolInstanceRow = EntityRow<typeof protocolEntities, 'protocol'>;
 
 export interface ProtocolResponseRow {
   id: string;
