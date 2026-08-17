@@ -21,6 +21,12 @@ export type {
   MigrateScopeOutcome,
   MigrationFrontier,
   ModuleRegistration,
+  ConsumersOf,
+  EventContract,
+  EventPayloadOf,
+  EventTypeOf,
+  TypedConsumerHandler,
+  TypedConsumers,
   OpenedAttachment,
   OperationContext,
   OperationHandler,
@@ -45,6 +51,7 @@ export type {
 } from './scope-host.js';
 export {
   attachmentBlobKey,
+  consumersFor,
   entitlementDenial,
   backoffAt,
   parseValidationRecords,
