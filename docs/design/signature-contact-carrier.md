@@ -1,12 +1,21 @@
 # Signature party contact — reaching a signatory without putting them in the spine
 
-Status: draft v0.1 · Last updated: 2026-08-16
+Status: draft v0.2 · Last updated: 2026-08-17
 
-> Answers ask 1 of issue [#620](https://github.com/substrat-run/substrat/issues/620):
-> a signature request must be able to carry **how a party is reached** — an email or
-> mobile for delivery, and a personal number when the provider authenticates with a
-> national eID. Ask 2 (`authLevel`) shipped in `engine-protocol@0.6.0` /
-> `connector-scrive@0.7.0` and is not revisited here.
+> Answers ask 1 of issue [#620](https://github.com/substrat-run/substrat/issues/620),
+> now closed and carried by [#687](https://github.com/substrat-run/substrat/issues/687):
+> a signature request must be able to carry **how a party is reached** — a delivery
+> address, so a document that starts has somebody to go to. Ask 2 (`authLevel`) shipped
+> in `engine-protocol@0.6.0` / `connector-scrive@0.7.0` and is not revisited here.
+>
+> **The premise narrowed after v0.1, and it narrowed the carrier with it.** v0.1 assumed
+> a national eID also needs a personal number carried to the provider. #687 measured
+> that and it is false: Scrive validates that a `se_bankid` party *has* a
+> `personal_number` field, not that it holds a value, and BankID has not accepted one
+> from the relying party since API v6. `connector-scrive` sends the empty field and maps
+> `strong` straight through ([#688](https://github.com/substrat-run/substrat/pull/688)).
+> So the carrier this document designs is for a **delivery address**. A personal number
+> is not required by any path in the tree, and nothing here may be built to demand one.
 >
 > Companion to [kernel-design.md §13.1](kernel-design.md) (what subject erasure
 > reaches, and its five stated limits), [connections.md](connections.md) (the
@@ -103,7 +112,7 @@ connector to know a vertical-specific operation name, which breaks connector
 genericity — the same argument that kept `se_bankid` out of the engine in ask 2.
 
 The row is cleared when the request leaves `pending` (signed, declined, expired,
-cancelled). A signatory's personal number exists to start one signing flow; keeping it
+cancelled). A signatory's delivery address exists to start one signing flow; keeping it
 after the flow ends is retention nobody asked for, and clearing it bounds the exposure
 in §6 to the life of a pending request rather than the life of the scope.
 
@@ -173,18 +182,24 @@ error rather than a mystery.
 ([`connectors/scrive/src/index.ts:349-367`](../../connectors/scrive/src/index.ts#L349-L367)).
 Two consequences, both in #620's evidence:
 
-- With `authLevel: 'strong'`, Scrive refuses before the document can start — BankID
-  needs a personal number field on the signatory. The connector now refuses this
-  itself, before egress, with a readable sentence
-  ([`index.ts:251-272`](../../connectors/scrive/src/index.ts#L251-L272)).
 - With `basic`, the document starts and then has nobody to deliver to. `name: p.label`
-  is a role name — "Beställare" — not a person, and no address is sent.
+  is a role name — "Beställare" — not a person, and no address is sent. Scrive answers
+  `invalid_invitation_delivery_info`.
+- With `authLevel: 'strong'`, the same thing fails for the same reason. v0.1 recorded a
+  second, BankID-specific cause here — a missing personal number — and a connector-side
+  refusal of `strong` before egress. Both are gone: #687 established that the field, not
+  a value, is what Scrive validates, and `scriveAuthMethod` now maps `strong` straight
+  through while `update` sends an empty `personal_number` for every `se_bankid` party
+  ([`index.ts:239-261`](../../connectors/scrive/src/index.ts#L239-L261)). The delivery
+  address is the whole of what is missing, at both auth levels.
 
-The provider-side slots are **already plumbed**: `ScriveParty` declares `email` and
-`personalNumber`, and both are wired into Scrive's `fields` array
+The provider-side slot is **already plumbed**: `ScriveParty` declares `email`, wired into
+Scrive's `fields` array
 ([`connectors/scrive/src/api.ts:133-157`](../../connectors/scrive/src/api.ts#L133-L157),
-[`:329-350`](../../connectors/scrive/src/api.ts#L329-L350)). They are egress slots with
-no producer. Everything this document designs is the producer.
+[`:329-350`](../../connectors/scrive/src/api.ts#L329-L350)). It is an egress slot with no
+producer. Everything this document designs is the producer. (`personalNumber` is declared
+alongside it and is deliberately sent empty — it needs no producer, and giving it one
+would create the carrier problem this document exists to avoid.)
 
 ## 2. The constraint chain — why the sealed carrier cannot be built
 
@@ -242,8 +257,8 @@ in-scope as such: step 4 rules out projecting a *secret* key, and says nothing a
 Had the contact ridden the event, it would have hit §13.1's **limit 1: one subject per
 event**. `_substrat_outbox` has a single `subject_id` column
 ([`scope-do.ts:124`](../../packages/adapter-cloudflare/src/scope-do.ts#L124)), and a
-two-party avtal with a personal number for each has two subjects and one slot: erasing
-party A would have to null a payload still carrying party B's contact.
+two-party avtal with a contact for each has two subjects and one slot: erasing party A
+would have to null a payload still carrying party B's contact.
 
 Per-party sealing would have sidestepped it neatly — each blob keyed to its own
 subject, so destroying A's key blinds A and leaves B readable, and the row's own
@@ -261,6 +276,12 @@ Caveat added after review: this dissolution is complete only under **D-2**. Opti
 classification and a subject — so limit 1 returns there, blunted but not gone.
 
 ### 2.2 Does Swedish law reopen the spine option?
+
+Kept as written, and now partly moot: since v0.2 carries no personal number at all (§4),
+the question below is no longer load-bearing for *this* carrier. It is retained because
+the answer is the reusable part — it governs any future proposal to put direct PII in the
+spine, and the conclusion it reaches is the reason D-1 holds regardless of what the
+carrier turns out to be carrying.
 
 Raised during review, and worth answering in the document rather than in a thread: a
 personnummer is **not** an Article 9 special category, Sweden's national rule
@@ -402,18 +423,27 @@ argument, not as the plan.
 export const partyContact = z.object({
   email: z.string().email().optional(),
   mobile: z.string().min(1).optional(),
-  /** Only for authLevel 'strong'. Never emitted, never logged, cleared at resolution. */
-  personalNumber: z.string().min(1).optional(),
 });
 
 // on signatureRequestParty:
 contact: partyContact.optional(),
 ```
 
-`requestSignatures` writes it to the row and **does not** put it on the event. A party
-declaring `authLevel: 'strong'` without `contact.personalNumber` is refused in the
-engine, at the call site, with the reason — the same refuse-before-egress shape #620
-praised in ask 2, moved one layer earlier where the caller can actually fix it.
+**No `personalNumber` field.** v0.1 carried one and made it a precondition of
+`authLevel: 'strong'`. Built as written, that would refuse exactly the flow #688
+unblocked — and refuse it one layer *earlier* than the connector used to, so a vertical
+that correctly holds no personnummer still could not use BankID. That was ask 2's
+original complaint, reintroduced by the fix for ask 1. The field is gone rather than
+merely optional: an optional PII field on an engine surface is a carrier that exists,
+and §5 limit 1 is easier to hold when there is nothing to hold.
+
+The precondition, corrected: **`strong` requires a delivery address, never a personal
+number** — which is not a rule about `strong` at all, because `basic` needs one just as
+much. A party the request cannot reach is refused in the engine, at the call site, with
+the reason. If some future provider genuinely needs a personal number from the relying
+party, that is a provider-specific refusal at egress in that connector, and it arrives
+with its own carrier argument; it is not an engine precondition and does not belong in
+this shape.
 
 **Engine read operation** — new permission key, new operation:
 
@@ -431,7 +461,7 @@ const scope = await host.getConnectorScope(connectionId, scopeId);
 const { parties } = await scope.invoke('protocol/resolve-party-contacts', {
   instanceId: payload.instanceId,
 });
-// → ScriveParty.email / .personalNumber, already wired to the provider's fields array
+// → ScriveParty.email, already wired to the provider's fields array
 ```
 
 but the caller differs by path, and that asymmetry is the open decision:
@@ -450,14 +480,16 @@ resolves contacts on the hosted path and silently sends contactless parties on t
 self-hosted one would reintroduce #620's original failure — a document that starts and
 reaches nobody — on the path we test least.
 
-And `scriveAuthMethod`'s `'strong'` refusal is replaced by: `strong` requires a
-resolved `personalNumber`, refused before egress if absent.
+`scriveAuthMethod` needs no change. Its `'strong'` refusal was already removed in #688,
+and nothing here restores it: `strong` maps to `se_bankid` with an empty
+`personal_number` field, and the only thing the connector must have resolved before
+egress is a delivery address.
 
 **Both human checkpoints fire, which is the point.** The new column is migration
 `0004` on `protocol_signature_requests` (migration diff), and
 `protocol:resolve-party-contact` plus the connection grant that holds it appear in
-`PERMISSIONS.md` (permission diff). A connection that can read signatory personal
-numbers should be legible in a PR, and this makes it so.
+`PERMISSIONS.md` (permission diff). A connection that can read how signatories are
+reached should be legible in a PR, and this makes it so.
 
 ## 5. What this does not solve — stated, not discovered
 
@@ -476,9 +508,11 @@ numbers should be legible in a PR, and this makes it so.
    is what keeps this window short. Extending sealing to declared vertical columns is a
    real follow-up and is out of scope here.
 
-3. **The personal number still reaches the provider**, which is the entire purpose. It
+3. **The delivery address still reaches the provider**, which is the entire purpose. It
    is passed through and not persisted by us — `ScriveParty`'s doc already commits to
-   that.
+   that. (A personal number reaches the provider too, but never through us: the
+   signatory enters it into the BankID ceremony, and it comes back in the completion
+   data. That is the property that let v0.2 drop the field.)
 
 4. **No audit entry is added for the contact read.** It is an ordinary operation invoke
    by a connection, checked and attributable like any other; it does not land in the
@@ -526,9 +560,9 @@ terms:
 
 **Version skew is benign in both directions.** Old connector + new engine: the ciphertext
 is stripped on parse and the connector behaves as it does today. New connector + old
-engine: no contact field arrives, so the connector must treat it as optional — refusing
-`strong` with the existing message and proceeding on `basic`. Neither combination is worse
-than the status quo, which is that nothing works.
+engine: no contact field arrives, so the connector must treat it as optional and proceed
+as it does today — which means the document starts and reaches nobody, at either auth
+level. Neither combination is worse than the status quo, which is that nothing works.
 
 **But "additive" is not "no risk", and four things are worth naming.**
 
@@ -579,12 +613,13 @@ contract with a known signatory, watched, before it is left to run.
    generalise now and awkward later.
 
 4. **Does `partyContact` belong on the engine at all, or should the engine store an
-   opaque blob it never interprets?** A `personalNumber` column in `engine-protocol`
-   changes the engine's posture — it has held only opaque refs until now, deliberately.
-   An opaque `contact_blob` the connector parses keeps the engine ignorant but moves the
-   schema contract into an untyped string. Recommendation: typed, because a
-   provider-agnostic engine choosing what "how to reach a party" means is exactly the
-   `authLevel` argument from ask 2, one level down.
+   opaque blob it never interprets?** A contact column in `engine-protocol` changes the
+   engine's posture — it has held only opaque refs until now, deliberately. An opaque
+   `contact_blob` the connector parses keeps the engine ignorant but moves the schema
+   contract into an untyped string. Recommendation: typed, because a provider-agnostic
+   engine choosing what "how to reach a party" means is exactly the `authLevel` argument
+   from ask 2, one level down. Dropping `personalNumber` (§4) makes this easier, not
+   harder: the type is now small, provider-agnostic and free of direct PII.
 
 5. **Does clear-at-resolution (D-3) fight `recordSignature`'s ordering?** The clear must
    land after the connector no longer needs the plaintext row. D-5 says nothing re-reads
