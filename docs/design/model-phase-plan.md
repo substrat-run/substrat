@@ -368,11 +368,43 @@ So the emit is not a convenience — it is what makes the TS choice viable in a 
 never had to face:
 
 **The model emits a checked-in `model.json`** (the `openapi.json` pattern), with the SDL view
-and ER diagram derived from *that*, never from the TS source. This gives the
-parse-without-execute path for untrusted rendering, the diff surface §5 requires, and the
-skimmable artifact — all derived, none hand-maintained. It is the same shape as
+and ER diagram derived from *that*, never from the TS source. It is the same shape as
 `lint:permissions`: `MODULES` + `ROLES` are TypeScript, `PERMISSIONS.md` is the diffable
 artifact.
+
+### CORRECTION — `model.json` is not for every consumer
+
+An earlier version of this section said *"everything downstream reads `model.json`, never
+the TypeScript."* That is **too broad**, and it conflates renderers with generators.
+
+`emitModel` goes through `z.toJSONSchema`, which keeps the DECLARATIVE constraints and
+silently drops the PROGRAMMATIC ones. Measured:
+
+| declared | in `model.json` |
+|---|---|
+| `.min(1)`, `.regex(…)`, `.enum([…])` | preserved |
+| `.nullable()`, `.optional()`, `.default(…)` | preserved |
+| `.brand<'ThingId'>()` | **gone** — plain `{"type":"string"}` |
+| `.refine(v => …)` | **gone** — plain `{"type":"string"}` |
+
+A generator emitting Zod validators from the JSON would therefore produce validators
+**weaker than the model declares**, accepting input the model rejects, with no trace of the
+loss. That is exactly the defect class this whole effort removes — a second description
+that disagrees with the first and nothing holding them together.
+
+So the split is by consumer, not blanket:
+
+| consumer | reads | why |
+|---|---|---|
+| a code generator | **the TS module** | needs the live Zod objects; the JSON round-trip loses refinements and brands |
+| a hosted console, an ER diagram | `model.json` | must never execute a tenant's code |
+| the diff classifier, the review checkpoint | `model.json` | wants stability and diffability, not validators |
+
+This also refines the swappability argument. `model.json` keeps the notation swappable for
+the renderers; a generator's stable interface is the **exported object** — what
+`defineEntities` / `defineOperations` return — not the file's syntax. A different authoring
+layer producing the same object shape still works, and `model.json` is a lossy *projection*
+of that object for consumers who cannot run it.
 
 Honest cost: a TS object literal is less skimmable than SDL for a non-technical approver. I
 think that argument is void, because the approver reads **the diagram** (#684), not either

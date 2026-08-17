@@ -249,9 +249,40 @@ Approval of the design is what unlocks step 5. Until you have it, you are still 
 
 ---
 
-## Step 5 — Build it
+## Step 5 — Declare the model
 
-The design is approved — now build it with the **new-vertical** skill
+The design is approved. Before any handler, declare **what exists** in `spec/model.ts`:
+entities, the operations over them, and the permissions those operations check. One
+TypeScript module, and the compiler checks the joins — a `parents` naming no entity, an
+`entityIdFrom` naming no output field, a payload carrying an `erasable` field are all
+compile errors, before a line of the module exists.
+
+Full walkthrough: [The model](https://substrat.net/concepts/model). The short version:
+
+```ts
+export const entities = defineEntities({ … });          // table, fields, parents, key, erasable
+export const PERMISSIONS = ['thing:manage'] as const;
+export const operations = defineOperations(entities, PERMISSIONS, [engineEntities])({ … });
+export const model = emitModel(entities);
+```
+
+Behaviour stays prose. If you find yourself inventing a way to declare a state
+*transition*, the boundary has slipped — that belongs in the concept document.
+
+Field names mirror the SQL columns, snake_case included; a prettier naming here is a second
+description of the same rows. And not every table is an entity: an entity is something the
+platform can point at.
+
+**Do not edit `spec/model.ts` during the build.** If a handler cannot return what the model
+declares, that is real information — say so and stop, rather than reshaping the model to
+make the build pass. The model changes because the business changed, never to accommodate
+what got built.
+
+---
+
+## Step 6 — Build it
+
+The model is approved — now build it with the **new-vertical** skill
 (`.claude/skills/new-vertical/SKILL.md`), which turns this design document into a working
 vertical (the three module files, the seed world, the server, the API surface, the app
 skin, the scenario test) against the Callout reference. Point it at the approved
@@ -270,9 +301,9 @@ Two front-door cautions worth carrying in, because they are silent traps and eas
 
 ---
 
-## Step 6 — Run it
+## Step 7 — Run it
 
-(Steps 6–9 happen inside the build, after the new-vertical skill has scaffolded — they are
+(Steps 7–10 happen inside the build, after the new-vertical skill has scaffolded — they are
 here so the whole arc reads in one place.)
 
 Build confidence in this order, and **show the user the output of each**:
@@ -295,7 +326,7 @@ the work and plenty of people want the API and their own frontend.
 
 ---
 
-## Step 7 — The two checkpoints. STOP HERE.
+## Step 8 — The two checkpoints. STOP HERE.
 
 These are the **code** checkpoints — the design gate (step 4) reviewed the *plan*; these
 review the *implementation* against it. The permission diff here should hold no surprises
@@ -323,7 +354,7 @@ see other customers' data?*
 
 ---
 
-## Step 8 — Deploy (optional)
+## Step 9 — Deploy (optional)
 
 Only if the user asks. Local-first is a legitimate stopping point.
 
@@ -353,7 +384,7 @@ and shipping it is a cross-tenant hole with a UI.
 
 ---
 
-## Step 9 — Leave the project competent
+## Step 10 — Leave the project competent
 
 Write a `CLAUDE.md` in the project root carrying the rules below plus the app's own
 vocabulary, cast, and roles. This session has the skill loaded; **the next one won't** —
