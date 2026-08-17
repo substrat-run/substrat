@@ -227,7 +227,7 @@ export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
     lastErrorAt: null,
     createdAt: new Date(Date.now() - 86400_000).toISOString(),
   },
-  grants: ['protocol:record-signature', 'protocol:attach'],
+  grants: ['protocol:read', 'protocol:record-signature', 'protocol:attach'],
   // #618: the failure the preview must be able to show. A 4xx settles `failed` on the first
   // attempt now, so this is one attempt with the provider's whole sentence — not attempt 78
   // of a two-day retry loop whose error nobody could read.

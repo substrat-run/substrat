@@ -58,10 +58,14 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       { key: 'tokenId', label: 'Token credentials identifier', secret: false },
       { key: 'tokenSecret', label: 'Token credentials secret', secret: true },
     ],
-    // `record-signature` lands the signature; `attach` lands the sealed signed PDF
+    // `read` opens the document the vertical bound to the instance (connector-scrive
+    // 0.9.0, #711) — a bound-but-unreadable document dead-letters rather than sending
+    // the attestation sheet instead, so a connection without it cannot send an avtal at
+    // all. `record-signature` lands the signature; `attach` lands the sealed signed PDF
     // (the attachmentTargets write gate). Without `attach` the reconcile retries the
-    // upload forever — the grants travel together.
-    grants: ['protocol:record-signature', 'protocol:attach'],
+    // upload forever — the three grants travel together, and this list is the only
+    // place the dashboard door can carry them, so it must track the connector's needs.
+    grants: ['protocol:read', 'protocol:record-signature', 'protocol:attach'],
   },
 };
 
