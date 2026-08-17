@@ -62,7 +62,7 @@ import {
 	resolveModel,
 } from './providers.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import { detectPhase, interviewWriteGuard, skillsForPhase, type BuildPhase } from './phase.js';
+import { detectPhase, interviewWriteGuard, skillsForPhase, type BuildPhase, buildContext} from './phase.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -278,10 +278,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		}
 	}, 10_000);
 
-	const concept =
-		phase === 'interview'
-			? '(no concept document yet — interview the builder before writing code)'
-			: await cur.projectWs.readFile('spec/concept.md');
+	const concept = await buildContext(cur.projectWs, phase);
 
 	try {
 		// The phase is a workspace fact (phase.ts), so the UI's stepper renders

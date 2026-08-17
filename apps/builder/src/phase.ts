@@ -132,3 +132,30 @@ export function skillsForPhase(
 		.map((e) => loaded.get(e.file))
 		.filter((s): s is string => Boolean(s));
 }
+
+/**
+ * The context a build turn is given: the concept always, and the declared model
+ * once it exists (#681).
+ *
+ * The model is APPENDED to the concept block rather than threaded as a second
+ * parameter — the same seam, so the two hosts cannot drift on what a turn sees.
+ * Read from the workspace on every turn, never carried in memory: the file on
+ * disk is the artifact of record.
+ */
+export async function buildContext(
+	ws: { exists(p: string): Promise<boolean>; readFile(p: string): Promise<string> },
+	phase: BuildPhase,
+): Promise<string> {
+	if (phase === 'interview') {
+		return '(no concept document yet — interview the builder before writing code)';
+	}
+	const concept = await ws.readFile('spec/concept.md');
+	if (phase === 'model' || !(await ws.exists('spec/model.ts'))) return concept;
+	const model = await ws.readFile('spec/model.ts');
+	return (
+		`${concept}\n\n` +
+		`--- spec/model.ts (APPROVED — transcribe, do not re-derive) ---\n\n` +
+		`${model}\n\n` +
+		`--- end spec/model.ts ---`
+	);
+}

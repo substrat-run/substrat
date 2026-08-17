@@ -1,6 +1,36 @@
 # Scaffold — the first build
 
-Translate the approved spec/concept.md; never re-derive the domain. Its
+## The model is FIXED. Transcribe it.
+
+`spec/model.ts` is approved and appears in your context. The entity model and the
+operation surface are **decided** — transcribe them, never re-derive them:
+
+| in the model | becomes |
+|---|---|
+| `defineEntities` | the migration DDL, and `manifestEntities(...)` in the manifest |
+| `parents` | `entityRelations` — spread from `manifestEntities`, never hand-written |
+| `defineOperations` | one registered operation per key, each checking its declared `permission` |
+| `input` | the schema the handler parses — **import it, do not restate it** |
+| `output` | the handler's return type, bound with `satisfies OperationImpl<typeof operations, OperationContext>` |
+| `emits` | the `ctx.emit` call, using `entityIdFrom` for the entity id |
+
+Do not add an operation the model does not declare, rename one, or change an
+input or return shape. **You cannot edit `spec/model.ts` — the write is refused.**
+
+If the model is genuinely wrong — a declared return the handler cannot produce,
+an operation that cannot be implemented as specified — that is real information,
+and it goes **back to the model phase**. Say so plainly and stop. Do not reshape
+the code to make a wrong model compile, and do not work around it: a build that
+works around a wrong model is how a whole vertical comes to agree with a
+contract nobody meant.
+
+Import the engines' schemas rather than retyping them: `workOrder` is what an
+operation returns, `workorderRow` is what the engine stores, and they differ.
+
+---
+
+Translate the approved spec/concept.md for everything the model does not carry —
+behaviour, pricing, denials, the seed cast; never re-derive the domain. Its
 sections map straight onto the build: cast and roles → seed roles/grants; the
 thing that moves → engine composition; the data → migrations; who is denied
 what → permission checks and portal grants; the scenario →
