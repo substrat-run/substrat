@@ -35,3 +35,4 @@ export * from './deploy.js';
 export * from './ci.js';
 export * from './money.js';
 export * from './attachments.js';
+export * from './model.js';

@@ -1,7 +1,7 @@
 {
   "name": "@substrat-run/contracts",
   "version": "0.66.0",
-  "description": "Substrat kernel contract schemas — Zod is the source of truth (master plan D-22); OAS/JSON Schema are emitted artifacts",
+  "description": "Substrat kernel contract schemas \u2014 Zod is the source of truth (master plan D-22); OAS/JSON Schema are emitted artifacts",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -23,13 +23,15 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "typescript": "^7.0.0"
+    "typescript": "^7.0.0",
+    "vitest": "^3.0.0"
   },
   "publishConfig": {
     "access": "public"
