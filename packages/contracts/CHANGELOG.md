@@ -1,5 +1,110 @@
 # @substrat-run/contracts
 
+## 0.67.0
+
+### Minor Changes
+
+- 5601fa9: `manifestEntities` gains `foreignRelations`, found by the first adopter.
+
+  Callout declares `{ entityType: 'protocol', parentType: 'workorder' }` — **both
+  engine entities, neither owned by Callout**. The protocol engine is
+  entity-agnostic, so only the vertical knows that protocols hang off work orders,
+  and it is the vertical that must declare the permission-walk edge.
+
+  `manifestEntities` assumed every referenced entity was locally declared, which no
+  real vertical satisfies. Rather than widen `parent` to accept any string —
+  making the checked case indistinguishable from the unchecked one — foreign edges
+  get their own field, so they read as a short list of what is _not_ yet verified.
+  They become checkable when engines export their entity-type constants (#696 item
+  3), at which point the field takes those constants instead of `string`.
+
+  This is what adoption is for: the spike could not have found it, because the
+  spike had no engines.
+
+- 81a8c62: An entity registry, so the manifest's entity names have something to be checked against.
+
+  The manifest describes permissions, events, guards, schedules, attachment
+  targets, entity relations, searchables and UI contributions. It does not
+  describe **entities**. `migrations` is a pointer (`journalDir` +
+  `compatibleFrom`), the tables live in raw SQL the manifest never sees, and
+  entity _type names_ appear only as bare `z.string().min(1)` fragments across
+  four unrelated, individually optional features — `attachmentTargets`,
+  `entityRelations`, `searchables` and `ui.entityViews`.
+
+  Nothing checked those four against each other or against the tables. A typo'd
+  `parentType` parsed cleanly and produced an edge permission never flows along:
+  the tuple evaluator walks a relation that does not exist, and a grant that should
+  reach a child silently does not. Now:
+
+  ```
+  Type '"custmer"' is not assignable to type '"contract" | "customer"'.
+    Did you mean '"customer"'?
+  ```
+
+  `defineEntities` declares them; `manifestEntities` composes the
+  entity-referencing manifest fragments against that declaration. Checked: every
+  `entityType` in `attachmentTargets`, `searchables` and `ui.entityViews`; `key`
+  and `erasable` against the entity's own fields; and `searchables.fields` against
+  the _named_ entity's fields — the only place a field name appears in the manifest
+  today, and nothing checked it.
+
+  `entityRelations` is **derived** from the entities' `parent` declarations rather
+  than written a second time. Two descriptions of one fact is how they come to
+  disagree, and this disagreement is invisible.
+
+  `emitModel` renders the registry to plain JSON, deterministically (sorted
+  entities, sorted `key`/`erasable`, field schemas via `z.toJSONSchema` — the same
+  conversion the OpenAPI builder already uses, so no second schema language enters
+  the pipeline). **This is the artifact of record**: everything downstream should
+  read it rather than the TypeScript, which is what keeps the authoring notation
+  swappable — a later change of authoring layer becomes a new emitter writing the
+  same JSON, and nothing downstream notices.
+
+  Additive and opt-in: nothing existing declares entities, no manifest changes
+  shape, and the whole monorepo builds and typechecks unaltered.
+
+  **Not included, deliberately.** No `lint:model --check` tool yet. No vertical
+  declares entities, so a checkpoint would scan nothing — and per
+  `tools/permission-diff.mts`'s own rule, _"a checkpoint that checked nothing must
+  never print a green light."_ The tool lands with the first adopter.
+
+  `packages/contracts` also gains a `tsconfig.test.json` and a `test` script: its
+  `tsconfig.json` includes only `src`, so nothing in `test/` was typechecked, and
+  the package had no test wiring at all. `test/model.test.ts` is the feature rather
+  than a test of it — a type-level constraint fails _permissively_, so written the
+  obvious way every check compiles clean and enforces nothing. Both directions were
+  verified: removing a `@ts-expect-error` surfaces the real error, adding a bogus
+  one is reported unused.
+
+- 746a885: The mixed edge gets its checkable half checked, and diagnostics name the entities.
+
+  Handlebar's permission walk is `customer → bike → workorder → protocol`, and it
+  crosses the ownership boundary in the middle: `workorder` is engine-workorder's,
+  `bike` is the vertical's. `foreignRelations` (added by the first adopter) treated
+  both sides of every foreign edge as unchecked strings — which threw away a check
+  we hold, because the parent of that edge IS a declared entity.
+
+  Split by which half can be checked:
+
+  - `foreignChildOf` — foreign child, **local parent**. `parentType` is strictly a
+    declared entity; a typo is a compile error.
+  - `foreignChildren` — neither side ours. Unchecked, and visible as such.
+
+  Both collapse back into `parent` when engines export entity-type constants
+  (#696 item 3).
+
+  **Diagnostics.** Entity-name positions are now written `keyof T & string` inline
+  rather than through the `EntityName<T>` alias. TypeScript prints an alias
+  _unresolved_ — the error named the alias and inlined the entire entity map,
+  hundreds of characters before anything useful. Inline, it lists the names:
+
+  ```
+  Type '"bkie"' is not assignable to type '"bike" | "customer"'.
+  ```
+
+  That is one of the costs recorded against the TypeScript decision on #680, and
+  this is the cheap half of it fixed.
+
 ## 0.66.0
 
 ## 0.65.0
@@ -2114,7 +2219,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
