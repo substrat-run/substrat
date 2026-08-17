@@ -2,8 +2,9 @@
 
 Status: draft for review. Written **before** reading `Egeryds/CRM-EFF`, deliberately, so
 that it and their implementation are two independent descriptions and every disagreement
-between them is a defect in one of the two. Supersedes parts of #680/#681/#684/#685; the
-issue-by-issue mapping is §9.
+between them is a defect in one of the two. **Proposes** changes to #680/#681/#684/#685 — it
+decides nothing on its own; the issue-by-issue mapping is §9, and §3's notation
+recommendation is open until #680 is called.
 
 Evidence base: #695 (a production vertical modelled as SDL, re-emitted, and diffed against
 the hand-written app — 55/55 tables column-exact, 159 operations, 164 routes, 73 permissions
