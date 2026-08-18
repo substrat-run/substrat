@@ -29,7 +29,7 @@ const entities = defineEntities({
       customer_id: z.string(),
       status: z.enum(['open', 'closed']),
       seats: z.number(),
-      active: z.boolean(),
+      active: z.number(),
       note: z.string().nullable(),
     }),
     parents: ['customer'],
@@ -65,8 +65,35 @@ describe('emitTables', () => {
     expect(sql).toContain("status TEXT NOT NULL CHECK (status IN ('open','closed'))");
   });
 
-  it('maps booleans to INTEGER — SQLite has none', () => {
+  it('maps a numeric flag to INTEGER — SQLite has no boolean', () => {
     expect(sql).toContain('active INTEGER NOT NULL');
+  });
+
+  it('refuses z.boolean() in a stored field, and says why', () => {
+    // INTEGER is the right column; `boolean` is the wrong type to promise,
+    // because SQLite hands back 0/1 and `EntityRow` would infer a boolean the
+    // database can never return.
+    const entities = {
+      thing: {
+        table: 'acme_things',
+        fields: z.object({ id: z.string(), done: z.boolean() }),
+      },
+    };
+    expect(() => emitTables(entities)).toThrow(/is z.boolean\(\), which stores as INTEGER/);
+    expect(() => emitTables(entities)).toThrow(/declare it z.number\(\)/);
+  });
+
+  it("...while an operation's input keeps z.boolean(), which is correct", () => {
+    // The asymmetry that makes this subtle: an app takes `done: z.boolean()`
+    // across JSON and stores `done: z.number()`, and both are right. Nothing
+    // here should discourage the first.
+    const entities = {
+      thing: {
+        table: 'acme_things',
+        fields: z.object({ id: z.string(), done: z.number() }),
+      },
+    };
+    expect(() => emitTables(entities)).not.toThrow();
   });
 
   it('makes a parent edge a real foreign key when its id column exists', () => {

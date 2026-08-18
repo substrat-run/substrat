@@ -3,7 +3,7 @@
     {
       "version": "0001",
       "slug": "add-todo_owners-and-3-more",
-      "sql": "CREATE TABLE todo_owners (\n  id TEXT PRIMARY KEY NOT NULL,\n  email TEXT NOT NULL,\n  display_name TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  UNIQUE (email)\n);\n\nCREATE TABLE todo_lists (\n  id TEXT PRIMARY KEY NOT NULL,\n  owner_id TEXT NOT NULL REFERENCES todo_owners(id),\n  name TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);\n\nCREATE TABLE todo_shares (\n  id TEXT PRIMARY KEY NOT NULL,\n  list_id TEXT NOT NULL REFERENCES todo_lists(id),\n  principal TEXT NOT NULL,\n  email TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);\n\nCREATE TABLE todo_items (\n  id TEXT PRIMARY KEY NOT NULL,\n  list_id TEXT NOT NULL REFERENCES todo_lists(id),\n  text TEXT NOT NULL,\n  done INTEGER NOT NULL,\n  added_by TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);"
+      "sql": "CREATE TABLE todo_owners (\n  id TEXT PRIMARY KEY NOT NULL,\n  email TEXT NOT NULL,\n  display_name TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  UNIQUE (email)\n);\n\nCREATE TABLE todo_lists (\n  id TEXT PRIMARY KEY NOT NULL,\n  owner_id TEXT NOT NULL REFERENCES todo_owners(id),\n  name TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);\n\nCREATE TABLE todo_shares (\n  id TEXT PRIMARY KEY NOT NULL,\n  list_id TEXT NOT NULL REFERENCES todo_lists(id),\n  principal TEXT NOT NULL,\n  email TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  UNIQUE (list_id, principal)\n);\n\nCREATE TABLE todo_items (\n  id TEXT PRIMARY KEY NOT NULL,\n  list_id TEXT NOT NULL REFERENCES todo_lists(id),\n  text TEXT NOT NULL,\n  done INTEGER NOT NULL,\n  added_by TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);"
     }
   ]
 }

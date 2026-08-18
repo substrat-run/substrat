@@ -59,7 +59,21 @@ function columnFor(name: string, schema: z.ZodTypeAny, where: string): Column {
   const kind = (inner as { type?: string }).type ?? (inner as { _def?: { typeName?: string } })._def?.typeName;
 
   if (kind === 'string' || kind === 'ZodString') return { name, type: 'TEXT', nullable };
-  if (kind === 'boolean' || kind === 'ZodBoolean') return { name, type: 'INTEGER', nullable };
+  if (kind === 'boolean' || kind === 'ZodBoolean') {
+    // INTEGER is the right COLUMN, and `boolean` is the wrong TYPE to promise:
+    // SQLite hands back 0/1, so `EntityRow` would infer a boolean the database
+    // can never return. Refused rather than emitted, per rule 1 — a silent
+    // default here is a type error that typechecks.
+    //
+    // Note the asymmetry, which is why the message says it: `z.boolean()` is
+    // CORRECT for an operation's input, which crosses JSON. An app can take
+    // `done: z.boolean()` and store `done: z.number()`, and both are right.
+    throw new Error(
+      `emit-sql: ${where} is z.boolean(), which stores as INTEGER — declare it z.number() so ` +
+        'the row type matches what SQLite returns. (z.boolean() stays correct for an ' +
+        "operation's input, which crosses JSON.)",
+    );
+  }
   if (kind === 'number' || kind === 'ZodNumber') {
     // Ints and reals both land in NUMERIC affinity; INTEGER is the honest
     // default for counts, and money is a string by platform rule (K-14).
@@ -214,11 +228,24 @@ export function columnsOf<T extends Record<string, EntityDef>>(
   return out;
 }
 
-/** `UNIQUE (email)` per declared key field. */
+/**
+ * The natural key, as ONE constraint over all its fields.
+ *
+ * `key: ['list_id', 'principal']` means "one share per person per list" and
+ * emits `UNIQUE (list_id, principal)`. It used to emit one UNIQUE per field —
+ * "a list may be shared once, ever" AND "a person may receive one share, ever",
+ * two wrong constraints silently replacing the composite. Stricter than
+ * intended, so it failed closed rather than open, and nothing said so.
+ *
+ * Every declaration in the fleet was single-field when this changed, so the two
+ * readings agreed everywhere and nothing could reveal the difference until an
+ * app needed a composite.
+ */
 export function uniqueConstraints(name: string, entity: EntityDef): string[] {
   const shape = entity.fields.shape as Record<string, z.ZodTypeAny>;
-  return (entity.key ?? []).map((k) => {
+  const key = entity.key ?? [];
+  for (const k of key) {
     if (!(k in shape)) throw new Error(`emit-sql: ${name}.key names '${k}', which is not a field`);
-    return `UNIQUE (${k})`;
-  });
+  }
+  return key.length > 0 ? [`UNIQUE (${key.join(', ')})`] : [];
 }
