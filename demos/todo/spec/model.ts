@@ -76,10 +76,7 @@ export const todoEntities = defineEntities({
    * source table is a missing table. It is the only directly personal field in
    * the app, so it is `erasable`, which also makes it uncarryable by any event.
    *
-   * Uniqueness (one share per person per list) is enforced in the handler rather
-   * than declared: `key` emits one UNIQUE per named field, so `['list_id',
-   * 'principal']` would mean "a list may be shared once, ever" and "a person may
-   * receive one share, ever" — two wrong constraints instead of the composite.
+   * `key` is the composite it reads as: one share per person per list.
    */
   share: {
     table: 'todo_shares',
@@ -91,6 +88,7 @@ export const todoEntities = defineEntities({
       created_at: z.string(),
     }),
     parents: ['list'],
+    key: ['list_id', 'principal'],
     erasable: ['email'],
   },
 });

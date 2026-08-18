@@ -52,9 +52,9 @@ const sql = emitTables(entities);
 | `id` | `id TEXT PRIMARY KEY NOT NULL` |
 | `z.string()` / `.nullable()` | `TEXT NOT NULL` / `TEXT` |
 | `z.number()` | `INTEGER` |
-| `z.boolean()` | `INTEGER` — SQLite has no boolean |
+| `z.boolean()` | **refused** — SQLite returns 0/1, so declare `z.number()` and keep the row type honest (`z.boolean()` stays right for an operation's *input*) |
 | `z.enum(['a','b'])` | `TEXT NOT NULL CHECK (col IN ('a','b'))` |
-| `key: ['number']` | `UNIQUE (number)` |
+| `key: ['number']` | `UNIQUE (number)` — composite over all its fields: `key: ['a','b']` is one `UNIQUE (a, b)` |
 | `parents: ['customer']` | `REFERENCES acme_customers(id)` on the matching `customer_id` |
 | `jsonColumn('because…')` | `TEXT` |
 

@@ -26,7 +26,7 @@
 import { z } from 'zod';
 import { columnsOf, emitTables, uniqueConstraints } from './emit-sql.js';
 import type { EntityDef } from '@substrat-run/contracts';
-import { journalColumns } from './journal.js';
+import { journalColumns, journalUniques } from './journal.js';
 
 export interface JournalEntry {
   /** Derived, monotonic, zero-padded: `0001`. Never authored. */
@@ -62,8 +62,10 @@ export function planMigration<T extends Record<string, EntityDef>>(
   entities: T,
   journal: Journal,
 ): MigrationPlan {
-  const applied = journalColumns(journal.entries.map((e) => e.sql).join('\n'));
+  const journalSql = journal.entries.map((e) => e.sql).join('\n');
+  const applied = journalColumns(journalSql);
   const desired = journalColumns(emitTables(entities));
+  const appliedUniques = journalUniques(journalSql);
 
   // table name → the entity that owns it, so a diff can be reported in the
   // vocabulary the model uses rather than in raw table names.
@@ -157,12 +159,39 @@ export function planMigration<T extends Record<string, EntityDef>>(
       );
     }
 
-    // A key added after the fact needs a table rebuild in SQLite, which is a
-    // decision rather than a diff.
-    if (uniqueConstraints(o.name, o.entity).length > 0 && !have.has('__unique_checked__')) {
-      // Nothing to do: the constraint shipped with the CREATE. Declared here so
-      // the omission is visible rather than silent — SQLite cannot ADD a UNIQUE
-      // constraint to an existing table without rebuilding it.
+    // -- a key declared after the table already exists ------------------------
+    // SQLite cannot ADD a UNIQUE constraint in place; it needs the table
+    // rebuilt, copied and renamed. That is a decision about live data, not a
+    // diff, so it is refused rather than guessed — and refused LOUDLY, because
+    // silently reporting "up to date" over a missing uniqueness guarantee is
+    // how a duplicate gets in.
+    const wantUniques = uniqueConstraints(o.name, o.entity).map((u) =>
+      (/UNIQUE\s*\(([^)]*)\)/i.exec(u)?.[1] ?? '')
+        .split(',')
+        .map((c) => c.trim())
+        .filter(Boolean)
+        .join(', '),
+    );
+    // Translated through any rename THIS plan is about to emit: the journal
+    // still names the old column, and SQLite rewrites the constraint along with
+    // it. Comparing untranslated makes a renamed key look like one the journal
+    // never had, and refuses the very change that would fix it.
+    const toCurrent = new Map([...renames].map(([current, previous]) => [previous, current]));
+    const haveUniques = new Set(
+      [...(appliedUniques.get(table) ?? new Set<string>())].map((c) =>
+        c
+          .split(', ')
+          .map((col) => toCurrent.get(col) ?? col)
+          .join(', '),
+      ),
+    );
+    for (const want of wantUniques) {
+      if (haveUniques.has(want)) continue;
+      refusals.push(
+        `'${table}' declares a key over (${want}) that the journal does not have — SQLite ` +
+          'cannot add a UNIQUE constraint to an existing table without rebuilding it. Rebuild ' +
+          'it in a hand-written entry, or drop the key',
+      );
     }
   }
 

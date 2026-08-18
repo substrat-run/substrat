@@ -4,7 +4,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z, defineEntities } from '@substrat-run/contracts';
-import { emitTables, journalColumns, planMigration, parseJournal, type Journal } from '../src/index.js';
+import {
+  emitTables,
+  journalColumns,
+  journalUniques,
+  planMigration,
+  parseJournal,
+  type Journal,
+} from '../src/index.js';
 
 const base = defineEntities({
   owner: {
@@ -263,5 +270,63 @@ describe('renamedFrom — the one declaration a diff cannot derive', () => {
     expect(plan.kind).toBe('refused');
     if (plan.kind !== 'refused') return;
     expect(plan.reasons.join(' ')).toMatch(/names the field it renamed TO/);
+  });
+});
+
+describe('a key is a composite, and one added later cannot be applied in place', () => {
+  it('emits one UNIQUE over all the key fields', () => {
+    const composite = defineEntities({
+      share: {
+        table: 'app_shares',
+        fields: z.object({ id: z.string(), list_id: z.string(), principal: z.string() }),
+        key: ['list_id', 'principal'],
+      },
+    });
+    const plan = planMigration(composite, empty);
+    if (plan.kind !== 'append') throw new Error('expected an append');
+    // One constraint, not two: "one share per person per list" — NOT "a list may
+    // be shared once, ever" and "a person may receive one share, ever".
+    expect(plan.entry.sql).toContain('UNIQUE (list_id, principal)');
+    expect(plan.entry.sql.match(/UNIQUE/g)).toHaveLength(1);
+  });
+
+  it('refuses a key added to a table that already exists', () => {
+    const before = defineEntities({
+      share: {
+        table: 'app_shares',
+        fields: z.object({ id: z.string(), list_id: z.string(), principal: z.string() }),
+      },
+    });
+    const after = defineEntities({
+      share: {
+        table: 'app_shares',
+        fields: z.object({ id: z.string(), list_id: z.string(), principal: z.string() }),
+        key: ['list_id', 'principal'],
+      },
+    });
+    const plan = planMigration(after, first(before));
+    // Reporting "up to date" over a missing uniqueness guarantee is how a
+    // duplicate gets in — so this refuses rather than shrugs.
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons[0]).toMatch(/cannot add a UNIQUE constraint/);
+  });
+
+  it('...while a key that shipped with the table is up to date', () => {
+    const withKey = defineEntities({
+      share: {
+        table: 'app_shares',
+        fields: z.object({ id: z.string(), list_id: z.string(), principal: z.string() }),
+        key: ['list_id', 'principal'],
+      },
+    });
+    expect(planMigration(withKey, first(withKey)).kind).toBe('up-to-date');
+  });
+
+  it('reads a composite constraint back out of a journal', () => {
+    const u = journalUniques(
+      'CREATE TABLE t (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL,\n  UNIQUE (a, b)\n);',
+    );
+    expect([...(u.get('t') ?? [])]).toEqual(['a, b']);
   });
 });

@@ -33,7 +33,8 @@ export const todoMigrations: SqlMigration[] = [
         list_id TEXT NOT NULL REFERENCES todo_lists(id),
         principal TEXT NOT NULL,
         email TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        UNIQUE (list_id, principal)
       );
 
       CREATE TABLE todo_items (
