@@ -1,5 +1,130 @@
 # @substrat-run/kernel
 
+## 0.72.0
+
+### Minor Changes
+
+- f869541: `ctx.grant` / `ctx.revoke` — an operation may narrow a permission it holds onto
+  one entity.
+
+  Every entity-narrowed grant in the fleet is made at seed time by
+  `HostAdmin.grant`, a platform actor's verb. So an app where a _person_ shares
+  their own record with someone had no supported mechanism: `OperationContext`
+  offered `check`, `link` and `emit`, and nothing that could widen access at
+  runtime. The only way to ship such a feature was a membership table consulted by
+  hand in every handler — the forgotten-WHERE-clause failure this platform exists
+  to remove, reintroduced one vertical at a time.
+
+  Found by building a vertical forward from its model rather than converting one
+  that already existed: the todo demo's sharing feature is unbuildable without it,
+  and no existing demo could reveal the gap because all of their entity-narrowed
+  access is seeded.
+
+  Non-escalating by construction:
+
+  - **Entity-narrowed only.** `entity` is required, so module code can never write
+    a scope-wide or tenant-wide grant.
+  - **Delegation, never elevation.** The caller's own decision on that entity is
+    re-checked inside the verb, so an operation can only hand out what it was
+    itself given.
+
+  Transactional with the operation, like rows and events: a grant made by an
+  operation that then throws never happened.
+
+  Pinned by five contract-suite cases both adapters run — the happy path, that the
+  grant reaches that entity and nothing else, the refused elevation, a control
+  proving a permission the caller _does_ hold still grants, and revoke. The
+  refusal case is mutation-checked: removing the guard fails it.
+
+- 9208b4e: A signature request can carry **how a party is reached** — sealed to the
+  connector, never readable in the spine (#687 item 1,
+  `docs/design/signature-contact-carrier.md`).
+
+  Every external signature this platform has ever sent has failed. The reason was
+  not the auth level and never was: `connector-scrive` mapped each party to a role
+  label — "Beställare" — and no address, so Scrive answered
+  `invalid_invitation_delivery_info` and a document started with nobody to deliver
+  it to. `ScriveParty.email` was declared, wired into the provider's `fields`
+  array, and filled by nothing. This is its producer.
+
+  **Why it took a design.** The obvious carrier — put the address on the event —
+  is unavailable: `protocol.signatures-requested` lands in `_substrat_outbox` and
+  `_substrat_platform_requests`, kernel rows a vertical may neither write nor
+  erase, so anything a hosted vertical emits in plaintext stays plaintext in copies
+  it cannot reach. The next obvious one — seal it under the per-subject keys — is
+  impossible rather than merely awkward: those keys live in the directory, and a
+  sandbox-clean vertical is architecturally on the far side of that boundary
+  (§2 of the design derives it). And reading the contact back at egress deadlocks,
+  because a connector runs _inside_ the scope's dispatch and re-entering the scope
+  actor wedges it.
+
+  What works is the gap in the middle: a scope may never hold a _secret_ key, and
+  nothing says that about a _public_ one.
+
+  - **`sealTo` / `openSealed` in the kernel** — the asymmetric sibling of
+    `SecretBox`: ECDH P-256 → AES-256-GCM, a fresh ephemeral keypair per seal, and
+    an envelope that is a `SealedSecret` so it carries `keyId`. A cell that cannot
+    name its key can only ever have one, and every ciphertext already written
+    becomes ambiguous the day a second exists. Rotation is deferred; the envelope
+    that permits it is not.
+  - **A keypair per connection.** The private half is sealed under the host
+    `SecretBox` beside the credential and stored **keyId-indexed from day one**,
+    even holding one member — widening a column into a set later is a migration
+    against live connections. Minted on first ask, so a connection older than this
+    feature acquires one by being asked rather than by being reconnected.
+  - **The public half is projected into the scope**, on the channel that already
+    carries entitlements, identity links and connection grants — not
+    `configureInstance`, because a key in the config bag becomes a key in a
+    settings form.
+  - **`ctx.sealToConnection(provider, plaintext)`** — awaited _before_ `ctx.emit`,
+    so `emit` stays synchronous and D-28 is untouched. **Fails closed and legibly**
+    when no key has reached the scope: emitting a request with its addresses
+    silently dropped is the invisible failure this exists to end.
+  - **`conn.unseal(cell)`** at egress, on the connection for the same reason
+    `fetch` and `openAttachment` are — key material never crosses into connector
+    code.
+
+  `engine-protocol` gains `partyContact { email?, mobile? }` on
+  `signatureRequestParty` and migration `0005-party-contact`, which stores **only
+  the ciphertext**. There is no plaintext column to clear later and no erasure
+  story to write: the address is unreadable to the spine, to its backups and to
+  `sealDump`'s output, because the key that opens it is in the directory.
+  `piiClass` therefore stays `'none'` — see the migration's own note for why
+  `'pseudonymous'` would be actively wrong rather than more honest.
+
+  **No `personalNumber` field, and its absence is the decision.** #687 measured the
+  premise and it is false: what a provider validates is that a BankID party _has_
+  the field, not that it holds a value. An optional PII field on an engine surface
+  is a carrier that exists.
+
+  Two invariants ship with the carrier, both in `requestSignatures`, both refusing
+  before anything freezes:
+
+  - **A party that will be invited must be reachable.** Otherwise the provider
+    refuses after the instance has already frozen, leaving an avtal that looks sent
+    for signature and is not.
+  - **A set with no counterparty is refused.** "The declared primary, else the
+    FIRST" is a total function, so a one-party request never failed here — it
+    failed at the provider, where that party had been made the _author_, and an
+    author is never invited. In production that party was the customer.
+
+  Verified against the Scrive **testbed**, not only the mock: a party carrying an
+  address no longer draws `invalid_invitation_delivery_info` at either auth level,
+  and a document with one starts and reaches `pending`. The connector tolerates an
+  absent contact in both skew directions — an older engine sends none, an older
+  connector strips the field — so neither combination is worse than today, which is
+  that nothing works.
+
+### Patch Changes
+
+- Updated dependencies [f869541]
+- Updated dependencies [19fb697]
+- Updated dependencies [f869541]
+- Updated dependencies [717600e]
+- Updated dependencies [46b1cac]
+- Updated dependencies [9208b4e]
+  - @substrat-run/contracts@0.72.0
+
 ## 0.71.0
 
 ### Patch Changes
@@ -2296,7 +2421,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
