@@ -66,8 +66,27 @@ async function main(): Promise<number> {
   let emitted = 0;
 
   for (const demo of demos) {
-    const src = join(DEMOS, demo, 'src', 'entities.ts');
-    if (!existsSync(src)) continue; // has not adopted the registry yet
+    // `spec/model.ts` is where a vertical built through the model phase declares
+    // its entities; `src/entities.ts` is where the verticals that predate it do.
+    // Looking only at the second silently skipped every vertical built the new
+    // way — CI green over an entity model nobody reviewed, which is the failure
+    // this tool exists to prevent.
+    const candidates = [join(DEMOS, demo, 'spec', 'model.ts'), join(DEMOS, demo, 'src', 'entities.ts')];
+    const src = candidates.find((c) => existsSync(c));
+    if (!src) {
+      // Same guard permission-diff carries: a directory that is clearly a
+      // vertical but exposes no model must fail loudly, never be skipped.
+      if (existsSync(join(DEMOS, demo, 'src', 'seed.ts'))) {
+        console.error(
+          `model-diff: ${DEMOS}/${demo} looks like a vertical (has src/seed.ts) but declares\n` +
+            '  neither spec/model.ts nor src/entities.ts — it would be skipped and CI would go\n' +
+            '  green over an entity model nobody reviewed.\n' +
+            '  Remedy: declare its entities with `defineEntities` and export `emitModel(...)`.',
+        );
+        return 2;
+      }
+      continue; // not a vertical
+    }
 
     const mod = (await import(pathToFileURL(join(process.cwd(), src)).href)) as Record<string, unknown>;
     const models = emittedModelIn(mod);

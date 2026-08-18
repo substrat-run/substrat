@@ -62,7 +62,16 @@ import {
 	resolveModel,
 } from './providers.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import { detectPhase, interviewWriteGuard, skillsForPhase, type BuildPhase, buildContext} from './phase.js';
+import {
+	buildWriteGuard,
+	detectPhase,
+	interviewWriteGuard,
+	modelWriteGuard,
+	scenarioWriteGuard,
+	skillsForPhase,
+	type BuildPhase,
+	buildContext,
+} from './phase.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -154,9 +163,18 @@ async function makeGenerator(spec: string, phase: BuildPhase = 'iterate'): Promi
 		editTool: editToolFor(spec),
 		// Sampling defaults per provider (H4): qwen wants 0.55, not SDK default.
 		...samplingFor(spec),
-		// Interview turns may write only spec/** — the ladder is mechanical, not
-		// a prompt hope (phase.ts explains the dead-end this prevents).
-		...(phase === 'interview' ? { denyWrite: interviewWriteGuard } : {}),
+		// The ladder is mechanical, not a prompt hope (phase.ts explains the
+		// dead-end this prevents). The SAME dispatch the hosted agent uses —
+		// local dev previously guarded only the interview, so a local run could
+		// write code during the model phase and a hosted one could not.
+		denyWrite:
+			phase === 'interview'
+				? interviewWriteGuard
+				: phase === 'model'
+					? modelWriteGuard
+					: phase === 'scenario'
+						? scenarioWriteGuard
+						: buildWriteGuard,
 	});
 }
 

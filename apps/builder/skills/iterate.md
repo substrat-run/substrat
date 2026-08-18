@@ -1,16 +1,20 @@
 # Building well — patterns and truths for the project's whole life
 
-The gates that must pass every turn: `pnpm typecheck`, boundary-lint, and the
-test suite (the scenario AND the server smoke — vitest runs every file under
-`test/`). The gates only measure what a test drives: green gates over an
+The gates that must pass every turn: `pnpm typecheck`, boundary-lint,
+`pnpm lint:tests`, and the test suite (the scenario AND the server smoke —
+vitest runs every file under `test/`). The gates only measure what a test drives: green gates over an
 undriven surface prove nothing, so every surface you build gets a test the same
 turn, never later.
 
 ## Code patterns
 
-- Import `z` from `@substrat-run/contracts`, **never add `zod` as a
-  dependency** — a second zod copy fails at runtime with `expected a Zod
-  schema`, pointing nowhere near the cause.
+- Zod comes from `@substrat-run/contracts`, which re-exports it. Importing `z`
+  from there is the shortest path and always correct. Declaring `zod` directly
+  is fine **and is what every demo and engine does** — but only at the range
+  contracts uses (`^4.4.3` today). The hazard is a *second instance*, not a
+  direct dependency: a schema built by one copy is not recognised by another, so
+  a different major fails at runtime with `expected a Zod schema`, pointing
+  nowhere near the cause. Match the range and there is one copy.
 - Migrations are append-only forever: never edit a shipped version, only
   append the next entry.
 - The **pricing moment**: read engine lines (`getReportedLines`) → apply the
@@ -34,8 +38,14 @@ turn, never later.
 
 ## test/scenario.test.ts
 
-Replay the concept's scenario headlessly against a temp dir via
-`buildHost`/`stub.invoke`: migrations journal → happy path → **denials hold**
+**Written in the scenario phase, BEFORE this code existed, and not yours to
+edit** — the build's job is to make it pass. It is the concept's independent
+claim about the app, and a build that may rewrite its own oracle has none. If an
+assertion is genuinely wrong, say so and stop rather than softening it;
+`pnpm lint:tests` additionally refuses any scenario suite that imports `spec/`,
+because a test built from the model cannot disagree with the model.
+
+What it contains, and why each rule earns its place: migrations journal → happy path → **denials hold**
 (wrong role; portal isolation between two customers; the cross-tenant attacker
 gets `unknown scope`/`permission denied`) → pricing math exact → events
 consumed → state machine can't skip. Truths that decide whether it's worth

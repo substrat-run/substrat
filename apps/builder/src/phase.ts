@@ -16,7 +16,7 @@ import type { BuildPhase } from '@substrat-run/builder-generator';
 /** Re-exported: the ladder's semantics live here, the type lives where the event needs it. */
 export type { BuildPhase };
 
-export const PHASES: readonly BuildPhase[] = ['interview', 'model', 'scaffold', 'iterate'];
+export const PHASES: readonly BuildPhase[] = ['interview', 'model', 'scenario', 'scaffold', 'iterate'];
 
 /** The slice of Workspace this module needs — keeps it importable anywhere. */
 interface HasExists {
@@ -37,6 +37,10 @@ interface HasExists {
 export async function detectPhase(projectWs: HasExists): Promise<BuildPhase> {
 	if (!(await projectWs.exists('spec/concept.md'))) return 'interview';
 	if (!(await projectWs.exists('spec/model.ts'))) return 'model';
+	// The tests come BEFORE the code they judge. A suite written afterwards can
+	// only agree with whatever got built; written first, it is the second
+	// description the build has to satisfy.
+	if (!(await projectWs.exists('test/scenario.test.ts'))) return 'scenario';
 	if (!(await projectWs.exists('src/module.ts'))) return 'scaffold';
 	return 'iterate';
 }
@@ -61,6 +65,24 @@ export function interviewWriteGuard(path: string): string | null {
 		'interview turns write only spec/** — when the builder approves the concept, ' +
 		'write spec/concept.md and end the turn; the model phase begins next turn ' +
 		'with the model references loaded'
+	);
+}
+
+/**
+ * The scenario phase writes only `test/**` — the suite, before the code.
+ *
+ * Its gate is not "the tests pass": they cannot, since nothing implements them
+ * yet. It is that they exist and are honest. What makes this worth a phase of
+ * its own is the direction: a test written after the handler is a mirror of the
+ * handler, and a mirror cannot disagree with what it reflects.
+ */
+export function scenarioWriteGuard(path: string): string | null {
+	const p = path.replace(/^\.\//, '');
+	if (p === 'test' || p.startsWith('test/')) return null;
+	return (
+		'scenario turns write only test/** — replay the concept\'s scenario as a failing ' +
+		'suite and end the turn; the build begins next turn and its job is to make ' +
+		'these pass, not to edit them'
 	);
 }
 
@@ -93,6 +115,18 @@ export function modelWriteGuard(path: string): string | null {
  */
 export function buildWriteGuard(path: string): string | null {
 	const p = path.replace(/^\.\//, '');
+	// The oracle is not the build's to rewrite. A suite the build may edit is a
+	// suite that agrees with whatever got built — the same failure as a model
+	// redrawn at continuation 14, one level down. `test/server.test.ts` and any
+	// other suite the build ADDS stay writable; only the scenario is frozen.
+	if (/^test\/scenario\.test\./.test(p)) {
+		return (
+			'build turns cannot write test/scenario.test.* — it is the concept\'s claim ' +
+			'about this app, written before the code so it could disagree with it. If an ' +
+			'assertion is genuinely wrong, say so and stop: it is corrected where it came ' +
+			'from, not here'
+		);
+	}
 	if (!/^spec\/model\./.test(p)) return null;
 	return (
 		'build turns cannot write spec/model.* — the model changes only from ' +
@@ -119,8 +153,9 @@ export const SKILL_MANIFEST: readonly SkillManifestEntry[] = [
 	{ file: 'apps/builder/skills/platform.md', phases: ['interview', 'scaffold', 'iterate'] },
 	{ file: 'apps/builder/skills/interview.md', phases: ['interview'] },
 	{ file: 'apps/builder/skills/model.md', phases: ['model'] },
+	{ file: 'apps/builder/skills/scenario.md', phases: ['scenario'] },
 	{ file: 'apps/builder/skills/scaffold.md', phases: ['scaffold'] },
-	{ file: 'apps/builder/skills/iterate.md', phases: ['scaffold', 'iterate'] },
+	{ file: 'apps/builder/skills/iterate.md', phases: ['scenario', 'scaffold', 'iterate'] },
 ];
 
 /** Filter loaded skill contents (parallel to SKILL_MANIFEST order) to a phase. */
