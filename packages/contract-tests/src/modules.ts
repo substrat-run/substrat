@@ -10,6 +10,8 @@
 import {
   dataSubjectId,
   moduleManifest,
+  permissionKey,
+  principalId,
   type EntityRef,
   type PermissionKey,
 } from '@substrat-run/contracts';
@@ -585,6 +587,27 @@ export const permMod: ModuleRegistration = {
     // and CP-less path tests to prove a hosted vertical reads entitlements without a CP.
     'perm/read-entitlement': (async (ctx, key) =>
       ctx.entitlement(key as string)) as OperationHandler<string, unknown>,
+    // Runtime delegation (ctx.grant/ctx.revoke). Deliberately UNGUARDED by an
+    // operation-level check: the guardrail under test lives inside the verb, so
+    // wrapping it in one here would hide whether it works.
+    'perm/share': (async (ctx, input) => {
+      const i = input as { principal: string; permission: string; entity: EntityRef };
+      await ctx.grant(
+        principalId.parse(i.principal),
+        permissionKey.parse(i.permission),
+        i.entity,
+      );
+      return { granted: true };
+    }) as OperationHandler<never, unknown>,
+    'perm/unshare': (async (ctx, input) => {
+      const i = input as { principal: string; permission: string; entity: EntityRef };
+      await ctx.revoke(
+        principalId.parse(i.principal),
+        permissionKey.parse(i.permission),
+        i.entity,
+      );
+      return { revoked: true };
+    }) as OperationHandler<never, unknown>,
   },
 };
 

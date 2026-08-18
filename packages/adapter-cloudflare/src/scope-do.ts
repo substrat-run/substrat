@@ -1810,6 +1810,35 @@ export function defineScopeDO(
       // invoke, so this does not leak across operations). `emit` snapshots it; a
       // system/override actor is unconditionally allowed, so its checks are not recorded.
       const passed: EventAuthorization[] = [];
+
+      // Lifted so `grant` reuses the SAME check the operation itself passes —
+      // a delegation check that could differ from the operation's would be a
+      // second opinion about what the caller holds.
+      const runCheck = async (permission: PermissionKey, entity?: EntityRef) => {
+        if (systemActor) {
+          return {
+            allowed: true as const,
+            proof: [
+              {
+                subject: objectRef.parse(
+                  `system:${systemActor.system.replace(/[^a-zA-Z0-9_.-]/g, '-')}`,
+                ),
+                relation: `granted:${permission}`,
+                object: objectRef.parse(`scope:${scopeId}`),
+              },
+            ],
+          };
+        }
+        const decision = await checker.check(subject, permission, { tenantId, scopeId }, entity);
+        if (decision.allowed) {
+          const grant = grantRefFromProof(permission, decision.proof);
+          const entry: EventAuthorization = grant ? { permission, grant } : { permission };
+          if (!passed.some((p) => p.permission === entry.permission && p.grant === entry.grant)) {
+            passed.push(entry);
+          }
+        }
+        return decision;
+      };
       return {
         tenantId,
         scopeId,
@@ -1883,35 +1912,44 @@ export function defineScopeDO(
             rowToPlatformRequest,
           );
         },
-        check: async (permission: PermissionKey, entity?: EntityRef) => {
-          if (systemActor) {
-            return {
-              allowed: true as const,
-              proof: [
-                {
-                  subject: objectRef.parse(
-                    `system:${systemActor.system.replace(/[^a-zA-Z0-9_.-]/g, '-')}`,
-                  ),
-                  relation: `granted:${permission}`,
-                  object: objectRef.parse(`scope:${scopeId}`),
-                },
-              ],
-            };
+        check: runCheck,
+        /**
+         * Delegate a permission this caller holds onto one entity — see the
+         * kernel's `OperationContext.grant` for why the verb exists.
+         *
+         * Same two guardrails as the pure adapter: entity-narrowed only, and
+         * re-checked against the caller's own decision so it delegates rather
+         * than elevates.
+         */
+        grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+          const held = await runCheck(permission, entity);
+          if (!held.allowed) {
+            throw new PermissionDenied(
+              `cannot grant '${permission}' on ${entity.entityType}:${entity.entityId} — ` +
+                'the caller does not hold it there (a grant delegates, it never elevates)',
+            );
           }
-          const decision = await checker.check(
-            subject,
-            permission,
-            { tenantId, scopeId },
-            entity,
+          sql.exec(
+            `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)`,
+            `principal:${principal}`,
+            `granted:${permission}`,
+            `${entity.entityType}:${entity.entityId}`,
           );
-          if (decision.allowed) {
-            const grant = grantRefFromProof(permission, decision.proof);
-            const entry: EventAuthorization = grant ? { permission, grant } : { permission };
-            if (!passed.some((p) => p.permission === entry.permission && p.grant === entry.grant)) {
-              passed.push(entry);
-            }
+        },
+        revoke: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+          const held = await runCheck(permission, entity);
+          if (!held.allowed) {
+            throw new PermissionDenied(
+              `cannot revoke '${permission}' on ${entity.entityType}:${entity.entityId} — ` +
+                'the caller does not hold it there',
+            );
           }
-          return decision;
+          sql.exec(
+            `DELETE FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?`,
+            `principal:${principal}`,
+            `granted:${permission}`,
+            `${entity.entityType}:${entity.entityId}`,
+          );
         },
         link: (child: EntityRef, parent: EntityRef) => {
           const allowed = relations.get(child.entityType);

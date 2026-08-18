@@ -626,3 +626,5 @@ export function mountPlatformSurface<Env extends object>(
     return c.json({ error: m }, status);
   });
 }
+
+export * from './operations-routes.js';

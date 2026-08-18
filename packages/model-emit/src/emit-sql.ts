@@ -91,6 +91,47 @@ function columnFor(name: string, schema: z.ZodTypeAny, where: string): Column {
   );
 }
 
+/**
+ * Parents before children, alphabetical within a tier.
+ *
+ * Sorting by name alone emitted `todo_items` — which REFERENCES `todo_lists` —
+ * first. SQLite tolerates a forward reference; a stricter engine does not, and
+ * "it happened to work" is not a property to ship. Deterministic either way,
+ * which is what lets the output be diffed.
+ *
+ * A cycle cannot be ordered, so it is reported rather than silently truncated:
+ * remaining entities are appended in name order after the error names them.
+ */
+function tableOrder<T extends Record<string, EntityDef>>(entities: T): string[] {
+  const names = Object.keys(entities).sort();
+  const placed = new Set<string>();
+  const out: string[] = [];
+
+  let progress = true;
+  while (progress && out.length < names.length) {
+    progress = false;
+    for (const name of names) {
+      if (placed.has(name)) continue;
+      const parents = entities[name]?.parents ?? [];
+      // A parent outside this registry (a composed engine's entity) cannot be
+      // emitted here and therefore cannot be waited for.
+      const blocked = parents.some((p) => p in entities && !placed.has(String(p)));
+      if (blocked) continue;
+      placed.add(name);
+      out.push(name);
+      progress = true;
+    }
+  }
+
+  if (out.length < names.length) {
+    const cyclic = names.filter((n) => !placed.has(n));
+    throw new Error(
+      `emit-sql: parent cycle among ${cyclic.join(', ')} — a table cannot be created before itself`,
+    );
+  }
+  return out;
+}
+
 export interface EmitSqlOptions {
   /** `IF NOT EXISTS`, for an emitter run against an existing database. */
   readonly ifNotExists?: boolean;
@@ -114,38 +155,70 @@ export function emitTables<T extends Record<string, EntityDef>>(
   const exists = options.ifNotExists ? 'IF NOT EXISTS ' : '';
   const out: string[] = [];
 
-  for (const name of Object.keys(entities).sort()) {
+  for (const name of tableOrder(entities)) {
     const entity = entities[name];
     if (!entity) continue;
-    const shape = entity.fields.shape as Record<string, z.ZodTypeAny>;
-    const cols: string[] = [];
-
-    for (const [field, schema] of Object.entries(shape)) {
-      const c = columnFor(field, schema, `${name}.${field}`);
-      if (field === 'id') {
-        cols.push(`  id ${c.type} PRIMARY KEY NOT NULL`);
-        continue;
-      }
-      let line = `  ${c.name} ${c.type}`;
-      if (!c.nullable) line += ' NOT NULL';
-      if (c.check) line += ` ${c.check}`;
-      // A parent edge whose id column is present becomes a real foreign key.
-      for (const parent of entity.parents ?? []) {
-        const parentTable = entities[parent as keyof T]?.table;
-        if (parentTable && c.name === `${String(parent).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()}_id`) {
-          line += ` REFERENCES ${parentTable}(id)`;
-        }
-      }
-      cols.push(line);
-    }
-
-    for (const k of entity.key ?? []) {
-      if (!(k in shape)) throw new Error(`emit-sql: ${name}.key names '${k}', which is not a field`);
-      cols.push(`  UNIQUE (${k})`);
-    }
-
+    const cols = [
+      ...columnsOf(name, entity, entities).map((c) => `  ${c.ddl}`),
+      ...uniqueConstraints(name, entity).map((u) => `  ${u}`),
+    ];
     out.push(`CREATE TABLE ${exists}${entity.table} (\n${cols.join(',\n')}\n);`);
   }
 
   return out.join('\n\n');
+}
+
+/** One emitted column: its name, its full definition, and whether SQLite could ADD it. */
+export interface EmittedColumn {
+  readonly name: string;
+  /** `owner_id TEXT NOT NULL REFERENCES todo_owners(id)` */
+  readonly ddl: string;
+  /** NOT NULL with no default cannot be added to a table that already has rows. */
+  readonly requiredWithoutDefault: boolean;
+}
+
+/**
+ * The columns one entity emits, shared by `emitTables` and the migration
+ * planner.
+ *
+ * Extracted rather than duplicated: the planner has to render a column the exact
+ * way the table would have rendered it, or an `ALTER TABLE ADD COLUMN` produces
+ * a schema subtly unlike the one a fresh `CREATE TABLE` would.
+ */
+export function columnsOf<T extends Record<string, EntityDef>>(
+  name: string,
+  entity: EntityDef,
+  entities: T,
+): EmittedColumn[] {
+  const shape = entity.fields.shape as Record<string, z.ZodTypeAny>;
+  const out: EmittedColumn[] = [];
+
+  for (const [field, schema] of Object.entries(shape)) {
+    const c = columnFor(field, schema, `${name}.${field}`);
+    if (field === 'id') {
+      out.push({ name: 'id', ddl: `id ${c.type} PRIMARY KEY NOT NULL`, requiredWithoutDefault: true });
+      continue;
+    }
+    let ddl = `${c.name} ${c.type}`;
+    if (!c.nullable) ddl += ' NOT NULL';
+    if (c.check) ddl += ` ${c.check}`;
+    // A parent edge whose id column is present becomes a real foreign key.
+    for (const parent of entity.parents ?? []) {
+      const parentTable = entities[parent as keyof T]?.table;
+      if (parentTable && c.name === `${String(parent).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()}_id`) {
+        ddl += ` REFERENCES ${parentTable}(id)`;
+      }
+    }
+    out.push({ name: c.name, ddl, requiredWithoutDefault: !c.nullable });
+  }
+  return out;
+}
+
+/** `UNIQUE (email)` per declared key field. */
+export function uniqueConstraints(name: string, entity: EntityDef): string[] {
+  const shape = entity.fields.shape as Record<string, z.ZodTypeAny>;
+  return (entity.key ?? []).map((k) => {
+    if (!(k in shape)) throw new Error(`emit-sql: ${name}.key names '${k}', which is not a field`);
+    return `UNIQUE (${k})`;
+  });
 }
