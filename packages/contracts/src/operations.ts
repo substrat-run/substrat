@@ -435,56 +435,74 @@ export function manifestOperations<const Ops extends Record<string, object>>(
 // ---------------------------------------------------------------------------
 
 /**
- * One engine operation, given a place in THIS vertical's HTTP surface.
+ * Where one composed-engine operation lives in THIS vertical's HTTP surface.
  *
- * An engine declares no `http`, and should not: it is entity-agnostic and does
- * not own a URL shape. Two verticals composing `workorder` legitimately disagree
- * about whether it lives at `/workorders` or `/repairs`. So the path is the
- * vertical's to decide — but it was previously undeclarable, which is why a
- * composing vertical hand-wrote most of its route table (Callout: 17 of 27).
- *
- * `input` and `output` are IMPORTED from the engine, never retyped —
- * `createWorkOrderInput` and `workOrder` are exported for exactly this.
+ * `{var}` is checked against the ENGINE's own declared input, so a path naming a
+ * field the engine does not accept is a compile error.
  */
-type EngineRouteShape<O> = {
-  /** One line, imperative — what invoking this does. Feeds the API document. */
-  readonly summary: string;
-  /** The engine's own input schema. Omitted means the operation takes no body. */
-  readonly input?: z.ZodObject<z.ZodRawShape>;
-  /** The engine's own published return shape, where the engine exports one. */
-  readonly output?: z.ZodType;
-  readonly http: {
-    readonly method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
-    readonly path: CheckedPath<O>;
-  };
+type EngineRouteBinding<Op, B> = {
+  readonly method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  // Self-referential in the binding, so the LITERAL path flows into the check.
+  // Written `PathAgainst<Op, string>` the constraint compiles clean and enforces
+  // nothing: `PathParams<string>` is `never`, which vacuously satisfies any
+  // input — the exact shape of a decorative type-level check.
+  readonly path: B extends { readonly path: infer P } ? PathAgainst<Op, P> : never;
 };
+
+/** Every `{var}` in the path must name a field of the engine operation's input. */
+type PathAgainst<Op, P> = P extends string
+  ? [PathParams<P>] extends [InputKeys<Op>]
+    ? P
+    : never
+  : never;
 
 /**
  * Declare where a composed engine's operations live in this vertical's API.
  *
+ * An engine declares no `http`, and should not: it is entity-agnostic and does
+ * not own a URL shape — a bike shop calls the same work order a repair, and both
+ * are right. The path is the vertical's decision, and this is where it gets
+ * declared instead of buried in a hand-written route table (Callout: 17 of 27
+ * routes).
+ *
  * ```ts
- * export const engineRoutes = defineEngineRoutes({
- *   'workorder/get': {
- *     summary: 'One work order',
- *     input: getWorkOrderInput,
- *     output: workOrder,
- *     http: { method: 'GET', path: '/workorders/{orderId}' },
- *   },
+ * export const engineRoutes = defineEngineRoutes(workorderOperations)({
+ *   'workorder/get': { method: 'GET', path: '/workorders/{orderId}' },
  * });
  * ```
  *
- * Every `{var}` is checked against the engine's own input schema, so a path
- * naming a field the engine does not accept is a compile error — the defect
- * class that hand-written routes produced silently.
+ * Curried, so the engine's operations are given explicitly while each binding is
+ * still checked against its own operation. The result MERGES the engine's
+ * declaration with the path, so `mountOperations` and `apiCatalogFrom` read it
+ * exactly as they read a vertical's own operations — the engine's real input and
+ * output schemas reach the router and the API document, rather than a
+ * restatement the vertical had to write.
  *
- * **The operation NAME is not checked here, and cannot be.** `ModuleRegistration`
- * types its operations as `Record<string, OperationHandler>`, so the keys are
- * erased before a vertical can see them. Pass `knownOperations` to
- * `mountOperations` and a typo fails at mount instead of as a 404 at request
- * time; declaring engine operations (#707) would move it earlier still.
+ * A `{var}` naming a field the engine's input does not accept is a compile
+ * error. An operation the engine does not have throws when the module loads —
+ * see the note in the body for why that one is not a type error.
  */
-export function defineEngineRoutes<
-  const R extends { readonly [K in keyof R]: EngineRouteShape<R[K]> },
->(routes: R): R {
-  return routes;
+export function defineEngineRoutes<const Ops extends Record<string, object>>(operations: Ops) {
+  return <const R extends { readonly [K in keyof R]: K extends keyof Ops ? EngineRouteBinding<Ops[K], R[K]> : never }>(
+    routes: R,
+  ): { [K in keyof R]: (K extends keyof Ops ? Ops[K] : never) & { http: R[K] } } => {
+    const out: Record<string, unknown> = {};
+    for (const [name, http] of Object.entries(routes)) {
+      const op = operations[name as keyof Ops];
+      // Checked HERE rather than by the type. The constraint is self-referential
+      // in `R`, and inference degrades: an unknown key resolves to `never` in
+      // the constraint and TypeScript accepts it anyway. A constraint that reads
+      // like a check and enforces nothing is worse than no constraint, so this
+      // is not claimed at the type level — it throws when the module loads,
+      // which is still long before anything serves a request.
+      if (!op) {
+        throw new Error(
+          `defineEngineRoutes: '${name}' is not an operation of this engine — it declares ` +
+            `${Object.keys(operations).sort().join(', ')}`,
+        );
+      }
+      out[name] = { ...(op as object), http };
+    }
+    return out as { [K in keyof R]: (K extends keyof Ops ? Ops[K] : never) & { http: R[K] } };
+  };
 }

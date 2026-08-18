@@ -1,6 +1,6 @@
 import { defineEngineRoutes, defineOperations, money } from '@substrat-run/contracts';
 import { protocolInstanceRow } from '@substrat-run/engine-protocol';
-import { billableLine, workOrder } from '@substrat-run/engine-workorder';
+import { billableLine, workOrder, workorderOperations } from '@substrat-run/engine-workorder';
 import { z } from 'zod';
 import { calloutEntities } from './entities.js';
 
@@ -159,61 +159,24 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
 });
 
 /**
- * Where the composed engines' operations live in Callout's API (#707 follow-on).
+ * Where the composed engines' operations live in Callout's API (#738).
  *
  * These were 17 of Callout's 27 hand-written routes, and they had to be: an
  * engine declares no `http` because it does not own a URL shape — a bike shop
  * calls the same work order a repair. The path is the vertical's decision, and
- * this is where it gets declared instead of buried in a route table.
+ * this is where it gets declared.
  *
- * `input` here is what the PATH binds against, not a restatement of the engine's
- * whole input: the body flows through untouched and the engine validates it.
- * Once engines declare their own operations (#707), even this goes away and a
- * binding is just a name and a path.
+ * Now that the engine declares its operations, a binding is a name and a path:
+ * the summary, the input schema and the return shape all come from the engine,
+ * so nothing here restates anything. Bind a name it does not have, or a `{var}`
+ * its input does not accept, and it does not compile.
  */
-const orderIdInput = z.object({ orderId: z.string() });
-
-export const calloutEngineRoutes = defineEngineRoutes({
-  'workorder/list': {
-    summary: 'Work orders, newest first',
-    input: z.object({ status: z.string().optional() }),
-    output: z.array(workOrder),
-    http: { method: 'GET', path: '/workorders' },
-  },
-  'workorder/get': {
-    summary: 'One work order',
-    input: orderIdInput,
-    output: workOrder,
-    http: { method: 'GET', path: '/workorders/{orderId}' },
-  },
-  'workorder/assign': {
-    summary: 'Assign a technician',
-    input: orderIdInput,
-    output: workOrder,
-    http: { method: 'POST', path: '/workorders/{orderId}/assign' },
-  },
-  'workorder/start': {
-    summary: 'Start the work',
-    input: orderIdInput,
-    output: workOrder,
-    http: { method: 'POST', path: '/workorders/{orderId}/start' },
-  },
-  'workorder/report-time': {
-    summary: 'Report time against the order',
-    input: orderIdInput,
-    output: workOrder,
-    http: { method: 'POST', path: '/workorders/{orderId}/time' },
-  },
-  'workorder/report-material': {
-    summary: 'Report material against the order',
-    input: orderIdInput,
-    output: workOrder,
-    http: { method: 'POST', path: '/workorders/{orderId}/material' },
-  },
-  'workorder/close': {
-    summary: 'Close the order at hand-over',
-    input: orderIdInput,
-    output: workOrder,
-    http: { method: 'POST', path: '/workorders/{orderId}/close' },
-  },
+export const calloutEngineRoutes = defineEngineRoutes(workorderOperations)({
+  'workorder/list': { method: 'GET', path: '/workorders' },
+  'workorder/get': { method: 'GET', path: '/workorders/{orderId}' },
+  'workorder/assign': { method: 'POST', path: '/workorders/{orderId}/assign' },
+  'workorder/start': { method: 'POST', path: '/workorders/{orderId}/start' },
+  'workorder/report-time': { method: 'POST', path: '/workorders/{orderId}/time' },
+  'workorder/report-material': { method: 'POST', path: '/workorders/{orderId}/material' },
+  'workorder/close': { method: 'POST', path: '/workorders/{orderId}/close' },
 });
