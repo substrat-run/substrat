@@ -13,6 +13,13 @@
  * **Scope.** It mounts the operations THIS module declares. A composed engine's
  * operations carry no `http` — the engine is entity-agnostic and does not own a
  * URL shape, so the vertical decides theirs and mounts them itself.
+ *
+ * Two things a hand-written table did for free, and this derivation therefore
+ * has to do deliberately: a query string carries no types (§ `queryCoercers`),
+ * and registration ORDER decides which of two overlapping paths wins
+ * (§ `comparePaths`). Both were found by a production vertical with 195
+ * declared routes that could not switch to this mount without the first — 29 of
+ * its 81 reads carried a `limit` the model declares as a number (#785).
  */
 import type { Context, Hono } from 'hono';
 import type { ScopeStub } from '@substrat-run/kernel';
@@ -32,6 +39,25 @@ interface HttpDecl {
   readonly input?: { readonly shape?: Record<string, unknown> };
 }
 
+/** Zod's internal definition, across the layouts this reads structurally. */
+interface ZodDef {
+  readonly type?: string;
+  readonly values?: unknown[];
+  readonly value?: unknown;
+  readonly innerType?: unknown;
+  readonly in?: unknown;
+}
+
+/**
+ * Read a schema's definition without `instanceof`, which fails across duplicate
+ * copies of the library — the same reason the rest of this file reads Zod
+ * structurally.
+ */
+function defOf(schema: unknown): ZodDef | undefined {
+  return ((schema as { _zod?: { def?: unknown } })?._zod?.def ??
+    (schema as { _def?: unknown })?._def) as ZodDef | undefined;
+}
+
 /**
  * Input fields the model pins to a single value — supplied by the route rather
  * than by the caller.
@@ -43,19 +69,13 @@ interface HttpDecl {
  * it here removes a whole category of "route that cannot be derived" without
  * adding any vocabulary, which is the better kind of fix: the model was not
  * missing information, the emitter was not listening.
- *
- * Read structurally across Zod's internal layouts rather than with `instanceof`,
- * which fails across duplicate copies of the library.
  */
 function pinnedFields(input: HttpDecl['input']): Record<string, unknown> {
   const shape = input?.shape;
   if (!shape) return {};
   const out: Record<string, unknown> = {};
   for (const [field, schema] of Object.entries(shape)) {
-    const def = ((schema as { _zod?: { def?: unknown } })._zod?.def ??
-      (schema as { _def?: unknown })._def) as
-      | { type?: string; values?: unknown[]; value?: unknown }
-      | undefined;
+    const def = defOf(schema);
     if (def?.type !== 'literal') continue;
     // Zod 4 carries `values` (a literal may name several); older layouts carry
     // `value`. Only a SINGLE permitted value is a constant — a choice is not.
@@ -63,6 +83,76 @@ function pinnedFields(input: HttpDecl['input']): Record<string, unknown> {
     if (Array.isArray(values) && values.length === 1) out[field] = values[0];
   }
   return out;
+}
+
+/**
+ * A URL carries no types: `?limit=100` arrives as the string `'100'`, and an
+ * operation declaring `limit: z.number().int().optional()` rejects it with
+ * "expected number, received string". Every read with a non-string field is
+ * affected — in a production vertical that was most paged reads, plus every
+ * year/month filter (#785).
+ *
+ * The fix reads the declared shape and coerces only the fields whose declared
+ * type cannot be a string: number, boolean, bigint. That is deliberately
+ * narrower than coercing by JSON grammar, which would have to guess — `?q=123`
+ * is a number to the grammar and a search term to the caller — and narrower
+ * than telling verticals to declare `z.coerce.number()`, which pushes an HTTP
+ * transport detail into a model that has to stay transport-agnostic (the same
+ * schema the handler parses).
+ *
+ * A value the declared type cannot accept is passed through UNCHANGED, so the
+ * error the caller reads still names what they actually sent.
+ *
+ * Unions are skipped: `z.union([z.number(), z.string()])` has no single answer,
+ * and guessing is what this function exists to avoid.
+ */
+function queryCoercers(input: HttpDecl['input']): Record<string, (raw: string) => unknown> {
+  const shape = input?.shape;
+  if (!shape) return {};
+  const out: Record<string, (raw: string) => unknown> = {};
+  for (const [field, schema] of Object.entries(shape)) {
+    const coerce = coercerFor(schema);
+    if (coerce) out[field] = coerce;
+  }
+  return out;
+}
+
+/**
+ * The coercion a declared field wants, looking through the wrappers that do not
+ * change its type — `optional`, `nullable`, `default`, `catch`, `readonly`, and
+ * a pipe's input side (`z.coerce.number()` is one, and coercing ahead of it is
+ * idempotent rather than wrong).
+ */
+function coercerFor(schema: unknown, depth = 0): ((raw: string) => unknown) | undefined {
+  if (depth > 8) return undefined; // a cycle cannot happen in a Zod schema, but a bound is cheap
+  const def = defOf(schema);
+  switch (def?.type) {
+    case 'number':
+      return (raw) => {
+        if (raw.trim() === '') return raw;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : raw;
+      };
+    case 'bigint':
+      return (raw) => (/^[+-]?\d+$/.test(raw.trim()) ? BigInt(raw.trim()) : raw);
+    case 'boolean':
+      // Only the two spellings a URL can mean unambiguously. `?flag` with no
+      // value arrives as '' and stays '' — "present" is not "true" here.
+      return (raw) => (raw === 'true' ? true : raw === 'false' ? false : raw);
+    case 'optional':
+    case 'nullable':
+    case 'nullish':
+    case 'default':
+    case 'prefault':
+    case 'catch':
+    case 'readonly':
+    case 'nonoptional':
+      return coercerFor(def.innerType, depth + 1);
+    case 'pipe':
+      return coercerFor(def.in, depth + 1);
+    default:
+      return undefined;
+  }
 }
 
 export interface MountOperationsOptions {
@@ -91,9 +181,87 @@ function pathParams(path: string): string[] {
 }
 
 /**
+ * Order two declared paths so the more specific one is registered first.
+ *
+ * Hono dispatches in REGISTRATION order, so `/users/{id}` registered before
+ * `/users/invites` answers `/users/invites` with `id: 'invites'` and the static
+ * route is unreachable — no error, no warning, just an endpoint that silently
+ * belongs to its neighbour. Registering in alphabetical OPERATION order (what
+ * this did until #785) decides that by a name that has nothing to do with
+ * routing: `support/get` sorts before `support/list-mine`, and a live
+ * `GET /support/issues/mine` disappeared behind `GET /support/issues/{id}`.
+ *
+ * So compare the paths instead, segment by segment, static before parameter —
+ * a lexicographic order over the key `[isParam, text]` per segment, which makes
+ * it a real total order (transitive, and the same table every time) rather than
+ * a pile of pairwise special cases. Paths that cannot overlap are unaffected;
+ * paths that can, resolve the way a reader of the URLs expects.
+ *
+ * **Why order rather than refuse.** #785 argued for detecting the collision and
+ * refusing to mount, on the grounds that the silence is the real defect and the
+ * vertical should decide. The silence is the defect — but a reserved word in an
+ * id slot has one correct reading, not an ambiguous one, and it is the reading
+ * every path-template spec already writes down: OpenAPI resolves a concrete
+ * path ahead of a templated one for exactly this case. Refusing would make a
+ * soluble collision a boot failure and force live URLs to be renamed to satisfy
+ * a router that had the whole table in front of it. What ordering CANNOT
+ * resolve still throws (`assertNoUnreachable`), so nothing stays silent.
+ */
+function comparePaths(a: string, b: string): number {
+  const as = a.split('/');
+  const bs = b.split('/');
+  for (let i = 0; i < Math.min(as.length, bs.length); i++) {
+    const x = as[i] as string;
+    const y = bs[i] as string;
+    if (x === y) continue;
+    const xParam = x.startsWith('{');
+    const yParam = y.startsWith('{');
+    if (xParam !== yParam) return xParam ? 1 : -1;
+    return x < y ? -1 : 1;
+  }
+  return as.length - bs.length;
+}
+
+/**
+ * The shape a path DISPATCHES as: parameter names are internal to the handler,
+ * so `/users/{id}` and `/users/{slug}` are one route to any router.
+ */
+function dispatchShape(path: string): string {
+  return path.replace(/\{\w+\}/g, '{}');
+}
+
+/**
+ * Refuse a table where one operation can never be reached.
+ *
+ * Ordering resolves a static path against its parameter sibling (§
+ * `comparePaths`). What it cannot resolve is two declarations that dispatch
+ * IDENTICALLY — same method, same shape, different parameter names — because
+ * there is no reading under which both are live. That is the case #785 is
+ * really about: an endpoint that quietly stops existing. Here it fails at
+ * mount, naming both operations, rather than at the first request nobody makes.
+ */
+function assertNoUnreachable(declared: readonly (readonly [string, { http: { method: string; path: string } }])[]): void {
+  const claimed = new Map<string, string>();
+  for (const [name, op] of declared) {
+    const key = `${op.http.method} ${dispatchShape(op.http.path)}`;
+    const first = claimed.get(key);
+    if (first !== undefined) {
+      throw new Error(
+        `mountOperations: '${first}' and '${name}' both declare ${key} — they dispatch ` +
+          'identically, so one of them can never be reached; give one a distinct path',
+      );
+    }
+    claimed.set(key, name);
+  }
+}
+
+/**
  * Mount one route per declared operation. Returns what it mounted — a caller
  * can assert on it, and a test that expects N routes fails loudly at zero
  * rather than passing over an empty table.
+ *
+ * The returned table is in registration order, which is the order that decides
+ * dispatch: read it to see which of two overlapping paths wins.
  */
 export function mountOperations(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -106,9 +274,23 @@ export function mountOperations(
   const known = options.knownOperations ? new Set(options.knownOperations) : undefined;
   const mounted: { operation: string; method: string; path: string }[] = [];
 
-  for (const name of Object.keys(operations).sort()) {
-    const op = operations[name] as HttpDecl | undefined;
-    if (!op?.http) continue;
+  const declared = Object.keys(operations)
+    .map((name) => [name, operations[name] as HttpDecl | undefined] as const)
+    .filter((entry): entry is readonly [string, HttpDecl & { http: NonNullable<HttpDecl['http']> }] =>
+      Boolean(entry[1]?.http),
+    )
+    // Path specificity decides dispatch; method and name only keep the table
+    // deterministic for two operations that share a path (`GET`/`POST /lists`).
+    .sort(
+      ([aName, a], [bName, b]) =>
+        comparePaths(a.http.path, b.http.path) ||
+        (a.http.method < b.http.method ? -1 : a.http.method > b.http.method ? 1 : 0) ||
+        (aName < bName ? -1 : aName > bName ? 1 : 0),
+    );
+
+  assertNoUnreachable(declared);
+
+  for (const [name, op] of declared) {
     if (known && !known.has(name)) {
       throw new Error(
         `mountOperations: '${name}' is bound to ${op.http.method} ${op.http.path} but no ` +
@@ -120,10 +302,21 @@ export function mountOperations(
     const full = `${base}${toHonoPath(path)}`;
     const takesBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
     const pinned = pinnedFields(op.input);
+    const coercers = queryCoercers(op.input);
+
+    /** Types the values a URL hands over as strings, per the declared shape. */
+    const typed = (values: Record<string, string | undefined>): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [field, raw] of Object.entries(values)) {
+        const coerce = coercers[field];
+        out[field] = coerce && raw !== undefined ? coerce(raw) : raw;
+      }
+      return out;
+    };
 
     const handler = async (c: Context) => {
       const stub = await resolveStub(c);
-      const fromPath: Record<string, unknown> = {};
+      const fromPath: Record<string, string | undefined> = {};
       for (const p of params) fromPath[p] = c.req.param(p);
 
       // A body is merged when the method carries one; query params fill the
@@ -136,10 +329,10 @@ export function mountOperations(
       if (takesBody) {
         const raw = await c.req.text();
         const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-        payload = { ...body, ...pinned, ...fromPath };
+        // A body is JSON and already typed; only the URL's own values need it.
+        payload = { ...body, ...pinned, ...typed(fromPath) };
       } else {
-        const query = c.req.query();
-        payload = { ...query, ...pinned, ...fromPath };
+        payload = { ...typed(c.req.query()), ...pinned, ...typed(fromPath) };
       }
       if (!op.input && params.length === 0) payload = undefined;
 
