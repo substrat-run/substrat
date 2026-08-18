@@ -1,5 +1,99 @@
 # @substrat-run/contract-tests
 
+## 0.73.0
+
+### Minor Changes
+
+- da69ef5: A conformance kit that catches a node check where an entity check was declared.
+
+  An operation declaring `permission: { key, entity, idFrom }` beside a handler
+  calling `ctx.check(perm)` typechecks perfectly and fails open — everyone holding
+  the key anywhere in the scope passes, which in a sharing app is every member
+  against every record. `entityCheckConformanceSuite` generates the behavioural
+  pair that separates the two, per operation, read off the declaration:
+
+  ```ts
+  entityCheckConformanceSuite("todo", todoOperations, makeFixture, {
+    inputs: { "todo/rename-list": { name: "renamed" } },
+    uncovered: {
+      "todo/set-item-done": "declares 'resolved' — the id is not in the input",
+    },
+  });
+  ```
+
+  Grant on entity A and invoke against A: a correct check allows, a node check
+  denies, because a narrowed grant does not widen. Grant on A and invoke against B:
+  a correct check denies. The second is the breach direction; the first is the one
+  that catches the node check, and it fails as a _baffling denial_ rather than as a
+  breach — the direction nobody files a security bug about. Case 2 deliberately
+  does not catch the node check, and the suite says so rather than implying
+  coverage it does not have.
+
+  Operations the kit cannot generate — a `resolved` check, or one whose required
+  input nobody supplied — are reported as uncovered and asserted against a list the
+  caller writes down, so losing coverage turns CI red and appears in the diff.
+  `planEntityCheckCoverage` is exported for anyone who wants the partition without
+  the suite.
+
+  `alsoGrant` records the permissions an operation needs beyond the one it
+  declares, with a required reason. The first vertical it ran against produced one:
+  a handler that delegates a permission via `ctx.grant` must itself hold the
+  permission it delegates, so the declared key is the gate it opens with rather
+  than the whole authority it exercises.
+
+  Closes #747.
+
+- 3b8533d: **zod is now a peer dependency.** Install it alongside these packages:
+
+  ```sh
+  npm install zod@^4.4.0
+  ```
+
+  Every package here hands out zod schemas that a consumer parses with, composes
+  into their own, and that `mountOperations` reads `_zod.def` off to find pinned
+  literals. Two copies of zod in one tree means an object made by one is not
+  recognised by the other, and the symptom — `expected a Zod schema` — points
+  nowhere near the cause. A peer dependency says _use the consumer's copy_.
+
+  The declared range is `^4.4.0` rather than the exact version this repo builds
+  against: a peer range should state what the code supports, and pinning it to
+  `^4.4.3` would refuse a consumer on 4.4.0 for no reason.
+
+  **A defect this found.** `@substrat-run/contract-tests` shipped **130
+  `import("zod")` references in its published `.d.ts` while declaring zod
+  nowhere.** It resolved only because contracts had zod as a regular dependency,
+  which hoisted a copy into view — not a dependency, a coincidence. It now declares
+  it. Two more of the same class turned up when the tree shifted: packages using
+  `setTimeout`/`atob`/`btoa` — globals absent from `lib: ES2023` — compiling on an
+  ambient `@types/node` nobody had declared.
+
+  That is the general rule now enforced by `pnpm lint:deps`
+  (`tools/declared-deps.mjs`) in CI: **every module a package references, in its
+  source or its emitted `.d.ts`, must be one it declared.** The `.d.ts` half is the
+  sharp one — TypeScript writes the original specifier into declarations however
+  the source imported it, so re-exporting `z` through contracts still emits
+  `import("zod")` into a dependent's types.
+
+  **Why a lint rather than pnpm's own enforcement**, measured rather than assumed:
+  `autoInstallPeers` (pnpm's default) turns a peer conflict into a silent second
+  copy — with contracts peer-requiring `^4.4.3` and a consumer declaring `^3.23.0`,
+  pnpm reported nothing, and `zod` did not appear once in the peer report even
+  under `--strict-peer-dependencies`. And pnpm's peer checking does not reach
+  `workspace:` links at all. Full reasoning in `docs/design/dependency-policy.md`.
+
+  Internally, shared versions now come from a pnpm `catalog:` so one version is a
+  single edit. The `pnpm` settings block moved from `package.json` to
+  `pnpm-workspace.yaml`, which is where pnpm 10 reads it — it had been ignored,
+  with `overrides` surviving only because they were baked into the lockfile.
+
+  Closes #742.
+
+### Patch Changes
+
+- Updated dependencies [3b8533d]
+  - @substrat-run/contracts@0.73.0
+  - @substrat-run/kernel@0.73.0
+
 ## 0.72.0
 
 ### Minor Changes
@@ -1955,7 +2049,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

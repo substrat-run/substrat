@@ -1,5 +1,13 @@
 # @substrat-run/vertical-host
 
+## 0.73.0
+
+### Patch Changes
+
+- Updated dependencies [3b8533d]
+  - @substrat-run/contracts@0.73.0
+  - @substrat-run/kernel@0.73.0
+
 ## 0.72.0
 
 ### Minor Changes
