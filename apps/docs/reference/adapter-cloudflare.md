@@ -7,8 +7,8 @@ a stateless coordinator that mints capability stubs.
 
 Both adapters pass the **same** [conformance suite](/reference/contract-tests) unchanged
 (decision 14), so a vertical developed and CI-tested on pure SQLite runs on Cloudflare with
-no code change. A demo vertical — [Callout](https://github.com/substrat-run/substrat/tree/main/demos/callout) —
-runs deployed on it today, behind Better Auth.
+no code change. Several verticals run deployed on it today, [OIDC-only](/concepts/identity)
+against a shared relying party.
 
 ```sh
 pnpm add @substrat-run/adapter-cloudflare
@@ -42,6 +42,20 @@ pnpm add @substrat-run/adapter-cloudflare
   hosted vertical pushed into a dispatch namespace gets no `triggers.crons`; `ensureArmed()`
   is idempotent and self-arms from code. The workerd analogue of the kernel's node-side
   `startPlatformSweeper`.
+- **`defineScopeSweeperDO`** — the *vertical's own* timer, and the piece a CP-less vertical
+  cannot do without. Same singleton shape (`SCOPE_SWEEPER_NAME`, one alarm, one pass at a
+  time), but the roster is this deployment's scopes and the pass is the work that must happen
+  inside them: draining retryable executor deliveries and firing the
+  [schedules](/concepts/modules#recurring-work-schedules) the manifest declares. The platform
+  sweeper reaps and reconciles from above; this one runs *your* recurring work where your data
+  is.
+- **Per-tenant stores** — `createD1TenantStores` and `createR2BlobStores`, the platform's
+  reach into a minted D1 database or R2 bucket. Worth understanding for what they are *not*:
+  this is the **control-plane** path — minting at provision, out-of-band SQL, ops inspection.
+  Request-time access is not HTTP at all. The serving script carries a real `d1` /
+  `r2_bucket` binding per store, named by the contracts helpers, attached by the control plane
+  at provision and re-derived from the ledger on every serving upload. A vertical is *handed*
+  a store; it never mints one, and never learns a database id or bucket name.
 
 ## Usage (a Worker)
 
@@ -95,13 +109,20 @@ Two options change the topology:
 
 The shared contract suites run **green in workerd against real Durable Objects** (one
 runtime-late-registration test is skipped — a deployed DO bundle is code-time), the control
-plane is durable, and a vertical is deployed. Since milestone 1, three things landed that the
-earlier version of this page listed as deferred:
+plane is durable, and a fleet of verticals is deployed on it. Landed since this page first
+listed them as deferred:
 
 - **Scope-local permissions** (`scopeLocalPermissions`, `provisionScopeLocal`) — the control
   plane off the request hot path, projection-on-write, and a CP-less host mode.
 - **The `hostname → (tenant, scope, deploymentRef)` router** — `createRouteResolver`, feeding
-  Workers-for-Platforms dynamic dispatch. Callout runs CP-less through it.
+  Workers-for-Platforms dynamic dispatch, with custom domains issued end to end.
+- **Per-tenant D1 and R2** — minted by the platform at provision, handed to the vertical as a
+  binding.
+- **Both sweepers** — the platform's maintenance pass and the vertical's own scope sweep, each
+  an alarm-driven singleton because a dispatch-namespace script gets no crons.
+- **The outbound seams** — connector dispatch riding platform intents, the declared egress
+  allowlist, and the platform email relay, so a CP-less vertical reaches the outside world
+  without ever holding a credential.
 
 Still deferred, honestly:
 

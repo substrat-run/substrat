@@ -29,7 +29,8 @@
     "secrets:push": "node scripts/secrets.mjs push",
     "secrets:dev": "node scripts/secrets.mjs dev",
     "todo-demo": "pnpm --filter @substrat-run/demo-todo",
-    "lint:tests": "node tools/test-independence.mjs"
+    "lint:tests": "node tools/test-independence.mjs",
+    "lint:docs": "node tools/docs-drift.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
