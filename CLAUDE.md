@@ -93,6 +93,23 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
     invariants like immutable-after-export safe from a half-finished caller.
   Which mode an engine is, is a fact about its exports; state it in the engine's header
   so an absence reads as intent rather than an omission.
+- **Catching an engine error requires `ctx.atomic`** (#770, `docs/design/sub-transactions.md`).
+  An engine call composed inside your transaction has no boundary of its own, so a bare
+  `catch` leaves you holding its partial writes — the rows its invariants were protecting —
+  and commits them. Wrap it instead:
+
+  ```ts
+  try {
+    await ctx.atomic(() => completeWorkOrder(ctx, { orderId, billable }));
+  } catch {
+    // the engine's rows, events, links, grants and platform intents are all gone;
+    // your own writes survive, and it still commits once
+  }
+  ```
+
+  A succeeded `atomic` is still **provisional**: if the operation later throws, its writes
+  go too. Sub-transactions nest but must not interleave — starting two concurrently throws.
+  Outside `ctx.atomic`, catching an engine error stays forbidden.
 - Engine surfaces evolve **additively only**: new operation inputs are optional with
   behavior-preserving defaults; emitted event payload fields are frozen once shipped —
   rename/remove/retype means a `schemaVersion` bump (dual-emit through a deprecation

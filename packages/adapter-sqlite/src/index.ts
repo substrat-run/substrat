@@ -195,6 +195,8 @@ import {
   type TenantRelationalStore,
   type TenantStoreProvisionInput,
   type TenantStoreRecord,
+  createAtomic,
+  type RunSub,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -6284,6 +6286,37 @@ export class SqliteScopeHost implements ScopeHost {
     // allowed, so its checks are not authorizations and are not recorded.
     const passed: EventAuthorization[] = [];
 
+    /**
+     * The scope host's half of `ctx.atomic` (#770) — everything else is the
+     * kernel's (`createAtomic`). SQLite gives us savepoints, which nest inside
+     * the operation's `BEGIN IMMEDIATE` and roll back independently.
+     *
+     * `ROLLBACK TO` does not pop the savepoint, so the `RELEASE` after it is
+     * what keeps the stack balanced. It runs in its own try: if the enclosing
+     * transaction has been aborted outright (`SQLITE_FULL`, `SQLITE_BUSY`, an
+     * explicit `ON CONFLICT ROLLBACK`) the unwind fails too, and the caller is
+     * far better served by the ORIGINAL error than by the one raised while
+     * trying to recover from it.
+     */
+    const runSub: RunSub = async (depth, fn) => {
+      const name = `substrat_sub_${depth}`;
+      rt.db.exec(`SAVEPOINT ${name}`);
+      let out: unknown;
+      try {
+        out = await fn();
+      } catch (err) {
+        try {
+          rt.db.exec(`ROLLBACK TO ${name}`);
+          rt.db.exec(`RELEASE ${name}`);
+        } catch {
+          /* the transaction itself is gone; the original error is the useful one */
+        }
+        throw err;
+      }
+      rt.db.exec(`RELEASE ${name}`);
+      return out as never;
+    };
+
     // Lifted out of the object literal so `grant` can reuse it: a delegation
     // check has to be the SAME check the operation itself passes, or the two
     // could disagree about what the caller holds.
@@ -6465,6 +6498,7 @@ export class SqliteScopeHost implements ScopeHost {
             `${entity.entityType}:${entity.entityId}`,
           );
       },
+      atomic: createAtomic(runSub, { passed, signals }),
       link: (child: EntityRef, parent: EntityRef) => {
         const allowed = relations.get(child.entityType);
         if (!allowed?.has(parent.entityType)) {

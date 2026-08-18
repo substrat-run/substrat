@@ -15,6 +15,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
+  atomicContractSuite,
   billedMod,
   connectorTestFetch,
   permissionContractSuite,
@@ -50,6 +51,18 @@ scopeHostContractSuite(
 // The permission suite runs against the DO's default tuple checker (scope tuples
 // in the ScopeDO, tenant tuples + roles in the ControlPlaneDO).
 permissionContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #770: sub-transactions, on the default tuple checker (the K-34 assertion needs a
+// real check to record). `atomicMod` is in `contractTestModules`, so the ScopeDO
+// already carries it at code time — a DO cannot be handed handlers over RPC.
+atomicContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

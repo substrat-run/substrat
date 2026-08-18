@@ -222,6 +222,40 @@ export interface OperationContext {
   grant(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
   /** Withdraw a grant this caller could have made. Same guardrails. */
   revoke(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
+  /**
+   * Run `fn` as a SUB-TRANSACTION of this operation (#770,
+   * docs/design/sub-transactions.md) — the boundary that makes catching an
+   * engine error safe.
+   *
+   * A vertical composes engine in-scope functions inside one scope transaction,
+   * and without this the adapter rolls back only when the whole handler throws.
+   * So a vertical that did the reasonable thing — catch a `completeWorkOrder`
+   * failure, fall back to a manual path — committed the engine's partial writes,
+   * which are exactly the ones its invariants were protecting.
+   *
+   * Inside `atomic`, a throw discards everything `fn` wrote — rows, events,
+   * links, grants and platform intents alike — and the ORIGINAL error is
+   * rethrown unwrapped. The caller's own writes, before and after, survive, and
+   * the operation still commits once.
+   *
+   * Two things it deliberately does not promise:
+   *
+   * - **The commit is provisional.** If the operation later throws, a succeeded
+   *   `atomic`'s writes are discarded with everything else. This narrows what a
+   *   CAUGHT error destroys; it never promotes writes past the operation's own
+   *   commit.
+   * - **Not every storage failure is recoverable.** Ordinary constraint
+   *   violations are; conditions that abort the enclosing transaction outright
+   *   (`SQLITE_FULL`, `SQLITE_BUSY`, an explicit `ON CONFLICT ROLLBACK`) are not.
+   *
+   * Nests. Sub-transactions must not INTERLEAVE, though — starting two
+   * concurrently (`Promise.all`) throws rather than crossing savepoint frames.
+   *
+   * Outside `ctx.atomic`, catching an engine error remains forbidden: the writes
+   * are still there, and on a host whose transactions poison on error (Postgres)
+   * the operation is already unrecoverable.
+   */
+  atomic<T>(fn: () => T | Promise<T>): Promise<T>;
 }
 
 export type OperationHandler<I = unknown, O = unknown> = (

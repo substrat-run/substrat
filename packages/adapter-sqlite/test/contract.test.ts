@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
+  atomicContractSuite,
   connectorTestFetch,
   permissionContractSuite,
   scheduleContractSuite,
@@ -49,6 +50,23 @@ permissionContractSuite('adapter-sqlite', async () => {
 // system grant resolves through the real tuple engine, not an allow-all.
 scheduleContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-sched-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #770: sub-transactions. The DEFAULT checker — the K-34 assertion turns on a real
+// `ctx.check` recording an authorization, which an allow-all never does.
+atomicContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-atomic-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),

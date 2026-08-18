@@ -52,6 +52,8 @@ import {
   type OperationHandler,
   type PermissionChecker,
   type SqlMigration,
+  createAtomic,
+  type RunSub,
 } from '@substrat-run/kernel';
 import type { CheckSubject, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
@@ -1836,6 +1838,20 @@ export function defineScopeDO(
       // system/override actor is unconditionally allowed, so its checks are not recorded.
       const passed: EventAuthorization[] = [];
 
+      /**
+       * The scope host's half of `ctx.atomic` (#770) — everything else is the
+       * kernel's (`createAtomic`).
+       *
+       * The DO runtime FORBIDS `SAVEPOINT` through `sql.exec` outright ("please
+       * use the state.storage.transaction() or state.storage.transactionSync()
+       * APIs"), so this is not the pure adapter's mechanism spelled differently:
+       * it is the nested async transaction, which workerd rolls back correctly
+       * even across an `await`. `depth` is therefore unused here — the runtime
+       * owns that stack itself. It is exactly this asymmetry that makes `RunSub`
+       * closure-shaped rather than an enter/rollback/release triple.
+       */
+      const runSub: RunSub = (_depth, fn) => this.ctx.storage.transaction(fn);
+
       // Lifted so `grant` reuses the SAME check the operation itself passes —
       // a delegation check that could differ from the operation's would be a
       // second opinion about what the caller holds.
@@ -1976,6 +1992,7 @@ export function defineScopeDO(
             `${entity.entityType}:${entity.entityId}`,
           );
         },
+        atomic: createAtomic(runSub, { passed, signals }),
         link: (child: EntityRef, parent: EntityRef) => {
           const allowed = relations.get(child.entityType);
           if (!allowed?.has(parent.entityType)) {
