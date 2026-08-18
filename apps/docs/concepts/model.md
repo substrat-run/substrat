@@ -177,6 +177,47 @@ export const manifest = moduleManifest.parse({
 twice. `relations` is only for edges involving a composed engine's entity, and both sides are
 checked against local ∪ engine names.
 
+## From entities to tables {#emit-tables}
+
+An entity registry already describes a schema. Writing that schema again by hand as SQL is
+a *second description* of the same rows — and second descriptions drift, invisibly, until a
+query returns `undefined` for a column somebody renamed on one side.
+
+[`@substrat-run/model-emit`](/reference/model-emit) derives the second from the first:
+
+```ts
+import { emitTables } from '@substrat-run/model-emit';
+import { entities } from './spec/model.js';
+
+const sql = emitTables(entities);
+// CREATE TABLE acme_customers (
+//   id         TEXT PRIMARY KEY NOT NULL,
+//   number     TEXT NOT NULL,
+//   name       TEXT NOT NULL,
+//   created_at TEXT NOT NULL,
+//   UNIQUE (number)
+// );
+```
+
+Three things about it are worth knowing here, because they are consequences of how the model
+is declared:
+
+- **It is stricter than what you would have written.** `id` becomes `TEXT PRIMARY KEY
+  **NOT NULL**` — in SQLite a non-INTEGER primary key does not imply `NOT NULL`, so the
+  hand-written version accepts a NULL id. Every hand-written `vertical_*` table in this repo
+  had that hole; the emitter cannot produce it.
+- **It refuses rather than guesses.** A Zod shape it cannot map to a column throws, naming the
+  field. `z.boolean()` is refused outright for a *row* (SQLite stores 0/1 — declare
+  `z.number()` and keep the row type honest); it stays right for an operation's *input*. A
+  column that genuinely holds a document is declared as `jsonColumn('a reason')`, and a bare
+  `z.unknown()` remains an error, so deliberately-opaque and not-yet-modelled stay
+  distinguishable.
+- **It emits a schema, not a history.** `journalColumns` replays an existing migration journal
+  so a test can hold your registry and your journal to each other, and `planMigration` says
+  what *one* new entry would have to contain — with a **derived** version number, because
+  declaring a version is declaring a fact a diff already knows. It refuses anything that would
+  rewrite history or lose data.
+
 ## `model.json`
 
 `emitModel(entities)` renders the registry to deterministic JSON, checked in and re-emitted
@@ -194,6 +235,8 @@ the TypeScript, where the Zod objects are live.
 
 ## See also
 
+- [`@substrat-run/model-emit`](/reference/model-emit) — the DDL emitter, the journal reader,
+  and the migration planner in full
 - [Modules & the manifest](/concepts/modules) — what a module registers
 - [Permissions](/concepts/permissions) — keys, roles and the proof walk
 - [Events & audit](/concepts/events) — fat payloads, `piiClass`, and the spine

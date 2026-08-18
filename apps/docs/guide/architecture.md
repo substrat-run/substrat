@@ -99,7 +99,14 @@ bundles:
 - **migrations** — plain SQL, journaled per module, applied lazily per scope inside the
   scope's serialization domain;
 - **operations** — named handlers (`'workorder/create'`) invoked through scope stubs;
-- **event consumers** — handlers for event types other modules emit.
+- **event consumers** — handlers for event types other modules emit;
+- **schedules** — recurring work, fired by the deployment's own sweeper under a system actor
+  rather than by a cron the module holds.
+
+A vertical increasingly does not *write* most of that. It declares its entities, operations
+and permissions once in [the model](/concepts/model), and the manifest's entity fragments,
+permission list, event list and DDL are **derived** from that declaration — with CI failing on
+drift between the declaration and what is checked in.
 
 See [Modules & the manifest](/concepts/modules).
 

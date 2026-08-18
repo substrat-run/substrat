@@ -48,8 +48,21 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   refuses a non-`prod` channel with a `400`.
 - **Hostnames** — `/hostnames` (+ `/status`, `/verify`): the K-26 hostname map and its
   Cloudflare-for-SaaS issuance/verification.
-- **Roles**, **admin-log**, and **observability** (`/observability/logs`, `/metrics`) —
-  the permission surface, the append-only audit history, and fleet telemetry.
+- **Connections** — `/tenants/:t/connections` (+ `/verify`, `/credential`, `/activity`,
+  `/connection-grants`): the integrations hub. A credential is *verified against the
+  provider* when it is connected rather than merely stored, `/credential` says which one is
+  loaded without revealing it, and `/activity` reads what the connection actually did.
+- **Copies and erasure** — `/directory/backups` and `/directory/restore` for the directory
+  itself, `/scopes/:s/backups` and `/snapshots` for a scope, and
+  `/scopes/:s/subjects/:id/shred`, which redacts the spine payloads and destroys the sealing
+  key in one audited, idempotent call — returning **a receipt the DSAR response is written
+  from**. Deliberately staff-only: a builder forwards the request, the platform executes it.
+- **Platform grants** — `/verticals/:slug/email-sender` and
+  `/verticals/:slug/tenant-provisioner`: the capabilities a vertical must be *granted*
+  rather than configure for itself.
+- **Roles**, **admin-log**, **ops-failures**, **meters**, and **observability**
+  (`/observability/logs`, `/observability/metrics`) — the permission surface, the
+  append-only audit history, operational failures, billable readings, and fleet telemetry.
 - **`/push-tokens`** — mints the scoped builder tokens a `substrat push` authenticates with.
 
 Routes are the shape only; enumerate the [OpenAPI](/reference/contracts) document for the

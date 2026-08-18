@@ -74,6 +74,8 @@ function guideSidebar() {
         { text: 'What is Substrat?', link: '/guide/what-is-substrat' },
         { text: 'Why runtime enforcement?', link: '/guide/why-substrat' },
         { text: 'How Substrat compares', link: '/guide/comparisons' },
+        { text: "What Substrat doesn't have (yet)", link: '/guide/what-substrat-lacks' },
+        { text: 'FAQ', link: '/guide/faq' },
         { text: 'Architecture', link: '/guide/architecture' },
         { text: 'Getting started', link: '/guide/getting-started' },
         { text: 'Running locally', link: '/guide/running-locally' },
@@ -145,6 +147,7 @@ function guideSidebar() {
       text: 'Package reference',
       items: [
         { text: '@substrat-run/contracts', link: '/reference/contracts' },
+        { text: '@substrat-run/model-emit', link: '/reference/model-emit' },
         { text: '@substrat-run/kernel', link: '/reference/kernel' },
         { text: '@substrat-run/adapter-sqlite', link: '/reference/adapter-sqlite' },
         { text: '@substrat-run/adapter-cloudflare', link: '/reference/adapter-cloudflare' },
