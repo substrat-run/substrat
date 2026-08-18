@@ -49,6 +49,21 @@ export interface EntityDef<Names extends string = string> {
   readonly key?: readonly string[];
   /** Fields an erasure must be able to reach (§12). Must name fields that exist. */
   readonly erasable?: readonly string[];
+  /**
+   * Fields that used to be called something else — `{ current: previous }`.
+   *
+   * **The one thing a migration diff cannot derive.** A diff sees a field gone
+   * and a field arrived and cannot tell a rename from a drop-plus-add; guessing
+   * wrong drops the column and the data in it. So this is declared, and it is
+   * the ONLY declaration in the journal that is not derived — everything else,
+   * including the version number, comes from the diff.
+   *
+   * **Deletable after use.** It exists to survive one diff, not forever. Once
+   * the rename has shipped, the old name is gone from the journal and the entry
+   * becomes a no-op that can be removed. A model that accumulates these is
+   * carrying gravestones.
+   */
+  readonly renamedFrom?: Readonly<Record<string, string>>;
 }
 
 /** The field names of one entity, read off its own `fields` schema. */
@@ -73,6 +88,16 @@ export function defineEntities<
     readonly [K in keyof T]: EntityDef<keyof T & string> & {
       key?: readonly EntityFields<T[K]>[];
       erasable?: readonly EntityFields<T[K]>[];
+      // Keys are CURRENT field names — the thing being renamed TO. The values
+      // are historical and name nothing that still exists, so they stay strings.
+      //
+      // The key is checked by the MIGRATION PLANNER, not here: TypeScript does
+      // not apply excess-property checking when satisfying a generic
+      // constraint, so an unknown key widens rather than erroring. Written the
+      // obvious way this reads like a working check and enforces nothing —
+      // which is worse than no check, so it is not claimed. `planMigration`
+      // refuses a declaration naming a field the model does not have.
+      renamedFrom?: Readonly<Partial<Record<EntityFields<T[K]>, string>>>;
     };
   },
 >(entities: T): T {

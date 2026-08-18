@@ -106,8 +106,32 @@ export function planMigration<T extends Record<string, EntityDef>>(
     const o = owner.get(table);
     if (!o) continue;
     const emitted = columnsOf(o.name, o.entity, entities);
+
+    // `{ current: previous }`, kept only for names the journal still holds. A
+    // declaration whose old name has already gone is spent, not wrong — the
+    // rename shipped, and the entry is now a gravestone the model may delete.
+    const renames = new Map<string, string>();
+    for (const [current, previous] of Object.entries(o.entity.renamedFrom ?? {})) {
+      if (typeof previous !== 'string') continue;
+      if (!emitted.some((c) => c.name === current)) {
+        refusals.push(
+          `'${table}.${current}' is declared as renamed from '${previous}', but no such field ` +
+            'exists in the model — a rename names the field it renamed TO',
+        );
+        continue;
+      }
+      if (have.has(previous) && !have.has(current)) renames.set(current, previous);
+    }
+
+    for (const [current, previous] of renames) {
+      statements.push(`ALTER TABLE ${table} RENAME COLUMN ${previous} TO ${current};`);
+      changes.push(`rename-${table}-${previous}-to-${current}`);
+    }
+
     for (const col of emitted) {
       if (have.has(col.name)) continue;
+      // A renamed column is not a new one — emitting both would add it twice.
+      if (renames.has(col.name)) continue;
       if (col.requiredWithoutDefault) {
         refusals.push(
           `'${table}.${col.name}' is required and has no default, and '${table}' already exists — ` +
@@ -121,12 +145,15 @@ export function planMigration<T extends Record<string, EntityDef>>(
     }
 
     // -- columns the model dropped --------------------------------------------
+    const renamedAway = new Set(renames.values());
     for (const name of have) {
       if (emitted.some((c) => c.name === name)) continue;
+      // Accounted for: it did not go away, it got a new name.
+      if (renamedAway.has(name)) continue;
       refusals.push(
         `'${table}.${name}' is in the journal but no longer in the model — a diff cannot tell a ` +
-          'rename from a drop-plus-add, and guessing wrong loses the data. Declare the rename, ' +
-          'or retire the column deliberately',
+          'rename from a drop-plus-add, and guessing wrong loses the data. Declare it with ' +
+          `\`renamedFrom: { <newName>: '${name}' }\` on the entity, or retire the column deliberately`,
       );
     }
 

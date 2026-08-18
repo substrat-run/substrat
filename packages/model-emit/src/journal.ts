@@ -18,7 +18,7 @@
  *
  * Handles what real journals do: multi-line `CHECK (...)` constraints (tracked
  * by paren depth, so a continuation line is not read as a column), `ADD COLUMN`,
- * `DROP TABLE`, and `RENAME TO` — append-only journals rebuild a table by
+ * `DROP TABLE`, `RENAME COLUMN` and `RENAME TO` — append-only journals rebuild a table by
  * creating a `_new`, copying, dropping the original and renaming onto its name.
  */
 export function journalColumns(sql: string): Map<string, Set<string>> {
@@ -45,12 +45,18 @@ export function journalColumns(sql: string): Map<string, Set<string>> {
   // Replayed in statement order: a journal may add a column and later rename the
   // table, or rename onto a name it has just dropped.
   for (const m of sql.matchAll(
-    /(?:ALTER TABLE ([a-z_][a-z0-9_]*)\s+ADD COLUMN\s+([a-z_][a-z0-9_]*))|(?:ALTER TABLE ([a-z_][a-z0-9_]*)\s+RENAME TO\s+([a-z_][a-z0-9_]*))|(?:DROP TABLE (?:IF EXISTS )?([a-z_][a-z0-9_]*))/gi,
+    // `RENAME COLUMN` comes first: `RENAME TO` must not swallow it. Without this
+    // branch a renamed column reads as its old name forever, and a planner that
+    // derives migrations would emit the same rename on every run.
+    /(?:ALTER TABLE ([a-z_][a-z0-9_]*)\s+ADD COLUMN\s+([a-z_][a-z0-9_]*))|(?:ALTER TABLE ([a-z_][a-z0-9_]*)\s+RENAME COLUMN\s+([a-z_][a-z0-9_]*)\s+TO\s+([a-z_][a-z0-9_]*))|(?:ALTER TABLE ([a-z_][a-z0-9_]*)\s+RENAME TO\s+([a-z_][a-z0-9_]*))|(?:DROP TABLE (?:IF EXISTS )?([a-z_][a-z0-9_]*))/gi,
   )) {
-    const [, addTable, addCol, fromTable, toTable, dropped] = m;
+    const [, addTable, addCol, renTable, renFrom, renTo, fromTable, toTable, dropped] = m;
     if (addTable && addCol) tables.get(addTable)?.add(addCol);
     else if (dropped) tables.delete(dropped);
-    else if (fromTable && toTable) {
+    else if (renTable && renFrom && renTo) {
+      const cols = tables.get(renTable);
+      if (cols?.delete(renFrom)) cols.add(renTo);
+    } else if (fromTable && toTable) {
       const cols = tables.get(fromTable);
       if (cols) {
         tables.delete(fromTable);

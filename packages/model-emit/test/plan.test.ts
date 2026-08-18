@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z, defineEntities } from '@substrat-run/contracts';
-import { emitTables, planMigration, parseJournal, type Journal } from '../src/index.js';
+import { emitTables, journalColumns, planMigration, parseJournal, type Journal } from '../src/index.js';
 
 const base = defineEntities({
   owner: {
@@ -166,5 +166,102 @@ describe('parseJournal', () => {
         ],
       }),
     ).toThrow(/bad merge/);
+  });
+});
+
+describe('the reader follows a column rename', () => {
+  it('reports the new name, not the old one', () => {
+    // Without this the planner re-emits the same rename on every run, because
+    // the journal keeps reporting the column it renamed away from.
+    const cols = journalColumns(
+      'CREATE TABLE t (\n  id TEXT PRIMARY KEY NOT NULL,\n  email TEXT NOT NULL\n);\n' +
+        'ALTER TABLE t RENAME COLUMN email TO address;',
+    );
+    expect([...(cols.get('t') ?? [])].sort()).toEqual(['address', 'id']);
+  });
+
+  it('does not confuse a column rename with a table rename', () => {
+    const cols = journalColumns(
+      'CREATE TABLE t (\n  id TEXT PRIMARY KEY NOT NULL\n);\nALTER TABLE t RENAME TO u;',
+    );
+    expect(cols.has('u')).toBe(true);
+    expect(cols.has('t')).toBe(false);
+  });
+});
+
+describe('renamedFrom — the one declaration a diff cannot derive', () => {
+  const renamed = defineEntities({
+    ...base,
+    owner: {
+      table: 'app_owners',
+      fields: z.object({ id: z.string(), address: z.string(), created_at: z.string() }),
+      key: ['address'],
+      renamedFrom: { address: 'email' },
+    },
+  });
+
+  it('renames instead of dropping and re-adding', () => {
+    const plan = planMigration(renamed, first(base));
+    expect(plan.kind).toBe('append');
+    if (plan.kind !== 'append') return;
+    expect(plan.entry.sql).toBe('ALTER TABLE app_owners RENAME COLUMN email TO address;');
+    // The whole point: no DROP, and no ADD that would leave the data behind.
+    expect(plan.entry.sql).not.toMatch(/DROP|ADD COLUMN/);
+    expect(plan.entry.slug).toBe('rename-app_owners-email-to-address');
+  });
+
+  it('is spent once it has shipped — the model may delete the declaration', () => {
+    // Apply the rename, then plan again with the SAME model: nothing left to do.
+    const applied = planMigration(renamed, first(base));
+    if (applied.kind !== 'append') throw new Error('expected an append');
+    const journal = { entries: [...first(base).entries, applied.entry] };
+    expect(planMigration(renamed, journal).kind).toBe('up-to-date');
+
+    // And with the declaration removed, still nothing — it was a gravestone.
+    const withoutDeclaration = defineEntities({
+      ...base,
+      owner: {
+        table: 'app_owners',
+        fields: z.object({ id: z.string(), address: z.string(), created_at: z.string() }),
+        key: ['address'],
+      },
+    });
+    expect(planMigration(withoutDeclaration, journal).kind).toBe('up-to-date');
+  });
+
+  it('...while WITHOUT the declaration the same change is still refused', () => {
+    // The control. Without this, the rename test would pass just as happily if
+    // the planner had quietly stopped refusing drops altogether.
+    const undeclared = defineEntities({
+      ...base,
+      owner: {
+        table: 'app_owners',
+        fields: z.object({ id: z.string(), address: z.string(), created_at: z.string() }),
+        key: ['address'],
+      },
+    });
+    const plan = planMigration(undeclared, first(base));
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons.join(' ')).toMatch(/renamedFrom/);
+  });
+
+  it('refuses a declaration naming a field the model does not have', () => {
+    const wrong = defineEntities({
+      ...base,
+      owner: {
+        table: 'app_owners',
+        fields: z.object({ id: z.string(), email: z.string(), created_at: z.string() }),
+        key: ['email'],
+        // NOT a compile error, deliberately: see the note on `renamedFrom` in
+        // contracts. The planner is what catches it, which is why this case is
+        // here rather than in the type-level suite.
+        renamedFrom: { postal: 'email' },
+      },
+    });
+    const plan = planMigration(wrong, first(base));
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons.join(' ')).toMatch(/names the field it renamed TO/);
   });
 });
