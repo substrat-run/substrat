@@ -90,7 +90,11 @@ describe('Meridian — Scrive signature loop (Gate 1)', () => {
 
     const report = await sweep();
     expect(report.errors).toEqual([]);
-    expect(report.connectionsSwept).toBe(1);
+    // Two: the demo world has two tenants, and since #687 every Meridian instance
+    // holds a Scrive connection — a contract cannot be issued without one, because
+    // the request seals each signatory's address to its public key. The second
+    // tenant's is a placeholder with nothing out for signature, so it sweeps clean.
+    expect(report.connectionsSwept).toBe(2);
 
     // The signature travelled back onto the instance — the whole point of Gate 1.
     const after = await karinsContract();
@@ -109,7 +113,13 @@ describe('Meridian — Scrive signature loop (Gate 1)', () => {
     // whose method is the provider's — proof the #97 seam, not test scaffolding,
     // carried it.
     const scope: ScopeId = world.sSe;
-    const conns = await host.admin.listConnections(platformActorId.parse(ulid()), { provider: 'scrive' });
+    // Narrowed to the tenant under test: every Meridian instance now holds a
+    // connection (#687), so the fleet-wide list is no longer a statement about
+    // this one.
+    const conns = await host.admin.listConnections(platformActorId.parse(ulid()), {
+      tenantId: world.t1,
+      provider: 'scrive',
+    });
     expect(conns.map((c) => c.vertical)).toEqual(['meridian']);
     expect(conns.every((c) => c.tenantId === world.t1)).toBe(true);
     expect(scope).toBe(world.sSe);

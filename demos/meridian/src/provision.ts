@@ -157,6 +157,22 @@ export const permissions = definePermissions({ modules: MODULES, roles: ROLES, e
  * authority a leaked Scrive token would carry: record a signature on this
  * vertical's data, nothing else, and it shows up in the permission diff.
  */
+/**
+ * What a demo instance connects with when no real Scrive credential was supplied.
+ *
+ * Not a secret and not pretending to be one: no connector is registered without a
+ * `ScriveConfig`, so nothing ever presents it. It exists because the CONNECTION
+ * must, and the connection must because a signature request seals every
+ * signatory's address to its public key (#687) — a demo without one could not
+ * issue a contract at all, which is a worse lie than a placeholder token.
+ */
+const PLACEHOLDER_SCRIVE_CREDENTIAL: ScriveCredential = {
+  clientId: 'demo-unconfigured',
+  clientSecret: 'demo-unconfigured',
+  tokenId: 'demo-unconfigured',
+  tokenSecret: 'demo-unconfigured',
+};
+
 export async function connectScrive(
   host: ScopeHost,
   input: { tenantId: TenantId; scopeId: ScopeId; secret: ScriveCredential },
@@ -246,14 +262,36 @@ export async function provisionMeridian(
     node: { tenantId: input.tenantId, scopeId: null },
   });
 
-  // Wire the provider BEFORE any contract is issued: a dispatch fires post-commit,
-  // so the connection has to exist by the time `hr/issue-employment-contract`
-  // emits, or the connector fails with no credential. Only when Scrive is enabled.
-  if (opts.scrive) {
+  // Wire the provider BEFORE any contract is issued, and now UNCONDITIONALLY.
+  //
+  // It always had to exist before `hr/issue-employment-contract` emits, because a
+  // dispatch fires post-commit and a connector with no credential fails. #687
+  // moved the requirement one step earlier and made it total: the operation seals
+  // each signatory's address to this connection's public key, so without a
+  // connection there is no key and the request is refused rather than frozen and
+  // undeliverable. That is the right refusal — an instance sitting in
+  // `pending_signature` for a document nobody was sent is the failure this
+  // vertical shipped with — and it means a Meridian instance that can issue
+  // contracts is one that has connected Scrive.
+  //
+  // Without a real credential the connection holds a placeholder and no connector
+  // is registered to use it, so nothing reaches the provider: the contract freezes
+  // and waits, exactly as the Scrive-less demo always did.
+  //
+  // Skipped when one is already live, because provisioning is idempotent (K-31,
+  // and the reconciliation sweep re-runs exactly this): a second `createConnection`
+  // for the same (tenant, vertical, provider) is refused by the live-uniqueness
+  // index, and a re-provision must not fail on state it already established.
+  const live = await host.admin.listConnections(staff, {
+    tenantId: input.tenantId,
+    vertical: VERTICAL,
+    provider: 'scrive',
+  });
+  if (live.length === 0) {
     await connectScrive(host, {
       tenantId: input.tenantId,
       scopeId: input.scopeId,
-      secret: opts.scrive,
+      secret: opts.scrive ?? PLACEHOLDER_SCRIVE_CREDENTIAL,
     });
   }
 

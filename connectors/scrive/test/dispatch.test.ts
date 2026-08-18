@@ -200,7 +200,7 @@ describe('scrive connector — outbound dispatch', () => {
         method: 'scrive',
         parties: [
           { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
-          { label: 'Anställd', kind: 'external' },
+          { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
         ],
       },
     );
@@ -263,7 +263,15 @@ describe('scrive connector — outbound dispatch', () => {
       return stub.invoke('protocol/request-signatures', {
         instanceId: inst.id,
         method: 'scrive',
-        parties: [{ label: 'Anställd', kind: 'external', ...(level ? { authLevel: level } : {}) }],
+        parties: [
+          {
+            label: 'Anställd',
+            kind: 'external',
+            contact: { email: 'anstalld@example.se' },
+            ...(level ? { authLevel: level } : {}),
+          },
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+        ],
       });
     };
 
@@ -271,7 +279,8 @@ describe('scrive connector — outbound dispatch', () => {
       await issueAt();
       const [doc] = [...scrive.documents.values()];
       expect(doc!.status).toBe('pending'); // started — the 409 is gone
-      expect(doc!.parties.map((p) => p.auth)).toEqual(['standard']);
+      // Two parties now — the counterparty and the issuer it is sent by (#687).
+      expect(doc!.parties.map((p) => p.auth)).toEqual(['standard', 'standard']);
     });
 
     it("honours a connection-level default for parties that ask for 'basic'", async () => {
@@ -285,7 +294,7 @@ describe('scrive connector — outbound dispatch', () => {
       await issueAt();
       const [doc] = [...scrive.documents.values()];
       expect(doc!.status).toBe('pending');
-      expect(doc!.parties.map((p) => p.auth)).toEqual(['se_bankid']);
+      expect(doc!.parties.map((p) => p.auth)).toEqual(['se_bankid', 'se_bankid']);
     });
 
     it("dispatches 'strong' as BankID, carrying the EMPTY personal_number field (#687)", async () => {
@@ -299,28 +308,25 @@ describe('scrive connector — outbound dispatch', () => {
 
       const [doc] = [...scrive.documents.values()];
       expect(doc!.status).toBe('pending'); // it starts — no refusal, no 409
-      expect(doc!.parties.map((p) => p.auth)).toEqual(['se_bankid']);
+      // Only the party that ASKED for strong; the issuer keeps the default.
+      expect(doc!.parties.map((p) => p.auth)).toEqual(['se_bankid', 'standard']);
       // The mock enforces the rule the testbed enforces: presence, not value.
       // Without `update` sending the empty field this assertion — and `start` —
       // would both fail.
-      expect(doc!.parties.every((p) => p.hasPersonalNumber)).toBe(true);
+      expect(doc!.parties[0]!.hasPersonalNumber).toBe(true);
     });
 
-    it('cannot deliver to a COUNTERPARTY: no party carries an address (#687 item 1)', async () => {
-      // The gap that outlives this fix, stated where it will fail loudly when it
-      // closes. `strictDelivery` makes the mock apply the testbed's OTHER `start`
-      // rule — a party who must be INVITED and carries no `email` field cannot be
-      // reached — which no party this connector builds can satisfy, at either auth
-      // level. So the flow is blocked on a contact carrier, never on the auth
-      // level, and the refusal removed above was never what stood between a
-      // request and a signature.
+    it('DELIVERS to the counterparty: the sealed address reaches the provider (#687 item 1)', async () => {
+      // The gap this connector was written into, now closed — and asserted under
+      // the provider's real rule rather than a friendlier mock. `strictDelivery`
+      // makes the mock apply the testbed's OTHER `start` rule: a party who must be
+      // INVITED and carries no `email` field cannot be reached, and `start` 409s.
       //
-      // The set matters: this one names a real counterparty, so participant #2 is
-      // someone Scrive must invite. The test below is the same gap with the other
-      // party set, and it does NOT fail.
-      //
-      // One attempt, so the failure lands in the dead-letter record immediately
-      // rather than after eight backoffs a test cannot advance through.
+      // Until #687 no party this connector built could satisfy it, at either auth
+      // level — `ScriveParty.email` was declared, wired into the fields array, and
+      // filled by nothing. This is the whole path: the vertical passes an address,
+      // the engine seals it to this connection, the cell rides the event, and the
+      // connector opens it here and puts it where Scrive looks.
       const discarded = dir;
       await host.close();
       await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, { strictDelivery: true });
@@ -336,57 +342,68 @@ describe('scrive connector — outbound dispatch', () => {
         contentRef: { entityType: 'employment-terms', entityId: '01JTERMS000000000000000AUT' },
         contentHash: '11'.repeat(32),
       });
-      // The operation SUCCEEDS — the freeze is committed and the request rows
-      // exist. Only the delivery fails, and this time the reason is the provider's.
       await stub.invoke('protocol/request-signatures', {
         instanceId: inst.id,
         method: 'scrive',
         parties: [
           { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
-          { label: 'Anställd', kind: 'external' },
+          { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
         ],
       });
 
-      const [dead] = await host.executorDeadLetters(t, s);
-      expect(dead!.eventType).toBe('protocol.signatures-requested');
-      expect(dead!.error).toMatch(/409/);
-      expect(dead!.error).toMatch(/requires valid email field/);
-      // Participant #2 — the counterparty — and ONLY #2. #1 is the author, whom
-      // Scrive never invites, so its missing address is not what refused this
-      // document. A refusal naming both would be the mock inventing a rule.
-      expect(dead!.error).toMatch(/participant #2/);
-      expect(dead!.error).not.toMatch(/participant #1/);
+      // It started, under the rule that used to refuse it.
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.status).toBe('pending');
+      expect(await host.executorDeadLetters(t, s)).toEqual([]);
+
+      // Participant #2 — the counterparty — carries the address the vertical
+      // supplied. #1 is the author, whom Scrive reaches as our own account and
+      // never invites, so it carries none and needs none.
+      expect(doc!.parties[1]!.email).toBe('anstalld@example.se');
+      expect(doc!.parties[0]!.isAuthor).toBe(true);
+      expect(doc!.parties[0]!.email).toBeNull();
     });
 
-    it('a LONE party becomes the author: the document starts and invites nobody (#687)', async () => {
-      // The control case, and the trap. `requestSignatures` resolves the issuing
-      // party unconditionally — the declared one, else the FIRST — so a caller
-      // that names only counterparties has one of them silently made the issuer,
-      // and this connector maps `primary` to `is_author`. Scrive never invites the
-      // author, so the delivery rule the test above trips does not reach it: the
-      // document starts, journals a document id, reports itself sent for
-      // signature, and reaches nobody. Production got here without anyone choosing
-      // it (Scrive doc 9222115557586247373).
+    it('a LONE party is refused before anything freezes (#687)', async () => {
+      // This test used to assert the OPPOSITE, and its own comment named the day
+      // it would have to change. `requestSignatures` resolved the issuing party
+      // unconditionally — the declared one, else the FIRST — so a caller naming
+      // only counterparties had one of them silently made the issuer, and this
+      // connector maps `primary` to `is_author`. Scrive never invites the author,
+      // so the document started, journalled an id, reported itself sent for
+      // signature, and reached nobody. Production got there without anyone
+      // choosing it (Scrive doc 9222115557586247373).
       //
-      // So "no document this connector builds can start" is false, and stating it
-      // as an unconditional refusal would have hidden the worse of the two
-      // failures behind the louder one. When #687 item 1 lands its invariant —
-      // no document goes out with nobody to deliver to — THIS is the assertion
-      // that must be changed deliberately, because a contact field alone does not
-      // close it: an author is uninvitable whatever address it carries.
+      // A contact field alone does not close that: an author is uninvitable
+      // whatever address it carries. So the refusal lives in the engine, at the
+      // call site, where the hazard is created.
       const discarded = dir;
       await host.close();
       await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, { strictDelivery: true });
       rmSync(discarded, { recursive: true, force: true });
 
-      await issueAt('basic'); // one party, no declared issuer
+      const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
+        templateKey: 'anstallningsavtal',
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      });
+      await expect(
+        stub.invoke('protocol/request-signatures', {
+          instanceId: inst.id,
+          method: 'scrive',
+          parties: [
+            { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
+          ],
+        }),
+      ).rejects.toThrow(/needs a counterparty/);
 
-      const [doc] = [...scrive.documents.values()];
-      expect(doc!.status).toBe('pending'); // it STARTED
-      expect(doc!.parties).toHaveLength(1);
-      expect(doc!.parties[0]!.isAuthor).toBe(true); // …as the sender's own side
-      expect(doc!.parties[0]!.email).toBeNull(); // …with nobody to deliver to
-      expect(await host.executorDeadLetters(t, s)).toEqual([]); // …and no complaint
+      // Nothing was sent, and nothing froze — the instance is still negotiable.
+      expect(scrive.documents.size).toBe(0);
+      const [summary] = await stub.invoke<{ instance: { status: string } }[]>(
+        'protocol/list-for-entity',
+        { entityType: EMPLOYEE.entityType, entityId: EMPLOYEE.entityId },
+      );
+      expect(summary!.instance.status).toBe('open');
     });
   });
 
@@ -444,7 +461,7 @@ describe('scrive connector — outbound dispatch', () => {
           method: 'scrive',
           parties: [
             { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
-            { label: 'Anställd', kind: 'external' },
+            { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
           ],
         },
       );
@@ -524,7 +541,10 @@ describe('scrive connector — outbound dispatch', () => {
       await stub.invoke('protocol/request-signatures', {
         instanceId: inst.id,
         method: 'scrive',
-        parties: [{ label: 'Anställd', kind: 'external' }],
+        parties: [
+          { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+        ],
       });
 
       const [doc] = [...scrive.documents.values()];
@@ -656,7 +676,7 @@ describe('scrive connector — outbound dispatch', () => {
       method: 'scrive',
       parties: [
         { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
-        { label: 'Anställd', kind: 'external' },
+        { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
       ],
     });
 
@@ -680,10 +700,26 @@ describe('scrive connector — outbound dispatch', () => {
       contentRef: { entityType: 'employment-terms', entityId: '01JTERMS000000000000000001' },
       contentHash: 'cd'.repeat(32),
     });
+    // The tenant genuinely holds an 'assently' connection: the engine seals each
+    // contact to the connector named by `method` (#687), so a provider nobody
+    // connected is refused at the operation and would never reach dispatch at all
+    // — which would test the wrong thing. This asserts the connector's own filter.
+    await host.admin.createConnection(staff, {
+      id: connectionId.parse(ulid()),
+      tenantId: t,
+      vertical: 'meridian',
+      provider: 'assently',
+      label: 'Assently',
+      secret: { token: 'x' },
+      scopes: [],
+    });
     await stub.invoke('protocol/request-signatures', {
       instanceId: inst.id,
       method: 'assently',
-      parties: [{ label: 'Anställd', kind: 'external' }],
+      parties: [
+        { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+        { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
+      ],
     });
     expect(scrive.documents.size).toBe(0);
   });
@@ -727,10 +763,54 @@ describe('scrive connector — outbound dispatch', () => {
     expect(healed!.lastError).toBeNull();
   });
 
-  it('refuses to dispatch when the tenant has no Scrive connection', async () => {
+  it('refuses the REQUEST when the tenant has no Scrive connection (#687)', async () => {
+    // New with the contact carrier, and worth its own assertion: a request whose
+    // addresses cannot be sealed is refused at the operation, so nothing freezes.
+    // Before this, such a request froze the instance and then failed invisibly at
+    // the provider — an avtal that looks sent for signature and is not.
+    const [existing] = await host.admin.listConnections(staff, { tenantId: t });
+    await host.admin.revokeConnection(staff, existing!.id);
+
+    const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
+      templateKey: 'anstallningsavtal',
+      entityType: EMPLOYEE.entityType,
+      entityId: EMPLOYEE.entityId,
+    });
+    await stub.invoke('protocol/bind-document', {
+      instanceId: inst.id,
+      contentRef: { entityType: 'employment-terms', entityId: '01JTERMS0000000000000000NC' },
+      contentHash: 'aa'.repeat(32),
+    });
+    await expect(
+      stub.invoke('protocol/request-signatures', {
+        instanceId: inst.id,
+        method: 'scrive',
+        parties: [
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
+        ],
+      }),
+    ).rejects.toThrow(/no 'scrive' sealing key is available/);
+
+    expect(scrive.documents.size).toBe(0);
+    const [open] = await stub.invoke<{ instance: { status: string } }[]>(
+      'protocol/list-for-entity',
+      { entityType: EMPLOYEE.entityType, entityId: EMPLOYEE.entityId },
+    );
+    expect(open!.instance.status).toBe('open');
+  });
+
+  it('keeps retrying a dispatch whose connection was revoked between attempts', async () => {
+    // The original shape of the test above, and still the real case — only now it
+    // has to be reached differently. A request made with NO connection is refused
+    // outright (the test above), so the way a dispatch meets a missing credential
+    // is that the credential goes away in the gap between attempts. The provider
+    // outage opens that gap.
+    scrive.failWith = 503;
+    await issue();
+    scrive.failWith = undefined;
     const [conn] = await host.admin.listConnections(staff, { tenantId: t });
     await host.admin.revokeConnection(staff, conn!.id);
-    await issue();
 
     // Nothing was sent, and nothing was recorded as sent — the two together are
     // what distinguish a refused dispatch from a silent no-op.

@@ -31,6 +31,7 @@ import {
   meterReading,
   subjectRef,
   createConnectionInput,
+  projectedConnectionKey,
   moduleManifest,
   org as orgSchema,
   orgMembership,
@@ -63,6 +64,7 @@ import {
   type ListPage,
   type MeterReading,
   type ProjectedConnectionGrant,
+  type ProjectedConnectionKey,
   type ProjectedIdentityLink,
   type Node,
   type Org,
@@ -136,6 +138,8 @@ import {
   isSecretBoxConfigured,
   unconfiguredSecretBox,
   createSubjectKeys,
+  generateSealingKeyPair,
+  openSealed,
   type SubjectKeys,
   type ConnectorContext,
   type ConnectorHandler,
@@ -464,6 +468,25 @@ interface ControlPlaneStub {
     includeRevoked?: boolean;
   }): Promise<ConnectionDoRow[]>;
   readConnection(id: string): Promise<ConnectionDoRow | undefined>;
+  /** #687: this connection's sealing-key rows — current and retired alike. */
+  readConnectionKeys(connectionId: string): Promise<
+    {
+      key_id: string;
+      public_key: string;
+      wrapped_key_id: string;
+      wrapped_private: string;
+      retired_at: string | null;
+    }[]
+  >;
+  /** #687: mint-if-absent; returns the CURRENT key after the write, so a lost race adopts the winner's. */
+  insertConnectionKey(row: {
+    connectionId: string;
+    keyId: string;
+    publicKey: string;
+    wrappedKeyId: string;
+    wrappedPrivate: string;
+    createdAt: string;
+  }): Promise<{ key_id: string; public_key: string } | undefined>;
   readLiveConnection(
     tenantId: string,
     vertical: string,
@@ -719,6 +742,8 @@ interface ScopeStubRpc {
     scopeTuples?: { subject: string; relation: string; object: string; expires_at: string | null }[],
     /** The tenant's identity links (#406) — same preserve-on-undefined convention as entitlements. */
     identities?: { provider: string; external_id: string; principal_id: string; scope_id: string | null }[],
+    /** Live connections' PUBLIC sealing keys (#687) — same preserve-on-undefined convention. */
+    connectionKeys?: { connection_id: string; provider: string; key_id: string; public_key: string }[],
   ): Promise<void>;
   /** Resolve an external identity from this scope's projected links (#406) — the CP-less auth read. */
   resolveProjectedIdentity(
@@ -1066,6 +1091,11 @@ export class CloudflareScopeHost implements ScopeHost {
           // vertical's R2, so the bytes come back over the seam.
           openAttachment: (attachmentId: string) =>
             this.getConnectorAttachments(open.id, scopeId).then((a) => a.open(attachmentId)),
+          // #687: open a cell the scope sealed TO this connection. The keyId-indexed
+          // map goes in, never out — a connector receives the plaintext of one cell,
+          // not a private key it could mislay. Retired keys are in the map too, so a
+          // request pending across a rotation still opens.
+          unseal: async (sealed) => openSealed(await this.openSealingKeys(open.id), sealed),
           fetch: async (input, init) => {
             try {
               const res = await fetchImpl(input, {
@@ -3680,6 +3710,18 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
 
+      connectionSealingKey: (id: ConnectionId) => this.ensureSealingKey(id),
+
+      connectionSealingKeys: async (tenantId: TenantId, vertical: string) => {
+        // LIVE connections only. A revoked connection's key is KEPT (its pending
+        // ciphertext must still open) but stops being projected, so a scope can no
+        // longer seal to a credential that has been withdrawn.
+        const rows = await this.cp.listConnections({ tenantId, vertical });
+        const out: ProjectedConnectionKey[] = [];
+        for (const r of rows) out.push(await this.ensureSealingKey(r.id as ConnectionId));
+        return out;
+      },
+
       listConnections: async (actor, filter?: ConnectionFilter) => {
         const f = filter ?? {};
         const rows = await this.cp.listConnections(f);
@@ -4071,6 +4113,71 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.scopeStub(scopeId).writeTuple(subject, relation, object, expiresAt);
   }
 
+  /**
+   * The connection's CURRENT public sealing key, minted on first ask (#687).
+   *
+   * Mint-on-read rather than mint-only-at-connect, because the fleet already holds
+   * live connections older than this feature — Egeryds' Scrive credential carries
+   * years of real contracts, and "reconnect to acquire a keypair" is not a
+   * migration anyone should have to run against production. Asking IS the
+   * back-fill, and it is idempotent: the DO's insert loses silently against the
+   * partial-unique index and re-reads the winner, so a race yields one key.
+   *
+   * Minted HERE, on the coordinator, for the reason the credential is: the DO has
+   * never held a `SecretBox` and must never see an unsealed private half.
+   */
+  private async ensureSealingKey(connectionId: ConnectionId): Promise<ProjectedConnectionKey> {
+    const conn = await this.cp.readConnection(connectionId);
+    if (!conn) throw new Error(`connection not found: ${connectionId}`);
+    const rows = await this.cp.readConnectionKeys(connectionId);
+    const current = rows.find((r) => r.retired_at === null);
+    if (current) {
+      return projectedConnectionKey.parse({
+        connectionId,
+        provider: conn.provider,
+        keyId: current.key_id,
+        publicKey: current.public_key,
+      });
+    }
+    const pair = await generateSealingKeyPair(`connection:${connectionId}:${ulid()}`);
+    const wrapped = await this.secretBox.seal(pair.privateKey);
+    const won = await this.cp.insertConnectionKey({
+      connectionId,
+      keyId: pair.keyId,
+      publicKey: pair.publicKey,
+      wrappedKeyId: wrapped.keyId,
+      wrappedPrivate: wrapped.ciphertext,
+      createdAt: new Date().toISOString(),
+    });
+    return projectedConnectionKey.parse({
+      connectionId,
+      provider: conn.provider,
+      keyId: won?.key_id ?? pair.keyId,
+      publicKey: won?.public_key ?? pair.publicKey,
+    });
+  }
+
+  /**
+   * EVERY private half this connection holds, keyed by keyId — retired ones too.
+   *
+   * A ciphertext sealed before a rotation still names the key that sealed it, so
+   * the opener has to hold the whole map or every request pending across a
+   * rotation dead-letters. When rotation eventually DESTROYS a retired key its row
+   * goes and the open fails loudly, which is the intended erasure (D-5), not an
+   * accident.
+   */
+  private async openSealingKeys(connectionId: ConnectionId): Promise<Record<string, string>> {
+    const rows = await this.cp.readConnectionKeys(connectionId);
+    const out: Record<string, string> = {};
+    for (const r of rows) {
+      out[r.key_id] = await this.secretBox.open({
+        keyId: r.wrapped_key_id,
+        ciphertext: r.wrapped_private,
+      });
+    }
+    return out;
+  }
+
   private scopeStub(scopeId: ScopeId): ScopeStubRpc {
     // Deterministic DO id in milestone 1. Production mints per-jurisdiction ids
     // via newUniqueId (K-7) and stores the mapping in the directory — deferred.
@@ -4114,11 +4221,45 @@ export class CloudflareScopeHost implements ScopeHost {
     };
   }
 
+  /**
+   * The public sealing keys a scope of THIS vertical may seal to (#687), in the shape
+   * the ScopeDO stores.
+   *
+   * Per (tenant, vertical) rather than per tenant, unlike everything else in the
+   * projection: a connection is keyed (tenant, vertical, provider) because a vertical
+   * is a blast-radius boundary (D-30), so projecting another vertical's key would hand
+   * this scope a write channel into a credential it may not reach. `[]` for a scope
+   * bound to no vertical — which then seals to nothing, the fail-closed direction.
+   */
+  private async connectionKeyRows(
+    tenantId: TenantId,
+    vertical: string | null | undefined,
+  ): Promise<{ connection_id: string; provider: string; key_id: string; public_key: string }[]> {
+    if (!vertical) return [];
+    const keys = await this.admin.connectionSealingKeys(tenantId, vertical);
+    return keys.map((k) => ({
+      connection_id: k.connectionId,
+      provider: k.provider,
+      key_id: k.keyId,
+      public_key: k.publicKey,
+    }));
+  }
+
   /** Project the tenant's current state into ONE scope + flip it to local. */
   private async projectScope(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     if (!this.scopeLocalPermissions) return;
     const { roles, tuples, entitlements, identities } = await this.tenantProjection(tenantId);
-    await this.scopeStub(scopeId).applyProjection(tenantId, roles, tuples, entitlements, undefined, identities);
+    const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+    const connectionKeys = await this.connectionKeyRows(tenantId, scope?.vertical);
+    await this.scopeStub(scopeId).applyProjection(
+      tenantId,
+      roles,
+      tuples,
+      entitlements,
+      undefined,
+      identities,
+      connectionKeys,
+    );
   }
 
   /**
@@ -4130,10 +4271,29 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!this.scopeLocalPermissions) return;
     const { roles, tuples, entitlements, identities } = await this.tenantProjection(tenantId);
     const scopes = await this.cp.listScopes({ tenantId });
+    // #687: connection keys are per (tenant, vertical), so they are resolved per scope
+    // rather than once for the tenant — memoized, because a fan-out over twenty scopes
+    // of one vertical must not mint or re-read twenty times.
+    const keysByVertical = new Map<
+      string,
+      Promise<{ connection_id: string; provider: string; key_id: string; public_key: string }[]>
+    >();
     await Promise.all(
-      scopes.map((s) =>
-        this.scopeStub(s.scope_id as ScopeId).applyProjection(tenantId, roles, tuples, entitlements, undefined, identities),
-      ),
+      scopes.map(async (s) => {
+        const vertical = s.vertical ?? '';
+        if (!keysByVertical.has(vertical)) {
+          keysByVertical.set(vertical, this.connectionKeyRows(tenantId, s.vertical));
+        }
+        await this.scopeStub(s.scope_id as ScopeId).applyProjection(
+          tenantId,
+          roles,
+          tuples,
+          entitlements,
+          undefined,
+          identities,
+          await keysByVertical.get(vertical),
+        );
+      }),
     );
   }
 
@@ -4183,6 +4343,12 @@ export class CloudflareScopeHost implements ScopeHost {
      *  delivered, and every delegated call re-passes the platform's live-connection gate
      *  first, so a stale tuple cannot act. */
     connectionGrants?: ProjectedConnectionGrant[];
+    /** Live connections' PUBLIC sealing keys for this tenant's vertical (#687), gathered by
+     *  the platform and projected so module code can `ctx.sealToConnection` — the channel a
+     *  CP-less vertical uses to hand a connector a value the spine must not hold in the
+     *  clear. Only ever public halves. Absent ⇒ untouched, so a provision path predating
+     *  #687 never wipes keys a reconcile already delivered. */
+    connectionKeys?: ProjectedConnectionKey[];
   }): Promise<void> {
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
@@ -4248,6 +4414,18 @@ export class CloudflareScopeHost implements ScopeHost {
             external_id: l.externalId,
             principal_id: l.principal,
             scope_id: l.scopeId ?? null,
+          }))
+        : undefined,
+      // #687: the tenant's connection sealing keys, delivered with provisioning exactly as
+      // entitlements and identity links are. Preserve-on-undefined for the same reason: an
+      // absent field must never wipe keys a prior reconcile projected, or a working
+      // signature flow would break on an unrelated re-provision.
+      input.connectionKeys
+        ? input.connectionKeys.map((k) => ({
+            connection_id: k.connectionId,
+            provider: k.provider,
+            key_id: k.keyId,
+            public_key: k.publicKey,
           }))
         : undefined,
     );

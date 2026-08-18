@@ -1658,6 +1658,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       scope.vertical,
       scopeId,
     );
+    // #687: connection sealing keys ride the same gather — the back-fill for a scope
+    // provisioned before its connection existed, and the channel a connection made AFTER
+    // provision rides. Minted on first ask, so this is also how a connection older than
+    // the feature acquires a keypair without being reconnected.
+    const connectionKeys = scope.vertical
+      ? await admin.connectionSealingKeys(tenantId, scope.vertical)
+      : [];
     try {
       const result = await vertical.reconcileInstance({
         tenantId,
@@ -1665,6 +1672,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         entitlements,
         identityLinks,
         connectionGrants,
+        connectionKeys,
       });
       return c.json(result);
     } catch (e) {
@@ -2613,6 +2621,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       slug,
       input.scopeId,
     );
+    // #687: and the public sealing keys of this tenant's live connections for the same
+    // vertical, so the new install can seal a value TO a connector from its first
+    // operation — before this, a scope could only receive a connector's answer, never
+    // hand it something the spine must not carry in the clear.
+    const connectionKeys = await admin.connectionSealingKeys(input.tenantId, slug);
     // #301 PR-2: per-tenant relational stores the vertical DECLARED, minted here (before
     // the callback — the vertical migrates the store inside the K-31 ready-gate, so it
     // must exist and be bound first). Idempotent like the endpoint: a retried provision
@@ -2646,6 +2659,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           entitlements,
           identityLinks,
           connectionGrants,
+          connectionKeys,
           ...(tenantStores.length ? { tenantStores } : {}),
         }),
       );

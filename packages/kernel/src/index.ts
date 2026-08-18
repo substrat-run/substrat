@@ -66,6 +66,15 @@ export {
   webCryptoSecretBox,
 } from './secret-box.js';
 export type { SealedSecret, SecretBox } from './secret-box.js';
+export {
+  ConnectionSealingKeyUnavailableError,
+  generateSealingKeyPair,
+  noSealingKeyMessage,
+  openSealed,
+  sealTo,
+  SealedKeyUnavailableError,
+} from './sealed-box.js';
+export type { SealingKeyPair, SealingPublicKey } from './sealed-box.js';
 export { createSubjectKeys } from './subject-keys.js';
 export type { SubjectKeyRecords, SubjectKeyRow, SubjectKeys } from './subject-keys.js';
 export { resolveScopeRecord } from './scope-record.js';

@@ -873,12 +873,26 @@ const issueContractOp: OperationHandler<
   assertAllowed(
     await ctx.check(PROTO.requestSignature, { entityType: 'protocol', entityId: instance.id }),
   );
+  // #687: the employee's own address, so the contract reaches the person it is
+  // for. The engine seals it to the Scrive connection before emitting, so this
+  // vertical passes a plain email and nothing downstream — the outbox, the
+  // platform intent, the console — ever holds a readable one.
+  //
+  // Refused here rather than there, because this is where the fact is missing: an
+  // employee row with no email cannot be sent a contract, and saying so names the
+  // employee instead of a party label.
+  if (!employee.email) {
+    throw new Error(
+      `employee ${employee.number} (${employee.name}) has no email, so the contract has ` +
+        'nowhere to go — set one before issuing',
+    );
+  }
   const sent = await requestSignatures(ctx, {
     instanceId: instance.id,
     method: 'scrive',
     parties: [
       { label: 'Arbetsgivare', kind: 'principal', ref: ctx.principal, signatureKind: 'primary' },
-      { label: 'Anställd', kind: 'external', ref: employee.id },
+      { label: 'Anställd', kind: 'external', ref: employee.id, contact: { email: employee.email } },
     ],
   });
   return { instance: sent.instance, contentHash: sent.contentHash };

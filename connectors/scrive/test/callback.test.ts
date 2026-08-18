@@ -157,7 +157,7 @@ describe('scrive connector — webhook ingress (capability URL → reconcile)', 
         method: 'scrive',
         parties: [
           { label: 'Arbetsgivare', kind: 'principal', ref: employerRef, signatureKind: 'primary' },
-          { label: 'Anställd', kind: 'external', ref: employeeRef },
+          { label: 'Anställd', kind: 'external', ref: employeeRef, contact: { email: 'anstalld@example.se' } },
         ],
       },
     );
@@ -333,7 +333,7 @@ describe('scrive connector — webhook ingress (capability URL → reconcile)', 
         method: 'scrive',
         parties: [
           { label: 'Arbetsgivare', kind: 'principal', ref: employerRef, signatureKind: 'primary' },
-          { label: 'Anställd', kind: 'external', ref: employeeRef },
+          { label: 'Anställd', kind: 'external', ref: employeeRef, contact: { email: 'anstalld@example.se' } },
         ],
       });
 

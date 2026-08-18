@@ -84,12 +84,14 @@ export interface DemoWorld extends MeridianInstance {
 export function buildDemoHost(dir: string, scrive?: ScriveConfig): SqliteScopeHost {
   const host = new SqliteScopeHost({
     dir,
-    // A `SecretBox` is only needed to seal a connection credential — so it is set
-    // exactly when Scrive is wired, and the default host (every existing test)
-    // still needs none. `fetch` is the connector's egress: the testbed, or a mock.
-    ...(scrive
-      ? { secretBox: webCryptoSecretBox('meridian-dev', DEV_SECRET_KEY), fetch: scrive.fetch }
-      : {}),
+    // A `SecretBox` is what lets this host hold a connection at all, and since
+    // #687 every Meridian instance holds one: `hr/issue-employment-contract`
+    // seals each signatory's address to the Scrive connection's public key, so a
+    // host that cannot store a connection cannot issue a contract. It used to be
+    // set only when Scrive was wired. `fetch` still is — it is the connector's
+    // egress (the testbed, or a mock), and only matters when one is registered.
+    secretBox: webCryptoSecretBox('meridian-dev', DEV_SECRET_KEY),
+    ...(scrive ? { fetch: scrive.fetch } : {}),
   });
   for (const m of MODULES) host.registerModule(m);
   // The connector is host code registered on the scope host, exactly like an

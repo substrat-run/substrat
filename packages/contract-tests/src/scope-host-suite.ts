@@ -1626,6 +1626,38 @@ export function scopeHostContractSuite(
         expect(open?.id).toBe(id);
       });
 
+      it('mints ONE public sealing key per connection, idempotently (#687)', async () => {
+        // The write channel a scope has into a connector, and the reason it can
+        // exist at all: a PUBLIC key may be projected into a scope where a secret
+        // one may never be (kernel-design §13.1).
+        const open = await host.admin.openConnection(t1, 'callout', 'scrive');
+        const key = await host.admin.connectionSealingKey(open!.id);
+        expect(key.provider).toBe('scrive');
+        expect(key.connectionId).toBe(open!.id);
+        expect(key.publicKey.length).toBeGreaterThan(0);
+
+        // Mint-on-read, so a connection made before this existed acquires a key by
+        // being asked rather than by being reconnected. Asking twice must not mint
+        // twice: a second current key would orphan everything the first sealed.
+        const again = await host.admin.connectionSealingKey(open!.id);
+        expect(again.keyId).toBe(key.keyId);
+        expect(again.publicKey).toBe(key.publicKey);
+
+        // And the gather the platform projects finds it, keyed by provider —
+        // which is all module code knows.
+        const all = await host.admin.connectionSealingKeys(t1, 'callout');
+        expect(all.map((k) => [k.provider, k.keyId])).toEqual([['scrive', key.keyId]]);
+      });
+
+      it('the public key is public — it carries no private half (#687)', async () => {
+        // Stated as an assertion because this is the property the whole carrier
+        // rests on. If a private half ever rode this shape, projecting it into a
+        // scope would put a key in the same backup as its own ciphertext.
+        const open = await host.admin.openConnection(t1, 'callout', 'scrive');
+        const key = await host.admin.connectionSealingKey(open!.id);
+        expect(Object.keys(key).sort()).toEqual(['connectionId', 'keyId', 'provider', 'publicKey']);
+      });
+
       it('never returns the credential from a metadata read', async () => {
         const rows = await host.admin.listConnections(staff, { tenantId: t1 });
         expect(rows).toHaveLength(1);

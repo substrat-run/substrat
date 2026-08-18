@@ -9,6 +9,7 @@ import type {
   ConnectionSecret,
   CreateConnectionInput,
   OpenConnection,
+  ProjectedConnectionKey,
   AccessLogEntry,
   BindHostnameInput,
   AdminLogEntry,
@@ -157,6 +158,39 @@ export interface OperationContext {
   entitlement(key: string): Promise<EntitlementView | null>;
   /** Every entitlement the tenant currently holds (expired grants excluded), as read views. */
   entitlements(): Promise<EntitlementView[]>;
+  /**
+   * Seal a value TO a connector, so it can ride the spine without being IN the
+   * spine (#687, design/signature-contact-carrier.md Option E).
+   *
+   * The problem this solves is narrow and had no other answer. A vertical
+   * sometimes has to hand a connector something the platform must not keep — how
+   * a signatory is reached, so a document that starts has somebody to go to —
+   * and every channel from a scope to a connector is a spine row: the outbox,
+   * the platform-request payload. Both are kernel rows a vertical may neither
+   * write nor erase (rule 3), so anything a hosted vertical emits in plaintext
+   * stays plaintext in copies it cannot reach. Encrypting in-scope does not help
+   * by itself — a symmetric key would have to travel the same rows as the value.
+   *
+   * What works is that the CONNECTION holds a keypair whose public half is
+   * projected down. Seal here, put the cell on the event, and the connector opens
+   * it at egress with a private half that never left the directory. Nothing
+   * re-enters the scope actor, so the fat-event rule survives intact: the
+   * consumer still needs no cross-module read, it just cannot read one field.
+   *
+   * `provider` is what module code knows ('scrive'), never a connection id —
+   * connection identity is the host's business, and an engine that learned it
+   * would be naming infrastructure it is not allowed to see.
+   *
+   * **Fails closed and legibly.** Throws `ConnectionSealingKeyUnavailableError`
+   * when no key for that provider has been projected into this scope. Returning
+   * an unsealed value, or silently dropping the field, would emit a request that
+   * reaches nobody — which is exactly the invisible failure this carrier exists
+   * to end (§7 point 2).
+   *
+   * Awaiting this BEFORE `ctx.emit` is what keeps `emit` synchronous: an
+   * operation is `async`, Web Crypto is not, and D-28 stays untouched.
+   */
+  sealToConnection(provider: string, plaintext: string): Promise<SealedSecret>;
   /**
    * Record a relation tuple child→parent (K-16) — the write path for the
    * permission evaluator's entity-edge rule (design doc §4.2 rule 3). The
@@ -472,6 +506,30 @@ export interface ScopedConnectorConnection extends ConnectorConnection {
    * falls back rather than failing a dispatch over a missing file.
    */
   openAttachment(attachmentId: string): Promise<OpenedAttachment | null>;
+  /**
+   * Open a cell the scope sealed TO this connection (#687) — the egress half of
+   * `ctx.sealToConnection`.
+   *
+   * **Here rather than on `ConnectorConnection`, and the probe path is why.** A
+   * connection rebuilt top-level may have no directory row at all — the credential
+   * probe builds one from a candidate secret and a zero id — so it holds no
+   * keypair and could only ever throw. A sealed cell arrives on a delivered event,
+   * which is to say inside a dispatch, which is exactly the shape that has one.
+   *
+   * **On the connection, for the same reason `fetch` and `openAttachment` are.**
+   * The private half belongs to one connection, and the only connection it can
+   * correctly be is the one this handler opened. An ambient `ctx.unseal` would
+   * have to guess, and it would guess wrong the first time a tenant held two
+   * credentials for one provider.
+   *
+   * Key material never crosses this seam: the adapter holds the keyId-indexed map
+   * and picks by the cell's own `keyId`, so a connector cannot mislay a private
+   * key it never had. Throws `SealedKeyUnavailableError` when the named key is not
+   * held — which after a rotation-as-erasure (D-5) is the correct and permanent
+   * answer, not a mystery. A scope restored from backup can resurrect a pending
+   * request whose key is gone, and that delivery should dead-letter saying so.
+   */
+  unseal(sealed: SealedSecret): Promise<string>;
 }
 
 /**
@@ -1695,6 +1753,37 @@ export interface HostAdmin {
    * and in the audit row — never laundered into the actor (§3.5.1).
    */
   createConnection(actor: PlatformActorId, input: CreateConnectionInput): Promise<void>;
+
+  /**
+   * This connection's PUBLIC sealing key (#687) — what the platform gathers and
+   * projects into a scope so module code can `ctx.sealToConnection` to it.
+   *
+   * **Mints on first ask, idempotently.** Not a separate "create key" verb,
+   * because the alternative is a fleet where connections made before this
+   * existed can never receive a sealed value: Egeryds' Scrive credential is
+   * years of real contracts old, and re-connecting it to acquire a keypair is
+   * not a migration anyone should have to run. Asking is the back-fill.
+   *
+   * The private half is sealed under the host's `SecretBox` and stored beside
+   * the credential, in a **keyId-indexed** set from day one — even holding
+   * exactly one member (D-4: widening a single-key column into a set later is a
+   * migration against live connections; starting with the map is free).
+   *
+   * Unaudited, like `resolveIdentity`: it is a machine read on a delivery path
+   * that returns a public key, and an audit row per provision would say nothing
+   * a reader could act on. Every USE of the private half is already attributable
+   * — it happens inside a connector dispatch, against a named connection.
+   */
+  connectionSealingKey(id: ConnectionId): Promise<ProjectedConnectionKey>;
+
+  /**
+   * Every live connection's public sealing key for one (tenant, vertical) — the
+   * gather the platform projects with provision and reconcile.
+   *
+   * Minting is idempotent per connection, so this doubles as the back-fill for a
+   * tenant whose connections all predate the keypair.
+   */
+  connectionSealingKeys(tenantId: TenantId, vertical: string): Promise<ProjectedConnectionKey[]>;
 
   /** Metadata only — never the credential, at any privilege level. */
   listConnections(actor: PlatformActorId, filter?: ConnectionFilter): Promise<Connection[]>;

@@ -42,6 +42,7 @@ import {
   instant,
   entitlementGrant,
   projectedConnectionGrant,
+  projectedConnectionKey,
   projectedIdentityLink,
   platformRequestFilter,
   platformRequestId,
@@ -61,6 +62,7 @@ import {
   type ScopeQueryResult,
   type EntitlementGrant,
   type ProjectedConnectionGrant,
+  type ProjectedConnectionKey,
   type ProjectedIdentityLink,
   type PlatformRequest,
   type PlatformRequestFilter,
@@ -84,6 +86,7 @@ export interface VerticalScopeHost {
     entitlements?: EntitlementGrant[];
     identityLinks?: ProjectedIdentityLink[];
     connectionGrants?: ProjectedConnectionGrant[];
+    connectionKeys?: ProjectedConnectionKey[];
   }): Promise<void>;
   restoreScopeLocal(scopeId: ScopeId, tables: ScopeDumpTable[]): Promise<{ tables: number }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
@@ -164,6 +167,7 @@ const provisionBody = z.object({
   entitlements: z.array(entitlementGrant).optional(),
   identityLinks: z.array(projectedIdentityLink).optional(),
   connectionGrants: z.array(projectedConnectionGrant).optional(),
+  connectionKeys: z.array(projectedConnectionKey).optional(),
 });
 /** The parsed provision body handed to `onProvision`. */
 export type ProvisionBody = z.infer<typeof provisionBody>;
@@ -175,6 +179,7 @@ const reconcileBody = z.object({
   entitlements: z.array(entitlementGrant).optional(),
   identityLinks: z.array(projectedIdentityLink).optional(),
   connectionGrants: z.array(projectedConnectionGrant).optional(),
+  connectionKeys: z.array(projectedConnectionKey).optional(),
 });
 
 const restoreBody = z.object({
@@ -548,6 +553,7 @@ export function mountPlatformSurface<Env extends object>(
       entitlements: body.entitlements,
       identityLinks: body.identityLinks,
       connectionGrants: body.connectionGrants,
+      connectionKeys: body.connectionKeys,
     });
     await deps.onProvision?.(c.env, body);
     return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: body.owner }, 201);
@@ -578,6 +584,7 @@ export function mountPlatformSurface<Env extends object>(
       entitlements: body.entitlements,
       identityLinks: body.identityLinks,
       connectionGrants: body.connectionGrants,
+      connectionKeys: body.connectionKeys,
     });
     return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner });
   });

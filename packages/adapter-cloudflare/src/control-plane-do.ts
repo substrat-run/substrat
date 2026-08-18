@@ -582,6 +582,28 @@ const DIRECTORY_DDL = `
     ciphertext    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
   );
+  -- Each connection's SEALING keypair (#687, design/signature-contact-carrier.md).
+  -- The PUBLIC half is projected into scopes so module code can seal a value TO this
+  -- connector before emitting it; the private half is sealed under the host SecretBox
+  -- exactly as the credential is, and never leaves the directory. Keyed
+  -- (connection_id, key_id) — a MAP from day one even holding one member, because
+  -- widening a single-key column into a set later is a migration against live
+  -- connections and starting with the map is free (D-4).
+  CREATE TABLE IF NOT EXISTS _substrat_connection_keys (
+    connection_id   TEXT NOT NULL,
+    key_id          TEXT NOT NULL,
+    public_key      TEXT NOT NULL,
+    wrapped_key_id  TEXT NOT NULL,
+    wrapped_private TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    retired_at      TEXT,
+    PRIMARY KEY (connection_id, key_id)
+  );
+  -- The CURRENT key a new seal uses. Partial-unique rather than a column on the
+  -- connection: rotation retires a row and inserts a new current one, and old
+  -- ciphertext stays openable because its own key_id row is still here.
+  CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connection_keys_current
+    ON _substrat_connection_keys (connection_id) WHERE retired_at IS NULL;
   -- Connection grants as the directory records them (#592) — the durable half of
   -- grantToConnection, written alongside the enforcement tuple. The tuple lives
   -- where it is checked (the scope's own DO); this row is what provision/reconcile
@@ -2377,6 +2399,66 @@ export class ControlPlaneDO extends DurableObject {
       row.ciphertext,
       row.createdAt,
     );
+  }
+
+  /** This connection's key rows — every one, current and retired (#687). */
+  readConnectionKeys(connectionId: string): {
+    key_id: string;
+    public_key: string;
+    wrapped_key_id: string;
+    wrapped_private: string;
+    retired_at: string | null;
+  }[] {
+    return this.sql
+      .exec(
+        `SELECT key_id, public_key, wrapped_key_id, wrapped_private, retired_at
+         FROM _substrat_connection_keys WHERE connection_id = ?`,
+        connectionId,
+      )
+      .toArray() as unknown as {
+      key_id: string;
+      public_key: string;
+      wrapped_key_id: string;
+      wrapped_private: string;
+      retired_at: string | null;
+    }[];
+  }
+
+  /**
+   * Insert a minted keypair, returning the CURRENT key after the write (#687).
+   *
+   * Returns rather than voids because minting races: two provisions of the same
+   * tenant can ask at once, and the loser must adopt the winner's key — a second
+   * current key would orphan whatever the first already sealed. `OR IGNORE`
+   * against the partial-unique index makes losing silent, and the re-read makes
+   * it correct.
+   */
+  insertConnectionKey(row: {
+    connectionId: string;
+    keyId: string;
+    publicKey: string;
+    wrappedKeyId: string;
+    wrappedPrivate: string;
+    createdAt: string;
+  }): { key_id: string; public_key: string } | undefined {
+    this.sql.exec(
+      `INSERT OR IGNORE INTO _substrat_connection_keys
+         (connection_id, key_id, public_key, wrapped_key_id, wrapped_private, created_at, retired_at)
+       VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      row.connectionId,
+      row.keyId,
+      row.publicKey,
+      row.wrappedKeyId,
+      row.wrappedPrivate,
+      row.createdAt,
+    );
+    return this.sql
+      .exec(
+        `SELECT key_id, public_key FROM _substrat_connection_keys
+         WHERE connection_id = ? AND retired_at IS NULL`,
+        row.connectionId,
+      )
+      .toArray()[0] as unknown as { key_id: string; public_key: string } | undefined;
   }
 
   listConnections(filter: {
