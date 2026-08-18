@@ -1,7 +1,7 @@
 {
   "name": "@substrat-run/engine-workorder",
   "version": "0.4.3",
-  "description": "Substrat engine: work orders + time + material — one engine, one state machine, append-only reporting",
+  "description": "Substrat engine: work orders + time + material \u2014 one engine, one state machine, append-only reporting",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -35,9 +35,10 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@substrat-run/contract-tests": "workspace:^",
+    "@substrat-run/engine-test-kit": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "typescript": "^7.0.0",
-    "@substrat-run/engine-test-kit": "workspace:^",
     "vitest": "^3.0.0"
   }
 }

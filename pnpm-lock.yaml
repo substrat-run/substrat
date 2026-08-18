@@ -1375,6 +1375,9 @@ importers:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
@@ -1400,6 +1403,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
