@@ -63,6 +63,11 @@ jobs:
       # index line cannot be derived — one that opens on a table, or on a fragment
       # too short to tell seven identically-titled engine pages apart.
       - run: pnpm lint:llms --check
+      # The rules a vertical must not violate ship in two places: create-substrat's
+      # AGENTS.md, and the published page an agent reads when it never scaffolded
+      # anything. Unlike lint:playbook — which guards two documents that diverge on
+      # purpose — these must read identically, so this re-emits and diffs.
+      - run: pnpm lint:agent-rules --check
       - run: pnpm -r typecheck
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM

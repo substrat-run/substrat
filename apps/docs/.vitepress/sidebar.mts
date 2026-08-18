@@ -8,6 +8,14 @@
  * `--check` asserts, so the two can never disagree about what the docs contain.
  */
 
+/**
+ * The one page an agent should read before any other — the always-on rules, emitted
+ * from `create-substrat`'s AGENTS.md by `pnpm lint:agent-rules`. Named here rather
+ * than written twice, because `llms.txt` promotes it above its own index and a
+ * silently-renamed page would leave that promotion pointing at a 404.
+ */
+export const START_HERE = '/guide/agent-rules';
+
 /** The five pages every engine gets, in the same order, so a reader who learns one learns all. */
 export function engineSidebar(slug: string, text: string) {
   return {
@@ -35,6 +43,7 @@ export function guideSidebar() {
         { text: 'FAQ', link: '/guide/faq' },
         { text: 'Architecture', link: '/guide/architecture' },
         { text: 'Getting started', link: '/guide/getting-started' },
+        { text: 'Agent rules', link: START_HERE },
         { text: 'Running locally', link: '/guide/running-locally' },
         { text: 'Deploying a vertical', link: '/guide/deploying' },
         { text: 'Environments & previews', link: '/guide/environments-and-previews' },
