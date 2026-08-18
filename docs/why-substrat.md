@@ -244,6 +244,16 @@ cannot prompt that away, so the architecture has to catch it.
   own invariants and that a vertical extends by composition rather than by forking**. That
   gap is real — and it is real partly because it's hard, which is why the bullet above is
   labelled unproven and not shipped.
+- **The nearest *mechanism* is Convex Components, arriving from the other direction.** A
+  component is a mini-backend with its own tables that the host app cannot read or mutate,
+  an explicit API, runtime validation on **both arguments and return values**, and calls that
+  commit as sub-transactions inside the caller's transaction — a component that throws rolls
+  its own writes back and the caller can catch it. Those are the isolation rules
+  `boundary-lint` enforces for us, enforced by their runtime instead of by our CI. What their
+  catalogue holds is *technical* primitives; nobody has published a component that owns a
+  business invariant. So the honest read on our position is: the mechanism is convergent and
+  increasingly well understood, and the **domain content is the part still unproven** — which
+  is exactly what §5 says.
 
 ## 3. How it compares
 
@@ -261,7 +271,8 @@ are better than Substrat at what they set out to do.
 | **Wasp** ([wasp.sh](https://wasp.sh)) | Rails-for-JS/TS: declarative spec → React/Node/Prisma app; since June 2026 the spec is TypeScript | Excellent DX, open source, no hosting lock-in, strong AI-coding compatibility, and Open SaaS as a template | Convergent instinct (a typed spec the compiler checks — Substrat's `model.ts` rhymes with it), opposite depth: Wasp is a framework you deploy, Substrat is a runtime that enforces — and we keep Wasp's own perks (deterministic generation, pre-vetted auth, local run, connectors, migrations) rather than trading them for the guarantees |
 | **Baseplate.dev** | Deterministic codegen you eject from | Zero lock-in, literally its proudest feature | Exact opposite pole: they generate the foundation and leave; we are the foundation and stay |
 | **MakerKit / ShipFast / Open SaaS** | Boilerplates, $199–649 one-time | Unbeatable economics if the guarantees can be conventions | Guarantees erode with every edit; no nested tenancy, no provisioning, no engines |
-| **Supabase / Convex** | BaaS | Better DX, bigger ecosystem, far better for app-shaped products | App-shaped, not vertical-SaaS-shaped; RLS is precisely the foot-gun that produces the CVEs above |
+| **Supabase** | BaaS with row-level security | Better DX, bigger ecosystem, far better for app-shaped products | App-shaped, not vertical-SaaS-shaped; RLS is precisely the foot-gun that produces the CVEs above |
+| **Convex** ([convex.dev](https://www.convex.dev/)) | Reactive TypeScript backend — database, functions, scheduling and sync in one runtime — with **sandboxed Components** as installable backend modules | The closest thing to an architectural peer in this table, and ahead of us on several axes we actually care about: reactivity as a *primitive* (a query is TypeScript that re-runs on write — no cache to invalidate wrongly), a component catalogue that ships today, ACID transactions that span component calls, SOC 2 Type II + HIPAA already, and the whole backend — server, dashboard, CLI, Postgres/MySQL storage — self-hostable under FSL. Their DX is better than ours and it isn't close. And they closed the RLS hole the same way we did, then [wrote the argument up better than we have](https://stack.convex.dev/why-convex-doesnt-need-row-level-security) | Single-app shaped: no tenancy tree, no scope-per-customer, no audit spine below the API, no crypto-shredding, no permission diff a CI job can fail on. Their components are *technical* primitives — workflow, rate limiter, aggregate, sharded counter, migrations — and an engine that owns a work order's state machine is not that shape. Authorization is a convention their own docs ask you to repeat in every function; here the missing check is a lint error. And FSL is fair-source, not OSI-open: no competing hosted product until the two-year Apache conversion |
 | **Retool / Superblocks** | Internal tools with governance | Owns the internal-tool shape outright — genuinely better there | No nested tenancy for *selling* SaaS; runtime-locked; US-hosted |
 | **OutSystems / Mendix / Power Apps** | Enterprise LCAP | Genuinely solve permissions, audit, governance as a hosted platform, and prove the willingness to pay (~$36k/yr entry) | Proprietary visual model: agent-hostile, internal-app-shaped, single-level tenancy, no usable eject |
 | **Odoo / Frappe** | Platform-with-modules | Vast module ecosystem; a real business today | You inherit their ORM, worldview, and upgrade treadmill (Community has *no* vendor upgrade path); single-org shaped |
@@ -331,21 +342,22 @@ documents start lying.
 |---|---|---|
 | **Integration catalogue** | Power Automate (1000+ connectors), Zapier, Nango (400+) | **Genuine gap, and the most practical one.** We have one production connector. The framework is right; the library is a rounding error |
 | **DSAR *access-request* export** (Art. 15) | Anyone selling GDPR compliance as a feature | **Half-built, and it's the visible half.** Art. 17 erasure is shipped with a receipt; the Art. 15 export that answers *"what do you hold about me"* is not, and neither half has a UI. The asymmetry is odd from outside — we do the cryptographically hard part and not the part a customer actually asks for first |
-| **Certifications** (SOC 2, ISO 27001, HIPAA, FedRAMP) | Salesforce, Dataverse, OutSystems — and *Lovable*, which shipped SOC 2 + ISO 27001 | **Genuine gap, and the sharpest one relative to our own pitch.** We sell trust and cannot yet hand a procurement officer the one page that prices it. Master-plan D-32 knows this |
+| **Certifications** (SOC 2, ISO 27001, HIPAA, FedRAMP) | Salesforce, Dataverse, OutSystems — *Lovable*, which shipped SOC 2 + ISO 27001, and *Convex*, SOC 2 Type II + HIPAA on a business tier | **Genuine gap, and the sharpest one relative to our own pitch.** We sell trust and cannot yet hand a procurement officer the one page that prices it. Master-plan D-32 knows this |
 | **End-user report / dashboard builder** | Salesforce, Odoo, Retool, Power BI | **Deliberate refusal** (master-plan §6: "resist configurability until a customer pays for it") — but it *will* lose a bake-off against Salesforce, and knowing why doesn't make the demo go better |
 | **No-code admin customization** | Salesforce Flow, Odoo Studio, Dataverse | **Deliberate refusal.** "No visual BPMN builder — tarpit." Defensible, and it means an admin cannot change behavior without a developer |
 | **Visual building: click-to-edit, instant preview, Figma import** | Lovable, Bolt, Base44, Floot, Retool | **Two-thirds answered, one-third a real gap.** *Instant preview* we have both ways — Vite HMR locally (`pnpm <demo> dev`), and a `PreviewPane` iframe over a live devserver in the hosted builder — but that's parity with any decent framework, not a win. *Figma* works through an MCP server or a pasted screenshot, and Manyfold is the evidence: a 13-screen design-system handover recreated as a working vertical. It's setup, though, not a button. *Click-to-edit* we genuinely lack, and the gap is **audience, not technology** — it exists so someone with no terminal and no vocabulary for the change can still make it. Claude Code gives a better loop to people who can already run a terminal, and no loop at all to people who can't |
 | **Native mobile + offline sync** | Salesforce, OutSystems, Mendix, Power Apps; Floot exports mobile | **Planned, scoped hard, unbuilt.** Append-only capture flows only — general offline CRUD is a sync/conflict tarpit |
 | **Marketplace + third-party ecosystem** | AppExchange, Odoo Apps, OutSystems Forge, Frappe | **Planned, unbuilt.** A design doc is not an ecosystem, and ecosystems take years |
 | **Full-text + semantic search** | Supabase, Salesforce, essentially everyone | **Planned, unbuilt.** Table stakes in every B2B app and ugly to retrofit — §6 says so itself |
-| **Realtime subscriptions / presence** | Supabase, Convex | **Planned, unbuilt.** Nearly free on scope DOs, which is exactly why not building it yet is a choice rather than a constraint |
+| **Realtime subscriptions / presence** | Supabase, and *Convex*, where reactivity is the primitive rather than a feature — a query is a function that re-runs on write | **Planned, unbuilt.** Nearly free on scope DOs, which is exactly why not building it yet is a choice rather than a constraint. Convex is the evidence for how much product falls out of it once it exists |
 | **Localization** | The FSM incumbent ships three languages; everyone mature does | **Planned, unbuilt.** §6 says "build day one" and today it's an `// i18n key` comment. Retrofits here are miserable |
 | **Billing your customers out of the box** | Open SaaS (Stripe), Base44 payments primitives | **Partial.** Metering and entitlements exist for platform billing; the vertical-bills-its-own-customers rail is engine territory, not shipped |
 | **Data import / legacy migration tooling** | Salesforce Data Loader, Odoo import, **8090's reverse-engineering agents** | **Planned, unbuilt** — and §6 calls it out as the biggest sales barrier, since every sale is a migration out of an incumbent. 8090's brownfield story is real and ours is greenfield-only |
 | **Permissive licence** | Rails, Wasp, Medusa (MIT) | **Deliberate**, and a real adoption barrier. AGPL + commercial is a different bargain from MIT, and some builders will simply not take it |
-| **A fully self-hostable *platform*** | Odoo, Frappe, Medusa, Rails, Wasp — clone it and run the whole thing | **Partial, and the split is the honest bit.** The vertical runtime self-hosts today (published, AGPL, one dependency, contract-tested on two adapters). The multi-tenant hosting product — router, control plane, PR-preview forking, per-tenant database minting — is private and Cloudflare-native. Escrow answers "can we keep running"; it does not answer "can we run the platform ourselves" |
+| **A fully self-hostable *platform*** | Odoo, Frappe, Medusa, Rails, Wasp — and *Convex*, which is a hosted-backend business too and still publishes server, dashboard, CLI and Postgres/MySQL storage under FSL | **Partial, and the split is the honest bit.** The vertical runtime self-hosts today (published, AGPL, one dependency, contract-tested on two adapters). The multi-tenant hosting product — router, control plane, PR-preview forking, per-tenant database minting — is private and Cloudflare-native. Escrow answers "can we keep running"; it does not answer "can we run the platform ourselves" |
 | **Ecosystem, hiring pool, twenty years of answers** | Rails, and it isn't close | **Structural.** Nothing to do but say it |
 | **Environment/ALM maturity** (sandboxes, managed solutions, refresh) | Salesforce, Dataverse | **We win the part that matters and lose the breadth.** A per-PR fork of prod that runs the PR's own code arrives in minutes and reaps itself; a Salesforce full-copy sandbox refreshes on the order of days. What they have and we don't is everything *around* it — change sets, deployment pipelines, org-wide metadata compare |
+| **A catalogue of installable backend modules** | Convex Components — ~20 sandboxed modules installed from npm, with a directory page and an `llms.txt` for agents | **Same shape, no distribution.** Our engines are npm-published modules with private tables and an explicit surface; there are seven, all written by us, and no third party has ever installed one. Their catalogue proves the *distribution* half of the idea §5 calls unproven — and proves it for technical primitives, which is the easier half |
 | **Provenance of the build itself** (decision graph, agent context, reverse-engineering) | 8090 | **Different axis, partly ours.** `concept.md` + the decision log + typed model are the same instinct in flat files — no graph, no retro-extraction from a legacy codebase |
 
 **The pattern worth noticing:** almost every gap is *breadth* — catalogues, ecosystems,
@@ -354,7 +366,55 @@ shape of a young platform with an unusual foundation, and it says exactly who sh
 yet: anyone whose decision turns on connector count, an admin-configurable report builder, or
 a certificate we don't have.
 
-## 7. Add your own
+## 7. Learnings worth borrowing
+
+Read from Convex specifically, because it is the closest architectural peer here and the
+most instructive to steal from. Labelled like everything else: what we'd have to build vs.
+what we already did.
+
+- **Sub-transactions at the module boundary.** Convex component calls roll back
+  independently inside the caller's transaction, so a caller can catch a module error and
+  keep its own writes. We compose engine in-scope functions inside one scope transaction —
+  a vertical that catches an engine error today is sitting on that engine's partial writes.
+  SQLite has `SAVEPOINT` and DO storage has nested transactions, so this is a scope-host
+  contract question, not a research project. **[gap, cheap, worth an issue]**
+- **Validate returns, not just arguments.** We parse operation inputs at the boundary and
+  trust engine return shapes because TypeScript says so. Convex validates both directions
+  across the component seam. Given the additive-evolution rule for engine surfaces, a
+  validated return is precisely what would catch an engine that shipped a shape change into
+  a vertical that compiled against the old one. Engines already carry Zod. **[gap, cheap]**
+- **Programmatic bans beat prompt instructions**, stated as a finding rather than a
+  preference: *"LLMs are prone to making the wrong decision, even when prompted not to"* —
+  so Chef, their app builder, blocks the file writes rather than asking. We landed the same
+  conclusion the hard way in `b12279fb` after an agent rewrote the monorepo. Convergent, and
+  the lesson is to keep extending the deny-list rather than the prompt. **[shipped]**
+- **Make the hard decisions for the model; leave it creative where mistakes are cheap.**
+  Chef fixes framework and auth and lets the model do UI and app logic. That is the same
+  split as OIDC-only verticals + engines + `model.ts`, and it's worth naming as a stated
+  principle in the builder skills rather than leaving it implicit in the scaffolding.
+  **[shipped, undocumented]**
+- **Evals over vibes**, as they put it — a quantitative sweep forces you to say what success
+  is. `pnpm builder evals` is that, on frozen fixtures. No work; useful confirmation that
+  the frozen-fixture shape is the industry's answer too. **[shipped]**
+- **A component directory is a distribution strategy, not just an architecture.** Theirs has
+  a browsable page, npm installs, and an `llms.txt` for agents. If engine reuse without
+  forking is our least-proven hypothesis, the cheapest experiment available is to make one
+  engine genuinely installable by someone outside this repo and watch what breaks.
+  **[gap, and the one that would actually move §5]**
+- **Agent-first positioning is now table stakes, not a differentiator.** Their headline is
+  *"the reactive backend platform that keeps up with you and your agents"*. Every serious
+  backend will say this within a year, so "built for agents" cannot carry our pitch — the
+  guarantees under the generated code have to, and they're the part nobody else is selling.
+  **[a marketing correction, not a product one]**
+- **Someone else made our enforcement argument, with better distribution.** "Row-Level
+  Security is a Ticking Timebomb" is Substrat's §2 case written by a company with no stake
+  in Substrat being right: authorization split into a second language in a second place is
+  a thing you must get right twice and update twice. Cite it. It also means the published
+  BaaS comparison had to be split — the RLS critique lands on Supabase and *doesn't* land on
+  Convex, and leaving that wrong would have been the kind of thing this file exists to
+  prevent. **[fixed in this edit]**
+
+## 8. Add your own
 
 <!-- Markus: append below. Same labelling rules — [shipped] / [built, unproven] / [bet]. -->
 
@@ -363,6 +423,12 @@ a certificate we don't have.
 ---
 
 **Sources for the external claims:** [Floot](https://floot.com) ·
+[Convex](https://www.convex.dev/) ·
+[Convex Components](https://docs.convex.dev/components) ·
+[Convex: the software-defined database](https://stack.convex.dev/the-software-defined-database) ·
+[Why Convex doesn't need row-level security](https://stack.convex.dev/why-convex-doesnt-need-row-level-security) ·
+[Lessons from building an AI app builder (Chef)](https://stack.convex.dev/lessons-from-building-an-ai-app-builder) ·
+[convex-backend, FSL-1.1-Apache-2.0](https://github.com/get-convex/convex-backend) ·
 [Wasp](https://github.com/wasp-lang/wasp) ·
 [Wasp's TypeScript spec, June 2026](https://wasp.sh/blog/2026/06/15/wasp-typescript-spec) ·
 [Lovable RLS analysis (Superblocks)](https://www.superblocks.com/blog/lovable-vulnerabilities) ·

@@ -34,7 +34,8 @@ better than Substrat at what they set out to do, and the third column says so.
 |---|---|---|---|
 | **Ruby on Rails** | The reference full-stack framework | Maturity, ecosystem, hiring pool, twenty years of answers. Rails + a good team beats Substrat on almost any *single*-tenant app | Rails gives you conventions, and conventions erode with every edit. No tenancy, permissions, audit or GDPR machinery below the app — that is yours to build and keep correct |
 | **Wasp** | Rails-for-TypeScript: a declarative spec compiled to a React/Node/Prisma app | Excellent DX, MIT, no hosting lock-in, strong AI-coding compatibility, and a SaaS template that gets you selling | Convergent instinct — a typed spec the compiler checks; our [`model.ts`](/concepts/model) rhymes with theirs — and opposite depth. Wasp is a framework you deploy; Substrat is a runtime that *enforces*. We keep their perks (deterministic generation, pre-vetted auth, local run, migrations) rather than trading them away for the guarantees |
-| **Supabase / Convex** | Backend-as-a-service | Better DX, bigger ecosystem, far better for app-shaped products | App-shaped, not vertical-SaaS-shaped. RLS is precisely the surface builders and LLMs misconfigure most |
+| **Supabase** | Backend-as-a-service with row-level security | Better DX, bigger ecosystem, far better for app-shaped products | App-shaped, not vertical-SaaS-shaped. RLS is precisely the surface builders and LLMs misconfigure most |
+| **Convex** | Reactive TypeScript backend — database, functions, scheduling and sync in one runtime — with sandboxed **Components** as installable backend modules | The closest architectural peer here, and ahead of us on axes we care about: reactivity as a primitive, a component catalogue that ships today, transactions that span component calls, SOC 2 Type II + HIPAA, and a backend you can self-host. Their DX is better than ours and it isn't close | Convex closed the RLS hole the same way we did, so the difference isn't enforcement — it's *shape*. No tenancy tree, no scope-per-customer, no audit spine below the API, no erasure machinery. Their components are technical primitives (workflow, rate limiter, aggregate); a [domain engine](/engines/) that owns a work order's state machine is a different animal |
 | **MakerKit / ShipFast / Open SaaS** | Boilerplates, one-time purchase | Unbeatable economics *if* the guarantees can be conventions | Guarantees erode with every edit; no nested tenancy, no provisioning, no engines |
 | **Lovable / Bolt / Replit** | Prompt-to-app | Enormous distribution, polish, iteration speed | They generate the dangerous parts too. Their remedy is *scanning* — checking policies exist, not that they hold. Here you bring your own model and your own agent, on code that runs locally |
 | **Base44, Floot** | AI-native app builders with auth/roles as platform primitives | The nearest AI-native articulation of the same idea, with real products and real users | Single-app shaped — no tenancy tree, no engines, no B2B SaaS shape — and weak portability. Substrat code boots on SQLite with no platform in the loop |
@@ -107,7 +108,7 @@ them.
 
 ### Backend-as-a-service
 
-*Supabase, Convex.*
+*Supabase.*
 
 BaaS does enforce at runtime — but it makes the guarantee contingent on rules the builder
 writes correctly. Row-level-security policies are precisely the surface inexperienced
@@ -116,6 +117,28 @@ Substrat's isolation is not a policy you author — [the API for reaching a
 scope](/concepts/scope-host) *is* the isolation mechanism, and its secure default is deny.
 BaaS is also app-shaped rather than vertical-SaaS-shaped: no nested tenancy tree, no module
 system, no domain engines.
+
+### Reactive backends with modules
+
+*Convex.*
+
+Worth separating from the row above, because the usual BaaS critique doesn't land here.
+Convex reached the same conclusion we did — [that RLS is a ticking
+timebomb](https://stack.convex.dev/why-convex-doesnt-need-row-level-security), because
+authorization split into a second language in a second place is a thing you have to get
+right twice and update twice — and closed the hole the same way, by putting every database
+access behind server functions. Their Components are the nearest mechanism to our engines
+from the other direction: mini-backends with private tables the host app cannot read,
+an explicit API, runtime validation of arguments *and* return values, and calls that commit
+as sub-transactions inside the caller's.
+
+So the difference is shape rather than enforcement. Convex is built for one app: there is
+no tenancy tree, no scope per customer, no audit spine below the API, no erasure machinery,
+and authorization is a convention you repeat in every function rather than a check whose
+absence fails a lint. And their catalogue holds *technical* primitives — workflow, rate
+limiter, aggregate, migrations — where a [domain engine](/engines/) owns a business
+invariant like a state machine that cannot skip a state. If your product is one app that
+wants live data, Convex is an excellent answer and a better developer experience than ours.
 
 ### Low-code / enterprise app platforms
 
