@@ -1,5 +1,19 @@
 # @substrat-run/demo-fsm
 
+## 0.2.30
+
+### Patch Changes
+
+- Updated dependencies [89c2113]
+  - @substrat-run/kernel@0.75.0
+  - @substrat-run/adapter-sqlite@0.75.0
+  - @substrat-run/adapter-cloudflare@0.75.0
+  - @substrat-run/engine-invoicing@0.7.2
+  - @substrat-run/engine-protocol@0.9.2
+  - @substrat-run/engine-workorder@0.6.2
+  - @substrat-run/control-plane-api@0.75.0
+  - @substrat-run/contracts@0.75.0
+
 ## 0.2.29
 
 ### Patch Changes
