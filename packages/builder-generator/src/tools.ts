@@ -80,7 +80,14 @@ const DEFAULT_DENY: Array<[RegExp, string]> = [
 	],
 ];
 
-function defaultDeny(cmd: string): string | null {
+/**
+ * The default `run_command` guard, as a pure decision: the refusal reason, or
+ * null when the command is allowed. Exported so the deny-list can be tested
+ * without RUNNING anything — asserting "allowed" by executing `pnpm install`
+ * in a scratch dir spends seconds on process spawns that prove nothing about
+ * the guard, and turns a unit test into a timing bet it eventually loses.
+ */
+export function defaultDenyCommand(cmd: string): string | null {
 	for (const [re, why] of DEFAULT_DENY) if (re.test(cmd)) return why;
 	return null;
 }
@@ -98,7 +105,7 @@ function normalizeQuestion(s: string): string {
 
 export function workspaceTools(opts: WorkspaceToolOptions) {
 	const { workspace: ws, emit } = opts;
-	const deny = opts.denyCommand ?? defaultDeny;
+	const deny = opts.denyCommand ?? defaultDenyCommand;
 	// Per-generator-pass question ledger (workspaceTools is built once per run).
 	// Survives mid-turn provider retries — already-executed calls are not re-run
 	// on resume — and resets on the next pass, which is a NEW conversation turn.
