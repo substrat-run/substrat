@@ -15,6 +15,13 @@
 # NOTE (shared worktree): this typechecks the WORKING TREE, so uncommitted edits are
 # included. If a concurrent in-flight change fails, either stash-free-fix it or use
 # --no-verify for that push.
+#
+# Calls the root `typecheck` SCRIPT, not `pnpm -r typecheck` directly: the script
+# excludes `.builder/projects/**` (see pnpm-workspace.yaml). Those are gitignored
+# builder-studio scratch projects that are also workspace members, so a killed eval
+# run left a half-built generated project behind and this hook refused every push
+# until someone deleted it — a local scratch directory blocking work that CI, which
+# never sees the directory at all, would have passed. Issue #769.
 
 set -euo pipefail
 
@@ -23,8 +30,8 @@ if ! command -v pnpm >/dev/null 2>&1; then
   exit 0
 fi
 
-echo "pre-push: pnpm -r typecheck …"
-if ! pnpm -r typecheck; then
+echo "pre-push: pnpm typecheck …"
+if ! pnpm run typecheck; then
   echo "" >&2
   echo "pre-push: typecheck FAILED — push aborted. Fix the errors above, or bypass with 'git push --no-verify'." >&2
   exit 1

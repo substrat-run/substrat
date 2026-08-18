@@ -270,7 +270,7 @@ Discovered while scoping the §3 fixes, and it outranks everything else here.
 
 `engines/{invoicing,workorder,protocol}` are **published packages** (`access: public`)
 totalling ~1,715 lines of source with **zero dedicated tests**. None has a `test` script,
-so the root `pnpm test` — which is `pnpm -r build && pnpm -r test` — **skips engines
+so the root `pnpm test` — which builds, then runs `test` in every workspace member — **skips engines
 entirely**. They are exercised only as a side effect of the three demo scenarios, which
 means:
 

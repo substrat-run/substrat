@@ -23,7 +23,10 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 
 ## Commands
 
-- `pnpm install` · `pnpm -r build` · `pnpm -r typecheck` · `pnpm test` (builds first)
+- `pnpm install` · `pnpm build` · `pnpm typecheck` · `pnpm test` (builds first) — the root
+  scripts, not `pnpm -r …` directly: they exclude `.builder/projects/**`, the gitignored
+  builder-studio scratch projects that are also workspace members. A half-built one
+  otherwise reddens repo-wide gates and blocks every push (#769).
 - `node tools/boundary-lint.mjs` — the layer rules below, enforced mechanically (runs in CI)
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
