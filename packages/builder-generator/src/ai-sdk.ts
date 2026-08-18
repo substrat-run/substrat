@@ -21,6 +21,7 @@ import {
 	type LanguageModelUsage,
 	type ModelMessage,
 	type ProviderMetadata,
+	type StopCondition,
 } from 'ai';
 import type { BuildEvent, BuildEventOf, StepUsage } from './events.js';
 import { condenseTranscript, type CondenseResult } from './condense.js';
@@ -34,6 +35,21 @@ export interface AiSdkGeneratorOptions {
 	readonly label: string;
 	/** Ceiling on tool-loop steps per turn. Also the runaway backstop. */
 	readonly maxSteps?: number;
+	/**
+	 * Uncached-equivalent tokens one turn may spend before it is cut off.
+	 *
+	 * A step ceiling bounds ITERATIONS, not spend, and the two diverge fast:
+	 * every step re-sends a growing transcript, so cost per step climbs through
+	 * the turn. Measured on #740's first real run — the turn hit the 40-step
+	 * ceiling AND spent 2,036,785 input tokens chasing a phantom type error, so
+	 * `maxSteps` fired and bounded nothing that mattered.
+	 *
+	 * Budgeted on UNCACHED-equivalent tokens (`input - cacheRead + output`)
+	 * because 96% of that run was cache reads, billed around a tenth of the rate.
+	 * A raw-token budget would cut off a long, well-cached, perfectly behaved
+	 * build while letting a short badly-cached one run.
+	 */
+	readonly maxTokens?: number;
 	/**
 	 * Retries per turn on TRANSIENT provider failures (429/5xx/network), with
 	 * retry-after honored and jittered backoff (retry.ts). Default 5. The turn
@@ -316,6 +332,50 @@ function's first and last lines without re-sending its body. write_file remains 
 tool for NEW files and full rewrites. If an edit fails, the error tells you exactly why —
 fix that one block and retry; never fall back to write_file just to force a change through.`;
 
+/**
+ * Stop the turn once it has spent `budget` UNCACHED-equivalent tokens.
+ *
+ * Exported so it can be tested directly: a stop condition that never fires is
+ * indistinguishable from one that is not wired up, and this one only runs on the
+ * path nobody exercises in a normal build.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- `stepCountIs`
+// is typed the same way: a stop condition is tool-agnostic, and the specific
+// ToolSet the SDK infers at the call site is not assignable to a general one.
+export function tokenBudgetIs(budget: number): StopCondition<any> {
+	return ({ steps }) => uncachedEquivalent(steps) >= budget;
+}
+
+/**
+ * `input - cacheRead + output`, summed over the steps so far.
+ *
+ * Cache reads are billed at roughly a tenth of fresh input, so counting them at
+ * face value would make a well-cached long build look like a runaway. Clamped at
+ * zero per step because a provider that reports more cached than input tokens
+ * should not be able to buy the turn extra budget.
+ */
+/** A recorded `StepUsage` back into the SDK's usage shape, for the budget sum. */
+function asUsage(u: StepUsage): LanguageModelUsage {
+	return {
+		inputTokens: u.inputTokens,
+		outputTokens: u.outputTokens,
+		totalTokens: u.inputTokens + u.outputTokens,
+		inputTokenDetails: { cacheReadTokens: u.cachedInputTokens ?? 0 },
+	} as LanguageModelUsage;
+}
+
+export function uncachedEquivalent(
+	steps: readonly { readonly usage: LanguageModelUsage }[],
+): number {
+	let spent = 0;
+	for (const s of steps) {
+		const u = s.usage;
+		const cached = u.inputTokenDetails?.cacheReadTokens ?? 0;
+		spent += Math.max(0, (u.inputTokens ?? 0) - cached) + (u.outputTokens ?? 0);
+	}
+	return spent;
+}
+
 export class AiSdkGenerator implements VerticalGenerator {
 	readonly id: string;
 	readonly #opts: AiSdkGeneratorOptions;
@@ -444,6 +504,7 @@ export class AiSdkGenerator implements VerticalGenerator {
 			this.#opts.explainError?.(err) ?? apiErrorFacts(err).message;
 
 		const maxSteps = this.#opts.maxSteps ?? 40;
+		const maxTokens = this.#opts.maxTokens;
 		const maxRetries = this.#opts.maxRetries ?? 5;
 		const MAX_CONDENSATIONS = 2;
 		let attempt = 0;
@@ -471,7 +532,12 @@ export class AiSdkGenerator implements VerticalGenerator {
 					// stable prefix gets a breakpoint, the volatile context does not.
 					allowSystemInMessages: true,
 					tools,
-					stopWhen: stepCountIs(Math.max(1, maxSteps - steps)),
+					// Two ceilings, and they catch different runaways: steps bounds a
+					// model that will not stop calling tools, tokens bounds one whose
+					// individual steps have grown enormous.
+					stopWhen: maxTokens
+						? [stepCountIs(Math.max(1, maxSteps - steps)), tokenBudgetIs(maxTokens)]
+						: stepCountIs(Math.max(1, maxSteps - steps)),
 					maxRetries: 0,
 					// Step-economies, mutually exclusive by dialect (see the helpers):
 					// Anthropic gets a moving cache breakpoint; qwen passes through
@@ -542,7 +608,16 @@ export class AiSdkGenerator implements VerticalGenerator {
 					// the step ceiling cut the turn, it did not finish (H6). Said out
 					// loud, because a silent cut reads as "done" everywhere downstream.
 					if (lastFinishReason === 'tool-calls') {
-						yield { type: 'truncated', steps, maxSteps };
+						// WHICH ceiling fired matters to whoever reads the log: a step
+						// cut-off usually means the work was big, a budget cut-off almost
+						// always means the turn was looping.
+						const spent = uncachedEquivalent(stepUsage.map((u) => ({ usage: asUsage(u) })));
+						// `reason` is omitted for the step ceiling, which is what
+						// `truncated` meant before a budget existed — consumers that
+						// predate this keep reading it unchanged.
+						yield maxTokens && spent >= maxTokens
+							? { type: 'truncated', steps, maxSteps, reason: 'tokens', spent, budget: maxTokens }
+							: { type: 'truncated', steps, maxSteps };
 					}
 					yield this.#usageEvent(result, steps, stepUsage);
 					return;

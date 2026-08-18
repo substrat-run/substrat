@@ -51,6 +51,33 @@ const DEFAULT_DENY: Array<[RegExp, string]> = [
 	// are path-confined to the project, so the shell should not casually be the
 	// way around them. The container makes this real in hosted mode.
 	[/\.\.\//, 'paths above the project are out of bounds — everything you need is in the project and the skills'],
+	// Patching a dependency is never the answer to a type error, and in this
+	// workspace it is not even local: a studio project is a pnpm workspace
+	// MEMBER, so `pnpm patch-commit` writes `patchedDependencies` into the
+	// monorepo's own pnpm-workspace.yaml and a patch file at its root. Observed
+	// doing exactly that — rewriting the workspace file and patching zod's type
+	// declarations — while chasing errors from a `tsc` invocation that had
+	// bypassed the project's tsconfig.
+	[
+		/\bpnpm\s+patch(-commit)?\b|\byarn\s+patch\b/,
+		'never patch a dependency — a type error in a library is a signal you are ' +
+			'calling it wrongly or typechecking wrongly (use `tsc -p tsconfig.json`), ' +
+			'and a patch here would rewrite the whole workspace',
+	],
+	// The same escape by the other door: these operate on the workspace ROOT
+	// regardless of where they are run from.
+	[
+		/\bpnpm\s+(-w|--workspace-root)\b/,
+		'workspace-root commands reach outside this project — work inside the project only',
+	],
+	// Editing an installed dependency in place: same intent as patching, and it
+	// survives until the next install, which makes the resulting bug untraceable.
+	[
+		// No `[^|]` fences here: a sed script is full of pipes (`s|a|b|`), and a
+		// pattern that stopped at the first one matched nothing at all.
+		/\bsed\s+-i\b[\s\S]*node_modules|\b(rm|mv|cp)\b[^;&]*node_modules\//,
+		'node_modules is installed output, not source — never edit or remove it by hand',
+	],
 ];
 
 function defaultDeny(cmd: string): string | null {

@@ -56,6 +56,7 @@ interface Args {
 	readonly only?: readonly string[];
 	readonly modelFlag?: string;
 	readonly maxSteps: number;
+	readonly maxTokens: number;
 	readonly maxTurns?: number;
 	readonly list: boolean;
 	readonly quiet: boolean;
@@ -74,6 +75,11 @@ function parseArgs(argv: readonly string[]): Args {
 		...(only ? { only: only.split(',').map((s) => s.trim()) } : {}),
 		modelFlag: get('--model'),
 		maxSteps: Number(get('--max-steps') ?? 40),
+		// 400k uncached-equivalent per turn. Generous on purpose: a real build turn
+		// runs well under it, and the run this exists to stop spent five times it.
+		// A tight budget would cut off honest work, which is the failure mode that
+		// makes people disable the guard.
+		maxTokens: Number(get('--max-tokens') ?? 400_000),
 		...(maxTurns ? { maxTurns: Number(maxTurns) } : {}),
 		list: argv.includes('--list'),
 		quiet: argv.includes('--quiet'),
@@ -88,6 +94,7 @@ const USAGE = `pnpm builder evals [options]
   --max-steps <n>     tool-loop ceiling per pass (default 40)
   --max-turns <n>     turn ceiling per fixture (fixture expect.json wins)
   --root <path>       monorepo root (default cwd)
+  --max-tokens <n>    per-turn uncached-equivalent token ceiling (default 400000)
   --list              list fixtures and exit
   --quiet             suppress the event stream; verdicts only
   --help
@@ -192,6 +199,11 @@ async function main(): Promise<number> {
 			model: resolved.model,
 			label: resolved.label,
 			maxSteps: args.maxSteps,
+			// The runaway ceiling. `maxSteps` bounds iterations and did not bound
+			// spend: #740's first real run hit the 40-step ceiling AND spent
+			// 2,036,785 input tokens in that one turn. Uncached-equivalent, so a
+			// long well-cached build is not punished for caching well.
+			maxTokens: args.maxTokens,
 			skills: skillsForPhase(skills.byFile, phase),
 			explainError: explainProviderError(chosen.spec.split(':')[0] ?? 'anthropic'),
 			editTool: editToolFor(chosen.spec),

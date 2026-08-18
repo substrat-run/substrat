@@ -36,6 +36,25 @@ turn, never later.
 - Money/decimals are strings via contracts helpers; IDs are `ulid()`; dates
   are ISO-8601 TEXT.
 
+## Typechecking: always through the project's tsconfig
+
+```
+pnpm exec tsc -p tsconfig.json --noEmit
+```
+
+**Never `tsc <file>`.** Passing a file path makes tsc ignore `tsconfig.json`
+entirely — no `moduleResolution`, no `esModuleInterop`, `module` back to its
+default — so you get a wall of errors that say nothing about your code. The
+classic is `TS1259: can only be default-imported using the esModuleInterop flag`
+pointing into a dependency's `.d.cts`.
+
+Those errors are an artifact of how you invoked the compiler. A library's own
+types are not broken, and patching one is never the fix: `pnpm patch` here writes
+into the monorepo's workspace file, and the tool surface refuses it for that
+reason. If the compiler seems to disagree with a dependency, check the invocation
+before you believe it.
+
+
 ## test/scenario.test.ts
 
 **Written in the scenario phase, BEFORE this code existed, and not yours to
