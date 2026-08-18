@@ -39,7 +39,7 @@ import type {
 	StepUsage,
 	VerticalGenerator,
 } from '@substrat-run/builder-generator';
-import { detectPhase, type BuildPhase } from '../phase.js';
+import { buildContext, detectPhase, type BuildPhase } from '../phase.js';
 import { runProbe, type ProbeFn, type ProbeResult } from './probe.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -65,11 +65,62 @@ export interface EvalExpectations {
 	readonly maxTurns?: number;
 }
 
+/**
+ * A fixture starts at ONE of two places, and which one decides what is measured.
+ *
+ * **`concept`** — the frozen concept document, verbatim. The sweep drives model
+ * → scenario → scaffold → iterate. This measures how faithfully a fully
+ * specified design gets built: obedience.
+ *
+ * **`prompt` + `answers`** — the brief a customer would actually give
+ * ("I want to create a todo app"), and everything the builder said, as ONE
+ * block. The run starts in the interview phase and produces its own
+ * `spec/concept.md`, so the interview → concept link is inside the measurement
+ * for the first time. This measures judgment: what a model assumes when nobody
+ * told it, and whether those assumptions land on the forks `expect.json` pins.
+ *
+ * **Why the answers are one block rather than question-answer pairs.** The
+ * questions vary run to run — that is the point of an interview — so anything
+ * matching on their wording breaks on the first re-run. Delivered whole, the
+ * interview skill finds its frontier covered and proposes.
+ */
 export interface EvalFixture {
 	readonly name: string;
-	/** The frozen concept document, verbatim. */
-	readonly concept: string;
+	/** The frozen concept document, verbatim. Absent when the fixture starts at the prompt. */
+	readonly concept?: string;
+	/** The underspecified brief. Its presence is what starts the run in the interview phase. */
+	readonly prompt?: string;
+	/** Everything the builder answered, as one block. Only meaningful with `prompt`. */
+	readonly answers?: string;
 	readonly expect: EvalExpectations;
+}
+
+/** Does this fixture start at the prompt (interview measured) or at the concept? */
+export function startsAtPrompt(fixture: EvalFixture): boolean {
+	return fixture.prompt !== undefined;
+}
+
+/**
+ * A fixture must start at exactly one place. Checked rather than assumed: a
+ * fixture carrying both would silently run as whichever branch was tested last,
+ * and one carrying neither would drive a project with no concept and no brief.
+ */
+export function assertFixtureStart(fixture: EvalFixture): void {
+	const hasConcept = fixture.concept !== undefined;
+	const hasPrompt = fixture.prompt !== undefined;
+	if (hasConcept === hasPrompt) {
+		throw new Error(
+			`fixture ${fixture.name}: give EITHER concept.md (start at the frozen concept) ` +
+				'OR prompt.md + answers.md (start at the brief, measuring the interview) — ' +
+				(hasConcept ? 'both were supplied' : 'neither was supplied'),
+		);
+	}
+	if (hasPrompt && fixture.answers === undefined) {
+		throw new Error(
+			`fixture ${fixture.name}: prompt.md needs answers.md beside it — an interview ` +
+				'replay with nothing to answer stalls at the first round of questions',
+		);
+	}
 }
 
 /** Validation without a schema dep: expect.json is our file, read hostilely anyway. */
@@ -232,6 +283,24 @@ export const CONTINUE_MESSAGE =
 	'Continue until the concept in spec/concept.md is fully implemented and the gates are green. ' +
 	'The concept document is the authority.';
 
+/**
+ * The third turn of an interview replay, and the only one the harness authors.
+ *
+ * `interview.md` requires the concept be presented in prose and written only
+ * after the builder agrees, so a replay cannot end at the answers — it needs a
+ * turn that says yes. It doubles as the reply to a second round of questions
+ * (take the conventional option), which keeps the replay from stalling when a
+ * model asks more than the answers block anticipated.
+ *
+ * Deliberately says nothing about the DOMAIN. Anything domain-specific here
+ * would be the oracle riding in the prompt: the fixture's assumptions are what
+ * is being measured, so the harness must not supply any.
+ */
+export const APPROVE_MESSAGE =
+	'Approved — that is what I want. Where you offered choices or are still unsure, take the ' +
+	'most conventional option and record it as an assumption. Write spec/concept.md as ' +
+	'presented and end the turn.';
+
 export const ANSWER_MESSAGE =
 	'Proceed with your stated assumption, or the most conventional option where you offered ' +
 	'choices. The frozen concept document is the only authority available in this run — ' +
@@ -291,6 +360,14 @@ export interface RunEvalOptions {
 export const DEFAULT_MAX_TURNS = 3;
 
 /**
+ * Turns an interview replay spends before the build starts: brief, answers,
+ * approval. Added to the ceiling for a prompt fixture so it gets the same
+ * number of BUILD turns as a concept fixture — otherwise starting at the prompt
+ * would look worse for having had further to walk.
+ */
+export const INTERVIEW_TURNS = 3;
+
+/**
  * Drive one fixture to a verdict. The project directory must already exist as
  * a fresh project repo with ONLY spec/concept.md committed — `prepareProject`
  * does that; the split keeps this function free of destructive file ops.
@@ -298,7 +375,10 @@ export const DEFAULT_MAX_TURNS = 3;
 export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	const { ws, projectWs, projectDir, fixture } = opts;
 	const probe = opts.probe ?? runProbe;
-	const maxTurns = fixture.expect.maxTurns ?? opts.maxTurns ?? DEFAULT_MAX_TURNS;
+	assertFixtureStart(fixture);
+	const baseTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
+	const maxTurns =
+		fixture.expect.maxTurns ?? baseTurns + (startsAtPrompt(fixture) ? INTERVIEW_TURNS : 0);
 	const emit = opts.onEvent ?? (() => {});
 	const started = Date.now();
 
@@ -309,17 +389,27 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	let repairs = 0;
 	let questions = 0;
 	let questionsThisTurn = 0;
+	let answersSent = false;
+	let buildSent = false;
 	let lastGates: GateRun | null = null;
 	let lastGateReport: string | undefined;
 	let fatal: string | undefined;
 	let generatorId = 'unknown';
 
-	const runPass = async (generator: VerticalGenerator, text: string, carriedReport?: string): Promise<void> => {
+	const runPass = async (
+		generator: VerticalGenerator,
+		text: string,
+		phase: BuildPhase,
+		carriedReport?: string,
+	): Promise<void> => {
 		let prose = '';
 		for await (const event of generator.run({
 			workspace: projectWs,
 			verticalDir: '.',
-			concept: await projectWs.readFile('spec/concept.md'),
+			// `buildContext`, not a raw read of spec/concept.md — the same seam
+			// server.ts uses, and the only one that answers during the interview
+			// phase, where the file does not exist yet.
+			concept: await buildContext(projectWs, phase),
 			message: text,
 			workspaceBrief: await workspaceBrief(ws, projectDir).catch(() => undefined),
 			...(carriedReport ? { gateReport: carriedReport } : {}),
@@ -358,12 +448,31 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			const phase = await detectPhase(projectWs);
 			const generator = await opts.makeGenerator(phase);
 			generatorId = generator.id;
-			const message =
-				turnNo === 1 ? BUILD_MESSAGE : questionsThisTurn > 0 ? ANSWER_MESSAGE : CONTINUE_MESSAGE;
+			// The sequence keyed on PHASE, not on turn number, so a replay that
+			// needs an extra round self-corrects instead of approving a concept
+			// that was never proposed. Both modes converge on BUILD_MESSAGE the
+			// moment a concept exists — which is what makes their build halves
+			// comparable.
+			let message: string;
+			if (phase === 'interview') {
+				if (turnNo === 1) {
+					message = fixture.prompt ?? BUILD_MESSAGE;
+				} else if (!answersSent && fixture.answers !== undefined) {
+					message = fixture.answers;
+					answersSent = true;
+				} else {
+					message = APPROVE_MESSAGE;
+				}
+			} else if (!buildSent) {
+				message = BUILD_MESSAGE;
+				buildSent = true;
+			} else {
+				message = questionsThisTurn > 0 ? ANSWER_MESSAGE : CONTINUE_MESSAGE;
+			}
 			questionsThisTurn = 0;
 			turns += 1;
 
-			await runPass(generator, message, lastGateReport);
+			await runPass(generator, message, phase, lastGateReport);
 			let turn = await runChecks(`eval ${fixture.name} · turn ${turnNo}`);
 			for (
 				let attempt = 1;
@@ -375,7 +484,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 				attempt++
 			) {
 				repairs += 1;
-				await runPass(generator, gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
+				await runPass(generator, gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS), phase);
 				turn = await runChecks(`eval ${fixture.name} · turn ${turnNo} · repair ${attempt}/${MAX_GATE_REPAIRS}`);
 			}
 
@@ -426,6 +535,7 @@ export async function prepareProject(
 	projectDir: string,
 	fixture: EvalFixture,
 ): Promise<void> {
+	assertFixtureStart(fixture);
 	if (!projectDir.startsWith(EVAL_PROJECT_PREFIX)) {
 		throw new Error(
 			`refusing to prepare ${projectDir}: eval projects live under ${EVAL_PROJECT_PREFIX}* ` +
@@ -437,11 +547,17 @@ export async function prepareProject(
 	if (ensured.mode !== 'project') {
 		throw new Error(`${projectDir} came up in ${ensured.mode} mode — expected a fresh project repo`);
 	}
-	await ws.mkdir(`${projectDir}/spec`, { recursive: true });
-	await ws.writeFile(`${projectDir}/spec/concept.md`, fixture.concept);
-	// Commit the frozen concept with zero gates: the ledger starts at "concept
-	// exists", which also lands detectPhase on `scaffold` for turn 1.
-	await runTurn(ws, { verticalDir: projectDir, message: `eval ${fixture.name}: freeze concept`, gates: [] });
+	if (fixture.concept !== undefined) {
+		await ws.mkdir(`${projectDir}/spec`, { recursive: true });
+		await ws.writeFile(`${projectDir}/spec/concept.md`, fixture.concept);
+	}
+	// Commit with zero gates. For a concept fixture the ledger starts at
+	// "concept exists", which lands detectPhase on `model` for turn 1. For a
+	// prompt fixture NOTHING is written: no spec/concept.md is exactly what puts
+	// turn 1 in the interview phase, which is the whole point of the mode — the
+	// concept has to be produced by the run rather than handed to it.
+	const label = fixture.concept !== undefined ? 'freeze concept' : 'empty project (starts at the prompt)';
+	await runTurn(ws, { verticalDir: projectDir, message: `eval ${fixture.name}: ${label}`, gates: [] });
 }
 
 // ── reporting ────────────────────────────────────────────────────────────────

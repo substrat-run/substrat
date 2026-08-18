@@ -63,14 +63,11 @@ import {
 } from './providers.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
-	buildWriteGuard,
 	detectPhase,
-	interviewWriteGuard,
-	modelWriteGuard,
-	scenarioWriteGuard,
 	skillsForPhase,
 	type BuildPhase,
 	buildContext,
+	writeGuardFor,
 } from './phase.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
@@ -167,14 +164,7 @@ async function makeGenerator(spec: string, phase: BuildPhase = 'iterate'): Promi
 		// dead-end this prevents). The SAME dispatch the hosted agent uses —
 		// local dev previously guarded only the interview, so a local run could
 		// write code during the model phase and a hosted one could not.
-		denyWrite:
-			phase === 'interview'
-				? interviewWriteGuard
-				: phase === 'model'
-					? modelWriteGuard
-					: phase === 'scenario'
-						? scenarioWriteGuard
-						: buildWriteGuard,
+		denyWrite: writeGuardFor(phase),
 	});
 }
 

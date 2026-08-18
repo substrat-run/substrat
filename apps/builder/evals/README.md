@@ -8,11 +8,32 @@ makes for adapters, applied to the generator.
 
 ## What lives here
 
-One directory per fixture:
+One directory per fixture, and a fixture starts at **one of two places** — which one
+decides what the run measures.
 
-- `concept.md` — a **frozen** concept document, complete enough that a competent build
-  needs no questions. Frozen means frozen: editing a concept invalidates every
-  historical result against it; add a new fixture instead.
+**Start at the concept** (`concept.md`) — a **frozen** concept document, complete
+enough that a competent build needs no questions. Frozen means frozen: editing a
+concept invalidates every historical result against it; add a new fixture instead.
+This measures how faithfully a fully specified design gets built.
+
+**Start at the prompt** (`prompt.md` + `answers.md`, #740) — the brief a customer
+would actually give, and everything the builder answered. The run begins in the
+interview phase and writes its own `spec/concept.md`, so the interview → concept link
+is inside the measurement instead of below it.
+
+- `prompt.md` — the underspecified brief, in the customer's words. Nothing else: any
+  meta-commentary here is guidance the model would not have had.
+- `answers.md` — every answer as **one block**, never question-answer pairs. The
+  questions vary run to run, so anything matching their wording breaks on the first
+  re-run; delivered whole, the interview skill finds its frontier covered and proposes.
+
+The replay is three turns — brief, answers, approval — and the approval message is the
+harness's, deliberately saying nothing about the domain. Both modes converge on the
+same build message the moment a concept exists, which is what makes their build halves
+comparable.
+
+A directory with both starting points, or neither, is an error rather than a skip: a
+sweep that quietly runs fewer fixtures reads as a pass.
 - `expect.json` — the expected structural outcome, checked from the *outside* (the
   gates and the probe), never fed to the model:
   - `operations` — operation names that must exist in the project's registered modules
@@ -22,6 +43,13 @@ One directory per fixture:
   - `maxTurns` — optional per-fixture turn ceiling
 
 Gates-green is always required and never declared.
+
+**What a prompt fixture does not pin yet.** `todo/` pins only files, because the
+vocabulary is the model's freedom: a run that names the vertical `tasks` rather than
+`todo` would fail an `operations` pin for its naming rather than for its judgment.
+Scoring the assumptions themselves — every assumption mapped to a fork, measured as
+*forks correct at a given question count* so that asking more questions is not itself
+rewarded — is the other half of #740.
 
 ## Running the sweep
 

@@ -8,11 +8,13 @@ import { describe, expect, it } from 'vitest';
 import {
   buildContext,
   buildWriteGuard,
+  writeGuardFor,
   detectPhase,
   interviewWriteGuard,
   isSpecPhase,
   modelWriteGuard,
   PHASES,
+  scenarioWriteGuard,
 } from '../src/phase.js';
 
 /** A workspace that exists exactly where told to. */
@@ -70,6 +72,32 @@ describe('spec-phase guards write only spec/**', () => {
       expect(guard('package.json')).not.toBeNull();
     });
   }
+});
+
+describe('writeGuardFor — one dispatch, so the hosts cannot drift', () => {
+  // The reason this exists: server.ts applied these guards and the eval CLI did
+  // not, under a comment claiming byte-identical construction. The studio
+  // enforced the ladder; the harness meant to MEASURE the studio did not.
+  it('maps every phase to the guard that phase is supposed to have', () => {
+    expect(writeGuardFor('interview')).toBe(interviewWriteGuard);
+    expect(writeGuardFor('model')).toBe(modelWriteGuard);
+    expect(writeGuardFor('scenario')).toBe(scenarioWriteGuard);
+    // scaffold and iterate are BUILD turns — same guard, and the fallthrough is
+    // deliberate rather than an omission.
+    expect(writeGuardFor('scaffold')).toBe(buildWriteGuard);
+    expect(writeGuardFor('iterate')).toBe(buildWriteGuard);
+  });
+
+  it('never returns an unguarded phase', () => {
+    // A phase falling through to "no guard" is the silent failure: the ladder
+    // reads as enforced and refuses nothing.
+    for (const phase of PHASES) {
+      expect(typeof writeGuardFor(phase)).toBe('function');
+    }
+    // And the guard for a spec phase must actually refuse code, not merely exist.
+    expect(writeGuardFor('interview')('src/module.ts')).not.toBeNull();
+    expect(writeGuardFor('model')('src/module.ts')).not.toBeNull();
+  });
 });
 
 describe('the direction rule — build turns cannot author the model', () => {

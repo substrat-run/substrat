@@ -30,7 +30,7 @@ import {
 import { LocalWorkspace, standaloneGates } from '@substrat-run/builder-workspace';
 import { loadEnvFiles } from './env.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import { skillsForPhase, type BuildPhase } from './phase.js';
+import { skillsForPhase, writeGuardFor, type BuildPhase } from './phase.js';
 import { costOfSteps } from './pricing.js';
 import {
 	DEFAULT_MODEL,
@@ -43,8 +43,10 @@ import {
 	EVAL_PROJECT_PREFIX,
 	formatEvalResult,
 	parseExpectations,
+	assertFixtureStart,
 	prepareProject,
 	runEval,
+	startsAtPrompt,
 	type EvalFixture,
 	type EvalResult,
 } from './evals/harness.js';
@@ -96,20 +98,33 @@ land in .builder/evals/ as JSON; compare two runs to judge a harness change.
 
 Mode A has NO isolation — the model gets shell access, once per fixture.`;
 
-/** Fixture discovery: every apps/builder/evals/<name>/ with concept.md + expect.json. */
+/**
+ * Fixture discovery: every `apps/builder/evals/<name>/` with an expect.json and
+ * a starting point — either `concept.md` (start frozen) or `prompt.md` +
+ * `answers.md` (start at the brief, so the interview is measured).
+ *
+ * A directory carrying both, or neither, is an error rather than a skip:
+ * silently ignoring a malformed fixture shrinks the sweep without saying so,
+ * and a sweep that quietly runs fewer fixtures reads as a pass.
+ */
 async function loadFixtures(evalsDir: string, only?: readonly string[]): Promise<EvalFixture[]> {
 	const entries = await readdir(evalsDir, { withFileTypes: true });
 	const fixtures: EvalFixture[] = [];
 	for (const e of entries.filter((e) => e.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
 		const dir = join(evalsDir, e.name);
-		if (!existsSync(join(dir, 'concept.md'))) continue;
-		const concept = await readFile(join(dir, 'concept.md'), 'utf8');
-		const expectRaw: unknown = JSON.parse(await readFile(join(dir, 'expect.json'), 'utf8'));
-		fixtures.push({
+		const has = (f: string) => existsSync(join(dir, f));
+		if (!has('expect.json')) continue;
+		const read = (f: string) => readFile(join(dir, f), 'utf8');
+		const expectRaw: unknown = JSON.parse(await read('expect.json'));
+		const fixture: EvalFixture = {
 			name: e.name,
-			concept,
+			...(has('concept.md') ? { concept: await read('concept.md') } : {}),
+			...(has('prompt.md') ? { prompt: await read('prompt.md') } : {}),
+			...(has('answers.md') ? { answers: await read('answers.md') } : {}),
 			expect: parseExpectations(expectRaw, `evals/${e.name}/expect.json`),
-		});
+		};
+		assertFixtureStart(fixture);
+		fixtures.push(fixture);
 	}
 	const missing = only?.filter((n) => !fixtures.some((f) => f.name === n)) ?? [];
 	if (missing.length) throw new Error(`no such fixture(s): ${missing.join(', ')}`);
@@ -141,7 +156,13 @@ async function main(): Promise<number> {
 		for (const f of fixtures) {
 			const ops = f.expect.operations?.length ?? 0;
 			const roles = Object.keys(f.expect.roles ?? {}).length;
-			process.stdout.write(`${f.name}  (${ops} operation(s), ${roles} role(s) pinned)\n`);
+			// Where a fixture STARTS is the first thing to know about it: the two
+			// modes measure different things, and a sweep mixing them silently
+			// reports one number over both.
+			const start = startsAtPrompt(f) ? 'starts at the prompt' : 'frozen concept';
+			process.stdout.write(
+				`${f.name}  (${start}; ${ops} operation(s), ${roles} role(s) pinned)\n`,
+			);
 		}
 		return 0;
 	}
@@ -174,6 +195,12 @@ async function main(): Promise<number> {
 			skills: skillsForPhase(skills.byFile, phase),
 			explainError: explainProviderError(chosen.spec.split(':')[0] ?? 'anthropic'),
 			editTool: editToolFor(chosen.spec),
+			// The phase ladder's teeth, which this construction claimed to share
+			// with server.ts and did not. Without it an interview turn here could
+			// write code instead of spec/concept.md — the ladder would never
+			// advance, and the eval would measure a generator the studio refuses
+			// to run.
+			denyWrite: writeGuardFor(phase),
 			...samplingFor(chosen.spec),
 		});
 	};

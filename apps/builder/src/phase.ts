@@ -136,6 +136,28 @@ export function buildWriteGuard(path: string): string | null {
 	);
 }
 
+/**
+ * The write guard for a phase — the ladder's teeth, as ONE dispatch.
+ *
+ * It lives here rather than at each call site because it had already drifted:
+ * `server.ts` applied these guards and the eval CLI did not, under a comment
+ * claiming "byte-identical construction to server.ts makeGenerator". So the
+ * studio enforced the ladder and the harness that is supposed to MEASURE the
+ * studio did not — an interview turn in an eval could write code, leave
+ * `spec/concept.md` unwritten, and dead-end exactly as the transcript above
+ * describes, while the same run in the studio was refused.
+ *
+ * A harness that drives the generator through a different ladder measures the
+ * wrong thing (harness.ts §3), so there is now one function and both hosts call
+ * it.
+ */
+export function writeGuardFor(phase: BuildPhase): (path: string) => string | null {
+	if (phase === 'interview') return interviewWriteGuard;
+	if (phase === 'model') return modelWriteGuard;
+	if (phase === 'scenario') return scenarioWriteGuard;
+	return buildWriteGuard;
+}
+
 export interface SkillManifestEntry {
 	/** Path relative to the STUDIO checkout root (the trusted side, §5.4). */
 	readonly file: string;

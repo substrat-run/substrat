@@ -14,13 +14,17 @@ import { LocalWorkspace } from '@substrat-run/builder-workspace';
 import type { BuildEvent, GeneratorInput, VerticalGenerator } from '@substrat-run/builder-generator';
 import {
 	ANSWER_MESSAGE,
+	APPROVE_MESSAGE,
+	assertFixtureStart,
 	BUILD_MESSAGE,
 	checkExpectations,
 	CONTINUE_MESSAGE,
 	EVAL_PROJECT_PREFIX,
+	INTERVIEW_TURNS,
 	parseExpectations,
 	prepareProject,
 	runEval,
+	startsAtPrompt,
 	type EvalFixture,
 } from '../src/evals/harness.js';
 import type { ProbeFn, ProbeResult } from '../src/evals/probe.js';
@@ -313,5 +317,153 @@ describe('parseExpectations', () => {
 		expect(() => parseExpectations({ roles: { r: 'p:q' } }, 't')).toThrow(/roles\.r/);
 		expect(() => parseExpectations({ maxTurns: 0 }, 't')).toThrow(/maxTurns/);
 		expect(() => parseExpectations([], 't')).toThrow(/object/);
+	});
+});
+
+// ── starting at the prompt (#740) ────────────────────────────────────────────
+
+const PROMPT_FIXTURE: EvalFixture = {
+	name: 'fx-prompt',
+	prompt: 'I want to create a thing tracker.',
+	answers: '- **Who uses it:** just me.\n- **Screens:** a web UI.\n',
+	expect: { files: ['src/module.ts'] },
+};
+
+describe('a fixture that starts at the prompt', () => {
+	it('leaves the project with NO concept, which is what puts turn 1 in the interview', async () => {
+		// The whole mode rests on this: `detectPhase` returns 'interview' exactly
+		// when spec/concept.md is absent, so writing one here would skip the very
+		// link the fixture exists to measure.
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}${PROMPT_FIXTURE.name}`;
+		await prepareProject(ws, dir, PROMPT_FIXTURE);
+		expect(await ws.exists(`${dir}/spec/concept.md`)).toBe(false);
+		expect(startsAtPrompt(PROMPT_FIXTURE)).toBe(true);
+	});
+
+	it('replays brief → answers → approval, then converges on the build message', async () => {
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}${PROMPT_FIXTURE.name}`;
+		await prepareProject(ws, dir, PROMPT_FIXTURE);
+		const projectWs = new LocalWorkspace({ root: join((ws as LocalWorkspace).root, dir) });
+
+		const gen = scripted([
+			// 1 — the brief lands; the interview asks its round.
+			async () => [{ type: 'question', question: 'who uses it?', options: ['a', 'b'] }, usage(400, 40)],
+			// 2 — answers delivered whole; the concept is PROPOSED, not written.
+			async () => [{ type: 'assistant-text', text: 'here is the concept…' }, usage(500, 90)],
+			// 3 — approval: the concept is written, which moves the ladder.
+			async (input) => {
+				await input.workspace.mkdir('spec', { recursive: true });
+				await input.workspace.writeFile('spec/concept.md', '# Thing tracker\n');
+				return [{ type: 'assistant-text', text: 'written' }, usage(600, 120)];
+			},
+			// 4 — now a build turn, exactly as a concept fixture gets on ITS turn 1.
+			async (input) => {
+				await writeModule(input);
+				return [{ type: 'assistant-text', text: 'built' }, usage(1000, 200)];
+			},
+		]);
+
+		const result = await runEval({
+			ws,
+			projectWs,
+			projectDir: dir,
+			fixture: PROMPT_FIXTURE,
+			makeGenerator: async () => gen,
+			gates: [],
+			probe: probeOf(GOOD_PROBE),
+		});
+
+		// The sequence is the deliverable: the brief verbatim, the answers as ONE
+		// block, the harness's approval, and only then the same BUILD_MESSAGE a
+		// frozen-concept fixture starts with. That last convergence is what makes
+		// the two modes' build halves comparable.
+		expect(gen.received).toEqual([
+			PROMPT_FIXTURE.prompt,
+			PROMPT_FIXTURE.answers,
+			APPROVE_MESSAGE,
+			BUILD_MESSAGE,
+		]);
+		expect(result.passed).toBe(true);
+		// The question the interview asked is still counted — stop-discipline is
+		// measured across the interview too, and #740 wants forks-per-question.
+		expect(result.questions).toBe(1);
+	});
+
+	it('does not approve a concept that was never proposed when a second round is asked', async () => {
+		// The replay is keyed on PHASE, not on turn number. A model that asks
+		// again after the answers must get the approval message (which also says
+		// "take the conventional option"), never a build instruction — interview
+		// turns cannot write code, so a build message there is a wasted turn.
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}${PROMPT_FIXTURE.name}`;
+		await prepareProject(ws, dir, PROMPT_FIXTURE);
+		const projectWs = new LocalWorkspace({ root: join((ws as LocalWorkspace).root, dir) });
+
+		const gen = scripted([
+			async () => [{ type: 'question', question: 'round 1?', options: ['a'] }, usage(400, 40)],
+			async () => [{ type: 'question', question: 'round 2?', options: ['a'] }, usage(400, 40)],
+			async () => [{ type: 'question', question: 'round 3?', options: ['a'] }, usage(400, 40)],
+		]);
+
+		await runEval({
+			ws,
+			projectWs,
+			projectDir: dir,
+			fixture: { ...PROMPT_FIXTURE, expect: { ...PROMPT_FIXTURE.expect, maxTurns: 4 } },
+			makeGenerator: async () => gen,
+			gates: [],
+			probe: probeOf(GOOD_PROBE),
+		});
+
+		expect(gen.received).toEqual([
+			PROMPT_FIXTURE.prompt,
+			PROMPT_FIXTURE.answers,
+			APPROVE_MESSAGE,
+			APPROVE_MESSAGE,
+		]);
+	});
+
+	it('gets the interview turns ON TOP of the build ceiling', async () => {
+		// Otherwise starting at the prompt would look worse purely for having
+		// further to walk, and the metric would punish the mode rather than the
+		// model.
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}${PROMPT_FIXTURE.name}`;
+		await prepareProject(ws, dir, PROMPT_FIXTURE);
+		const projectWs = new LocalWorkspace({ root: join((ws as LocalWorkspace).root, dir) });
+		const gen = scripted([async () => [usage(10, 1)]]);
+		const result = await runEval({
+			ws,
+			projectWs,
+			projectDir: dir,
+			fixture: PROMPT_FIXTURE,
+			makeGenerator: async () => gen,
+			gates: [],
+			probe: probeOf(GOOD_PROBE),
+			maxTurns: 2,
+		});
+		expect(result.turns).toBe(2 + INTERVIEW_TURNS);
+	});
+});
+
+describe('assertFixtureStart', () => {
+	it('refuses a fixture that starts in two places, or in none', () => {
+		expect(() => assertFixtureStart({ name: 'both', concept: 'c', prompt: 'p', answers: 'a', expect: {} })).toThrow(
+			/both were supplied/,
+		);
+		expect(() => assertFixtureStart({ name: 'neither', expect: {} })).toThrow(/neither was supplied/);
+	});
+
+	it('refuses a prompt with nothing to answer', () => {
+		// An interview replay with no answers stalls at the first round and burns
+		// the whole ceiling asking.
+		expect(() => assertFixtureStart({ name: 'p', prompt: 'brief', expect: {} })).toThrow(/needs answers\.md/);
+	});
+
+	it('accepts either honest shape', () => {
+		expect(() => assertFixtureStart(FIXTURE)).not.toThrow();
+		expect(() => assertFixtureStart(PROMPT_FIXTURE)).not.toThrow();
 	});
 });
