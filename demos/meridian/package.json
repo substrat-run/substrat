@@ -64,7 +64,25 @@
         "group": "Auth"
       }
     ],
-    "tenant": "substrat-9yjbbn"
+    "tenant": "substrat-9yjbbn",
+    "devServers": [
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts",
+        "env": {
+          "ALLOW_DEV_HEADER": "true"
+        }
+      },
+      {
+        "name": "app",
+        "run": "dev",
+        "dir": "app",
+        "portEnv": "WEB_PORT",
+        "portFrom": "app/vite.config.ts"
+      }
+    ]
   },
   "type": "module",
   "exports": {

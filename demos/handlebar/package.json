@@ -3,7 +3,25 @@
   "version": "0.0.73",
   "private": true,
   "substrat": {
-    "permissions": "src/seed.ts"
+    "permissions": "src/seed.ts",
+    "devServers": [
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts",
+        "env": {
+          "ALLOW_DEV_HEADER": "true"
+        }
+      },
+      {
+        "name": "web",
+        "run": "dev",
+        "dir": "app",
+        "portEnv": "WEB_PORT",
+        "portFrom": "app/vite.config.ts"
+      }
+    ]
   },
   "license": "Apache-2.0",
   "description": "Handlebar demo vertical — the v2 bike-shop skin, see spec/concept.md",

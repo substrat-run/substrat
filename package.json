@@ -33,7 +33,8 @@
     "lint:tests": "node tools/test-independence.mjs",
     "lint:docs": "node tools/docs-drift.mjs",
     "lint:llms": "tsx tools/llms-index.mts",
-    "lint:agent-rules": "tsx tools/agent-rules-emit.mts"
+    "lint:agent-rules": "tsx tools/agent-rules-emit.mts",
+    "lint:launch": "tsx tools/launch-emit.mts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

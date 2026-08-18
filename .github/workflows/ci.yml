@@ -68,6 +68,14 @@ jobs:
       # anything. Unlike lint:playbook — which guards two documents that diverge on
       # purpose — these must read identically, so this re-emits and diffs.
       - run: pnpm lint:agent-rules --check
+      # The dev-server checkpoint (#752). `.claude/launch.json` is what lets an
+      # agent start the API and the web app and verify its own change in the
+      # Browser pane — the one part of a demo the scenario tests never touch,
+      # because they compose the host directly and never boot server.ts. It is
+      # emitted from each project's `substrat.devServers` block with the port read
+      # out of the file that binds it, so a moved port reddens here rather than
+      # failing an agent's boot with `autoPort: false`.
+      - run: pnpm lint:launch --check
       - run: pnpm -r typecheck
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM

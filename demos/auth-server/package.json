@@ -50,6 +50,21 @@
         "secret": false,
         "group": "Email"
       }
+    ],
+    "devServers": [
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts"
+      },
+      {
+        "name": "app",
+        "run": "dev",
+        "dir": "app",
+        "portEnv": "WEB_PORT",
+        "portFrom": "app/vite.config.ts"
+      }
     ]
   },
   "type": "module",

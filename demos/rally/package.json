@@ -3,7 +3,29 @@
   "version": "0.0.70",
   "private": true,
   "substrat": {
-    "permissions": "src/seed.ts"
+    "permissions": "src/seed.ts",
+    "devServers": [
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts"
+      },
+      {
+        "name": "player",
+        "run": "dev",
+        "dir": "app",
+        "portEnv": "PLAYER_PORT",
+        "portFrom": "app/vite.config.ts"
+      },
+      {
+        "name": "console",
+        "run": "dev",
+        "dir": "admin",
+        "portEnv": "CONSOLE_PORT",
+        "portFrom": "admin/vite.config.ts"
+      }
+    ]
   },
   "license": "Apache-2.0",
   "description": "RallyPoint demo vertical (padel/tennis club booking) — see spec/concept.md",

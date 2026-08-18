@@ -24,7 +24,22 @@
         "label": "App"
       }
     ],
-    "tenant": "substrat-9yjbbn"
+    "tenant": "substrat-9yjbbn",
+    "devServers": [
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts"
+      },
+      {
+        "name": "web",
+        "run": "dev",
+        "dir": "app",
+        "portEnv": "WEB_PORT",
+        "portFrom": "app/vite.config.ts"
+      }
+    ]
   },
   "type": "module",
   "exports": {
