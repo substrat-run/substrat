@@ -1,5 +1,168 @@
 # @substrat-run/vertical-host
 
+## 0.72.0
+
+### Minor Changes
+
+- f869541: Engine route binding, and an API document derived from the model.
+
+  **`defineEngineRoutes`** — a vertical declares where a composed engine's
+  operations live in its own API. An engine declares no `http` and should not: it
+  is entity-agnostic and does not own a URL shape, since a bike shop calls the same
+  work order a repair. That left a composing vertical hand-writing most of its
+  route table — 17 of Callout's 27 routes. Every `{var}` is checked against the
+  engine's input schema, so a path naming a field the engine does not accept is a
+  compile error rather than a silent 400.
+
+  The operation NAME cannot be checked at compile time: `ModuleRegistration` types
+  its operations as `Record<string, OperationHandler>`, erasing the keys before a
+  vertical can see them. `mountOperations` gains `knownOperations`, so a typo fails
+  at mount with a message naming it instead of as a 404 the first time somebody
+  calls that endpoint.
+
+  **`apiCatalogFrom`** — the OpenAPI catalog, read off the declared operations
+  rather than restated. Meridian's hand-written catalog is 226 lines and
+  Manyfold's 184, all of it repeating what the model already says. `tag` and
+  `description` stay supplied, the same prose/derived split as
+  `manifestOperations`.
+
+  **`ApiOperationDoc.http`** — the document now describes the route the server
+  actually serves. Before operations declared `http`, the only shape available was
+  the platform's `/api/op/{name}` invoke convention, so a vertical serving REST
+  routes published a document describing a surface it did not have. Path
+  parameters are emitted as OpenAPI `parameters`, and several operations sharing a
+  URL merge into one path item. Verticals whose catalogs declare no `http` are
+  byte-identical to before.
+
+- f869541: `narrows` names the permission keys its walk checks.
+
+  An operation that proves access per entity declared only a `reason`, so a key
+  reached **solely** by a proof walk contributed nothing to the derived permission
+  surface — and would have been absent from the review artifact that exists to make
+  a widened permission impossible to miss.
+
+  `narrows` now carries `checks: readonly PermKey[]` alongside `reason`, and
+  `permissionsUsedBy` gathers those keys as well as the leading `permission` ones.
+  Empty is a legitimate, explicit answer: Callout's portal walk evaluates only
+  `workorder:read`, which the workorder engine declares — a vertical restating
+  another module's permissions is the same two-descriptions defect this prevents.
+
+  Also adds `manifestOperations(operations, { permissions })`, the operation-side
+  counterpart to `manifestEntities`: the manifest's `permissions` list and
+  `events.emits` are derived from what the operations declare, with descriptions
+  supplied beside the manifest and checked for exhaustiveness. A key an operation
+  checks that nobody described is an error rather than an undocumented permission.
+
+  **Migrating:** add `checks` to every `narrows` declaration — the vertical's own
+  keys the walk evaluates, or `[]`.
+
+  `@substrat-run/vertical-host` gains `mountOperations(app, operations, resolveStub)`,
+  which derives the Hono route table from the operations' own `http` declarations —
+  method, path, and which input fields the path carries are already declared and
+  compile-checked, so writing them again by hand is a second description that
+  drifts. A runtime derivation rather than a generator: the model is TypeScript, so
+  `operations` is a live object and there is nothing to emit or regenerate.
+
+  It found real drift on first contact. Callout declared `callout/price-list` at
+  `/price-list` while serving — and its web client calling — `/prices`. Three
+  descriptions, one wrong, and nothing could contradict it until the route table
+  was derived from the declaration. The declaration is corrected here.
+
+  Scope: a vertical's OWN operations. A composed engine's operations carry no
+  `http`, because the engine does not own a URL shape — the vertical mounts those
+  itself.
+
+- 9208b4e: A signature request can carry **how a party is reached** — sealed to the
+  connector, never readable in the spine (#687 item 1,
+  `docs/design/signature-contact-carrier.md`).
+
+  Every external signature this platform has ever sent has failed. The reason was
+  not the auth level and never was: `connector-scrive` mapped each party to a role
+  label — "Beställare" — and no address, so Scrive answered
+  `invalid_invitation_delivery_info` and a document started with nobody to deliver
+  it to. `ScriveParty.email` was declared, wired into the provider's `fields`
+  array, and filled by nothing. This is its producer.
+
+  **Why it took a design.** The obvious carrier — put the address on the event —
+  is unavailable: `protocol.signatures-requested` lands in `_substrat_outbox` and
+  `_substrat_platform_requests`, kernel rows a vertical may neither write nor
+  erase, so anything a hosted vertical emits in plaintext stays plaintext in copies
+  it cannot reach. The next obvious one — seal it under the per-subject keys — is
+  impossible rather than merely awkward: those keys live in the directory, and a
+  sandbox-clean vertical is architecturally on the far side of that boundary
+  (§2 of the design derives it). And reading the contact back at egress deadlocks,
+  because a connector runs _inside_ the scope's dispatch and re-entering the scope
+  actor wedges it.
+
+  What works is the gap in the middle: a scope may never hold a _secret_ key, and
+  nothing says that about a _public_ one.
+
+  - **`sealTo` / `openSealed` in the kernel** — the asymmetric sibling of
+    `SecretBox`: ECDH P-256 → AES-256-GCM, a fresh ephemeral keypair per seal, and
+    an envelope that is a `SealedSecret` so it carries `keyId`. A cell that cannot
+    name its key can only ever have one, and every ciphertext already written
+    becomes ambiguous the day a second exists. Rotation is deferred; the envelope
+    that permits it is not.
+  - **A keypair per connection.** The private half is sealed under the host
+    `SecretBox` beside the credential and stored **keyId-indexed from day one**,
+    even holding one member — widening a column into a set later is a migration
+    against live connections. Minted on first ask, so a connection older than this
+    feature acquires one by being asked rather than by being reconnected.
+  - **The public half is projected into the scope**, on the channel that already
+    carries entitlements, identity links and connection grants — not
+    `configureInstance`, because a key in the config bag becomes a key in a
+    settings form.
+  - **`ctx.sealToConnection(provider, plaintext)`** — awaited _before_ `ctx.emit`,
+    so `emit` stays synchronous and D-28 is untouched. **Fails closed and legibly**
+    when no key has reached the scope: emitting a request with its addresses
+    silently dropped is the invisible failure this exists to end.
+  - **`conn.unseal(cell)`** at egress, on the connection for the same reason
+    `fetch` and `openAttachment` are — key material never crosses into connector
+    code.
+
+  `engine-protocol` gains `partyContact { email?, mobile? }` on
+  `signatureRequestParty` and migration `0005-party-contact`, which stores **only
+  the ciphertext**. There is no plaintext column to clear later and no erasure
+  story to write: the address is unreadable to the spine, to its backups and to
+  `sealDump`'s output, because the key that opens it is in the directory.
+  `piiClass` therefore stays `'none'` — see the migration's own note for why
+  `'pseudonymous'` would be actively wrong rather than more honest.
+
+  **No `personalNumber` field, and its absence is the decision.** #687 measured the
+  premise and it is false: what a provider validates is that a BankID party _has_
+  the field, not that it holds a value. An optional PII field on an engine surface
+  is a carrier that exists.
+
+  Two invariants ship with the carrier, both in `requestSignatures`, both refusing
+  before anything freezes:
+
+  - **A party that will be invited must be reachable.** Otherwise the provider
+    refuses after the instance has already frozen, leaving an avtal that looks sent
+    for signature and is not.
+  - **A set with no counterparty is refused.** "The declared primary, else the
+    FIRST" is a total function, so a one-party request never failed here — it
+    failed at the provider, where that party had been made the _author_, and an
+    author is never invited. In production that party was the customer.
+
+  Verified against the Scrive **testbed**, not only the mock: a party carrying an
+  address no longer draws `invalid_invitation_delivery_info` at either auth level,
+  and a document with one starts and reaches `pending`. The connector tolerates an
+  absent contact in both skew directions — an older engine sends none, an older
+  connector strips the field — so neither combination is worse than today, which is
+  that nothing works.
+
+### Patch Changes
+
+- Updated dependencies [f869541]
+- Updated dependencies [f869541]
+- Updated dependencies [19fb697]
+- Updated dependencies [f869541]
+- Updated dependencies [717600e]
+- Updated dependencies [46b1cac]
+- Updated dependencies [9208b4e]
+  - @substrat-run/kernel@0.72.0
+  - @substrat-run/contracts@0.72.0
+
 ## 0.71.0
 
 ### Patch Changes

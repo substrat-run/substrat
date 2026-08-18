@@ -1,5 +1,287 @@
 # @substrat-run/contracts
 
+## 0.72.0
+
+### Minor Changes
+
+- f869541: Engine route binding, and an API document derived from the model.
+
+  **`defineEngineRoutes`** — a vertical declares where a composed engine's
+  operations live in its own API. An engine declares no `http` and should not: it
+  is entity-agnostic and does not own a URL shape, since a bike shop calls the same
+  work order a repair. That left a composing vertical hand-writing most of its
+  route table — 17 of Callout's 27 routes. Every `{var}` is checked against the
+  engine's input schema, so a path naming a field the engine does not accept is a
+  compile error rather than a silent 400.
+
+  The operation NAME cannot be checked at compile time: `ModuleRegistration` types
+  its operations as `Record<string, OperationHandler>`, erasing the keys before a
+  vertical can see them. `mountOperations` gains `knownOperations`, so a typo fails
+  at mount with a message naming it instead of as a 404 the first time somebody
+  calls that endpoint.
+
+  **`apiCatalogFrom`** — the OpenAPI catalog, read off the declared operations
+  rather than restated. Meridian's hand-written catalog is 226 lines and
+  Manyfold's 184, all of it repeating what the model already says. `tag` and
+  `description` stay supplied, the same prose/derived split as
+  `manifestOperations`.
+
+  **`ApiOperationDoc.http`** — the document now describes the route the server
+  actually serves. Before operations declared `http`, the only shape available was
+  the platform's `/api/op/{name}` invoke convention, so a vertical serving REST
+  routes published a document describing a surface it did not have. Path
+  parameters are emitted as OpenAPI `parameters`, and several operations sharing a
+  URL merge into one path item. Verticals whose catalogs declare no `http` are
+  byte-identical to before.
+
+- 19fb697: The workorder engine declares its operation surface, and a route binding becomes
+  a name and a path.
+
+  `defineEngineRoutes` shipped taking the input and output schemas from the
+  composing vertical, because the engine only expressed them as TypeScript types.
+  That meant a vertical wrote a local `z.object({ orderId })` standing in for a
+  shape the engine owns — a description held in agreement by nothing — and the
+  operation NAME was an unchecked string, since `ModuleRegistration` erases its
+  operation keys.
+
+  The engine now declares all eight operations with `defineOperations`, and
+  `defineEngineRoutes` is curried against them:
+
+  ```ts
+  export const calloutEngineRoutes = defineEngineRoutes(workorderOperations)({
+    "workorder/get": { method: "GET", path: "/workorders/{orderId}" },
+  });
+  ```
+
+  The result MERGES the engine's declaration with the path, so the engine's real
+  schemas reach the router and the API document rather than a restatement. Callout
+  loses 40 lines of binding.
+
+  `http` is deliberately absent from the engine: it is entity-agnostic and owns no
+  URL shape — a bike shop calls the same work order a repair. `createWorkOrder`
+  stays an in-scope function rather than an operation, so a vertical can price,
+  label and link in one transaction instead of being offered a second way in that
+  skips all of it.
+
+  `timeEntry` and `materialLine` are published as Zod schemas rather than
+  interfaces, because an operation declaring what it RETURNS needs something to
+  point at.
+
+  **Two type-level checks that were decorative, made real.** The path check read
+  `PathAgainst<Op, string>`, and `PathParams<string>` is `never`, which vacuously
+  satisfies any input — it accepted every path. It now infers the literal. The
+  unknown-operation-name check could not be made to bite at all (the constraint is
+  self-referential and inference degrades), so it is **not claimed**: it throws
+  when the module loads, naming what the engine does declare.
+
+  **And a cycle the permission checkpoint caught.** With the published schemas in
+  `index.ts` and `index.ts` re-exporting `operations.ts`, importing the engine ran
+  `operations.ts` before `workOrder` was initialised. They now live in
+  `schemas.ts`, which both import — the kind of cycle a warm `dist` hides and a
+  tool that actually imports the module finds immediately.
+
+  `@substrat-run/engine-protocol` publishes its four row shapes as Zod —
+  `protocolTemplateRow`, `protocolResponseRow`, `protocolSignatureRow`,
+  `protocolSignatureRequestRow` — each asserted **exact** against the interface the
+  handler returns, in both directions. A declared return that drifts from what is
+  actually returned is the defect #695 found eleven times, so the assertion is
+  mutation-tested: widening either side stops the build.
+
+  Protocol does not yet declare its operations. Doing so needs its input schemas
+  moved to a leaf module first — they sit interleaved with the implementation
+  across a 2000-line file, and `operations.ts` importing them from `index.ts` while
+  `index.ts` re-exports `operations.ts` is a runtime cycle. See #738.
+
+  Progresses #738; unblocks #739.
+
+- f869541: `narrows` names the permission keys its walk checks.
+
+  An operation that proves access per entity declared only a `reason`, so a key
+  reached **solely** by a proof walk contributed nothing to the derived permission
+  surface — and would have been absent from the review artifact that exists to make
+  a widened permission impossible to miss.
+
+  `narrows` now carries `checks: readonly PermKey[]` alongside `reason`, and
+  `permissionsUsedBy` gathers those keys as well as the leading `permission` ones.
+  Empty is a legitimate, explicit answer: Callout's portal walk evaluates only
+  `workorder:read`, which the workorder engine declares — a vertical restating
+  another module's permissions is the same two-descriptions defect this prevents.
+
+  Also adds `manifestOperations(operations, { permissions })`, the operation-side
+  counterpart to `manifestEntities`: the manifest's `permissions` list and
+  `events.emits` are derived from what the operations declare, with descriptions
+  supplied beside the manifest and checked for exhaustiveness. A key an operation
+  checks that nobody described is an error rather than an undocumented permission.
+
+  **Migrating:** add `checks` to every `narrows` declaration — the vertical's own
+  keys the walk evaluates, or `[]`.
+
+  `@substrat-run/vertical-host` gains `mountOperations(app, operations, resolveStub)`,
+  which derives the Hono route table from the operations' own `http` declarations —
+  method, path, and which input fields the path carries are already declared and
+  compile-checked, so writing them again by hand is a second description that
+  drifts. A runtime derivation rather than a generator: the model is TypeScript, so
+  `operations` is a live object and there is nothing to emit or regenerate.
+
+  It found real drift on first contact. Callout declared `callout/price-list` at
+  `/price-list` while serving — and its web client calling — `/prices`. Three
+  descriptions, one wrong, and nothing could contradict it until the route table
+  was derived from the declaration. The declaration is corrected here.
+
+  Scope: a vertical's OWN operations. A composed engine's operations carry no
+  `http`, because the engine does not own a URL shape — the vertical mounts those
+  itself.
+
+- 717600e: A declared `permission` says what it checks against.
+
+  A bare key was ambiguous in the direction that fails **open**. These read
+  identically in the model and behave completely differently:
+
+  ```ts
+  'todo/create-list': { permission: 'list:create', … }   // checked at the scope
+  'todo/rename-list': { permission: 'list:manage', … }   // checked on ONE list
+  ```
+
+  Only the handler decided which, via `ctx.check(perm)` versus
+  `ctx.check(perm, entityRef)`. A reader of the model could not tell, a reviewer of
+  the permission diff could not tell, and an emitter could not generate the check.
+  Get the second case wrong and the operation passes for anyone holding the key
+  anywhere in the scope — in a sharing app, any member editing any record — with
+  every test still green, because only a seed that grants nothing scope-wide would
+  have caught it.
+
+  An entity-narrowed check now says so, and says what it narrows to:
+
+  ```ts
+  permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' }
+  ```
+
+  `entity` is checked against the declared entities and composed engines; `idFrom`
+  against the operation's own input, so the check is derivable. Where the id is not
+  in the input — an operation taking an item but checking the list it sits on —
+  `resolved: '<reason>'` records that this is not a node check while admitting the
+  handler must find the entity itself. The two are mutually exclusive and one is
+  required, so a check cannot silently say nothing.
+
+  Six `@ts-expect-error` controls prove each join bites: a bad `idFrom`, a bad
+  `entity`, both together, and neither. `permissionsUsedBy` reads the key out of
+  either form, so the permission review is unchanged.
+
+  Existing bare-key declarations keep their meaning — the node — and now mean it
+  explicitly. `demos/todo` adopts the narrowed form on all nine of its
+  entity-scoped operations.
+
+  Progresses #736.
+
+- 46b1cac: `renamedFrom` — the one declaration a migration diff cannot derive.
+
+  `planMigration` refused a dropped column, because a diff sees a field gone and a
+  field arrived and cannot tell a rename from a drop-plus-add. Guessing wrong drops
+  the column and everything in it, so refusing was right — and it also left a
+  rename unrepresentable, which is the next thing any app with data hits.
+
+  An entity may now declare `renamedFrom: { current: previous }`, and the planner
+  emits `ALTER TABLE … RENAME COLUMN` instead of refusing. Verified against real
+  SQLite: the rows survive and a `UNIQUE` constraint follows the column.
+
+  It is the ONLY declaration in the journal that is not derived — including the
+  version number — and it is **deletable after use**: once the rename has shipped,
+  the old name is gone from the journal and the entry is a gravestone the model may
+  remove. Both halves are tested, along with the control proving the same change
+  is still refused without it.
+
+  The declaration's KEY is checked by the planner rather than by the compiler:
+  TypeScript does not apply excess-property checking when satisfying a generic
+  constraint, so an unknown key widens instead of erroring. Written the obvious way
+  the constraint reads like a working check and enforces nothing, so it is not
+  claimed — `planMigration` refuses it instead, with a message naming the rule.
+
+  **Fixes a live defect in `journalColumns`**, which handled `ADD COLUMN`,
+  `DROP TABLE` and `RENAME TO` but not `RENAME COLUMN` — so a renamed column read
+  as its old name forever, and a planner deriving from that journal would have
+  re-emitted the same rename on every run.
+
+  Closes #734.
+
+- 9208b4e: A signature request can carry **how a party is reached** — sealed to the
+  connector, never readable in the spine (#687 item 1,
+  `docs/design/signature-contact-carrier.md`).
+
+  Every external signature this platform has ever sent has failed. The reason was
+  not the auth level and never was: `connector-scrive` mapped each party to a role
+  label — "Beställare" — and no address, so Scrive answered
+  `invalid_invitation_delivery_info` and a document started with nobody to deliver
+  it to. `ScriveParty.email` was declared, wired into the provider's `fields`
+  array, and filled by nothing. This is its producer.
+
+  **Why it took a design.** The obvious carrier — put the address on the event —
+  is unavailable: `protocol.signatures-requested` lands in `_substrat_outbox` and
+  `_substrat_platform_requests`, kernel rows a vertical may neither write nor
+  erase, so anything a hosted vertical emits in plaintext stays plaintext in copies
+  it cannot reach. The next obvious one — seal it under the per-subject keys — is
+  impossible rather than merely awkward: those keys live in the directory, and a
+  sandbox-clean vertical is architecturally on the far side of that boundary
+  (§2 of the design derives it). And reading the contact back at egress deadlocks,
+  because a connector runs _inside_ the scope's dispatch and re-entering the scope
+  actor wedges it.
+
+  What works is the gap in the middle: a scope may never hold a _secret_ key, and
+  nothing says that about a _public_ one.
+
+  - **`sealTo` / `openSealed` in the kernel** — the asymmetric sibling of
+    `SecretBox`: ECDH P-256 → AES-256-GCM, a fresh ephemeral keypair per seal, and
+    an envelope that is a `SealedSecret` so it carries `keyId`. A cell that cannot
+    name its key can only ever have one, and every ciphertext already written
+    becomes ambiguous the day a second exists. Rotation is deferred; the envelope
+    that permits it is not.
+  - **A keypair per connection.** The private half is sealed under the host
+    `SecretBox` beside the credential and stored **keyId-indexed from day one**,
+    even holding one member — widening a column into a set later is a migration
+    against live connections. Minted on first ask, so a connection older than this
+    feature acquires one by being asked rather than by being reconnected.
+  - **The public half is projected into the scope**, on the channel that already
+    carries entitlements, identity links and connection grants — not
+    `configureInstance`, because a key in the config bag becomes a key in a
+    settings form.
+  - **`ctx.sealToConnection(provider, plaintext)`** — awaited _before_ `ctx.emit`,
+    so `emit` stays synchronous and D-28 is untouched. **Fails closed and legibly**
+    when no key has reached the scope: emitting a request with its addresses
+    silently dropped is the invisible failure this exists to end.
+  - **`conn.unseal(cell)`** at egress, on the connection for the same reason
+    `fetch` and `openAttachment` are — key material never crosses into connector
+    code.
+
+  `engine-protocol` gains `partyContact { email?, mobile? }` on
+  `signatureRequestParty` and migration `0005-party-contact`, which stores **only
+  the ciphertext**. There is no plaintext column to clear later and no erasure
+  story to write: the address is unreadable to the spine, to its backups and to
+  `sealDump`'s output, because the key that opens it is in the directory.
+  `piiClass` therefore stays `'none'` — see the migration's own note for why
+  `'pseudonymous'` would be actively wrong rather than more honest.
+
+  **No `personalNumber` field, and its absence is the decision.** #687 measured the
+  premise and it is false: what a provider validates is that a BankID party _has_
+  the field, not that it holds a value. An optional PII field on an engine surface
+  is a carrier that exists.
+
+  Two invariants ship with the carrier, both in `requestSignatures`, both refusing
+  before anything freezes:
+
+  - **A party that will be invited must be reachable.** Otherwise the provider
+    refuses after the instance has already frozen, leaving an avtal that looks sent
+    for signature and is not.
+  - **A set with no counterparty is refused.** "The declared primary, else the
+    FIRST" is a total function, so a one-party request never failed here — it
+    failed at the provider, where that party had been made the _author_, and an
+    author is never invited. In production that party was the customer.
+
+  Verified against the Scrive **testbed**, not only the mock: a party carrying an
+  address no longer draws `invalid_invitation_delivery_info` at either auth level,
+  and a document with one starts and reaches `pending`. The connector tolerates an
+  absent contact in both skew directions — an older engine sends none, an older
+  connector strips the field — so neither combination is worse than today, which is
+  that nothing works.
+
 ## 0.71.0
 
 ### Minor Changes
@@ -2488,7 +2770,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
