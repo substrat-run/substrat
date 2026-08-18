@@ -16,9 +16,9 @@
     "@substrat-run/contracts": "workspace:^"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250109.0",
+    "@cloudflare/workers-types": "catalog:",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0",
-    "wrangler": "^4.110.0"
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

@@ -31,13 +31,16 @@
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
-    "@substrat-run/kernel": "workspace:^",
-    "zod": "^4.4.3"
+    "@substrat-run/kernel": "workspace:^"
   },
   "devDependencies": {
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/engine-protocol": "workspace:^",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
   }
 }

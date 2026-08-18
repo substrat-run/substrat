@@ -26,6 +26,13 @@ jobs:
       # @substrat-run/boundary-lint), so they need the build above — the repo
       # lints itself with the same code a from-scratch vertical runs.
       - run: node tools/boundary-lint.mjs
+      # Every module a package references must be one it DECLARED
+      # (docs/design/dependency-policy.md). Needs the build above, because the
+      # sharp half of the check reads emitted `.d.ts`: TypeScript writes the
+      # ORIGINAL specifier into declarations however the source imported it, so
+      # a package's published types can require a module its package.json never
+      # mentions. contract-tests shipped 130 `import("zod")` that way.
+      - run: node tools/declared-deps.mjs
       # The permission-diff human checkpoint (CLAUDE.md). Re-emit every vertical's
       # snapshot and fail if it drifts from what is checked in — an agent that
       # widened a role must show it in the PR diff, not in a console nobody opens.

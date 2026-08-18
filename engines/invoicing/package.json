@@ -31,13 +31,16 @@
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
-    "@substrat-run/kernel": "workspace:^",
-    "zod": "^4.4.3"
+    "@substrat-run/kernel": "workspace:^"
   },
   "devDependencies": {
+    "@substrat-run/engine-test-kit": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "typescript": "^7.0.0",
-    "@substrat-run/engine-test-kit": "workspace:^",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
   }
 }

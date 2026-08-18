@@ -24,10 +24,10 @@
     "hono": "^4.6.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.8.19",
-    "@cloudflare/workers-types": "^4.20250109.0",
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0",
-    "wrangler": "^4.110.0"
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

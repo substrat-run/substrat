@@ -32,8 +32,8 @@
     "better-sqlite3": "^13.0.3"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^7.0.0",
-    "@types/better-sqlite3": "^9.6.0"
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "catalog:",
+    "typescript": "^7.0.0"
   }
 }

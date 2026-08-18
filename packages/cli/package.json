@@ -37,9 +37,9 @@
     "esbuild": "^0.25.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "catalog:",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:"
   },
   "publishConfig": {
     "access": "public"

@@ -75,15 +75,15 @@
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",
-    "zod": "^4.4.3"
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250109.0",
+    "@cloudflare/workers-types": "catalog:",
     "@types/better-sqlite3": "^9.6.0",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0",
-    "wrangler": "^4.110.0"
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }
