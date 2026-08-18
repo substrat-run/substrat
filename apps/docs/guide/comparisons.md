@@ -25,7 +25,60 @@ own, on an open runtime, shaped for multi-tenant vertical SaaS.** The guarantees
 [below the API surface](/guide/why-substrat), so it stops mattering who — or what — wrote
 the code above them, and you still own that code.
 
+## The table, for scanning
+
+Read it as *what each product optimizes for*, not as a scoreboard. Several of these are
+better than Substrat at what they set out to do, and the third column says so.
+
+| Product | What it really is | Where it beats Substrat | Where Substrat differs |
+|---|---|---|---|
+| **Ruby on Rails** | The reference full-stack framework | Maturity, ecosystem, hiring pool, twenty years of answers. Rails + a good team beats Substrat on almost any *single*-tenant app | Rails gives you conventions, and conventions erode with every edit. No tenancy, permissions, audit or GDPR machinery below the app — that is yours to build and keep correct |
+| **Wasp** | Rails-for-TypeScript: a declarative spec compiled to a React/Node/Prisma app | Excellent DX, MIT, no hosting lock-in, strong AI-coding compatibility, and a SaaS template that gets you selling | Convergent instinct — a typed spec the compiler checks; our [`model.ts`](/concepts/model) rhymes with theirs — and opposite depth. Wasp is a framework you deploy; Substrat is a runtime that *enforces*. We keep their perks (deterministic generation, pre-vetted auth, local run, migrations) rather than trading them away for the guarantees |
+| **Supabase / Convex** | Backend-as-a-service | Better DX, bigger ecosystem, far better for app-shaped products | App-shaped, not vertical-SaaS-shaped. RLS is precisely the surface builders and LLMs misconfigure most |
+| **MakerKit / ShipFast / Open SaaS** | Boilerplates, one-time purchase | Unbeatable economics *if* the guarantees can be conventions | Guarantees erode with every edit; no nested tenancy, no provisioning, no engines |
+| **Lovable / Bolt / Replit** | Prompt-to-app | Enormous distribution, polish, iteration speed | They generate the dangerous parts too. Their remedy is *scanning* — checking policies exist, not that they hold. Here you bring your own model and your own agent, on code that runs locally |
+| **Base44, Floot** | AI-native app builders with auth/roles as platform primitives | The nearest AI-native articulation of the same idea, with real products and real users | Single-app shaped — no tenancy tree, no engines, no B2B SaaS shape — and weak portability. Substrat code boots on SQLite with no platform in the loop |
+| **Retool / Superblocks** | Internal tools with governance | Owns the internal-tool shape outright — genuinely better there | No nested tenancy for *selling* SaaS; runtime-locked |
+| **OutSystems / Mendix / Power Apps** | Enterprise low-code | Genuinely solve permissions, audit and governance as a hosted platform — and prove the willingness to pay | A proprietary visual model: agent-hostile, internal-app-shaped, single-level tenancy, no usable eject |
+| **Microsoft Dataverse** | Proprietary data platform with runtime-enforced security roles | The most mature RBAC in this table by a distance — row *and* column security, business-unit hierarchies, team ownership, audit built in | Business units are org structure *inside one tenant*, not tenancy for selling SaaS to many customers; per-user licensing lands on your customer, which breaks vertical-SaaS economics |
+| **Salesforce / ServiceNow** | The top of the market | Ecosystem, certifications, integrator army, indemnification | Proprietary runtime, enterprise pricing, no real exit. Apex defaults to *system* mode — enforcement contingent on the developer |
+| **Odoo / Frappe** | Platform-with-modules | The biggest module ecosystems on earth; a real business today | You inherit their ORM, worldview and upgrade treadmill; single-org shaped |
+| **Medusa v2** | E-commerce with strict module isolation | Independently converged on the module/engine model, shipping in production | E-commerce-scoped, no native multi-tenancy, no enforcement layer around the modules |
+| **Baseplate.dev** | Deterministic codegen you eject from | Zero lock-in — literally its proudest feature | The exact opposite pole: they generate the foundation and leave; we *are* the foundation and stay |
+| **DIY: WorkOS + Nango + Inngest + Stripe** | Assemble it yourself | Best-in-class at each piece; no platform bet | Every seam between them is yours to keep correct forever, and none of them enforces anything about the code above |
+
+**What none of the AI builders in this table have** is an oracle independent of the code they
+generate: they produce the app and its tests from the same act of generation, so the tests
+inherit the same misunderstanding and pass. Frameworks don't generate your tests at all, which
+is honest but leaves the second opinion to your discipline on a Friday afternoon. Deriving
+code from the model and [tests from the concept](/guide/ai-agents#the-second-opinion-two-descriptions-that-can-disagree)
+is cheap, and it catches the exact failure mode — small, confident, inconsistent mistakes —
+that makes generated systems untrustworthy.
+
 ## The neighbors, one by one
+
+### Full-stack frameworks
+
+*Ruby on Rails, Wasp, Laravel.*
+
+The honest baseline, and the one most readers should measure against first: for a
+single-tenant app, a good framework and a good team beat Substrat, and it isn't close. What a
+framework gives you is **conventions** — and conventions are exactly what erodes when the
+fifth iteration of a handler is written at speed, by a person or an agent, and drops a
+`WHERE` clause nothing was enforcing.
+
+Wasp is the closest in instinct: a declarative spec the compiler checks, compiled down to a
+working app — the same conviction that a project should have one high-level description a
+human and an agent can both hold in their head. Substrat's [`model.ts`](/concepts/model)
+rhymes with `main.wasp.ts` deliberately.
+
+The divergence is depth, not direction. Wasp is a framework you deploy; Substrat is a runtime
+that *enforces*, with tenancy, permissions, audit and GDPR below the API surface rather than
+in the app you generate. And the trade usually demanded for that — giving up the framework
+perks — is one we tried hard not to take: deterministic generation, auth you never write,
+local run, connectors, and platform-owned migrations are all still here.
+
+If your problem is one app for one organization, take the framework.
 
 ### Templates & boilerplates
 

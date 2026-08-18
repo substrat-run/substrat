@@ -127,12 +127,19 @@ scope-host contract is identical either way. On the pure-SQLite adapter both sha
 one SQLite file per scope.
 
 `storageShape` is not the only store a vertical can hold. Orthogonal to shape A/B, a
-vertical can declare a **per-tenant relational store** (`tenantStoreNeed`) — one independent
-SQL database *per tenant* (D1 on Cloudflare, a separate `.sqlite` file on the pure adapter),
-which the platform mints and injects (`provisionTenantStore`) and the vertical opens through
-the host (`openTenantStore`). It's a third, platform-minted store shape — an own-store concept
-(an auth DB, say), distinct from both the per-scope execution domain and a single shared `d1`
-binding.
+vertical's manifest can declare stores the platform mints for it, one per *tenant*:
+
+- **`tenantStores`** — an independent SQL database (D1 on Cloudflare, a separate `.sqlite`
+  file on the pure adapter), minted by `provisionTenantStore` and opened through
+  `openTenantStore`. An own-store concept — an auth DB, say.
+- **`blobStores`** — object storage (an R2 bucket) behind the kernel's attachment surface,
+  for the documents and images a scope's rows point at rather than contain.
+
+Both follow the same ownership rule, and it is the load-bearing part: **the builder supplies
+no id.** The vertical declares a *need*; the platform mints the database or bucket, holds the
+cloud credential, and attaches a binding to the serving script, re-derived from the ledger on
+every upload. A vertical is *handed* a store — it never names one, so it can never name
+someone else's.
 
 ## Addressing is capability-shaped
 

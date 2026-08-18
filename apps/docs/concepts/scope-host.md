@@ -56,6 +56,11 @@ interface OperationContext {
   entitlement(key: string): Promise<EntitlementView | null>;
   entitlements(): Promise<EntitlementView[]>;
   link(child: EntityRef, parent: EntityRef): void;
+  grant(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
+  revoke(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
+  requestPlatform(request: PlatformRequestInput): PlatformRequestId;
+  platformRequests(filter?: PlatformRequestFilter): PlatformRequest[];
+  sealToConnection(provider: string, plaintext: string): Promise<SealedSecret>;
 }
 ```
 
@@ -76,6 +81,26 @@ interface OperationContext {
 - **`link`** records a child→parent relation tuple (e.g. work order → facility) used by
   the permission evaluator's entity-edge rule. The relation must be declared in a
   registered module's `entityRelations`. Idempotent.
+- **`grant`** / **`revoke`** narrow a permission the caller **already holds** onto one
+  entity — how an app expresses user-initiated sharing. Non-escalating by construction:
+  `entity` is required, so module code can never write a scope- or tenant-wide grant, and
+  the caller's own decision on that entity is re-checked first. **Delegation, never
+  elevation.** Transactional with the operation, like its rows and its events. Without it,
+  an app where a person shares their own record would need a membership table consulted by
+  hand in every handler — the forgotten-`WHERE`-clause failure this platform exists to
+  remove.
+- **`requestPlatform`** / **`platformRequests`** enqueue a durable
+  [platform intent](/concepts/platform#platform-intents) and read back what the platform did
+  with it — the sandbox-clean way to ask for a privileged action, with no upward call and no
+  credential in vertical code.
+- **`sealToConnection`** seals a value to a *connection's* public key so it can ride on an
+  event that a connector opens at egress. The scope never holds the private half; the
+  consumer still needs no cross-module read, it just cannot read that one field. It takes a
+  provider name (`'scrive'`), never a connection id — connection identity is the host's
+  business, and an engine that learned it would be naming infrastructure it is not allowed to
+  see. It **fails closed and legibly**: no projected key for that provider throws, rather
+  than emitting a request that silently reaches nobody. Await it *before* `ctx.emit`, which
+  is what lets `emit` stay synchronous.
 
 ## Contract semantics — what every adapter guarantees
 

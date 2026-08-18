@@ -52,6 +52,11 @@ jobs:
       # hand-adapted copy of the substrat skill, so fail if the skill moved without
       # a human re-reconciling the playbook (tools/playbook-sync.mts).
       - run: pnpm lint:playbook --check
+      # The docs-freshness checkpoint (#750). Two mechanical questions: does every
+      # published package have a reference page, and has any page fallen so far
+      # behind its source that it is no longer describing it. Needs no build —
+      # it reads git history and the filesystem.
+      - run: pnpm lint:docs --check
       - run: pnpm -r typecheck
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM
