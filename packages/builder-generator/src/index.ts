@@ -13,7 +13,12 @@ export {
 	type VerticalGenerator,
 } from './generator.js';
 
-export { workspaceTools, type WorkspaceToolOptions, type WorkspaceTools } from './tools.js';
+export {
+	workspaceTools,
+	defaultDenyCommand,
+	type WorkspaceToolOptions,
+	type WorkspaceTools,
+} from './tools.js';
 
 export { AiSdkGenerator, type AiSdkGeneratorOptions } from './ai-sdk.js';
 

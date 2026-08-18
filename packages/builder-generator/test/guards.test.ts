@@ -16,7 +16,13 @@ import { simulateReadableStream } from 'ai';
 import { MockLanguageModelV3 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
 import { LocalWorkspace } from '@substrat-run/builder-workspace';
-import { AiSdkGenerator, collect, historyMarker, workspaceTools } from '../src/index.js';
+import {
+	AiSdkGenerator,
+	collect,
+	defaultDenyCommand,
+	historyMarker,
+	workspaceTools,
+} from '../src/index.js';
 import { tokenBudgetIs, uncachedEquivalent } from '../src/ai-sdk.js';
 import { MAX_QUESTIONS_PER_TURN } from '../src/tools.js';
 
@@ -200,7 +206,13 @@ describe('the tool surface refuses the escapes that rewrote the monorepo', () =>
 		expect(await refusalFor('rm -rf node_modules/zod/')).toMatch(/REFUSED/);
 	});
 
-	it('still allows the commands a build legitimately needs', async () => {
+	// Asserted against the guard DECISION, not by running the commands. The
+	// refusal cases above short-circuit before `ws.exec`, but an allowed one
+	// does not — so the old version of this test really did spawn `pnpm
+	// install`, `pnpm exec tsc` and `pnpm vitest run` in an empty temp dir. It
+	// spent its whole budget on process startup that proves nothing about the
+	// deny-list, and timed out on CI the first time a runner was cold.
+	it('still allows the commands a build legitimately needs', () => {
 		// A deny-list that refuses honest work gets turned off. Reading
 		// node_modules is how the model learns an engine's surface, and it must
 		// stay allowed — only MUTATING it is refused.
@@ -211,7 +223,15 @@ describe('the tool surface refuses the escapes that rewrote the monorepo', () =>
 			'cat node_modules/@substrat-run/kernel/dist/index.d.ts',
 			'grep -n "export" node_modules/@substrat-run/contracts/dist/index.d.ts',
 		]) {
-			expect(await refusalFor(ok), ok).not.toMatch(/^REFUSED/);
+			expect(defaultDenyCommand(ok), ok).toBeNull();
 		}
+	});
+
+	// The pure predicate is only worth asserting if run_command actually
+	// consults it. The refusals above prove the deny half of that wiring; this
+	// proves the allow half, with the one allowed command that costs no
+	// process spawn.
+	it('runs an allowed command instead of refusing it', async () => {
+		expect(await refusalFor('cat package.json')).not.toMatch(/^REFUSED/);
 	});
 });
