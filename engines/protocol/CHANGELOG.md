@@ -1,5 +1,104 @@
 # @substrat-run/engine-protocol
 
+## 0.9.0
+
+### Minor Changes
+
+- da69ef5: The protocol and invoicing engines declare their operation surfaces, completing
+  the set — every engine a vertical composes now publishes what can be done to it,
+  so a route binding is a name and a path.
+
+  Callout goes from 12 of its 27 routes derived to 21.
+
+  **engine-protocol** declares all fourteen. Its input schemas move to `inputs.ts`
+  and four composite returns become schemas (`signResult`,
+  `requestSignaturesResult`, `protocolDetail`, `protocolSummary`), each asserted
+  exact against the interface the handler returns in both directions, like the row
+  shapes before them. The package's export surface is unchanged: everything moved
+  is re-exported from the root, so an import that worked yesterday still resolves.
+  One addition, `contentUnion` — the content VALUE a caller receives, as distinct
+  from `protocolTemplateContent`, the preprocessing parser that normalises
+  discriminant-less legacy rows into it.
+
+  **engine-invoicing** declares its three. The engine is composed by _event_, so
+  those three are the whole callable surface and none of them creates anything — a
+  basis is built by a consumer, and a test asserts that absence, because a creating
+  operation appearing there would mean a second way in past the invariants
+  immutable-after-export depends on. Its two read projections are published as
+  `underlagListRow` and `underlagDetail`.
+
+  **One finding worth carrying forward.** Typing a handler _from_ its declared
+  schema (`z.infer`) looks like a drift check and is not one: a schema that DROPS a
+  field the handler still returns goes on compiling, because an object with extra
+  properties is assignable to a narrower type. It catches a retyped field and
+  misses a missing one — and a schema narrower than the projection publishes a
+  contract that omits real data, which is what a UI lane would fork on. Two
+  independent descriptions held together by an exactness assertion catch both
+  directions; that is the pattern used throughout, and every assertion here is
+  mutation-tested.
+
+  **`protocol/list-for-entity` declares `narrows` rather than a leading
+  permission.** It checks `protocol:read` against the entity the protocols hang on,
+  so the entity's TYPE arrives as data — and a declared entity check must name a
+  type known up front. Extending the vocabulary was considered and rejected: a
+  declaration that cannot express something is not an argument for a richer
+  declaration. `narrows` records the fact that protects anything — this is not a
+  node check — and names the walked key, so `protocol:read` still reaches the
+  permission review.
+
+  Closes #738 and #739.
+
+- 3b8533d: **zod is now a peer dependency.** Install it alongside these packages:
+
+  ```sh
+  npm install zod@^4.4.0
+  ```
+
+  Every package here hands out zod schemas that a consumer parses with, composes
+  into their own, and that `mountOperations` reads `_zod.def` off to find pinned
+  literals. Two copies of zod in one tree means an object made by one is not
+  recognised by the other, and the symptom — `expected a Zod schema` — points
+  nowhere near the cause. A peer dependency says _use the consumer's copy_.
+
+  The declared range is `^4.4.0` rather than the exact version this repo builds
+  against: a peer range should state what the code supports, and pinning it to
+  `^4.4.3` would refuse a consumer on 4.4.0 for no reason.
+
+  **A defect this found.** `@substrat-run/contract-tests` shipped **130
+  `import("zod")` references in its published `.d.ts` while declaring zod
+  nowhere.** It resolved only because contracts had zod as a regular dependency,
+  which hoisted a copy into view — not a dependency, a coincidence. It now declares
+  it. Two more of the same class turned up when the tree shifted: packages using
+  `setTimeout`/`atob`/`btoa` — globals absent from `lib: ES2023` — compiling on an
+  ambient `@types/node` nobody had declared.
+
+  That is the general rule now enforced by `pnpm lint:deps`
+  (`tools/declared-deps.mjs`) in CI: **every module a package references, in its
+  source or its emitted `.d.ts`, must be one it declared.** The `.d.ts` half is the
+  sharp one — TypeScript writes the original specifier into declarations however
+  the source imported it, so re-exporting `z` through contracts still emits
+  `import("zod")` into a dependent's types.
+
+  **Why a lint rather than pnpm's own enforcement**, measured rather than assumed:
+  `autoInstallPeers` (pnpm's default) turns a peer conflict into a silent second
+  copy — with contracts peer-requiring `^4.4.3` and a consumer declaring `^3.23.0`,
+  pnpm reported nothing, and `zod` did not appear once in the peer report even
+  under `--strict-peer-dependencies`. And pnpm's peer checking does not reach
+  `workspace:` links at all. Full reasoning in `docs/design/dependency-policy.md`.
+
+  Internally, shared versions now come from a pnpm `catalog:` so one version is a
+  single edit. The `pnpm` settings block moved from `package.json` to
+  `pnpm-workspace.yaml`, which is where pnpm 10 reads it — it had been ignored,
+  with `overrides` surviving only because they were baked into the lockfile.
+
+  Closes #742.
+
+### Patch Changes
+
+- Updated dependencies [3b8533d]
+  - @substrat-run/contracts@0.73.0
+  - @substrat-run/kernel@0.73.0
+
 ## 0.8.0
 
 ### Minor Changes
@@ -1085,7 +1184,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
