@@ -125,7 +125,11 @@ export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR
   },
   'bike-shop/portal-repairs': {
     summary: "The repairs visible to the caller's portal",
-    narrows: { reason: 'a customer sees their own repairs, not a denial' },
+    narrows: {
+      reason: 'a customer sees their own repairs, not a denial',
+      // Walks on the workorder engine's read key, declared by the engine.
+      checks: [],
+    },
     output: z.array(workOrder),
   },
   'bike-shop/timeline': {
