@@ -89,7 +89,48 @@ type PiiShape<O, OutKeys extends string> = O extends { emits: { piiClass: 'none'
  * per-row proof walk: a salesperson listing their own customers must get their
  * list, not a denial.
  */
-type OpAuthority<O, PermKey extends string> = O extends { narrows: unknown }
+/**
+ * What a leading `permission` actually checks — the node, or one entity.
+ *
+ * A bare key was ambiguous, and ambiguous in the direction that fails OPEN.
+ * These two read identically in the model and behave completely differently:
+ *
+ * ```ts
+ * 'todo/create-list': { permission: 'list:create', … }   // checked at the scope
+ * 'todo/rename-list': { permission: 'list:manage', … }   // checked on ONE list
+ * ```
+ *
+ * Only the handler decided which, via `ctx.check(perm)` versus
+ * `ctx.check(perm, entityRef)`. Get it wrong in the second case and the
+ * operation passes for anyone holding the key anywhere in the scope — in a
+ * sharing app, any member editing any record — with every test still green,
+ * because a seed that grants nothing scope-wide is the only thing that would
+ * have caught it.
+ *
+ * So an entity-narrowed check says so, and says what it narrows to:
+ *
+ * ```ts
+ * permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' }
+ * ```
+ *
+ * `idFrom` names the input field carrying the entity's id, so the check is
+ * derivable. When the id is not in the input — `set-item-done` takes an item and
+ * checks the LIST it sits on — say `resolved` instead with the reason. That
+ * still records the thing that matters (this is not a node check) while being
+ * honest that the handler has to find the entity itself.
+ */
+type PermissionCheck<O, Entities, Engines, PermKey extends string> = {
+  readonly key: PermKey;
+  /** The entity type the check narrows to — this module's, or a composed engine's. */
+  readonly entity:
+    | (keyof Entities & string)
+    | (Engines extends readonly (infer R)[] ? (R extends Record<string, EntityDef> ? keyof R & string : never) : never);
+} & (
+  | { readonly idFrom: InputKeys<O>; readonly resolved?: never }
+  | { readonly resolved: string; readonly idFrom?: never }
+);
+
+type OpAuthority<O, Entities, Engines, PermKey extends string> = O extends { narrows: unknown }
   ? {
       readonly narrows: {
         readonly reason: string;
@@ -112,7 +153,10 @@ type OpAuthority<O, PermKey extends string> = O extends { narrows: unknown }
       };
       readonly permission?: never;
     }
-  : { readonly permission: PermKey; readonly narrows?: never };
+  : {
+      readonly permission: PermKey | PermissionCheck<O, Entities, Engines, PermKey>;
+      readonly narrows?: never;
+    };
 
 /**
  * The per-operation constraint, self-referential in `O`.
@@ -192,7 +236,7 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    * still gets the row, without the fields they may not see.
    */
   readonly gates?: { readonly [F in OutputKeys<O>]?: PermKey };
-} & OpAuthority<O, PermKey>;
+} & OpAuthority<O, Entities, Engines, PermKey>;
 
 // ---------------------------------------------------------------------------
 // The composer.
@@ -247,6 +291,12 @@ export function permissionsUsedBy(operations: Readonly<Record<string, object>>):
   const keys = Object.values(operations).flatMap((op) => {
     const permission = (op as { permission?: unknown }).permission;
     if (typeof permission === 'string') return [permission];
+    // An entity-narrowed check carries the key in `.key`; it is no less part of
+    // this module's permission surface for being narrowed.
+    if (permission && typeof permission === 'object') {
+      const key = (permission as { key?: unknown }).key;
+      if (typeof key === 'string') return [key];
+    }
     // A proof walk checks per entity rather than up front, but the keys it
     // evaluates are just as much part of this module's permission surface.
     const checks = (op as { narrows?: { checks?: unknown } }).narrows?.checks;

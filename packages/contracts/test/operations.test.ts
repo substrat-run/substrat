@@ -133,6 +133,69 @@ ops({
   },
 });
 
+// --- an entity-narrowed check names what it narrows to ----------------------
+ops({
+  'customer/rename': {
+    summary: 's',
+    permission: { key: 'customer:manage', entity: 'customer', idFrom: 'customerId' },
+    input: z.object({ customerId: z.string(), name: z.string() }),
+    output: z.object({ id: z.string() }),
+  },
+});
+
+// --- ...and `idFrom` must name an input field -------------------------------
+ops({
+  'customer/rename': {
+    summary: 's',
+    // @ts-expect-error 'custId' is not a field of this operation's input
+    permission: { key: 'customer:manage', entity: 'customer', idFrom: 'custId' },
+    input: z.object({ customerId: z.string(), name: z.string() }),
+    output: z.object({ id: z.string() }),
+  },
+});
+
+// --- ...and `entity` must name a declared entity ----------------------------
+ops({
+  'customer/rename': {
+    summary: 's',
+    // @ts-expect-error 'custumer' is not a declared entity
+    permission: { key: 'customer:manage', entity: 'custumer', idFrom: 'customerId' },
+    input: z.object({ customerId: z.string(), name: z.string() }),
+    output: z.object({ id: z.string() }),
+  },
+});
+
+// --- a check the handler must resolve says so, with a reason ----------------
+ops({
+  'customer/touch': {
+    summary: 's',
+    permission: { key: 'customer:manage', entity: 'customer', resolved: 'the site’s customer' },
+    input: z.object({ siteId: z.string() }),
+    output: z.object({ id: z.string() }),
+  },
+});
+
+// --- ...but never both, and never neither -----------------------------------
+ops({
+  'customer/touch': {
+    summary: 's',
+    // @ts-expect-error idFrom and resolved are mutually exclusive
+    permission: { key: 'customer:manage', entity: 'customer', idFrom: 'siteId', resolved: 'both' },
+    input: z.object({ siteId: z.string() }),
+    output: z.object({ id: z.string() }),
+  },
+});
+
+ops({
+  'customer/touch': {
+    summary: 's',
+    // @ts-expect-error neither idFrom nor resolved — the check says nothing about which entity
+    permission: { key: 'customer:manage', entity: 'customer' },
+    input: z.object({ siteId: z.string() }),
+    output: z.object({ id: z.string() }),
+  },
+});
+
 // --- narrows must state which of THIS module's keys the walk checks ---------
 ops({
   'x/do': {

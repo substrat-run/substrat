@@ -69,6 +69,22 @@ export const model = emitModel(entities);
 - **`parents`, `key`, `erasable`** name fields/entities that exist.
 - **`permission`** names a key in `PERMISSIONS`. An operation carries
   `permission` **or** `narrows: { reason, checks }` — never both, never neither.
+- **A `permission` says WHAT IT CHECKS AGAINST.** A bare key means the node —
+  the whole scope. A check on one thing says so:
+
+  ```ts
+  permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' }
+  ```
+
+  `idFrom` names the input field carrying that entity's id. When the id is not
+  in the input — an operation taking an item but checking the list it sits on —
+  use `resolved: '<the reason>'` instead: it still records that this is not a
+  node check, while being honest that the handler has to find the entity.
+
+  Get this wrong in the open direction and the operation passes for anyone
+  holding the key anywhere in the scope, with every test still green. Ask of
+  every operation: *does holding this key somewhere else in this workspace
+  entitle you to do it HERE?* If not, it is narrowed.
   `checks` names THIS module's keys the per-entity walk evaluates (`[]` when it
   walks only on a composed engine's key, which the engine declares). It is
   required because a key reached only by a walk would otherwise vanish from the
