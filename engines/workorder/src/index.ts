@@ -11,12 +11,35 @@ import {
   type EntityRow,
   type Money,
 } from '@substrat-run/contracts';
+import {
+  billableLine,
+  decimal,
+  workOrder,
+  timeEntry,
+  materialLine,
+  type BillableLine,
+  type WorkOrder,
+  type TimeEntry,
+  type MaterialLine,
+} from './schemas.js';
 import { workorderEntities } from './entities.js';
 
 // The entity registry is PUBLIC: a composing vertical imports it to check
 // relation edges naming this engine's entities, and to declare an operation's
 // output without transcribing this engine's shape.
 export { workorderEntities, workorderRow } from './entities.js';
+export {
+  billableLine,
+  decimal,
+  workOrder,
+  timeEntry,
+  materialLine,
+  type BillableLine,
+  type WorkOrder,
+  type TimeEntry,
+  type MaterialLine,
+} from './schemas.js';
+export { workorderOperations, WORKORDER_PERMISSIONS } from './operations.js';
 import {
   assertAllowed,
   ulid,
@@ -123,19 +146,7 @@ export const workorderMigrations = [
 // Schemas & shapes
 // ---------------------------------------------------------------------------
 
-const decimal = z.string().regex(/^\d+(\.\d{1,6})?$/);
 
-export const billableLine = z.object({
-  article: z.string().min(1),
-  description: z.string().min(1),
-  qty: decimal,
-  unit: z.string().min(1),
-  unitPrice: money,
-  lineTotal: money,
-  sourceType: z.enum(['time', 'material']),
-  sourceId: z.string().min(1),
-});
-export type BillableLine = z.infer<typeof billableLine>;
 
 export const createWorkOrderInput = z.object({
   facility: entityRef,
@@ -167,40 +178,8 @@ type OrderRow = EntityRow<typeof workorderEntities, 'workorder'>;
  * carries one `EntityRef` and camelCase names. `status` is taken from the
  * registry so storage and domain cannot disagree about the state set.
  */
-export const workOrder = z.object({
-  id: z.string(),
-  number: z.number(),
-  facility: entityRef,
-  customer: entityRef,
-  kind: z.string(),
-  title: z.string(),
-  description: z.string().nullable(),
-  status: workorderEntities.workorder.fields.shape.status,
-  assignedTo: z.string().nullable(),
-  createdBy: z.string(),
-  createdAt: z.string(),
-  completedAt: z.string().nullable(),
-});
-export type WorkOrder = z.infer<typeof workOrder>;
 
-export interface TimeEntry {
-  id: string;
-  order_id: string;
-  technician: string;
-  hours: string;
-  note: string | null;
-  reported_at: string;
-}
 
-export interface MaterialLine {
-  id: string;
-  order_id: string;
-  article: string;
-  qty: string;
-  note: string | null;
-  reported_by: string;
-  reported_at: string;
-}
 
 const toWorkOrder = (r: OrderRow): WorkOrder => ({
   id: r.id,

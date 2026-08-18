@@ -14,6 +14,8 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { mountOperations } from '@substrat-run/vertical-host';
+import { apiCatalogFrom } from '@substrat-run/contracts';
+import { workorderOperations } from '@substrat-run/engine-workorder';
 import { mountApi } from '../src/routes.js';
 import { calloutEngineRoutes, calloutOperations } from '../src/operations.js';
 
@@ -75,5 +77,27 @@ describe('a binding that names an operation nothing registers', () => {
         { knownOperations: Object.keys(calloutOperations) },
       ),
     ).toThrow(/no registered module provides it/);
+  });
+});
+
+describe('a binding is checked against the engine that owns the operation', () => {
+  it('carries the ENGINE\'s input and output, not a restatement', () => {
+    // The point of #738: the vertical supplies a path, and everything else —
+    // the summary, the schema the handler parses, the shape it returns — comes
+    // from the engine. A restatement here is a description held in agreement
+    // by nothing.
+    const bound = calloutEngineRoutes['workorder/get'];
+    expect(bound.summary).toBe(workorderOperations['workorder/get'].summary);
+    expect(bound.input).toBe(workorderOperations['workorder/get'].input);
+    expect(bound.output).toBe(workorderOperations['workorder/get'].output);
+  });
+
+  it('reaches the API document with the engine\'s real schemas', () => {
+    const catalog = apiCatalogFrom({ ...calloutOperations, ...calloutEngineRoutes });
+    expect(catalog['workorder/get']?.output).toBe(workorderOperations['workorder/get'].output);
+    expect(catalog['workorder/get']?.http).toEqual({
+      method: 'GET',
+      path: '/workorders/{orderId}',
+    });
   });
 });
