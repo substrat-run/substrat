@@ -22,6 +22,12 @@ const operations = {
     input: {},
     http: { method: 'PATCH', path: '/lists/{listId}' },
   },
+  // A full-replacement update: PUT carries a body exactly as POST/PATCH do
+  // (#777 — 25 live routes in a production vertical are declared this way).
+  'todo/replace-list': {
+    input: {},
+    http: { method: 'PUT', path: '/lists/{listId}' },
+  },
   'todo/delete-list': {
     input: {},
     http: { method: 'DELETE', path: '/lists/{listId}' },
@@ -65,6 +71,7 @@ describe('mountOperations', () => {
       'GET /api/lists',
       'POST /api/workorders/:entityId/notes',
       'PATCH /api/lists/:listId',
+      'PUT /api/lists/:listId',
     ]);
   });
 
@@ -79,6 +86,12 @@ describe('mountOperations', () => {
     const { app, calls } = harness();
     await app.request('/api/lists/L1', { method: 'PATCH', body: JSON.stringify({ name: 'Renamed' }) });
     expect(calls[0]?.input).toEqual({ listId: 'L1', name: 'Renamed' });
+  });
+
+  it('merges body and path parameters on a PUT', async () => {
+    const { app, calls } = harness();
+    await app.request('/api/lists/L1', { method: 'PUT', body: JSON.stringify({ name: 'Replaced' }) });
+    expect(calls[0]).toEqual({ name: 'todo/replace-list', input: { listId: 'L1', name: 'Replaced' } });
   });
 
   it('carries path parameters on reads too', async () => {

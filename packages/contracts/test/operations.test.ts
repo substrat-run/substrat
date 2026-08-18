@@ -231,6 +231,17 @@ ops({
   },
 });
 
+// --- http: PUT is a declarable method (#777) --------------------------------
+ops({
+  'customer/replace': {
+    summary: 's',
+    permission: 'customer:manage',
+    input: z.object({ id: z.string(), name: z.string() }),
+    output: z.object({ id: z.string() }),
+    http: { method: 'PUT', path: '/customers/{id}' },
+  },
+});
+
 // --- events: entityIdFrom names an OUTPUT field (the #695 defect) -----------
 ops({
   'contract/advance': {

@@ -28,7 +28,7 @@ export type ResolveStub = (c: Context) => Promise<ScopeStub>;
  * reason `permissionsUsedBy` takes `Record<string, object>`.
  */
 interface HttpDecl {
-  readonly http?: { readonly method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; readonly path: string };
+  readonly http?: { readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; readonly path: string };
   readonly input?: { readonly shape?: Record<string, unknown> };
 }
 
@@ -118,7 +118,7 @@ export function mountOperations(
     const { method, path } = op.http;
     const params = pathParams(path);
     const full = `${base}${toHonoPath(path)}`;
-    const takesBody = method === 'POST' || method === 'PATCH';
+    const takesBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
     const pinned = pinnedFields(op.input);
 
     const handler = async (c: Context) => {
@@ -148,6 +148,7 @@ export function mountOperations(
 
     if (method === 'GET') app.get(full, handler);
     else if (method === 'POST') app.post(full, handler);
+    else if (method === 'PUT') app.put(full, handler);
     else if (method === 'PATCH') app.patch(full, handler);
     else app.delete(full, handler);
 

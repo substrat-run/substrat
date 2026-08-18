@@ -41,7 +41,7 @@ export interface ApiOperationDoc {
    * route the server derives from that same declaration, so the document and
    * the router cannot describe different surfaces.
    */
-  http?: { method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string };
+  http?: { method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; path: string };
 }
 
 /** operation name (module-namespaced, e.g. 'hr/create-employee') → its doc. */
