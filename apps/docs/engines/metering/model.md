@@ -1,3 +1,7 @@
+---
+description: "The append-only meter ledger, the counter and gauge kinds frozen at meter creation, the dedupe key that makes ingest idempotent, and why entries are stamped as instants."
+---
+
 # Domain model & invariants
 
 ## Tables

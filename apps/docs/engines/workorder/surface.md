@@ -1,3 +1,7 @@
+---
+description: "The work-order engine's two surfaces: operations invoked through a scope stub, and in-scope functions a vertical calls inside its own transaction — plus its permission keys and entitlement."
+---
+
 # Operations, functions & permissions
 
 An engine has **no endpoints**. It exposes two surfaces, and the difference between them is

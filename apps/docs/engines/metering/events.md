@@ -1,3 +1,7 @@
+---
+description: "The three events the metering engine emits, why a deduped replay emits nothing at all — leaving the stream itself dedupe-clean — and the period-closed billing hand-off. Consumes nothing."
+---
+
 # Events
 
 ## Emitted

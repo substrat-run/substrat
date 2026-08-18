@@ -1,3 +1,7 @@
+---
+description: "Registering the booking engine, wrapping `hold` and `confirm` with your own rules, and the timezone boundary: the engine compares instants and never does calendar arithmetic."
+---
+
 # Composing & extending
 
 ## Using it as-is

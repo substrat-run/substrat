@@ -1,3 +1,7 @@
+---
+description: "Registering the protocol engine and supplying the templates it deliberately ships none of, wrapping instantiation in your own operations, and the completion guard in both its forms."
+---
+
 # Composing & extending
 
 ## Using it as-is

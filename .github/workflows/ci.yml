@@ -57,6 +57,12 @@ jobs:
       # behind its source that it is no longer describing it. Needs no build —
       # it reads git history and the filesystem.
       - run: pnpm lint:docs --check
+      # The machine-readable-docs checkpoint (#751). llms.txt is emitted from the
+      # sidebar, so a page nobody added there is invisible to every agent while
+      # looking perfectly fine when a human opens it. Also fails on a page whose
+      # index line cannot be derived — one that opens on a table, or on a fragment
+      # too short to tell seven identically-titled engine pages apart.
+      - run: pnpm lint:llms --check
       - run: pnpm -r typecheck
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM

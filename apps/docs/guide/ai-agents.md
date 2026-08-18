@@ -78,6 +78,31 @@ build flow to whatever you open it in.
 And the code is on your disk, running locally: not "export a zip that dies without our SDK",
 but a repo that boots against SQLite with no platform in the loop.
 
+## These docs, as markdown
+
+An agent that reads this site as HTML spends its context on navigation and theme markup.
+Every page here is also published as raw markdown at the same path plus `.md` —
+`/concepts/model` is also [`/concepts/model.md`](/concepts/model.md) — and two files index
+the whole set:
+
+| File | What it is |
+|---|---|
+| [`/llms.txt`](/llms.txt) | The index: every page, grouped by section, one line of description each. Start here and fetch only the pages you need. |
+| [`/llms-full.txt`](/llms-full.txt) | Every page concatenated, for one-shot ingestion. Large — the index exists so this is the fallback, not the default. |
+
+Both state the `@substrat-run/kernel` version they describe, and `/llms.txt` is also served
+at `/llms-<version>.txt`. That second URL is the one to pin: Substrat is 0.x and interfaces
+change without notice, so an agent holding pages from two minors ago is a real failure mode.
+Fetching `/llms-<the version you have installed>.txt` returns 200 only while the published
+docs still describe your kernel — a 404 means they have moved on, and the answer is to
+re-read `/llms.txt` rather than trust the cache.
+
+::: tip Fetch the markdown, not the page
+Point your agent at the `.md` URLs. Links *inside* those files already point at other `.md`
+files, so an agent that follows a reference stays in markdown instead of bouncing back into
+HTML.
+:::
+
 ## Small surface, strong types
 
 A narrow, aggressively typed SDK means a small hallucination surface. The design goal is

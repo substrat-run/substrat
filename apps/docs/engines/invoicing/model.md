@@ -1,3 +1,7 @@
+---
+description: "The invoicing engine's two tables, the immutable-after-export invariant, why lines snapshot their source rather than join to it, and the rule that one document carries one currency."
+---
+
 # Domain model & invariants
 
 ## Tables

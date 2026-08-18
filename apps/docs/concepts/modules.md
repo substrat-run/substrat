@@ -1,3 +1,7 @@
+---
+description: "Engines and verticals join a scope host the same way — as modules bundling a manifest, migrations, operations and consumers. Covers envSpec, schedules, and attachment contracts."
+---
+
 # Modules & the manifest
 
 Engines and verticals join a scope host the same way: as **modules**. A module is one

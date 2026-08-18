@@ -1,3 +1,7 @@
+---
+description: "The twelve events the booking engine emits, from `booking.held` to `booking.no-show`, and the PII split that keeps participant identity out of every payload. Consumes nothing."
+---
+
 # Events
 
 ## Emitted
