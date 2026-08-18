@@ -1,0 +1,3 @@
+{
+	"files": ["spec/concept.md", "spec/model.ts", "test/scenario.test.ts", "src/module.ts", "app"]
+}
