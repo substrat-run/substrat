@@ -40,6 +40,24 @@
         "secret": false,
         "group": "Auth"
       }
+    ],
+    "devServers": [
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts",
+        "env": {
+          "ALLOW_DEV_HEADER": "true"
+        }
+      },
+      {
+        "name": "web",
+        "run": "dev",
+        "dir": "app",
+        "portEnv": "WEB_PORT",
+        "portFrom": "app/vite.config.ts"
+      }
     ]
   },
   "type": "module",

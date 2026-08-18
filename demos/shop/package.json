@@ -3,7 +3,29 @@
   "version": "0.0.72",
   "private": true,
   "substrat": {
-    "permissions": "src/seed.ts"
+    "permissions": "src/seed.ts",
+    "devServers": [
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts"
+      },
+      {
+        "name": "web",
+        "run": "dev",
+        "dir": "app",
+        "portEnv": "WEB_PORT",
+        "portFrom": "app/vite.config.ts"
+      },
+      {
+        "name": "admin",
+        "run": "dev",
+        "dir": "admin",
+        "portEnv": "ADMIN_PORT",
+        "portFrom": "admin/vite.config.ts"
+      }
+    ]
   },
   "license": "Apache-2.0",
   "description": "E-commerce demo vertical (Kallkälla Kaffe) — see spec/concept.md",

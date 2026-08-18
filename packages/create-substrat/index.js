@@ -16,6 +16,8 @@ import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { DEV_SERVERS } from './dev-servers.js';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = join(HERE, 'template');
 
@@ -73,7 +75,9 @@ function packageJson(name) {
       // What `substrat push` reads: the permission surface (the registry the
       // promotion checkpoint diffs) and the runtime needs the deploy config is
       // derived from — you never author wrangler config (src/worker.ts is the
-      // entry; ScopeDO is the store it exports).
+      // entry; ScopeDO is the store it exports). Also the client-neutral home of
+      // the dev topology `.claude/launch.json` is emitted from — see
+      // dev-servers.js for why the port is read from the code and never declared.
       substrat: {
         permissions: 'src/provision.ts',
         runtimeNeeds: {
@@ -84,6 +88,7 @@ function packageJson(name) {
             { binding: 'SWEEPER', class: 'SweeperDO' },
           ],
         },
+        devServers: DEV_SERVERS,
       },
       scripts: {
         dev: 'tsx watch src/server.ts',

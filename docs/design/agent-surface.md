@@ -62,7 +62,7 @@ delegate:
 
 | Client | Binding | Substance |
 |---|---|---|
-| Claude Code | `CLAUDE.md` (one line: `@AGENTS.md`), `.claude/skills/substrat/` | none — routes |
+| Claude Code | `CLAUDE.md` (one line: `@AGENTS.md`), `.claude/skills/substrat/`, `.claude/settings.json`, `.claude/launch.json` | none — routes |
 | Cursor | `.cursor/rules/substrat.mdc`, `.cursor/commands/new-vertical.md` | none — routes |
 | opencode | `.opencode/command/new-vertical.md` | none — routes |
 | Codex | reads `AGENTS.md` natively | none needed |
@@ -71,6 +71,16 @@ delegate:
 **The rule this establishes:** *an adapter may route, describe, and trigger. It may never
 contain a rule.* A rule that lives in one client's file is a rule the other clients do not
 have, which is the exact failure the two-checkpoint discipline exists to prevent.
+
+The same holds for **configuration an adapter needs in order to trigger**, which is where
+`.claude/launch.json` (#752) would otherwise have broken the rule: it carries the dev
+topology — commands, env, and up to three ports per demo. Those facts already exist in
+`package.json`'s `dev` script, `src/server.ts` and `app/vite.config.ts`, so writing them
+into a Claude-only file would have made it a fourth copy that only one client can read and
+only one client's users would notice going stale. Instead the topology is declared once in
+the neutral `substrat.devServers` block — the block `substrat push` and the SessionStart
+hook already read — and the launch file is **emitted** from it. The corollary worth stating:
+*if an adapter needs a fact, the fact goes in the core and the adapter is generated.*
 
 The evidence that this is right, and that it is worth stating rather than assuming: **the
 `AGENTS.md` convention alone already covers Codex and Kiro with no work at all.** Two of the
@@ -153,13 +163,19 @@ them, chosen case by case. The rule was never written down, so here it is:
 
 | Situation | Guard | Example |
 |---|---|---|
-| Two copies that must read **identically** | **Re-emit and diff** — one is generated from the other | `lint:agent-rules`, `lint:model`, `lint:api`, `lint:permissions` |
+| Two copies that must read **identically** | **Re-emit and diff** — one is generated from the other | `lint:agent-rules`, `lint:model`, `lint:api`, `lint:permissions`, `lint:launch` |
 | Two copies that diverge **on purpose** | **Hash baseline** — fail when the source moves, force a human to port | `lint:playbook` (skill → playbook) |
 | A document describing code, with no derivable artifact | **Staleness proxy** — commits to the source since the page last moved | `lint:docs` |
 
 **Prefer the first.** A copy that must be identical should not be a copy at all — it should
 be emitted. Reach for the hash baseline only when the divergence is deliberate and valuable,
 and say why in the tool's header.
+
+`lint:launch` is the first case where the source is **code rather than a document**, and it
+is worth naming what that changed: a port is not declared at all. The declaration says which
+env var moves a server and which file binds it; the number is read out of that file's
+`process.env.<VAR> ?? N`. A declared number would have been a second copy, and the copy that
+goes wrong is always the one nobody runs.
 
 **The standing constraint:** every new agent-facing artifact must name its canonical source
 and its guard *before* it ships. The failure mode is not one stale file, it is an agent
@@ -174,7 +190,8 @@ know which one binds.
   site, so versioned doc URLs would 404 the next day. We publish the current version and let
   a pinned fetch 404 as the signal. Reasoning in #751.
 - **A `start-dev-server` skill.** Claude Desktop ships preview servers natively via
-  `.claude/launch.json` (#752). Wasp's plugin predates that capability.
+  `.claude/launch.json`, which every demo and the template now carry (#752). Wasp's plugin
+  predates that capability.
 - **Bare title indexes.** Wasp's `llms.txt` carries no descriptions, which works because
   their page titles are self-describing. We have seven pages titled *Events*.
 - **A client-specific rule anywhere.** See §3.
@@ -192,7 +209,7 @@ know which one binds.
 | Core points at the published docs | **open — §5, cheapest win available** |
 | SessionStart hook, version pinning | open (#754) |
 | Plugin marketplace, skills | open (#753, #755) |
-| `.claude/launch.json` | open (#752) |
+| `.claude/launch.json`, emitted from `substrat.devServers` | shipped (#752) |
 | Kiro adapter beyond `AGENTS.md` | open — needed only if steering earns its keep |
 | Runtime plane: MCP, handover bundle, scoped app tokens | open, undesigned (#112, #127, #131) |
 

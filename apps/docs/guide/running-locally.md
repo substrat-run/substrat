@@ -108,6 +108,65 @@ sqlite3 demos/callout/.data/_directory.sqlite 'SELECT slug, status FROM scopes;'
 
 Delete the `.data` directory to reset the world; it re-seeds on the next boot.
 
+## Letting an agent run it
+
+Every demo and every scaffolded project ships a `.claude/launch.json`, so [Claude
+Desktop](https://code.claude.com/docs/en/desktop) starts the dev servers itself, opens the
+web app in the Browser pane, and — with `autoVerify` on — screenshots and checks for errors
+after each edit it makes.
+
+This is worth more here than in most projects. A demo's scenario test composes the host
+directly and **never boots `src/server.ts`**, so a green suite says nothing at all about the
+HTTP layer. The Browser pane is the reliable way to drive the part the tests skip.
+
+Each process gets its **own** entry rather than the single `concurrently` pair `pnpm dev`
+runs, which is the point: Claude can attach the Browser to the web port while reading the
+API's log independently. Callout's:
+
+```jsonc
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "api", "runtimeExecutable": "pnpm", "runtimeArgs": ["run", "server"],
+      "port": 8871, "env": { "ALLOW_DEV_HEADER": "true" }, "autoPort": false },
+    { "name": "web", "runtimeExecutable": "pnpm", "runtimeArgs": ["--dir", "app", "dev"],
+      "port": 5271, "autoPort": false }
+  ]
+}
+```
+
+### These files are emitted — don't hand-edit them
+
+The topology is declared once in the `substrat.devServers` block of each project's
+`package.json`, and the launch file is generated from it by `pnpm lint:launch` (CI runs
+`--check` and fails on drift). A declaration names the env var that moves a port and the
+file that binds it; the **number is read out of that file**, so moving a port means editing
+`src/server.ts` or `app/vite.config.ts` and re-running the emitter — never editing the JSON.
+
+### Gotchas
+
+- **Open the session in `demos/<name>`, not the monorepo root.** Preview servers use the
+  selected folder as the working directory and do not scan subfolders, so a session opened
+  at the root finds no configuration.
+- **`autoPort: false` everywhere, deliberately.** The OIDC-only demos redirect to a fixed
+  callback and the shop's Better Auth trusts two fixed origins, so a silently reassigned
+  port would break the *login*, not the boot — a much worse failure to debug. The cost is
+  that a genuine clash is fatal: `demos/rally` and `demos/auth-server` both sit on `:8877`
+  and `:5277`, so they cannot run at the same time without `PORT=… WEB_PORT=…`.
+- **A process can bind more than the port it declares.** Callout's `api` entry starts the
+  vertical API on `:8871` *and* the co-located control plane on `:8788`; only the first is
+  declared, because only the first is the one to attach a browser to. If `:8788` is taken —
+  by another project, or a stray `pnpm dev:connected` — the entry dies on `EADDRINUSE` for a
+  port Claude is not watching, which reads as a server that simply never came up. `CP_PORT=…`
+  moves it.
+- **No secrets in `launch.json`** — it is committed. Desktop also does not inherit your full
+  shell environment, and `env` in `~/.claude/settings.json` reaches *sessions* but not dev
+  servers; put secrets in the local environment editor instead.
+- **Claude curling its own API from Bash may fail.** The sandboxed Bash tool still blocks
+  outbound TCP to `localhost` ([claude-code#28018](https://github.com/anthropics/claude-code/issues/28018)).
+  The Browser-pane path is separate and works; wiring up Bash-side `curl` is a deliberate
+  `excludedCommands` entry, not something to discover mid-session.
+
 ## Two audiences, one directory
 
 The console and the portal are not two views of the same app — they are two **audiences**:

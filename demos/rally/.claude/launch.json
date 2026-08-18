@@ -1,0 +1,37 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "run",
+        "server"
+      ],
+      "port": 8877,
+      "autoPort": false
+    },
+    {
+      "name": "player",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--dir",
+        "app",
+        "dev"
+      ],
+      "port": 5277,
+      "autoPort": false
+    },
+    {
+      "name": "console",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--dir",
+        "admin",
+        "dev"
+      ],
+      "port": 5278,
+      "autoPort": false
+    }
+  ]
+}
