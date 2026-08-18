@@ -73,6 +73,12 @@ export {
   type DeclineSignatureInput,
   type CancelSignatureRequestsInput,
 } from './inputs.js';
+/**
+ * The declared operation surface (#738) — what a vertical binds to its own URLs
+ * with `defineEngineRoutes`, carrying this engine's real input and output
+ * schemas rather than a restatement the vertical had to write.
+ */
+export { protocolOperations, PROTOCOL_PERMISSIONS } from './operations.js';
 import {
   bindDocumentInput,
   cancelSignatureRequestsInput,

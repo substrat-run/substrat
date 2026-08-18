@@ -13,11 +13,17 @@
  * gains, loses or retypes a field.
  */
 import { z } from '@substrat-run/contracts';
+import { protocolInstanceRow } from './entities.js';
+import { contentUnion } from './inputs.js';
 import type {
+  ProtocolDetail,
   ProtocolResponseRow,
   ProtocolSignatureRequestRow,
   ProtocolSignatureRow,
+  ProtocolSummary,
   ProtocolTemplateRow,
+  RequestSignaturesResult,
+  SignResult,
 } from './index.js';
 
 export const protocolTemplateRow = z.object({
@@ -73,6 +79,63 @@ export const protocolSignatureRequestRow = z.object({
   resolved_at: z.string().nullable(),
 });
 
+/**
+ * The COMPOSITE returns — what the operations answer with, as opposed to the
+ * rows above.
+ *
+ * These existed only as interfaces, and an interface is exactly as much as an
+ * operation cannot be declared against. `output` on a declared operation is a
+ * Zod schema, so without these four `protocol/get` and `protocol/sign` had
+ * nothing to point at and the engine could declare only the half of its surface
+ * that happens to return one row.
+ *
+ * They are assembled from the row schemas rather than restating their fields,
+ * so a column added to a row reaches every projection that carries it.
+ */
+export const signResult = z.object({
+  instance: protocolInstanceRow,
+  signature: protocolSignatureRow,
+});
+
+export const requestSignaturesResult = z.object({
+  instance: protocolInstanceRow,
+  contentHash: z.string(),
+  requests: z.array(protocolSignatureRequestRow),
+});
+
+export const protocolDetail = z.object({
+  instance: protocolInstanceRow,
+  template: z.object({
+    key: z.string(),
+    version: z.number(),
+    title: z.string(),
+    content: contentUnion,
+  }),
+  /** The full append-only history — every edit, in order. */
+  responses: z.array(protocolResponseRow),
+  /** Per item, last append wins — the current answers. */
+  latest: z.record(z.string(), protocolResponseRow),
+  /** The primary (issuing) signature, or null while unsigned. */
+  signature: protocolSignatureRow.nullable(),
+  /** Every row: the primary plus any counter-signatures. */
+  signatures: z.array(protocolSignatureRow),
+  requests: z.array(protocolSignatureRequestRow),
+});
+
+export const protocolSummary = z.object({
+  instance: protocolInstanceRow,
+  title: z.string(),
+  contentKind: z.enum(['checklist', 'document']),
+  answered: z.number(),
+  total: z.number(),
+  signedBy: z.string().nullable(),
+  signedAt: z.string().nullable(),
+  countersignedBy: z.string().nullable(),
+  countersignedAt: z.string().nullable(),
+  /** How many requested signatures are still outstanding. */
+  pendingSignatures: z.number(),
+});
+
 // -- the assertions ---------------------------------------------------------
 // Bidirectional: `A extends B ? B extends A ? true : never : never` is `true`
 // only when the two are the same shape. A drifting schema stops compiling here
@@ -86,7 +149,17 @@ const _requestRow: Exact<
   z.infer<typeof protocolSignatureRequestRow>,
   ProtocolSignatureRequestRow
 > = true;
+const _signResult: Exact<z.infer<typeof signResult>, SignResult> = true;
+const _requestResult: Exact<z.infer<typeof requestSignaturesResult>, RequestSignaturesResult> =
+  true;
+const _detail: Exact<z.infer<typeof protocolDetail>, ProtocolDetail> = true;
+const _summary: Exact<z.infer<typeof protocolSummary>, ProtocolSummary> = true;
+
 void _templateRow;
 void _responseRow;
 void _signatureRow;
 void _requestRow;
+void _signResult;
+void _requestResult;
+void _detail;
+void _summary;
