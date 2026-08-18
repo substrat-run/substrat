@@ -1,3 +1,7 @@
+---
+description: "The append-only absence ledger and its five entry kinds, the request state machine, and why balances are computed in whole days rather than instants."
+---
+
 # Domain model & invariants
 
 ## Tables

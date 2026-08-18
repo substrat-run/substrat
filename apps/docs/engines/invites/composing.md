@@ -1,3 +1,7 @@
+---
+description: "Calling the invites engine from your own operations, delivering the invitation yourself — the engine sends nothing — and a worked example of the join flow, with what not to do."
+---
+
 # Invites: composing & extending
 
 ## From a vertical

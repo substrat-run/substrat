@@ -1,3 +1,7 @@
+---
+description: "Registering the metering engine, recording usage inside the operation that already did the work, tagging entries without overloading the meter key, and the pricing hand-off to invoicing."
+---
+
 # Composing & extending
 
 ## Using it as-is

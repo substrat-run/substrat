@@ -1,5 +1,8 @@
+import { resolve } from 'node:path';
 import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
+import { buildArtifacts, emitInto } from './llms.mjs';
+import { guideSidebar } from './sidebar.mjs';
 
 export default withMermaid(defineConfig({
   title: 'Substrat',
@@ -7,10 +10,24 @@ export default withMermaid(defineConfig({
     'The hard parts, hosted. A runtime-enforced substrate for building vertical B2B SaaS.',
   lastUpdated: true,
 
+  // The package's own changelog is not a docs page. It was being built and
+  // served at /CHANGELOG, where nothing linked to it and nothing indexed it.
+  srcExclude: ['CHANGELOG.md'],
+
   vite: {
     // mermaid ships ESM that default-imports CJS deps (dayjs); without
     // pre-bundling, the browser throws and the whole app fails to mount.
     optimizeDeps: { include: ['mermaid', 'dayjs'] },
+  },
+
+  // The machine-readable surface (#751): llms.txt, llms-full.txt and a .md twin
+  // of every page, written into the built site. It lives here rather than in a
+  // standalone script so it reads the same sidebar the nav renders and the same
+  // srcDir VitePress just built — there is no second list of pages to forget.
+  // `pnpm lint:llms --check` runs the identical code and fails on a mismatch.
+  buildEnd(siteConfig) {
+    const repoRoot = resolve(siteConfig.srcDir, '../..');
+    emitInto(siteConfig.outDir, buildArtifacts(siteConfig.srcDir, repoRoot));
   },
 
   themeConfig: {
@@ -47,120 +64,3 @@ export default withMermaid(defineConfig({
     },
   },
 }));
-
-// The engine doc pattern, in one place: every engine gets the same five pages in
-// the same order, so a reader who learns one learns all. If a new engine can't
-// fill all five, that's a gap in the engine, not in the template.
-// See the "How these pages are organized" section of /engines/.
-function engineSidebar(slug: string, text: string) {
-  return {
-    text,
-    collapsed: true,
-    items: [
-      { text: 'Overview', link: `/engines/${slug}/` },
-      { text: 'Domain model & invariants', link: `/engines/${slug}/model` },
-      { text: 'Operations & permissions', link: `/engines/${slug}/surface` },
-      { text: 'Events', link: `/engines/${slug}/events` },
-      { text: 'Composing & extending', link: `/engines/${slug}/composing` },
-    ],
-  };
-}
-
-function guideSidebar() {
-  return [
-    {
-      text: 'Introduction',
-      items: [
-        { text: 'What is Substrat?', link: '/guide/what-is-substrat' },
-        { text: 'Why runtime enforcement?', link: '/guide/why-substrat' },
-        { text: 'How Substrat compares', link: '/guide/comparisons' },
-        { text: "What Substrat doesn't have (yet)", link: '/guide/what-substrat-lacks' },
-        { text: 'FAQ', link: '/guide/faq' },
-        { text: 'Architecture', link: '/guide/architecture' },
-        { text: 'Getting started', link: '/guide/getting-started' },
-        { text: 'Running locally', link: '/guide/running-locally' },
-        { text: 'Deploying a vertical', link: '/guide/deploying' },
-        { text: 'Environments & previews', link: '/guide/environments-and-previews' },
-        { text: 'Building for AI agents', link: '/guide/ai-agents' },
-      ],
-    },
-    {
-      text: 'Concepts',
-      items: [
-        { text: 'Tenants & scopes', link: '/concepts/tenancy' },
-        { text: 'The platform layer', link: '/concepts/platform' },
-        { text: 'Operations & the scope host', link: '/concepts/scope-host' },
-        { text: 'Permissions', link: '/concepts/permissions' },
-        { text: 'Authentication & identity', link: '/concepts/identity' },
-        { text: 'Events & audit', link: '/concepts/events' },
-        { text: 'Snapshots & test copies', link: '/concepts/snapshots' },
-        { text: 'The deploy model', link: '/concepts/deploying' },
-        { text: 'Reads & scaling', link: '/concepts/reads' },
-        { text: 'The model', link: '/concepts/model' },
-        { text: 'Modules & the manifest', link: '/concepts/modules' },
-        { text: 'Money', link: '/concepts/money' },
-      ],
-    },
-    {
-      text: 'Engines',
-      items: [
-        { text: 'What is an engine?', link: '/engines/' },
-        engineSidebar('workorder', 'Work orders'),
-        engineSidebar('booking', 'Bookings'),
-        engineSidebar('invoicing', 'Invoicing'),
-        engineSidebar('protocol', 'Protocols'),
-        engineSidebar('invites', 'Invites'),
-        engineSidebar('absence', 'Absence'),
-        engineSidebar('metering', 'Metering'),
-      ],
-    },
-    {
-      text: 'Connectors',
-      items: [
-        { text: 'What is a connector?', link: '/connectors/' },
-        { text: 'Scrive (e-signing)', link: '/connectors/scrive' },
-      ],
-    },
-    {
-      text: 'Verticals',
-      items: [
-        { text: 'What is a vertical?', link: '/verticals/' },
-        { text: 'Callout (field service)', link: '/verticals/callout' },
-        { text: 'Handlebar (bike workshop)', link: '/verticals/handlebar' },
-        { text: 'Kallkälla (coffee shop)', link: '/verticals/shop' },
-        { text: 'Meridian (HR)', link: '/verticals/meridian' },
-        { text: 'RallyPoint (padel club)', link: '/verticals/rallypoint' },
-        { text: 'Manyfold (headless CMS)', link: '/verticals/manyfold' },
-      ],
-    },
-    {
-      text: 'Platform',
-      items: [
-        { text: 'The platform surfaces', link: '/platform/' },
-        { text: 'Control plane', link: '/platform/control-plane' },
-        { text: 'Console', link: '/platform/console' },
-        { text: 'Router', link: '/platform/router' },
-        { text: 'Dashboard', link: '/platform/dashboard' },
-      ],
-    },
-    {
-      text: 'Package reference',
-      items: [
-        { text: '@substrat-run/contracts', link: '/reference/contracts' },
-        { text: '@substrat-run/model-emit', link: '/reference/model-emit' },
-        { text: '@substrat-run/kernel', link: '/reference/kernel' },
-        { text: '@substrat-run/adapter-sqlite', link: '/reference/adapter-sqlite' },
-        { text: '@substrat-run/adapter-cloudflare', link: '/reference/adapter-cloudflare' },
-        { text: '@substrat-run/vertical-host', link: '/reference/vertical-host' },
-        { text: '@substrat-run/vertical-auth', link: '/reference/vertical-auth' },
-        { text: '@substrat-run/control-plane-api', link: '/reference/control-plane-api' },
-        { text: '@substrat-run/contract-tests', link: '/reference/contract-tests' },
-        { text: '@substrat-run/boundary-lint', link: '/reference/boundary-lint' },
-        { text: '@substrat-run/oidc-rp', link: '/reference/oidc-rp' },
-        { text: '@substrat-run/psl', link: '/reference/psl' },
-        { text: '@substrat-run/cli', link: '/reference/cli' },
-        { text: 'create-substrat', link: '/reference/create-substrat' },
-      ],
-    },
-  ];
-}

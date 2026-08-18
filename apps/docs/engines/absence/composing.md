@@ -1,3 +1,7 @@
+---
+description: "Registering the absence engine, the subject boundary that keeps it free of any employee directory, and why accrual, carryover and the calendar stay in your vertical."
+---
+
 # Composing & extending
 
 ## Using it as-is

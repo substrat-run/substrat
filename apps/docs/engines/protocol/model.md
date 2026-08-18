@@ -1,3 +1,7 @@
+---
+description: "Templates, instances, responses and signature requests across five tables: immutable template versions, the checklist and document content kinds, and provider-agnostic signature evidence."
+---
+
 # Domain model & invariants
 
 ## Templates, instances, responses, signatures

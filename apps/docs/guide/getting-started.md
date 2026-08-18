@@ -1,3 +1,7 @@
+---
+description: "Two ways in: scaffold a working vertical with `npm create substrat`, or build a scope host, a module and one operation from the packages up in ten minutes."
+---
+
 # Getting started
 
 Two ways in, and they answer different questions.

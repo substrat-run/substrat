@@ -1,3 +1,7 @@
+---
+description: "The six events the absence engine emits, the fat payloads that spare consumers a cross-module read, and the subject key that keeps crypto-shredding possible. Consumes nothing."
+---
+
 # Events
 
 ## Emitted

@@ -1,3 +1,7 @@
+---
+description: "Templates, code generators and BaaS platforms all deliver their guarantees as conventions, and conventions erode on the next edit. Why Substrat enforces them in the runtime instead."
+---
+
 # Why runtime enforcement?
 
 Every adjacent way of getting a "production-grade foundation" delivers its guarantees as
