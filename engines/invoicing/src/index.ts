@@ -37,6 +37,14 @@ import { invoicingEntities, underlagLine } from './entities.js';
 // declaring an operation that returns an invoice basis needs the schema rather
 // than a retyped copy of it.
 export { invoicingEntities, underlagLine, underlagRow } from './entities.js';
+/**
+ * The composite read shapes (#738), and the declared operation surface a
+ * vertical binds to its own URLs with `defineEngineRoutes`. The handlers below
+ * are typed FROM these schemas, so the published contract and the projection
+ * cannot drift apart.
+ */
+export { underlagDetail, underlagListRow } from './schemas.js';
+export { invoicingOperations, INVOICING_PERMISSIONS } from './operations.js';
 import {
   assertAllowed,
   ulid,
@@ -246,6 +254,25 @@ const timesheetClosedPayload = z.object({
 export type UnderlagRow = EntityRow<typeof invoicingEntities, 'underlag'>;
 
 export type UnderlagLine = z.infer<typeof underlagLine>;
+
+/**
+ * The two read projections, written out rather than inferred from the schemas
+ * in `schemas.ts` — deliberately, because the schemas are checked AGAINST these.
+ *
+ * Typing the handlers from `z.infer<typeof underlagDetail>` was tried first and
+ * is not a check: a schema that drops a field the handler still returns keeps
+ * compiling, because an object with extra properties is assignable to a narrower
+ * type. It caught a retyped field and missed a missing one, which is the
+ * permissive-failure shape that makes a decorative check worse than none. Two
+ * independent descriptions held together by an exactness assertion catch both.
+ */
+export type UnderlagListRow = UnderlagRow & { total: string };
+
+export interface UnderlagDetail {
+  underlag: UnderlagRow;
+  lines: UnderlagLine[];
+  total: string;
+}
 
 /**
  * The underlag's total, as Money.
@@ -524,10 +551,10 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
   });
 };
 
-const listOp: OperationHandler<
-  { status?: string } | undefined,
-  (UnderlagRow & { total: string })[]
-> = async (ctx, input) => {
+const listOp: OperationHandler<{ status?: string } | undefined, UnderlagListRow[]> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(INVOICING_PERM.read));
   const rows = input?.status
     ? ctx.sql.query<UnderlagRow>(
@@ -538,10 +565,7 @@ const listOp: OperationHandler<
   return rows.map((r) => ({ ...r, total: underlagTotal(ctx, r.id) }));
 };
 
-const getOp: OperationHandler<
-  { underlagId: string },
-  { underlag: UnderlagRow; lines: UnderlagLine[]; total: string }
-> = async (ctx, input) => {
+const getOp: OperationHandler<{ underlagId: string }, UnderlagDetail> = async (ctx, input) => {
   assertAllowed(await ctx.check(INVOICING_PERM.read));
   const underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [
     input.underlagId,
