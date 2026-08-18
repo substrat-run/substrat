@@ -57,9 +57,8 @@ handler returns, in both directions. A declared return that drifts from what is
 actually returned is the defect #695 found eleven times, so the assertion is
 mutation-tested: widening either side stops the build.
 
-Protocol does not yet declare its operations. Doing so needs its input schemas
-moved to a leaf module first — they sit interleaved with the implementation
-across a 2000-line file, and `operations.ts` importing them from `index.ts` while
-`index.ts` re-exports `operations.ts` is a runtime cycle. See #738.
+Protocol declares its operations in the same release — see the accompanying
+note. Doing so needed its input schemas moved to a leaf module first, for exactly
+the cycle described above.
 
 Progresses #738; unblocks #739.
