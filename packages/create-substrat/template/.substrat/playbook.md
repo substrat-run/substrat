@@ -190,10 +190,21 @@ plain language, so nothing there is a surprise:
    cross-tenant attacker gets nothing).
 9. **Open decisions** — each with a **recommended default**, so the user chooses rather
    than specifies:
-   - **Auth.** Local dev uses an `x-principal` header — a dev seam, not a login. Default to
-     it and note it must be replaced before anything real; offer to wire a real login (the
-     bike-shop reference shows the Better Auth pattern) now if they want it. Real auth gates
-     *exposing* the app, not *building* it.
+   - **Auth.** Local dev uses an `x-principal` header — a dev seam, not a login. Real auth
+     gates *exposing* the app, not *building* it — but if the app will be deployed for real
+     users, wire the OIDC seam from the start: the standard is a **separate OIDC issuer**
+     (an Auth Server app in the same team, or an external issuer — Supabase/Auth0/AuthHero/
+     Keycloak), never per-app credential storage. The vertical is a pure OIDC **relying
+     party**: depend on `@substrat-run/vertical-auth`, bind its `IdentityDO` (the
+     `sub → principal` directory, TOFU owner claim, invites) as a third DO store, read the
+     platform-delivered `substrat:auth` config per scope (`authWiring`), and build
+     `oidcRpAuthProvider` per request — see https://substrat.net/concepts/identity. The
+     dashboard's New-app **Identity** section does the automatic half (dynamic client
+     registration at the issuer + `/internal/configure` delivery) — but ONLY at app
+     creation, and only for verticals that implement this seam. An install created without
+     the identity choice stays `builtin`/unwired forever (switching issuers is deliberately
+     create-time only); a starter worker whose `authenticatedPrincipal` returns null answers
+     401 to everything deployed, however many auth servers exist in the team.
    - **Deploy or stay local.** Local-first is a legitimate endpoint; default to it.
 10. **Out of scope / deferred** — what you are deliberately not building, so the review is
     about a bounded thing.
@@ -428,13 +439,59 @@ only in seed.ts would run locally and silently not deploy. The deploy path is th
 authenticated CLI, and the author never holds a Cloudflare token:
 
 - `substrat login` / `substrat whoami` — authenticate against the control plane.
-- `substrat push` — push the vertical; the version auto-bumps. A **private** (tenant-owned)
+- `substrat push` — push the vertical. By default the version is the registry's highest
+  semver, patch-bumped; `package.json`'s version is only a **seed for the first push of a
+  new slug**, and an explicit `--version` always wins. A **private** (tenant-owned)
   vertical is admitted automatically; a **listed/shared** one waits for staff admission.
 - `substrat promote <slug> --channel dev|staging|prod --version … [--ack-permissions]
   [--ack-migrations]` — the owner promotes every channel, prod included, for their own
   private vertical.
 - `substrat hostnames bind <slug> --surface <s> [--domain <d>]` — mint a live hostname, or
   record a custom domain pending DNS validation (`substrat hostnames verify`).
+
+**A SPA ships as NATIVE assets — never inline it into the worker.** Declare it in
+`runtimeNeeds` and `substrat push` builds, hashes, and uploads the directory to the
+runtime's own asset store, served from the edge without invoking the worker:
+
+```jsonc
+"substrat": {
+  "runtimeNeeds": {
+    "entry": "src/worker.ts",
+    "build": "npm --prefix app install && npm --prefix app run build",
+    "assets": {
+      "directory": "app/dist",
+      "notFoundHandling": "single-page-application",   // deep client routes → index.html
+      "runWorkerFirst": ["/api/*", "/internal/*"]      // only these reach the worker
+    }
+  }
+}
+```
+
+`build` runs before assets are collected, so the directory may be pure build output. Never
+base64-inline a built `app/dist` into a generated worker module: it costs ~+33 % script
+size and a worker invocation per image.
+
+**Let changesets own the version, and pass it to push explicitly** — the default bump walks
+the registry forward on its own, so `package.json` and the registry drift apart within a
+few deploys. Set this up when the vertical first deploys:
+
+```sh
+pnpm add -D @changesets/cli && npx changeset init
+```
+
+Then in `.changeset/config.json` add `"privatePackages": { "version": true, "tag": false }`
+(the vertical is a private package, never npm-published), make sure `pnpm-workspace.yaml`
+lists `packages: ["."]` so changesets can see the root package, and add the scripts:
+
+```json
+"changeset": "changeset",
+"release": "pnpm test && pnpm typecheck && pnpm lint:boundaries && changeset version && substrat push --version $(node -p \"require('./package.json').version\") --promote prod"
+```
+
+Read the version with `node -p` at that point in the script, not `$npm_package_version` —
+the latter is captured before `changeset version` rewrites `package.json`, so it would push
+the version you just replaced. Changesets needs a git repo with a commit on the base branch
+(`git init -b main`) — a scaffold that isn't a repo yet must init before the first release.
 
 Updates deploy **in place** from one stable script — data carries forward, migrations run
 against prod data, backout is a time-boxed PITR rewind.
