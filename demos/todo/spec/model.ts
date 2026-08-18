@@ -167,7 +167,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
 
   'todo/rename-list': {
     summary: 'Rename a list',
-    permission: 'list:manage',
+    permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string(), name: z.string().min(1) }),
     output: todoEntities.list.fields,
     http: { method: 'PATCH', path: '/lists/{listId}' },
@@ -183,7 +183,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
 
   'todo/delete-list': {
     summary: 'Delete a list and everything on it',
-    permission: 'list:manage',
+    permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string() }),
     output: z.object({ id: z.string(), deleted: z.boolean() }),
     http: { method: 'DELETE', path: '/lists/{listId}' },
@@ -199,7 +199,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
 
   'todo/list-items': {
     summary: 'The items on a list',
-    permission: 'list:contribute',
+    permission: { key: 'list:contribute', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string() }),
     output: z.array(todoEntities.item.fields),
     http: { method: 'GET', path: '/lists/{listId}/items' },
@@ -207,7 +207,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
 
   'todo/add-item': {
     summary: 'Add an item to a list',
-    permission: 'list:contribute',
+    permission: { key: 'list:contribute', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string(), text: z.string().min(1) }),
     output: todoEntities.item.fields,
     http: { method: 'POST', path: '/lists/{listId}/items' },
@@ -224,7 +224,8 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   /** Ticking is reversible, so this sets the state rather than completing. */
   'todo/set-item-done': {
     summary: 'Tick an item off, or put it back',
-    permission: 'list:contribute',
+    // The id is not in the input: the check is on the LIST this item sits on.
+    permission: { key: 'list:contribute', entity: 'list', resolved: 'the list the item is on' },
     input: z.object({ itemId: z.string(), done: z.boolean() }),
     output: todoEntities.item.fields,
     http: { method: 'POST', path: '/items/{itemId}/done' },
@@ -240,7 +241,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
 
   'todo/delete-item': {
     summary: 'Delete an item',
-    permission: 'list:manage',
+    permission: { key: 'list:manage', entity: 'list', resolved: 'the list the item is on' },
     input: z.object({ itemId: z.string() }),
     output: z.object({ id: z.string(), deleted: z.boolean() }),
     http: { method: 'DELETE', path: '/items/{itemId}' },
@@ -261,7 +262,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
    */
   'todo/share-list': {
     summary: 'Share a list with someone by email',
-    permission: 'list:manage',
+    permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string(), email: z.string().email() }),
     output: todoEntities.share.fields,
     http: { method: 'POST', path: '/lists/{listId}/shares' },
@@ -282,7 +283,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
    */
   'todo/list-shares': {
     summary: 'Who this list is shared with',
-    permission: 'list:manage',
+    permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string() }),
     output: z.array(todoEntities.share.fields),
     http: { method: 'GET', path: '/lists/{listId}/shares' },
@@ -290,7 +291,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
 
   'todo/revoke-share': {
     summary: 'Revoke someone’s access to a list',
-    permission: 'list:manage',
+    permission: { key: 'list:manage', entity: 'list', resolved: 'the list the share is on' },
     input: z.object({ shareId: z.string() }),
     output: z.object({ id: z.string(), revoked: z.boolean() }),
     http: { method: 'DELETE', path: '/shares/{shareId}' },
