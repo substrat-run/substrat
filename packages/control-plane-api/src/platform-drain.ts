@@ -655,8 +655,21 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
       scope.vertical,
       scopeId,
     );
+    // #687: sealing keys ride every reconcile too, for the same reason grants do — a
+    // drain-side reconcile must not leave a scope unable to seal to a connector it could
+    // seal to a moment ago.
+    const connectionKeys = scope.vertical
+      ? await admin.connectionSealingKeys(tenantId, scope.vertical)
+      : [];
     try {
-      await vertical.reconcileInstance({ tenantId, scopeId, entitlements, identityLinks, connectionGrants });
+      await vertical.reconcileInstance({
+        tenantId,
+        scopeId,
+        entitlements,
+        identityLinks,
+        connectionGrants,
+        connectionKeys,
+      });
     } catch (e) {
       if (e instanceof ControlPlaneError) return { status: 'pending', error: e.message };
       throw e;

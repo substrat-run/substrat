@@ -38,6 +38,9 @@ import {
 import {
   ulid,
   assertAllowed,
+  ConnectionSealingKeyUnavailableError,
+  noSealingKeyMessage,
+  sealTo,
   assertReadOnlyQuery,
   entitlementDenial,
   platformRequestHistoryQuery,
@@ -269,6 +272,28 @@ const KERNEL_DDL = `
     scope_id TEXT,
     PRIMARY KEY (tenant_id, provider, external_id)
   );
+
+  -- Each live connection's PUBLIC sealing key, PROJECTED into this scope (#687), so
+  -- module code can seal a value TO a connector before emitting it — the one channel
+  -- a CP-less vertical has for handing a connector something the spine must not hold
+  -- in the clear. Same projection-on-write model as entitlements and identity links
+  -- above, and the same full-replace: a revoked connection's key is simply absent
+  -- from the next snapshot, and absence makes sealToConnection refuse, which is the
+  -- fail-closed direction.
+  --
+  -- **Only ever the public half.** Projecting a secret key into a scope is exactly the
+  -- failure kernel-design §13.1 names — a key restored by the same dump that restores
+  -- its ciphertext reverses every erasure the restore rolled past. The private half
+  -- stays in the directory; this row lets the scope WRITE to a connector, never read.
+  CREATE TABLE IF NOT EXISTS _substrat_connection_keys (
+    tenant_id     TEXT NOT NULL,
+    connection_id TEXT NOT NULL,
+    provider      TEXT NOT NULL,
+    key_id        TEXT NOT NULL,
+    public_key    TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, connection_id)
+  );
+
   -- Attachment metadata facts (#473): one row per object in the per-tenant blob store,
   -- keyed to the owning entity a module manifest declared as an attachmentTarget. Lives
   -- INSIDE the scope database on purpose — scope pull / restore / PITR carry the rows
@@ -1971,6 +1996,30 @@ export function defineScopeDO(
           return held.find((e) => e.key === key) ?? null;
         },
         entitlements: (): Promise<EntitlementView[]> => entitlementReader().listEntitlements(tenantId),
+        // #687: seal a value to the connector that will receive it. Reads the PROJECTED
+        // public key — the only half a scope ever holds — so a hosted vertical needs no
+        // control-plane binding for this, exactly as it needs none for entitlements.
+        //
+        // Refuses rather than degrades when nothing is projected. A silently contactless
+        // request is today's invisible failure in a new hat: the document starts at the
+        // provider and reaches nobody, and nothing in the system says so.
+        sealToConnection: async (provider: string, plaintext: string) => {
+          const row = this.sql
+            .exec(
+              `SELECT key_id, public_key FROM _substrat_connection_keys
+               WHERE tenant_id = ? AND provider = ?`,
+              tenantId,
+              provider,
+            )
+            .toArray()[0] as unknown as { key_id: string; public_key: string } | undefined;
+          if (!row) {
+            throw new ConnectionSealingKeyUnavailableError(
+              provider,
+              noSealingKeyMessage(provider, scopeId),
+            );
+          }
+          return sealTo({ keyId: row.key_id, publicKey: row.public_key }, plaintext);
+        },
       };
     }
 
@@ -2132,6 +2181,13 @@ export function defineScopeDO(
        *  restore repair) leaves projected links untouched; passing a list — even `[]` —
        *  full-replaces them, which is how an unlink reaches the scope. */
       identities?: { provider: string; external_id: string; principal_id: string; scope_id: string | null }[],
+      /** Live connections' PUBLIC sealing keys (#687) — projected alongside the rest so a
+       *  CP-less vertical can seal a value to a connector before emitting it. Same
+       *  preserve-on-undefined convention as `entitlements` and `identities`: omitting it
+       *  (a role-only re-projection like the restore repair) leaves projected keys
+       *  untouched; passing a list — even `[]` — full-replaces them, which is how a
+       *  revoked connection stops being sealable to. */
+      connectionKeys?: { connection_id: string; provider: string; key_id: string; public_key: string }[],
     ): Promise<void> {
       await this.queue.enqueue(() => {
         this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
@@ -2197,6 +2253,24 @@ export function defineScopeDO(
               i.external_id,
               i.principal_id,
               i.scope_id,
+            );
+          }
+        }
+        // #687: connection sealing keys ride the same snapshot. Full replace, so a
+        // revoked connection's key stops being projected and `sealToConnection` starts
+        // refusing — the same fail-closed direction an unlinked identity takes.
+        if (connectionKeys !== undefined) {
+          this.sql.exec(`DELETE FROM _substrat_connection_keys WHERE tenant_id = ?`, tenantId);
+          for (const k of connectionKeys) {
+            this.sql.exec(
+              `INSERT OR REPLACE INTO _substrat_connection_keys
+                 (tenant_id, connection_id, provider, key_id, public_key)
+               VALUES (?, ?, ?, ?, ?)`,
+              tenantId,
+              k.connection_id,
+              k.provider,
+              k.key_id,
+              k.public_key,
             );
           }
         }

@@ -323,9 +323,9 @@ describe.skipIf(!creds)('scrive connector — LIVE testbed', () => {
       // What `ScriveApi.update` now sends for every `se_bankid` party. No
       // `invalid_authentication_to_sign_info`: the empty field satisfied the check
       // exactly as a real personnummer does, which is the finding this connector
-      // change rests on. The delivery error remains because no party carries an
-      // address yet (#687 item 1) — the one thing still between a request and a
-      // signature.
+      // change rests on. The delivery error is still here because THIS party
+      // deliberately carries no address — the test below is the same shape with one,
+      // and it is what shows the delivery gap closed (#687 item 1).
       const { id } = await prepare({
         name: 'Counterparty',
         authenticationMethodToSign: 'se_bankid',
@@ -375,6 +375,51 @@ describe.skipIf(!creds)('scrive connector — LIVE testbed', () => {
 
       expect(await startErrors(doc.id)).toContain('invalid_authentication_to_sign_info');
       await discard(doc.id);
+    }, NET);
+
+    it('a BankID party WITH an address no longer draws the delivery error (#687 item 1)', async () => {
+      // The carrier, proved against the provider. Same party as the test above —
+      // `se_bankid`, empty personal_number — plus the one thing that was missing
+      // from every contract this platform ever sent: somewhere to deliver it.
+      //
+      // `invalid_invitation_delivery_info` is GONE, and the only error left is the
+      // account setting no request shape can talk its way out of. That is the exact
+      // difference between the two tests, and it is the whole of item 1.
+      const { id } = await prepare({
+        name: 'Counterparty',
+        authenticationMethodToSign: 'se_bankid',
+        email: 'nobody@substrat.test',
+        isSignatory: true,
+      });
+      const errors = await startErrors(id);
+      expect(errors).not.toContain('invalid_invitation_delivery_info');
+      expect(errors).not.toContain('invalid_authentication_to_sign_info');
+      expect(errors).toEqual(['authentication_to_sign_method_disabled']);
+      await discard(id);
+    }, NET);
+
+    it('STARTS a document that is actually delivered — the end of the gap (#687)', async () => {
+      // The acceptance criterion, and the first document this connector has ever
+      // been able to start. `standard` rather than `se_bankid` because BankID-to-sign
+      // is disabled on this testbed account and that refusal is unrelated to the
+      // carrier; what is under test is that a party the provider must INVITE now
+      // carries somewhere to invite them.
+      //
+      // `nobody@substrat.test` is unroutable by construction (RFC 2606 reserves
+      // `.test`), so starting this reaches no human — and it is cancelled, trashed
+      // and deleted immediately, like every other document in this file.
+      const { api, id } = await prepare({
+        name: 'Counterparty',
+        authenticationMethodToSign: 'standard',
+        email: 'nobody@substrat.test',
+        isSignatory: true,
+      });
+      expect(await startErrors(id)).toEqual([]);
+
+      // It is really out for signature at the provider, not merely accepted.
+      const doc = await api.get(id);
+      expect(doc.status).toBe('pending');
+      await discard(id);
     }, NET);
 
     it('reports every reason at once, not just the first (`asJson`)', async () => {

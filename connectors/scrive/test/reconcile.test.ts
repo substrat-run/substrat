@@ -152,7 +152,7 @@ describe('scrive connector — return path (record signatures back)', () => {
         method: 'scrive',
         parties: [
           { label: 'Arbetsgivare', kind: 'principal', ref: employerRef, signatureKind: 'primary' },
-          { label: 'Anställd', kind: 'external', ref: employeeRef },
+          { label: 'Anställd', kind: 'external', ref: employeeRef, contact: { email: 'anstalld@example.se' } },
         ],
       },
     );

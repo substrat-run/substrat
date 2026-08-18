@@ -5,9 +5,11 @@ import {
   instant,
   moduleManifest,
   permissionKey,
+  sealedCell,
   principalId,
   type EntityRef,
   type EntityRow,
+  type SealedCell,
 } from '@substrat-run/contracts';
 import { protocolEntities } from './entities.js';
 
@@ -369,6 +371,35 @@ export const protocolMigrations = [
         ADD COLUMN document_attachment_id TEXT;
     `,
   },
+  {
+    // #687: HOW a party is reached — a delivery address, so a document that
+    // starts has somebody to go to. Until now a request carried a role label
+    // ('Bestallare') and nothing else, and every external signature this
+    // platform ever sent failed at the provider for exactly that reason.
+    //
+    // **Ciphertext only, and there is no plaintext column to add later.** The
+    // contact is sealed in-scope to the connection's public key BEFORE the
+    // operation emits (design/signature-contact-carrier.md Option E), so what
+    // lands here is what lands on the event: an envelope only the connector can
+    // open. That is not caution, it is the only shape available — §2 of that
+    // design derives it — and it is why this engine needs no
+    // clear-at-resolution sweep and no erasure story of its own for the address.
+    // There is nothing here to redact that is not already unreadable.
+    //
+    // `contact_key_id` is not decoration: a cell that cannot name its key can
+    // only ever have ONE key, and every ciphertext already written becomes
+    // ambiguous the day a second exists (D-4).
+    //
+    // Nullable, and stays nullable: a party that issues the document is the
+    // author at the provider and is never invited, so it needs no address.
+    version: '0005-party-contact',
+    sql: `
+      ALTER TABLE protocol_signature_requests
+        ADD COLUMN contact_key_id TEXT;
+      ALTER TABLE protocol_signature_requests
+        ADD COLUMN contact_ciphertext TEXT;
+    `,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -528,6 +559,16 @@ export interface ProtocolSignatureRequestRow {
   method: string;
   /** #620: null on every row written before `0003-party-auth-level` — reads as `basic`. */
   auth_level: 'basic' | 'strong' | null;
+  /**
+   * #687: the sealed delivery address, or null for a party that needs none (the
+   * issuer) and for every row written before `0005-party-contact`.
+   *
+   * **Ciphertext, never plaintext** — the engine holds no readable address at
+   * any point after the operation returns, which is what keeps a signatory's
+   * contact out of this engine's erasure story entirely.
+   */
+  contact_key_id: string | null;
+  contact_ciphertext: string | null;
   status: 'pending' | 'signed' | 'declined' | 'expired' | 'cancelled';
   content_hash: string;
   external_ref: string | null;
@@ -1141,6 +1182,33 @@ export function bindDocument(
 // Asynchronous signing — freeze first, collect signatures over days.
 // ---------------------------------------------------------------------------
 
+/**
+ * How a signing party is REACHED (#687) — a delivery address, and nothing else.
+ *
+ * Typed rather than an opaque blob the engine never interprets, and the reason is
+ * the `authLevel` argument from #620 one level down: a provider-agnostic engine
+ * that cannot say what "how to reach a party" means is an engine every vertical
+ * has to guess around, and every connector has to re-derive. The type is small,
+ * provider-agnostic, and — with no personal number in it — free of anything a
+ * provider-specific vocabulary would be needed for.
+ *
+ * **No `personalNumber`, deliberately, and not merely as an omission.** An
+ * optional PII field on an engine surface is a carrier that exists, and this one
+ * is not needed by any path in the tree: a signatory enters their personnummer
+ * into the BankID ceremony itself, and it comes back in the completion data.
+ * Adding it would recreate exactly the problem this carrier was built to avoid.
+ */
+export const partyContact = z
+  .object({
+    email: z.string().email().optional(),
+    /** E.164 preferred; the provider decides what it accepts. */
+    mobile: z.string().min(1).optional(),
+  })
+  .refine((c) => c.email !== undefined || c.mobile !== undefined, {
+    message: 'a party contact must carry an email or a mobile — an empty contact reaches nobody',
+  });
+export type PartyContact = z.infer<typeof partyContact>;
+
 export const signatureRequestParty = z.object({
   /** Display name for the role, never PII: 'Beställare', 'Leverantör'. */
   label: z.string().min(1),
@@ -1180,16 +1248,39 @@ export const signatureRequestParty = z.object({
    * be choosing a Scrive enum through a provider-agnostic engine. The connector
    * maps this pair onto whatever its provider calls them (star topology).
    *
-   * **`strong` is currently unsatisfiable and will be refused at dispatch.** A
-   * national eID flow needs the signatory's personal number, and there is no
-   * lawful carrier for one: it would have to travel on this event, which lands
-   * in `_substrat_outbox` and `_substrat_platform_requests` — kernel spine rows a
-   * vertical may neither write nor erase (rule 3), and B6 says a personnummer
-   * never reaches the kernel, the events or the audit trail. The connector fails
-   * fast and says so, rather than sending a request the provider answers with a
-   * bare `409`. See the tracking issue for the sealed-carrier design.
+   * **`strong` needs a delivery address, never a personal number** (#687, #688).
+   * The earlier reading of this field — that a national eID flow must carry the
+   * signatory's personnummer, and is therefore unsatisfiable — was measured and
+   * is false: what a provider validates is that a BankID party HAS a personal
+   * number field, not that it holds a value, and BankID has not accepted one
+   * from the relying party since API v6. So there is no `personalNumber` on this
+   * shape, and its absence is a decision rather than an omission: an optional
+   * PII field on an engine surface is a carrier that exists. If some future
+   * provider genuinely needs one, that is a provider-specific refusal at egress
+   * in that connector, with its own carrier argument.
+   *
+   * What both levels need is `contact` below, and neither can do without it.
    */
   authLevel: z.enum(['basic', 'strong']).optional(),
+  /**
+   * How this party is REACHED (#687) — the thing whose absence made every
+   * external signature this platform ever sent fail at the provider.
+   *
+   * Required for any party that will be INVITED, which is every party except the
+   * one issuing the document (see `signatureKind`): the issuer is the author at
+   * the provider, reached through the platform's own account, and an author is
+   * never invited. `requestSignatures` refuses a set that would send a document
+   * to somebody it cannot reach, rather than letting the provider answer
+   * `invalid_invitation_delivery_info` a layer later where the caller cannot see
+   * it.
+   *
+   * **This is `direct` PII and the engine never stores it in the clear.** It is
+   * sealed to the receiving connector's public key inside the operation, before
+   * anything is emitted, and only the envelope reaches the row and the event
+   * (design/signature-contact-carrier.md). A vertical passes a plain address in;
+   * from the operation's return onward nothing in the platform can read it back.
+   */
+  contact: partyContact.optional(),
 });
 export type SignatureRequestParty = z.input<typeof signatureRequestParty>;
 
@@ -1240,6 +1331,37 @@ export async function requestSignatures(
   const primaryIndex = primaries.length === 1
     ? input.parties.findIndex((p) => p.signatureKind === 'primary')
     : 0;
+  // #687: a set with no counterparty is refused, and the fall-through above is
+  // exactly why it has to be.
+  //
+  // "The declared primary, else the FIRST" is a total function — it always finds
+  // an issuer — so a one-party request has never failed here. It has failed at
+  // the provider instead: the single party became the AUTHOR, an author is never
+  // invited, and the document went out to nobody. In production that party was
+  // the customer. The rule belongs where the hazard is created, because the call
+  // site cannot see it: a vertical passing `[{ label: 'Kund' }]` is asking for
+  // the customer to sign and is silently answered with the customer as sender.
+  if (input.parties.length < 2) {
+    throw new Error(
+      'a signature request needs a counterparty: with one party it becomes the issuing ' +
+        'author at the provider, and an author is never invited to sign — so the document ' +
+        'would start and reach nobody. Name who issues (signatureKind: \'primary\') and ' +
+        'who signs, or use signProtocol for an in-app signature.',
+    );
+  }
+  // #687: and every party that WILL be invited must be reachable. Checked before
+  // anything is written or sealed, so a request that cannot be delivered never
+  // freezes the instance — the alternative is an instance stuck in
+  // `pending_signature` for a document that was never sent.
+  for (const [index, party] of input.parties.entries()) {
+    if (index === primaryIndex || party.contact !== undefined) continue;
+    throw new Error(
+      `party '${party.label}' is a counter-signing party and carries no contact — it would be ` +
+        'invited to sign at an address that was never supplied, which the provider refuses ' +
+        '(invalid_invitation_delivery_info) after the instance has already frozen. Pass ' +
+        'contact: { email } or contact: { mobile } for every party that must be invited.',
+    );
+  }
   // Validate the refs that were supplied, so a personnummer cannot be smuggled
   // into a request row and land in a signature by way of the matching check.
   for (const party of input.parties) {
@@ -1248,6 +1370,26 @@ export async function requestSignatures(
   }
 
   const contentHash = await currentHash(ctx, instance);
+  // #687: seal every contact BEFORE anything is written or emitted.
+  //
+  // Awaited here, and that is the whole trick: an operation is async, `ctx.emit`
+  // is synchronous, and Web Crypto is not — so the seal happens in the operation
+  // and `emit` keeps the signature D-28 fixed. The envelope is opened only by the
+  // connector that will send the document; the engine, the outbox, the platform
+  // intent and every future consumer see bytes.
+  //
+  // Fails closed. `sealToConnection` throws when no key for this method has been
+  // projected into the scope, and this operation does not catch it: a request
+  // that quietly dropped its addresses would be the invisible failure of #620
+  // wearing a new hat, and it would freeze the instance on the way out.
+  const sealedContacts = new Map<number, SealedCell>();
+  for (const [index, party] of input.parties.entries()) {
+    if (party.contact === undefined) continue;
+    sealedContacts.set(
+      index,
+      sealedCell.parse(await ctx.sealToConnection(input.method, JSON.stringify(party.contact))),
+    );
+  }
   const now = new Date().toISOString();
   ctx.sql.exec(
     `UPDATE protocol_instances
@@ -1259,12 +1401,13 @@ export async function requestSignatures(
   for (const [index, party] of input.parties.entries()) {
     const id = ulid();
     created.push(id);
+    const sealed = sealedContacts.get(index);
     ctx.sql.exec(
       `INSERT INTO protocol_signature_requests
          (id, instance_id, party_label, party_kind, party_ref, signature_kind, method,
           auth_level, status, content_hash, external_ref, resolved_note, requested_by,
-          requested_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, ?, ?, NULL)`,
+          requested_at, resolved_at, contact_key_id, contact_ciphertext)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, ?, ?, NULL, ?, ?)`,
       [
         id,
         instance.id,
@@ -1277,6 +1420,11 @@ export async function requestSignatures(
         contentHash,
         ctx.principal,
         now,
+        // The SAME envelope that rides the event, not a second seal of the same
+        // value: a redelivery must open the identical bytes, and two envelopes of
+        // one address is two things that can drift.
+        sealed?.keyId ?? null,
+        sealed?.ciphertext ?? null,
       ],
     );
   }
@@ -1286,7 +1434,25 @@ export async function requestSignatures(
     type: 'protocol.signatures-requested',
     schemaVersion: 1,
     entity: protocolRef(instance.id),
-    piiClass: 'none', // party refs are opaque ids; labels are role names, never PII
+    // Party refs are opaque ids and labels are role names, never PII — and the
+    // contact cell does not change that, which is the one point worth stating
+    // rather than assuming (#687).
+    //
+    // A sealed contact IS personal data to whoever holds the private key, so the
+    // instinct is to move this to 'pseudonymous'. That would be worse, not more
+    // honest: `piiClass` other than 'none' requires a `subjectId`, the outbox has
+    // ONE subject column, and a two-party avtal has two signatories. Declaring one
+    // of them would tell `shredSubject` to null a payload still carrying the
+    // other's cell — kernel-design §13.1 limit 1, arriving as an actively wrong
+    // answer rather than a missing one.
+    //
+    // What makes 'none' true here is that the erasure this field needs is already
+    // applied at write time. The address is unreadable to the spine, to every
+    // backup of it, and to `sealDump`'s output, because the key that opens it lives
+    // in the directory and nowhere else. Erasing it is destroying that key
+    // (D-4/D-5's rotation-as-erasure), not redacting a row — so keying a shredder
+    // to this event would buy nothing it does not already have.
+    piiClass: 'none',
     payload: {
       instanceId: instance.id,
       templateKey: instance.template_key,
@@ -1317,6 +1483,14 @@ export async function requestSignatures(
         // the default. Additive and behaviour-preserving: a party that said nothing
         // reads `basic`, which is what the connector did for principals already.
         authLevel: r.auth_level ?? 'basic',
+        // #687: HOW to reach this party, sealed to the connection that will send
+        // the document. Fat like everything else on this payload — the connector
+        // needs no cross-module read to dispatch — with exactly one field opaque.
+        // Null for the issuing party, which the provider reaches as its own author.
+        contact:
+          r.contact_key_id && r.contact_ciphertext
+            ? { keyId: r.contact_key_id, ciphertext: r.contact_ciphertext }
+            : null,
       })),
     },
   });

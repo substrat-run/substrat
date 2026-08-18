@@ -11,6 +11,7 @@ import type {
   PrincipalId,
   ConnectionGrantRecord,
   ProjectedConnectionGrant,
+  ProjectedConnectionKey,
   ProjectedIdentityLink,
   QueryScopeInput,
   ReadScopeTableInput,
@@ -108,6 +109,24 @@ export interface ProvisionInstanceInput {
    */
   connectionGrants?: ProjectedConnectionGrant[];
   /**
+   * Live connections' PUBLIC sealing keys for this scope's vertical (#687), on the same
+   * trust line as everything above it: the platform gathers them itself
+   * (`admin.connectionSealingKeys`, never the caller's body) and the CP-less vertical
+   * projects them, so module code can seal a value TO a connector — the only channel a
+   * scope has for handing a connector something the spine must not hold in the clear.
+   *
+   * **Public halves only, structurally.** The private half stays sealed in the directory;
+   * projecting a secret key into a scope is the failure kernel-design §13.1 names, and it
+   * is what makes this carrier possible rather than what would break it — a public key
+   * lets the scope WRITE to a connector, never read.
+   *
+   * Delivery ORDER is load-bearing (signature-contact-carrier.md §7 point 2): the key must
+   * reach the scope before the engine tries to seal to it. A vertical that predates the
+   * field ignores it (its body parse strips unknown keys), and until it lands
+   * `sealToConnection` refuses loudly rather than emitting a request that reaches nobody.
+   */
+  connectionKeys?: ProjectedConnectionKey[];
+  /**
    * Per-tenant relational stores the platform MINTED for this tenant (#301), handed over
    * WITH provisioning so the vertical opens each (`host.openTenantStore(handle)`) and runs
    * its OWN store migrations against it before the callback returns — the same fail-closed,
@@ -193,6 +212,11 @@ export interface ReconcileInstanceInput {
    *  ran, and the channel a grant AFTER provision rides. A revoked connection's grants are
    *  absent from the gather, so they stop being delivered. */
   connectionGrants?: ProjectedConnectionGrant[];
+  /** Live connections' public sealing keys, gathered and re-delivered exactly as at provision
+   *  (#687) — the back-fill for a scope provisioned before the connection existed, and the
+   *  channel a connection made AFTER provision rides. A revoked connection's key is absent
+   *  from the gather, so the scope stops being able to seal to it. */
+  connectionKeys?: ProjectedConnectionKey[];
 }
 
 /**

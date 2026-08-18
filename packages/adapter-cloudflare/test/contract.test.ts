@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { warmControlPlane } from './do-warmup.js';
 import {
+  connectionId,
   moduleId,
   orgId,
   permissionKey,
@@ -304,6 +305,63 @@ describe('scope-local permissions — automatic fan-out on write (Phase 2)', () 
   it('revoking a membership fans the tombstone out — access stops', async () => {
     await host.admin.removeMember(staff, t, carol, acme);
     expect(await probe(carol, s1, READ)).toBe(false);
+  });
+
+  it('projects a connection\'s PUBLIC sealing key, and a scope seals to it (#687)', async () => {
+    // The whole carrier on the DO adapter, end to end: the platform mints the
+    // keypair in the directory, projects only the public half into the scope, module
+    // code seals to it without any control-plane binding, and the connector opens the
+    // envelope with a private half that never left the directory.
+    //
+    // This is the shape a hosted vertical runs — the scope reads its own storage and
+    // nothing else — and it is the only way a scope can hand a connector a value the
+    // spine must not carry in the clear.
+    const conn = connectionId.parse(ulid());
+    await host.admin.createConnection(staff, {
+      id: conn,
+      tenantId: t,
+      vertical: 'perm-vertical',
+      provider: 'sealed-provider',
+      label: 'Sealed provider',
+      secret: { accessToken: 'tok' },
+      scopes: [],
+    });
+    // Any tenant-level write fans out; this is the explicit form of the same thing.
+    await host.reconcileTenantProjection(t);
+
+    const scope = await host.getScope(alice, t, s1);
+    const sealed = await scope.invoke<{ keyId: string; ciphertext: string }>(
+      'perm/seal-to-connection',
+      { provider: 'sealed-provider', plaintext: 'anna@kund.se' },
+    );
+    // It names the key that opens it — a cell that cannot is a cell that can never
+    // be rotated retroactively.
+    expect(sealed.keyId).toContain(conn);
+    expect(sealed.ciphertext).not.toContain('anna@kund.se');
+
+    // And only the private half opens it, from where a connector runs.
+    const opened = await host.admin.connectionSealingKey(conn);
+    expect(opened.keyId).toBe(sealed.keyId);
+    let unsealed: string | undefined;
+    host.registerConnector('sealed-reader', 'perm.acted', async (ctx) => {
+      const c = await ctx.connection('sealed-provider');
+      unsealed = await c.unseal(sealed);
+    });
+    // Any emit will do — what is under test is the connector's side of the seam,
+    // reached the way every connector is reached: a delivered event.
+    await scope.invoke('perm/authorized-emit', { permission: ADMIN });
+    await host.drainDue(t, s1);
+    expect(unsealed).toBe('anna@kund.se');
+  });
+
+  it('refuses to seal for a provider whose key never reached the scope (#687)', async () => {
+    // The deploy-order hazard, fail-closed: between projecting a key and the vertical
+    // asking for one, a request must break loudly rather than emit with the value
+    // silently dropped — which is the invisible failure the carrier exists to end.
+    const scope = await host.getScope(alice, t, s1);
+    await expect(
+      scope.invoke('perm/seal-to-connection', { provider: 'never-connected', plaintext: 'x' }),
+    ).rejects.toThrow(/no 'never-connected' sealing key is available/);
   });
 
   it('reconcileTenantProjection repairs a scope whose projection drifted', async () => {

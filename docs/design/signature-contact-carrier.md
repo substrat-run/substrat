@@ -1,6 +1,6 @@
 # Signature party contact — reaching a signatory without putting them in the spine
 
-Status: draft v0.2 · Last updated: 2026-08-17
+Status: **implemented** (v0.2 as designed) · Last updated: 2026-08-18
 
 > Answers ask 1 of issue [#620](https://github.com/substrat-run/substrat/issues/620),
 > now closed and carried by [#687](https://github.com/substrat-run/substrat/issues/687):
@@ -632,3 +632,78 @@ contract with a known signatory, watched, before it is left to run.
    the operation returns. That is strictly better for §5's limit 1 and probably the right
    answer; it needs one pass to confirm nothing in the vertical's own screens needs to
    redisplay a contact.
+
+## 9. What was built — the answers §8 asked for
+
+Landed for #687 item 1. Option E as designed; every decision below was taken during
+implementation, and the two that differ from what §8 guessed are marked.
+
+**Q1 — which channel projects the public key.** Its own field on the established
+projection channel: `connectionKeys` on `ProvisionInstanceInput` and
+`ReconcileInstanceInput`, gathered by the platform (`admin.connectionSealingKeys`,
+never the caller's body) exactly as entitlements (#310), identity links (#406) and
+connection grants (#592) are. Not `configureInstance` — a key in the config bag becomes
+a key in a settings form. A connection created *after* the instance rides the reconcile
+delivery, which is the same channel a grant made after provision already rides.
+
+**Q2 — the primitive.** `sealTo` / `openSealed` in the kernel
+([`packages/kernel/src/sealed-box.ts`](../../packages/kernel/src/sealed-box.ts)):
+ECDH P-256 → SHA-256 KDF → AES-256-GCM, a fresh ephemeral keypair per seal, the
+ephemeral public key in the envelope, and `keyId` bound into both the derivation and the
+GCM additional data so a relabelled envelope does not open. Crypto in the kernel, storage
+in the adapter — the `createSubjectKeys` precedent, as §8 recommended.
+
+**Q3 — does anything else want it.** It is built as a **connection-level facility**, not
+something `engine-protocol` owns: `ctx.sealToConnection(provider, plaintext)` and
+`conn.unseal(cell)` are kernel surfaces both adapters implement, and `sealedCell` is a
+contracts shape. A second connector needing PII at egress inherits it whole.
+
+**Q4 — typed, not an opaque blob.** As recommended. `partyContact { email?, mobile? }`,
+with at least one required.
+
+**Q5 — clear-at-resolution vs `recordSignature` ordering.** Moot, per Q6.
+
+**Q6 — what the engine stores.** **Ciphertext only.** Migration `0005-party-contact` adds
+`contact_key_id` and `contact_ciphertext` and no plaintext column, so D-3's
+clear-at-resolution stops being a requirement rather than being implemented: there is
+nothing to clear that is not already unreadable. §5 limit 1 shrinks accordingly — the
+address a vertical passes in is unrecoverable from this engine's tables the moment the
+operation returns.
+
+### Two decisions §8 did not anticipate
+
+**`piiClass` stays `'none'`** — §3.1 guessed `'pseudonymous'`, and that turns out to be
+unavailable *and* undesirable. Unavailable: `piiClass !== 'none'` requires a `subjectId`
+([`contracts/src/events.ts`](../../packages/contracts/src/events.ts)), `_substrat_outbox`
+has one subject column, and a two-party avtal has two signatories — §2.1's limit 1, met
+for real. Undesirable: naming one of them would tell `shredSubject` to null a payload
+still carrying the other's cell, which is an actively wrong answer rather than a missing
+one. What makes `'none'` true is that the erasure this field needs is applied at *write*
+time — the address is unreadable to the spine, its backups and `sealDump`'s output —
+and the way to erase it is destroying a key the scope does not hold (D-4/D-5), not
+redacting a row. §7 point 3's "`piiClass` becomes data-dependent" therefore does not
+happen, and the erasure path's reach is unchanged.
+
+**The second invariant grew a second half.** §4 said `strong` requires a delivery
+address. Building it surfaced a failure that a contact field alone does not close:
+`requestSignatures` resolves the issuer as *"the declared one, else the FIRST"*, which is
+total, so a one-party request never failed in the engine — it failed at the provider,
+where that party had been made the **author**, and an author is never invited. Production
+reached that state without anyone choosing it. So the engine now refuses **a set with no
+counterparty** as well as **an invited party with no address**, both before the instance
+freezes. `connectors/scrive/test/dispatch.test.ts` carried a test asserting the old
+behaviour with a note naming the day it would have to change deliberately; it now asserts
+the refusal.
+
+### Consequences worth knowing
+
+- **A vertical that issues contracts must have connected the provider.** Sealing needs a
+  live connection for the request's `method`, so a request made without one is refused at
+  the operation instead of freezing an instance nothing will deliver. `demos/meridian`
+  now connects Scrive on every instance for this reason.
+- **§6 is untouched and still open.** `_substrat_platform_requests` remains invisible to
+  the #37 erasure mechanism. D-1 continues to avoid it rather than fix it: the intent
+  embeds the whole event, and the whole event now carries ciphertext.
+- **Rotation is still deferred** (D-4). The envelope carries `keyId`, the store is a
+  keyId-indexed map, and `openSealed` picks by name — so the retrofit trap is closed and
+  rotation-as-erasure (D-5) remains available whenever it is wanted.

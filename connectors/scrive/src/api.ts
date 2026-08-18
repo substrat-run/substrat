@@ -135,6 +135,15 @@ export interface ScriveParty {
   name: string;
   email?: string;
   /**
+   * Mobile number for an SMS invitation (#687).
+   *
+   * Beside `email` rather than instead of it because the engine's `partyContact`
+   * carries either, and a party reachable only by phone is a party this connector
+   * would otherwise have to refuse. Passed through to the provider's `mobile`
+   * field and, like the address above, never persisted by us.
+   */
+  mobile?: string;
+  /**
    * Swedish personnummer, when the sender happens to know it.
    *
    * **Optional even for BankID**, which is the whole finding of
@@ -354,6 +363,7 @@ export class ScriveApi {
               fields: [
                 { type: 'name', order: 1, value: p.name },
                 ...(p.email ? [{ type: 'email', value: p.email }] : []),
+                ...(p.mobile ? [{ type: 'mobile', value: p.mobile }] : []),
                 // BankID-to-sign needs the FIELD, not a value (#687). Probed
                 // against the testbed: a party carrying `personal_number: ''`
                 // draws exactly the same `start` errors as one carrying a real

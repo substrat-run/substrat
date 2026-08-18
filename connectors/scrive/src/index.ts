@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   connectionId,
   instant,
+  sealedCell,
   scopeId,
   tenantId,
   type ConnectionActivity,
@@ -220,6 +221,25 @@ const DISPATCH_PREFIX = 'scrive:dispatch:';
 const dispatchKey = (instanceId: string): string => `${DISPATCH_PREFIX}${instanceId}`;
 
 /** The payload half of `protocol.signatures-requested` this connector reads. */
+/**
+ * The delivery address a sealed cell unwraps to (#687).
+ *
+ * Re-declared here rather than imported from `engine-protocol`, for the reason
+ * every payload on this seam is: a consumer validates with its OWN schema, never
+ * the producer's types. The engine may add a field tomorrow; this connector will
+ * keep sending exactly what Scrive has a slot for, and an unknown key is stripped
+ * rather than crashing a dispatch.
+ *
+ * Parsed even though the plaintext came out of an envelope only we could open —
+ * an authenticated cell proves who wrote it, not that the shape is what this
+ * connector expects, and the two are different questions.
+ */
+const partyContact = z.object({
+  email: z.string().email().optional(),
+  mobile: z.string().min(1).optional(),
+});
+type PartyContact = z.infer<typeof partyContact>;
+
 const signaturesRequested = z.object({
   instanceId: z.string().min(1),
   templateKey: z.string().min(1),
@@ -241,6 +261,17 @@ const signaturesRequested = z.object({
       // #620: absent on events emitted by an engine older than 0003 — read as
       // `basic`, which is what those requests effectively asked for.
       authLevel: z.enum(['basic', 'strong']).default('basic'),
+      // #687: the party's delivery address, SEALED to this connection's public
+      // key by the engine before it emitted. Opened below, at egress, and never
+      // stored — the spine holds only what is here, which is bytes.
+      //
+      // Optional AND nullable, and both matter. Null is the issuing party, which
+      // the provider reaches as its own author and which therefore carries no
+      // address. Absent is an engine older than `0005-party-contact`: that
+      // request is exactly as undeliverable as it was before this field existed,
+      // and no worse — version skew must not be made worse than the status quo,
+      // which is that nothing works (§7).
+      contact: sealedCell.nullish(),
     }),
   ),
 });
@@ -309,6 +340,21 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // do so before `createDocument`: a throw mid-`update` leaves a draft behind at
     // the provider, and a retrying delivery leaves one per attempt.
     const authMethods = payload.parties.map((p) => scriveAuthMethod(p.authLevel, defaultAuthMethod));
+
+    // Open every sealed contact BEFORE the first call, for the same reason the
+    // auth methods are resolved here: a throw mid-`update` leaves a draft behind
+    // at the provider, and a retrying delivery leaves one per attempt. This CAN
+    // throw — a cell whose key has been destroyed by rotation no longer opens
+    // (design/signature-contact-carrier.md D-5), and dead-lettering before any
+    // document exists is the outcome to want.
+    //
+    // `conn.unseal`, not a key of our own: the private half never crosses into
+    // connector code, and the connection this handler opened is the only one it
+    // could correctly be authorized as.
+    const contacts: (PartyContact | undefined)[] = [];
+    for (const p of payload.parties) {
+      contacts.push(p.contact ? partyContact.parse(JSON.parse(await conn.unseal(p.contact))) : undefined);
+    }
 
     const api = new ScriveApi(conn, baseUrl);
 
@@ -403,6 +449,18 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
           // this connector ever sent came back a 409. `update` adds the empty
           // `personal_number` field a `se_bankid` party needs (#687).
           authenticationMethodToSign: authMethods[i]!,
+          // #687: the egress slot that has been plumbed and producerless since
+          // this connector was written. `ScriveParty.email` was declared, wired
+          // into the fields array, and never filled by anything — which is why
+          // every document started and then had nobody to deliver to, at both
+          // auth levels. This is the producer.
+          //
+          // Undefined for a party the engine sent no contact for: the issuing
+          // author (reached as our own API account), or an engine that predates
+          // the carrier. The party is sent as it was before, which is the
+          // version-skew floor §7 asks for — no better, no worse.
+          ...(contacts[i]?.email ? { email: contacts[i]!.email } : {}),
+          ...(contacts[i]?.mobile ? { mobile: contacts[i]!.mobile } : {}),
           // Scrive auto-adds the API user as the author, and exactly one party
           // must be it. The issuing (primary) party is the sender's side, so it
           // is the author — and it still signs. Verified: an explicit author

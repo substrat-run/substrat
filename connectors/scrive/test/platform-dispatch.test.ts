@@ -142,7 +142,7 @@ describe('scrive connector — platform-side dispatch of a routed delivery', () 
         method: 'scrive',
         parties: [
           { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
-          { label: 'Anställd', kind: 'external' },
+          { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
         ],
       },
     );

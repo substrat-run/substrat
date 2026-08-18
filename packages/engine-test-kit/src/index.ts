@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
+  connectionId,
   moduleManifest,
   platformActorId,
   principalId,
@@ -16,6 +17,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   ulid,
+  webCryptoSecretBox,
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
@@ -224,6 +226,21 @@ export interface EngineHarnessOptions {
    * The harness plays the vertical's part, exactly as `entityRelations` does.
    */
   attachments?: boolean | { vertical: string };
+  /**
+   * Provider slugs to create a live CONNECTION for, so the scope can seal a value
+   * to that connector (#687) — `ctx.sealToConnection('scrive', …)`.
+   *
+   * Off by default: a connection is real host state (a sealed credential, a
+   * keypair) and most engines need none. Turn it on to exercise an engine that
+   * hands a connector something the spine must not carry in the clear — a
+   * signatory's delivery address is the first, and the seal fails closed without
+   * a key, which is exactly the behaviour a test should be able to reach both
+   * sides of.
+   *
+   * Implies a vertical, since a connection is keyed (tenant, vertical, provider);
+   * pass `attachments` to name it, or the harness's own 'kit' is used.
+   */
+  connections?: string[];
 }
 
 /**
@@ -232,7 +249,13 @@ export interface EngineHarnessOptions {
  */
 export async function engineHarness(opts: EngineHarnessOptions): Promise<EngineHarness> {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-engine-kit-'));
-  const host = new SqliteScopeHost({ dir });
+  // A real SecretBox, because a connection cannot be stored without one (#603) and
+  // the sealing keypair it carries is wrapped by it. A fixed key: the box is real,
+  // the secrecy is not the point in a temp dir that is deleted on close.
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('engine-test-kit', new Uint8Array(32).fill(7)),
+  });
 
   const modules = [...opts.modules, buildProbeModule(opts.entityRelations ?? [])];
   for (const m of modules) host.registerModule(m);
@@ -248,7 +271,9 @@ export async function engineHarness(opts: EngineHarnessOptions): Promise<EngineH
 
   const vertical =
     opts.attachments === undefined || opts.attachments === false
-      ? undefined
+      ? opts.connections?.length
+        ? 'kit'
+        : undefined
       : opts.attachments === true
         ? 'kit'
         : opts.attachments.vertical;
@@ -264,8 +289,24 @@ export async function engineHarness(opts: EngineHarnessOptions): Promise<EngineH
   // The per-tenant attachment store, minted by the platform for (tenant, vertical) —
   // the same shape a real deployment provisions, so `host.attachments` resolves it
   // by the same rule (`ATTACHMENTS` is the documented binding name).
-  if (vertical) {
+  if (vertical && opts.attachments) {
     await host.provisionBlobStore(staff, { tenantId: t, vertical, binding: 'ATTACHMENTS' });
+  }
+  // #687: live connections, so `ctx.sealToConnection(provider, …)` finds a public
+  // key. The credential is a placeholder — nothing here calls the provider — but
+  // the CONNECTION is real, because the sealing keypair hangs off it and a fake
+  // would prove nothing about the path under test.
+  for (const provider of opts.connections ?? []) {
+    if (!vertical) throw new Error('engine-test-kit: connections require a vertical');
+    await host.admin.createConnection(staff, {
+      id: connectionId.parse(ulid()),
+      tenantId: t,
+      vertical,
+      provider,
+      label: `${provider} (engine test kit)`,
+      secret: { token: 'kit' },
+      scopes: [],
+    });
   }
 
   /**

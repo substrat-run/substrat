@@ -286,3 +286,50 @@ export type ConnectionCredentialField = z.infer<typeof connectionCredentialField
 
 export const connectionCredential = z.object({ fields: z.array(connectionCredentialField).max(16) });
 export type ConnectionCredential = z.infer<typeof connectionCredential>;
+
+/**
+ * A cell sealed to a recipient's public key (#687) — the shape a
+ * `SealedSecret` takes when it travels as DATA rather than as a kernel type.
+ *
+ * Structurally identical to the kernel's `SealedSecret`, and declared here for
+ * the reason every other travelling shape is: an engine and a connector both
+ * have to parse it at their own boundary ("parse, don't trust"), and neither may
+ * depend on the other. `ciphertext` is opaque to everything but the holder of
+ * the named private half — the console, the timeline and every future consumer
+ * of a payload carrying one read it as bytes and nothing more.
+ *
+ * `keyId` is not decoration: a cell that cannot name its key can only ever have
+ * one key, and rotating retroactively becomes impossible the day a second exists
+ * (signature-contact-carrier.md D-4).
+ */
+export const sealedCell = z.object({
+  keyId: z.string().min(1),
+  ciphertext: z.string().min(1),
+});
+export type SealedCell = z.infer<typeof sealedCell>;
+
+/**
+ * A connection's PUBLIC sealing key as it travels into a deployment (#687) —
+ * delivered with provision/reconcile exactly as entitlements (#310), identity
+ * links (#406) and connection grants (#592) are, and projected into the scope so
+ * module code can seal a value TO the connector before emitting it.
+ *
+ * **The private half is never here and can never be.** Projecting a secret key
+ * into a scope is precisely the failure kernel-design §13.1 names — a key
+ * restored by the same dump that restores its ciphertext reverses every erasure
+ * the restore rolled past. §2 of the carrier design closes that door; it says
+ * nothing about a public key, and that gap is the whole mechanism. Projecting
+ * this leaks nothing: it lets a scope WRITE to the connector, never read.
+ *
+ * Keyed by `provider` as well as `connectionId` because that is what module code
+ * knows. An engine emitting `method: 'scrive'` has no connection id and must not
+ * acquire one — connection identity is the host's business.
+ */
+export const projectedConnectionKey = z.object({
+  connectionId: z.string().min(1),
+  provider: z.string().min(1),
+  keyId: z.string().min(1),
+  /** SEC1 uncompressed P-256 point, base64. Public by construction. */
+  publicKey: z.string().min(1),
+});
+export type ProjectedConnectionKey = z.infer<typeof projectedConnectionKey>;

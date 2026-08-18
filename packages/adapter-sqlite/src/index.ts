@@ -31,6 +31,7 @@ import {
   systemGrant,
   subjectRef,
   createConnectionInput,
+  projectedConnectionKey,
   moduleManifest,
   createOrgInput,
   promotionAcknowledgement,
@@ -81,6 +82,7 @@ import {
   type EntitlementGrant,
   type EntitlementGrantInput,
   type EntitlementView,
+  type ProjectedConnectionKey,
   type EntityRef,
   type MeterReading,
   type CreateOrgInput,
@@ -161,6 +163,11 @@ import {
   isSecretBoxConfigured,
   unconfiguredSecretBox,
   createSubjectKeys,
+  generateSealingKeyPair,
+  noSealingKeyMessage,
+  openSealed,
+  sealTo,
+  ConnectionSealingKeyUnavailableError,
   type SubjectKeys,
   type ConnectorContext,
   type ConnectorHandler,
@@ -1049,6 +1056,28 @@ export class SqliteScopeHost implements ScopeHost {
         ciphertext    TEXT NOT NULL,
         updated_at    TEXT NOT NULL
       );
+      -- Each connection's SEALING keypair (#687, design/signature-contact-carrier.md).
+      -- The public half is projected into scopes so module code can seal a value TO
+      -- this connector before emitting it; the private half is sealed under the host
+      -- SecretBox exactly as the credential above is, and never leaves the directory.
+      -- Keyed (connection_id, key_id) — a MAP from day one even holding one member,
+      -- because widening a single-key column into a set later is a migration against
+      -- live connections and starting with the map is free (D-4).
+      CREATE TABLE IF NOT EXISTS _substrat_connection_keys (
+        connection_id TEXT NOT NULL,
+        key_id        TEXT NOT NULL,
+        public_key    TEXT NOT NULL,
+        wrapped_key_id TEXT NOT NULL,
+        wrapped_private TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        retired_at    TEXT,
+        PRIMARY KEY (connection_id, key_id)
+      );
+      -- The CURRENT key a new seal uses. Partial-unique rather than a column on the
+      -- connection: rotation retires a row and inserts a new current one, and old
+      -- ciphertext stays openable because its own key_id row is still here.
+      CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connection_keys_current
+        ON _substrat_connection_keys (connection_id) WHERE retired_at IS NULL;
       -- Connection grants as the directory records them (#592) — the durable half
       -- of grantToConnection, written alongside the enforcement tuple. The tuple
       -- lives where it is checked; this row is what provision/reconcile gather
@@ -1286,6 +1315,11 @@ export class SqliteScopeHost implements ScopeHost {
               reentrant: holdsActor,
             }).open(attachmentId);
           },
+          // #687: open a cell the scope sealed TO this connection. The keyId-indexed
+          // map goes in, never out — a connector is handed the plaintext of one cell,
+          // not a private key it could mislay. Retired keys are in the map too, so a
+          // request pending across a rotation still opens.
+          unseal: async (sealed) => openSealed(await this.openSealingKeys(open.id), sealed),
           fetch: async (input, init) => {
             try {
               const res = await fetchImpl(input, {
@@ -3025,6 +3059,101 @@ export class SqliteScopeHost implements ScopeHost {
         return { existed: existing?.wrapped_dek != null };
       },
     });
+  }
+
+  /**
+   * The connection's CURRENT public sealing key, minted on first ask (#687).
+   *
+   * Mint-on-read rather than mint-only-at-connect, because the fleet already
+   * holds live connections older than this feature — Egeryds' Scrive credential
+   * carries years of real contracts, and "reconnect to acquire a keypair" is not
+   * a migration anyone should have to run against production. Asking IS the
+   * back-fill, and it is idempotent: the partial-unique index makes a race
+   * between two callers resolve to one current key rather than two.
+   */
+  private async ensureSealingKey(connectionId: string): Promise<ProjectedConnectionKey> {
+    const conn = this.connectionRow(connectionId);
+    const read = () =>
+      this.directory
+        .prepare(
+          `SELECT key_id, public_key FROM _substrat_connection_keys
+           WHERE connection_id = ? AND retired_at IS NULL`,
+        )
+        .get(connectionId) as { key_id: string; public_key: string } | undefined;
+    const existing = read();
+    if (existing) {
+      return projectedConnectionKey.parse({
+        connectionId,
+        provider: conn.provider,
+        keyId: existing.key_id,
+        publicKey: existing.public_key,
+      });
+    }
+    const pair = await generateSealingKeyPair(`connection:${connectionId}:${ulid()}`);
+    // Sealed by the host SecretBox exactly as the credential is — the private half
+    // is never at rest in the clear, and a stolen directory file yields neither.
+    const wrapped = await this.secretBox.seal(pair.privateKey);
+    try {
+      this.directory
+        .prepare(
+          `INSERT INTO _substrat_connection_keys
+             (connection_id, key_id, public_key, wrapped_key_id, wrapped_private, created_at, retired_at)
+           VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+        )
+        .run(
+          connectionId,
+          pair.keyId,
+          pair.publicKey,
+          wrapped.keyId,
+          wrapped.ciphertext,
+          new Date().toISOString(),
+        );
+    } catch (err) {
+      // Lost the race. The winner's key is the current one, and using it is
+      // correct — minting a second would orphan whatever the first already sealed.
+      if (!/UNIQUE constraint failed/i.test((err as Error).message)) throw err;
+      const won = read();
+      if (!won) throw err;
+      return projectedConnectionKey.parse({
+        connectionId,
+        provider: conn.provider,
+        keyId: won.key_id,
+        publicKey: won.public_key,
+      });
+    }
+    return projectedConnectionKey.parse({
+      connectionId,
+      provider: conn.provider,
+      keyId: pair.keyId,
+      publicKey: pair.publicKey,
+    });
+  }
+
+  /**
+   * EVERY private half this connection holds, keyed by keyId — including retired
+   * ones, which is the point of keeping them.
+   *
+   * A ciphertext sealed before a rotation still names the key that sealed it, so
+   * the opener has to hold the whole map or every pending request older than the
+   * rotation dead-letters. When rotation eventually destroys a retired key, its
+   * row goes and the open fails LOUDLY (`SealedKeyUnavailableError`) — which is
+   * the intended erasure, not an accident (D-5).
+   */
+  private async openSealingKeys(connectionId: string): Promise<Record<string, string>> {
+    const rows = this.directory
+      .prepare(
+        `SELECT key_id, wrapped_key_id, wrapped_private FROM _substrat_connection_keys
+         WHERE connection_id = ?`,
+      )
+      .all(connectionId) as { key_id: string; wrapped_key_id: string; wrapped_private: string }[];
+    const out: Record<string, string> = {};
+    for (const r of rows) {
+      out[r.key_id] = await this.secretBox.open({
+        keyId: r.wrapped_key_id,
+        ciphertext: r.wrapped_private,
+      });
+    }
+    return out;
   }
 
   /** Load a connection or fail loudly — update/revoke must not silently no-op. */
@@ -5359,6 +5488,23 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
 
+      connectionSealingKey: (id: ConnectionId) => this.ensureSealingKey(id),
+
+      connectionSealingKeys: async (tenantId: TenantId, vertical: string) => {
+        // LIVE connections only. A revoked connection's key is kept (its pending
+        // ciphertext must still open) but stops being projected, so a scope can no
+        // longer seal to a credential that has been withdrawn.
+        const rows = this.directory
+          .prepare(
+            `SELECT id FROM _substrat_connections
+             WHERE tenant_id = ? AND vertical = ? AND revoked_at IS NULL`,
+          )
+          .all(tenantId, vertical) as { id: string }[];
+        const out: ProjectedConnectionKey[] = [];
+        for (const r of rows) out.push(await this.ensureSealingKey(r.id));
+        return out;
+      },
+
       listConnections: async (actor: PlatformActorId, filter?: ConnectionFilter) => {
         const f = filter ?? {};
         const where: string[] = [];
@@ -6370,6 +6516,36 @@ export class SqliteScopeHost implements ScopeHost {
           quota: r.quota,
           expiresAt: r.expires_at as EntitlementView['expiresAt'],
         }));
+      },
+      // #687: seal a value to the connector that will receive it. The pure adapter is
+      // single-process, so the directory is right here — no projection needed, and the
+      // SAME contract the DO adapter satisfies through its scope-local projection. The
+      // division is deliberate and matches `entitlement` above: identical semantics,
+      // adapter-appropriate storage. Only the PUBLIC half is ever read on this path.
+      sealToConnection: async (provider: string, plaintext: string) => {
+        const vertical =
+          (
+            this.directory
+              .prepare('SELECT vertical FROM scopes WHERE scope_id = ?')
+              .get(rt.scopeId) as { vertical: string | null } | undefined
+          )?.vertical ?? null;
+        const row = vertical
+          ? (this.directory
+              .prepare(
+                `SELECT id FROM _substrat_connections
+                 WHERE tenant_id = ? AND vertical = ? AND provider = ? AND revoked_at IS NULL
+                 ORDER BY created_at LIMIT 1`,
+              )
+              .get(rt.tenantId, vertical, provider) as { id: string } | undefined)
+          : undefined;
+        if (!row) {
+          throw new ConnectionSealingKeyUnavailableError(
+            provider,
+            noSealingKeyMessage(provider, rt.scopeId),
+          );
+        }
+        const key = await this.ensureSealingKey(row.id);
+        return sealTo({ keyId: key.keyId, publicKey: key.publicKey }, plaintext);
       },
     };
   }

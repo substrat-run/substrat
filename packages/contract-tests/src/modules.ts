@@ -587,6 +587,15 @@ export const permMod: ModuleRegistration = {
     // and CP-less path tests to prove a hosted vertical reads entitlements without a CP.
     'perm/read-entitlement': (async (ctx, key) =>
       ctx.entitlement(key as string)) as OperationHandler<string, unknown>,
+    // #687: seal a value TO a connector — the write half of the contact carrier.
+    // Deliberately UNGUARDED, like `perm/share` below and for the same reason: what
+    // is under test is the seam itself, and a permission check in front of it would
+    // only prove the check. Returns the envelope so a test can assert the shape and
+    // hand it back through `conn.unseal` on the other side.
+    'perm/seal-to-connection': (async (ctx, input) => {
+      const i = input as { provider: string; plaintext: string };
+      return ctx.sealToConnection(i.provider, i.plaintext);
+    }) as OperationHandler<never, unknown>,
     // Runtime delegation (ctx.grant/ctx.revoke). Deliberately UNGUARDED by an
     // operation-level check: the guardrail under test lives inside the verb, so
     // wrapping it in one here would hide whether it works.
