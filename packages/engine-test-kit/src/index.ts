@@ -10,6 +10,7 @@ import {
   scopeId,
   tenantId,
   type DomainEventInput,
+  type EntityRef,
   type PermissionKey,
   type PrincipalId,
   type ScopeId,
@@ -133,6 +134,24 @@ export interface EngineHarness {
    * you assert an engine's default-deny rather than assuming it.
    */
   as(permissions: PermissionKey[]): Promise<ScopeStub>;
+  /**
+   * The same principal `as` mints, but with its id handed back.
+   *
+   * `as` returns only a stub, which is enough for a test that asks "may someone
+   * holding these keys do this" and not enough for one that asks "may someone
+   * holding this key ON THIS ENTITY do this" — an entity-narrowed grant has to
+   * name the principal it is for. Without this there was no way to build a
+   * principal whose only authority is a grant on one row, which is exactly the
+   * principal the entity-check conformance kit needs.
+   */
+  mintPrincipal(permissions?: PermissionKey[]): Promise<{ principal: PrincipalId; stub: ScopeStub }>;
+  /**
+   * Grant `permission` to a principal, narrowed to exactly one entity.
+   *
+   * The grant is a real tuple through `host.admin`, so it resolves the way a
+   * production grant does — along declared parent edges, refusing at the node.
+   */
+  grantOn(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
   /**
    * Fire an event into the scope so the engine's registered consumers see it,
    * through the real dispatch path. `entity`, `piiClass` and `schemaVersion` are
@@ -319,18 +338,37 @@ export async function engineHarness(opts: EngineHarnessOptions): Promise<EngineH
    * last permission set written — a fixture that hands out more authority than
    * the test asked for, which is the exact bug a permission test cannot afford.
    */
-  const as = async (permissions: PermissionKey[]): Promise<ScopeStub> => {
+  const mintPrincipal = async (
+    permissions: PermissionKey[] = [],
+  ): Promise<{ principal: PrincipalId; stub: ScopeStub }> => {
     const principal = principalId.parse(ulid());
     // A principal with no role at all — `roleDefinition.permissions` is min(1),
     // so "holds nothing" cannot be expressed as an empty role. Assigning no role
     // is the truer model of it anyway: no tuples, so the checker denies by
     // default rather than by an empty list.
-    if (permissions.length === 0) return host.getScope(principal, t, s);
+    if (permissions.length === 0) return { principal, stub: await host.getScope(principal, t, s) };
 
     const roleKey = `kit-role-${ulid().toLowerCase()}`;
     await host.admin.defineRole(staff, t, { key: roleKey, permissions, source: 'vertical' });
     await host.admin.assignRole(staff, { principalId: principal, roleKey, node: { tenantId: t, scopeId: s } });
-    return host.getScope(principal, t, s);
+    return { principal, stub: await host.getScope(principal, t, s) };
+  };
+
+  const as = async (permissions: PermissionKey[]): Promise<ScopeStub> =>
+    (await mintPrincipal(permissions)).stub;
+
+  const grantOn = async (
+    principal: PrincipalId,
+    permission: PermissionKey,
+    entity: EntityRef,
+  ): Promise<void> => {
+    await host.admin.grant(staff, {
+      principalId: principal,
+      permission,
+      node: { tenantId: t, scopeId: s },
+      entity,
+      grantedBy: principal,
+    });
   };
 
   const probe = await as([PROBE_PERM]);
@@ -341,6 +379,8 @@ export async function engineHarness(opts: EngineHarnessOptions): Promise<EngineH
     scope: s,
     dir,
     as,
+    mintPrincipal,
+    grantOn,
     emit: async (event) => {
       await probe.invoke('probe/emit', event);
     },

@@ -2,7 +2,7 @@
   "name": "@substrat-run/demo-todo",
   "version": "0.1.1",
   "private": true,
-  "description": "The smallest vertical that is still a real one — a shared todo app, built forward from its model",
+  "description": "The smallest vertical that is still a real one \u2014 a shared todo app, built forward from its model",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -24,6 +24,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@types/node": "catalog:",
     "concurrently": "^9.0.0",
