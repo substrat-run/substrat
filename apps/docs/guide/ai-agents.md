@@ -103,6 +103,35 @@ files, so an agent that follows a reference stays in markdown instead of bouncin
 HTML.
 :::
 
+## The project announces itself
+
+You should not have to remember any of the above. A scaffolded vertical carries
+`.substrat/hooks/session-start.mjs`, which runs when an agent session opens and hands it
+three things it would otherwise have to discover: that this is a Substrat vertical, where
+the rules and the build flow live, and the URL of the docs slice describing **the kernel
+this project actually has installed** — read from `node_modules`, not from the range in
+`package.json`, because a caret on `0.x` pins the minor and the resolved version is what
+your code compiles against.
+
+It also remembers which version it last announced, so the first session after an upgrade
+opens by stating the jump rather than letting an agent discover it by being wrong.
+
+The script sits in `.substrat/` — the tool-neutral home, beside `playbook.md` — and
+`.claude/settings.json` is a three-line adapter that runs it. Any other client that grows
+a session hook binds to the same script.
+
+It is silent unless `package.json` has a `substrat` block, so it is inert in any other
+project; it makes no network request, so it costs nothing at startup and works offline;
+and it never fails a session — any unexpected error exits quietly. Opt out entirely by
+creating `.substrat/no-session-context`.
+
+::: tip Why not just check whether the docs match?
+Because the check is already mechanical for whoever actually fetches. `/llms-<version>.txt`
+returns 200 only while the published docs still describe that kernel, so a 404 *is* the
+mismatch warning — and putting an HTTP request on the critical path of every session start,
+to compute an answer the next fetch computes for free, is a poor trade.
+:::
+
 ## Small surface, strong types
 
 A narrow, aggressively typed SDK means a small hallucination surface. The design goal is
