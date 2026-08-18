@@ -1,6 +1,7 @@
 ---
 '@substrat-run/contracts': minor
 '@substrat-run/engine-workorder': minor
+'@substrat-run/engine-protocol': minor
 ---
 
 The workorder engine declares its operation surface, and a route binding becomes
@@ -48,5 +49,17 @@ when the module loads, naming what the engine does declare.
 `operations.ts` before `workOrder` was initialised. They now live in
 `schemas.ts`, which both import — the kind of cycle a warm `dist` hides and a
 tool that actually imports the module finds immediately.
+
+`@substrat-run/engine-protocol` publishes its four row shapes as Zod —
+`protocolTemplateRow`, `protocolResponseRow`, `protocolSignatureRow`,
+`protocolSignatureRequestRow` — each asserted **exact** against the interface the
+handler returns, in both directions. A declared return that drifts from what is
+actually returned is the defect #695 found eleven times, so the assertion is
+mutation-tested: widening either side stops the build.
+
+Protocol does not yet declare its operations. Doing so needs its input schemas
+moved to a leaf module first — they sit interleaved with the implementation
+across a 2000-line file, and `operations.ts` importing them from `index.ts` while
+`index.ts` re-exports `operations.ts` is a runtime cycle. See #738.
 
 Progresses #738; unblocks #739.

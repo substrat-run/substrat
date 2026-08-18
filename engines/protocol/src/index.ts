@@ -17,6 +17,18 @@ import { protocolEntities } from './entities.js';
 // relation edges naming this engine's entities, and to declare an operation's
 // output without transcribing this engine's shape.
 export { protocolEntities, protocolInstanceRow } from './entities.js';
+/**
+ * The row shapes this engine publishes, as Zod (#738). A vertical declaring an
+ * operation that RETURNS one needs something to point at; before these it had
+ * only TypeScript interfaces, which are enough to implement against and not
+ * enough to declare against.
+ */
+export {
+  protocolTemplateRow,
+  protocolResponseRow,
+  protocolSignatureRow,
+  protocolSignatureRequestRow,
+} from './schemas.js';
 import {
   assertAllowed,
   ulid,
