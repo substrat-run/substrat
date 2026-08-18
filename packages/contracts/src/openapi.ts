@@ -32,6 +32,16 @@ export interface ApiOperationDoc {
   inputOptional?: boolean;
   /** The response schema, when the vertical declares one (adopted incrementally). */
   output?: z.ZodType;
+  /**
+   * Where this operation is actually served, when the model declares it.
+   *
+   * Absent, the document describes the platform's `/api/op/{name}` invoke
+   * convention (api-surface.md §2.2) — which was the only shape available
+   * before operations declared `http`. Present, the document describes the REST
+   * route the server derives from that same declaration, so the document and
+   * the router cannot describe different surfaces.
+   */
+  http?: { method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string };
 }
 
 /** operation name (module-namespaced, e.g. 'hr/create-employee') → its doc. */
@@ -69,10 +79,23 @@ export function buildOpenApiDocument(
 ): Record<string, unknown> {
   const paths: Record<string, unknown> = {};
   for (const [name, op] of Object.entries(catalog)) {
-    paths[`/api/op/${name}`] = {
-      post: {
+    const url = op.http ? `/api${op.http.path}` : `/api/op/${name}`;
+    const verb = op.http ? op.http.method.toLowerCase() : 'post';
+    // `{listId}` in the path is a path PARAMETER, and OpenAPI requires it
+    // declared or the document is invalid — a renderer will not infer it.
+    const params = [...url.matchAll(/\{(\w+)\}/g)].map((m) => ({
+      name: m[1] as string,
+      in: 'path',
+      required: true,
+      schema: { type: 'string' },
+    }));
+    const existing = (paths[url] ?? {}) as Record<string, unknown>;
+    paths[url] = {
+      ...existing,
+      [verb]: {
         operationId: name.replace(/[^a-zA-Z0-9]+/g, '-'),
         summary: op.summary,
+        ...(params.length > 0 ? { parameters: params } : {}),
         ...(op.description ? { description: op.description } : {}),
         ...(op.tag ? { tags: [op.tag] } : {}),
         ...(op.input
@@ -118,4 +141,53 @@ export function buildOpenApiDocument(
     },
     security: [{ session: [] }, { bearer: [] }],
   };
+}
+
+/**
+ * The API catalog, derived from the declared operations.
+ *
+ * Every field `ApiOperationDoc` needs — summary, input, output — is already on
+ * the operation, declared once and compile-checked there. Writing the catalog by
+ * hand is the same duplication as writing the route table by hand, and drifts
+ * the same way: Meridian's catalog is 226 lines and Manyfold's 184, all of it
+ * restating what the model says.
+ *
+ * **Why not Hono's OpenAPI support.** It would make the document a function of
+ * the route registration rather than of the model, and route registration is
+ * itself derived from the model — so the document would be derived from a
+ * derivation, one step further from the thing a human approved. It also needs
+ * the Zod schemas passed in anyway, which is the part we already have. The
+ * usual reason to reach for it is that it gives you validation middleware for
+ * free; we do not need that, because `input` IS the schema the handler parses.
+ *
+ * `tag` and `description` are prose, so they are supplied — the same split as
+ * permission descriptions in `manifestOperations`.
+ */
+export function apiCatalogFrom(
+  operations: Readonly<Record<string, object>>,
+  prose: Readonly<Record<string, { tag?: string; description?: string }>> = {},
+): ApiCatalog {
+  const catalog: ApiCatalog = {};
+  for (const name of Object.keys(operations).sort()) {
+    const op = operations[name] as {
+      summary?: unknown;
+      input?: z.ZodType;
+      inputOptional?: boolean;
+      output?: z.ZodType;
+    };
+    if (typeof op?.summary !== 'string') continue;
+    const extra = prose[name] ?? {};
+    catalog[name] = {
+      summary: op.summary,
+      ...(extra.tag ? { tag: extra.tag } : {}),
+      ...(extra.description ? { description: extra.description } : {}),
+      ...(op.input ? { input: op.input } : {}),
+      ...(op.inputOptional ? { inputOptional: true } : {}),
+      ...(op.output ? { output: op.output } : {}),
+      ...((op as { http?: ApiOperationDoc['http'] }).http
+        ? { http: (op as { http: NonNullable<ApiOperationDoc['http']> }).http }
+        : {}),
+    };
+  }
+  return catalog;
 }

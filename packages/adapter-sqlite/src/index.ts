@@ -6137,6 +6137,41 @@ export class SqliteScopeHost implements ScopeHost {
     // whatever has passed up to that point. A system/override actor is unconditionally
     // allowed, so its checks are not authorizations and are not recorded.
     const passed: EventAuthorization[] = [];
+
+    // Lifted out of the object literal so `grant` can reuse it: a delegation
+    // check has to be the SAME check the operation itself passes, or the two
+    // could disagree about what the caller holds.
+    const runCheck: OperationContext['check'] = async (permission, entity?) => {
+      if (overrideActor) {
+        return {
+          allowed: true as const,
+          proof: [
+            {
+              subject: objectRef.parse(
+                `system:${overrideActor.system.replace(/[^a-zA-Z0-9_.-]/g, '-')}`,
+              ),
+              relation: `granted:${permission}`,
+              object: objectRef.parse(`scope:${rt.scopeId}`),
+            },
+          ],
+        };
+      }
+      const decision = await checker.check(
+        subject,
+        permission,
+        { tenantId: rt.tenantId, scopeId: rt.scopeId },
+        entity,
+      );
+      if (decision.allowed) {
+        const grant = grantRefFromProof(permission, decision.proof);
+        const entry: EventAuthorization = grant ? { permission, grant } : { permission };
+        if (!passed.some((p) => p.permission === entry.permission && p.grant === entry.grant)) {
+          passed.push(entry);
+        }
+      }
+      return decision;
+    };
+
     return {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
@@ -6226,35 +6261,63 @@ export class SqliteScopeHost implements ScopeHost {
           rowToPlatformRequest,
         );
       },
-      check: async (permission, entity?) => {
-        if (overrideActor) {
-          return {
-            allowed: true as const,
-            proof: [
-              {
-                subject: objectRef.parse(
-                  `system:${overrideActor.system.replace(/[^a-zA-Z0-9_.-]/g, '-')}`,
-                ),
-                relation: `granted:${permission}`,
-                object: objectRef.parse(`scope:${rt.scopeId}`),
-              },
-            ],
-          };
+      check: runCheck,
+      /**
+       * Narrow a permission this caller already holds onto one entity (#K-sharing).
+       *
+       * The verb user-initiated sharing needs, and the reason it did not exist:
+       * every entity-narrowed grant in the fleet is made at SEED time by
+       * `host.admin.grant`, so an app where a person shares their own record with
+       * someone had no supported mechanism at all.
+       *
+       * Two guardrails make it non-escalating by construction:
+       *
+       * 1. **Entity-narrowed only.** `entity` is required, so module code can
+       *    never write a scope-wide or tenant-wide grant.
+       * 2. **You may only grant what you hold ON THAT ENTITY.** The caller's own
+       *    decision is re-checked here rather than trusted, so an operation
+       *    cannot hand out more than it was given — delegation, never elevation.
+       *
+       * A system/override actor is allowed by construction and therefore skips
+       * guardrail 2 the same way its `check` does.
+       */
+      grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+        const held = await runCheck(permission, entity);
+        if (!held.allowed) {
+          throw new PermissionDenied(
+            `cannot grant '${permission}' on ${entity.entityType}:${entity.entityId} — ` +
+              'the caller does not hold it there (a grant delegates, it never elevates)',
+          );
         }
-        const decision = await checker.check(
-          subject,
-          permission,
-          { tenantId: rt.tenantId, scopeId: rt.scopeId },
-          entity,
-        );
-        if (decision.allowed) {
-          const grant = grantRefFromProof(permission, decision.proof);
-          const entry: EventAuthorization = grant ? { permission, grant } : { permission };
-          if (!passed.some((p) => p.permission === entry.permission && p.grant === entry.grant)) {
-            passed.push(entry);
-          }
+        rt.db
+          .prepare(
+            `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
+             VALUES (?, ?, ?)`,
+          )
+          .run(
+            `principal:${principal}`,
+            `granted:${permission}`,
+            `${entity.entityType}:${entity.entityId}`,
+          );
+      },
+      /** Withdraw a grant this caller could have made. Same guardrails, same reason. */
+      revoke: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+        const held = await runCheck(permission, entity);
+        if (!held.allowed) {
+          throw new PermissionDenied(
+            `cannot revoke '${permission}' on ${entity.entityType}:${entity.entityId} — ` +
+              'the caller does not hold it there',
+          );
         }
-        return decision;
+        rt.db
+          .prepare(
+            `DELETE FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?`,
+          )
+          .run(
+            `principal:${principal}`,
+            `granted:${permission}`,
+            `${entity.entityType}:${entity.entityId}`,
+          );
       },
       link: (child: EntityRef, parent: EntityRef) => {
         const allowed = relations.get(child.entityType);

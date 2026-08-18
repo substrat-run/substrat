@@ -1,0 +1,148 @@
+/**
+ * The scenario from spec/concept.md §9, replayed headlessly.
+ *
+ * Written from the CONCEPT, never from the model: a test derived from the model
+ * agrees with a wrong model perfectly and forever. Inputs and outputs are
+ * literals here for the same reason — a test that builds its input from the
+ * emitted schema cannot disagree with that schema.
+ */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ScopeHost } from '@substrat-run/kernel';
+import { buildHost, seed, type World } from '../src/seed.js';
+
+let dir: string;
+let host: ScopeHost;
+let world: World;
+
+const as = (who: 'ada' | 'bjorn') => host.getScope(world[who].principal, world.tenant, world.scope);
+
+beforeAll(async () => {
+  dir = mkdtempSync(join(tmpdir(), 'todo-scenario-'));
+  host = buildHost(dir);
+  world = await seed(host);
+});
+
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+describe('the happy path', () => {
+  let groceries: string;
+  let milk: string;
+
+  it('Ada creates a list and adds an item', async () => {
+    const ada = await as('ada');
+    const list = await ada.invoke<{ id: string; name: string }>('todo/create-list', {
+      name: 'Groceries',
+    });
+    groceries = list.id;
+    expect(list.name).toBe('Groceries');
+
+    const item = await ada.invoke<{ id: string; text: string; done: number }>('todo/add-item', {
+      listId: groceries,
+      text: 'milk',
+    });
+    milk = item.id;
+    expect(item.text).toBe('milk');
+    expect(item.done).toBe(0);
+  });
+
+  it('Björn cannot see it before it is shared', async () => {
+    const bjorn = await as('bjorn');
+    expect(await bjorn.invoke('todo/my-lists')).toEqual([]);
+    await expect(bjorn.invoke('todo/list-items', { listId: groceries })).rejects.toThrow(
+      /permission denied/i,
+    );
+  });
+
+  it('Ada shares it, and Björn sees it', async () => {
+    const ada = await as('ada');
+    await ada.invoke('todo/share-list', { listId: groceries, email: 'bjorn@example.com' });
+
+    const bjorn = await as('bjorn');
+    const lists = await bjorn.invoke<{ id: string; name: string }[]>('todo/my-lists');
+    expect(lists.map((l) => l.name)).toEqual(['Groceries']);
+  });
+
+  it('Björn adds an item and ticks Ada’s off', async () => {
+    const bjorn = await as('bjorn');
+    await bjorn.invoke('todo/add-item', { listId: groceries, text: 'bread' });
+    const ticked = await bjorn.invoke<{ done: number }>('todo/set-item-done', {
+      itemId: milk,
+      done: true,
+    });
+    expect(ticked.done).toBe(1);
+  });
+
+  it('Ada sees both changes', async () => {
+    const ada = await as('ada');
+    const items = await ada.invoke<{ text: string; done: number }[]>('todo/list-items', {
+      listId: groceries,
+    });
+    expect(items.map((i) => `${i.text}:${i.done}`)).toEqual(['milk:1', 'bread:0']);
+  });
+
+  describe('the denials that prove it', () => {
+    it('Björn cannot delete the list', async () => {
+      const bjorn = await as('bjorn');
+      await expect(bjorn.invoke('todo/delete-list', { listId: groceries })).rejects.toThrow(
+        /permission denied/i,
+      );
+    });
+
+    it('...while the door he DOES hold stays open', async () => {
+      // Without this control the refusal above would pass just as happily if
+      // Björn's access were broken entirely.
+      const bjorn = await as('bjorn');
+      await expect(
+        bjorn.invoke('todo/add-item', { listId: groceries, text: 'butter' }),
+      ).resolves.toBeTruthy();
+    });
+
+    it('Ada’s unshared list is invisible, not merely filtered', async () => {
+      const ada = await as('ada');
+      const work = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Work' });
+
+      const bjorn = await as('bjorn');
+      const lists = await bjorn.invoke<{ name: string }[]>('todo/my-lists');
+      expect(lists.map((l) => l.name)).toEqual(['Groceries']);
+      await expect(bjorn.invoke('todo/list-items', { listId: work.id })).rejects.toThrow(
+        /permission denied/i,
+      );
+    });
+
+    it('a share can be revoked, and the access goes with it', async () => {
+      const ada = await as('ada');
+      const shared = await ada.invoke<{ id: string }>('todo/share-list', {
+        listId: groceries,
+        email: 'bjorn@example.com',
+      });
+      await ada.invoke('todo/revoke-share', { shareId: shared.id });
+
+      const bjorn = await as('bjorn');
+      expect(await bjorn.invoke('todo/my-lists')).toEqual([]);
+    });
+
+    it('Cleo, in another tenant, reaches nothing at all', async () => {
+      // A handle is not access: `getScope` hands her a stub, and every door
+      // behind it is shut. Asserting on the handle would have tested the wrong
+      // thing and passed for the wrong reason.
+      const cleo = await host.getScope(world.cleo.principal, world.tenant, world.scope);
+      await expect(cleo.invoke('todo/my-lists')).resolves.toEqual([]);
+      await expect(cleo.invoke('todo/list-items', { listId: groceries })).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(cleo.invoke('todo/create-list', { name: 'Trojan' })).rejects.toThrow(
+        /permission denied/i,
+      );
+    });
+
+    it('...and in her OWN scope she is a normal member', async () => {
+      // The control for the row above: Cleo is not a broken principal, she is
+      // simply somewhere else.
+      const cleo = await host.getScope(world.cleo.principal, world.otherTenant, world.otherScope);
+      await expect(cleo.invoke('todo/create-list', { name: 'Cleo’s list' })).resolves.toBeTruthy();
+    });
+  });
+});

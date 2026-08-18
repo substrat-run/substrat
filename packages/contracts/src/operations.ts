@@ -90,7 +90,28 @@ type PiiShape<O, OutKeys extends string> = O extends { emits: { piiClass: 'none'
  * list, not a denial.
  */
 type OpAuthority<O, PermKey extends string> = O extends { narrows: unknown }
-  ? { readonly narrows: { readonly reason: string }; readonly permission?: never }
+  ? {
+      readonly narrows: {
+        readonly reason: string;
+        /**
+         * THIS module's permission keys the walk evaluates per entity.
+         *
+         * Required, and empty is a legitimate answer — the point is that it is
+         * stated. Without it a key reached only by a proof walk contributes
+         * nothing to the derived permission list and vanishes from the review
+         * artifact, which is the one place a widened permission is supposed to
+         * be impossible to miss.
+         *
+         * A walk may also check a COMPOSED ENGINE's key (Callout's portal walk
+         * checks `workorder:read`). Those are deliberately not listed: the
+         * engine's own manifest declares them, and a vertical restating another
+         * module's permissions is the same two-descriptions defect this exists
+         * to prevent.
+         */
+        readonly checks: readonly PermKey[];
+      };
+      readonly permission?: never;
+    }
   : { readonly permission: PermKey; readonly narrows?: never };
 
 /**
@@ -225,7 +246,11 @@ export function defineOperations<
 export function permissionsUsedBy(operations: Readonly<Record<string, object>>): string[] {
   const keys = Object.values(operations).flatMap((op) => {
     const permission = (op as { permission?: unknown }).permission;
-    return typeof permission === 'string' ? [permission] : [];
+    if (typeof permission === 'string') return [permission];
+    // A proof walk checks per entity rather than up front, but the keys it
+    // evaluates are just as much part of this module's permission surface.
+    const checks = (op as { narrows?: { checks?: unknown } }).narrows?.checks;
+    return Array.isArray(checks) ? checks.filter((k): k is string => typeof k === 'string') : [];
   });
   return [...new Set(keys)].sort();
 }
@@ -278,3 +303,138 @@ type ImplInput<O> = O extends { input: infer I }
       : z.infer<I>
     : undefined
   : undefined;
+
+// ---------------------------------------------------------------------------
+// The manifest fragment the operations contribute.
+// ---------------------------------------------------------------------------
+
+/** Every permission key some operation declares, as a type. */
+export type PermissionsDeclaredBy<Ops> = {
+  [K in keyof Ops]: Ops[K] extends { permission: infer P } ? (P extends string ? P : never) : never;
+}[keyof Ops];
+
+/**
+ * The operation half of a module's manifest — derived, not written twice.
+ *
+ * `manifestEntities` already derives the entity-shaped fragments from the
+ * registry; this is its counterpart for the operation surface. Together they
+ * leave the hand-written manifest holding only what is genuinely a fact about
+ * *this deployment* rather than about the app: id, version, migrations dir,
+ * entitlement, env spec.
+ *
+ * ```ts
+ * export const manifest = moduleManifest.parse({
+ *   id: '@acme/vertical', version: '0.1.0', kernelContract: '^0.0.1',
+ *   migrations: { journalDir: './migrations', compatibleFrom: '0.1.0' },
+ *   ...manifestOperations(operations, {
+ *     permissions: { 'list:manage': 'Own and manage your lists' },
+ *   }),
+ *   ...manifestEntities(entities, {}),
+ * });
+ * ```
+ *
+ * **Descriptions are supplied, keys are derived.** The prose feeds the human
+ * permission diff and belongs beside the manifest; the key SET is a fact about
+ * what the operations check, and deriving it is what stops the two disagreeing.
+ * A key some operation checks but nobody described is an error rather than a
+ * silently undocumented permission.
+ *
+ * Extra descriptions are allowed on purpose: a `narrows` operation walks with a
+ * permission the model does not name (it declares only the reason), so a key
+ * reached solely by a proof walk has to be declarable here or it would vanish
+ * from the review artifact.
+ */
+export function manifestOperations<const Ops extends Record<string, object>>(
+  operations: Ops,
+  spec: {
+    readonly permissions: Readonly<Record<PermissionsDeclaredBy<Ops>, string>> & Readonly<Record<string, string>>;
+    /** Event types this module consumes — not derivable from its own operations. */
+    readonly consumes?: readonly { readonly type: string; readonly schemaVersion: number }[];
+  },
+): {
+  permissions: { key: string; description: string }[];
+  events: {
+    emits: { type: string; schemaVersion: number }[];
+    consumes: { type: string; schemaVersion: number }[];
+  };
+} {
+  const described = spec.permissions as Record<string, string>;
+  const used = permissionsUsedBy(operations);
+
+  const undescribed = used.filter((key) => !described[key]);
+  if (undescribed.length > 0) {
+    throw new Error(
+      `manifestOperations: no description for permission(s) ${undescribed.join(', ')} — ` +
+        'every key an operation checks appears in the permission review, so it needs prose',
+    );
+  }
+
+  return {
+    permissions: Object.keys(described)
+      .sort()
+      .map((key) => ({ key, description: described[key] as string })),
+    events: {
+      emits: eventsEmittedBy(operations),
+      consumes: [...(spec.consumes ?? [])].sort((a, b) => a.type.localeCompare(b.type)),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Binding a composed engine's operations to this vertical's URLs.
+// ---------------------------------------------------------------------------
+
+/**
+ * One engine operation, given a place in THIS vertical's HTTP surface.
+ *
+ * An engine declares no `http`, and should not: it is entity-agnostic and does
+ * not own a URL shape. Two verticals composing `workorder` legitimately disagree
+ * about whether it lives at `/workorders` or `/repairs`. So the path is the
+ * vertical's to decide — but it was previously undeclarable, which is why a
+ * composing vertical hand-wrote most of its route table (Callout: 17 of 27).
+ *
+ * `input` and `output` are IMPORTED from the engine, never retyped —
+ * `createWorkOrderInput` and `workOrder` are exported for exactly this.
+ */
+type EngineRouteShape<O> = {
+  /** One line, imperative — what invoking this does. Feeds the API document. */
+  readonly summary: string;
+  /** The engine's own input schema. Omitted means the operation takes no body. */
+  readonly input?: z.ZodObject<z.ZodRawShape>;
+  /** The engine's own published return shape, where the engine exports one. */
+  readonly output?: z.ZodType;
+  readonly http: {
+    readonly method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+    readonly path: CheckedPath<O>;
+  };
+};
+
+/**
+ * Declare where a composed engine's operations live in this vertical's API.
+ *
+ * ```ts
+ * export const engineRoutes = defineEngineRoutes({
+ *   'workorder/get': {
+ *     summary: 'One work order',
+ *     input: getWorkOrderInput,
+ *     output: workOrder,
+ *     http: { method: 'GET', path: '/workorders/{orderId}' },
+ *   },
+ * });
+ * ```
+ *
+ * Every `{var}` is checked against the engine's own input schema, so a path
+ * naming a field the engine does not accept is a compile error — the defect
+ * class that hand-written routes produced silently.
+ *
+ * **The operation NAME is not checked here, and cannot be.** `ModuleRegistration`
+ * types its operations as `Record<string, OperationHandler>`, so the keys are
+ * erased before a vertical can see them. Pass `knownOperations` to
+ * `mountOperations` and a typo fails at mount instead of as a 404 at request
+ * time; declaring engine operations (#707) would move it earlier still.
+ */
+export function defineEngineRoutes<
+  const R extends { readonly [K in keyof R]: EngineRouteShape<R[K]> },
+>(routes: R): R {
+  return routes;
+}

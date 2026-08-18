@@ -119,6 +119,53 @@ export function permissionContractSuite(
       await fixture.cleanup();
     });
 
+    // -- runtime delegation: ctx.grant / ctx.revoke ---------------------------
+    // The verb user-initiated sharing needs. Every OTHER entity-narrowed grant in
+    // this suite is made by `host.admin.grant` — a platform actor at seed time —
+    // so without these an app where a person shares their own record with someone
+    // has no supported mechanism.
+    describe('ctx.grant delegates, and cannot elevate', () => {
+      const frank: PrincipalId = principalId.parse(ulid());
+      const share = async (who: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+        const stub = await host.getScope(who, t1, s1);
+        return stub.invoke('perm/share', { principal: frank, permission, entity });
+      };
+
+      it('a caller may narrow a permission it holds onto one entity', async () => {
+        expect((await probe(frank, s1, PERM_USE, { entityType: 'item', entityId: 'i1' })).allowed).toBe(false);
+        await share(alice, PERM_USE, { entityType: 'item', entityId: 'i1' });
+        expect((await probe(frank, s1, PERM_USE, { entityType: 'item', entityId: 'i1' })).allowed).toBe(true);
+      });
+
+      it('the grant reaches that entity and nothing else', async () => {
+        expect((await probe(frank, s1, PERM_USE, { entityType: 'item', entityId: 'i2' })).allowed).toBe(false);
+        expect((await probe(frank, s1, PERM_USE)).allowed).toBe(false);
+      });
+
+      it('refuses to grant what the caller does not hold there', async () => {
+        // bob holds PERM_READ at s1 and PERM_USE nowhere.
+        await expect(share(bob, PERM_USE, { entityType: 'item', entityId: 'i1' })).rejects.toThrow(
+          /a grant delegates, it never elevates/,
+        );
+      });
+
+      it('...while the door bob DOES hold stays open', async () => {
+        // The control: without this, the refusal above would pass just as
+        // happily if `ctx.grant` were broken for everyone.
+        await expect(share(bob, PERM_READ, { entityType: 'item', entityId: 'i1' })).resolves.toBeTruthy();
+      });
+
+      it('revoke withdraws it', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('perm/unshare', {
+          principal: frank,
+          permission: PERM_USE,
+          entity: { entityType: 'item', entityId: 'i1' },
+        });
+        expect((await probe(frank, s1, PERM_USE, { entityType: 'item', entityId: 'i1' })).allowed).toBe(false);
+      });
+    });
+
     it('denies by default with the checked permission and node', async () => {
       const d = await probe(principalId.parse(ulid()), s1, PERM_READ);
       expect(d.allowed).toBe(false);

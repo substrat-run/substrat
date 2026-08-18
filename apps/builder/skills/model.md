@@ -68,7 +68,11 @@ export const model = emitModel(entities);
 
 - **`parents`, `key`, `erasable`** name fields/entities that exist.
 - **`permission`** names a key in `PERMISSIONS`. An operation carries
-  `permission` **or** `narrows: { reason }` — never both, never neither.
+  `permission` **or** `narrows: { reason, checks }` — never both, never neither.
+  `checks` names THIS module's keys the per-entity walk evaluates (`[]` when it
+  walks only on a composed engine's key, which the engine declares). It is
+  required because a key reached only by a walk would otherwise vanish from the
+  permission review.
 - **`entityIdFrom`** names a field of that operation's **`output`**. For a
   mutation writing a *child*, the event is usually about the *parent*, so the id
   field and the entity differ — say which field carries it.
@@ -144,3 +148,7 @@ vertical owns.
 
 Write `spec/model.ts` and stop. Say briefly what you declared and what you
 deliberately left as prose, so the builder can approve or correct it.
+
+Next is the **scenario phase**, not the build: the concept's scenario becomes a
+failing suite before any code exists, so that something in the project is still
+capable of disagreeing with this model.

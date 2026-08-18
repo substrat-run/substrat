@@ -67,7 +67,7 @@ describe('operation surface', () => {
     },
     'customer/list': {
       summary: 'List the customers this caller may see',
-      narrows: { reason: 'a salesperson sees their own customers, not a denial' },
+      narrows: { reason: 'a salesperson sees their own customers, not a denial', checks: ['customer:manage'] },
       input: z.object({}),
       output: z.object({ rows: z.array(z.string()) }),
     },
@@ -108,7 +108,7 @@ ops({
     permission: 'customer:manage',
     input: z.object({}),
     output: z.object({ id: z.string() }),
-    narrows: { reason: 'own rows' },
+    narrows: { reason: 'own rows', checks: [] },
   },
 });
 
@@ -130,6 +130,29 @@ ops({
     output: z.object({ id: z.string() }),
     // @ts-expect-error a bare `narrows: true` carries no reason
     narrows: true,
+  },
+});
+
+// --- narrows must state which of THIS module's keys the walk checks ---------
+ops({
+  'x/do': {
+    summary: 's',
+    input: z.object({}),
+    output: z.object({ id: z.string() }),
+    // @ts-expect-error `checks` is required — a key reached only by a walk would
+    // otherwise vanish from the derived permission list
+    narrows: { reason: 'own rows' },
+  },
+});
+
+// --- ...and `checks` names declared keys, not free strings ------------------
+ops({
+  'x/do': {
+    summary: 's',
+    input: z.object({}),
+    output: z.object({ id: z.string() }),
+    // @ts-expect-error 'customer:manag' is not a declared permission key
+    narrows: { reason: 'own rows', checks: ['customer:manag'] },
   },
 });
 

@@ -54,6 +54,7 @@ import {
 	interviewWriteGuard,
 	isSpecPhase,
 	modelWriteGuard,
+	scenarioWriteGuard,
 	skillsForPhase,
 	SKILL_MANIFEST,
 } from './phase.js';
@@ -361,7 +362,9 @@ export class BuilderAgent extends DurableObject<Env> {
 					? interviewWriteGuard
 					: phase === 'model'
 						? modelWriteGuard
-						: buildWriteGuard,
+						: phase === 'scenario'
+							? scenarioWriteGuard
+							: buildWriteGuard,
 		});
 	}
 

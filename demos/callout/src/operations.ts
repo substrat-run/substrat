@@ -1,4 +1,4 @@
-import { defineOperations, money } from '@substrat-run/contracts';
+import { defineEngineRoutes, defineOperations, money } from '@substrat-run/contracts';
 import { protocolInstanceRow } from '@substrat-run/engine-protocol';
 import { billableLine, workOrder } from '@substrat-run/engine-workorder';
 import { z } from 'zod';
@@ -52,7 +52,11 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
     summary: "Report the caller's role in this scope",
     // No permission gates it: answering "what may I do" must work for everyone,
     // including a principal who may do nothing.
-    narrows: { reason: 'every principal may ask what they themselves may do' },
+    narrows: {
+      reason: 'every principal may ask what they themselves may do',
+      // Also checks the workorder engine's `report`, which the ENGINE declares.
+      checks: ['customer:manage'],
+    },
     // No body at all.
     output: z.object({ role: z.enum(['office-admin', 'technician', 'none']) }),
   },
@@ -93,7 +97,7 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
     summary: 'The current price list',
     permission: 'customer:manage',
     output: z.array(priceRow),
-    http: { method: 'GET', path: '/price-list' },
+    http: { method: 'GET', path: '/prices' },
   },
   'callout/upsert-price': {
     summary: 'Create or update a price-list article',
@@ -132,10 +136,18 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
     // The handler's own schema, not a restatement of it.
     input: instantiateProtocolInput,
     output: protocolInstanceRow,
+    // `entityType` is `z.literal('workorder')` in that schema, so the route
+    // supplies it — this endpoint used to be hand-written for exactly that
+    // reason, and the declaration had said it all along.
+    http: { method: 'POST', path: '/workorders/{entityId}/protocols' },
   },
   'callout/portal-orders': {
     summary: "The work orders visible to the caller's portal",
-    narrows: { reason: 'a portal caller sees their own orders, not a denial' },
+    narrows: {
+      reason: 'a portal caller sees their own orders, not a denial',
+      // Walks on `workorder:read` alone — an engine key, declared by the engine.
+      checks: [],
+    },
     output: z.array(workOrder),
   },
   'callout/timeline': {
@@ -143,5 +155,65 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
     permission: 'customer:manage',
     input: z.object({ entityType: z.string(), entityId: z.string() }),
     output: z.array(z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() })),
+  },
+});
+
+/**
+ * Where the composed engines' operations live in Callout's API (#707 follow-on).
+ *
+ * These were 17 of Callout's 27 hand-written routes, and they had to be: an
+ * engine declares no `http` because it does not own a URL shape — a bike shop
+ * calls the same work order a repair. The path is the vertical's decision, and
+ * this is where it gets declared instead of buried in a route table.
+ *
+ * `input` here is what the PATH binds against, not a restatement of the engine's
+ * whole input: the body flows through untouched and the engine validates it.
+ * Once engines declare their own operations (#707), even this goes away and a
+ * binding is just a name and a path.
+ */
+const orderIdInput = z.object({ orderId: z.string() });
+
+export const calloutEngineRoutes = defineEngineRoutes({
+  'workorder/list': {
+    summary: 'Work orders, newest first',
+    input: z.object({ status: z.string().optional() }),
+    output: z.array(workOrder),
+    http: { method: 'GET', path: '/workorders' },
+  },
+  'workorder/get': {
+    summary: 'One work order',
+    input: orderIdInput,
+    output: workOrder,
+    http: { method: 'GET', path: '/workorders/{orderId}' },
+  },
+  'workorder/assign': {
+    summary: 'Assign a technician',
+    input: orderIdInput,
+    output: workOrder,
+    http: { method: 'POST', path: '/workorders/{orderId}/assign' },
+  },
+  'workorder/start': {
+    summary: 'Start the work',
+    input: orderIdInput,
+    output: workOrder,
+    http: { method: 'POST', path: '/workorders/{orderId}/start' },
+  },
+  'workorder/report-time': {
+    summary: 'Report time against the order',
+    input: orderIdInput,
+    output: workOrder,
+    http: { method: 'POST', path: '/workorders/{orderId}/time' },
+  },
+  'workorder/report-material': {
+    summary: 'Report material against the order',
+    input: orderIdInput,
+    output: workOrder,
+    http: { method: 'POST', path: '/workorders/{orderId}/material' },
+  },
+  'workorder/close': {
+    summary: 'Close the order at hand-over',
+    input: orderIdInput,
+    output: workOrder,
+    http: { method: 'POST', path: '/workorders/{orderId}/close' },
   },
 });

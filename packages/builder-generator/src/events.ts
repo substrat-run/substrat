@@ -35,7 +35,7 @@ export interface PlanAssumption {
  * there, and it re-exports this. One definition either way: it was written out
  * twice before, and the two drifted the moment a phase was added.
  */
-export type BuildPhase = 'interview' | 'model' | 'scaffold' | 'iterate';
+export type BuildPhase = 'interview' | 'model' | 'scenario' | 'scaffold' | 'iterate';
 
 export type BuildEvent =
 	/** Assistant prose destined for the chat pane. */

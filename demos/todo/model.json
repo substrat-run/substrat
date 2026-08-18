@@ -1,0 +1,143 @@
+{
+  "entities": {
+    "item": {
+      "table": "todo_items",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "list_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "done": {
+            "type": "number"
+          },
+          "added_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "list_id",
+          "text",
+          "done",
+          "added_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "list"
+      ]
+    },
+    "list": {
+      "table": "todo_lists",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner_id",
+          "name",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "owner"
+      ]
+    },
+    "owner": {
+      "table": "todo_owners",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "email"
+      ],
+      "erasable": [
+        "display_name",
+        "email"
+      ]
+    },
+    "share": {
+      "table": "todo_shares",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "list_id": {
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "list_id",
+          "principal",
+          "email",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "list"
+      ],
+      "erasable": [
+        "email"
+      ]
+    }
+  }
+}

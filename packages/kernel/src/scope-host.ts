@@ -164,6 +164,30 @@ export interface OperationContext {
    * Idempotent.
    */
   link(child: EntityRef, parent: EntityRef): void;
+  /**
+   * Narrow a permission the CALLER ALREADY HOLDS onto one entity — how an app
+   * expresses user-initiated sharing.
+   *
+   * Every entity-narrowed grant in the fleet used to be made at seed time
+   * through `HostAdmin.grant`, which is a platform actor's verb. An app where a
+   * person shares their own record with someone therefore had no supported
+   * mechanism: the alternative is a membership table consulted by hand in every
+   * handler, which is the forgotten-WHERE-clause failure this platform exists to
+   * remove.
+   *
+   * Non-escalating by construction:
+   *
+   * - `entity` is REQUIRED — module code can never write a scope- or
+   *   tenant-wide grant, only narrow one onto a thing.
+   * - The caller's own decision on that entity is re-checked, so an operation
+   *   can only hand out what it was itself given. Delegation, never elevation.
+   *
+   * Transactional with the operation: a grant made by an operation that then
+   * throws never happened, the same as its rows and its events.
+   */
+  grant(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
+  /** Withdraw a grant this caller could have made. Same guardrails. */
+  revoke(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
 }
 
 export type OperationHandler<I = unknown, O = unknown> = (

@@ -27,16 +27,26 @@ describe('the ladder', () => {
     expect(await detectPhase(ws('spec/concept.md'))).toBe('model');
   });
 
-  it('scaffold once the model lands', async () => {
-    expect(await detectPhase(ws('spec/concept.md', 'spec/model.ts'))).toBe('scaffold');
+  it('scenario once the model lands — the tests come before the code', async () => {
+    expect(await detectPhase(ws('spec/concept.md', 'spec/model.ts'))).toBe('scenario');
+  });
+
+  it('scaffold once the scenario suite exists', async () => {
+    expect(
+      await detectPhase(ws('spec/concept.md', 'spec/model.ts', 'test/scenario.test.ts')),
+    ).toBe('scaffold');
   });
 
   it('iterate once the module exists', async () => {
-    expect(await detectPhase(ws('spec/concept.md', 'spec/model.ts', 'src/module.ts'))).toBe('iterate');
+    expect(
+      await detectPhase(
+        ws('spec/concept.md', 'spec/model.ts', 'test/scenario.test.ts', 'src/module.ts'),
+      ),
+    ).toBe('iterate');
   });
 
   it('is ordered, so a UI stepper can render it', () => {
-    expect(PHASES).toEqual(['interview', 'model', 'scaffold', 'iterate']);
+    expect(PHASES).toEqual(['interview', 'model', 'scenario', 'scaffold', 'iterate']);
   });
 
   it('knows which phases write the spec', () => {
@@ -78,8 +88,14 @@ describe('the direction rule — build turns cannot author the model', () => {
   it('allows everything else — it is a mirror, not a cage', () => {
     expect(buildWriteGuard('src/module.ts')).toBeNull();
     expect(buildWriteGuard('spec/concept.md')).toBeNull();
-    expect(buildWriteGuard('test/scenario.test.ts')).toBeNull();
     expect(buildWriteGuard('package.json')).toBeNull();
+    // Suites the build ADDS stay writable — only the oracle is frozen.
+    expect(buildWriteGuard('test/server.test.ts')).toBeNull();
+  });
+
+  it('freezes the scenario suite — a build may not rewrite its own oracle', () => {
+    expect(buildWriteGuard('test/scenario.test.ts')).toMatch(/cannot write test\/scenario/);
+    expect(buildWriteGuard('test/scenario.test.ts')).toMatch(/stop/i);
   });
 
   it('does not refuse a file that merely starts like the model', () => {

@@ -1,0 +1,1008 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Todo",
+    "version": "0.1.0",
+    "description": "A shared list app on Substrat."
+  },
+  "paths": {
+    "/api/lists/{listId}/items": {
+      "post": {
+        "operationId": "todo-add-item",
+        "summary": "Add an item to a list",
+        "parameters": [
+          {
+            "name": "listId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "tags": [
+          "Items"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "listId": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "listId",
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "list_id": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "done": {
+                      "type": "number"
+                    },
+                    "added_by": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "list_id",
+                    "text",
+                    "done",
+                    "added_by",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      },
+      "get": {
+        "operationId": "todo-list-items",
+        "summary": "The items on a list",
+        "parameters": [
+          {
+            "name": "listId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "tags": [
+          "Items"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "listId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "listId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "list_id": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "done": {
+                        "type": "number"
+                      },
+                      "added_by": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "list_id",
+                      "text",
+                      "done",
+                      "added_by",
+                      "created_at"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/lists": {
+      "post": {
+        "operationId": "todo-create-list",
+        "summary": "Create a list",
+        "tags": [
+          "Lists"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "owner_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "owner_id",
+                    "name",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      },
+      "get": {
+        "operationId": "todo-my-lists",
+        "summary": "List the lists you own or have been shared",
+        "description": "A proof walk: lists you own or were shared, never a filter.",
+        "tags": [
+          "Lists"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "owner_id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "owner_id",
+                      "name",
+                      "created_at"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/items/{itemId}": {
+      "delete": {
+        "operationId": "todo-delete-item",
+        "summary": "Delete an item",
+        "parameters": [
+          {
+            "name": "itemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "tags": [
+          "Items"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "itemId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "itemId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "deleted"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/lists/{listId}": {
+      "delete": {
+        "operationId": "todo-delete-list",
+        "summary": "Delete a list and everything on it",
+        "parameters": [
+          {
+            "name": "listId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "tags": [
+          "Lists"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "listId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "listId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "deleted"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      },
+      "patch": {
+        "operationId": "todo-rename-list",
+        "summary": "Rename a list",
+        "parameters": [
+          {
+            "name": "listId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "tags": [
+          "Lists"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "listId": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "listId",
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "owner_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "owner_id",
+                    "name",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/join": {
+      "post": {
+        "operationId": "todo-join",
+        "summary": "Claim your account in this workspace",
+        "tags": [
+          "Account"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                  },
+                  "displayName": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "email",
+                  "displayName"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "display_name": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "email",
+                    "display_name",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/lists/{listId}/shares": {
+      "get": {
+        "operationId": "todo-list-shares",
+        "summary": "Who this list is shared with",
+        "parameters": [
+          {
+            "name": "listId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "tags": [
+          "Sharing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "listId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "listId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "list_id": {
+                        "type": "string"
+                      },
+                      "principal": {
+                        "type": "string"
+                      },
+                      "email": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "list_id",
+                      "principal",
+                      "email",
+                      "created_at"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      },
+      "post": {
+        "operationId": "todo-share-list",
+        "summary": "Share a list with someone by email",
+        "parameters": [
+          {
+            "name": "listId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Narrows `list:contribute` onto this list for that person.",
+        "tags": [
+          "Sharing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "listId": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                  }
+                },
+                "required": [
+                  "listId",
+                  "email"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "list_id": {
+                      "type": "string"
+                    },
+                    "principal": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "list_id",
+                    "principal",
+                    "email",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/shares/{shareId}": {
+      "delete": {
+        "operationId": "todo-revoke-share",
+        "summary": "Revoke someone’s access to a list",
+        "parameters": [
+          {
+            "name": "shareId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "tags": [
+          "Sharing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shareId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "shareId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "revoked": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "revoked"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    },
+    "/api/items/{itemId}/done": {
+      "post": {
+        "operationId": "todo-set-item-done",
+        "summary": "Tick an item off, or put it back",
+        "parameters": [
+          {
+            "name": "itemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "tags": [
+          "Items"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "itemId": {
+                    "type": "string"
+                  },
+                  "done": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "itemId",
+                  "done"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "list_id": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "done": {
+                      "type": "number"
+                    },
+                    "added_by": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "list_id",
+                    "text",
+                    "done",
+                    "added_by",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed — the input did not parse against the operation schema."
+          },
+          "401": {
+            "description": "No session — sign in (or present a bearer token) first."
+          },
+          "403": {
+            "description": "Permission denied — the caller lacks the permission this operation checks."
+          },
+          "404": {
+            "description": "Unknown operation, or an entity named in the input does not exist."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sb_session",
+        "description": "The vertical's session cookie. Instances on the Better-Auth provider use its cookie instead; same-origin requests carry either automatically."
+      },
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "security": [
+    {
+      "session": []
+    },
+    {
+      "bearer": []
+    }
+  ]
+}
