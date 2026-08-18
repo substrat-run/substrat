@@ -32,7 +32,8 @@
     "todo-demo": "pnpm --filter @substrat-run/demo-todo",
     "lint:tests": "node tools/test-independence.mjs",
     "lint:docs": "node tools/docs-drift.mjs",
-    "lint:llms": "tsx tools/llms-index.mts"
+    "lint:llms": "tsx tools/llms-index.mts",
+    "lint:agent-rules": "tsx tools/agent-rules-emit.mts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

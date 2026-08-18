@@ -49,7 +49,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileForLink, tableOfContents, type IndexedPage } from './sidebar.mjs';
+import { fileForLink, START_HERE, tableOfContents, type IndexedPage } from './sidebar.mjs';
 
 /** Where the docs are published. Links in `llms.txt` must be absolute. */
 export const SITE = 'https://substrat.net';
@@ -266,6 +266,14 @@ export function buildArtifacts(srcDir: string, repoRoot: string): Artifact[] {
       `The sidebar names ${missing.length} page(s) with no source file:\n  ${missing.join('\n  ')}`,
     );
   }
+  // The index promotes this page above everything else it lists, so a rename that
+  // left the promotion behind would publish a 404 as the first thing an agent reads.
+  if (!pages.has(START_HERE)) {
+    throw new Error(
+      `llms.txt promotes ${START_HERE} as the page to read first, but no sidebar entry ` +
+        `points there. Update START_HERE in sidebar.mts, or restore the page.`,
+    );
+  }
 
   // The twins.
   for (const { page, raw } of pages.values()) {
@@ -278,10 +286,31 @@ export function buildArtifacts(srcDir: string, repoRoot: string): Artifact[] {
     '',
     `> ${TAGLINE}`,
     '',
-    'Substrat is a multi-tenant kernel (tenancy, permissions, events, migrations) plus',
-    'headless **engines** that own domain invariants and **verticals** that own everything',
-    'a user touches. The guarantees are enforced at runtime by the platform, not by',
-    'convention in generated code.',
+    '## What Substrat is',
+    '',
+    'Substrat hosts the parts of a business application that are catastrophic to get wrong —',
+    'multi-tenancy, permissions, audit, migrations — and enforces them **at runtime**, in the',
+    'platform. That is the whole distinction: a template hands you correct code once and every',
+    'edit after erodes it, whereas here a vertical *cannot* query across tenants or skip a',
+    'permission check, because the kernel will not serve the query.',
+    '',
+    'Three layers, and you write only the third:',
+    '',
+    '- **Kernel** — tenancy, permissions, events and audit, migrations. One **scope** is one',
+    '  isolated SQLite database; there is no cross-tenant API to misuse.',
+    '- **Engines** — headless, versioned packages owning domain invariants (work orders,',
+    '  invoicing, bookings, protocols, invites, absence, metering). You either **compose** one',
+    '  (import it; its in-scope functions run inside *your* transaction) or **feed** one (emit a',
+    '  fat event; it consumes, with no import). Engines never import each other.',
+    '- **Verticals** — the application: vocabulary, pricing, roles, screens. This is the layer',
+    '  you own, and the only one an agent should be writing.',
+    '',
+    'A vertical is built by scaffolding one (`npm create substrat`) and reshaping the working',
+    'reference vertical it ships into your domain. It runs locally against SQLite with no',
+    'platform in the loop, and deploys to Cloudflare Durable Objects unchanged.',
+    '',
+    'That vocabulary — scope, engine, vertical, module, operation — is what the page titles',
+    'below assume you already have.',
     '',
     '## Before you read',
     '',
@@ -301,6 +330,19 @@ export function buildArtifacts(srcDir: string, repoRoot: string): Artifact[] {
     'HTML page at the same path, which wraps the same prose in navigation and theme markup.',
     '',
     `Everything at once: [\`${SITE}/llms-full.txt\`](${SITE}/llms-full.txt).`,
+    '',
+    '## Start here',
+    '',
+    'If you are building on Substrat, read this one page before any other:',
+    '',
+    `- [**Agent rules**](${twinUrl(START_HERE)}): the always-on contract — the three layers,`,
+    '  the ten non-negotiable module-code rules, the gates to run, and the two checkpoints you',
+    '  may never self-approve. Most of what a generated vertical gets wrong is on that page,',
+    '  and where it restates the summary above, that page is the authoritative one.',
+    '',
+    'The rest of this index is reference. Fetch from it as the task needs, rather than reading',
+    'it through — the sections below are ordered for a person learning the platform, not for an',
+    'agent with a job to do.',
     '',
   ];
 
