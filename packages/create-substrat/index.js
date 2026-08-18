@@ -162,6 +162,12 @@ dist/
 *.db
 .data/
 .DS_Store
+
+# Which kernel version this checkout last announced to an agent (.substrat/hooks
+# /session-start.mjs). Per-checkout state, not a project fact.
+.substrat/.docs-pin
+# Opt out of that hook entirely by creating this file.
+.substrat/no-session-context
 `;
 
 function readme(name) {
