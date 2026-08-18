@@ -1,5 +1,6 @@
 import { defineEngineRoutes, defineOperations, money } from '@substrat-run/contracts';
-import { protocolInstanceRow } from '@substrat-run/engine-protocol';
+import { invoicingOperations } from '@substrat-run/engine-invoicing';
+import { protocolInstanceRow, protocolOperations } from '@substrat-run/engine-protocol';
 import { billableLine, workOrder, workorderOperations } from '@substrat-run/engine-workorder';
 import { z } from 'zod';
 import { calloutEntities } from './entities.js';
@@ -179,4 +180,43 @@ export const calloutEngineRoutes = defineEngineRoutes(workorderOperations)({
   'workorder/report-time': { method: 'POST', path: '/workorders/{orderId}/time' },
   'workorder/report-material': { method: 'POST', path: '/workorders/{orderId}/material' },
   'workorder/close': { method: 'POST', path: '/workorders/{orderId}/close' },
+});
+
+/**
+ * The protocol engine's operations, at Callout's URLs (#739).
+ *
+ * Six of the eight protocol routes Callout serves. The two that are absent are
+ * absent for one reason between them: a route that supplies a CONSTANT the
+ * caller must not choose.
+ *
+ * - `POST /workorders/{id}/protocols` instantiates, and Callout's policy is that
+ *   protocols live on work orders. That constant is already declared, as
+ *   `entityType: z.literal('workorder')` on `callout/instantiate-protocol` —
+ *   a vertical operation wrapping the engine, which `mountOperations` pins so a
+ *   caller cannot talk the route out of it.
+ * - `GET /workorders/{id}/protocols` needs the same constant and has no wrapper,
+ *   so it stays hand-written. Binding `protocol/list-for-entity` here would put
+ *   `entityType` in the query string and let a caller list the protocols on
+ *   anything at all — the engine is entity-agnostic, and this is exactly where
+ *   the vertical is supposed to stop being.
+ */
+export const calloutProtocolRoutes = defineEngineRoutes(protocolOperations)({
+  'protocol/list-templates': { method: 'GET', path: '/protocol-templates' },
+  'protocol/define-template': { method: 'POST', path: '/protocol-templates' },
+  'protocol/get': { method: 'GET', path: '/protocols/{instanceId}' },
+  'protocol/fill': { method: 'POST', path: '/protocols/{instanceId}/responses' },
+  'protocol/sign': { method: 'POST', path: '/protocols/{instanceId}/sign' },
+  'protocol/void': { method: 'POST', path: '/protocols/{instanceId}/void' },
+});
+
+/**
+ * The invoicing engine's operations, at Callout's URLs (#739).
+ *
+ * All three, because this engine's callable surface is all reads and one export
+ * — there is nothing to create, so there is no constant for a vertical to pin.
+ */
+export const calloutInvoicingRoutes = defineEngineRoutes(invoicingOperations)({
+  'invoicing/list': { method: 'GET', path: '/invoicing' },
+  'invoicing/get': { method: 'GET', path: '/invoicing/{underlagId}' },
+  'invoicing/export': { method: 'POST', path: '/invoicing/{underlagId}/export' },
 });

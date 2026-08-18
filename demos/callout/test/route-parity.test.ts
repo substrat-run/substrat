@@ -17,7 +17,12 @@ import { mountOperations } from '@substrat-run/vertical-host';
 import { apiCatalogFrom } from '@substrat-run/contracts';
 import { workorderOperations } from '@substrat-run/engine-workorder';
 import { mountApi } from '../src/routes.js';
-import { calloutEngineRoutes, calloutOperations } from '../src/operations.js';
+import {
+  calloutEngineRoutes,
+  calloutInvoicingRoutes,
+  calloutOperations,
+  calloutProtocolRoutes,
+} from '../src/operations.js';
 
 /** `/customers/:id/facilities` → `/customers/:x/facilities`. */
 const shape = (path: string) => path.replace(/:[A-Za-z0-9_]+/g, ':x');
@@ -34,7 +39,12 @@ function derivedRoutes() {
   // — one table, one derivation.
   return mountOperations(
     app,
-    { ...calloutOperations, ...calloutEngineRoutes },
+    {
+      ...calloutOperations,
+      ...calloutEngineRoutes,
+      ...calloutProtocolRoutes,
+      ...calloutInvoicingRoutes,
+    },
     async () => ({}) as never,
   );
 }
@@ -47,6 +57,15 @@ describe('derived routes vs the routes Callout serves', () => {
       'callout/instantiate-protocol',
       'callout/list-customers',
       'callout/price-list',
+      'invoicing/export',
+      'invoicing/get',
+      'invoicing/list',
+      'protocol/define-template',
+      'protocol/fill',
+      'protocol/get',
+      'protocol/list-templates',
+      'protocol/sign',
+      'protocol/void',
       'workorder/assign',
       'workorder/close',
       'workorder/get',
@@ -63,6 +82,51 @@ describe('derived routes vs the routes Callout serves', () => {
       .map((r) => `${r.method} ${shape(r.path)}`)
       .filter((r) => !served.has(r));
     expect(missing).toEqual([]);
+  });
+});
+
+describe('what is NOT derived, and why', () => {
+  it('leaves the two routes that supply a constant to the hand-written table', () => {
+    // Callout's policy is that protocols live on work orders, so both
+    // `/workorders/{id}/protocols` routes fix `entityType` rather than letting a
+    // caller choose it. The POST already has a home — `callout/instantiate-
+    // protocol` declares `entityType: z.literal('workorder')`, which
+    // `mountOperations` pins. The GET has no wrapper, and binding
+    // `protocol/list-for-entity` directly would move `entityType` into the query
+    // string, letting a caller list the protocols on any entity in the scope.
+    const derived = new Set(derivedRoutes().map((r) => r.operation));
+    expect(derived.has('protocol/list-for-entity')).toBe(false);
+    expect(derived.has('callout/instantiate-protocol')).toBe(true);
+  });
+
+  it('pins the entity type rather than accepting it from the caller', async () => {
+    // The guard that makes the POST safe to derive at all, driven rather than
+    // read: a caller who puts a different `entityType` in the body must not be
+    // able to instantiate a protocol on something that is not a work order.
+    // Asserted through a real request, so it tests the protection instead of
+    // the schema's internal representation of a literal.
+    const seen: { name?: string; payload?: unknown } = {};
+    const app = new Hono();
+    mountOperations(app, calloutOperations, async () => ({
+      invoke: async (name: string, payload: unknown) => {
+        seen.name = name;
+        seen.payload = payload;
+        return {};
+      },
+    }) as never);
+
+    await app.request('/api/workorders/wo-1/protocols', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ templateKey: 'tillstandsrapport', entityType: 'customer' }),
+    });
+
+    expect(seen.name).toBe('callout/instantiate-protocol');
+    expect(seen.payload).toMatchObject({
+      templateKey: 'tillstandsrapport',
+      entityType: 'workorder',
+      entityId: 'wo-1',
+    });
   });
 });
 
