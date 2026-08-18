@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# Pre-commit gate: keep builder-studio scratch projects out of the committed
+# lockfile.
+#
+# `.builder/projects/*` are gitignored — each studio project is its own git repo
+# (builder-studio.md §4.6) — but they ARE pnpm workspace members, deliberately, so
+# `workspace:*` deps resolve and the per-project gates can run (see the comment in
+# pnpm-workspace.yaml). The consequence: every `pnpm install` while a studio or eval
+# project exists writes it into pnpm-lock.yaml as an importer, and pnpm-lock.yaml is
+# committed and PUBLIC.
+#
+# Four such importers reached main before anyone noticed, because nothing downstream
+# complains: `pnpm install --frozen-lockfile` does NOT fail on a lockfile importer
+# whose directory is absent from the checkout, so CI installed cleanly and stayed
+# green. The names were harmless that time. They are taken from whatever a studio
+# project was called, which is whatever the person building it typed.
+#
+# So this is the boundary where it has to be caught. Issue #769.
+#
+# Wired via `git config core.hooksPath .githooks`, done by the root package.json
+# `prepare` script on `pnpm install`. Bypass with `git commit --no-verify`.
+
+set -euo pipefail
+
+# Only the STAGED lockfile matters — local churn in the working tree is expected
+# and harmless right up until it is committed.
+if git diff --cached --name-only | grep -qx 'pnpm-lock.yaml'; then
+  offenders=$(git diff --cached -U0 -- pnpm-lock.yaml \
+    | grep '^+' \
+    | grep -oE '\.builder/projects/[^:]*' \
+    | sort -u || true)
+  if [ -n "$offenders" ]; then
+    echo "" >&2
+    echo "pre-commit: pnpm-lock.yaml stages builder-studio scratch projects as importers:" >&2
+    echo "$offenders" | sed 's/^/  /' >&2
+    echo "" >&2
+    echo "These are gitignored local projects; the lockfile is committed and public." >&2
+    echo "Drop them before committing:" >&2
+    echo "" >&2
+    echo "  git restore --staged --worktree pnpm-lock.yaml   # if the rest of the diff is theirs" >&2
+    echo "" >&2
+    echo "or edit the staged hunk to remove the .builder/projects/* importer blocks." >&2
+    echo "Bypass with 'git commit --no-verify' if you genuinely mean it." >&2
+    exit 1
+  fi
+fi

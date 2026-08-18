@@ -10,6 +10,26 @@ packages:
   # Builder-studio projects: gitignored, own nested git repos — but workspace
   # members so `workspace:*` deps on the kernel/engines resolve and the per-
   # project gates (`pnpm --filter ./.builder/projects/<n> …`) can run.
+  #
+  # Membership has two consequences, both of which bit before they were handled
+  # (issue #769). Anything that reaches "every workspace member" reaches these
+  # scratch projects too, and a half-built generated project is indistinguishable
+  # from a real regression until you read the path.
+  #
+  #   1. The root sweeps EXCLUDE them — `build`, `typecheck` and `test` in
+  #      package.json all carry `--filter='!./.builder/projects/**'`, and
+  #      .githooks/pre-push calls those scripts rather than `pnpm -r` directly.
+  #      A killed eval run used to redden repo-wide gates and, through the hook,
+  #      refuse every push from the checkout.
+  #   2. `pnpm install` writes them into pnpm-lock.yaml as importers, and that
+  #      file is committed and public. Four of them reached main this way before
+  #      anyone noticed, because `--frozen-lockfile` does NOT fail on an importer
+  #      whose directory is absent — CI stayed green and said nothing.
+  #      .githooks/pre-commit refuses the staged lockfile instead.
+  #
+  # Both are guards around the membership rather than a fix for it. The isolation
+  # answer — a fixture per throwaway worktree, which would also close #768's
+  # escape class — is still open on #769.
   - ".builder/projects/*"
   - ".builder/projects/*/app"
 
