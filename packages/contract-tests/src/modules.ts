@@ -76,6 +76,31 @@ export const flowModManifest = moduleManifest.parse({
   entitlementKey: 'flow',
 });
 
+// #770: the sub-transaction module. `atomic:extra` exists to be checked ONLY inside
+// a rolled-back region — the lever that proves the K-34 `passed` accumulator is
+// restored, because that accumulator lives in JavaScript and the storage rollback
+// cannot reach it. Its absence from a LATER event's `authorization` is the assertion.
+export const atomicModManifest = moduleManifest.parse({
+  id: '@test/atomic',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [
+    { key: 'atomic:use', description: 'the caller-level permission' },
+    { key: 'atomic:extra', description: 'checked only inside a sub-transaction' },
+  ],
+  events: {
+    emits: [
+      { type: 'atomic.acted', schemaVersion: 1 },
+      { type: 'atomic.inner', schemaVersion: 1 },
+    ],
+    consumes: [],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entityRelations: [{ entityType: 'item', parentType: 'box' }],
+  entitlementKey: 'atomic',
+});
+
 export const lateModManifest = moduleManifest.parse({
   id: '@test/late',
   version: '1.0.0',
@@ -373,6 +398,154 @@ const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
     'SELECT actor, permission, tenant_id, scope_id, operation FROM _substrat_denials ORDER BY id',
   );
 
+// -- #770 sub-transaction handlers -------------------------------------------
+// Every write a sub-transaction can make is exercised in one place: a row, an
+// event, a link, and a platform intent. The storage transaction reaches all four
+// (they are rows in this scope's own database); what it cannot reach is the
+// in-memory state, which is why `atomic:extra` and the intent tally are here.
+
+const ATOMIC_ITEM: EntityRef = { entityType: 'item', entityId: 'atomic-i1' };
+const ATOMIC_BOX: EntityRef = { entityType: 'box', entityId: 'atomic-b1' };
+
+/** Everything a callee can write, then throw — the shape #770 describes. */
+const writeThenThrow = async (ctx: OperationContext, tag: string): Promise<never> => {
+  assertAllowed(await ctx.check(permissionKey.parse('atomic:extra')));
+  ctx.sql.exec('INSERT INTO atomic_rows (id, tag) VALUES (?, ?)', [`inner-${tag}`, 'callee']);
+  ctx.emit({
+    type: 'atomic.inner',
+    schemaVersion: 1,
+    entity: ATOMIC_ITEM,
+    piiClass: 'none',
+    payload: {},
+  });
+  ctx.link(ATOMIC_ITEM, ATOMIC_BOX);
+  ctx.requestPlatform({ kind: 'test.rolled-back', payload: { tag } });
+  throw new Error(`callee boom: ${tag}`);
+};
+
+/**
+ * The headline case. Caller writes, calls a callee that writes all four kinds of
+ * thing and throws, CATCHES it, then writes again and emits. Afterwards: none of
+ * the callee's work exists, both of the caller's writes do, and the trailing
+ * event must NOT carry `atomic:extra` — that check passed inside work that was
+ * discarded.
+ */
+const atomicRollback: OperationHandler<undefined, { caught: string }> = async (ctx) => {
+  assertAllowed(await ctx.check(permissionKey.parse('atomic:use')));
+  ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('before', 'caller')");
+  let caught = '';
+  try {
+    await ctx.atomic(() => writeThenThrow(ctx, 'rollback'));
+  } catch (err) {
+    caught = (err as Error).message;
+  }
+  ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('after', 'caller')");
+  ctx.emit({
+    type: 'atomic.acted',
+    schemaVersion: 1,
+    entity: ATOMIC_ITEM,
+    piiClass: 'none',
+    payload: {},
+  });
+  return { caught };
+};
+
+/** A sub-transaction that SUCCEEDS keeps its writes and returns its value. */
+const atomicSuccess: OperationHandler<undefined, number> = async (ctx) => {
+  assertAllowed(await ctx.check(permissionKey.parse('atomic:use')));
+  return ctx.atomic(() => {
+    ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('kept', 'callee')");
+    return 42;
+  });
+};
+
+/** Two SIBLING sub-transactions: the first fails, the second must be unaffected. */
+const atomicStacked: OperationHandler<undefined, void> = async (ctx) => {
+  assertAllowed(await ctx.check(permissionKey.parse('atomic:use')));
+  try {
+    await ctx.atomic(() => writeThenThrow(ctx, 'sibling'));
+  } catch {
+    /* expected */
+  }
+  await ctx.atomic(() => {
+    ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('sibling-ok', 'callee')");
+  });
+};
+
+/** NESTED: the inner rolls back, the outer keeps going and commits. */
+const atomicNested: OperationHandler<undefined, void> = async (ctx) => {
+  assertAllowed(await ctx.check(permissionKey.parse('atomic:use')));
+  await ctx.atomic(async () => {
+    ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('outer', 'callee')");
+    try {
+      await ctx.atomic(() => writeThenThrow(ctx, 'nested'));
+    } catch {
+      /* expected */
+    }
+    ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('outer-after', 'callee')");
+  });
+};
+
+/**
+ * A sub-transaction's commit is PROVISIONAL: it succeeded, but the operation then
+ * throws, so its writes go with everything else. `atomic` narrows what a caught
+ * error destroys — it never promotes writes past the operation's own commit.
+ */
+const atomicProvisional: OperationHandler<undefined, void> = async (ctx) => {
+  assertAllowed(await ctx.check(permissionKey.parse('atomic:use')));
+  await ctx.atomic(() => {
+    ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('provisional', 'callee')");
+  });
+  throw new Error('operation boom');
+};
+
+/**
+ * The assertion today's suite cannot express, and the one a Postgres host must
+ * satisfy (design note §1): a caller catches a STORAGE error raised inside an
+ * atomic — a primary-key violation, not a thrown JS error — and the enclosing
+ * transaction is still usable afterwards. Without the savepoint this is where
+ * Postgres would already be poisoned (`25P02`).
+ */
+const atomicRecoverable: OperationHandler<undefined, { caught: boolean }> = async (ctx) => {
+  assertAllowed(await ctx.check(permissionKey.parse('atomic:use')));
+  let caught = false;
+  try {
+    await ctx.atomic(() => {
+      ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('dup', 'callee')");
+      ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('dup', 'callee')");
+    });
+  } catch {
+    caught = true;
+  }
+  ctx.sql.exec("INSERT INTO atomic_rows (id, tag) VALUES ('recovered', 'caller')");
+  return { caught };
+};
+
+/** Interleaving is not nesting: two atomics started concurrently must fail loudly. */
+const atomicInterleaved: OperationHandler<undefined, void> = async (ctx) => {
+  assertAllowed(await ctx.check(permissionKey.parse('atomic:use')));
+  const slow = () =>
+    ctx.atomic(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  await Promise.all([slow(), slow()]);
+};
+
+const atomicReadRows: OperationHandler<undefined, { id: string; tag: string }[]> = (ctx) =>
+  ctx.sql.query('SELECT id, tag FROM atomic_rows ORDER BY id');
+
+const atomicReadOutbox: OperationHandler<
+  undefined,
+  { type: string; authorization: string | null }[]
+> = (ctx) => ctx.sql.query('SELECT type, authorization FROM _substrat_outbox ORDER BY id');
+
+const atomicReadTuples: OperationHandler<undefined, { subject: string }[]> = (ctx) =>
+  ctx.sql.query("SELECT subject FROM _substrat_tuples WHERE object = 'box:atomic-b1'");
+
+const atomicReadIntents: OperationHandler<undefined, { kind: string }[]> = (ctx) =>
+  ctx.sql.query('SELECT kind FROM _substrat_platform_requests ORDER BY requested_at');
+
 const flowStep1Consumer: ConsumerHandler = (ctx, event) => {
   ctx.sql.exec('INSERT INTO flow_log (event_id, type) VALUES (?, ?)', [event.id, event.type]);
   ctx.emit({
@@ -417,6 +590,26 @@ export const testMod: ModuleRegistration = {
     'testmod/link-undeclared': linkUndeclared as OperationHandler<never, unknown>,
     'testmod/read-journal': readJournal as OperationHandler<never, unknown>,
     'testmod/read-tuples': readTuples as OperationHandler<never, unknown>,
+  },
+};
+
+export const atomicMod: ModuleRegistration = {
+  manifest: atomicModManifest,
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE atomic_rows (id TEXT PRIMARY KEY, tag TEXT NOT NULL)' },
+  ],
+  operations: {
+    'atomic/rollback': atomicRollback as OperationHandler<never, unknown>,
+    'atomic/success': atomicSuccess as OperationHandler<never, unknown>,
+    'atomic/stacked': atomicStacked as OperationHandler<never, unknown>,
+    'atomic/nested': atomicNested as OperationHandler<never, unknown>,
+    'atomic/provisional': atomicProvisional as OperationHandler<never, unknown>,
+    'atomic/recoverable': atomicRecoverable as OperationHandler<never, unknown>,
+    'atomic/interleaved': atomicInterleaved as OperationHandler<never, unknown>,
+    'atomic/read-rows': atomicReadRows as OperationHandler<never, unknown>,
+    'atomic/read-outbox': atomicReadOutbox as OperationHandler<never, unknown>,
+    'atomic/read-tuples': atomicReadTuples as OperationHandler<never, unknown>,
+    'atomic/read-intents': atomicReadIntents as OperationHandler<never, unknown>,
   },
 };
 
@@ -756,6 +949,7 @@ export const contractTestModules: ModuleRegistration[] = [
   permMod,
   connectorMod,
   scheduleMod,
+  atomicMod,
 ];
 
 export const brokenModManifest = moduleManifest.parse({
