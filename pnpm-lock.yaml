@@ -1191,6 +1191,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
