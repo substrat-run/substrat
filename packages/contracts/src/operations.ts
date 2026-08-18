@@ -193,7 +193,7 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    */
   readonly output: z.ZodType;
   readonly http?: {
-    readonly method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+    readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     readonly path: CheckedPath<O>;
   };
   readonly emits?: {
@@ -441,7 +441,7 @@ export function manifestOperations<const Ops extends Record<string, object>>(
  * field the engine does not accept is a compile error.
  */
 type EngineRouteBinding<Op, B> = {
-  readonly method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   // Self-referential in the binding, so the LITERAL path flows into the check.
   // Written `PathAgainst<Op, string>` the constraint compiles clean and enforces
   // nothing: `PathParams<string>` is `never`, which vacuously satisfies any

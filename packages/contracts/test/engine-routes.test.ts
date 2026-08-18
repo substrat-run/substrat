@@ -69,3 +69,10 @@ defineEngineRoutes(engineOps)({
 defineEngineRoutes(engineOps)({
   'engine/close': { method: 'POST', path: '/orders/close' },
 });
+
+// --- PUT binds like any other method (#777) ---------------------------------
+// A full-replacement update on a live URL is an ordinary REST shape; the union
+// omitted it only because the demos that shaped it happened not to use it.
+defineEngineRoutes(engineOps)({
+  'engine/close': { method: 'PUT', path: '/orders/{orderId}' },
+});
