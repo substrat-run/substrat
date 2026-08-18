@@ -27,14 +27,17 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@substrat-run/contracts": "workspace:*",
-    "zod": "^4.0.0"
+    "@substrat-run/contracts": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:",
+    "zod": "catalog:"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
   }
 }

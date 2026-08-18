@@ -34,9 +34,9 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "catalog:",
     "ai": "7.0.62",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:"
   }
 }

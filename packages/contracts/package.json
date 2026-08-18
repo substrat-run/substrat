@@ -26,14 +26,15 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {
-    "zod": "^4.4.3"
-  },
   "devDependencies": {
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:",
+    "zod": "catalog:"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
   }
 }

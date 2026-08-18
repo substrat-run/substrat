@@ -30,8 +30,9 @@
     "@substrat-run/contracts": "workspace:^"
   },
   "devDependencies": {
+    "@types/node": "catalog:",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:"
   },
   "publishConfig": {
     "access": "public"
