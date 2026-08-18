@@ -1,32 +1,97 @@
 # Getting started
 
-This walkthrough builds the smallest real thing: a scope host running on pure SQLite, a
-module with a migration and one operation, and an invocation through a capability stub.
-No cloud account, no services — one directory of `.sqlite` files.
+Two ways in, and they answer different questions.
+
+**[Scaffold a vertical](#quick-start)** is the one to take first: one command gives you a
+project that installs, tests green, and already carries the instruction layer your AI editor
+reads. It answers *"what does building on Substrat feel like?"*
+
+**[The ten-minute host](#the-ten-minute-host)** builds the same thing from the packages up —
+a scope host, a module, one operation, one invocation. It answers *"what is actually
+happening under there?"*, and it is worth doing once even if you never write a host again.
 
 ::: warning Pre-release
-Substrat is 0.x. The packages are developed in the
-[substrat monorepo](https://github.com/substrat-run/substrat) and interfaces change
-without notice until the first vertical ships.
+Substrat is 0.x. Interfaces change without notice until the first vertical ships.
 :::
 
-## Install
+## Quick start {#quick-start}
 
 ```sh
-pnpm add @substrat-run/kernel @substrat-run/contracts @substrat-run/adapter-sqlite
+npm create substrat my-app
+cd my-app && pnpm install
+pnpm test
 ```
 
-::: tip Import `z` from `@substrat-run/contracts`, not from `zod`
-Don't add `zod` yourself. Substrat is on Zod 4, and **Zod schemas do not compose across
-copies or majors** — mix two and `z.object({ facility: entityRef })` (the pattern the
-engines use, and what "parse, don't trust" asks of every operation input) fails at runtime
-with `expected a Zod schema`, pointing nowhere near the cause. Importing `z` from contracts
-means you never install zod at all, so the versions can't diverge when Zod 5 lands:
+That last line is the point: the scaffold ships a **small working vertical** — a bike-repair
+shop — that is green out of the box. It is a worked example, not a skeleton to fill in, and
+the build flow reshapes it into your domain rather than asking you to start from a blank
+file.
+
+Then open the project in your AI editor and start the flow:
+
+| editor | command |
+|---|---|
+| Claude Code | `/substrat` |
+| Cursor | the `new-vertical` command |
+| opencode | the `new-vertical` command |
+
+All three read the same two files the scaffolder wrote: `AGENTS.md` (the rules an agent must
+not violate) and `.substrat/playbook.md` (the build flow). The scaffolder writes the
+skeleton; **the agent writes the vertical**.
+
+### What you got
+
+```
+src/manifest.ts     what the module declares — permissions, events, entitlement key
+src/migrations.ts   the append-only journal
+src/module.ts       the operations
+src/provision.ts    roles and the permission surface `substrat push` reads
+src/seed.ts         a world to develop against
+src/server.ts       a Node dev server (SQLite adapter)
+src/worker.ts       the Cloudflare entry, via @substrat-run/vertical-host
+test/scenario.test.ts
+AGENTS.md · .substrat/playbook.md · .claude/ · .cursor/ · .opencode/
+```
+
+There is no `wrangler.jsonc` and you never write one. The `substrat` block in
+`package.json` declares what the deploy needs — the entry, the durable-object stores — and
+[`substrat push`](/guide/deploying) derives the rest.
+
+### The gates
+
+```sh
+pnpm test              # the scenario, including the denials
+pnpm lint:boundaries   # the layer rules
+pnpm typecheck
+```
+
+`lint:boundaries` is the one to run early and often: it is the mechanical enforcement of the
+[module code rules](/concepts/modules) — no raw database imports, no `fetch`, no `node:*`, no
+writes to the spine, no reading another module's tables. It fails the build rather than
+leaving a note in a review.
+
+::: tip Never install `zod`
+Substrat is on Zod 4, and **Zod schemas do not compose across copies or majors**. Mix two and
+`z.object({ facility: entityRef })` — the pattern every engine uses — fails at runtime with
+`expected a Zod schema`, pointing nowhere near the cause. Import `z` from contracts and the
+versions cannot diverge:
 
 ```ts
 import { z, entityRef, money } from '@substrat-run/contracts';
 ```
 :::
+
+---
+
+## The ten-minute host {#the-ten-minute-host}
+
+Now the same thing from below: a scope host on pure SQLite, a module with a migration and one
+operation, and an invocation through a capability stub. No cloud account, no services — one
+directory of `.sqlite` files.
+
+```sh
+pnpm add @substrat-run/kernel @substrat-run/contracts @substrat-run/adapter-sqlite
+```
 
 `@substrat-run/adapter-sqlite` uses [better-sqlite3](https://www.npmjs.com/package/better-sqlite3),
 a native module. With pnpm 10+, allow its build script:
@@ -40,7 +105,7 @@ a native module. With pnpm 10+, allow its build script:
 }
 ```
 
-## 1. Create a host and provision a scope
+### 1. Create a host and provision a scope
 
 ```ts
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
@@ -69,12 +134,12 @@ fixed at creation, forever — data residency is a provisioning decision, not a 
 
 ::: tip The checker choice is the security posture
 `UNSAFE_allowAllChecker` grants everything to everyone and is named accordingly — use it
-in tests and scratch scripts only. Omitting the checker gives you `denyAllChecker`:
-nothing is allowed until you wire a real permission checker. See
+in tests and scratch scripts only. Omit the option and you get the real tuple checker,
+which denies by default until roles and grants say otherwise. See
 [Permissions](/concepts/permissions).
 :::
 
-## 2. Register a module
+### 2. Register a module
 
 A module is a manifest + migrations + operations. Here's a minimal one (engines ship
 this structure for you — see [What is an engine?](/engines/)):
@@ -105,7 +170,7 @@ export const notesModule: ModuleRegistration = {
     {
       version: '0001-init',
       sql: `CREATE TABLE notes (
-        id         TEXT PRIMARY KEY,
+        id         TEXT PRIMARY KEY NOT NULL,
         text       TEXT NOT NULL,
         created_by TEXT NOT NULL,
         created_at TEXT NOT NULL
@@ -145,8 +210,12 @@ Things to notice:
   stamped by the kernel; your code physically cannot mislabel an event.
 - **Migrations apply lazily per scope**, journaled, inside the scope's serialization
   domain — you never run a migration step yourself.
+- **`id TEXT PRIMARY KEY NOT NULL`, not `id TEXT PRIMARY KEY`.** In SQLite a non-INTEGER
+  primary key does not imply `NOT NULL`. In a real vertical you would not write the DDL at
+  all — [`emitTables`](/reference/model-emit) derives it from your declared entities and
+  cannot produce that hole.
 
-## 3. Invoke through a stub
+### 3. Invoke through a stub
 
 ```ts
 const principal = principalId.parse('01JZX6ZH2EXY4ZA9BC3DE5FG2H');
@@ -167,7 +236,7 @@ The stub is a capability: it carries the principal and the scope context, so the
 operation handler receives ambient `ctx.tenantId` / `ctx.scopeId` / `ctx.principal` and
 no IDs travel through your business logic.
 
-## 4. Look at what happened
+### 4. Look at what happened
 
 Scope databases are plain SQLite files in WAL mode — debugging is opening a file:
 
@@ -178,16 +247,18 @@ sqlite3 ./data/<tenantId>__<scopeId>.sqlite 'SELECT type, tenant_id, actor, occu
 
 The event row carries the full kernel-stamped envelope — that's your audit trail,
 produced as a side effect of the write path rather than as something you remembered to
-log.
+log. Nothing in the code above asked for it.
 
 ## Next steps
 
-- [Deploying a vertical](/guide/deploying) — when the local loop is working, ship it: the
-  `substrat` CLI, `push`, and the admission gate that lets a scope serve it.
-- [Tenants & scopes](/concepts/tenancy) — the tenancy tree and how scopes are addressed.
-- [Permissions](/concepts/permissions) — roles, grants, and proof-carrying decisions.
-- [Events & audit](/concepts/events) — the envelope, PII classes, and consumers.
-- [What is an engine?](/engines/) — using the work-order and invoicing engines instead
-  of writing your own machinery.
-- [@substrat-run/contract-tests](/reference/contract-tests) — if you're writing an adapter
-  rather than a vertical.
+- [Running locally](/guide/running-locally) — the development loop, the demos, the personas
+- [Deploying a vertical](/guide/deploying) — the `substrat` CLI, `push`, and the admission gate
+- [The model](/concepts/model) — declaring entities and operations once, and what the compiler
+  then checks between them
+- [Tenants & scopes](/concepts/tenancy) — the tenancy tree and how scopes are addressed
+- [Permissions](/concepts/permissions) — roles, grants, and proof-carrying decisions
+- [Events & audit](/concepts/events) — the envelope, PII classes, and consumers
+- [What is an engine?](/engines/) — using the work-order and invoicing engines instead of
+  writing your own machinery
+- [`@substrat-run/contract-tests`](/reference/contract-tests) — if you're writing an adapter
+  rather than a vertical

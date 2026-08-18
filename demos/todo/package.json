@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-todo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "The smallest vertical that is still a real one \u2014 a shared todo app, built forward from its model",
   "license": "Apache-2.0",
@@ -15,22 +15,22 @@
     "demo": "pnpm run dev"
   },
   "dependencies": {
+    "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "@hono/node-server": "^1.13.0",
     "hono": "^4.6.0",
-    "zod": "^4.4.3"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
-    "@types/node": "^22.0.0",
+    "@types/node": "catalog:",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:"
   },
   "substrat": {
     "slug": "todo",

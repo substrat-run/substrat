@@ -114,14 +114,26 @@ columnar and seconds-scale by construction: it is for **reporting, reconciliatio
 and cross-scope history**. It is not a UI list view, and treating it as one is a category
 error.
 
-## A fourth surface: the per-tenant store
+## Two more surfaces, and neither is a read tier
 
-Distinct from the three read paths, a vertical can also hold a **per-tenant relational store**
-(`tenantStoreNeed`, opened at runtime through `host.openTenantStore`) — one independent SQL
-database per tenant that the platform mints and injects. It is an *own-store* concept, the way
-a vertical might keep an auth database, **not** a read-scaling tier: reach for it when a
-vertical genuinely needs its own relational store outside the per-scope execution domain, not
-to make scope reads faster. Scope reads still follow the three paths above.
+Distinct from the three read paths, a vertical's manifest can declare stores the platform
+mints and injects for it:
+
+- **A per-tenant relational store** (`tenantStores`, opened at runtime through
+  `host.openTenantStore`) — one independent SQL database per tenant. It is an *own-store*
+  concept, the way a vertical might keep an auth database.
+- **A per-tenant blob store** (`blobStores`) — object storage behind the kernel's
+  [attachment](/concepts/modules) surface, for the documents and images a scope's rows point
+  at rather than contain.
+
+Both follow the same ownership rule, and it is the interesting part: **the builder supplies
+no id**. The vertical declares a *need*; the platform mints the database or bucket, holds the
+cloud credential, and attaches a binding to the serving script. A vertical is handed a store —
+it never names one, so it can never name someone else's.
+
+Neither is a read-scaling tier. Reach for them when a vertical genuinely needs storage outside
+the per-scope execution domain, not to make scope reads faster. Scope reads still follow the
+three paths above.
 
 ## Why not global read replicas?
 

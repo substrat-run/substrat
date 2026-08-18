@@ -7,13 +7,15 @@ layer: what it gives you, what it deliberately does *not* share, and why the bou
 where it does.
 
 ::: info Status
-The platform layer is specified in full and implemented in part. Shipping today in the
-pure-SQLite adapter: **scope provisioning**, the **directory**, the **tenant registry**,
-**tenant + scope lifecycle transitions** (with fail-closed gating), the **entitlement
-gate**, and the **host admin** surface — every mutation of which takes a platform actor and
-writes an append-only **audit log**. Everything marked *(planned)* below — custom-domain
-routing and the ops **console** UI — is designed and not yet built. This page marks the
-difference rather than blurring it.
+The platform layer runs in production. Shipping on both adapters: **scope provisioning**,
+the **directory**, the **tenant registry**, **tenant + scope lifecycle transitions** (with
+fail-closed gating), the **entitlement gate**, and the **host admin** surface — every
+mutation of which takes a platform actor and writes an append-only **audit log**. Since
+this page was first written the [router](/platform/router) and custom-domain issuance,
+the ops [console](/platform/console), the builder [dashboard](/platform/dashboard),
+[per-PR previews](/guide/environments-and-previews), directory backup/restore, and the
+platform-owned outbound seams (connections, egress policy, email) have all landed. What is
+still designed-and-unbuilt is called out where it appears.
 :::
 
 ## One platform, N deployments
@@ -25,13 +27,15 @@ between what's shared and what isn't is the design:
 
 | | Shared — the platform owns it | Per-vertical |
 |---|---|---|
-| **Routing** | Resolves `hostname → (tenant, scope, vertical)` *(planned)* | — |
-| **Custom domains** | Hostname issuance, DNS validation, certificate lifecycle — part of scope provisioning *(planned)* | — |
+| **Routing** | Resolves `hostname → (tenant, scope, vertical, surface)`, then dispatches | The surfaces a manifest declares |
+| **Custom domains** | Hostname issuance, DNS validation, certificate lifecycle | — |
 | **Tenancy** | Tenant registry, scope directory, provisioning lifecycle | — |
 | **Identity** | Auth callbacks, principal derivation, capability minting | — |
 | **Entitlements** | The store and the module-load gate | The `entitlementKey` each manifest declares |
 | **History & analytics** | The event spine and its history tier | — |
-| **Admin** | Directory, audit log; ops console *(planned)* | — |
+| **Copies** | Snapshots, forks, per-PR previews, per-scope PITR, directory backup/restore | — |
+| **The outside world** | Connections and their sealed credentials, the outbound egress seam, the email relay | The declared allowlist and the connectors a manifest requires |
+| **Admin** | Directory, audit log, access log, ops-failure log; the [console](/platform/console) and the builder [dashboard](/platform/dashboard) | — |
 | **Execution** | — | **The scope's code**: kernel + engines + your modules, and their migrations |
 
 Everything a vertical would hate to rebuild is already shared. The only per-vertical thing
@@ -87,6 +91,46 @@ control-plane work; every transition is validated (an illegal one fails closed) 
   event history forever. **Un-archive is a restore, not a flag flip.**
 - **Jurisdiction is immutable.** Fixed at provisioning; a scope's execution domain can never
   relocate. There is no edit affordance because there is no edit.
+
+## Asking the platform for something: intents, not calls {#platform-intents}
+
+A vertical sometimes needs a privileged action it structurally cannot perform: provision a
+sibling scope (a new Manyfold "site"), send mail, reach a third party. The obvious design is
+an upward call — the vertical holds a platform credential and invokes the control plane. It
+is rejected for the same reason the shared bundle above is: a credential in vertical code is
+a configuration guarantee, and the whole point is that the reach should not exist.
+
+Instead the vertical **enqueues an intent** into its own scope, and the platform comes and
+gets it:
+
+```ts
+// inside an operation, AFTER the vertical's own permission check
+const id = ctx.requestPlatform({
+  kind: 'provision-sibling',
+  payload: { slug, name, owner: principal },
+});
+```
+
+- The row lands in this scope's `_substrat_platform_requests` spine table, **atomic with the
+  operation** — if the handler throws, the intent never happened.
+- Origin fields (`id`, `requestedAt`, `requestedBy`) are stamped kernel-side, exactly as an
+  event envelope is. The vertical cannot claim to be someone else.
+- The platform's drain reads that scope's DO, so it **knows the tenant inherently** — the
+  tenant is not in the payload and cannot be forged into it.
+- `kind` selects the platform-side handler, which validates the payload. To the kernel the
+  payload is opaque, like an event's.
+- A scope may hold at most `MAX_PENDING_PLATFORM_REQUESTS` (32) pending intents; past that
+  `requestPlatform` throws. A stuck or runaway vertical cannot flood the drain.
+
+Authorization is the vertical's; isolation is the platform's. That split is why the intent is
+enqueued *after* the vertical's own `ctx.check`.
+
+**And the outcome comes back.** `ctx.platformRequests(filter)` reads this scope's own intent
+journal — newest first, filterable by `kind` and `status` — returning the same record the
+platform settled, with its `result` or `lastError`. That read exists for one concrete reason:
+a contract whose signature request settled `failed` can say so on its own screen, instead of
+showing a document that appears to be out for signature and is not. The kernel owns every
+write to the table, so a status is only ever the platform's answer.
 
 ## Scheduled work {#scheduled-work}
 

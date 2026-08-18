@@ -12,3 +12,73 @@ packages:
   # project gates (`pnpm --filter ./.builder/projects/<n> …`) can run.
   - ".builder/projects/*"
   - ".builder/projects/*/app"
+
+# Settings and version policy.
+#
+# These lived in package.json's `pnpm` field until pnpm 10, which stopped
+# reading it — silently. `overrides` survived only because they were already
+# baked into the lockfile, so the config was running on inherited state rather
+# than on anything anyone had written down.
+#
+# One version of a shared library, in one place. `catalog:` is referenced by
+# every workspace package instead of a literal range, so bumping zod is a single
+# edit and a package that wants a DIFFERENT version has to say so in a way a
+# reviewer sees.
+catalog:
+  # The schema library whose objects cross package boundaries — see
+  # docs/design/dependency-policy.md. A published package declares this as a
+  # PEER (permissive range); internally everyone builds against this one.
+  zod: ^4.4.3
+
+  # Test and deploy tooling. Here because drift BETWEEN workspace packages is
+  # what produced most of the unmet peers this policy was written to stop: two
+  # packages had moved to vitest 4 while everyone else was on 3, and one demo to
+  # workers-types 5 while everyone else was on 4. Those were the workspace
+  # disagreeing with itself, and a catalog ends that by construction.
+  #
+  # The versions are deliberately the ones that currently WORK, not the newest.
+  # vitest 4 needs @cloudflare/vitest-pool-workers 0.21, which replaced
+  # `defineWorkersConfig` with a vitest-4 plugin API (it ships a codemod for the
+  # migration) — a real migration through the production Durable Object adapter,
+  # and not something to bundle into a dependency-policy change. Tracked
+  # separately; the catalog is what will make it a one-line bump when it lands.
+  #
+  # One peer conflict survives and cannot be resolved by pinning: wrangler 4.123
+  # wants workers-types ^5, pool-workers 0.9 wants ^4. It resolves itself with
+  # the vitest 4 migration above.
+  vitest: ^3.2.7
+  '@cloudflare/vitest-pool-workers': ^0.9.0
+  '@cloudflare/workers-types': ^4.20250109.0
+  wrangler: ^4.110.0
+  '@types/node': ^22.0.0
+
+onlyBuiltDependencies:
+  - esbuild
+  - workerd
+
+overrides:
+  hono: 4.12.30
+  better-sqlite3: 13.0.3
+
+# On why `strictPeerDependencies` is NOT set here, which is a measured decision
+# rather than an omission.
+#
+# pnpm's peer checking does not apply to WORKSPACE-LINKED packages. Measured:
+# with contracts peer-requiring zod ^4.4.0 and `demos/todo` declaring
+# zod@^3.23.0, a full re-resolution under `autoInstallPeers: false` +
+# `strictPeerDependencies: true` reported three missing third-party peers
+# (tailwindcss, monaco-editor, search-insights) and did not mention zod once.
+# Peer checking works — it just does not reach inside the workspace.
+#
+# So the two settings would have added churn (every third-party transitive peer
+# now needing a declaration or an ignore rule) and caught none of what this
+# policy exists to catch. Internal consistency is the `catalog:` above, which
+# guarantees it by construction, and `tools/declared-deps.mjs`, which fails CI
+# on a package that references a module it never declared. The peer
+# declarations still matter, and matter most, for consumers installing these
+# packages FROM npm, where pnpm's checking does apply.
+
+peerDependencyRules:
+  allowedVersions:
+    better-auth>better-sqlite3: '13'
+

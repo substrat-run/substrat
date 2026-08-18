@@ -107,21 +107,24 @@ While the contract is out it sits in `pending_signature`: **frozen**. No rebind,
 reaches `signed` only when *both* parties have signed — one signature, or a decline, is not
 completion.
 
-::: danger Nothing can complete this in the running demo
-`protocol/record-signature` is what a Scrive webhook would call, and there is **no webhook
-ingress** ([#96](https://github.com/substrat-run/substrat/issues/96)) and **no way for a
-non-principal callback to invoke a scope operation**
-([#97](https://github.com/substrat-run/substrat/issues/97)).
+::: warning Nothing completes this in the *local* demo, and that is not a platform gap
+`protocol/record-signature` is what a Scrive webhook calls. Both blockers this page used to
+name are now closed: webhook ingress terminates on the platform
+([#96](https://github.com/substrat-run/substrat/issues/96)) and a non-principal caller reaches
+a scope operation through a [connection's stub](/concepts/permissions)
+([#97](https://github.com/substrat-run/substrat/issues/97)) — a subject that opens the door
+and confers nothing, whose events are stamped with the connection that caused them.
+
+What is still true is the *local* story: `pnpm … dev` has no provider on the other end, so a
+contract dispatched there stays frozen and pending. Completing it needs the
+[Scrive connector](/connectors/scrive) and a real signing session.
 
 `hr-admin` holds `protocol:bind` and `protocol:request-signature` — it can freeze and
-dispatch. It does **not** hold `protocol:record-signature`, and neither does any other role:
-asserting that someone signed with BankID is the provider's word, not HR's. The scenario test
-mints a throwaway principal to stand in for the connector, and that stub deliberately lives
-in the **test** rather than the seed — a seeded "connector principal" in a reference
-implementation would quietly become the answer to #97 before #97 is designed.
-
-So the demo opens on a contract that is frozen and pending, and stays there. That is the
-honest state of the platform.
+dispatch. It does **not** hold `protocol:record-signature`, and neither does any other human
+role: asserting that someone signed with BankID is the provider's word, not HR's. The scenario
+test mints a throwaway principal to stand in for the connector, and that stub deliberately
+lives in the **test** rather than the seed — a seeded "connector principal" in a reference
+implementation would quietly become an authority nobody designed.
 :::
 
 Everything else is vertical code — and the most interesting part is what *isn't* an engine

@@ -74,11 +74,84 @@ const pkgs = [
   ['@substrat-run/adapter-sqlite', 'Pure-SQLite scope host — local dev, CI, self-host', 'Working'],
   ['@substrat-run/adapter-cloudflare', 'Durable-Object scope host — production', 'Working'],
   ['@substrat-run/contract-tests', 'The conformance suite both adapters pass unchanged', 'Working'],
+  ['@substrat-run/model-emit', 'DDL emitted from your declared entities, and the reader that checks it', 'Working'],
+  ['@substrat-run/vertical-host', 'The platform surface a hosted vertical mounts', 'Working'],
+  ['@substrat-run/cli', 'substrat login / push — authenticated deploy', 'Working'],
   ['@substrat-run/engine-workorder', 'Work orders, time & material', 'Seed'],
   ['@substrat-run/engine-booking', 'Reservations — resource × interval, one allocation invariant, no locks', 'Seed'],
   ['@substrat-run/engine-invoicing', 'Invoice basis, immutable exports', 'Seed'],
   ['@substrat-run/engine-protocol', 'Checklists & protocols', 'Seed'],
   ['@substrat-run/engine-invites', 'Invitations — verified hashed identifier, accept-required', 'Seed'],
+  ['@substrat-run/engine-absence', 'Leave and absence — balances as an entry ledger', 'Seed'],
+  ['@substrat-run/engine-metering', 'Usage readings folded into billable meters', 'Seed'],
+];
+
+// A real operation, lightly trimmed, from demos/callout/src/module.ts — the
+// vertical wrapping the work-order engine in its own domain rule. Kept verbatim
+// on purpose: an excerpt with the messy parts cropped is not evidence.
+const sample = `// The vertical's own operation, composing the work-order engine.
+const createWorkOrderOp = async (ctx, input) => {
+  assertAllowed(await ctx.check(WO.create));
+
+  const facility = ctx.sql.query(
+    'SELECT * FROM callout_facilities WHERE id = ?',
+    [input.facilityId],
+  )[0];
+  if (!facility) throw new Error(\`facility not found: \${input.facilityId}\`);
+
+  return createWorkOrder(ctx, {          // the engine's in-scope function,
+    facility: ref('facility', facility.id),   // inside YOUR transaction
+    customer: ref('customer', facility.customer_id),
+    kind: input.kind,
+    title: input.title,
+  });
+};`;
+
+const didnt = [
+  [
+    'No tenant filter',
+    'There is no WHERE tenant_id to forget. ctx.sql reaches this scope’s own database and cannot address another.',
+  ],
+  [
+    'No audit call',
+    'The engine emitted a work-order event stamped with tenant, scope, actor and time — below this code, which cannot forge or suppress it.',
+  ],
+  [
+    'No transaction management',
+    'The operation is the transaction. The throw on line 8 rolls back the rows, the events, and any platform intent it had enqueued.',
+  ],
+  [
+    'No lock, no retry loop',
+    'One operation runs in this scope at a time, to completion. Read-modify-write needs no ceremony.',
+  ],
+  [
+    'No fork of the engine',
+    'createWorkOrder is a plain export called inside the vertical’s own handler — extension by composition, so upgrading the engine stays an upgrade.',
+  ],
+];
+
+// Why an agent is a primary user of this API, not an afterthought.
+const forAgents = [
+  [
+    'Derived, not generated',
+    'Entities are declared once; the DDL and the model artifact are emitted by code, and CI fails on drift. Cheaper than a model in tokens, latency and exactness — and smaller to hold in context afterwards.',
+    '/concepts/model',
+  ],
+  [
+    'An oracle the build didn’t write',
+    'Code comes from the model; tests come from the human-approved concept. Two independent derivations, and the disagreement between them is the product. A suite written after the handlers can only agree with whatever got built.',
+    '/guide/ai-agents#the-second-opinion-two-descriptions-that-can-disagree',
+  ],
+  [
+    'Bring your own model',
+    'Design and build run in your agent — Claude Code, Cursor, opencode — against skills that ship in the project. Your tokens, your model, and a repo that boots on SQLite with no platform in the loop.',
+    '/guide/ai-agents#bring-your-own-model-bring-your-own-agent',
+  ],
+  [
+    'Every PR gets a copy of production',
+    'Open a pull request and the platform forks the production scope, runs that PR’s own migrations against the copy, and posts the URL. Reviewing a migration diff is a checkpoint; watching it run on real data is what makes it honest.',
+    '/guide/environments-and-previews',
+  ],
 ];
 
 const repo = 'https://github.com/substrat-run/substrat';
@@ -102,8 +175,29 @@ const repo = 'https://github.com/substrat-run/substrat';
         <div class="cta-row">
           <a class="btn btn-primary" href="/guide/getting-started">Get started</a>
           <a class="btn btn-secondary" href="/guide/why-substrat">Why runtime enforcement</a>
-          <code class="cmd">pnpm create substrat</code>
+          <code class="cmd">npm create substrat my-app</code>
         </div>
+      </div>
+    </section>
+
+    <!-- What the code looks like. The point of this section is the SECOND column:
+         a landing page that only shows what you write is showing the easy half. -->
+    <section class="wrap section">
+      <div class="kicker">What you write</div>
+      <h2>One operation, whole.</h2>
+      <p class="muted lede-narrow">
+        This is the entire handler. Everything in the right-hand column happened
+        anyway — not because the code asked for it, but because it could not
+        avoid it.
+      </p>
+      <div class="split">
+        <pre class="code"><code>{{ sample }}</code></pre>
+        <ul class="didnt">
+          <li v-for="([title, desc]) in didnt" :key="title">
+            <span class="didnt-title">{{ title }}</span>
+            <span class="muted sm">{{ desc }}</span>
+          </li>
+        </ul>
       </div>
     </section>
 
@@ -165,6 +259,29 @@ const repo = 'https://github.com/substrat-run/substrat';
       </div>
     </section>
 
+    <!-- Built for agents -->
+    <section class="bleed band">
+      <div class="wrap section">
+        <div class="kicker">Built for agents, on purpose</div>
+        <h2>The layer AI is worst at is the layer that’s already written.</h2>
+        <p class="muted lede-narrow">
+          Tenancy, auth, migrations and compliance are where models fail and where
+          failure is catastrophic. Screens, forms and workflows are where they excel
+          and where failure is cosmetic. Substrat draws the line between them and
+          enforces it — then does four more things most “AI-friendly” claims skip.
+        </p>
+        <div class="grid-2">
+          <a v-for="([title, desc, href]) in forAgents" :key="title" class="cannot op" :href="href">
+            <span class="check">✓</span>
+            <div>
+              <div class="cannot-title">{{ title }}</div>
+              <div class="muted sm">{{ desc }}</div>
+            </div>
+          </a>
+        </div>
+      </div>
+    </section>
+
     <!-- Reference verticals -->
     <section class="wrap section">
       <div class="kicker">Reference verticals</div>
@@ -195,6 +312,31 @@ const repo = 'https://github.com/substrat-run/substrat';
             </span>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- The honest half. A page that only lists strengths is a document nobody
+         trusts twice — so the gaps get a section, not a footnote. -->
+    <section class="wrap section">
+      <div class="kicker">The honest half</div>
+      <h2>Where Substrat is the wrong answer.</h2>
+      <p class="muted lede-narrow">
+        Single-tenant internal tools, one scale-heavy tenant, deep-domain products
+        like payroll or core banking, and anything where the foundation isn’t your
+        binding constraint — reach for something else, and the docs will say so
+        rather than sell around it.
+      </p>
+      <p class="muted lede-narrow">
+        There is also a list of what we don’t have: one production connector, no
+        certifications yet, no search, no localization, no report builder. Almost
+        every gap is breadth; almost every strength is depth of guarantee. That’s
+        the honest shape of a young platform, and it says plainly who shouldn’t
+        buy yet.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-secondary" href="/guide/what-substrat-lacks">What Substrat doesn’t have (yet)</a>
+        <a class="btn btn-secondary" href="/guide/comparisons">How Substrat compares</a>
+        <a class="btn btn-secondary" href="/guide/faq">FAQ</a>
       </div>
     </section>
 
@@ -415,6 +557,53 @@ h2 {
   margin-top: 28px;
 }
 
+/* Code sample beside what it did NOT have to say */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 28px;
+  margin-top: 32px;
+  align-items: start;
+}
+.code {
+  margin: 0;
+  padding: 20px 22px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-page);
+  box-shadow: var(--shadow-sm);
+  overflow-x: auto;
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+.code code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  white-space: pre;
+  background: none;
+  padding: 0;
+  border: 0;
+  color: var(--text-primary);
+}
+.didnt {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.didnt li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 16px;
+  border-left: 2px solid var(--border-default);
+}
+.didnt-title {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+}
+
 /* Three-layer cards */
 .layer-card {
   border: 1px solid var(--border-default);
@@ -589,6 +778,9 @@ h2 {
     grid-template-columns: 1fr;
   }
   .grid-2 {
+    grid-template-columns: 1fr;
+  }
+  .split {
     grid-template-columns: 1fr;
   }
   .cta-inner {

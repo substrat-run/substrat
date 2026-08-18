@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/engine-invoicing",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Substrat engine: invoice basis — consumes billable events, snapshots lines with provenance, immutable once exported",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -31,13 +31,16 @@
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
-    "@substrat-run/kernel": "workspace:^",
-    "zod": "^4.4.3"
+    "@substrat-run/kernel": "workspace:^"
   },
   "devDependencies": {
+    "@substrat-run/engine-test-kit": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "typescript": "^7.0.0",
-    "@substrat-run/engine-test-kit": "workspace:^",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
   }
 }

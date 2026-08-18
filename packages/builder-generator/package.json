@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/builder-generator",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "The builder studio's generator seam — provider-agnostic vertical generation over a Workspace (builder-studio.md §5)",
   "license": "AGPL-3.0-only",
@@ -34,8 +34,8 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "catalog:",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/adapter-sqlite",
-  "version": "0.71.0",
+  "version": "0.72.0",
   "description": "Pure-SQLite scope host — real kernel semantics with no Cloudflare dependency (D-14): local dev, CI, self-host/escrow",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -27,15 +27,15 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@substrat-run/kernel": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/kernel": "workspace:^",
     "better-sqlite3": "^13.0.3"
   },
   "devDependencies": {
     "@substrat-run/contract-tests": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "catalog:"
   },
   "publishConfig": {
     "access": "public"

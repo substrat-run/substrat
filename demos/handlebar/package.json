@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-handlebar",
-  "version": "0.0.71",
+  "version": "0.0.72",
   "private": true,
   "substrat": {
     "permissions": "src/seed.ts"
@@ -16,17 +16,17 @@
     "demo": "pnpm run dev"
   },
   "dependencies": {
+    "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/engine-workorder": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
-    "@hono/node-server": "^1.13.0",
+    "better-auth": "^1.6.23",
     "better-sqlite3": "^13.0.3",
     "hono": "^4.6.0",
-    "zod": "^4.4.3",
-    "better-auth": "^1.6.23"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@substrat-run/model-emit": "workspace:*",
@@ -34,6 +34,6 @@
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:"
   }
 }

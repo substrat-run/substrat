@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/console",
-  "version": "0.13.6",
+  "version": "0.13.7",
   "private": true,
   "description": "The control-plane admin console (control-plane.md §4.5)",
   "type": "module",
@@ -23,6 +23,6 @@
     "@vitejs/plugin-react": "^4.3.0",
     "typescript": "^7.0.0",
     "vite": "^6.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:"
   }
 }

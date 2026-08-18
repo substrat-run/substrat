@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/contract-tests",
-  "version": "0.71.0",
+  "version": "0.72.0",
   "description": "The suite every scope-host adapter must pass, forever (D-14)",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -27,14 +27,19 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@substrat-run/kernel": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
-    "vitest": "^3.0.0"
+    "@substrat-run/kernel": "workspace:^",
+    "vitest": "catalog:"
   },
   "devDependencies": {
-    "typescript": "^7.0.0"
+    "@types/node": "catalog:",
+    "typescript": "^7.0.0",
+    "zod": "catalog:"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
   }
 }

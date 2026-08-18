@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/model-emit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Build-time tooling over a Substrat model — DDL emitted from the entity registry, and the journal reader that holds it honest",
   "license": "Apache-2.0",
   "repository": {
@@ -27,14 +27,17 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@substrat-run/contracts": "workspace:*",
-    "zod": "^4.0.0"
+    "@substrat-run/contracts": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:",
+    "zod": "catalog:"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
   }
 }

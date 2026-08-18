@@ -1,7 +1,7 @@
 {
   "name": "@substrat-run/engine-protocol",
-  "version": "0.7.3",
-  "description": "Substrat engine: protocols, checklists and signed documents with the freeze \u2192 immutable invariant \u2014 versioned templates, append-only responses, verifiable content hash, counter-signatures on frozen content, and asynchronous multi-party signatures by external (non-principal) signatories",
+  "version": "0.8.0",
+  "description": "Substrat engine: protocols, checklists and signed documents with the freeze → immutable invariant — versioned templates, append-only responses, verifiable content hash, counter-signatures on frozen content, and asynchronous multi-party signatures by external (non-principal) signatories",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -31,8 +31,7 @@
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
-    "@substrat-run/kernel": "workspace:^",
-    "zod": "^4.4.3"
+    "@substrat-run/kernel": "workspace:^"
   },
   "devDependencies": {
     "@substrat-run/adapter-sqlite": "workspace:^",
@@ -40,6 +39,10 @@
     "@substrat-run/engine-test-kit": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/adapter-cloudflare",
-  "version": "0.71.0",
+  "version": "0.72.0",
   "description": "Cloudflare Durable-Object scope host (D-14): DO-per-scope, real kernel semantics on Workers",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -31,16 +31,16 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@substrat-run/kernel": "workspace:^",
-    "@substrat-run/contracts": "workspace:^"
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/kernel": "workspace:^"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
     "@substrat-run/contract-tests": "workspace:^",
-    "@cloudflare/vitest-pool-workers": "^0.8.19",
-    "@cloudflare/workers-types": "^4.20250109.0",
-    "wrangler": "^4.110.0",
     "typescript": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   },
   "publishConfig": {
     "access": "public"
