@@ -144,7 +144,19 @@ export type BuildEvent =
 	 * indistinguishable from a finished one — to the builder AND to the model's
 	 * own next turn, which then reasons over silently unfinished work.
 	 */
-	| { readonly type: 'truncated'; readonly steps: number; readonly maxSteps: number }
+	| {
+			readonly type: 'truncated';
+			readonly steps: number;
+			readonly maxSteps: number;
+			/**
+			 * Which ceiling ended the turn. Absent means the step ceiling, which is
+			 * what `truncated` meant before a token budget existed.
+			 */
+			readonly reason?: 'steps' | 'tokens';
+			/** Uncached-equivalent tokens spent, when the budget is what fired. */
+			readonly spent?: number;
+			readonly budget?: number;
+	  }
 	| { readonly type: 'error'; readonly message: string; readonly fatal: boolean };
 
 /**
@@ -200,7 +212,10 @@ export function formatEvent(e: BuildEvent): string {
 		case 'retry':
 			return `! ${e.reason} — retrying in ${Math.round(e.delayMs / 1000)}s (${e.attempt}/${e.maxAttempts})`;
 		case 'truncated':
-			return `! turn cut off at the ${e.maxSteps}-step ceiling — work may be unfinished`;
+			return e.reason === 'tokens'
+				? `! turn cut off at the ${e.budget} uncached-token budget (spent ${e.spent}) — ` +
+					'work may be unfinished, and a turn that spends this much is usually looping'
+				: `! turn cut off at the ${e.maxSteps}-step ceiling — work may be unfinished`;
 		case 'error':
 			return `${e.fatal ? '✗' : '!'} ${e.message}`;
 	}
