@@ -25,6 +25,7 @@
 import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { classifyError, messageOf } from './errors.js';
 import {
   assertPlatformCall,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
@@ -287,28 +288,6 @@ export interface PlatformSurfaceDeps<Env> {
    * own domain errors; the platform routes here never need it.
    */
   mapError?: (err: unknown) => { status: number; message: string } | undefined;
-}
-
-/**
- * A throw that names the RUNTIME failing, not the request (#559). Two signals, either
- * sufficient: the flags workerd sets on transient Durable Object errors (`retryable`,
- * `overloaded`), and the message shapes the runtime is known to emit — foremost DO
- * SQLite's redacted `internal error; reference = <id>`, whose reference resolves only at
- * Cloudflare support. The patterns are anchored/specific on purpose: an APP error that
- * merely mentions "internal error" mid-sentence is still the caller's 400.
- */
-const PLATFORM_FAULT_PATTERNS = [
-  /^internal error(?:;|$)/i,
-  /^durable object reset/i,
-  /^durable object storage operation/i,
-  /transient (?:issue|error)/i,
-  /^network connection lost/i,
-];
-
-function isPlatformFault(err: unknown, message: string): boolean {
-  const flags = err as { retryable?: unknown; overloaded?: unknown } | null;
-  if (flags?.retryable === true || flags?.overloaded === true) return true;
-  return PLATFORM_FAULT_PATTERNS.some((p) => p.test(message));
 }
 
 /**
@@ -608,30 +587,32 @@ export function mountPlatformSurface<Env extends object>(
   app.onError((err, c) => {
     const mapped = deps.mapError?.(err);
     if (mapped) return c.json({ error: mapped.message }, mapped.status as ContentfulStatusCode);
-    const status = err instanceof HTTPException ? err.status : 400;
-    const m = err instanceof Error ? err.message : String(err);
+    // The shared vocabulary (`./errors.ts`) decides the status. It also answers "no
+    // opinion", which THIS surface turns into the caller's 400 — the control plane
+    // relays the status verbatim and retries 5xx, so an unrecognised throw must not
+    // claim to be the platform's fault. `mountOperations` answers no-opinion differently.
+    const seen = classifyError(err) ?? {
+      status: 400 as ContentfulStatusCode,
+      message: messageOf(err),
+    };
     // An infrastructure fault is the PLATFORM failing, not the request (#559). Defaulting
     // it to 400 taught every layer above to treat a Cloudflare outage as the caller's
     // fault — the control plane relays the status verbatim, and its retry convention
     // (install path) deliberately retries 5xx while surfacing 4xx immediately, so the
     // misclassification also disarmed any retry. 502 is the honest answer. Log it
     // structured so the vertical's observability keeps stage + reference queryable.
-    if (status === 400 && isPlatformFault(err, m)) {
+    if (seen.platformFault) {
       console.error('vertical-host.platform-fault', {
         method: c.req.method,
         path: c.req.path,
-        detail: m,
+        detail: seen.message,
         stack: err instanceof Error ? err.stack : undefined,
       });
-      return c.json({ error: m }, 502);
     }
-    // Map the kernel/engine error vocabulary onto HTTP. Only reinterpret the default 400 —
-    // an explicit HTTPException status (403/404/409/501 the routes raise) is authoritative.
-    if (status === 400 && /permission denied/i.test(m)) return c.json({ error: m }, 403);
-    if (status === 400 && /not found|unknown scope/i.test(m)) return c.json({ error: m }, 404);
-    if (status === 400 && /invalid transition|immutable/i.test(m)) return c.json({ error: m }, 409);
-    return c.json({ error: m }, status);
+    return c.json({ error: seen.message }, seen.status);
   });
 }
 
 export * from './operations-routes.js';
+export { classifyError, isPlatformFault, messageOf } from './errors.js';
+export type { ErrorClassification } from './errors.js';
