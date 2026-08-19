@@ -44,6 +44,7 @@ export function guideSidebar() {
         { text: 'Architecture', link: '/guide/architecture' },
         { text: 'Getting started', link: '/guide/getting-started' },
         { text: 'Agent rules', link: START_HERE },
+        { text: 'The Claude Code plugin', link: '/guide/agent-plugin' },
         { text: 'Running locally', link: '/guide/running-locally' },
         { text: 'Deploying a vertical', link: '/guide/deploying' },
         { text: 'Environments & previews', link: '/guide/environments-and-previews' },

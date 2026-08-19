@@ -69,6 +69,7 @@ delegate:
 | Client | Binding | Substance |
 |---|---|---|
 | Claude Code | `CLAUDE.md` (one line: `@AGENTS.md`), `.claude/skills/substrat/`, `.claude/settings.json`, `.claude/launch.json` | none — routes |
+| Claude Code, un-scaffolded | the `substrat` plugin (#753) — `plugin/substrat/`, published through `.claude-plugin/marketplace.json` | none — scaffolds, then routes |
 | Cursor | `.cursor/rules/substrat.mdc`, `.cursor/commands/new-vertical.md` | none — routes |
 | opencode | `.opencode/command/new-vertical.md` | none — routes |
 | Codex | reads `AGENTS.md` natively | none needed |
@@ -87,6 +88,16 @@ only one client's users would notice going stale. Instead the topology is declar
 the neutral `substrat.devServers` block — the block `substrat push` and the SessionStart
 hook already read — and the launch file is **emitted** from it. The corollary worth stating:
 *if an adapter needs a fact, the fact goes in the core and the adapter is generated.*
+
+The plugin (#753) is the rule's hardest case, because it ships to projects where **the core
+does not exist yet** — and an adapter that has no core to route to is exactly how substance
+leaks into a client-specific file. The resolution is that the plugin *creates* the core
+before routing to it: on an empty directory its skill runs `npm create substrat` and then
+reads the `AGENTS.md` and `.substrat/playbook.md` that produced, pinned to the kernel that
+project installed. So it carries no flow, no rules, and no copy of the playbook — one file
+in it is substance-bearing, `scripts/session-start.mjs`, and only because a script cannot be
+routed to: it has to be somewhere the client can execute. That one is emitted from the
+scaffold's copy and gated by `lint:plugin`, per §6's first row.
 
 The evidence that this is right, and that it is worth stating rather than assuming: **the
 `AGENTS.md` convention alone already covers Codex and Kiro with no work at all.** Two of the
@@ -108,7 +119,7 @@ platform in the loop. Interaction is *the repo and its gates*: `npm test`, `boun
 
 This is where "mechanical pushback beats prompting" cashes out — the agent does not need to
 be convinced, it needs to be told no by a linter. Largely shipped; the gaps are distribution
-(#753, #755) and freshness pinning (#754).
+(#755) and freshness pinning (#754).
 
 ### 4.2 The studio plane — an agent we host
 
@@ -169,7 +180,7 @@ them, chosen case by case. The rule was never written down, so here it is:
 
 | Situation | Guard | Example |
 |---|---|---|
-| Two copies that must read **identically** | **Re-emit and diff** — one is generated from the other | `lint:agent-rules`, `lint:model`, `lint:api`, `lint:permissions`, `lint:launch` |
+| Two copies that must read **identically** | **Re-emit and diff** — one is generated from the other | `lint:agent-rules`, `lint:model`, `lint:api`, `lint:permissions`, `lint:launch`, `lint:plugin` |
 | Two copies that diverge **on purpose** | **Hash baseline** — fail when the source moves, force a human to port | `lint:playbook` (skill → playbook) |
 | A document describing code, with no derivable artifact | **Staleness proxy** — commits to the source since the page last moved | `lint:docs` |
 
@@ -201,6 +212,16 @@ know which one binds.
 - **Bare title indexes.** Wasp's `llms.txt` carries no descriptions, which works because
   their page titles are self-describing. We have seven pages titled *Events*.
 - **A client-specific rule anywhere.** See §3.
+- **A separate repository for the plugin.** #753 assumed one, on the Wasp model. It is not
+  needed: `substrat-run/substrat` is already public, a `git-subdir` plugin source
+  sparse-clones only `plugin/substrat/`, and a marketplace added by URL fetches one JSON
+  file and clones nothing — so `https://substrat.net/marketplace.json` gives the light entry
+  point without a second home. A second repo would be, by construction, a second copy: a
+  publish workflow plus a drift guard, both of which fail in the direction this repo already
+  knows well (#451 — green, and silently did not ship). The catalog is authored once at
+  `.claude-plugin/marketplace.json` and the docs build copies it to the site root, so
+  `claude plugin marketplace add substrat-run/substrat` and the URL form resolve the same
+  file.
 
 ---
 
@@ -214,7 +235,8 @@ know which one binds.
 | Published agent rules page | shipped |
 | Core points at the published docs | **open — §5, cheapest win available** |
 | SessionStart hook, version pinning | open (#754) |
-| Plugin marketplace, skills | open (#753, #755) |
+| Plugin marketplace + the `substrat` skill | shipped (#753) |
+| Plugin skills: init, help, deploy, symptom→fix | open (#755) |
 | `.claude/launch.json`, emitted from `substrat.devServers` | shipped (#752) |
 | Kiro adapter beyond `AGENTS.md` | open — needed only if steering earns its keep |
 | Runtime plane: MCP, handover bundle, scoped app tokens | open, undesigned (#112, #127, #131) |

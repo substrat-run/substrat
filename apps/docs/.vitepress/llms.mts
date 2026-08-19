@@ -382,6 +382,22 @@ export function buildArtifacts(srcDir: string, repoRoot: string): Artifact[] {
   }
   artifacts.push({ path: 'llms-full.txt', contents: `${full.join('\n').trimEnd()}\n` });
 
+  // The plugin marketplace catalog (#753), served from the site root so
+  // `claude plugin marketplace add https://substrat.net/marketplace.json` fetches
+  // one small file instead of cloning the monorepo. Copied rather than authored
+  // here: `.claude-plugin/marketplace.json` in the repo root is the single source,
+  // and it has to stay there for `claude plugin marketplace add substrat-run/substrat`
+  // to resolve as well. Two published entry points, one file under review.
+  const catalog = join(repoRoot, '.claude-plugin', 'marketplace.json');
+  if (!existsSync(catalog)) {
+    throw new Error(
+      `The plugin marketplace catalog is missing: ${catalog}\n` +
+        `Users install the Substrat plugin from it; publishing the site without it ` +
+        `breaks \`claude plugin marketplace add https://substrat.net/marketplace.json\`.`,
+    );
+  }
+  artifacts.push({ path: 'marketplace.json', contents: readFileSync(catalog, 'utf8') });
+
   return artifacts;
 }
 
