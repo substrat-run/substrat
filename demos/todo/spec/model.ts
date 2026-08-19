@@ -10,8 +10,13 @@
  * platform's. An absent `engines` argument is a fact about the app, not an
  * omission.
  */
-import { defineEntities, defineOperations, emitModel } from '@substrat-run/contracts';
-import { z } from 'zod';
+import {
+  defineEntities,
+  defineOperations,
+  emitModel,
+  LIST_PAGE_MAX,
+  z,
+} from '@substrat-run/contracts';
 
 export const todoEntities = defineEntities({
   /**
@@ -198,8 +203,16 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   'todo/list-items': {
     summary: 'The items on a list',
     permission: { key: 'list:contribute', entity: 'list', idFrom: 'listId' },
-    input: z.object({ listId: z.string() }),
-    output: z.array(todoEntities.item.fields),
+    input: z.object({
+      listId: z.string(),
+      limit: z.number().int().positive().max(LIST_PAGE_MAX).optional(),
+      cursor: z.string().optional(),
+    }),
+    // The ENTRY, not the envelope: `paged` is what wraps it, here and in the document.
+    output: todoEntities.item.fields,
+    // A list's items are the one table here that grows without bound — one per line of
+    // shopping, forever. Keyset over the ULID id, which is creation-ordered for free.
+    paged: { sortKey: 'id' },
     http: { method: 'GET', path: '/lists/{listId}/items' },
   },
 
