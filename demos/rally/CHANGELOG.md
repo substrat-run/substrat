@@ -1,5 +1,19 @@
 # @substrat-run/demo-rally
 
+## 0.0.76
+
+### Patch Changes
+
+- Updated dependencies [48ddee6]
+- Updated dependencies [43d67cb]
+- Updated dependencies [bb32545]
+  - @substrat-run/contracts@0.79.0
+  - @substrat-run/kernel@0.79.0
+  - @substrat-run/engine-booking@0.3.6
+  - @substrat-run/engine-invites@0.3.6
+  - @substrat-run/engine-invoicing@0.7.6
+  - @substrat-run/adapter-sqlite@0.79.0
+
 ## 0.0.75
 
 ### Patch Changes

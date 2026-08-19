@@ -1,5 +1,126 @@
 # @substrat-run/contracts
 
+## 0.79.0
+
+### Minor Changes
+
+- 48ddee6: The error model, phase 1: a closed taxonomy, `problem+json`, and an API surface that
+  finally documents how it can fail.
+
+  `packages/contracts/src/errors.ts` lands the contracts half of the error-model RFC
+  (`docs/rfc/error-model.md`, issue #113): ten codes, a status and title per code, declared
+  per-code extensions, `SubstratError`, and `toProblem` — the one mapper meant to replace
+  the seven hand-rolled `onError` handlers that currently choose a status by matching on
+  error message TEXT.
+
+  **Nothing throws these yet.** `toProblem` maps an unrecognised throw to `internal`
+  exactly as today's transports do, so this ships, is reviewable, and changes no behaviour
+  anywhere. The kernel throwing typed errors, and the ScopeDO RPC hop preserving them, are
+  phase 2.
+
+  Three decisions worth knowing:
+
+  - **`internal` never carries `detail`.** The posture predates this module and survives it
+    verbatim: an unrecognised throw is one nobody reviewed for what it discloses, and these
+    surfaces have cross-tenant reach. A test asserts a secret in a thrown message does not
+    reach the body.
+  - **The body carries a deprecated `error` duplicating `detail`.** Every SPA in the repo
+    reads `{ error }`; RFC 9457 permits extension members; so the transports can adopt
+    `problem+json` without breaking a single client. It goes away once they are moved.
+  - **`isSubstratError` duck-types.** `instanceof` is checked first and not trusted alone,
+    because the adapter rebuilds an error crossing the ScopeDO boundary as a plain `Error`
+    — which is why `instanceof PermissionDenied` is false in production today.
+
+  `buildOpenApiDocument` now emits failure responses with bodies. The problem schema and
+  each failure response live in `components` and are referenced, so a vertical's checked-in
+  `openapi.json` gains three lines per failure rather than an inlined body per failure per
+  operation — the artifact is a review document, and its signal-to-noise is a constraint.
+  The three emitted documents are regenerated in this change.
+
+  `precondition_failed` (412) and `rate_limited` (429) are in the taxonomy so that
+  `If-Match` (#129) and rate limiting (#130) add no vocabulary when they land, but they are
+  deliberately **not** documented yet: nothing raises them, and documenting a failure that
+  cannot occur is worse than documenting none. This narrows the RFC's §6 Q1 leaning, on the
+  reasoning that motivated the question.
+
+- 43d67cb: The error model, phase 3: a failure crosses the ScopeDO boundary as a value, so the code
+  finally survives the hop.
+
+  Phase 2 measured what a throw actually carries across that boundary and the answer was
+  "its message, and nothing else" — `name` folded into the message, every own property
+  dropped. That is why `instanceof PermissionDenied` has been false in production while
+  being true in every test, and why verticals match error messages with regexes.
+
+  So a failure stops being thrown across the boundary and starts being returned across it.
+  `ScopeDO.invoke` returns `{ result, platformRequests, failure? }`, where `failure` is a
+  `WireFailure`: name, message, code, extensions, plain JSON. The coordinator rebuilds an
+  error from it and throws THAT — the envelope is the wire's shape, never the API's, so
+  every caller above `host.ts` still writes `try`/`catch` exactly as before.
+
+  **Opt-in per call, which is what makes it deployable.** The coordinator passes
+  `failureEnvelope: true`. A ScopeDO instance still running older code ignores an unknown
+  trailing argument and throws exactly as it always did, which the coordinator still
+  handles; and without the flag a new DO throws too, so the reverse skew cannot silently
+  turn a failure into a success. There is no flag day and no window where an error reads as
+  a result.
+
+  What it deliberately does not do: the rebuilt error is a `SubstratError` wearing the
+  original `name`, not an instance of the class that was thrown. Contracts cannot import
+  the kernel, and reviving arbitrary classes over a wire is a capability nobody should
+  want. `instanceof PermissionDenied` stays false on this path and always will — it is the
+  wrong question, and every consumer in the repo asks `errorCodeOf` instead.
+
+  Measured, not asserted: the adapter's contract suite now crosses the hop and checks that
+  the message arrives verbatim, that the code and name arrive with it, and that the result
+  classifies to the same status a same-isolate throw would.
+
+  The compat path is exercised too, and that one nearly shipped untested. Every test goes
+  through the coordinator, which always asks for the envelope — so the flag-absent branch
+  was reached by nothing, and the argument this change rests on for deploy safety was an
+  assertion about code no test ran. Three tests now call the DO directly the way an older
+  coordinator would: the legacy path still rejects with its message intact, a denial is
+  never handed back as a resolved result, and the envelope appears only when asked for.
+
+  Still throwing across the hop, and so still losing their structure: `attachmentAdd`,
+  `attachmentList`, `attachmentAuthorize`, `attachmentRemove`, `introspectQuery`. Same
+  pattern, mechanical, much lower traffic.
+
+- bb32545: The error model, phase 2: the kernel's errors join the taxonomy — and the RPC hop turns
+  out not to carry them.
+
+  `PermissionDenied` and `SecretBoxUnconfiguredError` are now `SubstratError` subclasses,
+  so a transport can ask what a throw IS instead of knowing which classes exist. Both keep
+  their exact names and messages: `vertical-host`'s classifier and several verticals match
+  those strings today, and renaming them would be a behaviour change smuggled into a
+  refactor. `errorCodeOf` reads a code by shape — the live property first, then the name,
+  then the legacy class names — and `vertical-host`'s `classifyError` consults it before
+  falling through to its message patterns.
+
+  **The part worth reading.** Phase 2 was written expecting to make the taxonomy survive
+  the ScopeDO boundary. It does not, and the RFC's §3 has been rewritten because the
+  measurement contradicts it.
+
+  Workers RPC carries a thrown error's **message and nothing else**. `name` is not a second
+  channel: setting it does not deliver a `name` on the far side — workerd folds it into the
+  message as `"<name>: <message>"` and resets `name` to `'Error'`. That was implemented,
+  and the new test caught it: adopting it would have rewritten every error message on the
+  Cloudflare path, turning `permission denied: perm:use` into `PermissionDenied: permission
+denied: perm:use` for every log line, vertical `onError` and UI string. It was reverted.
+
+  The measurement is now a test in `adapter-cloudflare`, pinning both halves: that messages
+  cross verbatim, and that no class, name or code crosses with them. Every other error test
+  in the repo runs in a single isolate, where the class survives and `instanceof` works —
+  which is exactly why the production bug (`instanceof PermissionDenied` false on
+  Cloudflare) stayed invisible for so long. Nothing crossed the hop in a test until now.
+
+  So the RFC's contingency is promoted to the plan: structure crossing that boundary has to
+  travel as a **value** — a discriminated `{ ok, error }` envelope on `ScopeDO.invoke` —
+  not as a throw. That is its own change and its own review.
+
+  What holds today: in-process, the real class arrives and the full taxonomy works — the
+  SQLite adapter, and any handler in the same isolate as its scope. On Cloudflare a
+  transport still classifies by message, exactly as before: no better, and no worse.
+
 ## 0.78.0
 
 ### Minor Changes
@@ -2985,7 +3106,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
