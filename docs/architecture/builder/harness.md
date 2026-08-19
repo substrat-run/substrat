@@ -4,10 +4,11 @@ layer: plan
 description: Model catalog and harness efficiency. Rows 6-7 open (#663).
 ---
 
-# RFC: builder model catalog & harness efficiency
+# Builder model catalog & harness efficiency
 
-**Status:** proposed — tracks a research pass over opencode/models.dev (2026-08-15) and turns it
-into a ranked adoption plan. · **Depends on:** [builder-studio.md](./studio.md) (§5.3 the
+**Status:** **partly built** — the two-source rate card, retries, the edit tool and
+condensation landed (#661, #664); rows 6–7 of §4 remain open (#663). Written from a research
+pass over opencode/models.dev (2026-08-15). · **Depends on:** [builder-studio.md](./studio.md) (§5.3 the
 provider seam, §5.4 prompt caching — this doc is the concrete follow-through on both),
 [engine-metering.md](../../engines/metering.md) (quantities vs pricing; the studio's rate card is
 vertical vocabulary). · **Touches:** `apps/builder` (pricing, picker, providers),

@@ -6,8 +6,9 @@ description: How a sandbox-clean vertical requests a privileged platform action.
 
 # Platform intents — how a sandbox-clean vertical requests a privileged platform action
 
-**Status:** proposal (K-decision-scale) · **First consumer:** Manyfold self-serve site
-creation (`multi-scope-manyfold.md` M3) · **Related:** #303 (outbound policy), K-27 (verticals
+**Status:** **built** — the durable pull, the router kick and the sweep backstop run in
+production (#444, verified against the prod cron). · **First consumer:** Manyfold self-serve
+site creation (`multi-scope-manyfold.md` M3) · **Related:** #303 (outbound policy), K-27 (verticals
 reach the platform only through the router), K-31 (the platform owns provisioning).
 
 ## The problem (general, not Manyfold-specific)

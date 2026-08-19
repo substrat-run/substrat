@@ -58,10 +58,13 @@ jobs:
       # hand-adapted copy of the substrat skill, so fail if the skill moved without
       # a human re-reconciling the playbook (tools/playbook-sync.mts).
       - run: pnpm lint:playbook --check
-      # The docs-freshness checkpoint (#750). Two mechanical questions: does every
-      # published package have a reference page, and has any page fallen so far
-      # behind its source that it is no longer describing it. Needs no build —
-      # it reads git history and the filesystem.
+      # Two docs checkpoints behind one command. docs-drift (#750) asks whether a
+      # PUBLISHED page has fallen behind its source. docs-structure asks whether an
+      # INTERNAL document still says what it is: a closed status vocabulary, `built`
+      # only where a reader looks for shipped work, no architecture/ page opening by
+      # calling itself unbuilt, every relative link resolving, and the docs/README.md
+      # index regenerated from front-matter. The audit that added it found 18 of 18
+      # sampled documents describing shipped work as unbuilt.
       - run: pnpm lint:docs --check
       # The machine-readable-docs checkpoint (#751). llms.txt is emitted from the
       # sidebar, so a page nobody added there is invisible to every agent while

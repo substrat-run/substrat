@@ -4,10 +4,12 @@ layer: plan
 description: Chat to vertical, hosted. Its nine proposals landed as D-48..D-56.
 ---
 
-# RFC: the builder studio — chat → vertical, hosted
+# The builder studio — chat → vertical, hosted
 
-**Status:** proposed — **internal PoC first** (§1.1). Not a customer surface, not linked from
-substrat.net or the dashboard. · **Depends on:**
+**Status:** **built** — `apps/builder`, with `evals/`, team scoping and the `builder`
+entitlement. Still **staff-only by design** (§1.1): not a customer surface, not linked from
+substrat.net or the dashboard. Its nine proposed decisions landed as D-48…D-56.
+· **Depends on:**
 [generated-verticals.md](../../strategy/generated-verticals.md) (the channel, the debug scope, the CI gate,
 and every gotcha that decides whether this is legitimate),
 [builder-plane.md](./plane.md) (tenant-owned verticals, builder authz, self-serve

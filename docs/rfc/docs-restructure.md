@@ -1,12 +1,16 @@
 ---
 status: building
 layer: plan
-description: Audit of docs/ and the restructure. Phases 0-3 done; Phase 4 is the gate and the content debt.
+description: Audit of docs/ and the restructure. All four phases executed; the prose rewrite is what remains.
 ---
 
 # Restructuring `docs/` — an audit first, a folder tree second
 
-**Status: phases 0–3 executed (2026-08-19); Phase 4 outstanding.** Written after reading
+**Status: all four phases executed (2026-08-19).** What remains is prose: the
+`architecture/` documents have honest headers and bodies still argued in the future tense
+in places (§9). The gate refuses new ones, so this shrinks rather than grows.
+
+Written after reading
 all 55 markdown files in `docs/`, both decision logs end to end, and verifying every status
 claim against the repository. The folder tree is the smallest part of this document and one
 of the last sections, deliberately: **the corpus's problem was not that the files were in
@@ -694,10 +698,39 @@ still linked `demos/fsm` and `demos/bike-shop`, renamed long ago. **Changelog pa
 rewritten, decision ids in changelogs are not** (§7.4) — the distinction is that a path is a
 pointer to the same document, while an id is that document's identity.
 
-**Phase 4 — the gate, then the content debt.**
-Extend `lint:docs` per §8. Then the writing work Phase 1 only labelled: rewrite the ~18
-`built` docs in present tense, and write the three missing engine docs (workorder,
-invoicing, invites).
+**Phase 4 — the gate, then the content debt. ✅ Mostly done 2026-08-19.**
+
+[`tools/docs-structure.mjs`](../../tools/docs-structure.mjs) sits beside `docs-drift.mjs`
+behind one `pnpm lint:docs`, `--check` in CI. `docs-drift` asks whether a *published* page
+has fallen behind its source; this asks whether an *internal* document still says what it
+is. Five rules, each tested against a real violation before being trusted:
+
+| rule | catches |
+|---|---|
+| closed status vocabulary; `layer`; a `description` | F1 |
+| `built` only in `architecture/` or `engines/` | F1's placement half |
+| no `architecture/` document opening by calling itself unbuilt | `dashboard.md`'s "Not built." |
+| every relative link resolves | F7, and the 84 that broke in Phase 3 |
+| `docs/README.md`'s index regenerated from front-matter | M1 |
+
+It found three survivors of Phase 1 — `builder/harness.md`, `builder/studio.md` and
+`platform-intents.md` still opened "**Status:** proposed" while describing shipped work —
+now rewritten. It also reads `--others --exclude-standard`, so a brand-new document is
+checked before it is even `git add`ed; reading only the index would have let one pass
+silently until CI.
+
+**The three missing engine docs are written** (M2): [`engines/workorder.md`](../engines/workorder.md),
+[`invoicing.md`](../engines/invoicing.md), [`invites.md`](../engines/invites.md) — from the
+source, since these engines predate the convention of writing one. Each says so in its
+header rather than implying a design argument that never happened, and each ends with open
+questions that are genuinely open. Two are worth reading beyond their own engine: invoicing
+is where D-28's unimplementable dual-emit clause actually bites (§6 there), and invites
+documents the seam an engine *cannot* cross — the membership write that lives in another
+Durable Object (§6 there).
+
+**What remains:** the ~18 `architecture/` documents have honest headers but bodies still
+argued in the future tense in places. The gate refuses new ones; rewriting the existing
+bodies is prose work, best done per-document by whoever next touches one.
 
 **Not scheduled — the renumber.** Available at any later point at the cost of one
 mechanical pass over `docs/decisions/`, per §7.4. Revisit when the two-prefix vocabulary
