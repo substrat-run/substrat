@@ -79,9 +79,24 @@ identity, `key` is an additional uniqueness rule, and a table legitimately has b
 entity with neither an `id` field nor a `primaryKey` is refused rather than emitted keyless.
 
 An entity is still something the platform can *point at* — attachments hang off one,
-[grants](/concepts/permissions) narrow to one, events are about one — and only a
-**single-column** key can serve as an `EntityRef`. A composite-keyed table is a table your
-vertical owns and models; it is not a grant target.
+[grants](/concepts/permissions) narrow to one, `ctx.link` joins two, an event is about one —
+and all of that needs **one** id. So a composite key makes an entity un-pointable, and the
+compiler enforces it: `parents`, `attachmentTargets`, `relations`, `emits.entity` and a
+narrowed `permission.entity` accept only single-column-keyed entities.
+
+```ts
+attachmentTargets: [{ entityType: 'budget', readPermission: 'x:read' }],
+//                               ~~~~~~~~
+// Type '"budget"' is not assignable to type '"customer" | "ext"'.
+```
+
+A composite-keyed table is still a full model member — migrations, a row type, a place in
+`model.json`. It is simply not something a grant can narrow to. Note that `ext` above stays
+pointable: a single-column key that is not called `id` is still one id.
+
+The rule is derived from the key rather than declared. A `pointable: true` flag would be a
+second description of what `primaryKey` already says, and two descriptions are how they come
+to disagree.
 
 `parents` is plural and takes an array because `entityRelations` is an **allowlist**: the
 kernel accumulates permitted parent types into a set, so an entity legitimately has more
@@ -122,6 +137,7 @@ Omit `input` entirely for an operation that takes no body.
 Every one of these is a compile error, not a lint:
 
 - `parents`, `primaryKey`, `key` and `erasable` name fields and entities that exist
+- entity-pointing positions name a **pointable** entity — one identified by a single column
 - `permission` names a **declared** key — a typo becomes a *"Did you mean"* suggestion
 - an operation carries `permission` **or** `narrows: { reason }` — never both, never neither
 - every `{var}` in an `http` path names a real input field
