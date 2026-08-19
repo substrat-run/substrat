@@ -40,9 +40,18 @@ jobs:
       # on console/app.substrat.net through several releases). Note the prod-deploy
       # gate below no longer relies on this alone — it also fires on the
       # `Version packages` release commit, so an app-only release still deploys.
+      #
+      # `version` must be spelled out: the action's default is a bare
+      # `changeset version`, which bumps the package.json versions and stops —
+      # so the `&& pnpm lint:pins` half of the `version-packages` script never
+      # ran, and the first Version Packages PR after the pin checkpoint landed
+      # reddened its own CI on pins it was supposed to have rewritten (#795).
+      # Naming the script here is what makes the emit part of versioning rather
+      # than a thing someone remembers.
       - uses: changesets/action@v1
         id: changesets
         with:
+          version: pnpm version-packages
           publish: pnpm release
           commit: "Version packages"
           title: "Version packages"
