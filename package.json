@@ -23,7 +23,7 @@
     "callout-demo": "pnpm --filter @substrat-run/demo-callout",
     "builder": "pnpm --filter @substrat-run/builder",
     "changeset": "changeset",
-    "version-packages": "changeset version",
+    "version-packages": "changeset version && pnpm lint:pins",
     "release": "pnpm run build && pnpm publish -r --access public --no-git-checks && changeset tag",
     "secrets:platform": "tools/set-platform-secrets.sh",
     "secrets:check": "node scripts/secrets.mjs check",
@@ -35,6 +35,7 @@
     "lint:llms": "tsx tools/llms-index.mts",
     "lint:agent-rules": "tsx tools/agent-rules-emit.mts",
     "lint:launch": "tsx tools/launch-emit.mts",
+    "lint:pins": "tsx tools/pins-emit.mts",
     "lint:plugin": "tsx tools/plugin-emit.mts"
   },
   "devDependencies": {

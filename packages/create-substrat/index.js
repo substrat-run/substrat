@@ -21,16 +21,23 @@ import { DEV_SERVERS } from './dev-servers.js';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = join(HERE, 'template');
 
-// Published today; Substrat is 0.x, so these are caret ranges on the current minor.
-// The runtime packages release together off one version line, so one constant is right
-// for all of them.
-const SUBSTRAT = '^0.71.0';
-// Engines do NOT share a line — each one versions on its own, so a single ENGINES
-// constant silently stops resolving the moment any engine crosses a minor. It did:
-// this file pinned `^0.3.37` while workorder had moved to 0.4.x and invoicing to 0.6.x,
-// so a freshly scaffolded project could not install. One pin per engine, deliberately.
-const ENGINE_WORKORDER = '^0.4.3';
-const ENGINE_INVOICING = '^0.6.2';
+// Substrat is 0.x, so these are caret ranges on the current minor — a caret on 0.x
+// locks the minor, which is what makes a stale pin here a scaffold four minors behind
+// rather than a scaffold that quietly upgrades.
+//
+// EMITTED, NOT EDITED. `pnpm lint:pins` writes this block from each package's own
+// version and `--check` fails CI on drift; `version-packages` runs the write, so a
+// bump and its pins land in the same PR. Hand-maintained, they went stale twice: once
+// resolving nothing (`^0.3.37` after workorder moved to 0.4.x), and once resolving
+// fine but freezing the template against packages nobody ships, which is worse — the
+// scaffold's own tests stayed green while the surface moved underneath them.
+//
+// The runtime packages release together off one version line (the changesets `fixed`
+// group), so one constant is right for all of them. Engines do NOT share a line —
+// each versions on its own, so one pin per engine, deliberately.
+const SUBSTRAT = '^0.75.0';
+const ENGINE_WORKORDER = '^0.6.2';
+const ENGINE_INVOICING = '^0.7.2';
 const BOUNDARY_LINT = '^0.0.7';
 
 const DOCS = 'https://substrat.net';

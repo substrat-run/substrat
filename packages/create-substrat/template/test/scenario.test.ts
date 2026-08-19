@@ -160,14 +160,18 @@ describe('bike-shop scenario', () => {
     expect(underlag[0]!.status).toBe('open');
     expect(underlag[0]!.total).toBe('336.5');
 
-    const detail = await greta.invoke<{ lines: { source_id: string; source_type: string }[] }>(
-      'invoicing/get',
-      { underlagId: underlag[0]!.id },
-    );
+    // Provenance is two-level: `document_*` is which delivery produced the line
+    // (this work order), `source_*` is what the line itself is (time vs material).
+    // Both come from the engine's own event payload — the vertical never joins
+    // into invoicing's tables to find out.
+    const detail = await greta.invoke<
+      { lines: { document_id: string; document_type: string; source_type: string | null }[] }
+    >('invoicing/get', { underlagId: underlag[0]!.id });
     expect(detail.lines).toHaveLength(2);
-    expect(detail.lines.every((l) => l.source_type === 'workorder' && l.source_id === repairId)).toBe(
-      true,
-    );
+    expect(
+      detail.lines.every((l) => l.document_type === 'workorder' && l.document_id === repairId),
+    ).toBe(true);
+    expect(detail.lines.map((l) => l.source_type).sort()).toEqual(['material', 'time']);
   });
 
   it('7. portal isolation: Lisbeth sees her repair, Otto sees nothing', async () => {

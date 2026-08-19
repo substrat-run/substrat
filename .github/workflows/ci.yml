@@ -85,6 +85,14 @@ jobs:
       # plugin's version moves in its manifest but not in the catalog users
       # install from, which ships as "no update available" to everyone on it.
       - run: pnpm lint:plugin --check
+      # The scaffold-pin checkpoint. `create-substrat` writes dependency ranges
+      # into every new project, hand-copied from versions changesets moves on
+      # every release. A caret on 0.x locks the minor, so a stale pin does not
+      # drift forward — it freezes new projects on packages nobody ships, which
+      # is how the template's own scenario test stayed green for four minors
+      # while the engine surface moved underneath it. `version-packages` runs
+      # the write, so this only reddens on a hand edit.
+      - run: pnpm lint:pins --check
       - run: pnpm -r typecheck
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM
