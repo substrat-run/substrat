@@ -595,3 +595,69 @@ describe('#807 — a journal is read as SQL, not as lines', () => {
     expect(planMigration(base, collapsed).kind).toBe('up-to-date');
   });
 });
+
+/**
+ * The reader replays the journal instead of parsing it.
+ *
+ * Everything above this block is unchanged and still passes, which is the point:
+ * the readers answer the same questions, they just stopped guessing at the
+ * answers. What follows is what only a replay can do.
+ */
+describe('the journal is replayed, not parsed', () => {
+  it('follows a table rebuild without a line of replay code', () => {
+    // An append-only journal rebuilds a table by creating a `_new`, copying,
+    // dropping the original and renaming onto its name. Three hand-written
+    // replay loops used to implement this, one per reader. SQLite does it.
+    const sql =
+      'CREATE TABLE t (a TEXT PRIMARY KEY NOT NULL);\n' +
+      'CREATE TABLE t_new (a TEXT NOT NULL, b TEXT NOT NULL, PRIMARY KEY (a, b));\n' +
+      "INSERT INTO t_new (a, b) SELECT a, 'x' FROM t;\n" +
+      'DROP TABLE t;\n' +
+      'ALTER TABLE t_new RENAME TO t;';
+    expect(journalColumns(sql).get('t')).toEqual(new Set(['a', 'b']));
+    expect(journalPrimaryKeys(sql).get('t')).toEqual(['a', 'b']);
+    expect(journalColumns(sql).has('t_new')).toBe(false);
+  });
+
+  it('rewrites a constraint when a column is renamed, because the database does', () => {
+    const sql =
+      'CREATE TABLE t (a TEXT NOT NULL, b TEXT NOT NULL UNIQUE, PRIMARY KEY (a, b));\n' +
+      'ALTER TABLE t RENAME COLUMN b TO c;';
+    expect(journalColumns(sql).get('t')).toEqual(new Set(['a', 'c']));
+    expect(journalPrimaryKeys(sql).get('t')).toEqual(['a', 'c']);
+    expect(journalUniques(sql).get('t')).toEqual(new Set(['c']));
+  });
+
+  it('reads a vertical journal that hands data to another module', () => {
+    // Decision 28's extraction handoff: a vertical copies rows into a table that
+    // lives in the ENGINE's journal. Replaying the vertical alone can never
+    // satisfy that INSERT — so the DML is not replayed at all. It changes no
+    // schema, which is the only thing being asked about here.
+    const sql =
+      'CREATE TABLE vertical_thing (id TEXT PRIMARY KEY NOT NULL);\n' +
+      'INSERT INTO engine_thing (id) SELECT id FROM vertical_thing;';
+    expect(journalColumns(sql).get('vertical_thing')).toEqual(new Set(['id']));
+    expect(journalColumns(sql).has('engine_thing')).toBe(false);
+  });
+
+  it('refuses a journal whose schema statements do not apply', () => {
+    // The old readers answered anyway. A journal that cannot be replayed here
+    // would not apply to a scope either, and reporting a schema for it is how a
+    // broken migration passes a parity test.
+    expect(() => journalColumns('CREATE TABLE t (a TEXT, a TEXT);')).toThrow(/does not apply/);
+    expect(() => journalColumns('ALTER TABLE nope ADD COLUMN x TEXT;')).toThrow(/does not apply/);
+  });
+
+  it('does not trip over a semicolon inside a string literal', () => {
+    const sql = "CREATE TABLE t (a TEXT PRIMARY KEY NOT NULL, b TEXT NOT NULL DEFAULT 'x; y');";
+    expect(journalColumns(sql).get('t')).toEqual(new Set(['a', 'b']));
+  });
+
+  it('reads a key whose order is not declaration order', () => {
+    // `(b, a)` is a different index from `(a, b)`, and a reader that reported
+    // declaration order would call a moved key up to date.
+    expect(
+      journalPrimaryKeys('CREATE TABLE t (a TEXT NOT NULL, b TEXT NOT NULL, PRIMARY KEY (b, a));').get('t'),
+    ).toEqual(['b', 'a']);
+  });
+});
