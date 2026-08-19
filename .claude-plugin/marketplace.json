@@ -1,0 +1,28 @@
+{
+  "name": "substrat-run",
+  "owner": {
+    "name": "Substrat",
+    "url": "https://substrat.net"
+  },
+  "description": "Build multi-tenant business apps on Substrat.",
+  "plugins": [
+    {
+      "name": "substrat",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/substrat-run/substrat.git",
+        "path": "plugin/substrat"
+      },
+      "description": "Build a multi-tenant business app on Substrat — scaffold a vertical, then follow the project's own playbook through the design gate and the two human checkpoints.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Substrat",
+        "url": "https://github.com/substrat-run"
+      },
+      "homepage": "https://substrat.net",
+      "license": "Apache-2.0",
+      "category": "development",
+      "tags": ["substrat", "multi-tenant", "saas", "permissions", "scaffolding"]
+    }
+  ]
+}

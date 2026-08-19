@@ -76,6 +76,15 @@ jobs:
       # out of the file that binds it, so a moved port reddens here rather than
       # failing an agent's boot with `autoPort: false`.
       - run: pnpm lint:launch --check
+      # The agent-plugin checkpoint (#753). The plugin reaches the projects the
+      # scaffold never did, and everything in it routes except the SessionStart
+      # hook — a script cannot be routed to, so it is emitted from the template's
+      # copy. They must stay byte-identical: the script decides at runtime which
+      # copy it is and the plugin's stays silent when the project owns one, which
+      # only holds while they really are the same file. Also fails when the
+      # plugin's version moves in its manifest but not in the catalog users
+      # install from, which ships as "no update available" to everyone on it.
+      - run: pnpm lint:plugin --check
       - run: pnpm -r typecheck
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM

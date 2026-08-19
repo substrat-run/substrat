@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "substrat",
+  "displayName": "Substrat",
+  "description": "Build a multi-tenant business app on Substrat — scaffold a vertical, then follow the project's own playbook through the design gate and the two human checkpoints.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Substrat",
+    "url": "https://github.com/substrat-run"
+  },
+  "homepage": "https://substrat.net",
+  "repository": "https://github.com/substrat-run/substrat",
+  "license": "Apache-2.0",
+  "keywords": ["substrat", "multi-tenant", "vertical", "permissions", "kernel"]
+}
