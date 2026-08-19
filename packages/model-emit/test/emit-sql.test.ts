@@ -317,6 +317,16 @@ describe('a foreign key follows the parent\'s own key, not an assumed `id`', () 
       note: {
         table: 'vertical_budget_note',
         fields: z.object({ id: z.string(), budget_id: z.string(), text: z.string() }),
+        // A declared parent is now refused at compile time too: `parents` takes
+        // pointable names only, and `budget` is keyed by two columns. The emit
+        // guard below is the second layer, and it is not redundant — it is what
+        // catches an entity map that never went through this inference (built
+        // dynamically, or handed in from JavaScript).
+        //
+        // The directive earns its keep in both directions: TypeScript fails an
+        // unused `@ts-expect-error`, so deleting the narrowing in `parents`
+        // reddens this file.
+        // @ts-expect-error - 'budget' is composite-keyed, so it is not pointable
         parents: ['budget'],
       },
     });
