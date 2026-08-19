@@ -30,6 +30,7 @@ import {
   permissionKey,
   type EntityRow,
   type Money,
+  substratError,
 } from '@substrat-run/contracts';
 import { invoicingEntities, underlagLine } from './entities.js';
 
@@ -327,7 +328,7 @@ function assertSingleCurrency(
     ...incoming.map((l) => l.unitPrice.currency),
   ]);
   if (currencies.size > 1) {
-    throw new Error(
+    throw substratError('conflict', 
       `currency mismatch on underlag ${underlagId}: ${[...currencies].sort().join(', ')} — an underlag is one document in one currency`,
     );
   }
@@ -570,7 +571,7 @@ const getOp: OperationHandler<{ underlagId: string }, UnderlagDetail> = async (c
   const underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [
     input.underlagId,
   ])[0];
-  if (!underlag) throw new Error(`underlag not found: ${input.underlagId}`);
+  if (!underlag) throw substratError('not_found', `underlag not found: ${input.underlagId}`);
   const lines = ctx.sql.query<UnderlagLine>(
     'SELECT * FROM invoicing_lines WHERE underlag_id = ? ORDER BY id',
     [input.underlagId],
@@ -583,9 +584,9 @@ const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (c
   const underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [
     input.underlagId,
   ])[0];
-  if (!underlag) throw new Error(`underlag not found: ${input.underlagId}`);
+  if (!underlag) throw substratError('not_found', `underlag not found: ${input.underlagId}`);
   if (underlag.status !== 'open') {
-    throw new Error(`underlag ${underlag.number} is '${underlag.status}' — exported underlag are immutable`);
+    throw substratError('conflict', `underlag ${underlag.number} is '${underlag.status}' — exported underlag are immutable`);
   }
   ctx.sql.exec(
     `UPDATE invoicing_underlag SET status = 'exported', exported_at = ? WHERE id = ?`,

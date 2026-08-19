@@ -1,4 +1,4 @@
-import { entityRef, moduleManifest, permissionKey, type OrgId } from '@substrat-run/contracts';
+import { entityRef, moduleManifest, permissionKey, substratError, type OrgId } from '@substrat-run/contracts';
 
 // The entity registry is PUBLIC: a vertical composing this engine needs the
 // entity-type constants its relation edges name, and the row schema to declare
@@ -194,7 +194,7 @@ export async function sendInvite(
     [input.orgId, ctx.principal],
   );
   if ((open[0]?.n ?? 0) >= MAX_OPEN_PER_SENDER) {
-    throw new Error(
+    throw substratError('conflict', 
       `invite rate limit: ${MAX_OPEN_PER_SENDER} open invitations per sender per organization`,
     );
   }

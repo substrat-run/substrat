@@ -10,6 +10,7 @@ import {
   type EntityRef,
   type EntityRow,
   type Money,
+  substratError,
 } from '@substrat-run/contracts';
 import {
   billableLine,
@@ -202,13 +203,13 @@ function getRow(ctx: OperationContext, orderId: string): OrderRow {
   const row = ctx.sql.query<OrderRow>('SELECT * FROM workorder_orders WHERE id = ?', [
     orderId,
   ])[0];
-  if (!row) throw new Error(`work order not found: ${orderId}`);
+  if (!row) throw substratError('not_found', `work order not found: ${orderId}`);
   return row;
 }
 
 function requireStatus(row: OrderRow, ...allowed: OrderRow['status'][]): void {
   if (!allowed.includes(row.status)) {
-    throw new Error(
+    throw substratError('conflict', 
       `invalid transition: work order ${row.number} is '${row.status}', requires ${allowed.join('|')}`,
     );
   }

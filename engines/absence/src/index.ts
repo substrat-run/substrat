@@ -7,6 +7,7 @@ import {
   moduleManifest,
   permissionKey,
   type EntityRef,
+  substratError,
 } from '@substrat-run/contracts';
 
 // The entity registry is PUBLIC: a vertical composing this engine needs the
@@ -257,7 +258,7 @@ function getRequestRow(ctx: OperationContext, requestId: string): RequestRow {
   const row = ctx.sql.query<RequestRow>('SELECT * FROM absence_requests WHERE id = ?', [
     requestId,
   ])[0];
-  if (!row) throw new Error(`absence request not found: ${requestId}`);
+  if (!row) throw substratError('not_found', `absence request not found: ${requestId}`);
   return row;
 }
 
@@ -265,7 +266,7 @@ function getLeaveTypeRow(ctx: OperationContext, key: string): LeaveTypeRow {
   const row = ctx.sql.query<LeaveTypeRow>('SELECT * FROM absence_leave_types WHERE key = ?', [
     key,
   ])[0];
-  if (!row) throw new Error(`leave type not found: ${key}`);
+  if (!row) throw substratError('not_found', `leave type not found: ${key}`);
   return row;
 }
 
@@ -439,11 +440,11 @@ export type RequestAbsenceInput = z.infer<typeof requestAbsenceInput>;
 export function requestAbsence(ctx: OperationContext, rawInput: RequestAbsenceInput): AbsenceRequest {
   const input = requestAbsenceInput.parse(rawInput);
   if (input.endDate < input.startDate) {
-    throw new Error(`endDate ${input.endDate} precedes startDate ${input.startDate}`);
+    throw substratError('validation_failed', `endDate ${input.endDate} precedes startDate ${input.startDate}`);
   }
   const leaveType = getLeaveTypeRow(ctx, input.leaveTypeKey);
   if (leaveType.active !== 1) {
-    throw new Error(`leave type '${input.leaveTypeKey}' is inactive`);
+    throw substratError('conflict', `leave type '${input.leaveTypeKey}' is inactive`);
   }
   const id = ulid();
   ctx.sql.exec(
@@ -498,7 +499,7 @@ export function decideAbsence(
   const req = getRequestRow(ctx, input.requestId);
   // The state machine cannot skip: only a 'requested' absence can be decided.
   if (req.status !== 'requested') {
-    throw new Error(`absence request ${req.id} is '${req.status}' — only a requested absence can be decided`);
+    throw substratError('conflict', `absence request ${req.id} is '${req.status}' — only a requested absence can be decided`);
   }
   const now = new Date().toISOString();
   const subject: AbsenceSubject = {
@@ -534,7 +535,7 @@ export function decideAbsence(
   const leaveType = getLeaveTypeRow(ctx, req.leave_type_key);
   const balance = balanceAsOf(ctx, { subject: subject.ref, leaveTypeKey: req.leave_type_key });
   if (compareDecimal(addDecimal(balance, negate(req.days)), leaveType.floor) < 0) {
-    throw new Error(
+    throw substratError('conflict', 
       `insufficient balance: ${balance} day(s) of '${req.leave_type_key}' (floor ${leaveType.floor}), request needs ${req.days}`,
     );
   }
@@ -589,7 +590,7 @@ export function cancelAbsence(
   const input = cancelAbsenceInput.parse(rawInput);
   const req = getRequestRow(ctx, input.requestId);
   if (req.status !== 'requested' && req.status !== 'approved') {
-    throw new Error(`absence request ${req.id} is '${req.status}' — only requested or approved can be cancelled`);
+    throw substratError('conflict', `absence request ${req.id} is '${req.status}' — only requested or approved can be cancelled`);
   }
   const now = new Date().toISOString();
   const subject: AbsenceSubject = {
@@ -603,7 +604,7 @@ export function cancelAbsence(
       `SELECT * FROM absence_ledger WHERE request_id = ? AND entry_kind = 'booking'`,
       [req.id],
     )[0];
-    if (!booking) throw new Error(`approved request ${req.id} has no booking entry — ledger integrity violated`);
+    if (!booking) throw substratError('internal', `approved request ${req.id} has no booking entry — ledger integrity violated`);
     reversal = insertEntry(ctx, {
       subject,
       leaveTypeKey: req.leave_type_key,
@@ -776,7 +777,7 @@ export function availability(
 ): { days: AbsenceDay[]; requests: AbsenceRequest[] } {
   const from = isoDate.parse(input.from);
   const to = isoDate.parse(input.to);
-  if (to < from) throw new Error(`to ${to} precedes from ${from}`);
+  if (to < from) throw substratError('validation_failed', `to ${to} precedes from ${from}`);
   const rows = ctx.sql.query<RequestRow>(
     `SELECT * FROM absence_requests
        WHERE subject_type = ? AND subject_id = ? AND status = 'approved'

@@ -6,6 +6,7 @@ import {
   moduleManifest,
   permissionKey,
   type EntityRef,
+  substratError,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -249,7 +250,7 @@ const toLine = (r: PeriodLineRow): PeriodLine => ({
 
 function getMeterRow(ctx: OperationContext, key: string): MeterRow {
   const row = ctx.sql.query<MeterRow>('SELECT * FROM metering_meters WHERE key = ?', [key])[0];
-  if (!row) throw new Error(`meter not found: ${key}`);
+  if (!row) throw substratError('not_found', `meter not found: ${key}`);
   return row;
 }
 
@@ -326,7 +327,7 @@ export function configureMeter(ctx: OperationContext, rawInput: ConfigureMeterIn
   ])[0];
   if (existing) {
     if (existing.kind !== input.kind || existing.unit !== input.unit) {
-      throw new Error(
+      throw substratError('conflict', 
         `meter '${input.key}' is ${existing.kind}/${existing.unit} — kind and unit are frozen after creation; a new unit is a new meter key`,
       );
     }
@@ -393,7 +394,7 @@ export function recordUsage(
 ): { entry: UsageEntry; deduped: boolean } {
   const input = recordUsageInput.parse(rawInput);
   const meter = getMeterRow(ctx, input.meter);
-  if (meter.active !== 1) throw new Error(`meter '${meter.key}' is inactive`);
+  if (meter.active !== 1) throw substratError('conflict', `meter '${meter.key}' is inactive`);
   if (meter.kind === 'gauge') nonNegDecimal.parse(input.qty);
 
   const existing = ctx.sql.query<EntryRow>(
@@ -402,7 +403,7 @@ export function recordUsage(
   )[0];
   if (existing) {
     if (compareDecimal(existing.qty, input.qty) !== 0) {
-      throw new Error(
+      throw substratError('conflict', 
         `dedupe key '${input.dedupeKey}' on meter '${meter.key}' was recorded with qty ${existing.qty}, now ${input.qty} — a dedupe key must name one observation`,
       );
     }
@@ -412,7 +413,7 @@ export function recordUsage(
   const occurredAt = input.occurredAt ?? new Date().toISOString();
   const horizon = closeHorizon(ctx);
   if (horizon !== null && occurredAt < horizon) {
-    throw new Error(
+    throw substratError('conflict', 
       `occurred_at ${occurredAt} is behind the close horizon ${horizon} — the period covering it is closed; record late usage at observation time`,
     );
   }
@@ -468,7 +469,7 @@ export function usageTotal(
 ): { qty: string; entryCount: number } | null {
   const from = isoInstant.parse(input.from);
   const to = isoInstant.parse(input.to);
-  if (to <= from) throw new Error(`to ${to} must be after from ${from}`);
+  if (to <= from) throw substratError('validation_failed', `to ${to} must be after from ${from}`);
   return aggregateMeter(ctx, getMeterRow(ctx, input.meter), from, to);
 }
 
@@ -518,10 +519,10 @@ export function closePeriod(
   rawInput: ClosePeriodInput,
 ): { period: MeteringPeriod; lines: PeriodLine[] } {
   const input = closePeriodInput.parse(rawInput);
-  if (input.to <= input.from) throw new Error(`to ${input.to} must be after from ${input.from}`);
+  if (input.to <= input.from) throw substratError('validation_failed', `to ${input.to} must be after from ${input.from}`);
   const horizon = closeHorizon(ctx);
   if (horizon !== null && input.from < horizon) {
-    throw new Error(
+    throw substratError('conflict', 
       `period from ${input.from} overlaps the close horizon ${horizon} — closes are monotonic and non-overlapping`,
     );
   }
@@ -574,7 +575,7 @@ export function periodLines(ctx: OperationContext, input: { periodId: string }):
   const period = ctx.sql.query<PeriodRow>('SELECT * FROM metering_periods WHERE id = ?', [
     input.periodId,
   ])[0];
-  if (!period) throw new Error(`metering period not found: ${input.periodId}`);
+  if (!period) throw substratError('not_found', `metering period not found: ${input.periodId}`);
   return ctx.sql
     .query<PeriodLineRow>(
       'SELECT * FROM metering_period_lines WHERE period_id = ? ORDER BY meter_key',
