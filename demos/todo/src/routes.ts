@@ -1,5 +1,5 @@
 /**
- * The HTTP surface — an error map and one line of mounting.
+ * The HTTP surface — one line of mounting and what is left of an error map.
  *
  * There is no route table here. Method, path and which input fields the path
  * carries are declared on the operations themselves and compile-checked there,
@@ -8,7 +8,6 @@
  */
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { PermissionDenied } from '@substrat-run/kernel';
 import { mountOperations, type ResolveStub } from '@substrat-run/vertical-host';
 import { todoOperations } from '../spec/model.js';
 
@@ -19,12 +18,14 @@ export function mountApi(
   app: Hono<any, any, any>,
   resolveStub: ResolveStub,
 ): { operation: string; method: string; path: string }[] {
-  // Shared mapping: auth is the transport's (401), a refused permission is the
-  // kernel's (403), a missing thing is 404, anything else is a bad request.
+  // The mount decides the STATUS for everything the kernel itself names — a
+  // refused permission, an input that failed to parse, `resolveStub` refusing an
+  // anonymous call — and re-throws the rest untouched (#791). So what is left
+  // here is this vertical's own vocabulary, plus the `{ error }` body it wants on
+  // every failure: the mount deliberately does not pick a body for you.
   app.onError((err, c: Context) => {
-    if (err instanceof HTTPException) return err.getResponse();
-    if (err instanceof PermissionDenied) return c.json({ error: err.message }, 403);
-    if (/not found|unknown scope|unknown operation|not entitled|nobody here/.test(err.message)) {
+    if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+    if (/unknown operation|not entitled|nobody here/.test(err.message)) {
       return c.json({ error: err.message }, 404);
     }
     return c.json({ error: err.message }, 400);
