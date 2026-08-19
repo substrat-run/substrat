@@ -292,6 +292,12 @@ side table you add for extra data on an engine's entity is keyed by *that engine
 additional uniqueness rule; a table legitimately has both. An entity with neither an `id`
 field nor a `primaryKey` is refused rather than emitted without one.
 
+A **composite** key means the entity cannot be pointed at: attachments, grants, `ctx.link`
+edges and event subjects all need one id, so `parents`, `attachmentTargets`, `relations`,
+`emits.entity` and a narrowed `permission.entity` are compile errors for such an entity. It
+is still a full model member with migrations and a row type. A single-column key that is not
+called `id` stays fully pointable.
+
 **Do not edit `spec/model.ts` during the build.** If a handler cannot return what the model
 declares, that is real information — say so and stop, rather than reshaping the model to
 make the build pass. The model changes because the business changed, never to accommodate

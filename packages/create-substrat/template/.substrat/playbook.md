@@ -285,6 +285,12 @@ would permit two side rows for one work order. A value-keyed table is keyed by i
 additional uniqueness rule — a table legitimately has both. An entity with neither an `id`
 field nor a `primaryKey` is refused rather than emitted without one.
 
+A **composite** key means the entity cannot be pointed at: attachments, grants, link edges
+and event subjects all need one id, so naming such an entity in `parents`,
+`attachmentTargets`, `relations`, `emits.entity` or a narrowed `permission.entity` is a
+compile error. It is still a full model member with migrations and a row type. A
+single-column key that is not called `id` stays fully pointable.
+
 Behaviour stays prose in `DESIGN.md`. Inventing a way to declare a state *transition* means
 the boundary slipped.
 

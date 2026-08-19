@@ -64,6 +64,14 @@ export interface EntityDef<Names extends string = string> {
    * Order is significant and preserved: a composite primary key is also the
    * index its columns are searched by, left to right.
    *
+   * **A composite key means the entity cannot be pointed AT.** An `EntityRef` is
+   * one type and one id, so an attachment target, an event subject, a narrowed
+   * permission check and a `parents` edge all need a single column to identify
+   * the row. Those positions accept only single-column-keyed entities, and the
+   * compiler says so — see `PointableName` below. A composite-keyed table is
+   * still a full model member: it gets migrations, a row type and a place in
+   * `model.json`. It is simply not something a grant can narrow to.
+   *
    * An entity with neither `primaryKey` nor an `id` field is an ERROR, not a
    * table without a primary key. That silence is what let 15 of one production
    * vertical's 63 tables emit with no primary key at all while a column-by-column
@@ -91,6 +99,38 @@ export interface EntityDef<Names extends string = string> {
   readonly renamedFrom?: Readonly<Record<string, string>>;
 }
 
+/**
+ * The entities the platform can point AT — those identified by ONE column.
+ *
+ * An `EntityRef` is a type and a single id. Attachments hang off one, grants
+ * narrow to one, `ctx.link` joins two, an event is about one and names the
+ * output field carrying its id. None of that has a meaning for a table
+ * identified by `(customer_id, year, month)`: there is no one id to carry, and
+ * `entityIdFrom` naming `customer_id` would silently make the event about a
+ * third of a row.
+ *
+ * So a composite `primaryKey` is what makes an entity un-pointable, and that is
+ * DERIVED rather than declared — a `pointable: true` flag would be a second
+ * description of what the key already says, which is how two descriptions come
+ * to disagree.
+ *
+ * **This alias is documentation; the positions inline it.** TypeScript prints an
+ * alias unresolved, so a parameter typed `PointableName<T>` reports
+ *
+ *     Argument of type '"budget"' is not assignable to parameter of type
+ *     'PointableName<{ readonly customer: { readonly table: "a"; … } }>'
+ *
+ * — the whole entity map, and not one usable name. Inlined, the same error reads
+ * `Type '"budget"' is not assignable to type '"customer" | "ext" | "site"'`.
+ * Same lesson as #705, verified again here. Every inlined copy has a
+ * `@ts-expect-error` case in `test/model.test.ts`, so a copy that stops biting
+ * turns that directive unused and fails `typecheck`.
+ */
+export type PointableName<T> = {
+  readonly [K in keyof T]: T[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] } ? never : K;
+}[keyof T] &
+  string;
+
 /** The field names of one entity, read off its own `fields` schema. */
 export type EntityFields<E> = E extends { fields: infer F }
   ? F extends z.ZodObject<z.ZodRawShape>
@@ -109,8 +149,14 @@ export type EntityFields<E> = E extends { fields: infer F }
  * still bite.
  */
 export function defineEntities<
-  T extends {
+  const T extends {
     readonly [K in keyof T]: EntityDef<keyof T & string> & {
+      // Permission flows along this edge by `ctx.link`, which joins two
+      // EntityRefs — so a parent must be pointable. Inlined, per `PointableName`.
+      parents?: readonly ({
+        readonly [N in keyof T]: T[N] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] } ? never : N;
+      }[keyof T] &
+        string)[];
       primaryKey?: readonly EntityFields<T[K]>[];
       key?: readonly EntityFields<T[K]>[];
       erasable?: readonly EntityFields<T[K]>[];
@@ -263,8 +309,15 @@ export function entityRelationsOf<T extends Record<string, EntityDef>>(
  *     Type '"bkie"' is not assignable to type '"bike" | "customer"'.
  */
 type EntityRefs<T extends Record<string, EntityDef>, M> = {
+  /**
+   * An attachment hangs off ONE entity id, so the target must be pointable.
+   * Inlined rather than aliased, per `PointableName`.
+   */
   readonly attachmentTargets?: readonly {
-    readonly entityType: keyof T & string;
+    readonly entityType: {
+      readonly [K in keyof T]: T[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] } ? never : K;
+    }[keyof T] &
+      string;
     readonly readPermission: string;
     readonly writePermission?: string;
   }[];
@@ -308,13 +361,41 @@ type EntityRefs<T extends Record<string, EntityDef>, M> = {
     // Inlined rather than via a `ComposedName<T, M>` alias: TypeScript prints an
     // alias UNRESOLVED, so the diagnostic would name the alias and dump the
     // whole entity map instead of listing the names (learned in #705).
-    readonly entityType: (keyof T & string) | (M extends { engines: readonly (infer R)[] } ? NamesOf<R> : never);
-    readonly parentType: (keyof T & string) | (M extends { engines: readonly (infer R)[] } ? NamesOf<R> : never);
+    //
+    // BOTH sides are pointable-only: a relation is walked by `ctx.link`, which
+    // joins two EntityRefs, and neither end of a link can be a third of a row.
+    readonly entityType:
+      | ({
+          readonly [K in keyof T]: T[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] } ? never : K;
+        }[keyof T] &
+          string)
+      | (M extends { engines: readonly (infer R)[] } ? PointableNamesOf<R> : never);
+    readonly parentType:
+      | ({
+          readonly [K in keyof T]: T[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] } ? never : K;
+        }[keyof T] &
+          string)
+      | (M extends { engines: readonly (infer R)[] } ? PointableNamesOf<R> : never);
   }[];
 };
 
 /** Every entity name in one registry. */
 type NamesOf<R> = R extends Record<string, EntityDef> ? keyof R & string : never;
+
+/**
+ * The pointable entity names of one composed engine's registry.
+ *
+ * An alias is tolerable HERE, unlike the local side: an engine's names are not
+ * what a diagnostic needs to list — the local union carries those, and this arm
+ * only widens it. Engines declare their registries with `defineEntities` too, so
+ * the tuple survives and the filter bites on their entities as well.
+ */
+type PointableNamesOf<R> = R extends Record<string, EntityDef>
+  ? {
+      readonly [K in keyof R]: R[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] } ? never : K;
+    }[keyof R] &
+      string
+  : never;
 
 
 /**
