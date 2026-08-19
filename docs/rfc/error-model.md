@@ -6,7 +6,7 @@ description: One error model — RFC 9457 problem+json, a closed code taxonomy, 
 
 # The error model — problem+json, a closed taxonomy, and errors that survive the hop
 
-Status: **proposed** (v0.2 — §3 rewritten after phase 2 measured the RPC hop)
+Status: **proposed** (v0.3 — §3 rewritten after measurement, then built as the envelope)
 
 > Answers issue [#113](https://github.com/substrat-run/substrat/issues/113), the first item
 > of the [#132](https://github.com/substrat-run/substrat/issues/132) tracking list — and the
@@ -109,7 +109,7 @@ Two rules that are not negotiable:
   This is the star topology applied to failure: a vertical can branch on the engine's reason
   without importing the engine's types.
 
-## 3. Surviving the RPC hop — measured, and it changes the answer
+## 3. Surviving the RPC hop — measured, and it changed the answer
 
 This is the part that decides whether the whole design is real, because it is where the
 current one dies. **v0.1 proposed a sentinel prefix on `message`, and then guessed that
@@ -133,17 +133,30 @@ sites, so a sentinel would leak into whatever forgets. Wrapping the stub in a de
 proxy is conceivable and was not attempted; an RPC stub has delicate property and
 disposal semantics, and that is a real change rather than a two-line one.
 
-**So the successor is promoted from contingency to plan.** Structure crossing this
-boundary has to travel as a **value**, not as a throw: `ScopeDO.invoke` returns a
-discriminated `{ ok, error }` envelope, the coordinator rehydrates a `SubstratError` from
-it, and nothing is encoded into human-readable text anywhere. That is a larger change —
-it touches the shape of the adapter's methods and their call sites — and it deserves its
-own review rather than being smuggled into a refactor.
+**So the successor was promoted from contingency to plan, and then built.** Structure
+crossing this boundary travels as a **value**, not as a throw: `ScopeDO.invoke` returns
+`{ result, platformRequests, failure? }`, where `failure` is a `WireFailure` — name,
+message, code, extensions, plain JSON. The coordinator rebuilds an error from it and
+throws THAT, so the envelope is the wire's shape and never the API's: every caller above
+`host.ts` still writes `try`/`catch` exactly as before.
 
-**What holds in the meantime.** In-process, the real class arrives and `errorCodeOf`
-reads it directly: the SQLite adapter, and any handler in the same isolate as its scope,
-have the full taxonomy today. On the Cloudflare adapter a transport still classifies by
-message, exactly as it does now — no better, and importantly no worse.
+**It is opt-in per call, and that is what makes it deployable.** The coordinator passes
+`failureEnvelope: true`; a ScopeDO instance still running older code ignores an unknown
+trailing argument and throws exactly as it always did, which the coordinator still
+handles. The reverse skew cannot silently swallow an error either: without the flag the
+DO throws. No flag day, and no window where a failure reads as a success.
+
+**What it deliberately does not do.** The rebuilt error is a `SubstratError` wearing the
+original `name`, NOT an instance of the class that was thrown — contracts cannot import
+the kernel, and reviving arbitrary classes across a wire is a capability nobody should
+want. `instanceof PermissionDenied` stays false on this path and always will. That is
+the wrong question; `errorCodeOf` is the right one, and every consumer in the repo asks
+it that way.
+
+**Still to convert.** `invoke` carries the envelope; the five other throwing RPC methods
+(`attachmentAdd`, `attachmentList`, `attachmentAuthorize`, `attachmentRemove`,
+`introspectQuery`) still throw across the hop and lose their structure. Same pattern,
+mechanical, lower traffic.
 
 ## 4. Where it lands
 
@@ -158,7 +171,7 @@ message, exactly as it does now — no better, and importantly no worse.
   replicator keeps running and the next generated vertical needs migrating on the day it
   is born.
 
-## 5. Rollout — four phases, no flag day
+## 5. Rollout — five phases, no flag day
 
 1. **Contracts.** Registry, schema, `SubstratError`, `toProblem`, OpenAPI wiring. Purely
    additive; nothing throws it yet, nothing breaks.
@@ -168,10 +181,13 @@ message, exactly as it does now — no better, and importantly no worse.
    before its message patterns. **The RPC seam is NOT solved here** — see §3: it needs
    the envelope, which is its own change. Converting the remaining bare `Error` throw
    sites in the adapters is phase 2b, mechanical and message-preserving.
-3. **Transports.** `mapError` and every vertical `onError` read `code` first and **keep the
+3. **The wire.** Failures cross the ScopeDO boundary as a value (§3), so a code and its
+   extensions reach the coordinator intact. `vertical-host`'s classifier reads the code
+   before its message patterns.
+4. **Transports.** `mapError` and every vertical `onError` read `code` first and **keep the
    regex table as a fallback**, deleting patterns as each throw site is typed. Bodies gain
    the problem shape while retaining `error` (§1), so no client breaks.
-4. **Cleanup.** Contract-suite assertions migrate from message text to `code`; the regex
+5. **Cleanup.** Contract-suite assertions migrate from message text to `code`; the regex
    fallback and the `error` duplicate are deleted.
 
 **The constraint phase 4 exists to respect:** the contract suite asserts on roughly thirty
