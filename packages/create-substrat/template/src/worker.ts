@@ -164,8 +164,15 @@ mountPlatformSurface<Env>(app, {
   hostFor,
   roles: ROLES,
   ownerRoleKey: OWNER_ROLE_KEY,
-  onProvision: (env, b) => sweeper(env).noteScope(b.tenantId, b.scopeId),
-  onDeleteScope: (env, s) => sweeper(env).forgetScope(s),
+  // Both hooks are `Promise<void>`: the roster's own count is its business, and
+  // returning it here would make the platform's response shape depend on what a
+  // vertical happens to hand back. Await, discard.
+  onProvision: async (env, b) => {
+    await sweeper(env).noteScope(b.tenantId, b.scopeId);
+  },
+  onDeleteScope: async (env, s) => {
+    await sweeper(env).forgetScope(s);
+  },
 });
 
 // Unmatched /api/* fails as JSON; everything else gets a pointer, not a UI —
