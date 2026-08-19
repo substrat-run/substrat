@@ -1,3 +1,9 @@
+---
+status: built
+layer: plan
+description: The shared platform layer N per-vertical deployments sit on.
+---
+
 # Control plane design
 
 **Status:** partly implemented. Implements plan decision 30; kernel design log K-20.

@@ -1,6 +1,12 @@
+---
+status: historical
+layer: plan
+description: Visual UI brief handed to a design tool. Consumed.
+---
+
 # The Dashboard — visual UI spec
 
-**Status:** design brief for handoff to a design tool. Companion to
+**Status:** **historical** — design brief, consumed; the Dashboard ships. Companion to
 [dashboard.md](dashboard.md) (the *system/authority* spec — read it first for what the
 Dashboard **is**) and to the built operator console (`apps/console`), whose design system
 this reuses wholesale. This document is the *screen-by-screen visual contract*: layout,

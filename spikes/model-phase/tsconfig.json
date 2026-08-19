@@ -6,7 +6,7 @@
     "moduleResolution": "bundler",
     "noEmit": true,
     "skipLibCheck": true,
-    "paths": { "zod": ["../../../node_modules/.pnpm/zod@4.4.3/node_modules/zod"] }
+    "paths": { "zod": ["../../node_modules/.pnpm/zod@4.4.3/node_modules/zod"] }
   },
   "include": ["*.ts"]
 }

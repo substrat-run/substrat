@@ -1,3 +1,9 @@
+---
+status: historical
+layer: plan
+description: Agent-loop acceptance run 006.
+---
+
 # Agent-loop acceptance run 006 — CykelKraft, from scratch
 
 Date: 2026-07-16 · Benchmark shape: **the from-scratch flow** — the first run conducted

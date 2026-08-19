@@ -1,3 +1,9 @@
+---
+status: building
+layer: plan
+description: The model phase. Umbrella #685 open.
+---
+
 # The model phase — a plan
 
 Status: draft for review. Written **before** reading `Egeryds/CRM-EFF`, deliberately, so

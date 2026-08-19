@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Pick your issuer at install. All four phases implemented.
+---
+
 # RFC: detachable vertical auth — pick your issuer at install
 
-**Status:** proposed · **Extends:** [scope-local-permissions.md](./scope-local-permissions.md)
+**Status:** **built** — all four phases implemented 2026-07-26 (§3). **Extends:** [scope-local-permissions.md](./scope-local-permissions.md)
 Phase 3 (sandbox-clean verticals) and the first-run/TOFU model (PRs #214/#215). **Depends
 on:** [dashboard-ui.md](./dashboard-ui.md) (New-app flow, the Env tab),
 [marketplace-publish.md](./marketplace-publish.md) (registry-driven catalog), the K-31

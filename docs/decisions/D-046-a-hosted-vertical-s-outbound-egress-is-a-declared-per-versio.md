@@ -1,0 +1,16 @@
+---
+id: D-46
+date: 2026-08-11
+layer: plan
+title: "A hosted vertical's outbound egress is a declared per-version allowlist, enforced at the…"
+status: accepted
+aliases: []
+tracking: ["#303", "#442"]
+---
+# D-46 — A hosted vertical's outbound egress is a declared per-version allowlist, enforced at the…
+
+**A hosted vertical's outbound egress is a declared per-version allowlist, enforced at the dispatch egress seam and metered on every verdict** ([#303](https://github.com/substrat-run/substrat/issues/303); self-serve-deploy.md §4.2 — resolves that doc's open question 6.3, "allowlist, none, or metered", with *allowlist and metered*). Egress from a hosted worker runs under the platform's Cloudflare account — an SSRF/exfiltration and cost/abuse surface — yet every dispatched `fetch()` passed through the egress worker (#442) untouched. Now the vertical declares the third-party hosts it calls (`package.json` `substrat.outbound`: exact hostnames + `*.`-wildcards), the CLI carries the list in the deploy manifest **versioned with the code** (each version's manifest holds its own list, lifted onto the version record and rendered beside the console's Admit button — the permission-surface shape, D-39), the router's directory read joins the list of *the version whose code the dispatch runs* (serving version when the stable script wins, bound version on the per-version fallback — the policy follows the bundle, not the pointer), and the egress worker enforces it per subrequest: platform hosts keep looping through the router (K-27), declared hosts pass untouched, anything else is a teachable 403 naming the host. A new-CLI push **always** sends the field (`[]` when undeclared) because *no direct third-party egress* is the right default — connectors run platform-side, mail rides the relay grant, cross-vertical calls ride the router; a pre-#303 version resolves `hosts: null` and passes through **unenforced but metered** until its next push, so least privilege arrives version by version, never as a fleet outage. Every verdict (`platform`/`allowed`/`unenforced`/`refused`) writes one Analytics Engine datapoint (`substrat_egress`, index = slug — D-30 *meter, don't bill*)
+
+## Why
+
+Three calls worth recording. **Declaration is the authority, not a staff grant** — unlike `emailSender` (platform credential, shared sending reputation), a declared host grants nothing the vertical could not already reach before this existed; the value is the bound, the diff at admit, and the attributed meter — so a private self-admitting vertical (D-36) stays self-serve and the listed tier's human admitter sees the list like the permission table. **The policy follows the bundle**: reading the scope's bound version would enforce a *different version's* list than the code actually running mid-promote. And **the honest limit ships with the mechanism** (the D-45 rule): Cloudflare outbound workers do not intercept Durable-Object-originated subrequests, and verticals are DO-centric — so this is defense-in-depth plus a reviewed contract, not an airtight sandbox, and the doc says so; if CF extends interception, enforcement completes with no contract change. Free win, also written down: attaching an outbound worker disables raw TCP `connect()` for every dispatched script

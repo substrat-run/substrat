@@ -1,6 +1,12 @@
+---
+status: built
+layer: kernel
+description: Reservation and slot allocation.
+---
+
 # `engine-booking` — reservation / slot allocation
 
-Status: draft v0.1 · Last updated: 2026-07-18
+Status: **built** — the engine ships on npm
 
 > Surface sketch for the reservation engine. Companion to
 > [booking-social.md](booking-social.md) (tier split, locking model) and

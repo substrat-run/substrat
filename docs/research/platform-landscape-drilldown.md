@@ -1,3 +1,9 @@
+---
+status: historical
+layer: plan
+description: How platform incumbents handle extension, upgrades, tenancy.
+---
+
 # Platform-with-modules landscape: Odoo, SAP, Salesforce, and the kernel-shaped alternatives
 
 *2026-07-14. Deep-research pass (5 search angles, 25 sources fetched, 122 claims extracted,

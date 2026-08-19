@@ -48,6 +48,12 @@ jobs:
       # if no vertical declares entities, so the checkpoint can never pass by
       # scanning nothing.
       - run: pnpm lint:model --check
+      # The decision-log checkpoint. docs/decisions/*.md is the source; the tables in
+      # master-plan §12 and kernel-design §14 and docs/DECISIONS.md are rendered from
+      # it. Fails on a stale table, a duplicate or aliased-twice id, a gap in either
+      # sequence, or a dangling twin — the class of defect that let two different
+      # decisions both call themselves D-41.
+      - run: pnpm lint:decisions --check
       # The playbook-sync checkpoint: the create-substrat template playbook is a
       # hand-adapted copy of the substrat skill, so fail if the skill moved without
       # a human re-reconciling the playbook (tools/playbook-sync.mts).

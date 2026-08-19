@@ -1,6 +1,12 @@
+---
+status: historical
+layer: plan
+description: The first end-to-end flow. Milestone completed.
+---
+
 # The first end-to-end flow — deploy and manage an external vertical
 
-**Status:** in progress. A milestone plan, not a decision — it commits to a *walking
+**Status:** **complete** — the milestone landed; production runs it. A milestone plan, not a decision — it commits to a *walking
 skeleton*, not to the scaling shape. Slices 1 and 2 are done; the slice-4 connect seam and
 slice-3 staff auth are built and verified locally (see §4 Progress). What remains is the
 Cloudflare-deployed join: the same seams wired into deployed workers and actually shipped.

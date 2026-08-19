@@ -1,3 +1,9 @@
+---
+status: built
+layer: plan
+description: Peer vs direct dependencies, and the declared-deps gate.
+---
+
 # Dependency policy
 
 Status: adopted. Written after #742 asked a narrow question — should `zod` be a

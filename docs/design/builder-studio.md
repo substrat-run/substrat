@@ -1,3 +1,9 @@
+---
+status: built
+layer: plan
+description: Chat to vertical, hosted. NOTE: proposes D-47..D-55, none landed.
+---
+
 # RFC: the builder studio — chat → vertical, hosted
 
 **Status:** proposed — **internal PoC first** (§1.1). Not a customer surface, not linked from
@@ -812,9 +818,10 @@ if a phase leaves nothing behind when cancelled, it is scoped wrong.
 
 ## 13. Proposed decision-log entries
 
-Not yet in master-plan §12 (latest is D-46). **D-47 is the one the PoC decision implies; D-48–D-51
-are shape, and only need recording if the PoC graduates** — though building against them costs
-nothing now and retrofitting them later costs a rewrite.
+**Landed as D-48…D-56** in `docs/decisions/` (2026-08-19), shifted by one because D-47 went to the
+permission registry, whose own entry had proposed the already-taken number 41. They carry
+`status: proposed` until ratified. The numbering below is the original proposal and is kept for
+provenance; the log is authoritative.
 
 - **D-47 — The builder studio is built as an unlisted internal tool first, and staff review is its
   §6 answer at that scale.** No marketing surface, no dashboard entry, staff roster only; the

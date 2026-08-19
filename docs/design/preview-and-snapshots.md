@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Run a version against a copy of the data.
+---
+
 # RFC: preview & snapshots — run a version against a copy of the data
 
-**Status:** proposed · **Depends on:** [builder-plane.md](./builder-plane.md) (versions,
+**Status:** **built** — per-PR previews ship (D-43); `substrat preview`. **Depends on:** [builder-plane.md](./builder-plane.md) (versions,
 channels, promote), [control-plane.md](./control-plane.md) §4.7 (the router, hostname
 bindings), [kernel-design.md](./kernel-design.md) (the scope-host contract, both adapters).
 

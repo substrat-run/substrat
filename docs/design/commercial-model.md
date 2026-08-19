@@ -1,3 +1,9 @@
+---
+status: proposed
+layer: plan
+description: Tiers, marketplace, what may be metered. Not ratified.
+---
+
 # Commercial model — tiers, marketplace, and what may be metered
 
 **Status:** design synthesis, **not ratified**. This doc expands master-plan §9 (Commercial

@@ -1,3 +1,9 @@
+---
+status: built
+layer: plan
+description: The untrusted trust model and the sandbox contract.
+---
+
 # Self-serve vertical deploy — the untrusted trust model
 
 **Status:** foundation **built** (§7.1 / §8) — `substrat push` + the deploy endpoint land a

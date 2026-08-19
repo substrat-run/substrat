@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Every vertical serves its own OpenAPI; Scalar renders it.
+---
+
 # RFC: API surface — every vertical serves its own OpenAPI, Scalar renders it
 
-**Status:** proposed · **Implements:** [master-plan.md](../master-plan.md) decision 22 /
+**Status:** **built** — `pnpm lint:api` gates the emitted `openapi.json`. **Implements:** [master-plan.md](../master-plan.md) decision 22 /
 [kernel-design.md](./kernel-design.md) K-9 (zod-openapi on Hono; OAS emitted + CI-diffed)
 and the "API surface — build cheap early" buy/build row. **Depends on:**
 [vertical-auth-detach.md](./vertical-auth-detach.md) (vertical-owned sessions are the auth

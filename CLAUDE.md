@@ -156,5 +156,5 @@ A vertical declares **what exists** — entities, operations, permissions — in
 module, and the compiler checks the joins between them: a parent naming no entity, an
 `entityIdFrom` naming no output field, a payload carrying an `erasable` field are compile
 errors. `pnpm lint:model --check` gates the emitted `model.json`, as `lint:permissions` gates
-the permission surface. See `docs/concepts/model.md` (published at
+the permission surface. See `apps/docs/concepts/model.md` (published at
 [substrat.net/concepts/model](https://substrat.net/concepts/model)).
