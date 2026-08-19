@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { defineEntities, emitModel, entityRelationsOf, manifestEntities } from '../src/model.js';
+import { defineEntities, emitModel, entityRelationsOf, manifestEntities, primaryKeyOf } from '../src/model.js';
 
 const entities = defineEntities({
   customer: {
@@ -27,6 +27,60 @@ const entities = defineEntities({
     fields: z.object({ id: z.string(), customerId: z.string(), status: z.string() }),
     parents: ['customer'],
   },
+});
+
+/**
+ * #804 — a table whose identity is not an `id`.
+ *
+ * The first two are the `vertical_` side table keyed by an engine's id, which
+ * the design rules prescribe: its identity IS the work order's, and giving it an
+ * `id` of its own would permit two side rows for one work order. The third is an
+ * ordinary value-keyed table.
+ */
+const keyedEntities = defineEntities({
+  budget: {
+    table: 'vertical_time_budget',
+    fields: z.object({
+      customer_id: z.string(),
+      year: z.number(),
+      month: z.number(),
+      hours: z.string(),
+    }),
+    primaryKey: ['customer_id', 'year', 'month'],
+  },
+  ext: {
+    table: 'vertical_workorder_ext',
+    fields: z.object({ workorder_id: z.string(), route_note: z.string().nullable() }),
+    primaryKey: ['workorder_id'],
+  },
+});
+
+describe('primaryKeyOf', () => {
+  it('defaults to id', () => {
+    expect(primaryKeyOf('customer', entities.customer)).toEqual(['id']);
+  });
+
+  it('takes the declared key when there is one', () => {
+    expect(primaryKeyOf('budget', keyedEntities.budget)).toEqual(['customer_id', 'year', 'month']);
+    expect(primaryKeyOf('ext', keyedEntities.ext)).toEqual(['workorder_id']);
+  });
+
+  it('refuses an entity with no id and no declared key, rather than none at all', () => {
+    // The silent case: a table with no primary key accepts duplicate rows, and a
+    // parity check that compares columns reports a perfect match over it.
+    const orphan = { table: 't', fields: z.object({ a: z.string(), b: z.string() }) };
+    expect(() => primaryKeyOf('orphan', orphan)).toThrow(/no 'id' field and declares no `primaryKey`/);
+  });
+
+  it('refuses a key naming a field that does not exist', () => {
+    const wrong = { table: 't', fields: z.object({ a: z.string() }), primaryKey: ['b'] };
+    expect(() => primaryKeyOf('wrong', wrong)).toThrow(/names 'b', which is not a field/);
+  });
+
+  it('refuses a key that repeats a column', () => {
+    const dupe = { table: 't', fields: z.object({ a: z.string(), b: z.string() }), primaryKey: ['a', 'a'] };
+    expect(() => primaryKeyOf('dupe', dupe)).toThrow(/repeats a column/);
+  });
 });
 
 describe('entity registry', () => {
@@ -46,6 +100,26 @@ describe('entity registry', () => {
     // Field schemas travel as JSON Schema — the same conversion the OpenAPI
     // builder uses, so there is no second schema language in the pipeline.
     expect(a.entities.customer?.fields).toMatchObject({ type: 'object' });
+  });
+
+  it('carries a non-default primary key into the artifact, unsorted', () => {
+    const m = emitModel(keyedEntities);
+    // Unsorted: a composite primary key is the index its columns are searched
+    // by, so sorting it for a tidier diff would emit a different table.
+    expect(m.entities.budget?.primaryKey).toEqual(['customer_id', 'year', 'month']);
+    expect(m.entities.ext?.primaryKey).toEqual(['workorder_id']);
+  });
+
+  it('leaves the artifact unchanged for the id default', () => {
+    // Absent means `['id']`. Emitting it everywhere would churn every checked-in
+    // model.json to restate the default.
+    expect(emitModel(entities).entities.customer).not.toHaveProperty('primaryKey');
+  });
+
+  it('refuses to emit an entity that has no identity at all', () => {
+    // `lint:model --check` goes red on it, the same way the DDL emitter does.
+    const orphans = { thing: { table: 't_thing', fields: z.object({ a: z.string() }) } };
+    expect(() => emitModel(orphans)).toThrow(/no 'id' field and declares no `primaryKey`/);
   });
 
   it('sorts entities and their key/erasable lists, so the diff is stable', () => {
@@ -103,6 +177,16 @@ defineEntities({
     fields: z.object({ id: z.string(), name: z.string() }),
     // @ts-expect-error 'emial' is not a field of customer
     erasable: ['emial'],
+  },
+});
+
+// --- primaryKey is checked against the entity's own fields ------------------
+defineEntities({
+  budget: {
+    table: 't_budget',
+    fields: z.object({ customer_id: z.string(), year: z.number() }),
+    // @ts-expect-error 'moth' is not a field of budget
+    primaryKey: ['customer_id', 'moth'],
   },
 });
 

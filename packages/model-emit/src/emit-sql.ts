@@ -19,7 +19,7 @@
  * silently — for anything reaching a migration, absent must be loud.
  */
 import { z } from 'zod';
-import { JSON_COLUMN, type EntityDef } from '@substrat-run/contracts';
+import { JSON_COLUMN, primaryKeyOf, type EntityDef } from '@substrat-run/contracts';
 
 /** What a column becomes, before nullability and constraints. */
 interface Column {
@@ -154,10 +154,14 @@ export interface EmitSqlOptions {
 /**
  * `CREATE TABLE` for every declared entity, in sorted order.
  *
- * - `id` becomes `TEXT PRIMARY KEY NOT NULL`. The `NOT NULL` is deliberate and
+ * - The primary key — `primaryKey` if declared, else `id` — becomes
+ *   `TEXT PRIMARY KEY NOT NULL` inline when it is one column, and a table-level
+ *   `PRIMARY KEY (a, b)` when it is several. The `NOT NULL` is deliberate and
  *   stricter than most hand-written schemas: in SQLite a non-INTEGER primary key
  *   does NOT imply it, so `id TEXT PRIMARY KEY` accepts a NULL id. Every
  *   `vertical_*` table written by hand in this repo has that hole.
+ * - An entity with neither is an ERROR. A table emitted with no primary key
+ *   accepts duplicate rows and a column-wise parity check cannot see it (#804).
  * - `key` becomes a `UNIQUE` constraint.
  * - `parents` becomes a `REFERENCES` clause per parent, on `<parent>_id` when the
  *   entity declares such a column — never invented if it does not.
@@ -174,6 +178,7 @@ export function emitTables<T extends Record<string, EntityDef>>(
     if (!entity) continue;
     const cols = [
       ...columnsOf(name, entity, entities).map((c) => `  ${c.ddl}`),
+      ...primaryKeyConstraint(name, entity).map((k) => `  ${k}`),
       ...uniqueConstraints(name, entity).map((u) => `  ${u}`),
     ];
     out.push(`CREATE TABLE ${exists}${entity.table} (\n${cols.join(',\n')}\n);`);
@@ -207,14 +212,26 @@ export function columnsOf<T extends Record<string, EntityDef>>(
   const shape = entity.fields.shape as Record<string, z.ZodTypeAny>;
   const out: EmittedColumn[] = [];
 
+  const pk = primaryKeyOf(name, entity);
+  const inKey = new Set(pk);
+
   for (const [field, schema] of Object.entries(shape)) {
     const c = columnFor(field, schema, `${name}.${field}`);
-    if (field === 'id') {
-      out.push({ name: 'id', ddl: `id ${c.type} PRIMARY KEY NOT NULL`, requiredWithoutDefault: true });
-      continue;
+    if (inKey.has(field) && c.nullable) {
+      // A nullable primary-key column is a contradiction the database would not
+      // catch: SQLite lets a NULL into a non-INTEGER primary key, which is the
+      // very hole this emitter exists to close.
+      throw new Error(
+        `emit-sql: ${name}.${field} is part of the primary key but is nullable — ` +
+          'a key column identifies a row, so it cannot be absent',
+      );
     }
     let ddl = `${c.name} ${c.type}`;
-    if (!c.nullable) ddl += ' NOT NULL';
+    // One column: inline, which is what a hand-written schema writes and what
+    // keeps `id TEXT PRIMARY KEY NOT NULL` byte-identical. Several: a
+    // table-level constraint, the only way SQL can express it.
+    if (inKey.has(field) && pk.length === 1) ddl += ' PRIMARY KEY NOT NULL';
+    else if (!c.nullable) ddl += ' NOT NULL';
     if (c.check) ddl += ` ${c.check}`;
     // A parent edge whose id column is present becomes a real foreign key.
     for (const parent of entity.parents ?? []) {
@@ -226,6 +243,22 @@ export function columnsOf<T extends Record<string, EntityDef>>(
     out.push({ name: c.name, ddl, requiredWithoutDefault: !c.nullable });
   }
   return out;
+}
+
+/**
+ * The table-level `PRIMARY KEY (a, b)`, for a composite key only.
+ *
+ * A single-column key is written inline by `columnsOf`, so this returns nothing
+ * for it — emitting both would declare the primary key twice and SQLite would
+ * refuse the table.
+ *
+ * Column order is preserved, not sorted: a composite primary key is also the
+ * index its columns are searched by, left to right, so `(customer_id, year,
+ * month)` and `(year, month, customer_id)` are different tables.
+ */
+export function primaryKeyConstraint(name: string, entity: EntityDef): string[] {
+  const pk = primaryKeyOf(name, entity);
+  return pk.length > 1 ? [`PRIMARY KEY (${pk.join(', ')})`] : [];
 }
 
 /**

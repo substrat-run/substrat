@@ -18,15 +18,15 @@
  * the model, re-run, it renumbers.
  *
  * **What this refuses.** Anything that would rewrite history or lose data: a
- * dropped table or column, a retyped column, or a required column added to a
- * table that may already hold rows. Those are real decisions (expand/contract,
- * a backfill, a `renamedFrom` declaration) and a generator that guessed at them
- * would be guessing with somebody's data.
+ * dropped table or column, a retyped column, a moved primary key, or a required
+ * column added to a table that may already hold rows. Those are real decisions
+ * (expand/contract, a rebuild, a backfill, a `renamedFrom` declaration) and a
+ * generator that guessed at them would be guessing with somebody's data.
  */
 import { z } from 'zod';
-import { columnsOf, emitTables, uniqueConstraints } from './emit-sql.js';
-import type { EntityDef } from '@substrat-run/contracts';
-import { journalColumns, journalUniques } from './journal.js';
+import { columnsOf, emitTables, primaryKeyConstraint, uniqueConstraints } from './emit-sql.js';
+import { primaryKeyOf, type EntityDef } from '@substrat-run/contracts';
+import { journalColumns, journalPrimaryKeys, journalUniques } from './journal.js';
 
 export interface JournalEntry {
   /** Derived, monotonic, zero-padded: `0001`. Never authored. */
@@ -66,6 +66,7 @@ export function planMigration<T extends Record<string, EntityDef>>(
   const applied = journalColumns(journalSql);
   const desired = journalColumns(emitTables(entities));
   const appliedUniques = journalUniques(journalSql);
+  const appliedKeys = journalPrimaryKeys(journalSql);
 
   // table name → the entity that owns it, so a diff can be reported in the
   // vocabulary the model uses rather than in raw table names.
@@ -97,6 +98,7 @@ export function planMigration<T extends Record<string, EntityDef>>(
       // the REFERENCES clause of every foreign key pointing outside it.
       const cols = [
         ...columnsOf(o.name, o.entity, entities).map((c) => `  ${c.ddl}`),
+        ...primaryKeyConstraint(o.name, o.entity).map((k) => `  ${k}`),
         ...uniqueConstraints(o.name, o.entity).map((u) => `  ${u}`),
       ];
       statements.push(`CREATE TABLE ${table} (\n${cols.join(',\n')}\n);`);
@@ -159,6 +161,36 @@ export function planMigration<T extends Record<string, EntityDef>>(
       );
     }
 
+    // -- the primary key moved -------------------------------------------------
+    // SQLite cannot alter a primary key at all: it needs the table rebuilt,
+    // copied and renamed, which is a decision about live data rather than a
+    // diff. Refused LOUDLY for the same reason as a late UNIQUE — a schema that
+    // silently identifies rows differently than the journal does is how a
+    // duplicate gets in, and #804 is exactly that failure going unseen.
+    //
+    // Both comparisons below translate the journal's column names through any
+    // rename THIS plan is about to emit: the journal still names the old column,
+    // and SQLite rewrites keys and constraints along with it. Comparing
+    // untranslated makes a renamed key look like one the journal never had, and
+    // refuses the very change that would fix it. Built from `renames`, not from
+    // `renamedFrom`, so a spent declaration cannot translate a name the journal
+    // is not actually renaming.
+    const previousToCurrent = new Map([...renames].map(([current, previous]) => [previous, current]));
+    const wantKey = primaryKeyOf(o.name, o.entity).join(', ');
+    const haveKey = (appliedKeys.get(table) ?? []).map((c) => previousToCurrent.get(c) ?? c).join(', ');
+    if (haveKey !== wantKey) {
+      refusals.push(
+        haveKey === ''
+          ? `'${table}' exists in the journal with NO primary key, and the model identifies a row ` +
+            `by (${wantKey}) — SQLite cannot add a primary key to an existing table. Rebuild it in ` +
+            'a hand-written entry (create, copy, drop, rename), after deciding what to do with any ' +
+            'duplicate rows it already holds'
+          : `'${table}' is keyed by (${haveKey}) in the journal and by (${wantKey}) in the model — ` +
+            'SQLite cannot change a primary key in place. Rebuild the table in a hand-written ' +
+            'entry, or restore the declared key',
+      );
+    }
+
     // -- a key declared after the table already exists ------------------------
     // SQLite cannot ADD a UNIQUE constraint in place; it needs the table
     // rebuilt, copied and renamed. That is a decision about live data, not a
@@ -172,16 +204,11 @@ export function planMigration<T extends Record<string, EntityDef>>(
         .filter(Boolean)
         .join(', '),
     );
-    // Translated through any rename THIS plan is about to emit: the journal
-    // still names the old column, and SQLite rewrites the constraint along with
-    // it. Comparing untranslated makes a renamed key look like one the journal
-    // never had, and refuses the very change that would fix it.
-    const toCurrent = new Map([...renames].map(([current, previous]) => [previous, current]));
     const haveUniques = new Set(
       [...(appliedUniques.get(table) ?? new Set<string>())].map((c) =>
         c
           .split(', ')
-          .map((col) => toCurrent.get(col) ?? col)
+          .map((col) => previousToCurrent.get(col) ?? col)
           .join(', '),
       ),
     );

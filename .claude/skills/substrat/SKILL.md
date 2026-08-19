@@ -272,7 +272,7 @@ compile errors, before a line of the module exists.
 Full walkthrough: [The model](https://substrat.net/concepts/model). The short version:
 
 ```ts
-export const entities = defineEntities({ … });          // table, fields, parents, key, erasable
+export const entities = defineEntities({ … });          // table, fields, parents, primaryKey, key, erasable
 export const PERMISSIONS = ['thing:manage'] as const;
 export const operations = defineOperations(entities, PERMISSIONS, [engineEntities])({ … });
 export const model = emitModel(entities);
@@ -284,6 +284,13 @@ Behaviour stays prose. If you find yourself inventing a way to declare a state
 Field names mirror the SQL columns, snake_case included; a prettier naming here is a second
 description of the same rows. And not every table is an entity: an entity is something the
 platform can point at.
+
+`primaryKey` defaults to `['id']` — declare it where the identity is something else. The
+side table you add for extra data on an engine's entity is keyed by *that engine's id*
+(`primaryKey: ['workorder_id']`), and a value-keyed table by its values
+(`primaryKey: ['customer_id', 'year', 'month']`). It is separate from `key`, which is an
+additional uniqueness rule; a table legitimately has both. An entity with neither an `id`
+field nor a `primaryKey` is refused rather than emitted without one.
 
 **Do not edit `spec/model.ts` during the build.** If a handler cannot return what the model
 declares, that is real information — say so and stop, rather than reshaping the model to
