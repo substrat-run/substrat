@@ -12,6 +12,36 @@ import {
   type SealedCell,
   substratError,
 } from '@substrat-run/contracts';
+
+/**
+ * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
+ * `conflict` code (#113). Exported so a vertical can branch on WHY a refusal happened
+ * without importing this engine's types or matching on its prose; `as const` so a typo
+ * is a compile error here rather than a slug nobody ever matches.
+ *
+ * Additive only, like every other engine surface: new reasons may appear, existing ones
+ * do not change spelling.
+ */
+export const PROTOCOL_CONFLICT_REASONS = [
+  'already_open',
+  'already_signed',
+  'already_voided',
+  'attachment_mismatch',
+  'content_frozen',
+  'content_mismatch',
+  'no_bound_content',
+  'not_frozen',
+  'protocol_required',
+  'request_resolved',
+  'wrong_party',
+  'wrong_status',
+  'wrong_template_kind',
+] as const;
+export type ProtocolConflictReason = (typeof PROTOCOL_CONFLICT_REASONS)[number];
+
+/** `conflict(reason, message)` — reason first, so the classification reads before the prose. */
+const conflict = (reason: ProtocolConflictReason, message: string) => substratError('conflict', message, { reason });
+
 import { protocolEntities } from './entities.js';
 
 // The entity registry is PUBLIC: a composing vertical imports it to check
@@ -685,7 +715,7 @@ async function currentHash(
   const content = templateContentOf(template);
   if (content.kind === 'document') {
     if (!instance.bound_hash) {
-      throw substratError('conflict', 
+      throw conflict('no_bound_content', 
         `document protocol ${instance.id} has no bound content — bind it before freezing`,
       );
     }
@@ -703,11 +733,11 @@ async function verifyFrozen(
   instance: ProtocolInstanceRow,
 ): Promise<string> {
   if (!instance.frozen_hash) {
-    throw substratError('conflict', `protocol ${instance.id} is not frozen: nothing to sign against`);
+    throw conflict('not_frozen', `protocol ${instance.id} is not frozen: nothing to sign against`);
   }
   const replayed = await currentHash(ctx, instance);
   if (replayed !== instance.frozen_hash) {
-    throw substratError('conflict', 
+    throw conflict('content_mismatch', 
       `content hash mismatch: frozen ${instance.frozen_hash}, replayed ${replayed}`,
     );
   }
@@ -744,7 +774,7 @@ export function requireSigned(ctx: OperationContext, entity: EntityRef, template
     [entity.entityType, entity.entityId, templateKey],
   )[0];
   if (!signed) {
-    throw substratError('conflict', 
+    throw conflict('protocol_required', 
       `protocol required: '${templateKey}' must be signed before this transition ` +
         `(${entity.entityType} ${entity.entityId})`,
     );
@@ -772,7 +802,7 @@ export function requireCountersigned(
     [entity.entityType, entity.entityId, templateKey],
   )[0];
   if (!counter) {
-    throw substratError('conflict', 
+    throw conflict('protocol_required', 
       `protocol required: '${templateKey}' must be counter-signed before this transition ` +
         `(${entity.entityType} ${entity.entityId})`,
     );
@@ -881,7 +911,7 @@ export function instantiateProtocol(
     [input.entity.entityType, input.entity.entityId, input.templateKey],
   )[0];
   if (dup) {
-    throw substratError('conflict', 
+    throw conflict('already_open', 
       `protocol '${input.templateKey}' already open on this ${input.entity.entityType}`,
     );
   }
@@ -925,12 +955,12 @@ export function instantiateProtocol(
 function assertUnfrozen(instance: ProtocolInstanceRow, what: string): void {
   if (instance.status === 'open') return;
   if (instance.status === 'pending_signature') {
-    throw substratError('conflict', 
+    throw conflict('content_frozen', 
       `protocol is out for signature: content is frozen until the requests resolve ` +
         `or are cancelled (instance ${instance.id})`,
     );
   }
-  throw substratError('conflict', 
+  throw conflict('content_frozen', 
     `protocol is ${instance.status}: content is frozen, ${what} can no longer change ` +
       `(append-only history kept)`,
   );
@@ -949,7 +979,7 @@ export function fillProtocol(
   const template = getTemplateRow(ctx, instance.template_key, instance.template_version);
   const content = templateContentOf(template);
   if (content.kind !== 'checklist') {
-    throw substratError('conflict', 
+    throw conflict('wrong_template_kind', 
       `template ${instance.template_key}@${instance.template_version} is a '${content.kind}' ` +
         `protocol: it carries no items — bind its content instead of filling it`,
     );
@@ -1031,7 +1061,7 @@ export function bindDocument(
   const template = getTemplateRow(ctx, instance.template_key, instance.template_version);
   const content = templateContentOf(template);
   if (content.kind !== 'document') {
-    throw substratError('conflict', 
+    throw conflict('wrong_template_kind', 
       `template ${instance.template_key}@${instance.template_version} is a '${content.kind}' ` +
         `protocol: fill its items instead of binding content`,
     );
@@ -1056,7 +1086,7 @@ export function bindDocument(
       );
     }
     if (attachment.entity_type !== 'protocol' || attachment.entity_id !== instance.id) {
-      throw substratError('conflict', 
+      throw conflict('attachment_mismatch', 
         `attachment ${documentAttachmentId} is attached to ` +
           `${attachment.entity_type}/${attachment.entity_id}, not to protocol/${instance.id} — ` +
           `a document must be bound to the instance it will be signed on`,
@@ -1130,7 +1160,7 @@ export async function requestSignatures(
   const input = requestSignaturesInput.parse(rawInput);
   const instance = getInstanceRow(ctx, input.instanceId);
   if (instance.status !== 'open') {
-    throw substratError('conflict', 
+    throw conflict('wrong_status', 
       `protocol is ${instance.status}: only an open protocol can be sent for signature`,
     );
   }
@@ -1344,12 +1374,12 @@ export async function recordSignature(
   )[0];
   if (!request) throw substratError('not_found', `signature request not found: ${input.requestId}`);
   if (request.status !== 'pending') {
-    throw substratError('conflict', `signature request is already ${request.status}: ${request.id}`);
+    throw conflict('request_resolved', `signature request is already ${request.status}: ${request.id}`);
   }
 
   const instance = getInstanceRow(ctx, request.instance_id);
   if (instance.status !== 'pending_signature') {
-    throw substratError('conflict', 
+    throw conflict('wrong_status', 
       `protocol is ${instance.status}: signatures are only recorded while out for signature`,
     );
   }
@@ -1357,7 +1387,7 @@ export async function recordSignature(
   // Re-derive rather than trust the column, then check the provider agrees.
   const frozen = await verifyFrozen(ctx, instance);
   if (input.contentHash !== frozen) {
-    throw substratError('conflict', 
+    throw conflict('content_mismatch', 
       `signed content does not match the frozen protocol: provider reported ` +
         `${input.contentHash}, frozen ${frozen}`,
     );
@@ -1369,14 +1399,14 @@ export async function recordSignature(
     );
   }
   if (request.party_ref && request.party_ref !== input.signatory.ref) {
-    throw substratError('conflict', 
+    throw conflict('wrong_party', 
       `signature request ${request.id} was addressed to a different party than the one who signed`,
     );
   }
   if (
     getSignatureRows(ctx, instance.id).some((s) => s.signed_by === input.signatory.ref)
   ) {
-    throw substratError('conflict', 'this signatory has already signed this protocol');
+    throw conflict('already_signed', 'this signatory has already signed this protocol');
   }
 
   const id = ulid();
@@ -1448,7 +1478,7 @@ export function declineSignature(
   )[0];
   if (!request) throw substratError('not_found', `signature request not found: ${input.requestId}`);
   if (request.status !== 'pending') {
-    throw substratError('conflict', `signature request is already ${request.status}: ${request.id}`);
+    throw conflict('request_resolved', `signature request is already ${request.status}: ${request.id}`);
   }
   const instance = getInstanceRow(ctx, request.instance_id);
   ctx.sql.exec(
@@ -1495,7 +1525,7 @@ export function cancelSignatureRequests(
   const input = cancelSignatureRequestsInput.parse(rawInput);
   const instance = getInstanceRow(ctx, input.instanceId);
   if (instance.status !== 'pending_signature') {
-    throw substratError('conflict', 
+    throw conflict('wrong_status', 
       `protocol is ${instance.status}: only a protocol out for signature can be withdrawn`,
     );
   }
@@ -1619,7 +1649,7 @@ export async function signProtocol(
 ): Promise<SignResult> {
   const instance = getInstanceRow(ctx, z.string().min(1).parse(input.instanceId));
   if (instance.status !== 'open') {
-    throw substratError('conflict', `protocol is ${instance.status}: only an open protocol can be signed`);
+    throw conflict('wrong_status', `protocol is ${instance.status}: only an open protocol can be signed`);
   }
   const latest = latestPerItem(getResponseRows(ctx, instance.id));
   const contentHash = await currentHash(ctx, instance);
@@ -1660,7 +1690,7 @@ export async function countersignProtocol(
 ): Promise<SignResult> {
   const instance = getInstanceRow(ctx, z.string().min(1).parse(input.instanceId));
   if (instance.status !== 'signed') {
-    throw substratError('conflict', 
+    throw conflict('wrong_status', 
       `protocol is ${instance.status}: only a signed (frozen) protocol can be counter-signed`,
     );
   }
@@ -1668,7 +1698,7 @@ export async function countersignProtocol(
   const primary = signatures.find((s) => s.kind === 'primary');
   if (!primary) throw substratError('internal', `signed protocol has no primary signature: ${instance.id}`); // corrupt state, fail closed
   if (signatures.some((s) => s.signed_by === ctx.principal)) {
-    throw substratError('conflict', 'counter-signature must come from a signatory who has not already signed');
+    throw conflict('already_signed', 'counter-signature must come from a signatory who has not already signed');
   }
 
   // Re-run the recipe against stored state: the counter-signature binds to
@@ -1702,7 +1732,7 @@ export function voidProtocol(
 ): ProtocolInstanceRow {
   const reason = z.string().min(1).parse(input.reason);
   const instance = getInstanceRow(ctx, z.string().min(1).parse(input.instanceId));
-  if (instance.status === 'voided') throw substratError('conflict', 'protocol is already voided');
+  if (instance.status === 'voided') throw conflict('already_voided', 'protocol is already voided');
   const now = new Date().toISOString();
   // An outstanding request set dies with the protocol — leaving rows `pending`
   // on a voided instance would keep `requireAllSigned` reading a live gate on

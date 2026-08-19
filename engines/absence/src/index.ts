@@ -10,6 +10,26 @@ import {
   substratError,
 } from '@substrat-run/contracts';
 
+/**
+ * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
+ * `conflict` code (#113). Exported so a vertical can branch on WHY a refusal happened
+ * without importing this engine's types or matching on its prose; `as const` so a typo
+ * is a compile error here rather than a slug nobody ever matches.
+ *
+ * Additive only, like every other engine surface: new reasons may appear, existing ones
+ * do not change spelling.
+ */
+export const ABSENCE_CONFLICT_REASONS = [
+  'insufficient_balance',
+  'leave_type_inactive',
+  'wrong_status',
+] as const;
+export type AbsenceConflictReason = (typeof ABSENCE_CONFLICT_REASONS)[number];
+
+/** `conflict(reason, message)` — reason first, so the classification reads before the prose. */
+const conflict = (reason: AbsenceConflictReason, message: string) => substratError('conflict', message, { reason });
+
+
 // The entity registry is PUBLIC: a vertical composing this engine needs the
 // entity-type constants its relation edges name, and the row schema to declare
 // an operation's output against without retyping this engine's shape.
@@ -444,7 +464,7 @@ export function requestAbsence(ctx: OperationContext, rawInput: RequestAbsenceIn
   }
   const leaveType = getLeaveTypeRow(ctx, input.leaveTypeKey);
   if (leaveType.active !== 1) {
-    throw substratError('conflict', `leave type '${input.leaveTypeKey}' is inactive`);
+    throw conflict('leave_type_inactive', `leave type '${input.leaveTypeKey}' is inactive`);
   }
   const id = ulid();
   ctx.sql.exec(
@@ -499,7 +519,7 @@ export function decideAbsence(
   const req = getRequestRow(ctx, input.requestId);
   // The state machine cannot skip: only a 'requested' absence can be decided.
   if (req.status !== 'requested') {
-    throw substratError('conflict', `absence request ${req.id} is '${req.status}' — only a requested absence can be decided`);
+    throw conflict('wrong_status', `absence request ${req.id} is '${req.status}' — only a requested absence can be decided`);
   }
   const now = new Date().toISOString();
   const subject: AbsenceSubject = {
@@ -535,7 +555,7 @@ export function decideAbsence(
   const leaveType = getLeaveTypeRow(ctx, req.leave_type_key);
   const balance = balanceAsOf(ctx, { subject: subject.ref, leaveTypeKey: req.leave_type_key });
   if (compareDecimal(addDecimal(balance, negate(req.days)), leaveType.floor) < 0) {
-    throw substratError('conflict', 
+    throw conflict('insufficient_balance', 
       `insufficient balance: ${balance} day(s) of '${req.leave_type_key}' (floor ${leaveType.floor}), request needs ${req.days}`,
     );
   }
@@ -590,7 +610,7 @@ export function cancelAbsence(
   const input = cancelAbsenceInput.parse(rawInput);
   const req = getRequestRow(ctx, input.requestId);
   if (req.status !== 'requested' && req.status !== 'approved') {
-    throw substratError('conflict', `absence request ${req.id} is '${req.status}' — only requested or approved can be cancelled`);
+    throw conflict('wrong_status', `absence request ${req.id} is '${req.status}' — only requested or approved can be cancelled`);
   }
   const now = new Date().toISOString();
   const subject: AbsenceSubject = {

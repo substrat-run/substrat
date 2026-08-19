@@ -1,5 +1,23 @@
 import { entityRef, moduleManifest, permissionKey, substratError, type OrgId } from '@substrat-run/contracts';
 
+/**
+ * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
+ * `conflict` code (#113). Exported so a vertical can branch on WHY a refusal happened
+ * without importing this engine's types or matching on its prose; `as const` so a typo
+ * is a compile error here rather than a slug nobody ever matches.
+ *
+ * Additive only, like every other engine surface: new reasons may appear, existing ones
+ * do not change spelling.
+ */
+export const INVITES_CONFLICT_REASONS = [
+  'open_invite_limit',
+] as const;
+export type InvitesConflictReason = (typeof INVITES_CONFLICT_REASONS)[number];
+
+/** `conflict(reason, message)` — reason first, so the classification reads before the prose. */
+const conflict = (reason: InvitesConflictReason, message: string) => substratError('conflict', message, { reason });
+
+
 // The entity registry is PUBLIC: a vertical composing this engine needs the
 // entity-type constants its relation edges name, and the row schema to declare
 // an operation's output against without retyping this engine's shape.
@@ -194,7 +212,7 @@ export async function sendInvite(
     [input.orgId, ctx.principal],
   );
   if ((open[0]?.n ?? 0) >= MAX_OPEN_PER_SENDER) {
-    throw substratError('conflict', 
+    throw conflict('open_invite_limit', 
       `invite rate limit: ${MAX_OPEN_PER_SENDER} open invitations per sender per organization`,
     );
   }

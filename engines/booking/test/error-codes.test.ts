@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { errorCodeOf, toProblem } from '@substrat-run/contracts';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
+  BOOKING_CONFLICT_REASONS,
   PERM,
   bookingModule,
   createResource,
@@ -77,6 +78,28 @@ describe('engine-booking refusals carry a code', () => {
     expect(err.message).toMatch(/has not expired yet/);
     expect(errorCodeOf(err)).toBe('conflict');
     expect(toProblem(err).status).toBe(409);
+    // The engine's own vocabulary, narrowing the platform code: a consumer branches on
+    // WHY without importing this engine's types or matching on its prose.
+    expect(toProblem(err).reason).toBe('not_yet_expired');
+  });
+
+  it('only raises reasons it declares', async () => {
+    const resource = await h.run((ctx) => createResource(ctx, { kind: 'court', name: 'Bana 3' }));
+    const held = await h.run((ctx) =>
+      holdReservation(ctx, {
+        resourceId: resource.id,
+        startsAt: T17,
+        endsAt: T1830,
+        expiresAt: EXPIRES,
+        now: NOW,
+      }),
+    );
+    const err = await thrownBy(() =>
+      h.run((ctx) => expireReservation(ctx, { reservationId: held.id, now: NOW })),
+    );
+    // The declared list is the contract a vertical writes its switch against, so a
+    // reason outside it would be a slug nothing matches.
+    expect(BOOKING_CONFLICT_REASONS).toContain(toProblem(err).reason);
   });
 
   it('classifies malformed input as validation_failed', async () => {

@@ -29,9 +29,27 @@ highest value per edit — their throws ARE the invariants, they are the stable 
 verticals compose against (D-28), and "the state machine refused" is exactly the class
 message-matching guesses at and frequently misses.
 
-No `reason` slugs yet. The taxonomy lets a module narrow a code with a reason it owns,
-but inventing 78 of them is a design exercise per site with no consumer asking; adding
-one later is additive. Codes now, reasons when something needs to branch.
+Each engine also declares its own **conflict reasons** — `BOOKING_CONFLICT_REASONS`,
+`PROTOCOL_CONFLICT_REASONS`, and so on — as an `as const` union, exported alongside a
+matching type. All 45 conflict sites raise one, through a local
+`conflict(reason, message)` helper, so a mistyped slug is a compile error rather than a
+string nothing ever matches:
+
+```
+conflict('resource_inactve', …)
+→ error TS2345: Argument of type '"resource_inactve"' is not assignable to parameter of
+  type '"already_joined" | "already_left" | … | "resource_inactive"'
+```
+
+A vertical can now branch on WHY a refusal happened — `immutable_after_export` vs
+`currency_mismatch` — without importing the engine's types or matching on its prose. The
+vocabularies are deliberately coarse: thirteen reasons across protocol's twenty-three
+throw sites, one or two for the smaller engines. They are engine surface, so they evolve
+additively like everything else — new reasons may appear, existing spellings do not
+change.
+
+Reasons are only on `conflict`. `not_found` declares no extensions and `validation_failed`
+carries field issues instead, so neither has anywhere to put one.
 
 Still bare, deliberately: the ~30 kernel and adapter throws the control plane's
 `STATUS_PATTERNS` already matches (`already taken`, `illegal scope transition`, `not

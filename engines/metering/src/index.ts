@@ -8,6 +8,28 @@ import {
   type EntityRef,
   substratError,
 } from '@substrat-run/contracts';
+
+/**
+ * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
+ * `conflict` code (#113). Exported so a vertical can branch on WHY a refusal happened
+ * without importing this engine's types or matching on its prose; `as const` so a typo
+ * is a compile error here rather than a slug nobody ever matches.
+ *
+ * Additive only, like every other engine surface: new reasons may appear, existing ones
+ * do not change spelling.
+ */
+export const METERING_CONFLICT_REASONS = [
+  'dedupe_mismatch',
+  'definition_frozen',
+  'meter_inactive',
+  'period_closed',
+  'period_overlap',
+] as const;
+export type MeteringConflictReason = (typeof METERING_CONFLICT_REASONS)[number];
+
+/** `conflict(reason, message)` — reason first, so the classification reads before the prose. */
+const conflict = (reason: MeteringConflictReason, message: string) => substratError('conflict', message, { reason });
+
 import {
   assertAllowed,
   ulid,
@@ -327,7 +349,7 @@ export function configureMeter(ctx: OperationContext, rawInput: ConfigureMeterIn
   ])[0];
   if (existing) {
     if (existing.kind !== input.kind || existing.unit !== input.unit) {
-      throw substratError('conflict', 
+      throw conflict('definition_frozen', 
         `meter '${input.key}' is ${existing.kind}/${existing.unit} — kind and unit are frozen after creation; a new unit is a new meter key`,
       );
     }
@@ -394,7 +416,7 @@ export function recordUsage(
 ): { entry: UsageEntry; deduped: boolean } {
   const input = recordUsageInput.parse(rawInput);
   const meter = getMeterRow(ctx, input.meter);
-  if (meter.active !== 1) throw substratError('conflict', `meter '${meter.key}' is inactive`);
+  if (meter.active !== 1) throw conflict('meter_inactive', `meter '${meter.key}' is inactive`);
   if (meter.kind === 'gauge') nonNegDecimal.parse(input.qty);
 
   const existing = ctx.sql.query<EntryRow>(
@@ -403,7 +425,7 @@ export function recordUsage(
   )[0];
   if (existing) {
     if (compareDecimal(existing.qty, input.qty) !== 0) {
-      throw substratError('conflict', 
+      throw conflict('dedupe_mismatch', 
         `dedupe key '${input.dedupeKey}' on meter '${meter.key}' was recorded with qty ${existing.qty}, now ${input.qty} — a dedupe key must name one observation`,
       );
     }
@@ -413,7 +435,7 @@ export function recordUsage(
   const occurredAt = input.occurredAt ?? new Date().toISOString();
   const horizon = closeHorizon(ctx);
   if (horizon !== null && occurredAt < horizon) {
-    throw substratError('conflict', 
+    throw conflict('period_closed', 
       `occurred_at ${occurredAt} is behind the close horizon ${horizon} — the period covering it is closed; record late usage at observation time`,
     );
   }
@@ -522,7 +544,7 @@ export function closePeriod(
   if (input.to <= input.from) throw substratError('validation_failed', `to ${input.to} must be after from ${input.from}`);
   const horizon = closeHorizon(ctx);
   if (horizon !== null && input.from < horizon) {
-    throw substratError('conflict', 
+    throw conflict('period_overlap', 
       `period from ${input.from} overlaps the close horizon ${horizon} — closes are monotonic and non-overlapping`,
     );
   }

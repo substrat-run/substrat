@@ -32,6 +32,25 @@ import {
   type Money,
   substratError,
 } from '@substrat-run/contracts';
+
+/**
+ * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
+ * `conflict` code (#113). Exported so a vertical can branch on WHY a refusal happened
+ * without importing this engine's types or matching on its prose; `as const` so a typo
+ * is a compile error here rather than a slug nobody ever matches.
+ *
+ * Additive only, like every other engine surface: new reasons may appear, existing ones
+ * do not change spelling.
+ */
+export const INVOICING_CONFLICT_REASONS = [
+  'currency_mismatch',
+  'immutable_after_export',
+] as const;
+export type InvoicingConflictReason = (typeof INVOICING_CONFLICT_REASONS)[number];
+
+/** `conflict(reason, message)` — reason first, so the classification reads before the prose. */
+const conflict = (reason: InvoicingConflictReason, message: string) => substratError('conflict', message, { reason });
+
 import { invoicingEntities, underlagLine } from './entities.js';
 
 // The entity registry is PUBLIC: every demo composes this engine, and a vertical
@@ -328,7 +347,7 @@ function assertSingleCurrency(
     ...incoming.map((l) => l.unitPrice.currency),
   ]);
   if (currencies.size > 1) {
-    throw substratError('conflict', 
+    throw conflict('currency_mismatch', 
       `currency mismatch on underlag ${underlagId}: ${[...currencies].sort().join(', ')} — an underlag is one document in one currency`,
     );
   }
@@ -586,7 +605,7 @@ const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (c
   ])[0];
   if (!underlag) throw substratError('not_found', `underlag not found: ${input.underlagId}`);
   if (underlag.status !== 'open') {
-    throw substratError('conflict', `underlag ${underlag.number} is '${underlag.status}' — exported underlag are immutable`);
+    throw conflict('immutable_after_export', `underlag ${underlag.number} is '${underlag.status}' — exported underlag are immutable`);
   }
   ctx.sql.exec(
     `UPDATE invoicing_underlag SET status = 'exported', exported_at = ? WHERE id = ?`,
