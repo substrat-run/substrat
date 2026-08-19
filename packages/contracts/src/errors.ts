@@ -158,12 +158,47 @@ export const problem = z.object({
 export type Problem = z.infer<typeof problem>;
 
 /**
+ * How a code crosses a boundary that keeps only `name`, `message` and `stack`.
+ *
+ * The `ScopeDO` RPC hop is that boundary: the adapter rebuilds a thrown error as a
+ * plain `Error`, so the class and every own property are gone by the time a transport
+ * sees it — which is why `instanceof PermissionDenied` is false in production.
+ *
+ * The RFC proposed a sentinel prefix on `message`. `name` is the better carrier and
+ * this supersedes that: `message` is read by humans, printed in logs, and asserted on
+ * by ~30 contract-suite patterns, while `name` is already preserved by Workers RPC and
+ * already exists to say what kind of error this is. The messages stay pristine.
+ *
+ * The cost, stated plainly: `name` carries the CODE and not the extensions, so
+ * `permission` / `reason` / `errors` do not survive that hop. In-process — the SQLite
+ * adapter, and any handler in the same isolate — the real class arrives and they do.
+ * Carrying extensions across too means an envelope on `ScopeDO.invoke` rather than a
+ * throw, which is the RFC §3 successor and is not this change.
+ */
+export const ERROR_NAME_PREFIX = 'Substrat.';
+
+/**
+ * Class names that predate the taxonomy and already mean a code.
+ *
+ * Keeping `PermissionDenied` named `PermissionDenied` rather than renaming it to the
+ * generic form is deliberate: `vertical-host`'s classifier and several verticals match
+ * on that exact string today, and a rename would be a silent behaviour change bundled
+ * into a refactor. `ZodError` earns its row because a parse failure crossing the hop
+ * loses its `issues` array — the code is all that is left, and `validation_failed`
+ * without fields still beats `internal`.
+ */
+const CODE_BY_ERROR_NAME: Readonly<Record<string, ErrorCode>> = {
+  PermissionDenied: 'permission_denied',
+  SecretBoxUnconfiguredError: 'unavailable',
+  ZodError: 'validation_failed',
+};
+
+/**
  * A throw that already knows what it means.
  *
  * `message` stays the human sentence and nothing more, so logs, stack traces and the
- * ~30 message assertions the contract suite makes against both adapters all read
- * exactly as they do today. The structure rides alongside it, which is what lets the
- * rollout keep `detail` byte-identical through phases 1–3.
+ * contract suite's message assertions all read exactly as they do today. The code
+ * rides in `name`, which is what lets it survive the hop.
  */
 export class SubstratError extends Error {
   readonly code: ErrorCode;
@@ -172,11 +207,36 @@ export class SubstratError extends Error {
 
   constructor(code: ErrorCode, message: string, extensions: Record<string, unknown> = {}) {
     super(message);
-    this.name = 'SubstratError';
+    this.name = `${ERROR_NAME_PREFIX}${code}`;
     this.code = code;
     this.status = PROBLEM_CATALOG[code].status;
     this.extensions = extensions;
   }
+}
+
+/**
+ * The code a throw carries, however little of it survived.
+ *
+ * Three readings, in order of fidelity: the live `code` property (same isolate), the
+ * `Substrat.<code>` name (crossed a boundary), and the legacy class names above. A
+ * throw this cannot classify is not ours, and `toProblem` answers `internal` for it.
+ */
+export function errorCodeOf(err: unknown): ErrorCode | undefined {
+  if (err === null || typeof err !== 'object') return undefined;
+
+  const own = (err as { code?: unknown }).code;
+  if (typeof own === 'string') {
+    const parsed = errorCode.safeParse(own);
+    if (parsed.success) return parsed.data;
+  }
+
+  const name = (err as { name?: unknown }).name;
+  if (typeof name !== 'string') return undefined;
+  if (name.startsWith(ERROR_NAME_PREFIX)) {
+    const parsed = errorCode.safeParse(name.slice(ERROR_NAME_PREFIX.length));
+    if (parsed.success) return parsed.data;
+  }
+  return CODE_BY_ERROR_NAME[name];
 }
 
 /**
@@ -194,19 +254,13 @@ export function substratError<C extends ErrorCode>(
 }
 
 /**
- * Recognise one of ours.
+ * Recognise one of ours — by shape, never by `instanceof` alone.
  *
- * `instanceof` is checked first and is NOT trusted alone: an error crossing the
- * `ScopeDO` RPC boundary is rebuilt by the adapter as a plain `Error`, so the
- * prototype is gone by the time a transport sees it. Duck-typing on `code` costs two
- * lines and is the difference between this working in production and only in tests.
- * Making the structure actually survive that hop is phase 2 (RFC §3).
+ * Two copies of a package in one build already make `instanceof` a coin toss; a
+ * serialising boundary makes it a certainty in the wrong direction.
  */
 export function isSubstratError(err: unknown): err is SubstratError {
-  if (err instanceof SubstratError) return true;
-  if (!(err instanceof Error)) return false;
-  const code = (err as { code?: unknown }).code;
-  return typeof code === 'string' && errorCode.safeParse(code).success;
+  return err instanceof Error && errorCodeOf(err) !== undefined;
 }
 
 /** Zod's issue list, flattened to the wire shape. */
@@ -232,9 +286,13 @@ export function toProblem(err: unknown, instance?: string): Problem {
       errors: validationIssuesFrom(err),
     });
   }
-  if (isSubstratError(err)) {
+  const code = errorCodeOf(err);
+  if (code !== undefined && err instanceof Error) {
+    // `internal` is still generic even when a throw asked for it by name: the rule is
+    // about what reaches a client, not about who chose the code.
+    if (code === 'internal') return build('internal', undefined, instance);
     const extensions = (err as SubstratError).extensions ?? {};
-    return build(err.code, err.message, instance, extensions);
+    return build(code, err.message, instance, extensions);
   }
   return build('internal', undefined, instance);
 }

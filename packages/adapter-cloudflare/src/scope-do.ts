@@ -317,12 +317,25 @@ const KERNEL_DDL = `
 `;
 
 /**
- * Workers RPC carries only a plain `Error`'s message/name/stack faithfully; a
- * custom subclass (e.g. Zod's `ZodError`, whose `message` is a getter over its
- * issues) arrives on the coordinator side as just its class name. Contract
- * matchers assert on the message (`/subjectId/`, `/boom/`, …), so re-wrap any
- * non-plain error as a plain `Error` before it crosses the boundary — the
- * message (which for a ZodError includes the failing path/detail) survives.
+ * Workers RPC carries a plain `Error`'s MESSAGE faithfully and nothing else. A custom
+ * subclass (e.g. Zod's `ZodError`, whose `message` is a getter over its issues) arrives
+ * on the coordinator side as just its class name, so re-wrap any non-plain error as a
+ * plain `Error` before it crosses — the message (which for a ZodError includes the
+ * failing path/detail) survives, and contract matchers assert on it.
+ *
+ * **`name` is NOT a second channel, and this was measured, not assumed** (#113 phase 2,
+ * `test/error-taxonomy.test.ts`). Setting `name` on the rewrapped error does not deliver
+ * a `name` on the far side: workerd folds it into the message as `"<name>: <message>"`
+ * and resets `name` to `'Error'`. So carrying the error taxonomy's code this way would
+ * rewrite every error message on the Cloudflare path — `permission denied: perm:use`
+ * becomes `PermissionDenied: permission denied: perm:use` — for every log line, every
+ * vertical's `onError`, and every UI string.
+ *
+ * The consequence, stated so it is not re-derived: across THIS boundary a throw carries
+ * its message and nothing more. Structure has to travel as a VALUE, which is the
+ * discriminated `{ ok, error }` envelope the error-model RFC names as §3's successor.
+ * In-process — the SQLite adapter, a handler in the same isolate — the real class
+ * arrives and `errorCodeOf` reads it directly.
  */
 function toRpcError(err: unknown): Error {
   if (err instanceof Error) {
