@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "description": "Substrat design-system primitives — the shared React component library + tokens, reused by the console and the dashboard",
-  "license": "AGPL-3.0-or-later",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
