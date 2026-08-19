@@ -1,3 +1,9 @@
+---
+status: historical
+layer: plan
+description: Agent-loop acceptance run 002.
+---
+
 # Agent-loop acceptance run 002 — office screens (extend, not scaffold)
 
 Date: 2026-07-14 · Benchmark variant: extending existing verticals, the shape most real

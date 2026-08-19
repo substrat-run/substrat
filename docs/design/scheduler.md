@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: The platform scheduler.
+---
+
 # The platform scheduler — the timer nothing has yet
 
-**Status:** sketch. Depends on: [connections.md §2.1](connections.md) (the retry driver),
+**Status:** **built** — design A (the sweep pass) runs in `apps/control-plane`. Depends on: [connections.md §2.1](connections.md) (the retry driver),
 `HostAdmin.listConnectorState` / `sweepScriveReconciliations` (landed), `drainDue` (landed).
 
 ## 1. The gap

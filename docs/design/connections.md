@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: The integrations hub: connections, connectors, executor runtime.
+---
+
 # The integrations hub — connections, connectors, and the executor runtime
 
-Status: draft v0.1 · Last updated: 2026-08-10 · For review before any code
+Status: **built** — the hub and `connectors/scrive` are live
 
 > **Relationship to canon.** Master plan §6 and the decision log rule; this document
 > proposes, it doesn't decide. It exists to be reviewed against decisions 18 (the triage

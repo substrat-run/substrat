@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Push to your team, publish to everyone.
+---
+
 # RFC: the marketplace — push to your team, publish to everyone
 
-**Status:** proposed · **Extends:** [builder-plane.md](./builder-plane.md) (tenant-owned
+**Status:** **built** — listing and installs ship (#213, #691). **Extends:** [builder-plane.md](./builder-plane.md) (tenant-owned
 verticals, the ownership claim, builder authz). **Depends on:** the manifest env-spec work
 (the registry already carries `envSpec`), [self-serve-deploy.md](./self-serve-deploy.md) (push
 seam + models A/B), [dashboard.md](./dashboard.md) (tenant-narrowed provisioning).

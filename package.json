@@ -34,7 +34,8 @@
     "lint:docs": "node tools/docs-drift.mjs",
     "lint:llms": "tsx tools/llms-index.mts",
     "lint:agent-rules": "tsx tools/agent-rules-emit.mts",
-    "lint:launch": "tsx tools/launch-emit.mts"
+    "lint:launch": "tsx tools/launch-emit.mts",
+    "lint:decisions": "node tools/decisions.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

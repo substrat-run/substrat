@@ -1,3 +1,9 @@
+---
+status: built
+layer: plan
+description: One login, many teams; team = tenant.
+---
+
 # Multiple teams in the Dashboard
 
 **Status:** Phases 1–3 built (switcher, create-team, onboarding, invites + roster). Two

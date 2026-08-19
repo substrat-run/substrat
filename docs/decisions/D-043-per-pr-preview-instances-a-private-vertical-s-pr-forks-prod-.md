@@ -1,0 +1,16 @@
+---
+id: D-43
+date: 2026-07-30
+layer: plan
+title: "Per-PR preview instances: a private vertical's PR forks prod, runs the PR's code against…"
+status: accepted
+aliases: []
+tracking: []
+---
+# D-43 — Per-PR preview instances: a private vertical's PR forks prod, runs the PR's code against…
+
+**Per-PR preview instances: a private vertical's PR forks prod, runs the PR's code against the copy on its own URL, and is reaped on close** (preview-and-snapshots.md §2/§9 — resolves that doc's open-Q1 and open-Q6). The generated deploy workflow only fired on push-to-branch, so a PR's changes could not be seen running before merge. Now `substrat preview create` (in the PR-open/synchronize job) pushes the working tree, forks the tenant's prod scope, binds the just-pushed version to the fork, and mints a non-canonical `<label>--pr-N.<base>` hostname; the PR-close job runs `substrat preview delete`, and a per-preview `expiresAt` is the GC backstop (the 15-min platform sweep already reaps expired forks). This is the [§9 "cross-version preview"](../design/preview-and-snapshots.md) path — the fork binds a NEW version whose bundle is a *different* dispatch script, so the dump moves between deployments (export from where prod data lives → import into the PR version's deployment) — the one genuinely byte-moving lifecycle op, gated exactly as the governed pull: **`global`-jurisdiction only** (K-32 residency; an `eu`/`us` source is refused until Regional Services), the canonical audited export path, and a non-canonical, non-public preview URL that never demotes prod. Almost nothing new was built below the seam — `provisionScope`(kind=`preview`/`forkedFrom`/`expiresAt`), `exportScope`/`restoreScope`, `bindScopeVersion`, hostname bind/unbind and the expiry GC all already shipped; the work was composition glue (`orchestratedPreview` + 3 builder-reachable `/verticals/:slug/previews` routes), the `substrat preview` CLI verb, and the PR triggers in the generated workflow. **Private verticals only, and no admission relaxation**: a private push self-admits (D-36), so binding an unpromoted PR version to a preview scope is a pure self-serve act; a listed vertical's preview would need to bind un-vouched code and is deferred with the rest of the listed-tier admission work
+
+## Why
+
+The reason this is a small, safe slice and not the whole of preview-and-snapshots.md is that the two hard parts were already decided elsewhere. D-36 made a private vertical self-admitting, which is exactly what lets a builder bind their own PR code with no staff in the loop — the "admission relaxation" the design doc worried about simply isn't needed once the audience is one's own tenant. And D-37's stable serving script means prod data lives somewhere findable to export from. What remained genuinely new — a dump crossing deployment boundaries — is the one thing §9 flagged as the harder path, so it inherits §6's gates verbatim rather than inventing new ones: same `global`-only refusal, same audited canonical export, same dead-ended fork. The honest limit is that the fork carries real prod PII onto a preview URL; the URL is non-canonical and preview-gated, and the fork is outbound-dead-ended, but a builder previewing their own tenant's data is trusting themselves — the boundary that would matter (data leaving the platform) is `scope pull`, which stays break-glass

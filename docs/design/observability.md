@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Piggyback Cloudflare; stamp only what Cloudflare cannot know.
+---
+
 # RFC: observability — piggyback Cloudflare, stamp only what Cloudflare can't know
 
-**Status:** proposed · **Extends:** [master-plan.md](../master-plan.md) §5.3 (Tier 3
+**Status:** **built** — metrics and logs surface in the console. **Extends:** [master-plan.md](../master-plan.md) §5.3 (Tier 3
 telemetry) and the "Observability per tenant" buy/build row. **Depends on:**
 [orchestration.md](./orchestration.md) (WfP dispatch namespace, D-34 platform-held
 credential), [dashboard-ui.md](./dashboard-ui.md) §4.9 (the Analytics screen this doc gives

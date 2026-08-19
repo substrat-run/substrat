@@ -1,3 +1,9 @@
+---
+status: historical
+layer: plan
+description: Agent-loop acceptance run 007.
+---
+
 # Agent-loop acceptance run 007 — Canopy, a domain the skill does not name
 
 Date: 2026-07-16 · Benchmark shape: **coverage generalization** — the first run on a domain

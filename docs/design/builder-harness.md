@@ -1,3 +1,9 @@
+---
+status: building
+layer: plan
+description: Model catalog and harness efficiency. Rows 6-7 open (#663).
+---
+
 # RFC: builder model catalog & harness efficiency
 
 **Status:** proposed — tracks a research pass over opencode/models.dev (2026-08-15) and turns it

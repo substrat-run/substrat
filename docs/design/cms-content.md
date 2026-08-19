@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Content types that compile to reviewed migrations.
+---
+
 # Manyfold — content types that compile to reviewed migrations
 
-Status: draft v0.1 · Last updated: 2026-07-24 · For review before any code
+Status: **built** — `demos/manyfold` ships content types as reviewed migrations
 
 > **Relationship to canon.** This proposes; it doesn't decide. It sits on rails that already
 > exist: [generated-verticals](generated-verticals.md) (authored `migrations` reach prod only

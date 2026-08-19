@@ -1,6 +1,12 @@
+---
+status: historical
+layer: plan
+description: Commerce capability gap walk, 2026-07-17. See NOTE in docs/README.md.
+---
+
 # Commerce capability gaps — a checklist walk
 
-Status: draft v0.1 · Last updated: 2026-07-17 · For review, decides nothing
+Status: **historical** — a gap walk dated 2026-07-17; decides nothing. **§6.1 is now out of date**: every engine has a test script and `packages/engine-test-kit` exists.
 
 > **Relationship to canon.** Master plan §6 and the decision log rule; this document
 > proposes, it doesn't decide. It exists because a richer storefront demo was floated as

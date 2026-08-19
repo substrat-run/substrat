@@ -1,6 +1,12 @@
+---
+status: built
+layer: kernel
+description: The approved-absence ledger.
+---
+
 # `engine-absence` — the approved-absence ledger
 
-Status: draft v0.1 · Last updated: 2026-08-14
+Status: **built** — the engine ships on npm
 
 > Surface sketch for the absence engine, extracted from Meridian per the plan its spec
 > already carries. Companion to

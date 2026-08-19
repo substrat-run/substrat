@@ -1,3 +1,9 @@
+---
+status: building
+layer: plan
+description: How any agent discovers and works with Substrat. #749 open.
+---
+
 # RFC: the agent surface — how any agent discovers and works with Substrat
 
 **Status:** proposed · **Supersedes** the strategy narrative in #749 (which stays as tracking)

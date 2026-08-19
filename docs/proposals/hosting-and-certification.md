@@ -1,8 +1,25 @@
+---
+status: accepted
+layer: plan
+description: Accepted as D-32. The long form of its argument; still cited by D-45/K-37.
+---
+
 # Proposal: hosting as the monetization boundary; certification inheritance as the paid layer
 
-**Status: draft for review. Not approved, not merged into the plan.** Four edits to
-[master-plan.md](../master-plan.md), written out below with their insertion points so the
-whole shape can be read as one argument before any of it lands.
+**Status: accepted and merged — this is [master-plan.md](../master-plan.md) decision 32**
+(2026-07-18, "Hosting is the monetization boundary; certification inheritance is the paid
+layer"). All four edits proposed below landed — the decision-log row, the §6 build/buy row
+("Certification & assurance programme"), the §7.4 paragraph ("Certification is what makes
+the trust moat legible") and the §5.7 amendment ("What travels on exit, and what does
+not"). **This document remains live, not historical**: it is the long form of D-32's
+argument, and both [D-45](../master-plan.md#12-decision-log) and
+[K-37](../design/kernel-design.md#14-design-log) (2026-08-08) cite its §3
+shared-responsibility line as normative when scoping subject erasure — *"we provide
+extraction, they define scope"*.
+
+The sections below are preserved as written, insertion points included, because they are
+the reasoning D-32 compresses into one row. Where this document and the master plan
+disagree, the master plan wins.
 
 ## Why this exists
 

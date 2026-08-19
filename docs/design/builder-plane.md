@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Tenant-owned verticals, self-serve.
+---
+
 # RFC: the builder plane — tenant-owned verticals, self-serve
 
-**Status:** proposed · **Depends on:** [self-serve-deploy.md](./self-serve-deploy.md) (the push
+**Status:** **built** — `apps/builder` and the builder plane ship. **Depends on:** [self-serve-deploy.md](./self-serve-deploy.md) (the push
 seam + §4 sandbox contract + models A/B/C), [scope-local-permissions.md](./scope-local-permissions.md)
 (CP-less verticals, already shipped).
 

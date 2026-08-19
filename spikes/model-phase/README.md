@@ -1,11 +1,11 @@
 # model-phase spike
 
-Evidence for [`../model-phase-plan.md`](../model-phase-plan.md) §3: **can a typed TypeScript
+Evidence for [`docs/design/model-phase-plan.md`](../../docs/design/model-phase-plan.md) §3: **can a typed TypeScript
 model make CRM-EFF's `validate` checks compile errors, instead of a bespoke validator?**
 
 ```
 pnpm install            # the spike resolves zod from the workspace
-npx tsc -p docs/design/model-phase-spike
+npx tsc -p spikes/model-phase
 ```
 
 A **clean run means every check bites.** The harness inverts `@ts-expect-error`, so a check

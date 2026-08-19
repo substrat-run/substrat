@@ -1,3 +1,9 @@
+---
+status: historical
+layer: plan
+description: Agent-loop acceptance run 005.
+---
+
 # Agent-loop acceptance run 005 — the manifest guard (engine-protocol milestone C)
 
 Date: 2026-07-14 · Benchmark shape: **kernel-surface change** — the first run to add
