@@ -35,7 +35,7 @@
     "lint:llms": "tsx tools/llms-index.mts",
     "lint:agent-rules": "tsx tools/agent-rules-emit.mts",
     "lint:launch": "tsx tools/launch-emit.mts",
-    "lint:decisions": "node tools/decisions.mjs"
+    "lint:decisions": "node tools/decisions.mjs",
     "lint:plugin": "tsx tools/plugin-emit.mts"
   },
   "devDependencies": {
