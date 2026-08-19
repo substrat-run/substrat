@@ -26,8 +26,8 @@ because SQLite follows it.
 
 - A journal whose schema statements do not apply now **throws**, naming the statement.
   The old readers answered anyway, which is how a broken migration passes a parity test.
-  It caught an invalid fixture in this package's own test suite on the first run: a partial
-  index over a column the table did not have.
+  The first time it ran it caught an invalid fixture written for the previous change: a
+  partial index over a column the table did not have, which the parser had accepted.
 - `readSchema` and `statements` are exported for a tool that wants the schema itself.
 - Only schema statements are replayed. A journal's `INSERT`s change no schema, and skipping
   them is what lets a vertical's journal be read alone when it hands data to an engine whose
