@@ -1,5 +1,15 @@
 # @substrat-run/builder
 
+## 0.5.14
+
+### Patch Changes
+
+- Updated dependencies [cbc4538]
+  - @substrat-run/contracts@0.77.0
+  - @substrat-run/engine-metering@0.2.4
+  - @substrat-run/adapter-cloudflare@0.77.0
+  - @substrat-run/kernel@0.77.0
+
 ## 0.5.13
 
 ### Patch Changes
