@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-todo",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "The smallest vertical that is still a real one — a shared todo app, built forward from its model",
   "license": "Apache-2.0",

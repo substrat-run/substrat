@@ -1,7 +1,7 @@
 {
   "name": "@substrat-run/model-emit",
-  "version": "0.4.1",
-  "description": "Build-time tooling over a Substrat model \u2014 DDL emitted from the entity registry, and the journal reader that holds it honest",
+  "version": "0.5.0",
+  "description": "Build-time tooling over a Substrat model — DDL emitted from the entity registry, and the journal reader that holds it honest",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

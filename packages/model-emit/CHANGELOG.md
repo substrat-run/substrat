@@ -1,5 +1,117 @@
 # @substrat-run/model-emit
 
+## 0.5.0
+
+### Minor Changes
+
+- 331f91b: The journal readers replay the journal instead of parsing it.
+
+  `journalColumns`, `journalUniques` and `journalPrimaryKeys` now run the journal into a
+  throwaway in-memory SQLite and read the schema back through `PRAGMA table_info`,
+  `index_list` and `index_info`. Same three signatures, same answers, no parser.
+
+  **Why, rather than another patch.** The previous change fixed seven ways a regex over SQL
+  text read a journal wrongly — several columns on a line, a one-line `CREATE TABLE`, a
+  `) STRICT;` suffix, a wrapped `PRIMARY KEY (` list, a quoted identifier, a comma in a
+  literal, the word UNIQUE in a comment. Finding those took ten minutes of probing, which is
+  the argument: a parser over a language it does not implement has no bottom, and each fix
+  is a patch against the next spelling. SQLite already implements SQLite.
+
+  **What it removes.** `journal.ts` goes from 388 lines to 82. The `RENAME TO` /
+  `RENAME COLUMN` / `DROP TABLE` replay loops — written out three times, once per reader, and
+  each a re-implementation of what the database does for free — are gone, along with the
+  constraint-rewriting-on-rename special case that had to be verified against a real database
+  to be written at all. A table rebuild (`create _new`, copy, drop, rename) is followed
+  because SQLite follows it.
+
+  **What it adds.**
+
+  - A journal whose schema statements do not apply now **throws**, naming the statement.
+    The old readers answered anyway, which is how a broken migration passes a parity test.
+    The first time it ran it caught an invalid fixture written for the previous change: a
+    partial index over a column the table did not have, which the parser had accepted.
+  - `readSchema` and `statements` are exported for a tool that wants the schema itself.
+  - Only schema statements are replayed. A journal's `INSERT`s change no schema, and skipping
+    them is what lets a vertical's journal be read alone when it hands data to an engine whose
+    tables live in a different journal (decision 28's extraction handoff). Foreign keys stay
+    off, so a `REFERENCES` across journals is created rather than refused.
+
+  **Node 22.5+**, via the `node:sqlite` builtin — no new dependency. Not a new restriction in
+  practice: this package is a devDependency in all 13 of its dependents, no `src/` file
+  imports it, and the builder runs its gates as shell commands in a container. Declared as an
+  `engines` floor.
+
+  All 83 tests pass, 77 of them unchanged from before the rewrite — which is the equivalence
+  proof, since they are the same assertions against an entirely different implementation.
+
+### Patch Changes
+
+- 3bf2f2f: The journal readers read SQL, not lines (#807).
+
+  `journalColumns`, `journalPrimaryKeys` and `journalUniques` split a `CREATE TABLE` body on
+  newlines and took the first word of each. So a journal that put two columns on one line
+  reported one of them — the same table, reformatted, produced a different schema. A field
+  report measured it: 63 entities, 38 shipped journal entries, **64 `planMigration` refusals,
+  none of which was the model being wrong.** Reformatting the journal to one column per line
+  fixed 60 of them, which is the tell: whitespace is not semantics, and history is the one
+  thing an append-only journal may not rewrite to satisfy a parser.
+
+  The body is now found by scanning to the paren that **matches** the opening one, and split
+  on **top-level commas**, with string literals and `--` / `/* */` comments skipped. That one
+  change carries the whole family:
+
+  - several columns on one line, and a `CREATE TABLE` written entirely on one line;
+  - a `) STRICT;` or `) WITHOUT ROWID;` suffix;
+  - a `PRIMARY KEY (` whose column list wraps over lines;
+  - a quoted `"order"` identifier;
+  - a comma inside a string literal, and a paren inside a `CHECK`.
+
+  **The two that were dangerous rather than annoying.** A `CREATE TABLE` on one line was not
+  refused, it was _invisible_ — so `planMigration` read the table as new and emitted a second
+  `CREATE TABLE` for a table that already existed. A wrong migration, generated silently. And
+  the word UNIQUE inside a comment was read as a real constraint, which is the inverse: the
+  planner reporting "up to date" over a guarantee nothing enforces.
+
+  **`journalUniques` reads all three spellings.** It read only table-level `UNIQUE (b)`;
+  column-level `b TEXT UNIQUE` and `CREATE UNIQUE INDEX … ON t (b)` are the same constraint
+  by a different route, and both appear in real journals. A partial index
+  (`… WHERE deleted_at IS NULL`) is deliberately still not read — it constrains a subset of
+  the rows, so treating it as a whole-table key would claim what the database does not.
+
+  That one was not only the field report's problem. Cross-checking every journal in this repo
+  against a real SQLite found **13 uniqueness rules the planner could not see** — in
+  `workorder`, `invoicing`, `shop`, `rally`, `callout`, `meridian` and `handlebar`, all of
+  them spelled column-level. All 83 tables now agree with the database on columns, primary
+  key and uniqueness, with zero mismatches.
+
+  The reporter's four cases ship as fixtures, alongside the five the same cause turned out to
+  have. A successor will replace the parser outright by replaying the journal into an
+  in-memory SQLite and reading the schema back through `pragma_table_info` — ten minutes of
+  probing found five new spellings, and a regex over SQL text has no bottom.
+
+- 87ec6f2: Every published package now actually ships its license text.
+
+  `LICENSING.md` has always opened by claiming each package "ships the full text in its
+  tarball." Eight of them did not: `adapter-cloudflare`, `control-plane-api`,
+  `vertical-auth`, `oidc-rp`, `psl`, `boundary-lint`, `model-emit` and `create-substrat`
+  declared a license in `package.json` and shipped no `LICENSE` file. npm auto-includes
+  `LICENSE*` when present — none was present, so nothing was included.
+
+  That is worth a version bump rather than a docs fix, because a tarball is where the
+  claim is either true or false, and `adapter-cloudflare` is the load-bearing case: §5.7
+  makes the Cloudflare adapter half of the two-adapter rule that keeps the escrow story
+  literally true, and AGPL is what stops a hosted derivative of it from staying closed.
+  An AGPL package distributed without its license text is the weakest possible version of
+  that. The texts are the stock unmodified AGPL-3.0 and Apache-2.0, byte-identical to the
+  copies already in `kernel` and `contracts`.
+
+  No code changes.
+
+- Updated dependencies [48ddee6]
+- Updated dependencies [43d67cb]
+- Updated dependencies [bb32545]
+  - @substrat-run/contracts@0.79.0
+
 ## 0.4.1
 
 ### Patch Changes
