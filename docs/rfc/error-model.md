@@ -6,7 +6,7 @@ description: One error model — RFC 9457 problem+json, a closed code taxonomy, 
 
 # The error model — problem+json, a closed taxonomy, and errors that survive the hop
 
-Status: **proposed** (v0.1)
+Status: **proposed** (v0.2 — §3 rewritten after phase 2 measured the RPC hop)
 
 > Answers issue [#113](https://github.com/substrat-run/substrat/issues/113), the first item
 > of the [#132](https://github.com/substrat-run/substrat/issues/132) tracking list — and the
@@ -109,29 +109,41 @@ Two rules that are not negotiable:
   This is the star topology applied to failure: a vertical can branch on the engine's reason
   without importing the engine's types.
 
-## 3. Surviving the RPC hop
+## 3. Surviving the RPC hop — measured, and it changes the answer
 
 This is the part that decides whether the whole design is real, because it is where the
-current one dies.
+current one dies. **v0.1 proposed a sentinel prefix on `message`, and then guessed that
+`name` would be a cleaner carrier. Phase 2 measured both against workerd. The measurement
+is in `packages/adapter-cloudflare/test/contract.test.ts` and it says:**
 
-`SubstratError extends Error` carries `code` and its declared extensions. Across the
-`ScopeDO` boundary, Workers RPC preserves only `name`, `message` and `stack` — so the
-structured payload has to travel *inside* one of those. Both ends of that hop are our code
-([`scope-do.ts:328`](../../packages/adapter-cloudflare/src/scope-do.ts#L328)), so:
+> Across the `ScopeDO` boundary, **only `message` survives.** `name` is not a second
+> channel: setting it on the rewrapped error does not deliver a `name` on the far side —
+> workerd folds it into the message as `"<name>: <message>"` and resets `name` to
+> `'Error'`. Own properties do not survive at all.
 
-```
-message = "substrat{\"code\":\"permission_denied\",\"permission\":\"customer:manage\"}permission denied: customer:manage"
-```
+That kills the `name` carrier outright: adopting it silently rewrites every error message
+on the Cloudflare path (`permission denied: perm:use` becomes `PermissionDenied:
+permission denied: perm:use`) for every log line, every vertical's `onError`, and every
+UI string. It was tried, the test caught it, and it was reverted.
 
-The rebuild on the far side parses the sentinel-prefixed header back into a `SubstratError`
-and restores `message` to the human tail. An error **without** the sentinel stays a plain
-`Error` and maps to `internal`, so nothing regresses while adoption is partial.
+It also weakens the message sentinel, which remains mechanically possible — `message` is
+a carrier — but is only *safe* if every reader decodes it before display. There is no
+single place to do that: `host.ts` obtains the stub and calls it directly from dozens of
+sites, so a sentinel would leak into whatever forgets. Wrapping the stub in a decoding
+proxy is conceivable and was not attempted; an RPC stub has delicate property and
+disposal semantics, and that is a real change rather than a two-line one.
 
-This is a wire hack and should read as one. It is chosen over the alternative — making
-`ScopeDO.invoke` return a discriminated `{ ok, error }` envelope instead of throwing —
-because that alternative changes the shape of every adapter method and every call site, and
-this RFC should not be that large. **If the sentinel proves fragile in practice, the
-envelope is the correct successor**, and this paragraph is the note that says so.
+**So the successor is promoted from contingency to plan.** Structure crossing this
+boundary has to travel as a **value**, not as a throw: `ScopeDO.invoke` returns a
+discriminated `{ ok, error }` envelope, the coordinator rehydrates a `SubstratError` from
+it, and nothing is encoded into human-readable text anywhere. That is a larger change —
+it touches the shape of the adapter's methods and their call sites — and it deserves its
+own review rather than being smuggled into a refactor.
+
+**What holds in the meantime.** In-process, the real class arrives and `errorCodeOf`
+reads it directly: the SQLite adapter, and any handler in the same isolate as its scope,
+have the full taxonomy today. On the Cloudflare adapter a transport still classifies by
+message, exactly as it does now — no better, and importantly no worse.
 
 ## 4. Where it lands
 
@@ -151,8 +163,11 @@ envelope is the correct successor**, and this paragraph is the note that says so
 1. **Contracts.** Registry, schema, `SubstratError`, `toProblem`, OpenAPI wiring. Purely
    additive; nothing throws it yet, nothing breaks.
 2. **Kernel + adapters.** `PermissionDenied` becomes a `SubstratError` subclass — same
-   name, same message, now with `code`. Typed throws replace the highest-traffic bare
-   `Error`s. The sentinel lands at the RPC seam.
+   name, same message, now with `code`; `SecretBoxUnconfiguredError` likewise.
+   `errorCodeOf` reads a code by shape, and `vertical-host`'s classifier consults it
+   before its message patterns. **The RPC seam is NOT solved here** — see §3: it needs
+   the envelope, which is its own change. Converting the remaining bare `Error` throw
+   sites in the adapters is phase 2b, mechanical and message-preserving.
 3. **Transports.** `mapError` and every vertical `onError` read `code` first and **keep the
    regex table as a fallback**, deleting patterns as each throw site is typed. Bodies gain
    the problem shape while retaining `error` (§1), so no client breaks.

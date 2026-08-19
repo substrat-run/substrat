@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   buildOpenApiDocument,
+  errorCodeOf,
   DOCUMENTED_ERROR_CODES,
   errorCode,
   isSubstratError,
@@ -187,13 +188,80 @@ describe('validationIssuesFrom', () => {
 });
 
 describe('SubstratError', () => {
-  it('is catchable as an Error and names itself', () => {
+  it('is catchable as an Error and carries its code in the name', () => {
     try {
       throw new SubstratError('unavailable', 'no seal key configured');
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
-      expect((err as Error).name).toBe('SubstratError');
+      expect((err as Error).name).toBe('Substrat.unavailable');
       expect((err as SubstratError).status).toBe(503);
     }
+  });
+});
+
+// The mechanism phase 2 rests on: `name` is what Workers RPC preserves, so `name` is
+// where the code rides. Everything here simulates the far side of that hop — a PLAIN
+// Error with nothing but message and name left.
+describe('errorCodeOf', () => {
+  it('reads the live property in-process', () => {
+    expect(errorCodeOf(substratError('conflict', 'already exported'))).toBe('conflict');
+  });
+
+  it('reads the name once the class is gone', () => {
+    const crossed = new Error('already exported');
+    crossed.name = 'Substrat.conflict';
+    expect(errorCodeOf(crossed)).toBe('conflict');
+    expect(isSubstratError(crossed)).toBe(true);
+  });
+
+  it('reads the legacy class names that already meant a code', () => {
+    const denied = new Error('permission denied: customer:manage');
+    denied.name = 'PermissionDenied';
+    expect(errorCodeOf(denied)).toBe('permission_denied');
+
+    const unsealed = new Error('no seal key');
+    unsealed.name = 'SecretBoxUnconfiguredError';
+    expect(errorCodeOf(unsealed)).toBe('unavailable');
+
+    // A parse failure loses its `issues` across the hop; the code is all that is left,
+    // and validation_failed without fields still beats internal.
+    const parse = new Error('invalid input');
+    parse.name = 'ZodError';
+    expect(errorCodeOf(parse)).toBe('validation_failed');
+  });
+
+  it('has no opinion about a foreign error', () => {
+    expect(errorCodeOf(new Error('boom'))).toBeUndefined();
+    expect(errorCodeOf(Object.assign(new Error('boom'), { code: 'ENOENT' }))).toBeUndefined();
+    expect(errorCodeOf(Object.assign(new Error('boom'), { name: 'Substrat.nonsense' }))).toBeUndefined();
+    expect(errorCodeOf(null)).toBeUndefined();
+    expect(errorCodeOf('boom')).toBeUndefined();
+  });
+
+  it('classifies a post-hop throw exactly as it classified the original', () => {
+    const original = substratError('conflict', 'work order is already exported', {
+      reason: 'already_exported',
+    });
+    const crossed = new Error(original.message);
+    crossed.name = original.name;
+
+    const before = toProblem(original);
+    const after = toProblem(crossed);
+
+    expect(after.status).toBe(before.status);
+    expect(after.code).toBe(before.code);
+    expect(after.detail).toBe(before.detail);
+    // The documented cost: own properties do not survive, so the extension is lost.
+    expect(before.reason).toBe('already_exported');
+    expect(after.reason).toBeUndefined();
+  });
+
+  it('keeps `internal` generic even when a throw asked for it by name', () => {
+    const crossed = new Error('connection string postgres://user:hunter2@db');
+    crossed.name = 'Substrat.internal';
+    const body = toProblem(crossed);
+    expect(body.code).toBe('internal');
+    expect(body.detail).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain('hunter2');
   });
 });

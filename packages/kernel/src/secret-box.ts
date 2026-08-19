@@ -13,6 +13,8 @@
  * plaintext Worker binding. Nothing was per-tenant, nothing was rotatable.
  */
 
+import { SubstratError } from '@substrat-run/contracts';
+
 /**
  * Sealed bytes plus the id of the key that sealed them.
  *
@@ -148,9 +150,11 @@ export function webCryptoSecretBox(keyId: string, key: Uint8Array): SecretBox {
  * the process knew at boot. Every seam that can raise it maps it to a typed
  * 503 naming the missing key.
  */
-export class SecretBoxUnconfiguredError extends Error {
+export class SecretBoxUnconfiguredError extends SubstratError {
   constructor(message: string) {
-    super(message);
+    super('unavailable', message);
+    // Kept, not generalised — `mapError` matches this class today, and contracts'
+    // `CODE_BY_ERROR_NAME` reads the name back as `unavailable` across a boundary.
     this.name = 'SecretBoxUnconfiguredError';
   }
 }
