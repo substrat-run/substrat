@@ -525,7 +525,7 @@ describe('#807 — a journal is read as SQL, not as lines', () => {
     // as a whole-table key would claim a guarantee the database does not make —
     // and the planner would then report "up to date" over a missing one.
     const sql =
-      'CREATE TABLE t (\n  a TEXT PRIMARY KEY NOT NULL,\n  b TEXT\n);\n' +
+      'CREATE TABLE t (\n  a TEXT PRIMARY KEY NOT NULL,\n  b TEXT,\n  deleted_at TEXT\n);\n' +
       'CREATE UNIQUE INDEX ux ON t(b) WHERE deleted_at IS NULL;';
     expect(journalUniques(sql).get('t')).toEqual(new Set());
   });
