@@ -1,5 +1,16 @@
 # @substrat-run/control-plane
 
+## 0.11.13
+
+### Patch Changes
+
+- Updated dependencies [cbc4538]
+  - @substrat-run/contracts@0.77.0
+  - @substrat-run/connector-scrive@0.11.4
+  - @substrat-run/adapter-cloudflare@0.77.0
+  - @substrat-run/control-plane-api@0.77.0
+  - @substrat-run/kernel@0.77.0
+
 ## 0.11.12
 
 ### Patch Changes
