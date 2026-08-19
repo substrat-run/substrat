@@ -29,7 +29,7 @@ Both should exist. Nothing belongs in both.
 | positioning, pricing, market | [`strategy/`](strategy/) |
 | a brief for a design tool or an agent | [`briefs/`](briefs/) — expect it to become `historical` once consumed |
 | a dated snapshot of the outside world | [`research/`](research/), `status: historical` |
-| the result of an acceptance run | [`acceptance/`](acceptance/), `status: historical` |
+| ~~the result of an acceptance run~~ | the practice is retired (D-57); `acceptance/` is closed to new files |
 | a page for someone *using* Substrat | `apps/docs/` — not here |
 
 Two rules carry the structure, and both are meant to be enforceable:
@@ -109,7 +109,7 @@ The plan, the log, this map.
 
 ### `strategy/`
 
-Why we build this, for whom, at what price.
+Why we build this, for whom, at what price. These are **satellites of the master plan**, not rivals to it: where one disagrees with the plan, the plan wins and the satellite is stale. Several are cited as normative by `architecture/` documents and open questions, so none of them is idle background.
 
 | document | status | |
 |---|---|---|
@@ -207,7 +207,7 @@ Dated snapshots of the outside world. Never revised.
 
 ### `acceptance/`
 
-Agent-loop run records. Append-only.
+Agent-loop run records. **Closed** — the practice is retired (D-57); the records stay because later work cites them.
 
 | document | status | |
 |---|---|---|

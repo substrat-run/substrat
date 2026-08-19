@@ -6,6 +6,9 @@ description: Agent-loop acceptance run 001.
 
 # Agent-loop acceptance run 001 — CykelService
 
+> **Retired as a practice (D-57), kept as evidence.** There is no standing
+> obligation to run more of these. This record stands because later work cites it.
+
 Date: 2026-07-14 · Benchmark: master plan §5.6 / demo concept §9 ("an agent, pointed at
 the repo, scaffolds CykelService to the checkpoints without human prompting beyond the
 task statement") · Result: **PASS, with notes**

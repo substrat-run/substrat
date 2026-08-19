@@ -6,6 +6,9 @@ description: Agent-loop acceptance run 002.
 
 # Agent-loop acceptance run 002 — office screens (extend, not scaffold)
 
+> **Retired as a practice (D-57), kept as evidence.** There is no standing
+> obligation to run more of these. This record stands because later work cites it.
+
 Date: 2026-07-14 · Benchmark variant: extending existing verticals, the shape most real
 agent work takes · Result: **PASS, no checkpoints triggered**
 

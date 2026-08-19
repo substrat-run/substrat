@@ -6,6 +6,9 @@ description: Agent-loop acceptance run 004.
 
 # Agent-loop acceptance run 004 — the extraction (engine-protocol milestone B)
 
+> **Retired as a practice (D-57), kept as evidence.** There is no standing
+> obligation to run more of these. This record stands because later work cites it.
+
 Date: 2026-07-14 · Benchmark shape: **extraction** — the decision-27 discipline as a
 run: a second vertical's differently-shaped need forces protocol machinery out of
 ServiceCo vertical code into `engines/protocol` · Result: **PASS** — and the primary

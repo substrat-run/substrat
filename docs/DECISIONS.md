@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-94 decisions · 56 plan · 38 kernel
+96 decisions · 57 plan · 39 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -105,4 +105,6 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-54](decisions/D-054-the-generated-vertical-is-the-customer-s-code-the-studio-is-.md) | 2026-08-15 | plan | The generated vertical is the customer's code; the studio is a tool, not the author |  |
 | [D-55](decisions/D-055-the-generator-s-skills-are-builder-distilled-documents-owned.md) | 2026-08-15 | plan | The generator's skills are builder-distilled documents owned by the studio |  |
 | [D-56](decisions/D-056-which-skills-ride-a-turn-is-decided-by-a-phase-ladder-derive.md) | 2026-08-15 | plan | Which skills ride a turn is decided by a phase ladder derived from workspace facts |  |
+| [D-57](decisions/D-057-the-agent-loop-acceptance-benchmark-is-retired-the-run-record.md) | 2026-08-19 | plan | The agent-loop acceptance benchmark is retired; the run records are kept |  |
 | [K-38](decisions/K-038-cross-engine-transition-guards-ship-as-both-poles-chosen-per.md) | 2026-08-19 | kernel | Cross-engine transition guards ship as both poles, chosen per case |  |
+| [K-39](decisions/K-039-payload-changes-are-loud-failure-replaces-until-dispatch-rou.md) | 2026-08-19 | kernel | Payload changes are loud-failure replaces; dual-emit is unavailable, not merely awkward | #128 |

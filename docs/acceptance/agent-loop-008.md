@@ -6,6 +6,9 @@ description: Agent-loop acceptance run 008.
 
 # Agent-loop acceptance run 008 — PodHost, and the honest no
 
+> **Retired as a practice (D-57), kept as evidence.** There is no standing
+> obligation to run more of these. This record stands because later work cites it.
+
 Date: 2026-07-16 · Benchmark shape: **the honest no** — the first run where the correct
 answer is partly "this does not belong here" · Result: **PASS — it refused three things,
 named replacements, and found a contradiction in our own tooling**
