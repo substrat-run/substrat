@@ -1,0 +1,127 @@
+#!/usr/bin/env tsx
+/**
+ * The agent-plugin checkpoint — the plugin ships the scaffold's hook, unchanged (#753).
+ *
+ * The plugin at `plugin/substrat/` exists for the projects the scaffold never
+ * reached: someone who opens an agent on a directory we did not generate has no
+ * `/substrat` and no session context at all. Everything in it routes — the build
+ * flow stays in `.substrat/playbook.md`, in the project, pinned to the kernel
+ * installed there — with exactly one exception, and this guards it.
+ *
+ * The exception is the SessionStart hook. A script cannot be routed to: it has to
+ * be somewhere the client can execute, and for a project scaffolded before the
+ * hook existed, the only such place is inside the plugin. So there are two copies,
+ * and design/agent-surface.md §6 is unambiguous about which guard that takes —
+ * they must read IDENTICALLY, so it is a regenerate-and-diff like lint:launch and
+ * lint:agent-rules, not the hash baseline lint:playbook uses for two files that
+ * diverge on purpose.
+ *
+ * Identical is also what makes the copy safe. The script decides at runtime which
+ * copy it is (`isPluginCopy()`) and the plugin's stays silent when the project owns
+ * one, so a scaffolded project announces itself once. That only holds while the two
+ * really are the same file — a plugin copy edited on its own would be a second
+ * behaviour nobody runs locally.
+ *
+ * It also checks the marketplace catalog against the plugin manifest, because those
+ * two carry the plugin's version in two places and a marketplace pins installs to
+ * whichever one it names. A version that moved in one file and not the other ships
+ * as "no update available" to everyone who already installed it.
+ *
+ *   pnpm lint:plugin            re-emit the plugin's copy of the hook
+ *   pnpm lint:plugin --check    CI: exit 1 if it has drifted
+ *
+ * Exit codes follow boundary-lint's: 0 = in sync, 1 = drift, 2 = cannot run.
+ */
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+const check = process.argv.includes('--check');
+
+/** The scaffold's copy is the source: it ships beside the playbook it points at. */
+const SOURCE = 'packages/create-substrat/template/.substrat/hooks/session-start.mjs';
+const TARGET = 'plugin/substrat/scripts/session-start.mjs';
+
+const MANIFEST = 'plugin/substrat/.claude-plugin/plugin.json';
+const MARKETPLACE = '.claude-plugin/marketplace.json';
+
+/** Exit 2: the tool cannot do its job. Always names the remedy. */
+function cannot(message: string): never {
+  console.error(`plugin: ${message}\n`);
+  process.exit(2);
+}
+
+function read(rel: string): string {
+  const absolute = join(ROOT, rel);
+  if (!existsSync(absolute)) {
+    cannot(`missing: ${rel}\n  The thing this checkpoint guards does not exist — fix that, not the check.`);
+  }
+  return readFileSync(absolute, 'utf8');
+}
+
+function readJson(rel: string): Record<string, unknown> {
+  try {
+    return JSON.parse(read(rel));
+  } catch {
+    return cannot(`not valid JSON: ${rel}`);
+  }
+}
+
+// ── The hook script ──────────────────────────────────────────────────────────
+
+const source = read(SOURCE);
+const absoluteTarget = join(ROOT, TARGET);
+const current = existsSync(absoluteTarget) ? readFileSync(absoluteTarget, 'utf8') : undefined;
+const drifted = current !== source;
+
+if (drifted && !check) {
+  mkdirSync(dirname(absoluteTarget), { recursive: true });
+  writeFileSync(absoluteTarget, source);
+  console.log(`plugin: ${current === undefined ? 'wrote' : 'updated'} ${TARGET}`);
+}
+
+// ── The two versions ─────────────────────────────────────────────────────────
+
+const manifestVersion = readJson(MANIFEST).version;
+const catalog = readJson(MARKETPLACE) as { plugins?: { name?: string; version?: string }[] };
+const entry = catalog.plugins?.find((p) => p.name === 'substrat');
+
+if (!entry) {
+  cannot(
+    `${MARKETPLACE} lists no plugin named "substrat".\n` +
+      `  The catalog is what users install from; a plugin missing from it is not published.`,
+  );
+}
+
+const mismatched = entry.version !== manifestVersion;
+
+// ── Verdict ──────────────────────────────────────────────────────────────────
+
+if (mismatched) {
+  console.error(
+    `plugin: the plugin's version differs between its manifest and the catalog.\n\n` +
+      `  ${MANIFEST}\n    version ${String(manifestVersion)}\n` +
+      `  ${MARKETPLACE}\n    version ${String(entry.version)}\n\n` +
+      `  A marketplace pins installs to the version it names, so a bump in one file and\n` +
+      `  not the other ships as "no update available" to everyone already on it. Set both\n` +
+      `  to the same string.\n`,
+  );
+  process.exit(1);
+}
+
+if (check && drifted) {
+  console.error(
+    `plugin: the plugin's copy of the SessionStart hook has drifted from the scaffold's.\n\n` +
+      `  source:  ${SOURCE}\n` +
+      `  target:  ${TARGET}\n\n` +
+      `  Run \`pnpm lint:plugin\` and commit the result. The scaffold's copy is the source;\n` +
+      `  the plugin's is emitted from it. They must be byte-identical — the script decides\n` +
+      `  at runtime which copy it is, and stays silent as the plugin's when the project owns\n` +
+      `  one. Edit the source, never the target (design/agent-surface.md §3, §6).\n`,
+  );
+  process.exit(1);
+}
+
+console.log(`plugin: hook in sync with ${SOURCE}, catalog and manifest both at ${String(manifestVersion)}.`);
