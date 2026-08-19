@@ -101,7 +101,24 @@ Columns per table, replayed from a migration journal: `CREATE TABLE`, `ADD COLUM
 `DROP TABLE`, and `RENAME TO`. That last one matters — append-only journals rebuild a table
 by creating a `_new`, copying, dropping the original and renaming onto its name, and a
 reader that misses that reports the pre-rebuild columns forever. `journalUniques` does the
-same for unique constraints.
+same for unique constraints and `journalPrimaryKeys` for the key.
+
+**Your journal is read as SQL, not as lines.** It is under no obligation to format itself
+for a parser: several columns on one line, a `CREATE TABLE` written on one line, a
+`) STRICT;` or `) WITHOUT ROWID;` suffix, a quoted `"order"` identifier, a wrapped
+`PRIMARY KEY (` list, a comma inside a string literal and a `--` or `/* */` comment all read
+the way the database reads them. Reformatting a journal never changes an answer, which
+matters because history is the one thing an append-only journal may not rewrite.
+
+`journalUniques` reads all three spellings of a uniqueness rule, because real journals use
+all three:
+
+| in the journal | read as |
+|---|---|
+| `UNIQUE (a, b)` — table-level | `a, b` |
+| `b TEXT NOT NULL UNIQUE` — column-level | `b` |
+| `CREATE UNIQUE INDEX ux ON t (b)` | `b` |
+| `CREATE UNIQUE INDEX ux ON t (b) WHERE deleted_at IS NULL` | **nothing** — a partial index constrains a subset of the rows, so reading it as a key would claim a guarantee the database does not make |
 
 It ships with the emitter because the two are one claim: the emitter says *what the database
 ends up with*, and this is how that gets checked. Until your migrations are derived, use it
