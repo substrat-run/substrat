@@ -54,10 +54,49 @@ Field names mirror the SQL columns exactly, snake_case included. A prettier doma
 here would be a second description of the same rows, and two descriptions are how they come
 to disagree.
 
-**Not every table is an entity.** An entity is something the platform can *point at*:
-attachments hang off one, [grants](/concepts/permissions) narrow to one, events are about
-one. A price list keyed by article — no id, never an `EntityRef` — is a table your vertical
-owns, not an entity.
+**Not every table is keyed by `id`.** `primaryKey` defaults to `['id']` and is declared where
+the identity is something else — most often the `vertical_` side table the
+[composition rules](/guide/agent-rules) prescribe for extra data on an engine's entity:
+
+```ts
+// Its identity IS the work order's. An `id` of its own would permit two side rows
+// for one work order, which is the thing a primary key exists to prevent.
+workorderExt: {
+  table: 'vertical_workorder_ext',
+  fields: z.object({ workorder_id: z.string(), route_note: z.string().nullable() }),
+  primaryKey: ['workorder_id'],
+},
+// And the ordinary value-keyed shape: one budget per customer per month.
+budget: {
+  table: 'vertical_time_budget',
+  fields: z.object({ customer_id: z.string(), year: z.number(), month: z.number(), hours: z.string() }),
+  primaryKey: ['customer_id', 'year', 'month'],
+},
+```
+
+It stays separate from `key` because SQL's own distinction is the useful one: `primaryKey` is
+identity, `key` is an additional uniqueness rule, and a table legitimately has both. An
+entity with neither an `id` field nor a `primaryKey` is refused rather than emitted keyless.
+
+An entity is still something the platform can *point at* — attachments hang off one,
+[grants](/concepts/permissions) narrow to one, `ctx.link` joins two, an event is about one —
+and all of that needs **one** id. So a composite key makes an entity un-pointable, and the
+compiler enforces it: `parents`, `attachmentTargets`, `relations`, `emits.entity` and a
+narrowed `permission.entity` accept only single-column-keyed entities.
+
+```ts
+attachmentTargets: [{ entityType: 'budget', readPermission: 'x:read' }],
+//                               ~~~~~~~~
+// Type '"budget"' is not assignable to type '"customer" | "ext"'.
+```
+
+A composite-keyed table is still a full model member — migrations, a row type, a place in
+`model.json`. It is simply not something a grant can narrow to. Note that `ext` above stays
+pointable: a single-column key that is not called `id` is still one id.
+
+The rule is derived from the key rather than declared. A `pointable: true` flag would be a
+second description of what `primaryKey` already says, and two descriptions are how they come
+to disagree.
 
 `parents` is plural and takes an array because `entityRelations` is an **allowlist**: the
 kernel accumulates permitted parent types into a set, so an entity legitimately has more
@@ -97,7 +136,8 @@ Omit `input` entirely for an operation that takes no body.
 
 Every one of these is a compile error, not a lint:
 
-- `parents`, `key` and `erasable` name fields and entities that exist
+- `parents`, `primaryKey`, `key` and `erasable` name fields and entities that exist
+- entity-pointing positions name a **pointable** entity — one identified by a single column
 - `permission` names a **declared** key — a typo becomes a *"Did you mean"* suggestion
 - an operation carries `permission` **or** `narrows: { reason }` — never both, never neither
 - every `{var}` in an `http` path names a real input field
@@ -202,17 +242,20 @@ const sql = emitTables(entities);
 Three things about it are worth knowing here, because they are consequences of how the model
 is declared:
 
-- **It is stricter than what you would have written.** `id` becomes `TEXT PRIMARY KEY
-  **NOT NULL**` — in SQLite a non-INTEGER primary key does not imply `NOT NULL`, so the
+- **It is stricter than what you would have written.** The primary key becomes `TEXT PRIMARY
+  KEY **NOT NULL**` — in SQLite a non-INTEGER primary key does not imply `NOT NULL`, so the
   hand-written version accepts a NULL id. Every hand-written `vertical_*` table in this repo
-  had that hole; the emitter cannot produce it.
+  had that hole; the emitter cannot produce it, and it refuses a nullable key column for the
+  same reason. A composite `primaryKey` emits as a table-level `PRIMARY KEY (a, b)`, in
+  declaration order — that order is also the index its columns are searched by.
 - **It refuses rather than guesses.** A Zod shape it cannot map to a column throws, naming the
   field. `z.boolean()` is refused outright for a *row* (SQLite stores 0/1 — declare
   `z.number()` and keep the row type honest); it stays right for an operation's *input*. A
   column that genuinely holds a document is declared as `jsonColumn('a reason')`, and a bare
   `z.unknown()` remains an error, so deliberately-opaque and not-yet-modelled stay
   distinguishable.
-- **It emits a schema, not a history.** `journalColumns` replays an existing migration journal
+- **It emits a schema, not a history.** `journalColumns`, `journalUniques` and
+  `journalPrimaryKeys` replay an existing migration journal
   so a test can hold your registry and your journal to each other, and `planMigration` says
   what *one* new entry would have to contain — with a **derived** version number, because
   declaring a version is declaring a fact a diff already knows. It refuses anything that would

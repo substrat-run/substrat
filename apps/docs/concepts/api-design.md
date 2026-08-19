@@ -1,0 +1,254 @@
+# What a good API looks like
+
+Substrat is opinionated about API shape on purpose. Not because there is one true REST, but
+because the alternative is that every vertical re-decides pagination, error bodies, time and
+identifiers — and then a fleet of them disagrees, forever, in ways that only surface when
+someone tries to write one client against two.
+
+The goal of this page is a specific one: **a well-shaped API should be what falls out of the
+defaults, not what a careful team remembers to do.** Where a convention is enforced
+mechanically, that is said plainly. Where it is still a convention, that is said too.
+
+::: info Status
+Shipping today: the operation spine, boundary parsing, value types, additive evolution, and
+the generated OpenAPI document. The **pagination** convention ships in `contracts` and is
+adopted across the platform's own surfaces, but not yet by engines and verticals. The
+**error model**, **context clock** and **request idempotency** are designed and unbuilt —
+each is marked below and links to its issue. Nothing on this page is aspirational without
+saying so.
+:::
+
+## The shape of one operation
+
+Everything below is a variation on one idea, so it is worth seeing the whole thing once:
+
+```ts
+'callout/create-workorder': {
+  summary: 'Open a work order against a facility',
+  permission: 'facility:manage',
+  input: z.object({
+    facilityId: z.string(),
+    description: z.string().min(1),
+    priority: z.enum(['normal', 'urgent']).optional(),
+  }),
+  output: workOrder,
+  http: { method: 'POST', path: '/workorders' },
+}
+```
+
+That declaration is not documentation *about* the operation. It **is** the operation's
+contract: the same Zod objects validate the request at runtime, type the handler at compile
+time, and generate the OpenAPI document served at `/openapi.json`. There is no second place
+where the truth is written down, so there is no second place for it to drift.
+
+## The defaults
+
+### 1. One operation, one permission, one event
+
+Every operation's first line is its permission check:
+
+```ts
+assertAllowed(await ctx.check('facility:manage'));
+```
+
+Every mutation emits a **fat** event — one carrying enough payload that a consumer never
+needs to read back across a module boundary to understand what happened. Together these give
+you two things most systems retrofit badly: an authorization story that cannot be bypassed
+by adding a route, and an audit trail that is a byproduct of doing the work rather than a
+feature someone remembered.
+
+How much of that is mechanism rather than discipline is worth being precise about, because
+the honest answer is "most, not all":
+
+- **Declaring the permission is a compile error to skip.** An operation carries either a
+  `permission` or a `narrows` with a stated reason — never both, and never neither. An
+  entity-narrowed check must say what it narrows to, and which field the entity id comes
+  from; naming a field that does not exist does not compile.
+- **The permission surface is re-emitted by CI.** `pnpm lint:permissions --check` renders
+  each vertical's `PERMISSIONS.md` from the same objects the code uses, so a widened role
+  cannot merge without appearing in the pull-request diff.
+- **The handler's `assertAllowed` line is still a convention.** `tools/boundary-lint.mjs`
+  enforces the data, network, spine-write and star-topology boundaries — it does not check
+  that a handler calls its declared permission. That gap is closed by the declaration and by
+  review, not by a linter.
+
+### 2. Parse, don't trust
+
+Input crosses the boundary through a Zod schema or it does not cross. Not "validate the
+suspicious fields" — parse the whole input into a typed value, once, at the edge. Everything
+downstream is then working with a value the type system already believes in.
+
+### 3. Values that survive the wire
+
+- **Money is a decimal string plus a currency**, never a float, and arithmetic goes through
+  the shared helpers. See [Money](/concepts/money).
+- **Identifiers are ULIDs.** Sortable by creation time, generated without coordination,
+  and — usefully — they double as pagination cursors.
+- **Instants are ISO 8601 with an offset**, stamped once and never re-derived.
+
+The rule underneath all three: a value should mean the same thing after a JSON round trip as
+it did before one. Floats and naive local timestamps both fail that test.
+
+### 4. Lists are pages, not dumps
+
+A list endpoint that returns everything is a bug with a delay on it. It passes review, it
+passes tests, and then one tenant's table gets large.
+
+The platform convention is **keyset pagination** — a cursor over the list's own sort key,
+never an offset:
+
+```http
+GET /api/customers?limit=20&cursor=01J8Z3K7Q9WRT0P
+```
+
+```json
+{ "entries": [ … ], "nextCursor": "01J8Z3K7Q9WRT0P" }
+```
+
+`nextCursor` is the last entry's sort key when the page came back full, and `null` when it
+came back short — so a client walks until null and never makes a trailing empty request.
+
+Offset pagination is rejected deliberately: on live data, rows shift between requests, so
+pages silently skip and duplicate rows. A cursor names a *position in the ordering* rather
+than a count of rows that have scrolled past.
+
+Two defaults worth knowing: HTTP list reads **default to a page** (20, capped at 200),
+because egress is where an ever-growing table has to stop being a dump. Kernel-side reads
+default to **unbounded**, because internal callers — provisioning, catalogs, sweeps — mean
+"everything", and a silent cap there would let them mistake a page for the whole set.
+
+::: warning Adopted by the platform, not yet by verticals
+This convention ships in `@substrat-run/contracts` and is used across the control plane,
+dashboard and console. Engine and vertical list operations have **not** adopted it yet —
+several still return unbounded arrays. Tracked in
+[#129](https://github.com/substrat-run/substrat/issues/129) and
+[#811](https://github.com/substrat-run/substrat/issues/811), which also adds the declared
+filter/sort vocabulary a cursor needs to stay correct.
+:::
+
+### 5. Failures are data
+
+An error is part of your API surface, not an accident that happens to it. `500 Something
+went wrong` is unactionable for a human and worse for an agent; `validation_failed on field
+'email'` can be recovered from without a person reading a log.
+
+The designed shape is [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `problem+json` with
+a closed code taxonomy:
+
+```json
+{
+  "type":   "https://substrat.net/errors/permission-denied",
+  "title":  "Permission denied",
+  "status": 403,
+  "detail": "permission denied: customer:manage",
+  "code":   "permission_denied",
+  "permission": "customer:manage"
+}
+```
+
+The codes are a small closed set — `unauthenticated`, `permission_denied`, `forbidden`,
+`not_found`, `conflict`, `validation_failed`, `precondition_failed`, `rate_limited`,
+`unavailable`, `internal` — because an open set is a suggestion. A module narrows one with a
+`reason` slug it owns rather than inventing a code, which is the same boundary discipline
+engines follow everywhere else.
+
+One rule that is not a detail: **`internal` never carries a message.** An unrecognised throw
+is by definition one nobody reviewed for what it discloses, and a multi-tenant surface is
+the wrong place to find out.
+
+::: warning Designed, unbuilt
+Today every vertical hand-rolls a handler that matches on error *message text* to pick a
+status code. The design above is [#113](https://github.com/substrat-run/substrat/issues/113)
+— see the [error model RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/error-model.md)
+for the taxonomy, the rollout, and the awkward part (typed errors must survive the Durable
+Object RPC hop, which strips subclasses).
+:::
+
+### 6. Time comes from the context
+
+An operation should not read the wall clock. It should ask its context what time it is, so
+that tests can freeze it and replay means something:
+
+```ts
+const now = ctx.now();   // designed, unbuilt — see #812
+```
+
+This looks like a nicety until you try to test anything with a window in it — leave
+balances, metering periods, booking availability — and find that the only way to assert the
+interesting case is to wait for it.
+
+::: warning Designed, unbuilt
+`OperationContext` has no clock today, so module code calls `new Date()` directly.
+[#812](https://github.com/substrat-run/substrat/issues/812).
+:::
+
+### 7. Writes should be safe to retry
+
+A client that times out will retry, and a retried `POST` must not create a second work
+order. The convention is an `Idempotency-Key` header, deduplicated by the platform, with the
+original response replayed. Agents make this acute rather than novel: they retry more
+aggressively than people, and they do it faster.
+
+::: warning Designed, unbuilt
+[#116](https://github.com/substrat-run/substrat/issues/116). Note this is *request*
+idempotency — the event spine's consumer-side idempotency already exists and is checked by
+the contract suite.
+:::
+
+### 8. Surfaces only grow
+
+Once shipped, an operation's surface evolves **additively**:
+
+- new inputs are optional, with behavior-preserving defaults;
+- emitted event payload fields are frozen — renaming, removing or retyping one means a
+  `schemaVersion` bump and a dual-emit deprecation window;
+- permission keys are never renamed.
+
+This is the rule that makes a fleet of independently-deployed verticals survivable. It is
+also the rule that makes *deciding conventions early* matter so much: an additive-only
+system is one where the cost of a wrong default compounds.
+
+### 9. The document is generated, and CI diffs it
+
+Every vertical serves `/openapi.json` and a rendered reference at `/api/docs`, both built
+from the operation catalog — the same Zod schemas the handlers parse. The emitted document
+is checked in, and CI re-emits it to fail on drift.
+
+The reason to care: a hand-written spec is a description of what someone believed the API
+did on the day they wrote it. A generated one cannot be wrong without the code being wrong.
+
+## What "well-architected" means here
+
+Underneath the specifics there is one idea, and it is the same one the
+[three-layer rule](/concepts/modules) expresses: **prefer mechanisms to conventions.**
+
+A convention is a thing a careful person remembers. A mechanism is a thing a careless person
+cannot get wrong. Substrat's bet is that most of what people call architecture discipline is
+actually the absence of mechanism — so the platform spends its complexity budget on
+compile-time joins, boundary lints, checked-in artifacts that CI re-emits, and contract
+tests every adapter must pass, rather than on documents describing how to behave.
+
+Two things follow that are worth stating, because they cut against instinct:
+
+- **A good default is one you cannot silently opt out of.** Pagination that is available is
+  pagination that half the endpoints skip.
+- **Two human checkpoints stay human on purpose** — a migration diff and a permission diff.
+  CI going red is what makes the reading unskippable; it is not itself the approval. Some
+  judgments should not be automated away, and knowing which ones is part of the design.
+
+## The defaults at a glance
+
+| Default | Shape | Status |
+|---|---|---|
+| Permission declared | `permission` or `narrows` + reason | Compile error to omit |
+| Permission checked first | `assertAllowed(await ctx.check(…))` | Convention + review |
+| Fat events on mutation | payload complete for consumers | Convention + review |
+| Boundary parsing | Zod at the edge | Shipped |
+| Money | decimal string + currency | Shipped |
+| Identifiers | ULID | Shipped |
+| Pagination | keyset cursor, `{ entries, nextCursor }` | Shipped in contracts; [#129](https://github.com/substrat-run/substrat/issues/129) / [#811](https://github.com/substrat-run/substrat/issues/811) to adopt |
+| Errors | RFC 9457 problem+json, closed codes | [#113](https://github.com/substrat-run/substrat/issues/113) |
+| Clock | `ctx.now()` | [#812](https://github.com/substrat-run/substrat/issues/812) |
+| Idempotent writes | `Idempotency-Key` | [#116](https://github.com/substrat-run/substrat/issues/116) |
+| Evolution | additive only | Convention + review |
+| API document | generated, CI-diffed | Shipped |

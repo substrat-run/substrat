@@ -1,5 +1,55 @@
 # @substrat-run/dashboard
 
+## 0.26.15
+
+### Patch Changes
+
+- Updated dependencies [d3c6d31]
+  - @substrat-run/contracts@0.78.0
+  - @substrat-run/demo-callout@0.2.33
+  - @substrat-run/demo-manyfold@0.6.33
+  - @substrat-run/demo-meridian@0.5.14
+  - @substrat-run/engine-absence@0.3.5
+  - @substrat-run/engine-invites@0.3.5
+  - @substrat-run/engine-invoicing@0.7.5
+  - @substrat-run/engine-protocol@0.9.5
+  - @substrat-run/engine-workorder@0.6.5
+  - @substrat-run/adapter-cloudflare@0.78.0
+  - @substrat-run/kernel@0.78.0
+
+## 0.26.14
+
+### Patch Changes
+
+- Updated dependencies [cbc4538]
+  - @substrat-run/contracts@0.77.0
+  - @substrat-run/demo-callout@0.2.32
+  - @substrat-run/demo-manyfold@0.6.32
+  - @substrat-run/demo-meridian@0.5.13
+  - @substrat-run/engine-absence@0.3.4
+  - @substrat-run/engine-invites@0.3.4
+  - @substrat-run/engine-invoicing@0.7.4
+  - @substrat-run/engine-protocol@0.9.4
+  - @substrat-run/engine-workorder@0.6.4
+  - @substrat-run/adapter-cloudflare@0.77.0
+  - @substrat-run/kernel@0.77.0
+
+## 0.26.13
+
+### Patch Changes
+
+- @substrat-run/demo-callout@0.2.31
+- @substrat-run/demo-manyfold@0.6.31
+- @substrat-run/demo-meridian@0.5.12
+- @substrat-run/contracts@0.76.0
+- @substrat-run/kernel@0.76.0
+- @substrat-run/adapter-cloudflare@0.76.0
+- @substrat-run/engine-absence@0.3.3
+- @substrat-run/engine-invites@0.3.3
+- @substrat-run/engine-invoicing@0.7.3
+- @substrat-run/engine-protocol@0.9.3
+- @substrat-run/engine-workorder@0.6.3
+
 ## 0.26.12
 
 ### Patch Changes

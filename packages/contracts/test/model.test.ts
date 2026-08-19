@@ -13,7 +13,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { defineEntities, emitModel, entityRelationsOf, manifestEntities } from '../src/model.js';
+import { defineEntities, emitModel, entityRelationsOf, manifestEntities, primaryKeyOf } from '../src/model.js';
+import { defineOperations } from '../src/operations.js';
 
 const entities = defineEntities({
   customer: {
@@ -27,6 +28,60 @@ const entities = defineEntities({
     fields: z.object({ id: z.string(), customerId: z.string(), status: z.string() }),
     parents: ['customer'],
   },
+});
+
+/**
+ * #804 — a table whose identity is not an `id`.
+ *
+ * The first two are the `vertical_` side table keyed by an engine's id, which
+ * the design rules prescribe: its identity IS the work order's, and giving it an
+ * `id` of its own would permit two side rows for one work order. The third is an
+ * ordinary value-keyed table.
+ */
+const keyedEntities = defineEntities({
+  budget: {
+    table: 'vertical_time_budget',
+    fields: z.object({
+      customer_id: z.string(),
+      year: z.number(),
+      month: z.number(),
+      hours: z.string(),
+    }),
+    primaryKey: ['customer_id', 'year', 'month'],
+  },
+  ext: {
+    table: 'vertical_workorder_ext',
+    fields: z.object({ workorder_id: z.string(), route_note: z.string().nullable() }),
+    primaryKey: ['workorder_id'],
+  },
+});
+
+describe('primaryKeyOf', () => {
+  it('defaults to id', () => {
+    expect(primaryKeyOf('customer', entities.customer)).toEqual(['id']);
+  });
+
+  it('takes the declared key when there is one', () => {
+    expect(primaryKeyOf('budget', keyedEntities.budget)).toEqual(['customer_id', 'year', 'month']);
+    expect(primaryKeyOf('ext', keyedEntities.ext)).toEqual(['workorder_id']);
+  });
+
+  it('refuses an entity with no id and no declared key, rather than none at all', () => {
+    // The silent case: a table with no primary key accepts duplicate rows, and a
+    // parity check that compares columns reports a perfect match over it.
+    const orphan = { table: 't', fields: z.object({ a: z.string(), b: z.string() }) };
+    expect(() => primaryKeyOf('orphan', orphan)).toThrow(/no 'id' field and declares no `primaryKey`/);
+  });
+
+  it('refuses a key naming a field that does not exist', () => {
+    const wrong = { table: 't', fields: z.object({ a: z.string() }), primaryKey: ['b'] };
+    expect(() => primaryKeyOf('wrong', wrong)).toThrow(/names 'b', which is not a field/);
+  });
+
+  it('refuses a key that repeats a column', () => {
+    const dupe = { table: 't', fields: z.object({ a: z.string(), b: z.string() }), primaryKey: ['a', 'a'] };
+    expect(() => primaryKeyOf('dupe', dupe)).toThrow(/repeats a column/);
+  });
 });
 
 describe('entity registry', () => {
@@ -46,6 +101,26 @@ describe('entity registry', () => {
     // Field schemas travel as JSON Schema — the same conversion the OpenAPI
     // builder uses, so there is no second schema language in the pipeline.
     expect(a.entities.customer?.fields).toMatchObject({ type: 'object' });
+  });
+
+  it('carries a non-default primary key into the artifact, unsorted', () => {
+    const m = emitModel(keyedEntities);
+    // Unsorted: a composite primary key is the index its columns are searched
+    // by, so sorting it for a tidier diff would emit a different table.
+    expect(m.entities.budget?.primaryKey).toEqual(['customer_id', 'year', 'month']);
+    expect(m.entities.ext?.primaryKey).toEqual(['workorder_id']);
+  });
+
+  it('leaves the artifact unchanged for the id default', () => {
+    // Absent means `['id']`. Emitting it everywhere would churn every checked-in
+    // model.json to restate the default.
+    expect(emitModel(entities).entities.customer).not.toHaveProperty('primaryKey');
+  });
+
+  it('refuses to emit an entity that has no identity at all', () => {
+    // `lint:model --check` goes red on it, the same way the DDL emitter does.
+    const orphans = { thing: { table: 't_thing', fields: z.object({ a: z.string() }) } };
+    expect(() => emitModel(orphans)).toThrow(/no 'id' field and declares no `primaryKey`/);
   });
 
   it('sorts entities and their key/erasable lists, so the diff is stable', () => {
@@ -106,6 +181,16 @@ defineEntities({
   },
 });
 
+// --- primaryKey is checked against the entity's own fields ------------------
+defineEntities({
+  budget: {
+    table: 't_budget',
+    fields: z.object({ customer_id: z.string(), year: z.number() }),
+    // @ts-expect-error 'moth' is not a field of budget
+    primaryKey: ['customer_id', 'moth'],
+  },
+});
+
 // --- per-entity, not a union across all of them -----------------------------
 // `name` exists on customer and NOT on contract. A union-shaped check would
 // wrongly accept this; the self-referential constraint refuses it.
@@ -116,6 +201,103 @@ defineEntities({
     fields: z.object({ id: z.string(), status: z.string() }),
     // @ts-expect-error 'name' is a field of customer, not of contract
     key: ['name'],
+  },
+});
+
+// ---------------------------------------------------------------------------
+// POINTABILITY (#804 follow-up) — a composite key means no single id, so the
+// entity cannot be pointed AT. Five positions, five inlined copies of the same
+// mapped type; each has a case here, so a copy that stops biting turns its
+// directive unused and fails `pnpm --filter @substrat-run/contracts typecheck`.
+//
+// The diagnostic is the point. Inlined it reads
+//   Type '"budget"' is not assignable to type '"customer" | "ext"'.
+// Aliased it dumps the whole entity map (#705), which is why these are inline.
+// ---------------------------------------------------------------------------
+
+const mixedKeys = defineEntities({
+  customer: { table: 't_customer', fields: z.object({ id: z.string(), name: z.string() }) },
+  // Single-column and NOT `id` — still pointable: it has one id, just not named `id`.
+  ext: {
+    table: 't_workorder_ext',
+    fields: z.object({ workorder_id: z.string(), note: z.string() }),
+    primaryKey: ['workorder_id'],
+  },
+  // Composite — no one id to be pointed at by.
+  budget: {
+    table: 't_budget',
+    fields: z.object({ customer_id: z.string(), year: z.number(), hours: z.string() }),
+    primaryKey: ['customer_id', 'year'],
+  },
+});
+
+// --- a single-column key that is not `id` stays fully usable ----------------
+manifestEntities(mixedKeys, {
+  attachmentTargets: [{ entityType: 'ext', readPermission: 'x:read' }],
+  entityViews: [{ entityType: 'ext', view: './ui/Ext' }],
+});
+
+// --- 1. `parents` — permission flows by ctx.link, which joins two EntityRefs -
+defineEntities({
+  budget: {
+    table: 't_budget',
+    fields: z.object({ customer_id: z.string(), year: z.number() }),
+    primaryKey: ['customer_id', 'year'],
+  },
+  note: {
+    table: 't_note',
+    fields: z.object({ id: z.string(), text: z.string() }),
+    // @ts-expect-error 'budget' is keyed by (customer_id, year) — a link joins two entity ids
+    parents: ['budget'],
+  },
+});
+
+// --- 2. attachmentTargets — an attachment hangs off one entity id -----------
+manifestEntities(mixedKeys, {
+  // @ts-expect-error 'budget' has no single id for an attachment to hang off
+  attachmentTargets: [{ entityType: 'budget', readPermission: 'x:read' }],
+});
+
+// --- 3 & 4. relations — BOTH ends of a link ---------------------------------
+manifestEntities(mixedKeys, {
+  // @ts-expect-error 'budget' cannot be the CHILD of a link
+  relations: [{ entityType: 'budget', parentType: 'customer' }],
+});
+manifestEntities(mixedKeys, {
+  // @ts-expect-error 'budget' cannot be the PARENT of a link
+  relations: [{ entityType: 'customer', parentType: 'budget' }],
+});
+
+// --- 5. emits.entity — an event is about one entity, named by one id field --
+defineOperations(mixedKeys, ['budget:manage'] as const)({
+  'acme/set-budget': {
+    summary: 'Set a budget',
+    permission: 'budget:manage',
+    input: z.object({ customer_id: z.string(), year: z.number(), hours: z.string() }),
+    output: mixedKeys.budget.fields,
+    emits: {
+      // @ts-expect-error 'budget' is composite — `entityIdFrom` would name a third of a row
+      entity: 'budget',
+      entityIdFrom: 'customer_id',
+      type: 'acme.budget-set',
+      schemaVersion: 1,
+      piiClass: 'none',
+    },
+  },
+});
+
+// --- 6. a narrowed permission check — a grant against ONE entity id ---------
+defineOperations(mixedKeys, ['budget:manage'] as const)({
+  'acme/read-budget': {
+    summary: 'Read a budget',
+    permission: {
+      key: 'budget:manage',
+      // @ts-expect-error 'budget' is composite — a grant cannot narrow to a third of a row
+      entity: 'budget',
+      idFrom: 'customer_id',
+    },
+    input: z.object({ customer_id: z.string() }),
+    output: mixedKeys.budget.fields,
   },
 });
 

@@ -121,10 +121,33 @@ type PiiShape<O, OutKeys extends string> = O extends { emits: { piiClass: 'none'
  */
 type PermissionCheck<O, Entities, Engines, PermKey extends string> = {
   readonly key: PermKey;
-  /** The entity type the check narrows to — this module's, or a composed engine's. */
+  /**
+   * The entity type the check narrows to — this module's, or a composed engine's.
+   *
+   * Pointable only. A narrowed check is a grant against ONE entity id, and
+   * `idFrom` names the single input field carrying it, so a composite-keyed
+   * table has nothing to narrow to. Inlined rather than aliased, per
+   * `PointableName` in `model.ts`.
+   */
   readonly entity:
-    | (keyof Entities & string)
-    | (Engines extends readonly (infer R)[] ? (R extends Record<string, EntityDef> ? keyof R & string : never) : never);
+    | ({
+        readonly [K in keyof Entities]: Entities[K] extends {
+          primaryKey: readonly [unknown, unknown, ...unknown[]];
+        }
+          ? never
+          : K;
+      }[keyof Entities] &
+        string)
+    | (Engines extends readonly (infer R)[]
+        ? R extends Record<string, EntityDef>
+          ? {
+              readonly [K in keyof R]: R[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] }
+                ? never
+                : K;
+            }[keyof R] &
+              string
+          : never
+        : never);
 } & (
   | { readonly idFrom: InputKeys<O>; readonly resolved?: never }
   | { readonly resolved: string; readonly idFrom?: never }
@@ -209,10 +232,31 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
      *
      * Inlined rather than via an alias: TypeScript prints an alias unresolved,
      * so the diagnostic would name it instead of listing the entities (#705).
+     *
+     * Pointable only. An event is ABOUT one entity and `entityIdFrom` names the
+     * one output field carrying its id — so a composite-keyed table cannot be an
+     * event subject. Accepting it would have made the event about a third of a
+     * row, which is the #695 defect with a different cause.
      */
     readonly entity:
-      | (keyof Entities & string)
-      | (Engines extends readonly (infer R)[] ? (R extends Record<string, EntityDef> ? keyof R & string : never) : never);
+      | ({
+          readonly [K in keyof Entities]: Entities[K] extends {
+            primaryKey: readonly [unknown, unknown, ...unknown[]];
+          }
+            ? never
+            : K;
+        }[keyof Entities] &
+          string)
+      | (Engines extends readonly (infer R)[]
+          ? R extends Record<string, EntityDef>
+            ? {
+                readonly [K in keyof R]: R[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] }
+                  ? never
+                  : K;
+              }[keyof R] &
+                string
+            : never
+          : never);
     /**
      * Which OUTPUT field carries that entity's id.
      *

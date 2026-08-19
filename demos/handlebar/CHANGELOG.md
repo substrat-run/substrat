@@ -1,5 +1,40 @@
 # @substrat-run/demo-bike-shop
 
+## 0.0.78
+
+### Patch Changes
+
+- Updated dependencies [d3c6d31]
+  - @substrat-run/contracts@0.78.0
+  - @substrat-run/engine-invoicing@0.7.5
+  - @substrat-run/engine-protocol@0.9.5
+  - @substrat-run/engine-workorder@0.6.5
+  - @substrat-run/adapter-sqlite@0.78.0
+  - @substrat-run/kernel@0.78.0
+
+## 0.0.77
+
+### Patch Changes
+
+- Updated dependencies [cbc4538]
+  - @substrat-run/contracts@0.77.0
+  - @substrat-run/engine-invoicing@0.7.4
+  - @substrat-run/engine-protocol@0.9.4
+  - @substrat-run/engine-workorder@0.6.4
+  - @substrat-run/adapter-sqlite@0.77.0
+  - @substrat-run/kernel@0.77.0
+
+## 0.0.76
+
+### Patch Changes
+
+- @substrat-run/contracts@0.76.0
+- @substrat-run/kernel@0.76.0
+- @substrat-run/adapter-sqlite@0.76.0
+- @substrat-run/engine-invoicing@0.7.3
+- @substrat-run/engine-protocol@0.9.3
+- @substrat-run/engine-workorder@0.6.3
+
 ## 0.0.75
 
 ### Patch Changes

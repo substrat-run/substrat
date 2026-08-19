@@ -1,5 +1,151 @@
 # @substrat-run/contracts
 
+## 0.78.0
+
+### Minor Changes
+
+- d3c6d31: Only a **pointable** entity can be pointed at: the compiler now refuses a
+  composite-keyed entity where the platform needs one id.
+
+  #804 made a table's identity declarable, so `primaryKey: ['customer_id', 'year',
+'month']` is now a legal entity. But an `EntityRef` is one type and one **id** —
+  attachments hang off one, grants narrow to one, `ctx.link` joins two, and an
+  event is about one and names the single output field carrying its id. None of
+  that has a meaning for a table identified by three columns.
+
+  Nothing refused it. Both of these compiled clean:
+
+  ```ts
+  manifestEntities(entities, {
+    attachmentTargets: [{ entityType: 'budget', readPermission: 'x:read' }],
+  });                              // an attachment hanging off no id at all
+
+  emits: { entity: 'budget', entityIdFrom: 'customer_id', … }
+                                   // the event is about a THIRD of a row
+  ```
+
+  That is the same silence #804 was about, one layer up — and worse, because the
+  consequences are a misrouted grant and an ambiguous audit subject rather than a
+  schema that merely accepts duplicates. Six positions now refuse it at compile
+  time: `parents`, `attachmentTargets.entityType`, both ends of `relations`,
+  `emits.entity`, and a narrowed `permission.entity`.
+
+  ```
+  Type '"budget"' is not assignable to type '"customer" | "ext"'.
+  ```
+
+  **Derived, not declared.** Un-pointable _is_ "the primary key has more than one
+  column". A `pointable: true` flag would describe a second time what `primaryKey`
+  already says, and two descriptions of one fact are how they come to disagree.
+
+  **A single-column key that is not `id` stays fully pointable** — `primaryKey:
+['workorder_id']` is one id, just not spelled `id`, so the side table keyed by an
+  engine's id keeps attachments, grants, links and events. Only composite keys are
+  excluded, and such a table is still a complete model member: migrations, a row
+  type, a place in `model.json`. It is simply not a grant target.
+
+  ## The inference change
+
+  `defineEntities` is now `const`-generic. It has to be: without it a tuple widens
+  to an array, the length is lost, and the check cannot be written at all. This
+  affects **inference only** — the function still returns its argument unchanged,
+  and nothing about runtime behaviour moves. Every field of a declaration becomes
+  literal and readonly as a result, not just `primaryKey`, so code that assigned a
+  declared `parents` or `key` to a mutable array type may need a `readonly`. All 54
+  workspace packages typecheck unchanged; consumers outside this repo are the
+  reason this is a minor rather than a patch.
+
+  ## Why the types are written the ugly way
+
+  The mapped type is **inlined at each of the six positions** rather than used
+  through the exported `PointableName` alias. TypeScript prints an alias
+  unresolved, so an aliased parameter reports the entire entity map instead of the
+  names — the #705 lesson, re-verified here. Inlined, the diagnostic lists the
+  entities you may actually use.
+
+  Each copy has a `@ts-expect-error` case in `test/model.test.ts`. That is the
+  guard against a copy drifting: delete any one narrowing and its directive turns
+  unused, which fails `typecheck` — verified by doing exactly that.
+
+## 0.77.0
+
+### Minor Changes
+
+- cbc4538: `EntityDef` can express a primary key that is not `id`, and a table with no
+  primary key is now refused rather than emitted.
+
+  `EntityDef` assumed the identity of a row was an `id` field. Where it was not,
+  `emitTables` emitted the table **with no primary key at all** — silently. A
+  production vertical transcribing 63 entities from a 38-version journal that has
+  run against real data hit this on 15 of them, seven of those composite (#804):
+
+  | table                      | journal                        | emitted |
+  | -------------------------- | ------------------------------ | ------- |
+  | `vertical_workorder_ext`   | `PK(workorder_id)`             | none    |
+  | `vertical_time_budget`     | `PK(customer_id, year, month)` | none    |
+  | `vertical_number_sequence` | `PK(kind, year)`               | none    |
+
+  It is not a niche shape. The first is the `vertical_` side table keyed by an
+  engine's id — the composition pattern the design rules prescribe. Its identity
+  _is_ the work order's; an `id` of its own would permit two side rows for one
+  work order, which is the thing a primary key exists to prevent. So any vertical
+  composing an engine the way the rules describe hits this on its first side
+  table. The rest are ordinary value-keyed tables: a counter per `(kind, year)`, a
+  budget per `(customer, year, month)`.
+
+  **The silence was the part worth fixing first.** That vertical's own parity check
+  compared column names, types and nullability across all 63 tables and reported
+  63/63 matching — because it never compared primary keys. The emitted schema would
+  have accepted duplicate rows in 15 tables, and nothing said so.
+
+  So the refusal comes before the notation. `primaryKeyOf` resolves an entity's key
+  or throws, and both `emitTables` and `emitModel` go through it: an entity with
+  neither an `id` field nor a `primaryKey` now names itself in an error instead of
+  producing a keyless table, and `lint:model --check` goes red on it too.
+
+  Then the notation:
+
+  ```ts
+  ext: {
+    table: 'vertical_workorder_ext',
+    fields: z.object({ workorder_id: z.string(), route_note: z.string().nullable() }),
+    primaryKey: ['workorder_id'],           // → workorder_id TEXT PRIMARY KEY NOT NULL
+  },
+  budget: {
+    table: 'vertical_time_budget',
+    fields: z.object({ customer_id: z.string(), year: z.number(), month: z.number(), hours: z.string() }),
+    primaryKey: ['customer_id', 'year', 'month'],   // → PRIMARY KEY (customer_id, year, month)
+  },
+  ```
+
+  `primaryKey` defaults to `['id']`, so nothing already declared changes and no
+  checked-in `model.json` moves — an id-keyed entity emits the byte-identical DDL
+  it did before. It is kept distinct from `key` because SQL's own distinction is
+  the useful one: `primaryKey` is identity, `key` is an additional uniqueness rule,
+  and a table legitimately has both. Reading `key` as the primary key when an
+  entity has no `id` would have saved a field by conflating two facts. Column order
+  is preserved rather than sorted, unlike `key` — a composite primary key is also
+  the index its columns are searched by, left to right.
+
+  The columns are checked the way the rest of the emitter checks: a `primaryKey`
+  naming a field the entity does not have is a compile error, and a nullable key
+  column is refused, because SQLite lets a NULL into a non-INTEGER primary key and
+  would not catch it either.
+
+  **And the planner can see it now.** `journalPrimaryKeys` joins `journalColumns`
+  and `journalUniques` as the third reader, handling both spellings journals use
+  (inline for one column, table-level for several) and replaying renames, rebuilds
+  and drops like its siblings. `planMigration` emits the key on a new table and
+  refuses a moved one — SQLite cannot change a primary key in place, so that is a
+  rebuild and a decision about the duplicate rows already in there, not a diff. It
+  distinguishes "the journal built this table without a key" from "the journal
+  never built it", because only one of those is a bug.
+
+  The demo parity tests now compare primary keys per table, and fail on the case
+  that started this: both sides agreeing that neither has one.
+
+## 0.76.0
+
 ## 0.75.0
 
 ## 0.74.0
@@ -2839,7 +2985,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
