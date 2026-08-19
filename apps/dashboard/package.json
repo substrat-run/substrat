@@ -5,7 +5,6 @@
   "substrat": {
     "permissions": "src/provision.ts"
   },
-  "license": "Apache-2.0",
   "description": "The Dashboard — Substrat’s tenant-facing self-service surface (the platform vertical). See docs/architecture/dashboard.md.",
   "type": "module",
   "scripts": {
