@@ -1,6 +1,6 @@
 # model-phase spike
 
-Evidence for [`docs/design/model-phase-plan.md`](../../docs/design/model-phase-plan.md) §3: **can a typed TypeScript
+Evidence for [`docs/rfc/model-phase-plan.md`](../../docs/rfc/model-phase-plan.md) §3: **can a typed TypeScript
 model make CRM-EFF's `validate` checks compile errors, instead of a bespoke validator?**
 
 ```

@@ -2111,7 +2111,7 @@ export class ControlPlaneDO extends DurableObject {
 
   /**
    * ALL of a tenant's tenant-level tuples — the read behind scope-local projection
-   * (docs/design/scope-local-permissions.md). Includes tombstoned rows so the
+   * (docs/architecture/scope-local-permissions.md). Includes tombstoned rows so the
    * projection mirrors the directory exactly and the checker's own `live()` filter
    * drops them identically. Not on the request hot path — this runs on the admin
    * write path, projecting into a tenant's scopes.

@@ -55,7 +55,7 @@ export interface DoCheckerDeps {
 
 /**
  * A `ControlPlaneReader` backed by the ScopeDO's OWN storage — the read side of
- * scope-local permissions (docs/design/scope-local-permissions.md). It reads the
+ * scope-local permissions (docs/architecture/scope-local-permissions.md). It reads the
  * tenant-level tuples + role definitions that were **projected** into this scope
  * (`_substrat_tenant_tuples`, `_substrat_roles`), so the checker never has to call
  * the shared control-plane DO on the request path.

@@ -840,7 +840,7 @@ export interface ConnectorDelegation {
 export interface CloudflareScopeHostOptions {
   scope: DurableObjectNamespace;
   /**
-   * The shared directory DO. Optional: a **CP-less** vertical (docs/design/scope-
+   * The shared directory DO. Optional: a **CP-less** vertical (docs/architecture/scope-
    * local-permissions.md, Phase 3) runs with no control plane — it evaluates
    * permissions from its scopes' own storage, trusts the router-asserted node for
    * lifecycle/tenancy, and treats entitlements as enforced upstream at provision.
@@ -868,7 +868,7 @@ export interface CloudflareScopeHostOptions {
    */
   fetch?: FetchLike;
   /**
-   * Scope-local permissions (docs/design/scope-local-permissions.md, Phase 2). When
+   * Scope-local permissions (docs/architecture/scope-local-permissions.md, Phase 2). When
    * on, this host PROJECTS a tenant's roles + tenant-level tuples into its scopes on
    * every tenant-level write, and flips those scopes to evaluate permissions from
    * their own storage — taking the shared control-plane DO off the request hot path.
@@ -938,7 +938,7 @@ function nullControlPlane(): ControlPlaneStub {
         : async () => {
             throw new Error(
               `control plane unavailable: '${String(prop)}' — this host is scope-local / CP-less ` +
-                `(docs/design/scope-local-permissions.md, Phase 3)`,
+                `(docs/architecture/scope-local-permissions.md, Phase 3)`,
             );
           },
   });
@@ -4184,7 +4184,7 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeNs.get(this.scopeNs.idFromName(scopeId)) as unknown as ScopeStubRpc;
   }
 
-  // -- scope-local projection (docs/design/scope-local-permissions.md, Phase 2) --
+  // -- scope-local projection (docs/architecture/scope-local-permissions.md, Phase 2) --
   // The write side of the local reader (Phase 1): after any tenant-level change,
   // the coordinator PROJECTS the tenant's current roles + tenant-level tuples into
   // its scopes, which then evaluate permissions from their own storage. Cost moves

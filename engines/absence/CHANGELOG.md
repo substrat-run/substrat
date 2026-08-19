@@ -56,7 +56,7 @@
   copy — with contracts peer-requiring `^4.4.3` and a consumer declaring `^3.23.0`,
   pnpm reported nothing, and `zod` did not appear once in the peer report even
   under `--strict-peer-dependencies`. And pnpm's peer checking does not reach
-  `workspace:` links at all. Full reasoning in `docs/design/dependency-policy.md`.
+  `workspace:` links at all. Full reasoning in `docs/architecture/dependency-policy.md`.
 
   Internally, shared versions now come from a pnpm `catalog:` so one version is a
   single edit. The `pnpm` settings block moved from `package.json` to
@@ -186,7 +186,7 @@
   `booking`/`reversal` entries, a coverage-only `availability()` read, and the
   #383 stale-request expiry schedule. Leave-type vocabulary, accrual formulas,
   weekends/red days and holiday calendars stay vertical, by design
-  (`docs/design/engine-absence.md`; the entry ledger is deliberately
+  (`docs/engines/absence.md`; the entry ledger is deliberately
   engine-private, not a kernel primitive — D-A).
 
   Meridian adopts it in the same change: `0003-absence-to-engine` R5 extraction

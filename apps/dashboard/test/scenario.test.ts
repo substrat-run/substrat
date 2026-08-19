@@ -32,7 +32,7 @@ import { listDeploymentsFromHost, verticalDeploymentFromHost, verticalDeployment
 import { ControlPlaneError } from '../src/authority.js';
 
 /**
- * M0 — the central claim of docs/design/dashboard.md, cashed out: a tenant admin
+ * M0 — the central claim of docs/architecture/dashboard.md, cashed out: a tenant admin
  * self-provisions an app in THEIR OWN tenant, authorized by an in-scope permission
  * check, and cannot reach another tenant because the tenant is ambient (their
  * dashboard node), never a request argument.

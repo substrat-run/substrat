@@ -2,9 +2,9 @@
 
 > A generic multi-scope headless CMS on Substrat. **Site = scope.** Content types are
 > real, typed, connected models; the editorial lifecycle is the invariant. Design corpus:
-> [../../../docs/design/cms-content.md](../../../docs/design/cms-content.md) (the data model,
+> [../../../docs/architecture/cms-content.md](../../../docs/architecture/cms-content.md) (the data model,
 > the compile-to-migration mechanism) and
-> [../../../docs/design/manyfold-ui.md](../../../docs/design/manyfold-ui.md) (the 13 views).
+> [../../../docs/briefs/manyfold-ui.md](../../../docs/briefs/manyfold-ui.md) (the 13 views).
 
 ## The firm
 

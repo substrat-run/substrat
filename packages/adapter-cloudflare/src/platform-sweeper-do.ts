@@ -45,7 +45,7 @@ export interface PlatformSweeperDo {
 
 /**
  * `definePlatformSweeperDO` — the Cloudflare trigger for `runPlatformSweep`
- * (docs/design/scheduler.md §3.0): a singleton Durable Object whose `alarm()`
+ * (docs/architecture/scheduler.md §3.0): a singleton Durable Object whose `alarm()`
  * runs one sweep pass and re-arms itself, the workerd analogue of
  * `startPlatformSweeper`'s self-rescheduling timer.
  *

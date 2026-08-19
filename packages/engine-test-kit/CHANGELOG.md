@@ -59,7 +59,7 @@
 
 - 9208b4e: A signature request can carry **how a party is reached** — sealed to the
   connector, never readable in the spine (#687 item 1,
-  `docs/design/signature-contact-carrier.md`).
+  `docs/architecture/signature-contact-carrier.md`).
 
   Every external signature this platform has ever sent has failed. The reason was
   not the auth level and never was: `connector-scrive` mapped each party to a role

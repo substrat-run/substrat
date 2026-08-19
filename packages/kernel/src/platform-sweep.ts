@@ -333,7 +333,7 @@ async function mapBounded<T>(
  *
  * This is the SCHEDULER'S UNIT OF WORK — a Cloudflare cron, a Durable Object
  * alarm, or a node timer calls it; it holds no timer itself (see
- * `startPlatformSweeper`, and docs/design/scheduler.md). Both halves are code
+ * `startPlatformSweeper`, and docs/architecture/scheduler.md). Both halves are code
  * that landed but had no caller: `drainDue` (the retry driver) and the
  * connectors' reconcile sweeps.
  *

@@ -1,5 +1,5 @@
 // Template for the deployable Callout (fsm) Worker — a SANDBOX-CLEAN, control-plane-less
-// vertical (docs/design/scope-local-permissions.md, Phase 3).
+// vertical (docs/architecture/scope-local-permissions.md, Phase 3).
 //
 // `wrangler.jsonc` itself is gitignored — it holds your account-specific D1
 // database_id once you create one. Set up your local copy with:

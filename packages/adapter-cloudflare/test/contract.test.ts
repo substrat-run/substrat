@@ -178,7 +178,7 @@ describe('migration failure is recorded in the directory', () => {
 });
 
 /**
- * Scope-local permissions, Phase 1 (docs/design/scope-local-permissions.md): the
+ * Scope-local permissions, Phase 1 (docs/architecture/scope-local-permissions.md): the
  * ScopeDO can evaluate a tenant-level role from its OWN projected storage instead
  * of the control-plane DO. This proves the local reader is parity with RPC, that a
  * tombstoned projection stops granting, and — the load-bearing safety property —

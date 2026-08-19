@@ -3,7 +3,7 @@
 Substrat is a hosted substrate for vertical business software: a multi-tenant kernel
 (tenancy, permissions, events, migrations) + headless **engines** owning invariants +
 **verticals** owning everything a user touches. Canonical docs: [docs/master-plan.md](docs/master-plan.md)
-(strategy, decision log) and [docs/design/kernel-design.md](docs/design/kernel-design.md) (architecture).
+(strategy, decision log) and [docs/architecture/kernel-design.md](docs/architecture/kernel-design.md) (architecture).
 
 ## Layout
 
@@ -33,7 +33,7 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 - `pnpm callout-demo dev` — run the Callout demo (API :8871 + web :5271). Demo dev
   ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ` overrides both ends of the proxy.
-- **Callout, Meridian, and Manyfold are OIDC-only** (`docs/design/oidc-only-demos.md`): they run
+- **Callout, Meridian, and Manyfold are OIDC-only** (`docs/architecture/oidc-only-demos.md`): they run
   no credential store — login/sign-up/password/reset live at the OIDC issuer (`demos/auth-server`),
   and the vertical only maps the authenticated `sub` → a scope principal (owner-claim + invites in
   the per-tenant `IdentityDO`). Local `… dev` authenticates with the `x-principal` persona picker;
@@ -93,7 +93,7 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
     invariants like immutable-after-export safe from a half-finished caller.
   Which mode an engine is, is a fact about its exports; state it in the engine's header
   so an absence reads as intent rather than an omission.
-- **Catching an engine error requires `ctx.atomic`** (#770, `docs/design/sub-transactions.md`).
+- **Catching an engine error requires `ctx.atomic`** (#770, `docs/rfc/sub-transactions.md`).
   An engine call composed inside your transaction has no boundary of its own, so a bare
   `catch` leaves you holding its partial writes — the rows its invariants were protecting —
   and commits them. Wrap it instead:

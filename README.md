@@ -64,7 +64,7 @@ thesis, architecture decisions, market landscape, concrete cases, commercial str
 risks, open questions, and the decision log. Everything else derives from it.
 
 The technical shape of those decisions — contracts, data models, lifecycles — lives in
-[docs/design/kernel-design.md](docs/design/kernel-design.md).
+[docs/architecture/kernel-design.md](docs/architecture/kernel-design.md).
 
 Research feeding both:
 

@@ -6,12 +6,12 @@ title: "Regression safety comes from an acceptance ledger the user authored"
 status: accepted
 aliases: []
 tracking: []
-source: docs/design/builder-studio.md §13
+source: docs/architecture/builder/studio.md §13
 ---
 
 # D-51 — Regression safety comes from an acceptance ledger the user authored
 
-> **Ratified 2026-08-19.** Transcribed from docs/design/builder-studio.md §13 during the Phase-2 log
+> **Ratified 2026-08-19.** Transcribed from docs/architecture/builder/studio.md §13 during the Phase-2 log
 > split, which found this decision built but never written into the log. The text is
 > the author's; only the id is new.
 

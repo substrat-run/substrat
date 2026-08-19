@@ -476,7 +476,7 @@ export function createRallyApp(
   /**
    * The step a billing Workflow would invoke. It is an operation rather than a
    * timer because the schedule belongs outside the scope — durable, long-waiting,
-   * retryable per step (docs/design/booking-social.md §7) — while the credit and
+   * retryable per step (docs/rfc/booking-social.md §7) — while the credit and
    * the cursor advance belong inside one transaction.
    */
   app.post('/api/billing/run', async (c) =>

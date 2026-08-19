@@ -111,7 +111,7 @@ import {
 } from '@substrat-run/kernel';
 
 // ============================================================================
-// The protocol engine (docs/design/engine-protocol.md, extracted at milestone
+// The protocol engine (docs/engines/protocol.md, extracted at milestone
 // B per decision 27: the second vertical's shape — Handlebar's per-bike
 // condition report with a customer counter-signature at pickup — forced the
 // invariants out of Callout's vertical code). The engine owns ONLY the

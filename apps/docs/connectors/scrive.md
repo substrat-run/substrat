@@ -11,7 +11,7 @@ It is a `0.x` release, which already signals an unstable surface, and two caveat
 neither in the connector code: **the consuming vertical must schedule the poll on a timer**
 (`sweepScriveReconciliations` via `startPlatformSweeper` on node, or `definePlatformSweeperDO` —
 a self-re-arming Durable Object alarm in `@substrat-run/adapter-cloudflare` — on Workers; see the
-[scheduler](https://github.com/substrat-run/substrat/blob/main/docs/design/scheduler.md)),
+[scheduler](https://github.com/substrat-run/substrat/blob/main/docs/architecture/scheduler.md)),
 and **BankID-to-sign is disabled on the testbed account**, so the real signing round-trip is
 unverified. See [What's missing](#what-s-missing).
 :::
@@ -122,7 +122,7 @@ self-rescheduling interval — live in the Meridian demo server) and `definePlat
 (`@substrat-run/adapter-cloudflare`, a self-re-arming Durable Object alarm — chosen over a cron
 because a vertical pushed into a Workers-for-Platforms dispatch namespace gets no `triggers.crons`).
 Both drive the same `runPlatformSweep` (the kernel's
-[scheduler](https://github.com/substrat-run/substrat/blob/main/docs/design/scheduler.md) unit of
+[scheduler](https://github.com/substrat-run/substrat/blob/main/docs/architecture/scheduler.md) unit of
 work), and the control-plane worker is deliberately not the home, because its scope DO is
 module-less. The call site belongs in the vertical's own runtime — what remains is a *deployed*
 vertical wiring one up with a live connection.

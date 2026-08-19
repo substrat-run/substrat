@@ -1,6 +1,6 @@
 /**
  * The builder studio's workspace seam and gate runner.
- * Design: docs/design/builder-studio.md §3 (the seam), §9.1 (tier-1 gates).
+ * Design: docs/architecture/builder/studio.md §3 (the seam), §9.1 (tier-1 gates).
  */
 export type {
 	ExecOptions,

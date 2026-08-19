@@ -568,7 +568,7 @@
   vertical's honest refusal — e.g. a 501 for a verb it does not implement — reaches the
   dashboard as itself; routes that already hand-caught it are unchanged.
 
-- d93e690: Detachable vertical auth (docs/design/vertical-auth-detach.md): auth moves out of the
+- d93e690: Detachable vertical auth (docs/architecture/vertical-auth-detach.md): auth moves out of the
   verticals and becomes an install-time choice — a team Auth Server app or any external
   OIDC issuer — with `builtin` (embedded Better Auth) as the unchanged default.
 

@@ -4,7 +4,7 @@ Status: draft v0.1 · Last updated: 2026-07-18
 
 > Two self-contained prompts for a design tool. Each carries its own product context so it
 > can be pasted standalone. Companion to [concept.md](concept.md) (the domain) and
-> [engine-booking.md](../../../docs/design/engine-booking.md) (states and invariants).
+> [engine-booking.md](../../../docs/engines/booking.md) (states and invariants).
 
 ## Why two surfaces
 

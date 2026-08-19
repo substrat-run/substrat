@@ -3,7 +3,7 @@
 Status: draft v0.2 (adds §4.1b/§5.1b protocols — engine-protocol.md milestone A) · Last updated: 2026-07-14
 
 > Companion to [concept.md](concept.md) (the concept) and
-> [kernel-design.md](../../../docs/design/kernel-design.md) (the contracts). This document is the
+> [kernel-design.md](../../../docs/architecture/kernel-design.md) (the contracts). This document is the
 > implementation-level spec: concrete schemas, operations, events, permissions, and the
 > scenario script — detailed enough to build and run end-to-end on
 > `@substrat-run/adapter-sqlite` with **no UI, no HTTP, no Cloudflare** — and to derive the
@@ -21,7 +21,7 @@ individual views are specified in [views.md](views.md)), HTTP surface
 notifications, documents, custom fields, offline, Cloudflare adapter.
 
 > **Amendment (v0.2).** Protocols/self-inspections are now IN — as **vertical code**
-> per [engine-protocol.md](../../../docs/design/engine-protocol.md) milestone A
+> per [engine-protocol.md](../../../docs/engines/protocol.md) milestone A
 > (§4.1b, §5.1b, scenario steps 10–13). The protocols *engine* stays a non-goal:
 > extraction happens at milestone B, when Handlebar's second shape forces it.
 
@@ -86,7 +86,7 @@ crosses a module boundary.
 
 ### 4.1b `demos/callout` protocols (vertical, milestone A) — migration 0002
 
-The [engine-protocol.md](../../../docs/design/engine-protocol.md) §3 domain model as
+The [engine-protocol.md](../../../docs/engines/protocol.md) §3 domain model as
 `callout_*` tables — deliberately engine-shaped so the milestone-B extraction diff
 is mostly a rename. Migration `0002-protocols`, appended to the journal (0001 shipped).
 

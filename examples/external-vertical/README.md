@@ -4,7 +4,7 @@ A Substrat vertical built **from published packages**, standing in for a repo
 outside this monorepo. It depends on `@substrat-run/*` at real semver ranges (no
 `workspace:*`) and is **not** a workspace member — `pnpm install` here resolves
 everything from npm, exactly as a real external project would. This is
-[first-flow.md](../../docs/design/first-flow.md) slice 2: the "build an app
+[first-flow.md](../../docs/briefs/first-flow.md) slice 2: the "build an app
 outside the repo" half.
 
 ## What it is

@@ -43,7 +43,7 @@
   `atomicContractSuite` — twelve cases both adapters pass unchanged, including the Postgres-shaped
   one (a caught _storage_ error leaves the transaction usable) that no existing suite could express.
 
-  Design note: `docs/design/sub-transactions.md`.
+  Design note: `docs/rfc/sub-transactions.md`.
 
 ### Patch Changes
 
@@ -101,7 +101,7 @@
 
 - 9208b4e: A signature request can carry **how a party is reached** — sealed to the
   connector, never readable in the spine (#687 item 1,
-  `docs/design/signature-contact-carrier.md`).
+  `docs/architecture/signature-contact-carrier.md`).
 
   Every external signature this platform has ever sent has failed. The reason was
   not the auth level and never was: `connector-scrive` mapped each party to a role
@@ -1379,7 +1379,7 @@ drainedAt)` and an `AccessLogFilter.drained` narrowing, so the drain runs over t
 
 - 50d9260: Platform intents, Phase B1: the drain surface (read + settle).
 
-  Adds the read/settle half of the platform-intent queue from `docs/design/platform-intents.md`, so
+  Adds the read/settle half of the platform-intent queue from `docs/architecture/platform-intents.md`, so
   the platform can pull a scope's pending intents and journal their outcome. `ScopeHost` gains
   `listPlatformRequests(tenantId, scopeId)` (pending intents, mapped to the `PlatformRequest`
   contract shape) and `settlePlatformRequest(tenantId, scopeId, id, { status, result, lastError })`
@@ -1429,7 +1429,7 @@ drainedAt)` and an `AccessLogFilter.drained` narrowing, so the drain runs over t
 
 - 67be7c7: Platform intents, Phase A: the `ctx.requestPlatform` primitive.
 
-  Adds the foundation from `docs/design/platform-intents.md` — the sandbox-clean way a vertical
+  Adds the foundation from `docs/architecture/platform-intents.md` — the sandbox-clean way a vertical
   asks the platform for a privileged action (provision a sibling scope, quota, …) without an
   upward call. A vertical operation calls `ctx.requestPlatform({ kind, payload })` after its own
   permission check; the kernel durably records a typed intent in this scope's new
@@ -2083,7 +2083,7 @@ drainedAt)` and an `AccessLogFilter.drained` narrowing, so the drain runs over t
   overlap/stop) and end to end against the SQLite adapter with the real Scrive connector — a
   signature completes through the driver, nobody handing it the instance id.
 
-  See [docs/design/scheduler.md](../docs/design/scheduler.md). The remaining step is a call site in
+  See [docs/architecture/scheduler.md](../../docs/architecture/scheduler.md). The remaining step is a call site in
   a deployed vertical (the control-plane worker is deliberately NOT it — its `ScopeDO` is
   module-less; the sweep must run in the vertical's own runtime).
 
@@ -2139,7 +2139,7 @@ drainedAt)` and an `AccessLogFilter.drained` narrowing, so the drain runs over t
 
   **These methods take a `PlatformActorId`, which is a deliberate deferral, not an answer.**
   Connecting a provider is a tenant admin's act, and routing it through a platform actor is the
-  defect D-31 named for `addMember`. Recorded in `docs/design/connections.md` §3.5; no console
+  defect D-31 named for `addMember`. Recorded in `docs/architecture/connections.md` §3.5; no console
   flow should be built on this signature until the question is settled with membership's.
 
 - 113160a: **The inbound authority seam (#97): a connection is a subject.**
@@ -2255,7 +2255,7 @@ drainedAt)` and an `AccessLogFilter.drained` narrowing, so the drain runs over t
   the path was already doing silently — the difference is that failures are now recorded,
   retried, and readable instead of being thrown at whoever held the request.
 
-  Prerequisite for the integrations hub ([`docs/design/connections.md`](docs/design/connections.md)).
+  Prerequisite for the integrations hub ([`docs/architecture/connections.md`](../../docs/architecture/connections.md)).
   Scheduling `drainDue` from a cron trigger or Durable Object alarm is not included here.
 
 - d881f75: **Correct the Scrive connector against the real API, and widen the connector fetch body.**

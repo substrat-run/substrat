@@ -161,7 +161,7 @@ the correct direction for a read-heavy multi-tenant system, and what makes a sco
 isolated: it can run as its own Cloudflare Worker with *no* control-plane binding at all. (For
 the earlier per-request model and why it was replaced — scaling, isolation, and the
 untrusted-vertical requirement — see the
-[scope-local permissions design note](https://github.com/substrat-run/substrat/blob/main/docs/design/scope-local-permissions.md).)
+[scope-local permissions design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/scope-local-permissions.md).)
 
 The consistency consequence is small and one-directional. Scope-level grants/roles stay
 synchronous and immediately consistent ("no zookies") — the checker runs in the scope's own

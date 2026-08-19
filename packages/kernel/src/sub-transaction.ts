@@ -1,6 +1,6 @@
 /**
  * `ctx.atomic` — the engine-seam sub-transaction (#770,
- * docs/design/sub-transactions.md).
+ * docs/rfc/sub-transactions.md).
  *
  * A vertical composes engine in-scope functions inside ONE scope transaction,
  * and the adapter rolls back only if the whole handler throws. So a vertical

@@ -106,7 +106,7 @@ exactly that, because it is the property the design claims.
 | Pricing, seasonal rules | vertical | the engine never learns what a slot costs |
 | Who owns an open game | vertical | the club, a player up front, or a player opening a booking they hold |
 | Level bands, cancellation windows | vertical | the engine knows only *fill target* and *deadline* |
-| Wallet, credit packs, subscriptions | vertical | [commerce-gaps §4.6](https://github.com/substrat-run/substrat/blob/main/docs/design/commerce-gaps.md) — a subscription engine designed off a demo wishlist is the exact failure mode D-27 prevents |
+| Wallet, credit packs, subscriptions | vertical | [commerce-gaps §4.6](https://github.com/substrat-run/substrat/blob/main/docs/strategy/commerce-gaps.md) — a subscription engine designed off a demo wishlist is the exact failure mode D-27 prevents |
 
 Two domain details worth stealing:
 
@@ -207,7 +207,7 @@ The executable spec is three suites, **45 tests**:
   portable rating are keyed to a *global* player identity owned by no tenant. A club's scope
   cannot answer "which other clubs does she play at", and must not be able to. Those live in
   a downstream tier fed by the event outbox — see
-  [booking-social.md](https://github.com/substrat-run/substrat/blob/main/docs/design/booking-social.md).
+  [booking-social.md](https://github.com/substrat-run/substrat/blob/main/docs/rfc/booking-social.md).
 - **A payment rail.** Buying credit currently mints balance without charging anything; the
   money is imaginary. Stripe Connect is a connector, and connectors are a framework this repo
   has specified and not yet built.

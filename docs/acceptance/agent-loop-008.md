@@ -152,7 +152,7 @@ makes them worth something.
 - **The honest no is real, not decoration.** It refused three sub-parts of a product it
   otherwise liked, named replacements, and declined an engine on architectural grounds. That
   is what makes the yes worth something — and it is the answer to the open worry in
-  [generated-verticals](../design/generated-verticals.md) §6.1 about a channel that only ever
+  [generated-verticals](../strategy/generated-verticals.md) §6.1 about a channel that only ever
   flatters.
 - **Two runs independently found the same tooling contradiction.** Convergence is the
   strongest signal this methodology produces, and it fixed a bug that shipped that morning.

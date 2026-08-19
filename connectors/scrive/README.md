@@ -84,7 +84,7 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
    requires valid email field"* — at `basic` as much as at `strong`.
    `protocol.signatures-requested` carries no contact, and `ScriveParty.email` is therefore never
    populated. This is the live blocker, and it is one carrier away
-   (`docs/design/signature-contact-carrier.md`); every other caveat here is downstream of it.
+   (`docs/architecture/signature-contact-carrier.md`); every other caveat here is downstream of it.
 
    Read the participant number: **#2**, not #1. Scrive never invites the **author** — it is the
    sending account — so the rule does not reach it, and the gap splits in two:

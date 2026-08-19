@@ -1,6 +1,6 @@
 # `@substrat-run/router`
 
-The environment-wide router (K-26/K-27; [control-plane.md §4.7](../../docs/design/control-plane.md)).
+The environment-wide router (K-26/K-27; [control-plane.md §4.7](../../docs/architecture/control-plane.md)).
 
 One worker in front of every vertical. It resolves `hostname → (tenant, scope,
 vertical, surface)` against the shared control plane's directory and forwards over a

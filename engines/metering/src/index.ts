@@ -16,7 +16,7 @@ import {
 } from '@substrat-run/kernel';
 
 // ============================================================================
-// The metering engine (docs/design/engine-metering.md, #646). Owns an
+// The metering engine (docs/engines/metering.md, #646). Owns an
 // APPEND-ONLY usage ledger over configured meters, idempotent ingest keyed by
 // (meter, dedupe key), window aggregation (counters sum; gauges sample and
 // carry forward), and an append-only period-close journal whose latest close is

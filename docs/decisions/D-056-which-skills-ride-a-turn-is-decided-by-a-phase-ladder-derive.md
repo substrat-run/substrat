@@ -6,12 +6,12 @@ title: "Which skills ride a turn is decided by a phase ladder derived from works
 status: accepted
 aliases: []
 tracking: []
-source: docs/design/builder-studio.md §13
+source: docs/architecture/builder/studio.md §13
 ---
 
 # D-56 — Which skills ride a turn is decided by a phase ladder derived from workspace facts
 
-> **Ratified 2026-08-19.** Transcribed from docs/design/builder-studio.md §13 during the Phase-2 log
+> **Ratified 2026-08-19.** Transcribed from docs/architecture/builder/studio.md §13 during the Phase-2 log
 > split, which found this decision built but never written into the log. The text is
 > the author's; only the id is new.
 

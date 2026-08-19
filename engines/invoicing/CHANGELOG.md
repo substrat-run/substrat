@@ -100,7 +100,7 @@
   copy — with contracts peer-requiring `^4.4.3` and a consumer declaring `^3.23.0`,
   pnpm reported nothing, and `zod` did not appear once in the peer report even
   under `--strict-peer-dependencies`. And pnpm's peer checking does not reach
-  `workspace:` links at all. Full reasoning in `docs/design/dependency-policy.md`.
+  `workspace:` links at all. Full reasoning in `docs/architecture/dependency-policy.md`.
 
   Internally, shared versions now come from a pnpm `catalog:` so one version is a
   single edit. The `pnpm` settings block moved from `package.json` to

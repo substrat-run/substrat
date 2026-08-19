@@ -7,7 +7,7 @@ description: Agent-loop acceptance run 003.
 # Agent-loop acceptance run 003 — protocols in ServiceCo (engine-protocol milestone A)
 
 Date: 2026-07-14 · Benchmark shape: extend an existing vertical against a design doc
-([engine-protocol.md](../design/engine-protocol.md) §2 milestone A), triggering BOTH
+([engine-protocol.md](../engines/protocol.md) §2 milestone A), triggering BOTH
 human checkpoints · Result: **PASS, with one convention gap surfaced**
 
 ## Setup

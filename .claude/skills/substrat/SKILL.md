@@ -180,7 +180,7 @@ able to read it and recognise their own business.
 Substrat monorepo it is `demos/<name>/spec/concept.md` (the existing convention).
 
 **Top line, verbatim** — this is the house marker for a pre-code design (matching
-`docs/design/engine-protocol.md`):
+`docs/engines/protocol.md`):
 
 ```
 Status: draft v0.1 · Last updated: <date> · For review before any code
@@ -223,7 +223,7 @@ in plain language, so nothing there is a surprise:
      users, wire the OIDC seam from the start: the standard is a **separate OIDC issuer**
      (an Auth Server app in the same team, or an external issuer — Supabase/Auth0/AuthHero/
      Keycloak), never per-app credential storage. The vertical is a pure OIDC **relying
-     party** per `docs/design/vertical-auth-detach.md`: depend on
+     party** per `docs/architecture/vertical-auth-detach.md`: depend on
      `@substrat-run/vertical-auth`, bind its `IdentityDO` (the `sub → principal` directory,
      TOFU owner claim, invites) as a third DO store, read the platform-delivered
      `substrat:auth` config per scope (`authWiring`), and build `oidcRpAuthProvider` per
