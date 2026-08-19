@@ -9,6 +9,8 @@ import {
   eventId,
   instant,
   objectRef,
+  toWireFailure,
+  type WireFailure,
   grantRefFromProof,
   principalId,
   platformRequestInput,
@@ -801,6 +803,65 @@ export function defineScopeDO(
        * override bypass. Mutually exclusive with `connectionId`.
        */
       systemModuleId?: string,
+      /**
+       * #113 phase 3: return failures as a VALUE instead of throwing them.
+       *
+       * Opt-in, and that is what makes it safe to deploy. A coordinator running new
+       * code sets it; a ScopeDO instance still running OLD code simply ignores an extra
+       * argument and throws exactly as it always did, which the coordinator still
+       * handles. The reverse skew — old coordinator, new DO — cannot silently swallow
+       * an error either, because without this flag the DO throws. No flag day, and no
+       * window where a failure reads as a success.
+       */
+      failureEnvelope?: boolean,
+    ): Promise<{ result: unknown; platformRequests: number; failure?: WireFailure }> {
+      if (!failureEnvelope) {
+        // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
+        // ZodError, whose `message` is a getter) still arrives with its message.
+        try {
+          return await this.invokeOrThrow(
+            operation,
+            input,
+            principal,
+            tenantId,
+            scopeId,
+            connectionId,
+            requiredEntitlement,
+            systemModuleId,
+          );
+        } catch (err) {
+          throw toRpcError(err);
+        }
+      }
+      try {
+        return await this.invokeOrThrow(
+          operation,
+          input,
+          principal,
+          tenantId,
+          scopeId,
+          connectionId,
+          requiredEntitlement,
+          systemModuleId,
+        );
+      } catch (err) {
+        // The ONE place the error keeps its structure: flattened here, rebuilt by the
+        // coordinator. `toRpcError` is not applied — that exists to make a throw
+        // survivable, and this is not a throw.
+        return { result: undefined, platformRequests: 0, failure: toWireFailure(err) };
+      }
+    }
+
+    /** The operation path itself. Throws; `invoke` decides how that reaches the caller. */
+    async invokeOrThrow(
+      operation: string,
+      input: unknown,
+      principal: PrincipalId,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      connectionId?: string,
+      requiredEntitlement?: string,
+      systemModuleId?: string,
     ): Promise<{ result: unknown; platformRequests: number }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
@@ -881,7 +942,10 @@ export function defineScopeDO(
               err,
             );
           }
-          throw toRpcError(err);
+          // The ORIGINAL error, deliberately: `invoke` flattens it for the envelope
+          // (which keeps its code and extensions) or rewraps it for the legacy throw
+          // path. Collapsing it here would lose the structure before either can look.
+          throw err;
         }
         // Post-commit: drain the outbox to consumers, each delivery its own txn.
         await this.dispatch(tenantId, scopeId);

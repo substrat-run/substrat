@@ -4,6 +4,7 @@ import { warmControlPlane } from './do-warmup.js';
 import {
   connectionId,
   errorCodeOf,
+  toProblem,
   moduleId,
   orgId,
   permissionKey,
@@ -14,7 +15,7 @@ import {
   type EntitlementGrant,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   billedMod,
@@ -849,25 +850,21 @@ describe('#332 — recovery from a scope bricked to zero tuples (CP-less)', () =
 // a file of their own.
 // ---------------------------------------------------------------------------
 /**
- * What a throw actually carries out of the ScopeDO — measured against workerd, because
- * the comment that used to describe it was wrong.
+ * What an operation failure carries out of the ScopeDO — measured against workerd,
+ * because the comment that used to describe it was wrong twice.
  *
- * Every other test of error behaviour runs in one isolate, where the class survives and
+ * Every other error test in the repo runs in one isolate, where the class survives and
  * `instanceof` works. That is exactly why the production bug (`instanceof
  * PermissionDenied` false on the Cloudflare adapter, forcing verticals to regex the
- * message) stayed invisible: no test crossed the hop. This one does.
+ * message) stayed invisible: nothing crossed the hop in a test.
  *
- * The measured answer, which #113 phase 2 was written expecting to be otherwise:
- * **only the message survives.** `name` is not a second channel — setting it folds it
- * into the message as `"<name>: <message>"` and resets `name` to `'Error'`. So the
- * taxonomy's code cannot ride this boundary as a thrown error at all; it needs the
- * discriminated `{ ok, error }` envelope the error-model RFC names as §3's successor.
- *
- * These tests pin BOTH halves: that messages stay clean (the regression guard against
- * re-attempting the `name` carrier), and that the code does not survive (the fact that
- * justifies the envelope, so the next person does not re-derive it the hard way).
+ * The measurement that settled the design: a THROW carries its message and nothing
+ * else. `name` is not a second channel — setting it folds it into the message as
+ * `"<name>: <message>"` and resets `name` to `'Error'`. So a failure crosses as a
+ * VALUE now (#113 §3): the DO returns `{ failure }` and the coordinator rethrows a
+ * rebuilt error, which is the only shape that keeps the code and its extensions.
  */
-describe('what a throw carries across the ScopeDO boundary', () => {
+describe('what an operation failure carries across the ScopeDO boundary', () => {
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
@@ -907,18 +904,99 @@ describe('what a throw carries across the ScopeDO boundary', () => {
   it('delivers the message verbatim, with no class name folded into it', async () => {
     const err = await refused();
     expect(err.message).toBe('permission denied: perm:use');
-    // The two shapes a carrier attempt would leave behind. Either one reaching here
+    // The shapes a message-encoded carrier would leave behind. Either one reaching here
     // means every log line and UI string on this path just changed.
     expect(err.message).not.toMatch(/^PermissionDenied:/);
     expect(err.message).not.toContain('Substrat.');
   });
 
-  it('does not deliver the class, the name, or the code', async () => {
+  // The whole point of the envelope, and the production bug it closes.
+  it('delivers the code and the name, which a throw could not', async () => {
     const err = await refused();
-    expect(err.constructor).toBe(Error);
-    expect(err.name).toBe('Error');
-    // The fact that forces the envelope: nothing structured makes it across, so a
-    // transport on this adapter still has only the message to classify by.
-    expect(errorCodeOf(err)).toBeUndefined();
+    expect(errorCodeOf(err)).toBe('permission_denied');
+    expect(err.name).toBe('PermissionDenied');
+  });
+
+  it('classifies to the same status a same-isolate throw would', async () => {
+    const err = await refused();
+    // A transport no longer has to know the class to get here — which is what lets
+    // `vertical-host` stop matching on message text (its own suite covers that end).
+    expect(toProblem(err).status).toBe(403);
+  });
+
+  // Deliberately still false, and documented as such: contracts cannot import the
+  // kernel, so the rebuilt error is a SubstratError wearing the original name. Every
+  // consumer in the repo reads the code or the name; none reads the constructor.
+  it('does not resurrect the original class, and does not need to', async () => {
+    const err = await refused();
+    expect(err instanceof PermissionDenied).toBe(false);
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  /**
+   * The compat claim, exercised.
+   *
+   * Everything above goes through the coordinator, which always asks for the envelope —
+   * so without this, the `failureEnvelope`-absent branch is reached by no test at all,
+   * and the argument that makes this change safe to deploy ("an old ScopeDO ignores the
+   * flag and throws exactly as it always did") would be an assertion about code nothing
+   * runs. This calls the DO directly, the way an older coordinator would.
+   */
+  describe('a caller that does not ask for the envelope', () => {
+    const rawInvoke = (scope: string) =>
+      env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
+        invoke(
+          operation: string,
+          input: unknown,
+          principal: string,
+          tenantId: string,
+          scopeId: string,
+          connectionId?: string,
+          requiredEntitlement?: string,
+          systemModuleId?: string,
+          failureEnvelope?: boolean,
+        ): Promise<{ result: unknown; platformRequests: number; failure?: unknown }>;
+      };
+
+    it('still gets a throw, and a message it can still match on', async () => {
+      const thrown = await rawInvoke(s)
+        .invoke('perm/authorized-emit', { permission: PERM_USE }, nobody, t, s)
+        .then(
+          () => undefined,
+          (err: Error) => err,
+        );
+
+      expect(thrown, 'the legacy path must reject, never resolve').toBeInstanceOf(Error);
+      expect((thrown as Error).message).toBe('permission denied: perm:use');
+    });
+
+    it('never receives a failure smuggled into a resolved result', async () => {
+      // The dangerous skew, ruled out: an older coordinator reads `.result` off the
+      // resolved value. If the DO answered with an envelope here, a denial would read
+      // as a successful operation returning undefined.
+      const settled = await rawInvoke(s)
+        .invoke('perm/authorized-emit', { permission: PERM_USE }, nobody, t, s)
+        .then(
+          (value) => ({ resolved: true as const, value }),
+          () => ({ resolved: false as const }),
+        );
+      expect(settled.resolved).toBe(false);
+    });
+
+    it('answers the envelope only when it is asked to', async () => {
+      const envelope = await rawInvoke(s).invoke(
+        'perm/authorized-emit',
+        { permission: PERM_USE },
+        nobody,
+        t,
+        s,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+      expect(envelope.failure).toBeDefined();
+      expect(envelope.result).toBeUndefined();
+    });
   });
 });

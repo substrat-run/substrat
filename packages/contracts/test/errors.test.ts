@@ -3,6 +3,8 @@ import { z } from 'zod';
 import {
   buildOpenApiDocument,
   errorCodeOf,
+  fromWireFailure,
+  toWireFailure,
   DOCUMENTED_ERROR_CODES,
   errorCode,
   isSubstratError,
@@ -263,5 +265,55 @@ describe('errorCodeOf', () => {
     expect(body.code).toBe('internal');
     expect(body.detail).toBeUndefined();
     expect(JSON.stringify(body)).not.toContain('hunter2');
+  });
+});
+
+
+/**
+ * The value an error becomes when it has to cross a boundary a throw cannot survive.
+ * `adapter-cloudflare` proves the boundary end; this proves the round trip.
+ */
+describe('the wire failure', () => {
+  const roundTrip = (err: unknown): Error =>
+    fromWireFailure(JSON.parse(JSON.stringify(toWireFailure(err))));
+
+  it('keeps the code, the message and the declared extensions', () => {
+    const original = substratError('conflict', 'the period is closed for edits', {
+      reason: 'period_closed',
+    });
+    const rebuilt = roundTrip(original);
+
+    expect(rebuilt.message).toBe('the period is closed for edits');
+    expect(errorCodeOf(rebuilt)).toBe('conflict');
+    // The half the `name` carrier could never deliver.
+    expect(toProblem(rebuilt).reason).toBe('period_closed');
+    expect(toProblem(rebuilt).status).toBe(409);
+  });
+
+  it('keeps a name that predates the taxonomy', () => {
+    const denied = Object.assign(new Error('permission denied: customer:manage'), {
+      name: 'PermissionDenied',
+    });
+    const rebuilt = roundTrip(denied);
+    expect(rebuilt.name).toBe('PermissionDenied');
+    expect(errorCodeOf(rebuilt)).toBe('permission_denied');
+  });
+
+  it('leaves a foreign throw foreign rather than inventing a code for it', () => {
+    const rebuilt = roundTrip(new Error('something a vertical understands'));
+    expect(rebuilt.message).toBe('something a vertical understands');
+    expect(errorCodeOf(rebuilt)).toBeUndefined();
+    expect(toProblem(rebuilt).code).toBe('internal');
+  });
+
+  it('survives a throw that was never an Error at all', () => {
+    const rebuilt = roundTrip('a bare string');
+    expect(rebuilt).toBeInstanceOf(Error);
+    expect(rebuilt.message).toBe('a bare string');
+  });
+
+  it('is JSON — no prototypes, no getters, nothing that needs a class to read', () => {
+    const wire = toWireFailure(substratError('not_found', 'gone'));
+    expect(JSON.parse(JSON.stringify(wire))).toEqual(wire);
   });
 });
