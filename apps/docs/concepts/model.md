@@ -132,6 +132,44 @@ and transcription is where argument names go wrong.
 
 Omit `input` entirely for an operation that takes no body.
 
+### Paged reads
+
+A list operation declares `paged`, and its `output` then carries the **entry** shape — the
+platform supplies the envelope:
+
+```ts
+'acme/list-customers': {
+  summary: 'Customers, newest first',
+  permission: 'customer:read',
+  input: z.object({ limit: z.number().int().positive().max(200).optional(), cursor: z.string().optional() }),
+  output: entities.customer.fields,   // the ENTRY, not an array
+  paged: { sortKey: 'id', order: 'desc' },
+  http: { method: 'GET', path: '/customers' },
+},
+```
+
+Your handler returns a `Page` of that entry, built with `pageOf`:
+
+```ts
+const limit = input.limit ?? LIST_PAGE_DEFAULT;
+const rows = input.cursor
+  ? ctx.sql.query<Row>('SELECT * FROM acme_customers WHERE id < ? ORDER BY id DESC LIMIT ?', [input.cursor, limit])
+  : ctx.sql.query<Row>('SELECT * FROM acme_customers ORDER BY id DESC LIMIT ?', [limit]);
+return pageOf(rows, limit, (row) => row.id);
+```
+
+Three things follow from the declaration, none of which you write twice:
+
+- the **handler's return type** becomes `Page<Entry>`, so declaring `paged` and returning a
+  bare array does not compile;
+- **`sortKey` must name a field of the entry** — a cursor over a field that is not there is a
+  page that silently skips or repeats rows;
+- the **emitted OpenAPI** grows `limit` / `cursor` / `order` parameters and the
+  `{ entries, nextCursor }` response.
+
+See [What a good API looks like](/concepts/api-design#lists-are-pages-not-dumps) for why it
+is keyset rather than offset.
+
 ## What the compiler checks
 
 Every one of these is a compile error, not a lint:
@@ -143,6 +181,8 @@ Every one of these is a compile error, not a lint:
 - every `{var}` in an `http` path names a real input field
 - **`entityIdFrom` names a field of that operation's `output`** — for a mutation writing a
   *child*, the event is usually about the *parent*, so the id field and the entity differ
+- **`paged.sortKey` names a field of that operation's `output`** — same join, same reason: a
+  cursor has to name something the entry actually carries
 - `piiClass` is required, and anything other than `'none'` requires a `subjectId`, because an
   erasure has to be keyable
 - a `payload` cannot carry a field the entity marks `erasable` — immutable events are the one

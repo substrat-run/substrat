@@ -108,22 +108,53 @@ GET /api/customers?limit=20&cursor=01J8Z3K7Q9WRT0P
 `nextCursor` is the last entry's sort key when the page came back full, and `null` when it
 came back short — so a client walks until null and never makes a trailing empty request.
 
-Offset pagination is rejected deliberately: on live data, rows shift between requests, so
-pages silently skip and duplicate rows. A cursor names a *position in the ordering* rather
-than a count of rows that have scrolled past.
+There is **one** way to page, not two. Page numbers and `offset` are not offered, and that
+is a decision rather than an omission: on live data rows shift between requests, so an
+offset window silently skips and duplicates rows. A cursor names a *position in the
+ordering* instead of a count of rows that have scrolled past, so a row inserted mid-walk
+cannot push another onto a page you already read.
+
+The cost is honest and worth stating: keyset gives you *next*, not *jump to page 7*, and no
+total count. If a screen needs "1–20 of 340" it pays for a separate count query. Most do
+not, and the ones that do are usually asking for a report rather than a list.
 
 Two defaults worth knowing: HTTP list reads **default to a page** (20, capped at 200),
 because egress is where an ever-growing table has to stop being a dump. Kernel-side reads
 default to **unbounded**, because internal callers — provisioning, catalogs, sweeps — mean
 "everything", and a silent cap there would let them mistake a page for the whole set.
 
-::: warning Adopted by the platform, not yet by verticals
-This convention ships in `@substrat-run/contracts` and is used across the control plane,
-dashboard and console. Engine and vertical list operations have **not** adopted it yet —
-several still return unbounded arrays. Tracked in
+#### Declaring it
+
+An operation declares `paged` and its `output` carries the **entry** shape; the platform
+supplies the envelope, the query parameters and the handler's return type:
+
+```ts
+'acme/list-customers': {
+  output: entities.customer.fields,   // the ENTRY, not an array
+  paged: { sortKey: 'id', order: 'desc' },
+  http: { method: 'GET', path: '/customers' },
+},
+```
+
+`sortKey` is compile-checked against that entry's fields, and the handler is typed to return
+`Page<Entry>` — so declaring `paged` and returning a bare array does not compile. See
+[The model](/concepts/model#paged-reads) for the handler side.
+
+::: warning Declared here, adopted incrementally
+The convention ships in `@substrat-run/contracts` and is used across the control plane,
+dashboard and console. The `paged` declaration exists and the todo demo uses it end to end,
+but most engine and vertical list operations have **not** adopted it yet — several still
+return unbounded arrays. Tracked in
 [#129](https://github.com/substrat-run/substrat/issues/129) and
 [#811](https://github.com/substrat-run/substrat/issues/811), which also adds the declared
-filter/sort vocabulary a cursor needs to stay correct.
+filter/sort vocabulary a cursor needs to stay correct under a caller-chosen sort.
+:::
+
+::: tip The one place offset survives
+The console's **scope-table browser** pages with `limit`/`offset`, deliberately. It is
+random access into a table for a human reading rows — "jump to 5,000" is the actual
+requirement, and drift between requests is not a correctness problem there. It is a
+debugging surface, not a product API, and it is the exception that has to justify itself.
 :::
 
 ### 5. Failures are data
@@ -246,7 +277,7 @@ Two things follow that are worth stating, because they cut against instinct:
 | Boundary parsing | Zod at the edge | Shipped |
 | Money | decimal string + currency | Shipped |
 | Identifiers | ULID | Shipped |
-| Pagination | keyset cursor, `{ entries, nextCursor }` | Shipped in contracts; [#129](https://github.com/substrat-run/substrat/issues/129) / [#811](https://github.com/substrat-run/substrat/issues/811) to adopt |
+| Pagination | keyset cursor, `{ entries, nextCursor }`, declared with `paged` | Declaration shipped; [#129](https://github.com/substrat-run/substrat/issues/129) / [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
 | Errors | RFC 9457 problem+json, closed codes | [#113](https://github.com/substrat-run/substrat/issues/113) |
 | Clock | `ctx.now()` | [#812](https://github.com/substrat-run/substrat/issues/812) |
 | Idempotent writes | `Idempotency-Key` | [#116](https://github.com/substrat-run/substrat/issues/116) |
