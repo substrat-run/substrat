@@ -932,4 +932,71 @@ describe('what an operation failure carries across the ScopeDO boundary', () => 
     expect(err instanceof PermissionDenied).toBe(false);
     expect(err).toBeInstanceOf(Error);
   });
+
+  /**
+   * The compat claim, exercised.
+   *
+   * Everything above goes through the coordinator, which always asks for the envelope —
+   * so without this, the `failureEnvelope`-absent branch is reached by no test at all,
+   * and the argument that makes this change safe to deploy ("an old ScopeDO ignores the
+   * flag and throws exactly as it always did") would be an assertion about code nothing
+   * runs. This calls the DO directly, the way an older coordinator would.
+   */
+  describe('a caller that does not ask for the envelope', () => {
+    const rawInvoke = (scope: string) =>
+      env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
+        invoke(
+          operation: string,
+          input: unknown,
+          principal: string,
+          tenantId: string,
+          scopeId: string,
+          connectionId?: string,
+          requiredEntitlement?: string,
+          systemModuleId?: string,
+          failureEnvelope?: boolean,
+        ): Promise<{ result: unknown; platformRequests: number; failure?: unknown }>;
+      };
+
+    it('still gets a throw, and a message it can still match on', async () => {
+      const thrown = await rawInvoke(s)
+        .invoke('perm/authorized-emit', { permission: PERM_USE }, nobody, t, s)
+        .then(
+          () => undefined,
+          (err: Error) => err,
+        );
+
+      expect(thrown, 'the legacy path must reject, never resolve').toBeInstanceOf(Error);
+      expect((thrown as Error).message).toBe('permission denied: perm:use');
+    });
+
+    it('never receives a failure smuggled into a resolved result', async () => {
+      // The dangerous skew, ruled out: an older coordinator reads `.result` off the
+      // resolved value. If the DO answered with an envelope here, a denial would read
+      // as a successful operation returning undefined.
+      const settled = await rawInvoke(s)
+        .invoke('perm/authorized-emit', { permission: PERM_USE }, nobody, t, s)
+        .then(
+          (value) => ({ resolved: true as const, value }),
+          () => ({ resolved: false as const }),
+        );
+      expect(settled.resolved).toBe(false);
+    });
+
+    it('answers the envelope only when it is asked to', async () => {
+      const envelope = await rawInvoke(s).invoke(
+        'perm/authorized-emit',
+        { permission: PERM_USE },
+        nobody,
+        t,
+        s,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+      expect(envelope.failure).toBeDefined();
+      expect(envelope.result).toBeUndefined();
+    });
+  });
 });
