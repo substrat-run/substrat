@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  DOCUMENTED_ERROR_CODES,
+  type ErrorCode,
+  PROBLEM_CATALOG,
+  problem,
+} from './errors.js';
 
 /**
  * The API-surface artifact (design/api-surface.md): a vertical exports an
@@ -54,12 +60,72 @@ export interface ApiDocumentInfo {
   description?: string;
 }
 
-const ERROR_RESPONSES = {
-  '400': { description: 'Validation failed — the input did not parse against the operation schema.' },
-  '401': { description: 'No session — sign in (or present a bearer token) first.' },
-  '403': { description: 'Permission denied — the caller lacks the permission this operation checks.' },
-  '404': { description: 'Unknown operation, or an entity named in the input does not exist.' },
-} as const;
+/** Where the one problem schema lives in the document, referenced from every failure. */
+const PROBLEM_SCHEMA_REF = '#/components/schemas/Problem';
+
+/**
+ * Prose per status. Generated descriptions would read like a type listing; these say
+ * what the caller should conclude, which is the half a schema cannot carry.
+ */
+const ERROR_STATUS_PROSE: Readonly<Record<number, string>> = {
+  400: 'Validation failed — the input did not parse against the operation schema.',
+  401: 'No session — sign in (or present a bearer token) first.',
+  403: 'Refused — the caller lacks the permission this operation checks, or policy forbids it.',
+  404: 'Unknown operation, or an entity named in the input does not exist.',
+  409: 'Conflicts with current state — an illegal transition, a name already taken, or a record that is immutable now.',
+  500: 'Internal error. The body carries no `detail`, deliberately — an unreviewed message is not disclosed on a multi-tenant surface.',
+  503: 'The deployment cannot serve this — a required platform facility is unconfigured.',
+};
+
+/** Component name per documented status — `403` → `#/components/responses/Forbidden`. */
+const ERROR_RESPONSE_NAME: Readonly<Record<number, string>> = {
+  400: 'ValidationFailed',
+  401: 'Unauthenticated',
+  403: 'Forbidden',
+  404: 'NotFound',
+  409: 'Conflict',
+  500: 'InternalError',
+  503: 'Unavailable',
+};
+
+/**
+ * The failure half of every operation, derived from the error taxonomy (#113).
+ *
+ * Bodies are `application/problem+json` (RFC 9457). Both the schema AND the responses
+ * themselves live in `components` and are referenced, which is what keeps the
+ * checked-in artifact readable: a vertical with 27 operations gains three lines per
+ * failure rather than a fully inlined body per failure per operation. `api-diff`'s
+ * document is a review artifact, so its signal-to-noise is a real constraint.
+ *
+ * Every operation currently documents the same set. Narrowing it per operation — a
+ * `409` only where a conflict is actually reachable — wants the model layer to own
+ * the declaration, and is deferred with it (error-model RFC §6 Q1).
+ */
+const DOCUMENTED_STATUSES: readonly number[] = [
+  ...new Set(DOCUMENTED_ERROR_CODES.map((code) => PROBLEM_CATALOG[code].status)),
+].sort((a, b) => a - b);
+
+const ERROR_RESPONSES: Readonly<Record<string, unknown>> = Object.fromEntries(
+  DOCUMENTED_STATUSES.map((status) => [
+    String(status),
+    { $ref: `#/components/responses/${ERROR_RESPONSE_NAME[status]}` },
+  ]),
+);
+
+/** The definitions those references point at, written once per document. */
+const ERROR_RESPONSE_COMPONENTS: Readonly<Record<string, unknown>> = Object.fromEntries(
+  DOCUMENTED_STATUSES.map((status) => {
+    const codes = DOCUMENTED_ERROR_CODES.filter((code) => PROBLEM_CATALOG[code].status === status);
+    const codeList = codes.map((code) => `\`${code}\``).join(' or ');
+    return [
+      ERROR_RESPONSE_NAME[status] as string,
+      {
+        description: `${ERROR_STATUS_PROSE[status]} Carries \`code\`: ${codeList}.`,
+        content: { 'application/problem+json': { schema: { $ref: PROBLEM_SCHEMA_REF } } },
+      },
+    ];
+  }),
+);
 
 // The per-schema `$schema` key is dropped: OpenAPI 3.1's document-wide dialect
 // IS draft 2020-12, so repeating it on every request body is pure noise.
@@ -123,6 +189,11 @@ export function buildOpenApiDocument(
     info,
     paths,
     components: {
+      // One problem schema, referenced by every failure response above — the same
+      // object `toProblem` builds and validates, so the documented failure shape
+      // cannot drift from the emitted one.
+      schemas: { Problem: jsonSchema(problem, 'output') },
+      responses: ERROR_RESPONSE_COMPONENTS,
       securitySchemes: {
         // The primary path: the vertical's own session cookie. Same-origin
         // try-it (the /api/docs page) rides it automatically — the browser

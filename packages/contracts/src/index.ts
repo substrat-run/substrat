@@ -28,6 +28,7 @@ export * from './connections.js';
 export * from './control-plane.js';
 export * from './permission.js';
 export * from './events.js';
+export * from './errors.js';
 export * from './platform-request.js';
 export * from './manifest.js';
 export * from './openapi.js';
