@@ -6,6 +6,9 @@ description: Agent-loop acceptance run 005.
 
 # Agent-loop acceptance run 005 — the manifest guard (engine-protocol milestone C)
 
+> **Retired as a practice (D-57), kept as evidence.** There is no standing
+> obligation to run more of these. This record stands because later work cites it.
+
 Date: 2026-07-14 · Benchmark shape: **kernel-surface change** — the first run to add
 permanent contract surface, resolving kernel-design open question 11 · Result: **PASS,
 and the run's most valuable output was a bug it found in its own design**

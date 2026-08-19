@@ -77,8 +77,9 @@ Research feeding both:
   feature survey of the Swedish/Nordic field-service-management market the first engines
   compete against.
 
-Acceptance runs — the recurring "can an agent build a vertical unaided up to the human
-checkpoints?" benchmark (master plan §5.6):
+Acceptance runs — the "can an agent build a vertical unaided up to the human checkpoints?"
+benchmark, **retired as a standing practice (D-57)** and kept as evidence; open question 15
+was found by run 007:
 
 - [docs/acceptance/agent-loop-001.md](docs/acceptance/agent-loop-001.md) — run 001,
   Handlebar (2026-07-14): PASS, with notes.

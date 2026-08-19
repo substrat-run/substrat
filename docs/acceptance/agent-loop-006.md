@@ -6,6 +6,9 @@ description: Agent-loop acceptance run 006.
 
 # Agent-loop acceptance run 006 — CykelKraft, from scratch
 
+> **Retired as a practice (D-57), kept as evidence.** There is no standing
+> obligation to run more of these. This record stands because later work cites it.
+
 Date: 2026-07-16 · Benchmark shape: **the from-scratch flow** — the first run conducted
 **outside this monorepo**, against the published packages only, with no reference vertical
 and no `CLAUDE.md` · Result: **PASS — and faster than run 001 despite having strictly less

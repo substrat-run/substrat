@@ -6,6 +6,9 @@ description: Agent-loop acceptance run 003.
 
 # Agent-loop acceptance run 003 — protocols in ServiceCo (engine-protocol milestone A)
 
+> **Retired as a practice (D-57), kept as evidence.** There is no standing
+> obligation to run more of these. This record stands because later work cites it.
+
 Date: 2026-07-14 · Benchmark shape: extend an existing vertical against a design doc
 ([engine-protocol.md](../engines/protocol.md) §2 milestone A), triggering BOTH
 human checkpoints · Result: **PASS, with one convention gap surfaced**

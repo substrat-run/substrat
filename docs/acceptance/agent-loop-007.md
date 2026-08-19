@@ -6,6 +6,9 @@ description: Agent-loop acceptance run 007.
 
 # Agent-loop acceptance run 007 — Canopy, a domain the skill does not name
 
+> **Retired as a practice (D-57), kept as evidence.** There is no standing
+> obligation to run more of these. This record stands because later work cites it.
+
 Date: 2026-07-16 · Benchmark shape: **coverage generalization** — the first run on a domain
 the `substrat` skill has no worked example for, from scratch, outside the monorepo ·
 Result: **PASS — and the run's most valuable output is a kernel gap nobody had noticed**
