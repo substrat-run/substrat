@@ -1,5 +1,11 @@
 # @substrat-run/vertical-egress
 
+## 0.1.15
+
+### Patch Changes
+
+- @substrat-run/contracts@0.75.0
+
 ## 0.1.14
 
 ### Patch Changes

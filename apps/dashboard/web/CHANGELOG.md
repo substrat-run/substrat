@@ -1,5 +1,11 @@
 # @substrat-run/dashboard-web
 
+## 0.12.11
+
+### Patch Changes
+
+- @substrat-run/contracts@0.75.0
+
 ## 0.12.10
 
 ### Patch Changes
