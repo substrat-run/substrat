@@ -1,5 +1,12 @@
-export { emitTables, columnsOf, uniqueConstraints, type EmitSqlOptions, type EmittedColumn } from './emit-sql.js';
-export { journalColumns, journalUniques } from './journal.js';
+export {
+  emitTables,
+  columnsOf,
+  primaryKeyConstraint,
+  uniqueConstraints,
+  type EmitSqlOptions,
+  type EmittedColumn,
+} from './emit-sql.js';
+export { journalColumns, journalUniques, journalPrimaryKeys } from './journal.js';
 export {
   planMigration,
   parseJournal,

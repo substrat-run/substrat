@@ -9,14 +9,24 @@
  * Compared by COLUMN SET, not by string: the hand-written DDL has its own
  * whitespace, column order and a `REFERENCES` clause the emitter places
  * differently. What must agree is what the database ends up with.
+ *
+ * **And by PRIMARY KEY.** Columns alone are not what the database ends up with:
+ * a production vertical's parity check compared names, types and nullability
+ * across 63 tables and reported 63/63 while 15 of the emitted tables had no
+ * primary key at all (#804). A check that cannot fail on that is not a parity
+ * check.
  */
 import { describe, expect, it } from 'vitest';
-import { emitTables, journalColumns } from '@substrat-run/model-emit';
+import { emitTables, journalColumns, journalPrimaryKeys } from '@substrat-run/model-emit';
 import { handlebarEntities } from '../src/entities.js';
 import { bikeShopModule } from '../src/module.js';
 
-const handWritten = journalColumns((bikeShopModule.migrations ?? []).map((m) => m.sql).join('\n'));
-const emitted = journalColumns(emitTables(handlebarEntities));
+const journalSql = (bikeShopModule.migrations ?? []).map((m) => m.sql).join('\n');
+const emittedSql = emitTables(handlebarEntities);
+const handWritten = journalColumns(journalSql);
+const emitted = journalColumns(emittedSql);
+const handWrittenKeys = journalPrimaryKeys(journalSql);
+const emittedKeys = journalPrimaryKeys(emittedSql);
 
 describe('emitted DDL vs the hand-written journal', () => {
   it('parsed both sides', () => {
@@ -29,6 +39,13 @@ describe('emitted DDL vs the hand-written journal', () => {
       expect([...(emitted.get(entity.table) ?? [])].sort()).toEqual(
         [...(handWritten.get(entity.table) ?? [])].sort(),
       );
+    });
+
+    it(`${name} → ${entity.table}: same primary key`, () => {
+      // Non-empty on both sides: two tables agreeing that neither has a key is
+      // the failure this check exists to catch, not a pass.
+      expect(emittedKeys.get(entity.table) ?? []).not.toEqual([]);
+      expect(emittedKeys.get(entity.table)).toEqual(handWrittenKeys.get(entity.table));
     });
   }
 

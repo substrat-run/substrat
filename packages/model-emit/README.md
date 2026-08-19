@@ -50,6 +50,9 @@ const sql = emitTables(entities);
 | declared | emitted |
 |---|---|
 | `id` | `id TEXT PRIMARY KEY NOT NULL` |
+| `primaryKey: ['workorder_id']` | `workorder_id TEXT PRIMARY KEY NOT NULL` — the identity of a side table keyed by an engine's id |
+| `primaryKey: ['customer_id','year']` | `PRIMARY KEY (customer_id, year)` as a table-level constraint, in declaration order |
+| neither an `id` field nor a `primaryKey` | **refused** — a table with no primary key accepts duplicate rows |
 | `z.string()` / `.nullable()` | `TEXT NOT NULL` / `TEXT` |
 | `z.number()` | `INTEGER` |
 | `z.boolean()` | **refused** — SQLite returns 0/1, so declare `z.number()` and keep the row type honest (`z.boolean()` stays right for an operation's *input*) |
@@ -60,10 +63,36 @@ const sql = emitTables(entities);
 
 Pass `{ ifNotExists: true }` to emit `CREATE TABLE IF NOT EXISTS`.
 
+## Not every table is keyed by `id`
+
+`primaryKey` defaults to `['id']`, and is declared where the identity is something else:
+
+```ts
+// the side table the design rules prescribe for extra data on an engine's entity.
+// Its identity IS the work order's — an `id` of its own would permit two side
+// rows for one work order, which is what the primary key exists to prevent.
+ext: {
+  table: 'vertical_workorder_ext',
+  fields: z.object({ workorder_id: z.string(), route_note: z.string().nullable() }),
+  primaryKey: ['workorder_id'],
+},
+```
+
+It stays separate from `key` because SQL's own distinction is the useful one: `primaryKey`
+is identity, `key` is an additional uniqueness rule, and a table legitimately has both.
+Column order is preserved rather than sorted — a composite primary key is also the index its
+columns are searched by, left to right.
+
+An entity with neither an `id` field nor a `primaryKey` is **refused**. It used to emit a
+table with no primary key at all, silently: a production vertical had that on 15 of 63
+tables while its own column-by-column parity check reported 63/63, because it never compared
+primary keys ([#804](https://github.com/substrat-run/substrat/issues/804)). `journalPrimaryKeys`
+is the reader that closes that gap, next to `journalColumns` and `journalUniques`.
+
 ## It is stricter than a hand-written schema, in one way
 
-An `id` becomes `TEXT PRIMARY KEY **NOT NULL**`. In SQLite a non-INTEGER primary key does
-*not* imply `NOT NULL`, so `id TEXT PRIMARY KEY` accepts a NULL id:
+The primary key becomes `TEXT PRIMARY KEY **NOT NULL**`. In SQLite a non-INTEGER primary key
+does *not* imply `NOT NULL`, so `id TEXT PRIMARY KEY` accepts a NULL id:
 
 ```
 hand-written  id TEXT PRIMARY KEY          → ACCEPTED a NULL id
@@ -71,7 +100,7 @@ emitted       id TEXT PRIMARY KEY NOT NULL → rejected
 ```
 
 Every hand-written `vertical_*` table in the Substrat repo had that hole. The emitter cannot
-produce it.
+produce it, and it refuses a nullable key column for the same reason.
 
 ## It refuses rather than guesses
 

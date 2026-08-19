@@ -45,6 +45,31 @@ export interface EntityDef<Names extends string = string> {
    * kernel means and cannot express the real cases.
    */
   readonly parents?: readonly Names[];
+  /**
+   * The table's identity. Defaults to `['id']`.
+   *
+   * **Declared, because not every table's identity is an `id`.** The `vertical_`
+   * side table keyed by an engine's id — the composition pattern the design
+   * rules prescribe — has no id of its own to have, and inventing one would be
+   * wrong: it would permit two side rows for one work order, which is the very
+   * thing the primary key exists to prevent. Value-keyed tables are the same
+   * shape: a counter per `(kind, year)`, a budget per `(customer, year, month)`.
+   *
+   * **Kept distinct from `key`, because SQL's own distinction is the useful
+   * one.** `primaryKey` is identity; `key` is an additional uniqueness rule. A
+   * table legitimately has both — a composite primary key and a separate
+   * natural key — so reading `key` as the primary key when an entity has no
+   * `id` would conflate two facts to save a field.
+   *
+   * Order is significant and preserved: a composite primary key is also the
+   * index its columns are searched by, left to right.
+   *
+   * An entity with neither `primaryKey` nor an `id` field is an ERROR, not a
+   * table without a primary key. That silence is what let 15 of one production
+   * vertical's 63 tables emit with no primary key at all while a column-by-column
+   * parity check reported 63/63 (#804).
+   */
+  readonly primaryKey?: readonly string[];
   /** Natural key, if any. Must name fields that exist. */
   readonly key?: readonly string[];
   /** Fields an erasure must be able to reach (§12). Must name fields that exist. */
@@ -86,6 +111,7 @@ export type EntityFields<E> = E extends { fields: infer F }
 export function defineEntities<
   T extends {
     readonly [K in keyof T]: EntityDef<keyof T & string> & {
+      primaryKey?: readonly EntityFields<T[K]>[];
       key?: readonly EntityFields<T[K]>[];
       erasable?: readonly EntityFields<T[K]>[];
       // Keys are CURRENT field names — the thing being renamed TO. The values
@@ -108,6 +134,41 @@ export function defineEntities<
 export type EntityName<T> = keyof T & string;
 
 /**
+ * The entity's primary key — declared, or `['id']` if it has an `id` field.
+ *
+ * Resolved in one place because two callers need the same answer and the same
+ * refusal: the DDL emitter, which cannot write a `CREATE TABLE` without it, and
+ * `emitModel`, so the artifact of record carries the fact rather than leaving it
+ * to be re-derived by whoever reads it.
+ *
+ * **It throws rather than returning nothing.** A table with no primary key is
+ * not a shape the model may express: it accepts duplicate rows silently, and a
+ * parity check that compares columns — the natural one to write — reports a
+ * perfect match over it (#804).
+ */
+export function primaryKeyOf(name: string, entity: EntityDef): readonly string[] {
+  const shape = entity.fields.shape as Record<string, unknown>;
+  const declared = entity.primaryKey;
+  if (declared?.length) {
+    for (const col of declared) {
+      if (!(col in shape)) {
+        throw new Error(`model: ${name}.primaryKey names '${col}', which is not a field`);
+      }
+    }
+    if (new Set(declared).size !== declared.length) {
+      throw new Error(`model: ${name}.primaryKey repeats a column — (${declared.join(', ')})`);
+    }
+    return declared;
+  }
+  if ('id' in shape) return ['id'];
+  throw new Error(
+    `model: ${name} has no 'id' field and declares no \`primaryKey\` — a table without a ` +
+      'primary key accepts duplicate rows. Declare the columns that identify a row, e.g. ' +
+      "`primaryKey: ['workorder_id']` for a side table keyed by an engine's id",
+  );
+}
+
+/**
  * The serialisable form — the artifact of record.
  *
  * Everything downstream (migrations, the manifest, the route table, an ER
@@ -124,6 +185,12 @@ export interface EmittedEntity {
   readonly fields: Record<string, unknown>;
   /** The permitted parent types, sorted. One shape, always. */
   readonly parents?: readonly string[];
+  /**
+   * Present only when it is not the `['id']` default, and **unsorted** — unlike
+   * `key`, a primary key's column order is part of the fact, so sorting it for a
+   * tidier diff would emit a different index than the one declared.
+   */
+  readonly primaryKey?: readonly string[];
   readonly key?: readonly string[];
   readonly erasable?: readonly string[];
 }
@@ -150,6 +217,10 @@ export function emitModel<T extends Record<string, EntityDef>>(entities: T): Emi
       table: e.table,
       fields,
       ...(e.parents?.length ? { parents: [...e.parents].sort() } : {}),
+      // Resolved, not just copied: this also refuses an entity with no identity
+      // at all, so `lint:model --check` goes red on it the same way the DDL
+      // emitter does.
+      ...(primaryKeyOf(name, e).join() === 'id' ? {} : { primaryKey: primaryKeyOf(name, e) }),
       ...(e.key ? { key: [...e.key].sort() } : {}),
       ...(e.erasable ? { erasable: [...e.erasable].sort() } : {}),
     };

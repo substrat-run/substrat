@@ -7,6 +7,7 @@ import { z, defineEntities } from '@substrat-run/contracts';
 import {
   emitTables,
   journalColumns,
+  journalPrimaryKeys,
   journalUniques,
   planMigration,
   parseJournal,
@@ -328,5 +329,139 @@ describe('a key is a composite, and one added later cannot be applied in place',
       'CREATE TABLE t (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL,\n  UNIQUE (a, b)\n);',
     );
     expect([...(u.get('t') ?? [])]).toEqual(['a, b']);
+  });
+});
+
+/**
+ * #804 — the primary key, which the planner could not see at all.
+ *
+ * It compared columns and UNIQUE constraints. A table keyed differently than the
+ * journal keyed it passed as "up to date", which is the same silence that let 15
+ * of one production vertical's 63 tables emit with no primary key.
+ */
+describe('the primary key', () => {
+  const keyed = defineEntities({
+    budget: {
+      table: 'app_budgets',
+      fields: z.object({ customer_id: z.string(), year: z.number(), hours: z.string() }),
+      primaryKey: ['customer_id', 'year'],
+    },
+  });
+
+  it('is part of the CREATE for a new table', () => {
+    const plan = planMigration(keyed, empty);
+    expect(plan.kind).toBe('append');
+    if (plan.kind !== 'append') return;
+    expect(plan.entry.sql).toContain('PRIMARY KEY (customer_id, year)');
+  });
+
+  it('round-trips — the journal it just wrote is up to date', () => {
+    expect(planMigration(keyed, first(keyed)).kind).toBe('up-to-date');
+  });
+
+  it('refuses a key that moved, because SQLite cannot change one in place', () => {
+    const widened = defineEntities({
+      budget: {
+        table: 'app_budgets',
+        fields: z.object({ customer_id: z.string(), year: z.number(), hours: z.string() }),
+        primaryKey: ['customer_id', 'year', 'hours'],
+      },
+    });
+    const plan = planMigration(widened, first(keyed));
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons.join('\n')).toContain(
+      "'app_budgets' is keyed by (customer_id, year) in the journal and by (customer_id, year, hours) in the model",
+    );
+  });
+
+  it('refuses a key over a table the journal built without one', () => {
+    // A hand-written journal from before the model could express this. Adding
+    // the key is a rebuild and a decision about the duplicate rows already in
+    // there — not a diff.
+    const keyless: Journal = {
+      entries: [
+        {
+          version: '0001',
+          slug: 'legacy',
+          sql: 'CREATE TABLE app_budgets (\n  customer_id TEXT NOT NULL,\n  year INTEGER NOT NULL,\n  hours TEXT NOT NULL\n);',
+        },
+      ],
+    };
+    const plan = planMigration(keyed, keyless);
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons.join('\n')).toContain("exists in the journal with NO primary key");
+  });
+
+  it('follows a rename rather than reading it as a moved key', () => {
+    // SQLite rewrites the primary key when a column is renamed, so the reader
+    // has to as well. Comparing untranslated would refuse the very change that
+    // performs the rename.
+    const renamed = defineEntities({
+      budget: {
+        table: 'app_budgets',
+        fields: z.object({ client_id: z.string(), year: z.number(), hours: z.string() }),
+        primaryKey: ['client_id', 'year'],
+        renamedFrom: { client_id: 'customer_id' },
+      },
+    });
+    const plan = planMigration(renamed, first(keyed));
+    expect(plan.kind).toBe('append');
+    if (plan.kind !== 'append') return;
+    expect(plan.entry.sql).toBe('ALTER TABLE app_budgets RENAME COLUMN customer_id TO client_id;');
+  });
+
+  it('sees an id-keyed table exactly as it did before', () => {
+    expect(planMigration(base, first(base)).kind).toBe('up-to-date');
+  });
+});
+
+describe('journalPrimaryKeys', () => {
+  it('reads the inline spelling', () => {
+    expect(
+      journalPrimaryKeys('CREATE TABLE t (\n  id TEXT PRIMARY KEY NOT NULL,\n  a TEXT\n);').get('t'),
+    ).toEqual(['id']);
+  });
+
+  it('reads the table-level spelling, in declaration order', () => {
+    expect(
+      journalPrimaryKeys(
+        'CREATE TABLE t (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL,\n  PRIMARY KEY (b, a)\n);',
+      ).get('t'),
+    ).toEqual(['b', 'a']);
+  });
+
+  it('distinguishes a table with no key from a table that does not exist', () => {
+    const keys = journalPrimaryKeys('CREATE TABLE t (\n  a TEXT NOT NULL\n);');
+    expect(keys.get('t')).toEqual([]);
+    expect(keys.get('other')).toBeUndefined();
+  });
+
+  it('is not fooled by a PRIMARY KEY inside a multi-line CHECK', () => {
+    expect(
+      journalPrimaryKeys(
+        "CREATE TABLE t (\n  id TEXT PRIMARY KEY NOT NULL,\n  note TEXT NOT NULL CHECK (\n    note <> 'PRIMARY KEY (a, b)'\n  )\n);",
+      ).get('t'),
+    ).toEqual(['id']);
+  });
+
+  it('follows a rebuild: create _new, copy, drop, rename onto the name', () => {
+    const sql = [
+      'CREATE TABLE t (\n  a TEXT NOT NULL\n);',
+      'CREATE TABLE t_new (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL,\n  PRIMARY KEY (a, b)\n);',
+      'DROP TABLE t;',
+      'ALTER TABLE t_new RENAME TO t;',
+    ].join('\n');
+    expect(journalPrimaryKeys(sql).get('t')).toEqual(['a', 'b']);
+    expect(journalPrimaryKeys(sql).get('t_new')).toBeUndefined();
+  });
+
+  it('follows a renamed key column', () => {
+    const sql = [
+      'CREATE TABLE t (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL,\n  PRIMARY KEY (a, b)\n);',
+      'ALTER TABLE t RENAME COLUMN a TO c;',
+    ].join('\n');
+    expect(journalPrimaryKeys(sql).get('t')).toEqual(['c', 'b']);
   });
 });
