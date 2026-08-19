@@ -65,6 +65,7 @@ export function guideSidebar() {
         { text: 'Reads & scaling', link: '/concepts/reads' },
         { text: 'The model', link: '/concepts/model' },
         { text: 'Modules & the manifest', link: '/concepts/modules' },
+        { text: 'What a good API looks like', link: '/concepts/api-design' },
         { text: 'Money', link: '/concepts/money' },
       ],
     },

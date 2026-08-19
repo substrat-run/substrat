@@ -183,6 +183,7 @@ Open proposals. A document leaves when it is decided — to `architecture/` rewr
 | [agent-surface.md](rfc/agent-surface.md) | `building` | How any agent discovers and works with Substrat. #749 open. |
 | [booking-social.md](rfc/booking-social.md) | `building` | Booking engine shipped; the cross-tenant social tier is not. |
 | [docs-restructure.md](rfc/docs-restructure.md) | `building` | Audit of docs/ and the restructure. All four phases executed; the prose rewrite is what remains. |
+| [error-model.md](rfc/error-model.md) | `proposed` | One error model — RFC 9457 problem+json, a closed code taxonomy, typed throws that survive the RPC hop. |
 | [model-phase-plan.md](rfc/model-phase-plan.md) | `building` | The model phase. Umbrella #685 open. |
 | [sub-transactions.md](rfc/sub-transactions.md) | `proposed` | Sub-transactions at the engine seam: ctx.atomic. |
 
