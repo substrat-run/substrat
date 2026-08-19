@@ -1,3 +1,9 @@
+---
+status: historical
+layer: plan
+description: Agent-loop acceptance run 008.
+---
+
 # Agent-loop acceptance run 008 — PodHost, and the honest no
 
 Date: 2026-07-16 · Benchmark shape: **the honest no** — the first run where the correct

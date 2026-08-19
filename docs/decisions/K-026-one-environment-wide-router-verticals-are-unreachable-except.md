@@ -1,0 +1,16 @@
+---
+id: K-26
+date: 2026-07-19
+layer: kernel
+title: "One environment-wide router; verticals are unreachable except through it; residency is…"
+status: accepted
+aliases: []
+tracking: ["#31"]
+---
+# K-26 — One environment-wide router; verticals are unreachable except through it; residency is…
+
+**One environment-wide router; verticals are unreachable except through it; residency is configuration, not topology** (§5.5; #31 step 4). A single kernel-owned router worker resolves `hostname → (tenant, scope, vertical, surface, region)` and dispatches. **Not per vertical** — cert and DNS lifecycle in one place means a new vertical gets custom domains for free — and **not per jurisdiction**, because Cloudflare exposes that as configuration: **Regional Services** pins TLS termination and processing to a region **per hostname** ("Regional Hostnames"), and the **DO jurisdiction** (`eu` / `us` / `fedramp`) already pins storage and execution, fixed at id creation and unchangeable (K-7). Two halves, both covered, nothing deployed per region. **`surface` is new and load-bearing**: §5.5 specified `hostname → (tenant, scope, vertical)`, one hostname per scope, but a scope can already front two apps — the shop's storefront and back office, RallyPoint's player app and manager console — so the map needs to say *which app answers*, and retrofitting that once hostnames are issued and DNS records exist is the same trap `OrgId` and the identity key already taught. **Trust boundary**: vertical workers get no public route, only a service binding from the router — otherwise the router's assertion of `(tenant, scope)` is a header anyone reaching the worker directly can forge. **Hostname provisioning is scope lifecycle, not a string**: the custom-hostnames API, DNS validation and cert issuance are states a scope passes through, per §4.2. **Cache invalidation is deferred to open question 5's answer**, not given a second one
+
+## Why
+
+This preserves D-30 rather than eroding it, which is worth stating because a shared component in front of every vertical *looks* like the bundling shortcut D-30 rejects: that shortcut is one DO class per customer's code, which forces lockstep engine upgrades across differently-owned verticals. A router forwards; it does not merge, and deployments stay separate. The residency finding is the one that changed the shape: a per-jurisdiction router deployment is intuitive and wrong — hostname is already the key the router indexes on, so region is one more column rather than a second topology. Two honest costs. Regional Services is an **Enterprise add-on**, so the EU-residency claim carries a plan dependency that belongs in D-32's cost model rather than being discovered in procurement. And routing puts the directory on the **request hot path**, which makes suspension latency real — §7 calls suspension "a live weapon", and a cached route that keeps serving a suspended tenant blunts it; that is the same tension as open question 5 (entitlement checks: hot path or cached with event invalidation) and must not be answered twice. Cloudflare logs a `DurableObjectId` outside its jurisdiction for billing and debugging, which the ID design already anticipated — `contracts/src/ids.ts` requires ids to encode nothing precisely because of it

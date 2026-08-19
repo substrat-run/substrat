@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: The tenant-facing self-service surface. apps/dashboard.
+---
+
 # The Dashboard — the tenant-facing self-service surface
 
-**Status:** design. Not built. Sibling to [control-plane.md](control-plane.md) (the operator
+**Status:** **built** — `apps/dashboard`. Sibling to [control-plane.md](control-plane.md) (the operator
 console) and [kernel-design.md](kernel-design.md) (tenancy, permissions, provisioning). The prompt:
 *"Vercel, but for Substrat."*
 

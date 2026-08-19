@@ -1,3 +1,9 @@
+---
+status: built
+layer: kernel
+description: The permission registry, derived from TypeScript. NOTE: log entry never landed.
+---
+
 # Permission registry — enforced, and derived from TypeScript
 
 **Status:** **built** (D-41). Completes [D-39](../master-plan.md#12-decision-log) (the registry
@@ -185,7 +191,11 @@ Additive and staged; each step is independently shippable behind the two checkpo
 Step 2 is the reversible one: if deriving-from-build is fragile, stop at step 1's artifact and
 keep reading the file (the §5 fallback) — steps 1 and 3 stand on their own.
 
-## 7. Proposed decision-log entry (on acceptance)
+## 7. Decision-log entry — landed as D-47 (awaiting ratification)
+
+> Filed as [`docs/decisions/D-047-…`](../decisions/). The draft below numbered itself **41**, which
+> master-plan D-41 (the scope-local entitlements projection, #304) already held; the Phase-2 log
+> split found the collision and assigned the next free number.
 
 > **41 · Permission registry is a required, TypeScript-derived manifest field** — completes
 > D-39 and retires its checked-in machine artifact. The surface is declared once via a typed

@@ -1,3 +1,9 @@
+---
+status: built
+layer: kernel
+description: How a sandbox-clean vertical requests a privileged platform action.
+---
+
 # Platform intents — how a sandbox-clean vertical requests a privileged platform action
 
 **Status:** proposal (K-decision-scale) · **First consumer:** Manyfold self-serve site

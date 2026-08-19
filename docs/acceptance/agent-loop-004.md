@@ -1,3 +1,9 @@
+---
+status: historical
+layer: plan
+description: Agent-loop acceptance run 004.
+---
+
 # Agent-loop acceptance run 004 — the extraction (engine-protocol milestone B)
 
 Date: 2026-07-14 · Benchmark shape: **extraction** — the decision-27 discipline as a

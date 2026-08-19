@@ -1,6 +1,12 @@
+---
+status: built
+layer: kernel
+description: The billable-usage ledger.
+---
+
 # `engine-metering` — the billable-usage ledger
 
-Status: draft v0.1 · Last updated: 2026-08-14
+Status: **built** — the engine ships on npm
 
 > Surface sketch for the metering engine ([#646](https://github.com/substrat-run/substrat/issues/646)).
 > Companion to [master-plan.md](../master-plan.md) decisions D-30 (*meter, don't bill*),

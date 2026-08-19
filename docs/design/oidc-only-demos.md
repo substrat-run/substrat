@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Remove the credential store from the verticals.
+---
+
 # OIDC-only demos: remove the credential store from the verticals
 
-**Status:** approved shape — implementing
+**Status:** **built** — Callout, Meridian and Manyfold are OIDC-only
 **Scope:** `demos/meridian`, `demos/manyfold`, `demos/callout`
 **Author:** design pass, 2026-08-04
 

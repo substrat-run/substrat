@@ -1,3 +1,9 @@
+---
+status: canonical
+layer: plan
+description: Living catalog of application categories. Falsifies the engine set; not a roadmap.
+---
+
 # Candidate verticals
 
 A living catalog of application categories, ranked by fit with the Substrat model, with

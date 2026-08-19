@@ -1,3 +1,9 @@
+---
+status: built
+layer: plan
+description: What Substrat exposes, minus Cloudflare.
+---
+
 # The platform-neutral surface — what Substrat exposes, minus Cloudflare
 
 This document draws one picture: **what a module/vertical declares, and what the platform

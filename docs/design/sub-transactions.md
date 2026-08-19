@@ -1,6 +1,12 @@
+---
+status: proposed
+layer: kernel
+description: Sub-transactions at the engine seam: ctx.atomic.
+---
+
 # Sub-transactions at the engine seam — `ctx.atomic`
 
-Status: draft v0.2 · Last updated: 2026-08-19
+Status: **proposed** (v0.2)
 
 > Answers the five open questions in issue
 > [#770](https://github.com/substrat-run/substrat/issues/770), which was raised out of

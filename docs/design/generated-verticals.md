@@ -1,3 +1,9 @@
+---
+status: proposed
+layer: plan
+description: The prompt-to-app channel. Explicitly not scheduled.
+---
+
 # Generated verticals — the prompt-to-app channel
 
 **Status:** proposed, not scheduled. Explores plan §7.4's "latent channel"; depends on

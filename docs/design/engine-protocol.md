@@ -1,6 +1,12 @@
+---
+status: built
+layer: kernel
+description: Protocol and checklist engine. NOTE: OQ11 entry awaits ratification.
+---
+
 # Protocol engine — concept spec (pre-extraction draft)
 
-Status: draft v0.1 · Last updated: 2026-07-14 · For review before any code
+Status: **built** — the engine ships on npm; OQ11 decided (§6), its log entry still unratified
 
 > **Relationship to canon.** Master plan §5/§6 and the decision log rule; this document
 > proposes, it doesn't decide. It exists to be reviewed against decisions 26 (engine
@@ -42,7 +48,7 @@ discipline, rehearsed at demo scale:
    plan's least-proven hypothesis wants (§3), at rehearsal scale.
 3. **Milestone C — the guard.** With two verticals gating transitions on signatures,
    decide open question 11 on real material (§6 below). *Built: both poles exist and
-   each carries the case it fits; the decision-log entry for OQ11 awaits ratification.*
+   each carries the case it fits. Filed as **K-38** (awaiting ratification).*
 4. **Milestone D — the third shape forces the seam open.** A CRM whose central artefact is a
    priced *avtal* signed by all parties with BankID via Scrive fits the engine's attestation
    half exactly and its content half not at all — and exposed a freeze-window defect affecting

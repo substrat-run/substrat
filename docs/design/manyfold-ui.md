@@ -1,6 +1,12 @@
+---
+status: historical
+layer: plan
+description: UI design brief for Manyfold. Consumed.
+---
+
 # Manyfold — UI design brief (a prompt for Claude Code)
 
-Status: draft v0.1 · Last updated: 2026-07-24 · Design brief, hand to an agent
+Status: **historical** — design brief dated 2026-07-24, consumed; Manyfold ships
 
 > **How to use this.** This is a self-contained prompt. Read [cms-content.md](cms-content.md)
 > first (the data model, the two surfaces, the operations, the field DSL) — this file adds the

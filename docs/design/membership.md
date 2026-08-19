@@ -1,3 +1,9 @@
+---
+status: built
+layer: plan
+description: Membership, invites, and the admin as first consumer.
+---
+
 # Membership, invites, and the admin as first consumer
 
 **Status:** partly built. Implements plan decision 31; takes the option

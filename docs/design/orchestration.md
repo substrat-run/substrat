@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Portal-driven vertical deploy. Superseded in part by D-37/K-33.
+---
+
 # Portal-driven vertical deploy — the orchestration layer
 
-**Status:** design / RFC. Not built. This is the layer [first-flow](first-flow.md) §5
+**Status:** **built** — `substrat push/promote/preview`, dispatch namespaces; the serving half is superseded by D-37/K-33. This is the layer [first-flow](first-flow.md) §5
 deferred ("the deploy *trigger*") and D-34 named ("*we* deploy, with *our* credentials").
 It commits to a **target** — Workers for Platforms dispatch namespaces (K-28) — and to a
 **shape**, not yet to line-by-line implementation. It builds on the registry model that is

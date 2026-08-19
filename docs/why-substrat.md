@@ -1,3 +1,9 @@
+---
+status: canonical
+layer: plan
+description: The honest positioning source. Feeds four published pages; not itself published.
+---
+
 # Why Substrat — the honest version
 
 > A sales page that only lists strengths is a document nobody trusts twice. This one labels

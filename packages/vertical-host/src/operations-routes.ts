@@ -14,15 +14,19 @@
  * operations carry no `http` — the engine is entity-agnostic and does not own a
  * URL shape, so the vertical decides theirs and mounts them itself.
  *
- * Two things a hand-written table did for free, and this derivation therefore
+ * Three things a hand-written table did for free, and this derivation therefore
  * has to do deliberately: a query string carries no types (§ `queryCoercers`),
- * and registration ORDER decides which of two overlapping paths wins
- * (§ `comparePaths`). Both were found by a production vertical with 195
- * declared routes that could not switch to this mount without the first — 29 of
- * its 81 reads carried a `limit` the model declares as a number (#785).
+ * registration ORDER decides which of two overlapping paths wins
+ * (§ `comparePaths`), and a THROW has to become a status (§ `mountOperations`).
+ * All three were found by the same production vertical with 195 declared routes:
+ * 29 of its 81 reads carried a `limit` the model declares as a number (#785),
+ * and every failure — a permission denial foremost — came back as a bare 500
+ * with no seam to correct it (#791).
  */
 import type { Context, Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import type { ScopeStub } from '@substrat-run/kernel';
+import { classifyError } from './errors.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 
@@ -168,6 +172,44 @@ export interface MountOperationsOptions {
    * nothing, it fails as a 404 the first time somebody calls that endpoint.
    */
   readonly knownOperations?: Iterable<string>;
+  /**
+   * Turn an operation's result into the response. Omit ⇒ `c.json(result)`, the
+   * raw result, which is what every route did before this option existed.
+   *
+   * It exists because the mount had already decided the SUCCESS shape while
+   * leaving the failure shape to the vertical, so an adopting vertical's
+   * envelope ended up defined in two places in two vocabularies (#791). A
+   * vertical that answers `{ ok: true, result }` says so here, once.
+   *
+   * It is also the honest home for per-request work that belongs BETWEEN the
+   * invoke and the response — stripping a field the operation returns but the
+   * caller may not see, relaying a credential, sending mail. The alternative
+   * verticals were reaching for is a `resolveStub` whose `invoke` returns an
+   * envelope instead of the operation's result, which makes `ScopeStub` a lie.
+   */
+  readonly respond?: (c: Context, result: unknown, operation: string) => Response | Promise<Response>;
+  /**
+   * Turn a thrown error into the response. Return `undefined` to fall through
+   * to the default (§ `mountOperations`), so a vertical maps only what it
+   * actually knows about.
+   *
+   * Give it the same envelope as `respond` — a client that reads `ok` off every
+   * reply is the reason both options are here.
+   */
+  readonly onError?: (
+    c: Context,
+    error: unknown,
+    operation: string,
+  ) => Response | Promise<Response> | undefined | Promise<undefined>;
+}
+
+/** A request body, or the 400 it deserves. */
+function parseBody(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new HTTPException(400, { message: 'request body is not valid JSON' });
+  }
 }
 
 /** `{listId}` in the model is `:listId` to Hono. */
@@ -262,6 +304,27 @@ function assertNoUnreachable(declared: readonly (readonly [string, { http: { met
  *
  * The returned table is in registration order, which is the order that decides
  * dispatch: read it to see which of two overlapping paths wins.
+ *
+ * **What a failure answers.** A permission denial is the most common non-success
+ * outcome in a permissioned system and the kernel raises it as a typed error, so
+ * a route answering it with the same 500 as a crash is wrong in the way that
+ * matters most — a client cannot tell "you may not" from "we broke" (#791).
+ * The kernel's own vocabulary is therefore mapped here, and nothing else is:
+ *
+ * | thrown | status |
+ * |---|---|
+ * | `PermissionDenied` (or a message saying so) | 403 |
+ * | a `ZodError` — the input failed to parse | 400 |
+ * | a body that is not JSON | 400 |
+ * | an `HTTPException` — e.g. `resolveStub` refusing an anonymous call | its own |
+ * | a Durable Object / runtime fault (#559) | 502 |
+ * | anything else | re-thrown UNCHANGED |
+ *
+ * The last row is the point: a vertical's domain errors are not this mount's to
+ * guess at, so they reach `app.onError` exactly as they did before. And what IS
+ * mapped is re-thrown as an `HTTPException`, so an app that owns an error
+ * envelope still writes the body — this decides the status, not the shape.
+ * A vertical that wants the shape too passes `respond` and `onError`.
  */
 export function mountOperations(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -314,7 +377,7 @@ export function mountOperations(
       return out;
     };
 
-    const handler = async (c: Context) => {
+    const invoke = async (c: Context) => {
       const stub = await resolveStub(c);
       const fromPath: Record<string, string | undefined> = {};
       for (const p of params) fromPath[p] = c.req.param(p);
@@ -328,7 +391,9 @@ export function mountOperations(
       // a literal in the model is the model's statement, not a default.
       if (takesBody) {
         const raw = await c.req.text();
-        const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        // A body that is not JSON is the caller's 400, not a crash: `JSON.parse`
+        // throws a bare SyntaxError that no error vocabulary can recognise.
+        const body = raw ? (parseBody(raw) as Record<string, unknown>) : {};
         // A body is JSON and already typed; only the URL's own values need it.
         payload = { ...body, ...pinned, ...typed(fromPath) };
       } else {
@@ -336,7 +401,32 @@ export function mountOperations(
       }
       if (!op.input && params.length === 0) payload = undefined;
 
-      return c.json(await stub.invoke(name, payload));
+      const result = await stub.invoke(name, payload);
+      return options.respond ? await options.respond(c, result, name) : c.json(result);
+    };
+
+    const handler = async (c: Context) => {
+      try {
+        return await invoke(c);
+      } catch (err) {
+        const mapped = await options.onError?.(c, err, name);
+        if (mapped) return mapped;
+        const seen = classifyError(err);
+        // No opinion means exactly that: re-throw UNTOUCHED so the vertical's own
+        // `app.onError` still gets the error it has always got, and can still map
+        // its own domain vocabulary. Only what the kernel itself names — a refused
+        // permission, an input that failed to parse, a runtime fault — is decided
+        // here, because those are not a vertical's to guess at (#791).
+        if (!seen) throw err;
+        // One that already IS an HTTPException travels on as itself — re-wrapping
+        // would drop a custom `res` a route deliberately attached to it.
+        if (err instanceof HTTPException) throw err;
+        // Re-thrown as an HTTPException rather than answered directly, so an app
+        // that owns an error envelope keeps owning it — `mountPlatformSurface`'s
+        // handler reads the status and wraps the message. An app with no handler
+        // gets Hono's own response at the right status instead of a bare 500.
+        throw new HTTPException(seen.status, { message: seen.message, cause: err });
+      }
     };
 
     if (method === 'GET') app.get(full, handler);

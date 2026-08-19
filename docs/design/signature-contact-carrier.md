@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Reaching a signatory without putting them in the spine.
+---
+
 # Signature party contact — reaching a signatory without putting them in the spine
 
-Status: **implemented** (v0.2 as designed) · Last updated: 2026-08-18
+Status: **built** (v0.2 as designed)
 
 > Answers ask 1 of issue [#620](https://github.com/substrat-run/substrat/issues/620),
 > now closed and carried by [#687](https://github.com/substrat-run/substrat/issues/687):

@@ -1,0 +1,16 @@
+---
+id: K-24
+date: 2026-07-19
+layer: kernel
+title: "Staff reads are audited into a separate access log that drains rather than expires"
+status: accepted
+aliases: []
+tracking: ["#43", "#42"]
+---
+# K-24 — Staff reads are audited into a separate access log that drains rather than expires
+
+**Staff reads are audited into a separate access log that drains rather than expires** (control-plane.md §4.6; closes #43, depends on K-20's per-person actors being real — #42). Every `HostAdmin` read records actor, method, the tenant/scope it asked about, a bounded parameter summary and the **result count**, into `_substrat_access_log` — in the **directory** (the ControlPlaneDO's own SQLite, beside the admin log), not D1 and not the per-scope outbox. **Not** `_substrat_admin_log`: a mutation is permanent evidence and that log is append-only forever, a read is operational history — one table would force one retention policy, the stricter would win, and read noise would be kept forever while burying the mutation rows an auditor came for. **All reads, not a curated subset**: a subset decides in advance which reads will not matter, and "who enumerated every tenant" is what an incident asks. `result_count` is what separates navigation from an incident. **Hot storage and retention are different things**: the log ships with a `drained_at` marker and only drained rows are pruned, so the DO window is a *storage* bound while the record's lifetime belongs to Tier 2. Until that sink exists the window IS the retention, and that is a stated **limitation**, not a policy. The **§7 bound is preserved**: no admin-query RPC into scope databases, so this covers directory metadata and never tenant business data — adding logging must not be the moment that limit widens
+
+## Why
+
+The write side was already complete — all 16 `AdminAction` members record in both adapters — while a staff member could enumerate every tenant, scope, role and audit row with no trace. Defensible at one operator; not once we are a processor for EU employee data and a customer asks who looked at their directory, which is what D-32's ISO 27001 / SOC 2 commitment makes answerable-or-else. The separate-log split is the kernel's own prediction cashed in: `scope-host.ts` already recorded reads as unaudited *deliberately* because "a durable record of who READ the directory is a different feature with a different retention story" — this is that feature, in the shape that comment implied. The drain marker is the correction that matters: pruning on age would destroy evidence while *calling itself* a retention policy, which is the failure K-21 rejected for tuples reappearing one layer up. D-30 already observed the converse — "a hand-built admin audit log **is** `_substrat_outbox`" — so the outbox's own `drained_at` is the precedent, and shipping the column before the sink is what keeps the retrofit off an append-only log that by then holds history. Volume is **not** the pressure: this is staff reads, a handful of operators, thousands of rows a day rather than millions, which a singleton DO absorbs comfortably. The pressure is duration — an append-only log with no drain grows forever in a store that cannot be sharded, which argues for the marker rather than against the DO

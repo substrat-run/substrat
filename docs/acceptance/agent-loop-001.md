@@ -1,3 +1,9 @@
+---
+status: historical
+layer: plan
+description: Agent-loop acceptance run 001.
+---
+
 # Agent-loop acceptance run 001 — CykelService
 
 Date: 2026-07-14 · Benchmark: master plan §5.6 / demo concept §9 ("an agent, pointed at

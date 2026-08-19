@@ -1,3 +1,9 @@
+---
+status: building
+layer: plan
+description: Booking engine shipped; the cross-tenant social tier is not.
+---
+
 # Booking & the cross-tenant social tier
 
 > Status: design sketch (2026-07-18). Captures a conversation converging on two

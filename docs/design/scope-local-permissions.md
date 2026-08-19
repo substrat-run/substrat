@@ -1,3 +1,9 @@
+---
+status: built
+layer: kernel
+description: Permission checks off the control-plane hot path.
+---
+
 # Scope-local permissions — taking the control plane off the request hot path
 
 **Status:** **built.** All three stages of §8 have shipped — the pluggable local reader (#163),

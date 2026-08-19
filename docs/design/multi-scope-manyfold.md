@@ -1,6 +1,12 @@
+---
+status: built
+layer: plan
+description: Multi-scope Manyfold and the Data-tab scope switcher.
+---
+
 # Multi-scope Manyfold, self-serve sites, and the Data-tab scope switcher
 
-**Status:** proposal · **Motivating case:** a deployed Manyfold (CMS) app whose Data tab
+**Status:** **built** — tracking #360 closed 2026-08-04. **Motivating case:** a deployed Manyfold (CMS) app whose Data tab
 shows only `_substrat_*` system tables and no content — because hosted Manyfold is
 single-scope today, and even that one scope never received Manyfold's schema.
 

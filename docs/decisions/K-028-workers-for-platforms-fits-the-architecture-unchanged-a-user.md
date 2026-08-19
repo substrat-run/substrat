@@ -1,0 +1,16 @@
+---
+id: K-28
+date: 2026-07-19
+layer: kernel
+title: "Workers for Platforms fits the architecture unchanged: a user worker in a dispatch…"
+status: accepted
+aliases: []
+tracking: []
+---
+# K-28 — Workers for Platforms fits the architecture unchanged: a user worker in a dispatch…
+
+**Workers for Platforms fits the architecture unchanged: a user worker in a dispatch namespace MAY define its own SQLite-backed Durable Object class** — verified empirically, not inferred. This was the pivotal unknown, because `defineScopeDO(MODULES)` puts kernel, engines and module code INSIDE the DO: a vertical does not talk to a Durable Object, it **is** one. No Cloudflare doc states whether a dispatch-namespace script may define a DO class; the evidence only leaned yes (the dispatch script API returns `migration_tag`; `migrations` is an accepted multipart-upload metadata field). So it was tested: a user worker exporting a SQLite `ScopeDO`, deployed with `wrangler deploy --dispatch-namespace`, driven through a dynamic-dispatch worker doing a real `CREATE TABLE`/`INSERT`/`SELECT`, with one DO per scope by name. **Accepted, and it runs**; distinct scopes get distinct DO ids. So a customer's vertical becomes a user worker exporting its own `ScopeDO`, uploaded by US with OUR credentials — the customer never holds a Cloudflare token — and **D-30 holds by construction** (separate scripts, separate DO classes, no lockstep engine upgrades across differently-owned verticals). The router's `verticalFor` swaps a static service binding for `env.DISPATCH.get(name)`: the same `Fetcher` type, one function. **Second finding, operational: a newly-deployed user worker is NOT immediately dispatchable for every scope.** A scope whose DO placed in a colo the script had not reached yet failed with `Worker not found.` for ~15s while sibling scopes on the same script succeeded. It resolved on its own and stayed stable. So deployment is not instantaneously global, and an orchestration layer must not treat upload-succeeded as ready-to-serve — bind hostnames or move a channel pointer only after a readiness check, and expect a cold-start window per new version
+
+## Why
+
+Verified rather than assumed because the cost of being wrong was a redesign: had it been rejected, either verticals stop shipping code inside the DO (contradicting how every engine and vertical is written) or they stay ordinary Workers and WfP's script-cap lift, per-customer tags and per-script limits are all forgone. **WfP is a paid add-on and is NOT enabled on our own accounts** (`code: 10121` on both) — the same class of plan dependency K-26 flagged for Regional Services, and it belongs in D-32's cost model rather than being met in procurement. It does not gate the next milestone: platform-owned deploys already work through the ordinary Workers upload API, which is the whole of "we do the deploys, not the developers", and that path demonstrably supports DO classes because it is what `wrangler deploy` uses for `substrat-fsm` today. The propagation finding is the kind that only shows up in a real deployment — it would not have been found by reading docs, and it would have been found in production instead. Spike removed after recording, per its own README; it is in git history at `368b340`
