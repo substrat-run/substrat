@@ -34,6 +34,13 @@ Measured, not asserted: the adapter's contract suite now crosses the hop and che
 the message arrives verbatim, that the code and name arrive with it, and that the result
 classifies to the same status a same-isolate throw would.
 
+The compat path is exercised too, and that one nearly shipped untested. Every test goes
+through the coordinator, which always asks for the envelope — so the flag-absent branch
+was reached by nothing, and the argument this change rests on for deploy safety was an
+assertion about code no test ran. Three tests now call the DO directly the way an older
+coordinator would: the legacy path still rejects with its message intact, a denial is
+never handed back as a resolved result, and the envelope appears only when asked for.
+
 Still throwing across the hop, and so still losing their structure: `attachmentAdd`,
 `attachmentList`, `attachmentAuthorize`, `attachmentRemove`, `introspectQuery`. Same
 pattern, mechanical, much lower traffic.
