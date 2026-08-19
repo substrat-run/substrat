@@ -415,7 +415,7 @@
 
   `packages/vertical-auth` is unchanged, so the production verticals that depend on
   it are unaffected. Better Auth now lives only in `demos/auth-server` (the issuer)
-  and the Node-only demos (shop/rally/handlebar). Design: `docs/design/oidc-only-demos.md`.
+  and the Node-only demos (shop/rally/handlebar). Design: `docs/architecture/oidc-only-demos.md`.
 
 ### Patch Changes
 

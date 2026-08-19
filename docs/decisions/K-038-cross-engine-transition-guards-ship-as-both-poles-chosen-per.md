@@ -6,12 +6,12 @@ title: "Cross-engine transition guards ship as both poles, chosen per case"
 status: accepted
 aliases: []
 tracking: []
-source: docs/design/engine-protocol.md §6 (built 2026-07-20; entry unwritten until now)
+source: docs/engines/protocol.md §6 (built 2026-07-20; entry unwritten until now)
 ---
 
 # K-38 — Cross-engine transition guards ship as both poles, chosen per case
 
-> **Ratified 2026-08-19.** Transcribed from docs/design/engine-protocol.md §6 (built 2026-07-20; entry unwritten until now) during the Phase-2 log
+> **Ratified 2026-08-19.** Transcribed from docs/engines/protocol.md §6 (built 2026-07-20; entry unwritten until now) during the Phase-2 log
 > split, which found this decision built but never written into the log. The text is
 > the author's; only the id is new.
 

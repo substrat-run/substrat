@@ -27,7 +27,7 @@ There are two separate questions hiding in "can this go live", and Substrat answ
 two different boundaries (decision D-36):
 
 - **"May this code run on our infrastructure?"** — answered **mechanically** by the
-  [sandbox contract](https://github.com/substrat-run/substrat/blob/main/docs/design/self-serve-deploy.md):
+  [sandbox contract](https://github.com/substrat-run/substrat/blob/main/docs/architecture/self-serve-deploy.md):
   the declared bindings, Workers-for-Platforms isolation, and quotas. This is **admission**,
   and for a private vertical the contract is the whole answer, so a push is admitted the
   moment it validates (an auto-admission note records that no human vouched).
@@ -463,4 +463,4 @@ carried forward — is what ships today. The remaining evolution is on the
 *publish* side: admitting an **untrusted, listed** builder's source safely — building a
 customer's code in a disposable sandbox so the digest checkpoints become verified rather than
 advisory — at which point even the marketplace staff gate can relax. That trust model is the
-[self-serve deploy design note](https://github.com/substrat-run/substrat/blob/main/docs/design/self-serve-deploy.md).
+[self-serve deploy design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/self-serve-deploy.md).

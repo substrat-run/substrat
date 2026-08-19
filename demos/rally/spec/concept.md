@@ -2,8 +2,8 @@
 
 Status: draft v0.1 · Last updated: 2026-07-18
 
-> Companion to [booking-social.md](../../../docs/design/booking-social.md) (the tier split,
-> locking model, and outbox seam) and [concept.md](../../fsm/spec/concept.md) (the reference
+> Companion to [booking-social.md](../../../docs/rfc/booking-social.md) (the tier split,
+> locking model, and outbox seam) and [concept.md](../../callout/spec/concept.md) (the reference
 > demo). Anonymization per the master plan: the feature set is derived from **the racket-club
 > vendor's** public product surface (Playtomic Manager) — deliberately, so demo work seeds a
 > real `engine-booking` rather than a throwaway.
@@ -38,7 +38,7 @@ proof: the existing `Handlebar` skin gains a drop-off booking, demonstrating
   tenant, two scopes). Demo data: **two tenants × two scopes** — RallyPoint AB (Solna +
   Nacka), Padelcenter Väst AB (Göteborg + Mölndal) — giving the cross-tenant attack demo a
   victim, matching `fsm`.
-- **Critical scoping constraint** ([booking-social.md §3](../../../docs/design/booking-social.md)):
+- **Critical scoping constraint** ([booking-social.md §3](../../../docs/rfc/booking-social.md)):
   a resource's *entire* calendar must live in one scope. All of a venue's courts are in
   that venue's DO. Never split one court across scopes — that reintroduces distributed
   locking and forfeits the single-writer guarantee.
@@ -86,7 +86,7 @@ proof: the existing `Handlebar` skin gains a drop-off booking, demonstrating
 > Enforce that on write, or the two tables will disagree and the calendar will lie.
 
 Hours are stored as **local wall time + the venue's IANA zone** (per
-[engine-booking.md](../../../docs/design/engine-booking.md) D-B, local intent is vertical
+[engine-booking.md](../../../docs/engines/booking.md) D-B, local intent is vertical
 territory) and materialized to instants when querying — so 07:00 stays 07:00 across a DST
 boundary.
 
@@ -227,7 +227,7 @@ lediga"*, and `fillTarget` is derived rather than picked.
 
 ## 5. `engine-booking`
 
-The primitive ([booking-social.md §2](../../../docs/design/booking-social.md)):
+The primitive ([booking-social.md §2](../../../docs/rfc/booking-social.md)):
 
 > a **resource** held over a **time interval**, with the invariant that concurrent
 > allocations never exceed the resource's **capacity** over any overlapping interval.
@@ -311,7 +311,7 @@ one charge per participant. No-show charges and refunds ride the same path.
 | *player* | **no role** — an entity-narrowed `CapabilityGrant` over their own reservations |
 
 The player row is the important one: a consumer is **not** a principal with a role
-([kernel-design.md §4.3](../../../docs/design/kernel-design.md)). This reuses the portal
+([kernel-design.md §4.3](../../../docs/architecture/kernel-design.md)). This reuses the portal
 shape `fsm` already proves — no new mechanism.
 
 **The coach grant is deliberately broad — reviewed and accepted (2026-07-18).** A coach
@@ -330,7 +330,7 @@ should not have to rediscover:
 
 The cross-club player identity, connections, small groups, and level rating are **not part
 of this vertical** and cannot be: they are keyed to a global player identity owned by no
-tenant ([booking-social.md §1, §4](../../../docs/design/booking-social.md)). The demo ships
+tenant ([booking-social.md §1, §4](../../../docs/rfc/booking-social.md)). The demo ships
 only the **seam**:
 
 - `booking.participant-joined` emitted per player, carrying the **global player ref** as a

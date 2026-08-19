@@ -27,7 +27,7 @@ jobs:
       # lints itself with the same code a from-scratch vertical runs.
       - run: node tools/boundary-lint.mjs
       # Every module a package references must be one it DECLARED
-      # (docs/design/dependency-policy.md). Needs the build above, because the
+      # (docs/architecture/dependency-policy.md). Needs the build above, because the
       # sharp half of the check reads emitted `.d.ts`: TypeScript writes the
       # ORIGINAL specifier into declarations however the source imported it, so
       # a package's published types can require a module its package.json never

@@ -79,7 +79,7 @@ export interface ScopeDoEnv {
   /**
    * The shared directory DO — the source of tenant-level tuples + roles for a
    * scope whose `permission_source` is still 'control-plane'. Optional: a scope
-   * that has been projected (or a CP-less vertical, docs/design/scope-local-
+   * that has been projected (or a CP-less vertical, docs/architecture/scope-local-
    * permissions.md) evaluates permissions locally and needs no binding.
    */
   CONTROL_PLANE?: DurableObjectNamespace;
@@ -212,7 +212,7 @@ const KERNEL_DDL = `
     next_attempt_at TEXT,
     PRIMARY KEY (event_id, consumer_module)
   );
-  -- Scope-local permissions (docs/design/scope-local-permissions.md): the
+  -- Scope-local permissions (docs/architecture/scope-local-permissions.md): the
   -- tenant-level tuples + role definitions PROJECTED into this scope, so the
   -- checker evaluates permissions from local storage instead of reading the shared
   -- control-plane DO per request. Empty until a scope is projected (Phase 2) — until
@@ -2104,7 +2104,7 @@ export function defineScopeDO(
       };
     }
 
-    // -- scope-local permission projection (docs/design/scope-local-permissions.md) --
+    // -- scope-local permission projection (docs/architecture/scope-local-permissions.md) --
     // The write side of the local reader: the coordinator fans role/tuple changes
     // into a scope's own storage (Phase 2), then flips the source to 'local'. Public
     // RPC methods so `CloudflareScopeHost` (and the projection sweep) can call them.

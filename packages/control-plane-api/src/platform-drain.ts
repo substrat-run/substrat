@@ -26,7 +26,7 @@ import { collectBlobStoreHandles, collectTenantStoreHandles } from './tenant-sto
 import type { PatchScriptBindingsFn } from './wfp.js';
 
 /**
- * The platform-intent drain engine (Phase B2 of docs/design/platform-intents.md). A vertical
+ * The platform-intent drain engine (Phase B2 of docs/architecture/platform-intents.md). A vertical
  * enqueues typed intents in its own scope DO (`ctx.requestPlatform`, Phase A); because those rows
  * live in the vertical's deployment (K-31), the platform PULLS them over the vertical's `/internal`
  * surface (`VerticalClient`, Phase B1's read/settle exposed there) and executes each with its own

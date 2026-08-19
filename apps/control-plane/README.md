@@ -2,7 +2,7 @@
 
 The **shared control-plane deployment** — the directory-side control plane
 (control-plane.md §4) as one deployable Cloudflare Worker. Slice 1 of
-[the first end-to-end flow](../../docs/design/first-flow.md).
+[the first end-to-end flow](../../docs/briefs/first-flow.md).
 
 A singleton `ControlPlaneDO` (tenant registry, scope lifecycle, entitlements,
 roles, admin audit log) fronted by the audited `createControlPlaneApi` router.

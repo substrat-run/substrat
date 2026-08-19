@@ -30,7 +30,7 @@
 
 - 9208b4e: A signature request can carry **how a party is reached** — sealed to the
   connector, never readable in the spine (#687 item 1,
-  `docs/design/signature-contact-carrier.md`).
+  `docs/architecture/signature-contact-carrier.md`).
 
   Every external signature this platform has ever sent has failed. The reason was
   not the auth level and never was: `connector-scrive` mapped each party to a role
@@ -1976,7 +1976,7 @@ only`). Even relaxing that 403 wasn't enough, because `bindScopeVersion` hard-re
 
 - 41d01f6: Platform intents, Phase B2: the drain engine + `provision-sibling` handler.
 
-  The platform-side execution for `docs/design/platform-intents.md`. Because a scope's intent rows
+  The platform-side execution for `docs/architecture/platform-intents.md`. Because a scope's intent rows
   live in the vertical's own deployment (K-31), the platform PULLS them over the vertical's
   `/internal` surface: `VerticalClient` gains `listPlatformRequests` / `settlePlatformRequest`
   (the B1 read/settle surface, now reachable cross-deployment).
@@ -2779,7 +2779,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   Analytics: Read** and **Workers Observability: Read**; the router redeploy picks
   up the `substrat_router` AE dataset binding (auto-created on first write).
 
-- d93e690: Detachable vertical auth (docs/design/vertical-auth-detach.md): auth moves out of the
+- d93e690: Detachable vertical auth (docs/architecture/vertical-auth-detach.md): auth moves out of the
   verticals and becomes an install-time choice — a team Auth Server app or any external
   OIDC issuer — with `builtin` (embedded Better Auth) as the unchanged default.
 

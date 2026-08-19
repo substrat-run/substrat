@@ -58,7 +58,7 @@ session → stored service token. Two gotchas the CLI now warns about, learned t
 ## One-click CI — "Set up deployment"
 
 The shipping path for git → platform is CI in *your* repo (the platform never builds arbitrary
-repo code server-side — that is the model-A gap in `docs/design/self-serve-deploy.md`). The
+repo code server-side — that is the model-A gap in `docs/architecture/self-serve-deploy.md`). The
 dashboard's git-import view (Deployments → connect the GitHub App → pick repo + branch → **Set up
 deployment**) does three things, in a deliberate order:
 

@@ -4,7 +4,7 @@ Status: draft v0.1 · Last updated: 2026-07-18
 
 > Companion to the master plan §7.9 (non-goals — the payroll boundary), §5.1 (nested
 > tenancy), §5.3 (GDPR in an immutable lake), and §3 (engines are *extracted, not
-> designed*). Where Callout ([demos/callout](../../fsm/spec/concept.md)) proves the engines
+> designed*). Where Callout ([demos/callout](../../callout/spec/concept.md)) proves the engines
 > compose, Meridian is the deliberate shape-breaker: a domain with **no ready-made engine**,
 > chosen to prove the kernel isn't secretly field-service-shaped — the §8.2 role, HR edition.
 

@@ -56,7 +56,7 @@
 
 ### Minor Changes
 
-- d93e690: Detachable vertical auth (docs/design/vertical-auth-detach.md): auth moves out of the
+- d93e690: Detachable vertical auth (docs/architecture/vertical-auth-detach.md): auth moves out of the
   verticals and becomes an install-time choice — a team Auth Server app or any external
   OIDC issuer — with `builtin` (embedded Better Auth) as the unchanged default.
 

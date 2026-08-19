@@ -6,12 +6,12 @@ title: "Permission registry is a required, TypeScript-derived manifest field"
 status: accepted
 aliases: []
 tracking: []
-source: docs/design/permission-registry-enforcement.md §7
+source: docs/architecture/permission-registry-enforcement.md §7
 ---
 
 # D-47 — Permission registry is a required, TypeScript-derived manifest field
 
-> **Ratified 2026-08-19.** Transcribed from docs/design/permission-registry-enforcement.md §7 during the Phase-2 log
+> **Ratified 2026-08-19.** Transcribed from docs/architecture/permission-registry-enforcement.md §7 during the Phase-2 log
 > split, which found this decision built but never written into the log. The text is
 > the author's; only the id is new.
 

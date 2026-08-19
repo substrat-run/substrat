@@ -60,7 +60,7 @@
   copy — with contracts peer-requiring `^4.4.3` and a consumer declaring `^3.23.0`,
   pnpm reported nothing, and `zod` did not appear once in the peer report even
   under `--strict-peer-dependencies`. And pnpm's peer checking does not reach
-  `workspace:` links at all. Full reasoning in `docs/design/dependency-policy.md`.
+  `workspace:` links at all. Full reasoning in `docs/architecture/dependency-policy.md`.
 
   Internally, shared versions now come from a pnpm `catalog:` so one version is a
   single edit. The `pnpm` settings block moved from `package.json` to
@@ -274,7 +274,7 @@
 
 - 9208b4e: A signature request can carry **how a party is reached** — sealed to the
   connector, never readable in the spine (#687 item 1,
-  `docs/design/signature-contact-carrier.md`).
+  `docs/architecture/signature-contact-carrier.md`).
 
   Every external signature this platform has ever sent has failed. The reason was
   not the auth level and never was: `connector-scrive` mapped each party to a role
@@ -1767,7 +1767,7 @@ pull`, with one heuristic sweeping _both_ halves. Driving this surfaced a real g
 
 - 41d01f6: Platform intents, Phase B2: the drain engine + `provision-sibling` handler.
 
-  The platform-side execution for `docs/design/platform-intents.md`. Because a scope's intent rows
+  The platform-side execution for `docs/architecture/platform-intents.md`. Because a scope's intent rows
   live in the vertical's own deployment (K-31), the platform PULLS them over the vertical's
   `/internal` surface: `VerticalClient` gains `listPlatformRequests` / `settlePlatformRequest`
   (the B1 read/settle surface, now reachable cross-deployment).
@@ -1820,7 +1820,7 @@ pull`, with one heuristic sweeping _both_ halves. Driving this surfaced a real g
 
 - 67be7c7: Platform intents, Phase A: the `ctx.requestPlatform` primitive.
 
-  Adds the foundation from `docs/design/platform-intents.md` — the sandbox-clean way a vertical
+  Adds the foundation from `docs/architecture/platform-intents.md` — the sandbox-clean way a vertical
   asks the platform for a privileged action (provision a sibling scope, quota, …) without an
   upward call. A vertical operation calls `ctx.requestPlatform({ kind, payload })` after its own
   permission check; the kernel durably records a typed intent in this scope's new
@@ -2665,7 +2665,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
 
   **These methods take a `PlatformActorId`, which is a deliberate deferral, not an answer.**
   Connecting a provider is a tenant admin's act, and routing it through a platform actor is the
-  defect D-31 named for `addMember`. Recorded in `docs/design/connections.md` §3.5; no console
+  defect D-31 named for `addMember`. Recorded in `docs/architecture/connections.md` §3.5; no console
   flow should be built on this signature until the question is settled with membership's.
 
 - 113160a: **The inbound authority seam (#97): a connection is a subject.**

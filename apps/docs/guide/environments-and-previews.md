@@ -16,7 +16,7 @@ it couldn't.
 ## The mental model: an instance is `(scope × version)`
 
 Three primitives, and the whole page falls out of how they compose ([preview & snapshots
-RFC](https://github.com/substrat-run/substrat/blob/main/docs/design/preview-and-snapshots.md) §2):
+RFC](https://github.com/substrat-run/substrat/blob/main/docs/architecture/preview-and-snapshots.md) §2):
 
 | Primitive | Mutability | Git analogy |
 |---|---|---|

@@ -3,7 +3,7 @@ import { instant, platformRequestId, scopeId } from './ids.js';
 import { actor, domainEvent } from './events.js';
 
 /**
- * Platform intents (docs/design/platform-intents.md) — how a sandbox-clean vertical asks the
+ * Platform intents (docs/architecture/platform-intents.md) — how a sandbox-clean vertical asks the
  * platform to perform a privileged action (provision a sibling scope, request quota, …) without
  * an upward call. A vertical operation enqueues a typed intent into its own scope's
  * `_substrat_platform_requests` spine table via `ctx.requestPlatform`; the platform pulls and

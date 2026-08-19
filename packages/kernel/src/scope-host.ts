@@ -115,7 +115,7 @@ export interface OperationContext {
   /** Envelope is stamped kernel-side (id, occurredAt, tenant, scope, actor); input is validated. */
   emit(event: DomainEventInput): void;
   /**
-   * Enqueue a PLATFORM INTENT (docs/design/platform-intents.md) — how a sandbox-clean vertical asks
+   * Enqueue a PLATFORM INTENT (docs/architecture/platform-intents.md) — how a sandbox-clean vertical asks
    * the platform to perform a privileged action (e.g. provision a sibling scope) without an upward
    * call. Writes a durable row into this scope's `_substrat_platform_requests` spine, atomic with
    * the operation; the platform pulls and executes it later, knowing the tenant inherently (it reads
@@ -224,7 +224,7 @@ export interface OperationContext {
   revoke(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
   /**
    * Run `fn` as a SUB-TRANSACTION of this operation (#770,
-   * docs/design/sub-transactions.md) — the boundary that makes catching an
+   * docs/rfc/sub-transactions.md) — the boundary that makes catching an
    * engine error safe.
    *
    * A vertical composes engine in-scope functions inside one scope transaction,
@@ -1486,7 +1486,7 @@ export interface HostAdmin {
   /**
    * A COMPLETE dump of the scope's database — every table (the vertical's own AND the
    * `_substrat_*` spine), its DDL, and every row. This is the read side of the
-   * preview/snapshot primitive (docs/design/preview-and-snapshots.md §3): the source a
+   * preview/snapshot primitive (docs/architecture/preview-and-snapshots.md §3): the source a
    * fork copies into a new scope, or a governed `substrat scope pull` writes to a file.
    *
    * Unlike `readScopeTable` — bounded and blob-as-null, deliberately NOT a dump — this
@@ -2484,7 +2484,7 @@ export interface ScopeHost {
 
   /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of
-   * `exportScope` and the fork primitive (docs/design/preview-and-snapshots.md §3):
+   * `exportScope` and the fork primitive (docs/architecture/preview-and-snapshots.md §3):
    * a preview/snapshot is a fresh scope carrying a copy of another's data.
    *
    * The new scope's schema, rows, AND migration frontier come from the dump verbatim

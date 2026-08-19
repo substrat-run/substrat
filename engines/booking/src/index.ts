@@ -21,7 +21,7 @@ import {
 } from '@substrat-run/kernel';
 
 // ============================================================================
-// The reservation engine (docs/design/engine-booking.md). Owns exactly one
+// The reservation engine (docs/engines/booking.md). Owns exactly one
 // invariant: concurrent allocations against a resource never exceed its
 // capacity over any overlapping interval.
 //
@@ -430,7 +430,7 @@ function allParticipants(ctx: OperationContext, reservationId: string): Particip
  * There is no lock here, and none is needed: the scope is a single Durable
  * Object, so this read and the write that follows it never interleave with
  * another transaction. That guarantee is why a resource's whole calendar must
- * live in one scope (docs/design/booking-social.md §3).
+ * live in one scope (docs/rfc/booking-social.md §3).
  */
 function allocatedOver(
   ctx: OperationContext,
@@ -981,7 +981,7 @@ export function listReservations(
  *
  * Returns raw gaps between reservations — it knows nothing of opening hours and
  * will happily report 03:00 as free. Intersecting with the venue's bookable
- * window is the **vertical's** job (docs/design/engine-booking.md §4.1).
+ * window is the **vertical's** job (docs/engines/booking.md §4.1).
  *
  * Implemented as a sweep over interval boundaries rather than a simple gap walk,
  * because capacity may exceed 1 (fungible pools), where "free" is a number and not

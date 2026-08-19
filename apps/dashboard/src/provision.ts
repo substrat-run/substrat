@@ -133,7 +133,7 @@ export async function ensureRosterSeeded(
  * Bootstrap ONE customer: a tenant, a dashboard scope running this vertical, and
  * the signer as its owner. This is the one action that CANNOT be tenant-narrowed
  * — there is no tenant yet — so it stays a controlled platform action, triggered
- * by sign-up behind quotas (see docs/design/dashboard.md §4). Everything after it
+ * by sign-up behind quotas (see docs/architecture/dashboard.md §4). Everything after it
  * is authorized in-scope and effected against this tenant only.
  */
 export async function provisionDashboard(

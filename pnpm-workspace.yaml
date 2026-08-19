@@ -46,7 +46,7 @@ packages:
 # reviewer sees.
 catalog:
   # The schema library whose objects cross package boundaries — see
-  # docs/design/dependency-policy.md. A published package declares this as a
+  # docs/architecture/dependency-policy.md. A published package declares this as a
   # PEER (permissive range); internally everyone builds against this one.
   zod: ^4.4.3
 

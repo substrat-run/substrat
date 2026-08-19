@@ -2,7 +2,7 @@
 
 Status: draft v0.1 · Last updated: 2026-07-14
 
-> The v2 bike-shop skin from [demos/callout/spec/concept.md](../../fsm/spec/concept.md) §2:
+> The v2 bike-shop skin from [demos/callout/spec/concept.md](../../callout/spec/concept.md) §2:
 > the *same engines* as Callout (`engine-workorder`, `engine-invoicing`) with
 > different vocabulary. Two verticals on shared engines is the thesis demonstrated,
 > not claimed. The vertical owns vocabulary, extra fields, price list, roles and

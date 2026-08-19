@@ -826,7 +826,7 @@ const cancelSubscriptionOp: OperationHandler<{ subscriptionId: string }, Subscri
  *
  * A subscription that grants monthly credit IS a wallet topped up on a schedule —
  * one mechanism, not two. In production the schedule is a Workflow (durable,
- * long-waiting, per-step retry, per docs/design/booking-social.md §7), and the
+ * long-waiting, per-step retry, per docs/rfc/booking-social.md §7), and the
  * actual card charge is a payment connector; this operation is the step such a
  * workflow would invoke, and it is idempotent per (subscription, due date)
  * because it advances `next_charge_on` in the same transaction as the credit.

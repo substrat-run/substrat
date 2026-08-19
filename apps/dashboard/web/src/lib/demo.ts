@@ -1,5 +1,5 @@
 /**
- * Demo data for the screens the platform does not back yet (docs/design/dashboard.md
+ * Demo data for the screens the platform does not back yet (docs/architecture/dashboard.md
  * §6: M1 team, M2 ops, M3 plan, plus the design-ahead future screens). The M0 flow
  * — sign-in, the app list, create-app, the app header — runs on the real worker
  * API (lib/api.ts); everything here is clearly-labelled placeholder data shown

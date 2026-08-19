@@ -81,7 +81,7 @@
 
 ### Minor Changes
 
-- f2428a9: **The Dashboard UI — the tenant-facing surface, built from the design review (docs/design/dashboard-ui.md).**
+- f2428a9: **The Dashboard UI — the tenant-facing surface, built from the design review (docs/briefs/dashboard-ui.md).**
 
   "Vercel, for Substrat" as a real React app, on the same design system as the operator console.
 

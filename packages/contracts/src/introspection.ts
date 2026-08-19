@@ -94,7 +94,7 @@ export type ScopeQueryResult = z.infer<typeof scopeQueryResult>;
  * scope: every table, its DDL, and every row, so it can rebuild the scope elsewhere.
  *
  * It is the privileged primitive the preview/snapshot machinery is built on
- * (docs/design/preview-and-snapshots.md §3) — the source a fork or a local pull
+ * (docs/architecture/preview-and-snapshots.md §3) — the source a fork or a local pull
  * reads. It KEEPS the `_substrat_*` spine (a fork must carry the event/migration
  * state) and drops only SQLite's own `sqlite_*` internals (auto-managed, and
  * `CREATE TABLE sqlite_*` is rejected on reload). Because it exfiltrates a whole

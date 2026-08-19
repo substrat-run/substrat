@@ -11,7 +11,7 @@ import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite } from '@substrat-
 
 // ============================================================================
 // The Dashboard — the tenant-facing self-service surface, built AS a Substrat
-// vertical (the platform, dogfooded). See docs/design/dashboard.md.
+// vertical (the platform, dogfooded). See docs/architecture/dashboard.md.
 //
 // This module owns the customer's OWN data + permissions: the list of apps they
 // have created (a `dashboard_apps` row per provisioned instance) and the keys

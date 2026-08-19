@@ -22,7 +22,7 @@ import {
 } from '@substrat-run/kernel';
 
 // ============================================================================
-// The absence engine (docs/design/engine-absence.md). Owns an APPEND-ONLY entry
+// The absence engine (docs/engines/absence.md). Owns an APPEND-ONLY entry
 // ledger over an OPAQUE subject ref, balance-as-of-date as a pure fold, a
 // per-leave-type balance floor, and the approval state machine that is the only
 // mint for 'booking' and 'reversal' entries.

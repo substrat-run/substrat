@@ -186,7 +186,7 @@ function Recovery({ api, onToast }: SettingsProps) {
             replayed against a control plane that has already recovered.
           </p>
           <p style={{ margin: 0 }}>
-            The procedure is in <code>docs/design/control-plane.md</code> §4.9, including what a
+            The procedure is in <code>docs/architecture/control-plane.md</code> §4.9, including what a
             restore does <em>not</em> bring back — the staff roster (D1), worker secrets, and the
             key any sealed row was sealed with.
           </p>

@@ -11,7 +11,7 @@
  *
  * Flow: App JWT (RS256, signed with the private key) → installation access token
  * (`POST /app/installations/:id/access_tokens`) → repo list (`GET
- * /installation/repositories`). See docs/design/connections.md §3.5.1.
+ * /installation/repositories`). See docs/architecture/connections.md §3.5.1.
  */
 
 const API = 'https://api.github.com';

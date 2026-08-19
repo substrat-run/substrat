@@ -6,12 +6,12 @@ title: "The studio's local and hosted modes are one product behind a `Workspace`
 status: accepted
 aliases: []
 tracking: []
-source: docs/design/builder-studio.md §13
+source: docs/architecture/builder/studio.md §13
 ---
 
 # D-49 — The studio's local and hosted modes are one product behind a `Workspace` interface
 
-> **Ratified 2026-08-19.** Transcribed from docs/design/builder-studio.md §13 during the Phase-2 log
+> **Ratified 2026-08-19.** Transcribed from docs/architecture/builder/studio.md §13 during the Phase-2 log
 > split, which found this decision built but never written into the log. The text is
 > the author's; only the id is new.
 

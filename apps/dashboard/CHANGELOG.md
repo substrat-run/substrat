@@ -1987,7 +1987,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   Analytics: Read** and **Workers Observability: Read**; the router redeploy picks
   up the `substrat_router` AE dataset binding (auto-created on first write).
 
-- d93e690: Detachable vertical auth (docs/design/vertical-auth-detach.md): auth moves out of the
+- d93e690: Detachable vertical auth (docs/architecture/vertical-auth-detach.md): auth moves out of the
   verticals and becomes an install-time choice — a team Auth Server app or any external
   OIDC issuer — with `builtin` (embedded Better Auth) as the unchanged default.
 
@@ -2396,7 +2396,7 @@ false` while it wasn't yet deployable, which is why the tile was hidden even tho
   - **The worker** builds the seam from a new `CONTROL_PLANE_SVC` service binding + `CP_SERVICE_TOKEN` secret, pinned to the caller's tenant; falls back to embedded when unbound.
   - **Reaching a vertical**: the control plane + router resolve verticals **dynamically** through the WfP dispatch namespace (`resolveVertical`/`verticalFor` → `env.DISPATCH.get(deploymentRef)`); the dashboard's connected `createApp` pins the scope to the prod version (`bindScopeVersion`) so dispatch is dynamic — no per-vertical service binding, no redeploy. `demos/callout`'s `CONTROL_PLANE_URL` is neutralized (calls go over the service binding; only the `/api` path is used).
 
-  Steps 3–4 (router, `*.global.substrat.run` DNS + ACM cert) were already live; this is step 5 — the tenant-narrowed provisioning seam. Requires a deploy of the control plane + dashboard (`CP_SERVICE_TOKEN` = the control plane's `SERVICE_TOKEN`). A vertical is instantiable once it's pushed + promoted into the dispatch namespace; making Callout the first genuinely isolated, CP-less vertical is tracked in `docs/design/scope-local-permissions.md`. Verified in code (10/10 dashboard tests, typecheck, boundary-lint, wrangler dry-runs).
+  Steps 3–4 (router, `*.global.substrat.run` DNS + ACM cert) were already live; this is step 5 — the tenant-narrowed provisioning seam. Requires a deploy of the control plane + dashboard (`CP_SERVICE_TOKEN` = the control plane's `SERVICE_TOKEN`). A vertical is instantiable once it's pushed + promoted into the dispatch namespace; making Callout the first genuinely isolated, CP-less vertical is tracked in `docs/architecture/scope-local-permissions.md`. Verified in code (10/10 dashboard tests, typecheck, boundary-lint, wrangler dry-runs).
 
 - 6678b4d: **Delete app — real deprovisioning, replacing the front-end stub.**
 
@@ -2410,7 +2410,7 @@ false` while it wasn't yet deployable, which is why the tile was hidden even tho
 
   Verified: dashboard suites pass (11), including a new scenario test — deleting an app drops it from the list and suspends its scope (`getScope` then fails closed).
 
-- 7a64c3b: **The Dashboard — M0 of the tenant-facing self-service surface (docs/design/dashboard.md).**
+- 7a64c3b: **The Dashboard — M0 of the tenant-facing self-service surface (docs/architecture/dashboard.md).**
 
   "Vercel, but for Substrat," built AS a Substrat vertical. M0 is the core self-service loop, proven
   end to end:
@@ -2450,7 +2450,7 @@ false` while it wasn't yet deployable, which is why the tile was hidden even tho
   Verified: dashboard suites pass (12), including a new test that a create whose effect
   throws leaves the row `failed`, not `provisioning`.
 
-- f2428a9: **The Dashboard UI — the tenant-facing surface, built from the design review (docs/design/dashboard-ui.md).**
+- f2428a9: **The Dashboard UI — the tenant-facing surface, built from the design review (docs/briefs/dashboard-ui.md).**
 
   "Vercel, for Substrat" as a real React app, on the same design system as the operator console.
 

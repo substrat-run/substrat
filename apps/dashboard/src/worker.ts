@@ -1,6 +1,6 @@
 /**
  * The Dashboard — the tenant-facing self-service surface, as a Cloudflare Worker.
- * See docs/design/dashboard.md. M0: sign up → your own tenant is bootstrapped →
+ * See docs/architecture/dashboard.md. M0: sign up → your own tenant is bootstrapped →
  * create an app (a scope running a vertical, in YOUR tenant) → list your apps.
  *
  * The tenant is never a request argument: it is the account the authenticated user

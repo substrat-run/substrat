@@ -80,4 +80,4 @@ deferred metering "until a vertical meters something"; the **builder portal's to
 economy** is that trigger — AI turns whose token usage must be recorded so it can be
 charged for. Vertical AI features are the anticipated second consumer. The design
 decisions — the two planes, the dedupe contract, the horizon — are pinned in
-`docs/design/engine-metering.md` in the repository.
+`docs/engines/metering.md` in the repository.

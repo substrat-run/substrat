@@ -4,7 +4,7 @@ import { ulid } from '@substrat-run/kernel';
 import { TenantNarrowedControlPlane, ControlPlaneError } from '../src/authority.js';
 
 /**
- * The §4 seam (docs/design/dashboard.md): the Dashboard effects provisioning on the
+ * The §4 seam (docs/architecture/dashboard.md): the Dashboard effects provisioning on the
  * shared control plane, but ONLY inside the caller's own tenant. The tenant is pinned
  * at construction, so operation code cannot name another — cross-tenant is impossible
  * by construction. These tests exercise that the pinned tenant is injected on every

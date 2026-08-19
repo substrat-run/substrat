@@ -180,5 +180,5 @@ surface is now shipped: the app lifecycle, builder **Deployments**, a read-only 
 export/import, **Previews**, per-app **Environment**, custom **Domains**, team **members** (invite /
 accept / remove / leave, with a Team view), and third-party **connections** (an Integrations view).
 Billing and the plan are the main pieces still on the roadmap the
-[design note](https://github.com/substrat-run/substrat/blob/main/docs/design/dashboard.md) lays out.
+[design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md) lays out.
 It is served as a React SPA bundled into its worker; the account menu lives in the sidebar footer.

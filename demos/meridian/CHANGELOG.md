@@ -219,7 +219,7 @@
   `booking`/`reversal` entries, a coverage-only `availability()` read, and the
   #383 stale-request expiry schedule. Leave-type vocabulary, accrual formulas,
   weekends/red days and holiday calendars stay vertical, by design
-  (`docs/design/engine-absence.md`; the entry ledger is deliberately
+  (`docs/engines/absence.md`; the entry ledger is deliberately
   engine-private, not a kernel primitive — D-A).
 
   Meridian adopts it in the same change: `0003-absence-to-engine` R5 extraction
@@ -589,7 +589,7 @@
 
   `packages/vertical-auth` is unchanged, so the production verticals that depend on
   it are unaffected. Better Auth now lives only in `demos/auth-server` (the issuer)
-  and the Node-only demos (shop/rally/handlebar). Design: `docs/design/oidc-only-demos.md`.
+  and the Node-only demos (shop/rally/handlebar). Design: `docs/architecture/oidc-only-demos.md`.
 
 ### Patch Changes
 
@@ -1128,7 +1128,7 @@
 
 ### Minor Changes
 
-- d93e690: Detachable vertical auth (docs/design/vertical-auth-detach.md): auth moves out of the
+- d93e690: Detachable vertical auth (docs/architecture/vertical-auth-detach.md): auth moves out of the
   verticals and becomes an install-time choice — a team Auth Server app or any external
   OIDC issuer — with `builtin` (embedded Better Auth) as the unchanged default.
 

@@ -3,7 +3,7 @@
 Status: draft v0.1 · Last updated: 2026-07-15
 
 > A third vertical whose job is different from the first two. Callout
-> ([demos/callout](../../fsm/spec/concept.md)) and Handlebar ([demos/handlebar](../../bike-shop/spec/concept.md))
+> ([demos/callout](../../callout/spec/concept.md)) and Handlebar ([demos/handlebar](../../handlebar/spec/concept.md))
 > are both **work-order-shaped** — they prove *same engine, new vocabulary*. This one is
 > a **different domain** (retail) that (a) reuses `engine-invoicing` across that domain
 > boundary and (b) introduces a **new class of invariant** the current engines don't have:

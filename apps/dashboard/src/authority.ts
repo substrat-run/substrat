@@ -26,7 +26,7 @@ import type {
 import { LIST_PAGE_MAX } from '@substrat-run/contracts';
 
 /**
- * The tenant-narrowed platform authority — the crux of docs/design/dashboard.md §4.
+ * The tenant-narrowed platform authority — the crux of docs/architecture/dashboard.md §4.
  *
  * A customer's tenant-admin must be able to provision an app on the SHARED control
  * plane (the directory the router reads), but only ever inside THEIR OWN tenant.

@@ -293,7 +293,7 @@ function underlagTotalMoney(ctx: OperationContext, underlagId: string): Money {
   // currency to be Money at all. Attributing a currency to an empty document is
   // exactly the guess this engine should not make; SEK is the demo default and
   // the honest fix is a currency column on the underlag, which needs a migration
-  // and therefore a human checkpoint (see docs/design/commerce-gaps.md §3.1).
+  // and therefore a human checkpoint (see docs/strategy/commerce-gaps.md §3.1).
   if (rows.length === 0) return moneyOf('0', 'SEK');
 
   return rows

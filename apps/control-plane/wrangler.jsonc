@@ -85,7 +85,7 @@
 	// `resolveVertical` maps a slug → its prod version → env.DISPATCH.get(deploymentRef)
 	// (orchestration.md §5.4). No static `VERTICAL_<SLUG>` service bindings — those were
 	// a bring-up stopgap; with WfP enabled, a pushed + promoted vertical is reached with
-	// no per-vertical binding and no redeploy (see docs/design/scope-local-permissions.md).
+	// no per-vertical binding and no redeploy (see docs/architecture/scope-local-permissions.md).
 	"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals" }],
 	// Cloudflare Email Service — the email RELAY (#303). The control plane is the ONE worker
 	// that holds an outbound-mail credential: a hosted vertical cannot bind `send_email` (a WfP

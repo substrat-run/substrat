@@ -805,7 +805,7 @@ function authFor(env: Env): PlatformActorAuth {
 
 export default {
   /**
-   * The platform's scheduled pass (docs/design/scheduler.md; cron in wrangler.jsonc):
+   * The platform's scheduled pass (docs/architecture/scheduler.md; cron in wrangler.jsonc):
    * `runPlatformSweep`, whose GC phase reaps expired snapshot forks (preview-and-
    * snapshots.md §3/§9). Executor drains are skipped here — this deployment's SCOPE
    * namespace is the module-less placeholder, so there is nothing to drain; verticals

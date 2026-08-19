@@ -487,7 +487,7 @@
 
   `packages/vertical-auth` is unchanged, so the production verticals that depend on
   it are unaffected. Better Auth now lives only in `demos/auth-server` (the issuer)
-  and the Node-only demos (shop/rally/handlebar). Design: `docs/design/oidc-only-demos.md`.
+  and the Node-only demos (shop/rally/handlebar). Design: `docs/architecture/oidc-only-demos.md`.
 
 ### Patch Changes
 
@@ -1121,7 +1121,7 @@ resolveVertical` resolution provisioning uses reaches it; a co-located host fall
 
   Verified: `demo-callout` typechecks (node + worker), the scenario + provision suites pass (16 tests), and `wrangler deploy --dry-run` bundles the worker — build command running the app build + asset inline — with exactly `SCOPE` + `AUTH_DB` and no `ASSETS`.
 
-- 9a34950: **Scope-local permissions, Phase 3b — Callout runs CP-less (docs/design/scope-local-permissions.md).**
+- 9a34950: **Scope-local permissions, Phase 3b — Callout runs CP-less (docs/architecture/scope-local-permissions.md).**
 
   The first vertical on the control-plane-optional host (Phase 3a): the deployed Callout worker drops its `CONTROL_PLANE` bindings entirely and evaluates permissions from each scope's own storage. It is now a **sandbox-clean, pushable vertical** — the shape an untrusted self-serve deploy takes.
 
@@ -1144,9 +1144,9 @@ resolveVertical` resolution provisioning uses reaches it; a co-located host fall
   - **The worker** builds the seam from a new `CONTROL_PLANE_SVC` service binding + `CP_SERVICE_TOKEN` secret, pinned to the caller's tenant; falls back to embedded when unbound.
   - **Reaching a vertical**: the control plane + router resolve verticals **dynamically** through the WfP dispatch namespace (`resolveVertical`/`verticalFor` → `env.DISPATCH.get(deploymentRef)`); the dashboard's connected `createApp` pins the scope to the prod version (`bindScopeVersion`) so dispatch is dynamic — no per-vertical service binding, no redeploy. `demos/callout`'s `CONTROL_PLANE_URL` is neutralized (calls go over the service binding; only the `/api` path is used).
 
-  Steps 3–4 (router, `*.global.substrat.run` DNS + ACM cert) were already live; this is step 5 — the tenant-narrowed provisioning seam. Requires a deploy of the control plane + dashboard (`CP_SERVICE_TOKEN` = the control plane's `SERVICE_TOKEN`). A vertical is instantiable once it's pushed + promoted into the dispatch namespace; making Callout the first genuinely isolated, CP-less vertical is tracked in `docs/design/scope-local-permissions.md`. Verified in code (10/10 dashboard tests, typecheck, boundary-lint, wrangler dry-runs).
+  Steps 3–4 (router, `*.global.substrat.run` DNS + ACM cert) were already live; this is step 5 — the tenant-narrowed provisioning seam. Requires a deploy of the control plane + dashboard (`CP_SERVICE_TOKEN` = the control plane's `SERVICE_TOKEN`). A vertical is instantiable once it's pushed + promoted into the dispatch namespace; making Callout the first genuinely isolated, CP-less vertical is tracked in `docs/architecture/scope-local-permissions.md`. Verified in code (10/10 dashboard tests, typecheck, boundary-lint, wrangler dry-runs).
 
-- f2428a9: **The Dashboard UI — the tenant-facing surface, built from the design review (docs/design/dashboard-ui.md).**
+- f2428a9: **The Dashboard UI — the tenant-facing surface, built from the design review (docs/briefs/dashboard-ui.md).**
 
   "Vercel, for Substrat" as a real React app, on the same design system as the operator console.
 

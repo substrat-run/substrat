@@ -90,8 +90,8 @@ const row = (e, bare, target) =>
 const targets = [
   { file: 'docs/master-plan.md', header: '| # | Date | Decision | Rationale |',
     rows: entries.filter(e => e.id.startsWith('D-')).sort(byNum).map(e => row(e, true, 'docs/master-plan.md')) },
-  { file: 'docs/design/kernel-design.md', header: '| # | Date | Design decision | Notes |',
-    rows: entries.filter(e => e.id.startsWith('K-')).sort(byNum).map(e => row(e, false, 'docs/design/kernel-design.md')) },
+  { file: 'docs/architecture/kernel-design.md', header: '| # | Date | Design decision | Notes |',
+    rows: entries.filter(e => e.id.startsWith('K-')).sort(byNum).map(e => row(e, false, 'docs/architecture/kernel-design.md')) },
 ];
 
 let stale = false;
@@ -128,7 +128,7 @@ const idx = [
   '',
   '`D-*` are plan-layer decisions (strategy, architecture); `K-*` are kernel-layer (contracts,',
   'data models, lifecycles). The two sequences are historical — one log, two id vocabularies.',
-  'See [proposals/docs-restructure.md](proposals/docs-restructure.md) §7.',
+  'See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.',
   '',
   `${entries.length} decisions · ${entries.filter(e => e.layer === 'plan').length} plan · ${entries.filter(e => e.layer === 'kernel').length} kernel`,
   '',

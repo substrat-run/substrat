@@ -6,7 +6,7 @@ the entry carries the full rationale.
 
 `D-*` are plan-layer decisions (strategy, architecture); `K-*` are kernel-layer (contracts,
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
-See [proposals/docs-restructure.md](proposals/docs-restructure.md) §7.
+See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
 94 decisions · 56 plan · 38 kernel
 

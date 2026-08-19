@@ -43,7 +43,7 @@
   `atomicContractSuite` — twelve cases both adapters pass unchanged, including the Postgres-shaped
   one (a caught _storage_ error leaves the transaction usable) that no existing suite could express.
 
-  Design note: `docs/design/sub-transactions.md`.
+  Design note: `docs/rfc/sub-transactions.md`.
 
 ### Patch Changes
 
@@ -105,7 +105,7 @@
 
 - 9208b4e: A signature request can carry **how a party is reached** — sealed to the
   connector, never readable in the spine (#687 item 1,
-  `docs/design/signature-contact-carrier.md`).
+  `docs/architecture/signature-contact-carrier.md`).
 
   Every external signature this platform has ever sent has failed. The reason was
   not the auth level and never was: `connector-scrive` mapped each party to a role
@@ -1587,7 +1587,7 @@ entity)` — the CP-less, entity-narrowed sibling of `assignScopeRole`. Where a 
 
 - 50d9260: Platform intents, Phase B1: the drain surface (read + settle).
 
-  Adds the read/settle half of the platform-intent queue from `docs/design/platform-intents.md`, so
+  Adds the read/settle half of the platform-intent queue from `docs/architecture/platform-intents.md`, so
   the platform can pull a scope's pending intents and journal their outcome. `ScopeHost` gains
   `listPlatformRequests(tenantId, scopeId)` (pending intents, mapped to the `PlatformRequest`
   contract shape) and `settlePlatformRequest(tenantId, scopeId, id, { status, result, lastError })`
@@ -1622,7 +1622,7 @@ entity)` — the CP-less, entity-narrowed sibling of `assignScopeRole`. Where a 
 
 - 67be7c7: Platform intents, Phase A: the `ctx.requestPlatform` primitive.
 
-  Adds the foundation from `docs/design/platform-intents.md` — the sandbox-clean way a vertical
+  Adds the foundation from `docs/architecture/platform-intents.md` — the sandbox-clean way a vertical
   asks the platform for a privileged action (provision a sibling scope, quota, …) without an
   upward call. A vertical operation calls `ctx.requestPlatform({ kind, payload })` after its own
   permission check; the kernel durably records a typed intent in this scope's new
@@ -2383,7 +2383,7 @@ entity)` — the CP-less, entity-narrowed sibling of `assignScopeRole`. Where a 
   Verified: sqlite (147) + cloudflare (146) suites pass, including a new shared assertion that
   a registered owner round-trips through `listVerticals` and that a conflicting owner is refused.
 
-- aa786b7: **Scope-local permissions, Phase 1 — the ScopeDO can evaluate permissions from its own storage (docs/design/scope-local-permissions.md).**
+- aa786b7: **Scope-local permissions, Phase 1 — the ScopeDO can evaluate permissions from its own storage (docs/architecture/scope-local-permissions.md).**
 
   The read side of taking the shared control-plane DO off the request hot path. Behaviour-preserving on its own: a scope's `permission_source` defaults to `control-plane`, so the existing RPC path is used unchanged — this only makes the local path _possible_, for Phase 2 to activate.
 
@@ -2394,7 +2394,7 @@ entity)` — the CP-less, entity-narrowed sibling of `assignScopeRole`. Where a 
 
   Verified: the full adapter permission + scope-host contract suites pass **unchanged** (RPC parity), plus new tests proving the local reader is parity with RPC, that a tombstoned projection stops granting (K-21), and that flipping a scope to `local` with nothing projected **denies even where RPC would allow** (the load-bearing fail-closed property).
 
-- d83f521: **Scope-local permissions, Phase 2 — projection on write (docs/design/scope-local-permissions.md).**
+- d83f521: **Scope-local permissions, Phase 2 — projection on write (docs/architecture/scope-local-permissions.md).**
 
   The write side that activates Phase 1's local reader: the coordinator projects a tenant's roles + tenant-level tuples INTO its scopes, so they evaluate permissions from their own storage and the shared control-plane DO leaves the request hot path. Behind a **default-off** flag, so behaviour is unchanged until a deployment opts in.
 
@@ -2409,7 +2409,7 @@ entity)` — the CP-less, entity-narrowed sibling of `assignScopeRole`. Where a 
 
 - 0ae7d0f: **Scope-local permissions, Phase 3a — a control-plane-optional host (the CP-less vertical enabler).**
 
-  The reusable capability behind an untrusted / scope-local vertical (docs/design/scope-local-permissions.md): a `CloudflareScopeHost` that runs with **no control plane at all**.
+  The reusable capability behind an untrusted / scope-local vertical (docs/architecture/scope-local-permissions.md): a `CloudflareScopeHost` that runs with **no control plane at all**.
 
   - **`CloudflareScopeHostOptions.controlPlane` is now optional.** Absent, the host uses a **null-object control plane**: the hot path a served scope actually touches becomes trust-the-upstream — `validateScopeAccess` / `setMigrationState` no-op (the router already gated lifecycle + tenancy from the shared directory), `tenantHoldsEntitlement` returns `true` (the SKU was enforced on the shared plane at provision, so a scope that exists here was granted it), and audit no-ops (the shared plane owns the spine). Every other directory method throws — that surface genuinely is unavailable.
   - **`provisionScopeLocal(...)`** — the entry a CP-less vertical's `/internal/provision` calls: migrate the scope's modules, project the vertical's role definitions locally, grant the owner a role at scope level, and evaluate permissions from the scope's own storage. No tenant-level tuples, no control plane.
@@ -2615,7 +2615,7 @@ entity)` — the CP-less, entity-narrowed sibling of `assignScopeRole`. Where a 
 
   **These methods take a `PlatformActorId`, which is a deliberate deferral, not an answer.**
   Connecting a provider is a tenant admin's act, and routing it through a platform actor is the
-  defect D-31 named for `addMember`. Recorded in `docs/design/connections.md` §3.5; no console
+  defect D-31 named for `addMember`. Recorded in `docs/architecture/connections.md` §3.5; no console
   flow should be built on this signature until the question is settled with membership's.
 
 - 113160a: **The inbound authority seam (#97): a connection is a subject.**
@@ -2731,7 +2731,7 @@ entity)` — the CP-less, entity-narrowed sibling of `assignScopeRole`. Where a 
   the path was already doing silently — the difference is that failures are now recorded,
   retried, and readable instead of being thrown at whoever held the request.
 
-  Prerequisite for the integrations hub ([`docs/design/connections.md`](docs/design/connections.md)).
+  Prerequisite for the integrations hub ([`docs/architecture/connections.md`](../../docs/architecture/connections.md)).
   Scheduling `drainDue` from a cron trigger or Durable Object alarm is not included here.
 
 ### Patch Changes
