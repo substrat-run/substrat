@@ -279,3 +279,49 @@ describe('an entity with no identity is refused, not emitted keyless', () => {
     expect(() => emitTables(nullableKey)).toThrow(/part of the primary key but is nullable/);
   });
 });
+
+describe('a foreign key follows the parent\'s own key, not an assumed `id`', () => {
+  it('references the parent key column by name', () => {
+    // Emitting `REFERENCES vertical_workorder_ext(id)` here parses fine — SQLite
+    // does not check a foreign key target at CREATE time — and then rejects
+    // every valid child row at INSERT with "foreign key mismatch". Verified
+    // against a real database.
+    const withSideParent = defineEntities({
+      ext: {
+        table: 'vertical_workorder_ext',
+        fields: z.object({ workorder_id: z.string(), note: z.string().nullable() }),
+        primaryKey: ['workorder_id'],
+      },
+      line: {
+        table: 'vertical_ext_line',
+        fields: z.object({ id: z.string(), ext_id: z.string(), text: z.string() }),
+        parents: ['ext'],
+      },
+    });
+    expect(emitTables(withSideParent)).toContain(
+      'ext_id TEXT NOT NULL REFERENCES vertical_workorder_ext(workorder_id)',
+    );
+  });
+
+  it('still says `(id)` where the parent is keyed by id', () => {
+    expect(emitTables(entities)).toContain('REFERENCES acme_customers(id)');
+  });
+
+  it('refuses to point a single column at a composite-keyed parent', () => {
+    const compositeParent = defineEntities({
+      budget: {
+        table: 'vertical_time_budget',
+        fields: z.object({ customer_id: z.string(), year: z.number() }),
+        primaryKey: ['customer_id', 'year'],
+      },
+      note: {
+        table: 'vertical_budget_note',
+        fields: z.object({ id: z.string(), budget_id: z.string(), text: z.string() }),
+        parents: ['budget'],
+      },
+    });
+    expect(() => emitTables(compositeParent)).toThrow(
+      /a single column cannot reference a composite key/,
+    );
+  });
+});

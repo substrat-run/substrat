@@ -164,7 +164,8 @@ export interface EmitSqlOptions {
  *   accepts duplicate rows and a column-wise parity check cannot see it (#804).
  * - `key` becomes a `UNIQUE` constraint.
  * - `parents` becomes a `REFERENCES` clause per parent, on `<parent>_id` when the
- *   entity declares such a column — never invented if it does not.
+ *   entity declares such a column — never invented if it does not, and pointed at
+ *   the parent's own key rather than an assumed `id`.
  */
 export function emitTables<T extends Record<string, EntityDef>>(
   entities: T,
@@ -233,12 +234,27 @@ export function columnsOf<T extends Record<string, EntityDef>>(
     if (inKey.has(field) && pk.length === 1) ddl += ' PRIMARY KEY NOT NULL';
     else if (!c.nullable) ddl += ' NOT NULL';
     if (c.check) ddl += ` ${c.check}`;
-    // A parent edge whose id column is present becomes a real foreign key.
+    // A parent edge whose id column is present becomes a real foreign key —
+    // pointed at the parent's OWN key, which is not always `id`.
     for (const parent of entity.parents ?? []) {
-      const parentTable = entities[parent as keyof T]?.table;
-      if (parentTable && c.name === `${String(parent).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()}_id`) {
-        ddl += ` REFERENCES ${parentTable}(id)`;
+      const parentEntity = entities[parent as keyof T];
+      if (!parentEntity) continue;
+      if (c.name !== `${String(parent).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()}_id`) continue;
+      const parentKey = primaryKeyOf(String(parent), parentEntity);
+      if (parentKey.length > 1) {
+        // A one-column reference cannot point at a several-column key. SQLite
+        // parses `REFERENCES t(id)` against a table with no `id` quite happily
+        // and then rejects every valid child row at INSERT with "foreign key
+        // mismatch" — so this must refuse at emit, where someone can read it.
+        throw new Error(
+          `emit-sql: ${name}.${c.name} points at '${String(parent)}', which is keyed by ` +
+            `(${parentKey.join(', ')}) — a single column cannot reference a composite key. ` +
+            'A composite-keyed table is not something the platform can point at: give the ' +
+            'parent a single-column identity, or drop the parent edge and model the link ' +
+            'in your own columns',
+        );
       }
+      ddl += ` REFERENCES ${parentEntity.table}(${parentKey[0]})`;
     }
     out.push({ name: c.name, ddl, requiredWithoutDefault: !c.nullable });
   }
