@@ -6,7 +6,33 @@ import {
   permissionKey,
   type EntityRef,
   type Money,
+  substratError,
 } from '@substrat-run/contracts';
+
+/**
+ * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
+ * `conflict` code (#113). Exported so a vertical can branch on WHY a refusal happened
+ * without importing this engine's types or matching on its prose; `as const` so a typo
+ * is a compile error here rather than a slug nobody ever matches.
+ *
+ * Additive only, like every other engine surface: new reasons may appear, existing ones
+ * do not change spelling.
+ */
+export const BOOKING_CONFLICT_REASONS = [
+  'already_joined',
+  'already_left',
+  'capacity_below_joined',
+  'hold_expired',
+  'invalid_transition',
+  'not_yet_expired',
+  'reservation_full',
+  'resource_inactive',
+] as const;
+export type BookingConflictReason = (typeof BOOKING_CONFLICT_REASONS)[number];
+
+/** `conflict(reason, message)` — reason first, so the classification reads before the prose. */
+const conflict = (reason: BookingConflictReason, message: string) => substratError('conflict', message, { reason });
+
 
 // The entity registry is PUBLIC: a vertical composing this engine needs the
 // entity-type constants its relation edges name, and the row schema to declare
@@ -147,7 +173,7 @@ export const bookingMigrations = [
  */
 function toInstant(value: string): string {
   const ms = Date.parse(value);
-  if (Number.isNaN(ms)) throw new Error(`invalid instant: ${value}`);
+  if (Number.isNaN(ms)) throw substratError('validation_failed', `invalid instant: ${value}`);
   return new Date(ms).toISOString();
 }
 
@@ -379,7 +405,7 @@ const resourceRef = (id: string): EntityRef => ({ entityType: 'resource', entity
 
 function getResourceRow(ctx: OperationContext, id: string): ResourceRow {
   const row = ctx.sql.query<ResourceRow>('SELECT * FROM booking_resources WHERE id = ?', [id])[0];
-  if (!row) throw new Error(`resource not found: ${id}`);
+  if (!row) throw substratError('not_found', `resource not found: ${id}`);
   return row;
 }
 
@@ -387,13 +413,13 @@ function getRow(ctx: OperationContext, id: string): ReservationRow {
   const row = ctx.sql.query<ReservationRow>('SELECT * FROM booking_reservations WHERE id = ?', [
     id,
   ])[0];
-  if (!row) throw new Error(`reservation not found: ${id}`);
+  if (!row) throw substratError('not_found', `reservation not found: ${id}`);
   return row;
 }
 
 function requireState(row: ReservationRow, ...allowed: ReservationState[]): void {
   if (!allowed.includes(row.state)) {
-    throw new Error(
+    throw conflict('invalid_transition', 
       `invalid transition: reservation ${row.id} is '${row.state}', requires ${allowed.join('|')}`,
     );
   }
@@ -514,14 +540,14 @@ export function holdReservation(
   const input = holdReservationInput.parse(rawInput);
   const now = nowOr(input.now);
   if (input.startsAt >= input.endsAt) {
-    throw new Error(`invalid interval: ${input.startsAt} is not before ${input.endsAt}`);
+    throw substratError('validation_failed', `invalid interval: ${input.startsAt} is not before ${input.endsAt}`);
   }
   if (input.expiresAt <= now) {
-    throw new Error(`hold would already be expired: ${input.expiresAt} <= ${now}`);
+    throw substratError('validation_failed', `hold would already be expired: ${input.expiresAt} <= ${now}`);
   }
 
   const resource = getResourceRow(ctx, input.resourceId);
-  if (resource.active !== 1) throw new Error(`resource is inactive: ${resource.id}`);
+  if (resource.active !== 1) throw conflict('resource_inactive', `resource is inactive: ${resource.id}`);
 
   const quantity = input.quantity ?? 1;
   const allocated = allocatedOver(ctx, resource.id, input.startsAt, input.endsAt, now);
@@ -579,7 +605,7 @@ export function confirmReservation(
   requireState(row, 'held');
   const now = nowOr(input.now);
   if (row.expires_at && row.expires_at <= now) {
-    throw new Error(`hold expired at ${row.expires_at}`);
+    throw conflict('hold_expired', `hold expired at ${row.expires_at}`);
   }
 
   const resource = getResourceRow(ctx, row.resource_id);
@@ -622,7 +648,7 @@ export function expireReservation(
   requireState(row, 'held');
   const now = nowOr(input.now);
   if (!row.expires_at || row.expires_at > now) {
-    throw new Error(`reservation ${row.id} has not expired yet`);
+    throw conflict('not_yet_expired', `reservation ${row.id} has not expired yet`);
   }
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'expired' WHERE id = ?`, [row.id]);
   ctx.emit({
@@ -656,10 +682,10 @@ export function joinReservation(
 
   const active = activeParticipants(ctx, row.id);
   if (active.some((p) => p.party_ref === input.partyRef)) {
-    throw new Error(`party ${input.partyRef} has already joined ${row.id}`);
+    throw conflict('already_joined', `party ${input.partyRef} has already joined ${row.id}`);
   }
   if (row.fill_target !== null && active.length >= row.fill_target) {
-    throw new Error(`reservation ${row.id} is full (${row.fill_target})`);
+    throw conflict('reservation_full', `reservation ${row.id} is full (${row.fill_target})`);
   }
 
   const id = ulid();
@@ -718,7 +744,7 @@ export function openReservation(
   requireState(row, 'held', 'confirmed');
   const joined = activeParticipants(ctx, row.id).length;
   if (input.fillTarget !== null && input.fillTarget < joined) {
-    throw new Error(
+    throw conflict('capacity_below_joined', 
       `cannot open ${input.fillTarget} places: ${joined} are already on this reservation`,
     );
   }
@@ -753,8 +779,8 @@ export function leaveReservation(
     'SELECT * FROM booking_participants WHERE id = ? AND reservation_id = ?',
     [input.participantId, row.id],
   )[0];
-  if (!participant) throw new Error(`participant not found: ${input.participantId}`);
-  if (participant.left_at) throw new Error(`participant already left: ${input.participantId}`);
+  if (!participant) throw substratError('not_found', `participant not found: ${input.participantId}`);
+  if (participant.left_at) throw conflict('already_left', `participant already left: ${input.participantId}`);
 
   ctx.sql.exec('UPDATE booking_participants SET left_at = ? WHERE id = ?', [now, participant.id]);
   ctx.emit({
@@ -833,11 +859,11 @@ export function moveReservation(
     endsAt = row.ends_at;
   }
   if (startsAt >= endsAt) {
-    throw new Error(`invalid interval: ${startsAt} is not before ${endsAt}`);
+    throw substratError('validation_failed', `invalid interval: ${startsAt} is not before ${endsAt}`);
   }
 
   const target = getResourceRow(ctx, targetResourceId);
-  if (target.active !== 1) throw new Error(`resource is inactive: ${target.id}`);
+  if (target.active !== 1) throw conflict('resource_inactive', `resource is inactive: ${target.id}`);
 
   // Excluding self is what makes a small nudge (overlapping its own old slot) legal.
   const allocated = allocatedOver(ctx, target.id, startsAt, endsAt, now, row.id);

@@ -232,6 +232,16 @@ describe('errorCodeOf', () => {
     expect(errorCodeOf(parse)).toBe('validation_failed');
   });
 
+  // The one mapping in CODE_BY_ERROR_NAME keyed to a class we do NOT own. The tests
+  // above construct the name by hand, which would keep passing if Zod ever stopped
+  // producing it; this asks Zod itself.
+  it('maps a real ZodError, not just one we named ourselves', () => {
+    const parsed = z.object({ a: z.string() }).safeParse({ a: 1 });
+    expect(parsed.success).toBe(false);
+    expect(parsed.error!.name).toBe('ZodError');
+    expect(errorCodeOf(parsed.error!)).toBe('validation_failed');
+  });
+
   it('has no opinion about a foreign error', () => {
     expect(errorCodeOf(new Error('boom'))).toBeUndefined();
     expect(errorCodeOf(Object.assign(new Error('boom'), { code: 'ENOENT' }))).toBeUndefined();
