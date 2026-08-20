@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
-import { api, type Customer } from '../api';
+import { api, type CustomerWithFacilities } from '../api';
 
 /**
- * Customer & facility management (spec/views.md §1.3, v0 slice): list with
+ * CustomerWithFacilities & facility management (spec/views.md §1.3, v0 slice): list with
  * facilities, create customer, add facility. Access notes are internal-only
  * master data, so they carry the visibility badge ("shared register" honesty).
  */
 export function CustomersView() {
-  const [customers, setCustomers] = useState<Customer[] | null>(null);
+  const [customers, setCustomers] = useState<CustomerWithFacilities[] | null>(null);
   const [error, setError] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [number, setNumber] = useState('');
@@ -20,7 +20,7 @@ export function CustomersView() {
   const [facAccessNote, setFacAccessNote] = useState('');
 
   const load = () => {
-    api.customers().then(setCustomers).catch((e: Error) => setError(e.message));
+    api.listCustomers().then(setCustomers).catch((e: Error) => setError(e.message));
   };
   useEffect(load, []);
 
@@ -51,11 +51,9 @@ export function CustomersView() {
 
   const addFacility = (customerId: string) =>
     act(async () => {
-      await api.createFacility(customerId, {
-        name: facName,
+      await api.createFacility({ customerId: customerId, name: facName,
         ...(facAddress ? { address: facAddress } : {}),
-        ...(facAccessNote ? { accessNote: facAccessNote } : {}),
-      });
+        ...(facAccessNote ? { accessNote: facAccessNote } : {}), });
       setAddingFor('');
     })();
 

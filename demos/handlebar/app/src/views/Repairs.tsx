@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Customer, type Repair } from '../api';
+import { api, type CustomerWithBikes, type Repair } from '../api';
 
 export function StatusPill({ status }: { status: string }) {
   const label: Record<string, string> = {
@@ -15,7 +15,7 @@ export function StatusPill({ status }: { status: string }) {
 
 export function RepairsView() {
   const [repairs, setRepairs] = useState<Repair[] | null>(null);
-  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customers, setCustomers] = useState<CustomerWithBikes[]>([]);
   const [error, setError] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [bikeId, setBikeId] = useState('');
@@ -23,8 +23,8 @@ export function RepairsView() {
   const [title, setTitle] = useState('');
 
   const load = () => {
-    api.repairs().then(setRepairs).catch((e: Error) => setError(e.message));
-    api.customers().then(setCustomers).catch(() => setCustomers([]));
+    api.workorderList({}).then(setRepairs).catch((e: Error) => setError(e.message));
+    api.listCustomers().then(setCustomers).catch(() => setCustomers([]));
   };
   useEffect(load, []);
 

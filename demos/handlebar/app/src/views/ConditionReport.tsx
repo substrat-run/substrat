@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
+  extra,
   type ProtocolDetail,
   type ProtocolItem,
   type ProtocolSummary,
@@ -43,7 +44,7 @@ function ItemRow({
 
   const save = async (value: boolean | string) => {
     try {
-      await api.fillProtocol(detail.instance.id, item.key, value);
+      await api.protocolFill({ instanceId: detail.instance.id, itemKey: item.key, value });
       onSaved();
     } catch (e) {
       onError((e as Error).message);
@@ -111,7 +112,7 @@ function ReportCard({
   const [error, setError] = useState('');
 
   const load = useCallback(() => {
-    api.protocol(instanceId).then(setDetail).catch((e: Error) => setError(e.message));
+    api.protocolGet({ instanceId }).then(setDetail).catch((e: Error) => setError(e.message));
   }, [instanceId]);
   useEffect(load, [load]);
 
@@ -138,7 +139,19 @@ function ReportCard({
   return (
     <div style={{ marginTop: 12 }}>
       {error && <div className="alert error">{error}</div>}
-      {template.content.sections.map((section) => (
+      {/*
+        `content` is a union — a checklist has sections, a DOCUMENT protocol has a hash
+        recipe and no items. The hand-written `ProtocolDetail` this file used to import
+        declared only the checklist arm, so a document instance would have thrown on
+        `.sections` of undefined. The generated type carries the engine's real union.
+      */}
+      {template.content.kind !== 'checklist' ? (
+        <p className="muted" style={{ marginTop: 8 }}>
+          Detta är ett dokumentprotokoll ({template.content.documentType}) — det signeras i sin
+          helhet, inte rad för rad.
+        </p>
+      ) : (
+        template.content.sections.map((section) => (
         <div key={section.title} style={{ marginBottom: 8 }}>
           <h3 style={{ fontSize: 13, margin: '10px 0 4px' }}>{section.title}</h3>
           <table className="grid">
@@ -156,11 +169,12 @@ function ReportCard({
             </tbody>
           </table>
         </div>
-      ))}
+        ))
+      )}
 
       {!portal && instance.status === 'open' && (
         <div className="row" style={{ marginTop: 10 }}>
-          <button className="btn primary" onClick={act(() => api.signProtocol(instance.id))}>
+          <button className="btn primary" onClick={act(() => api.protocolSign({ instanceId: instance.id }))}>
             Signera (fryser rapporten)
           </button>
           <span className="muted" style={{ fontSize: 12 }}>
@@ -172,7 +186,7 @@ function ReportCard({
 
       {portal && instance.status === 'signed' && counters.length === 0 && (
         <div className="row" style={{ marginTop: 10 }}>
-          <button className="btn primary" onClick={act(() => api.countersignProtocol(instance.id))}>
+          <button className="btn primary" onClick={act(() => api.protocolCountersign({ instanceId: instance.id }))}>
             Motsignera vid uthämtning
           </button>
           <span className="muted" style={{ fontSize: 12 }}>
@@ -208,7 +222,7 @@ export function ConditionReportPanel({ repair, portal = false }: { repair: Repai
   const [error, setError] = useState('');
 
   const load = useCallback(() => {
-    api.repairProtocols(repair.id).then(setReports).catch(() => setReports([]));
+    extra.repairProtocols(repair.id).then(setReports).catch(() => setReports([]));
   }, [repair.id]);
   useEffect(load, [load]);
 
@@ -217,7 +231,7 @@ export function ConditionReportPanel({ repair, portal = false }: { repair: Repai
   const start = async () => {
     setError('');
     try {
-      const inst = await api.startConditionReport(repair.id);
+      const inst = await api.startConditionReport({ orderId: repair.id });
       setExpanded(inst.id);
       load();
     } catch (e) {

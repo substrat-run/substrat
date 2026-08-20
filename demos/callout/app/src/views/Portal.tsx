@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type TimelineEntry, type WorkOrder } from '../api';
+import { api, extra, type TimelineEntry, type WorkOrder } from '../api';
 
 const PLAIN: Record<string, string> = {
   planned: 'Planerad',
@@ -28,7 +28,7 @@ export function PortalView() {
 
   const toggle = async (id: string) => {
     if (openId === id) return setOpenId('');
-    const t = await api.timeline(id);
+    const t = await extra.timeline(id);
     setTimeline(t.filter((e) => PORTAL_EVENTS[e.type]));
     setOpenId(id);
   };

@@ -52,12 +52,21 @@ function derivedRoutes() {
 describe('derived routes vs the routes Callout serves', () => {
   it('derives a route for every operation that declares http', () => {
     expect(derivedRoutes().map((r) => r.operation).sort()).toEqual([
+      // Four of these were declared without an `http` block until the client became
+      // generated (#client-emit): an operation with no binding is invisible to the
+      // emitter, so the SPA had to hand-write the call. Binding them changes nothing
+      // at runtime — routes.ts still mounts the table — but the sibling test below
+      // proves each path is one Callout already serves.
+      'callout/complete-workorder',
       'callout/create-customer',
       'callout/create-facility',
+      'callout/create-workorder',
       'callout/instantiate-protocol',
       'callout/list-customers',
+      'callout/portal-orders',
       'callout/price-list',
       'callout/search-customers',
+      'callout/upsert-price',
       'invoicing/export',
       'invoicing/get',
       'invoicing/list',

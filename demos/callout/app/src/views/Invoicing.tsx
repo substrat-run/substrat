@@ -1,21 +1,21 @@
 import { useEffect, useState } from 'react';
-import { api, type Underlag, type UnderlagLine } from '../api';
+import { api, type UnderlagLine, type UnderlagListRow } from '../api';
 import { StatusPill } from './Orders';
 
 export function InvoicingView() {
-  const [underlag, setUnderlag] = useState<Underlag[] | null>(null);
+  const [underlag, setUnderlag] = useState<UnderlagListRow[] | null>(null);
   const [openId, setOpenId] = useState<string>('');
   const [lines, setLines] = useState<UnderlagLine[]>([]);
   const [error, setError] = useState('');
 
   const load = () => {
-    void api.invoicing().then(setUnderlag).catch((e: Error) => setError(e.message));
+    void api.invoicingList({}).then(setUnderlag).catch((e: Error) => setError(e.message));
   };
   useEffect(load, []);
 
   const toggle = async (id: string) => {
     if (openId === id) return setOpenId('');
-    const detail = await api.underlag(id);
+    const detail = await api.invoicingGet({ underlagId: id });
     setLines(detail.lines);
     setOpenId(id);
   };
@@ -23,7 +23,7 @@ export function InvoicingView() {
   const doExport = async (id: string) => {
     setError('');
     try {
-      await api.exportUnderlag(id);
+      await api.invoicingExport({ underlagId: id });
       load();
     } catch (e) {
       setError((e as Error).message);
@@ -43,7 +43,7 @@ export function InvoicingView() {
       {underlag.map((u) => (
         <div className="card" key={u.id}>
           <div className="row">
-            <strong>Underlag #{u.number}</strong>
+            <strong>UnderlagListRow #{u.number}</strong>
             <StatusPill status={u.status} />
             <span className="grow" />
             <strong>{u.total} SEK</strong>

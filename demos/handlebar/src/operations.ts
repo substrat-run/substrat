@@ -1,6 +1,7 @@
-import { defineOperations, money } from '@substrat-run/contracts';
-import { protocolInstanceRow } from '@substrat-run/engine-protocol';
-import { billableLine, workOrder } from '@substrat-run/engine-workorder';
+import { defineEngineRoutes, defineOperations, money } from '@substrat-run/contracts';
+import { invoicingOperations } from '@substrat-run/engine-invoicing';
+import { protocolInstanceRow, protocolOperations } from '@substrat-run/engine-protocol';
+import { billableLine, workOrder, workorderOperations } from '@substrat-run/engine-workorder';
 import { z } from 'zod';
 import { handlebarEntities } from './entities.js';
 
@@ -16,7 +17,7 @@ export const HANDLEBAR_PERMISSIONS = [
 ] as const;
 
 /** A price-list row. A table, not an entity — no id, never an `EntityRef`. */
-const priceRow = z.object({
+export const priceRow = z.object({
   article: z.string(),
   description: z.string(),
   unit: z.string(),
@@ -87,12 +88,13 @@ export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR
       internal: z.boolean().optional(),
     }),
     output: priceRow,
+    http: { method: 'POST', path: '/prices' },
   },
   'bike-shop/price-list': {
     summary: 'The current price list',
     permission: 'customer:manage',
     output: z.array(priceRow),
-    http: { method: 'GET', path: '/price-list' },
+    http: { method: 'GET', path: '/prices' },
   },
   'bike-shop/create-repair': {
     summary: 'Open a repair against a bike',
@@ -104,24 +106,32 @@ export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR
       description: z.string().optional(),
     }),
     output: workOrder,
+    http: { method: 'POST', path: '/repairs' },
   },
   'bike-shop/start-condition-report': {
     summary: 'Instantiate the condition-report protocol for a repair',
     permission: 'protocol:create',
     input: startConditionReportInput,
     output: protocolInstanceRow,
+    // `templateKey` defaults, so the route carries only the id — a caller may still
+    // name a template, which is a choice this vertical is happy to expose.
+    http: { method: 'POST', path: '/repairs/{orderId}/condition-report' },
   },
   'bike-shop/complete-repair': {
     summary: 'Complete a repair and price its billable lines',
     permission: 'workorder:complete',
     input: z.object({ orderId: z.string() }),
     output: z.object({ order: workOrder, billable: z.array(billableLine), total: money }),
+    http: { method: 'POST', path: '/repairs/{orderId}/complete' },
   },
   'bike-shop/close-repair': {
     summary: 'Close a completed repair at pickup',
     permission: 'workorder:close',
     input: z.object({ orderId: z.string() }),
     output: workOrder,
+    // The ONLY door to `closed` — the engine's own `workorder/close` binding is
+    // withdrawn in this host, so this path has no engine sibling to collide with.
+    http: { method: 'POST', path: '/repairs/{orderId}/close' },
   },
   'bike-shop/portal-repairs': {
     summary: "The repairs visible to the caller's portal",
@@ -131,6 +141,7 @@ export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR
       checks: [],
     },
     output: z.array(workOrder),
+    http: { method: 'GET', path: '/portal/repairs' },
   },
   'bike-shop/timeline': {
     summary: 'The event timeline for one entity',
@@ -138,4 +149,49 @@ export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR
     input: z.object({ entityType: z.string(), entityId: z.string() }),
     output: z.array(z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() })),
   },
+});
+
+/**
+ * The workorder engine's operations, at Handlebar's URLs.
+ *
+ * `workorder/close` is deliberately absent, and this is the one binding list in the
+ * repo where that absence is load-bearing: the engine's default binding is WITHDRAWN
+ * in this host (`src/module.ts`), because a repair is not closed until the customer
+ * has counter-signed the tillståndsrapport. `bike-shop/close-repair` is the only
+ * door, and binding the engine's here would reopen the one this vertical shut.
+ */
+export const handlebarWorkorderRoutes = defineEngineRoutes(workorderOperations)({
+  'workorder/list': { method: 'GET', path: '/repairs' },
+  'workorder/get': { method: 'GET', path: '/repairs/{orderId}' },
+  'workorder/assign': { method: 'POST', path: '/repairs/{orderId}/assign' },
+  'workorder/start': { method: 'POST', path: '/repairs/{orderId}/start' },
+  'workorder/report-time': { method: 'POST', path: '/repairs/{orderId}/time' },
+  'workorder/report-material': { method: 'POST', path: '/repairs/{orderId}/material' },
+});
+
+/**
+ * The protocol engine's operations, at Handlebar's URLs.
+ *
+ * `protocol/list-for-entity` is absent for the reason Callout gives at length: it
+ * takes an entity-agnostic `entityType`, and binding it would let a caller list the
+ * protocols on anything at all. `GET /repairs/{id}/protocols` supplies that constant
+ * by hand, and stays hand-written.
+ *
+ * `protocol/countersign` IS bound — the customer's counter-signature at pickup is
+ * this vertical's whole reason for existing.
+ */
+export const handlebarProtocolRoutes = defineEngineRoutes(protocolOperations)({
+  'protocol/list-templates': { method: 'GET', path: '/protocol-templates' },
+  'protocol/get': { method: 'GET', path: '/protocols/{instanceId}' },
+  'protocol/fill': { method: 'POST', path: '/protocols/{instanceId}/responses' },
+  'protocol/sign': { method: 'POST', path: '/protocols/{instanceId}/sign' },
+  'protocol/countersign': { method: 'POST', path: '/protocols/{instanceId}/countersign' },
+  'protocol/void': { method: 'POST', path: '/protocols/{instanceId}/void' },
+});
+
+/** The invoicing engine's operations, at Handlebar's URLs. All three. */
+export const handlebarInvoicingRoutes = defineEngineRoutes(invoicingOperations)({
+  'invoicing/list': { method: 'GET', path: '/invoicing' },
+  'invoicing/get': { method: 'GET', path: '/invoicing/{underlagId}' },
+  'invoicing/export': { method: 'POST', path: '/invoicing/{underlagId}/export' },
 });

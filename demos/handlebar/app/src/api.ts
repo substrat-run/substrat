@@ -1,126 +1,78 @@
+/**
+ * What the model does NOT declare — and nothing else.
+ *
+ * Every typed call lives in `api.generated.ts`, emitted from `src/entities.ts` +
+ * `src/operations.ts` and the three composed engines by `pnpm lint:client`. The
+ * 234 lines this file used to be were a second description of that model: sixteen
+ * interfaces retyping the engines' published schemas, and twenty-six methods
+ * retyping the route table.
+ *
+ * The first thing generating it found was a live drift — `bike-shop/price-list`
+ * declared `GET /price-list` while the server has always served `/prices`. Nothing
+ * checked, because Handlebar mounts its routes by hand and the declaration was
+ * decorative. A client generated from it would have 404'd on the first request.
+ *
+ * What survives here has no declaration behind it:
+ *
+ *  - **Who the caller is.** `x-principal` is the dev persona seam the node server
+ *    authenticates on — a fact about this harness, not about the model.
+ *  - **`/cast`**, the persona list the dev server serves. Not an operation.
+ *  - **Two operations deliberately left unbound.** `bike-shop/timeline` and
+ *    `protocol/list-for-entity` both take an entity-agnostic `entityType`; binding
+ *    either to a URL would let a caller name any entity at all. The server supplies
+ *    that constant by hand, which is exactly where the vertical stops being
+ *    entity-agnostic (see `handlebarProtocolRoutes`).
+ */
+import { createClient, type HandlebarClient, type ProtocolInstance } from './api.generated';
+
+export { ApiError } from './api.generated';
+export type {
+  BillableLine,
+  Bike,
+  Customer,
+  MaterialLine,
+  Money,
+  Price,
+  ProtocolInstance,
+  ProtocolResponse,
+  ProtocolSignature,
+  UnderlagLine,
+  UnderlagListRow,
+  WorkOrder,
+} from './api.generated';
+
+/**
+ * Shapes a screen names, pointed AT the generated client rather than retyped.
+ *
+ * These are operation OUTPUTS, not entities, so they have no interface of their own —
+ * `listCustomers` joins the bikes on, `protocolGet` assembles five rows. Indexing the
+ * generated method keeps the alias derived: change the operation and this follows,
+ * where a hand-written interface would quietly disagree.
+ */
+export type Repair = Awaited<ReturnType<HandlebarClient['workorderGet']>>['order'];
+export type RepairDetail = Awaited<ReturnType<HandlebarClient['workorderGet']>>;
+export type CustomerWithBikes = Awaited<ReturnType<HandlebarClient['listCustomers']>>[number];
+export type ProtocolDetail = Awaited<ReturnType<HandlebarClient['protocolGet']>>;
+export type CompletedRepair = Awaited<ReturnType<HandlebarClient['completeRepair']>>;
+
+/** A checklist row. `content` is a union — only the checklist arm has sections. */
+type ChecklistContent = Extract<ProtocolDetail['template']['content'], { kind: 'checklist' }>;
+export type ProtocolItem = ChecklistContent['sections'][number]['items'][number];
+
 export interface CastMember {
   name: string;
   role: string;
   principal: string;
 }
 
-export interface Repair {
-  id: string;
-  number: number;
-  facility: { entityType: string; entityId: string }; // the BIKE, in this vertical
-  customer: { entityType: string; entityId: string };
-  kind: string;
-  title: string;
-  description: string | null;
-  status: 'planned' | 'in_progress' | 'completed' | 'closed';
-  assignedTo: string | null;
-  createdAt: string;
-  completedAt: string | null;
-}
-
-export interface Money {
-  amount: string;
-  currency: string;
-}
-
-export interface BillableLine {
-  article: string;
-  description: string;
-  qty: string;
-  unit: string;
-  unitPrice: Money;
-  lineTotal: Money;
-}
-
-export interface Bike {
-  id: string;
-  label: string;
-  frame_no: string | null;
-}
-
-export interface Customer {
-  id: string;
-  number: string;
-  name: string;
-  phone: string | null;
-  bikes: Bike[];
-}
-
-export interface Price {
-  article: string;
-  description: string;
-  unit: string;
-  price_amount: string;
-  currency: string;
-  min_qty: string | null;
-  internal: number;
-}
-
-export interface Underlag {
-  id: string;
-  number: number;
-  customer_id: string;
-  status: 'open' | 'exported';
-  created_at: string;
-  total: string;
-}
-
-export interface UnderlagLine {
-  id: string;
-  source_type: string;
-  source_id: string;
-  article: string;
-  description: string;
-  qty: string;
-  unit: string;
-  unit_price_amount: string;
-  currency: string;
-  line_total_amount: string;
-}
-
+/** What `GET /repairs/{id}/timeline` answers — a hand-mounted route's own shape. */
 export interface TimelineEntry {
   type: string;
   occurred_at: string;
   actor: string;
 }
 
-export interface ProtocolItem {
-  key: string;
-  label: string;
-  type: 'check' | 'value' | 'text';
-  unit?: string;
-}
-
-export interface ProtocolInstance {
-  id: string;
-  template_key: string;
-  template_version: number;
-  entity_type: string;
-  entity_id: string;
-  status: 'open' | 'signed' | 'voided';
-  created_by: string;
-  created_at: string;
-  voided_reason: string | null;
-}
-
-export interface ProtocolResponse {
-  id: string;
-  item_key: string;
-  value_json: string;
-  note: string | null;
-  responded_by: string;
-  responded_at: string;
-}
-
-export interface ProtocolSignature {
-  id: string;
-  signed_by: string;
-  kind: 'primary' | 'counter';
-  method: string;
-  content_hash: string;
-  signed_at: string;
-}
-
+/** What `GET /repairs/{id}/protocols` answers — likewise. */
 export interface ProtocolSummary {
   instance: ProtocolInstance;
   title: string;
@@ -132,20 +84,6 @@ export interface ProtocolSummary {
   countersignedAt: string | null;
 }
 
-export interface ProtocolDetail {
-  instance: ProtocolInstance;
-  template: {
-    key: string;
-    version: number;
-    title: string;
-    content: { sections: { title: string; items: ProtocolItem[] }[] };
-  };
-  responses: ProtocolResponse[];
-  latest: Record<string, ProtocolResponse>;
-  signature: ProtocolSignature | null;
-  signatures: ProtocolSignature[];
-}
-
 export function currentPrincipal(): string | null {
   return localStorage.getItem('bike-shop-principal');
 }
@@ -155,80 +93,39 @@ export function setPrincipal(principal: string | null): void {
   else localStorage.removeItem('bike-shop-principal');
 }
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * The generated client, carrying this harness's persona header.
+ *
+ * `errorMessage` is left at its default: the server answers `{ error }`, which is the
+ * first shape it reads. The error envelope is the one part of the surface the model
+ * does not declare.
+ */
+export const api = createClient({
+  headers: (): Record<string, string> => {
+    const principal = currentPrincipal();
+    return principal ? { 'x-principal': principal } : {};
+  },
+});
+
+/**
+ * The one non-operation route and the two unbound operations, sharing the generated
+ * client's transport rather than a second fetch wrapper.
+ */
+const raw = async <T>(path: string): Promise<T> => {
   const principal = currentPrincipal();
   const res = await fetch(`/api${path}`, {
-    ...init,
-    headers: {
-      'content-type': 'application/json',
-      ...(principal ? { 'x-principal': principal } : {}),
-      ...init?.headers,
-    },
+    headers: principal ? { 'x-principal': principal } : {},
   });
   const body = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(body.error ?? `${res.status}`);
   return body;
-}
+};
 
-export const api = {
-  cast: () => call<Record<string, CastMember>>('/cast'),
-  customers: () => call<Customer[]>('/customers'),
-  repairs: () => call<Repair[]>('/repairs'),
-  repair: (id: string) =>
-    call<{ order: Repair; time: { id: string; hours: string; note: string | null }[]; material: { id: string; article: string; qty: string }[] }>(
-      `/repairs/${id}`,
-    ),
-  timeline: (id: string) => call<TimelineEntry[]>(`/repairs/${id}/timeline`),
-  createRepair: (input: { bikeId: string; kind: string; title: string; description?: string }) =>
-    call<Repair>('/repairs', { method: 'POST', body: JSON.stringify(input) }),
-  assign: (id: string, technician: string) =>
-    call<Repair>(`/repairs/${id}/assign`, { method: 'POST', body: JSON.stringify({ technician }) }),
-  start: (id: string) => call<Repair>(`/repairs/${id}/start`, { method: 'POST', body: '{}' }),
-  reportTime: (id: string, hours: string, note?: string) =>
-    call(`/repairs/${id}/time`, { method: 'POST', body: JSON.stringify({ hours, note }) }),
-  reportMaterial: (id: string, article: string, qty: string) =>
-    call(`/repairs/${id}/material`, { method: 'POST', body: JSON.stringify({ article, qty }) }),
-  complete: (id: string) =>
-    call<{ order: Repair; billable: BillableLine[]; total: Money }>(
-      `/repairs/${id}/complete`,
-      { method: 'POST', body: '{}' },
-    ),
-  close: (id: string) => call<Repair>(`/repairs/${id}/close`, { method: 'POST', body: '{}' }),
-  portalRepairs: () => call<Repair[]>('/portal/repairs'),
-  invoicing: () => call<Underlag[]>('/invoicing'),
-  underlag: (id: string) =>
-    call<{ underlag: Underlag; lines: UnderlagLine[]; total: string }>(`/invoicing/${id}`),
-  exportUnderlag: (id: string) => call<Underlag>(`/invoicing/${id}/export`, { method: 'POST', body: '{}' }),
-  prices: () => call<Price[]>('/prices'),
-  createCustomer: (input: { number: string; name: string; phone?: string }) =>
-    call<Omit<Customer, 'bikes'>>('/customers', { method: 'POST', body: JSON.stringify(input) }),
-  registerBike: (customerId: string, input: { label: string; frameNo?: string }) =>
-    call<Bike>(`/customers/${customerId}/bikes`, { method: 'POST', body: JSON.stringify(input) }),
-  upsertPrice: (input: {
-    article: string;
-    description: string;
-    unit: string;
-    priceAmount: string;
-    minQty?: string;
-    internal?: boolean;
-  }) => call<Price>('/prices', { method: 'POST', body: JSON.stringify(input) }),
-  repairProtocols: (repairId: string) => call<ProtocolSummary[]>(`/repairs/${repairId}/protocols`),
-  startConditionReport: (repairId: string) =>
-    call<ProtocolInstance>(`/repairs/${repairId}/condition-report`, { method: 'POST', body: '{}' }),
-  protocol: (id: string) => call<ProtocolDetail>(`/protocols/${id}`),
-  fillProtocol: (id: string, itemKey: string, value: boolean | string, note?: string) =>
-    call<ProtocolResponse>(`/protocols/${id}/responses`, {
-      method: 'POST',
-      body: JSON.stringify({ itemKey, value, note }),
-    }),
-  signProtocol: (id: string) =>
-    call<{ instance: ProtocolInstance; signature: ProtocolSignature }>(`/protocols/${id}/sign`, {
-      method: 'POST',
-      body: '{}',
-    }),
-  countersignProtocol: (id: string) =>
-    call<{ instance: ProtocolInstance; signature: ProtocolSignature }>(
-      `/protocols/${id}/countersign`,
-      { method: 'POST', body: '{}' },
-    ),
+export const extra = {
+  /** The dev harness's persona list. Not an operation — the node server owns it. */
+  cast: () => raw<Record<string, CastMember>>('/cast'),
+  /** `bike-shop/timeline`, unbound: `entityType` is entity-agnostic (see the header). */
+  timeline: (id: string) => raw<TimelineEntry[]>(`/repairs/${id}/timeline`),
+  /** `protocol/list-for-entity`, unbound for the same reason. */
+  repairProtocols: (repairId: string) => raw<ProtocolSummary[]>(`/repairs/${repairId}/protocols`),
 };

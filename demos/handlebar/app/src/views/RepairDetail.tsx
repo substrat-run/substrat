@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
+  extra,
   type BillableLine,
   type CastMember,
   type Money,
@@ -39,7 +40,7 @@ function money(m: Money | { amount: string; currency?: string }): string {
 }
 
 export function RepairDetailView({ repairId, cast }: { repairId: string; cast: Record<string, CastMember> }) {
-  const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.repair>> | null>(null);
+  const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.workorderGet>> | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [error, setError] = useState('');
   const [hours, setHours] = useState('0.5');
@@ -49,8 +50,8 @@ export function RepairDetailView({ repairId, cast }: { repairId: string; cast: R
   const [billed, setBilled] = useState<{ billable: BillableLine[]; total: Money } | null>(null);
 
   const load = useCallback(() => {
-    api.repair(repairId).then(setDetail).catch((e: Error) => setError(e.message));
-    api.timeline(repairId).then(setTimeline).catch(() => setTimeline([]));
+    api.workorderGet({ orderId: repairId }).then(setDetail).catch((e: Error) => setError(e.message));
+    extra.timeline(repairId).then(setTimeline).catch(() => setTimeline([]));
   }, [repairId]);
   useEffect(load, [load]);
 
@@ -96,10 +97,10 @@ export function RepairDetailView({ repairId, cast }: { repairId: string; cast: R
                   </option>
                 ))}
               </select>
-              <button className="btn" disabled={!mechanic} onClick={act(() => api.assign(repairId, mechanic))}>
+              <button className="btn" disabled={!mechanic} onClick={act(() => api.workorderAssign({ orderId: repairId, technician: mechanic }))}>
                 Tilldela
               </button>
-              <button className="btn primary" onClick={act(() => api.start(repairId))}>
+              <button className="btn primary" onClick={act(() => api.workorderStart({ orderId: repairId }))}>
                 Påbörja reparation
               </button>
             </>
@@ -107,12 +108,12 @@ export function RepairDetailView({ repairId, cast }: { repairId: string; cast: R
           {(order.status === 'planned' || order.status === 'in_progress') && (
             <>
               <input style={{ width: 70 }} value={hours} onChange={(e) => setHours(e.target.value)} />
-              <button className="btn" onClick={act(() => api.reportTime(repairId, hours))}>
+              <button className="btn" onClick={act(() => api.workorderReportTime({ orderId: repairId, hours }))}>
                 Rapportera tid
               </button>
               <input style={{ width: 180 }} value={article} onChange={(e) => setArticle(e.target.value)} />
               <input style={{ width: 50 }} value={qty} onChange={(e) => setQty(e.target.value)} />
-              <button className="btn" onClick={act(() => api.reportMaterial(repairId, article, qty))}>
+              <button className="btn" onClick={act(() => api.workorderReportMaterial({ orderId: repairId, article, qty }))}>
                 Reservdel
               </button>
             </>
@@ -120,13 +121,13 @@ export function RepairDetailView({ repairId, cast }: { repairId: string; cast: R
           {order.status === 'in_progress' && (
             <button
               className="btn primary"
-              onClick={act(async () => setBilled(await api.complete(repairId)))}
+              onClick={act(async () => setBilled(await api.completeRepair({ orderId: repairId })))}
             >
               Klarmarkera & prissätt
             </button>
           )}
           {order.status === 'completed' && (
-            <button className="btn primary" onClick={act(() => api.close(repairId))}>
+            <button className="btn primary" onClick={act(() => api.closeRepair({ orderId: repairId }))}>
               Lämna ut cykeln
             </button>
           )}

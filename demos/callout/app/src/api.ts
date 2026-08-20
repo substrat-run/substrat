@@ -1,156 +1,75 @@
+/**
+ * What the model does NOT declare — and nothing else.
+ *
+ * Every typed call lives in `api.generated.ts`, emitted from `src/entities.ts` +
+ * `src/operations.ts` and the three composed engines by `pnpm lint:client`. The
+ * 305 lines this file used to be were a second description of that model: the
+ * `WorkOrder`/`Customer`/`Protocol*` interfaces were the engines' published
+ * schemas retyped by hand, and the method list was the route table retyped again.
+ *
+ * What survives here is what genuinely has no declaration behind it:
+ *
+ *  - **Which identity a request carries.** Two backends share this app — the node
+ *    dev server authenticates the `x-principal` persona header, the Worker
+ *    authenticates a session cookie — and choosing between them is a fact about
+ *    the deployment, not about the model.
+ *  - **The four routes that are not operations.** `/cast` is the persona list the
+ *    dev harness serves; `/me` is the auth probe; `/api/auth/login` and `/logout`
+ *    redirect to the issuer. None is a `ScopeStub` invoke, so none can be declared.
+ *  - **The three operations deliberately left unbound.** `callout/timeline` and
+ *    `protocol/list-for-entity` both take an entity-agnostic `entityType`, and
+ *    binding either to a URL would let a caller name any entity at all — the
+ *    engine is entity-agnostic and this is exactly where the vertical stops being
+ *    (see `calloutProtocolRoutes`). `callout/whoami` has no screen.
+ */
+import { createClient, type CalloutClient, type ProtocolInstance } from './api.generated';
+
+export { ApiError } from './api.generated';
+export type {
+  BillableLine,
+  Customer,
+  Facility,
+  MaterialLine,
+  Money,
+  Price,
+  Protocol,
+  ProtocolInstance,
+  ProtocolResponse,
+  ProtocolSignature,
+  ProtocolTemplateRow as ProtocolTemplate,
+  Underlag,
+  UnderlagLine,
+  UnderlagListRow,
+  WorkOrder,
+} from './api.generated';
+
+/**
+ * Shapes a screen names, pointed AT the generated client rather than retyped.
+ *
+ * `protocolGet` returns an inline object — it is an operation's output, not an
+ * entity, so it has no interface of its own. Naming it by indexing the generated
+ * method keeps the alias derived: change the operation's output and this follows,
+ * where a hand-written `interface ProtocolDetail` would quietly disagree.
+ */
+export type ProtocolDetail = Awaited<ReturnType<CalloutClient['protocolGet']>>;
+/** A checklist row. `content` is a union — only the checklist arm has sections. */
+type ChecklistContent = Extract<ProtocolDetail['template']['content'], { kind: 'checklist' }>;
+export type ProtocolItem = ChecklistContent['sections'][number]['items'][number];
+export type CompletedOrder = Awaited<ReturnType<CalloutClient['completeWorkorder']>>;
+
+/**
+ * A customer WITH its facilities — what `callout/list-customers` answers.
+ *
+ * Not the `customer` entity: the operation joins the facilities on, so its output is
+ * a shape of its own. Indexed off the generated method for the same reason as
+ * `ProtocolDetail` — the join is declared, so the alias should follow it.
+ */
+export type CustomerWithFacilities = Awaited<ReturnType<CalloutClient['listCustomers']>>[number];
+
 export interface CastMember {
   name: string;
   role: string;
   principal: string;
-}
-
-export interface WorkOrder {
-  id: string;
-  number: number;
-  facility: { entityType: string; entityId: string };
-  customer: { entityType: string; entityId: string };
-  kind: string;
-  title: string;
-  description: string | null;
-  status: 'planned' | 'in_progress' | 'completed' | 'closed';
-  assignedTo: string | null;
-  createdAt: string;
-  completedAt: string | null;
-}
-
-export interface Money {
-  amount: string;
-  currency: string;
-}
-
-export interface BillableLine {
-  article: string;
-  description: string;
-  qty: string;
-  unit: string;
-  unitPrice: Money;
-  lineTotal: Money;
-}
-
-export interface Facility {
-  id: string;
-  name: string;
-  address: string | null;
-  access_note: string | null;
-}
-
-export interface Customer {
-  id: string;
-  number: string;
-  name: string;
-  org_ref: string | null;
-  facilities: Facility[];
-}
-
-export interface Price {
-  article: string;
-  description: string;
-  unit: string;
-  price_amount: string;
-  currency: string;
-  min_qty: string | null;
-  internal: number;
-}
-
-export interface Underlag {
-  id: string;
-  number: number;
-  customer_id: string;
-  status: 'open' | 'exported';
-  created_at: string;
-  total: string;
-}
-
-export interface UnderlagLine {
-  id: string;
-  document_type: string;
-  document_id: string;
-  source_type: string | null;
-  source_id: string | null;
-  article: string;
-  description: string;
-  qty: string;
-  unit: string;
-  unit_price_amount: string;
-  currency: string;
-  line_total_amount: string;
-}
-
-export interface TimelineEntry {
-  type: string;
-  occurred_at: string;
-  actor: string;
-}
-
-export interface ProtocolItem {
-  key: string;
-  label: string;
-  type: 'check' | 'value' | 'text';
-  unit?: string;
-}
-
-export interface ProtocolTemplate {
-  id: string;
-  key: string;
-  version: number;
-  title: string;
-  content_json: string;
-}
-
-export interface ProtocolInstance {
-  id: string;
-  template_key: string;
-  template_version: number;
-  entity_type: string;
-  entity_id: string;
-  status: 'open' | 'signed' | 'voided';
-  created_by: string;
-  created_at: string;
-  voided_reason: string | null;
-}
-
-export interface ProtocolResponse {
-  id: string;
-  item_key: string;
-  value_json: string;
-  note: string | null;
-  responded_by: string;
-  responded_at: string;
-}
-
-export interface ProtocolSignature {
-  id: string;
-  signed_by: string;
-  method: string;
-  content_hash: string;
-  signed_at: string;
-}
-
-export interface ProtocolSummary {
-  instance: ProtocolInstance;
-  title: string;
-  answered: number;
-  total: number;
-  signedBy: string | null;
-  signedAt: string | null;
-}
-
-export interface ProtocolDetail {
-  instance: ProtocolInstance;
-  template: {
-    key: string;
-    version: number;
-    title: string;
-    content: { sections: { title: string; items: ProtocolItem[] }[] };
-  };
-  responses: ProtocolResponse[];
-  latest: Record<string, ProtocolResponse>;
-  signature: ProtocolSignature | null;
 }
 
 export function currentPrincipal(): string | null {
@@ -237,69 +156,48 @@ export function signOut(): void {
   window.location.assign('/api/auth/logout');
 }
 
-export const api = {
+
+/**
+ * The four non-operation routes, and the three operations left unbound.
+ *
+ * They share the generated client's transport (`call` above) rather than a second
+ * fetch wrapper, so auth-mode selection and error handling stay in one place.
+ */
+export const extra = {
+  /** The dev harness's persona list. Not an operation — the node server owns it. */
   cast: () => call<Record<string, CastMember>>('/cast'),
-  customers: () => call<Customer[]>('/customers'),
-  workorders: () => call<WorkOrder[]>('/workorders'),
-  workorder: (id: string) =>
-    call<{ order: WorkOrder; time: { id: string; hours: string; note: string | null }[]; material: { id: string; article: string; qty: string }[] }>(
-      `/workorders/${id}`,
-    ),
+  /** `callout/timeline`, unbound: `entityType` is entity-agnostic (see api.ts header). */
   timeline: (id: string) => call<TimelineEntry[]>(`/workorders/${id}/timeline`),
-  createOrder: (input: { facilityId: string; kind: string; title: string; description?: string }) =>
-    call<WorkOrder>('/workorders', { method: 'POST', body: JSON.stringify(input) }),
-  assign: (id: string, technician: string) =>
-    call<WorkOrder>(`/workorders/${id}/assign`, { method: 'POST', body: JSON.stringify({ technician }) }),
-  start: (id: string) => call<WorkOrder>(`/workorders/${id}/start`, { method: 'POST', body: '{}' }),
-  reportTime: (id: string, hours: string, note?: string) =>
-    call(`/workorders/${id}/time`, { method: 'POST', body: JSON.stringify({ hours, note }) }),
-  reportMaterial: (id: string, article: string, qty: string) =>
-    call(`/workorders/${id}/material`, { method: 'POST', body: JSON.stringify({ article, qty }) }),
-  complete: (id: string) =>
-    call<{ order: WorkOrder; billable: BillableLine[]; total: Money }>(
-      `/workorders/${id}/complete`,
-      { method: 'POST', body: '{}' },
-    ),
-  close: (id: string) => call<WorkOrder>(`/workorders/${id}/close`, { method: 'POST', body: '{}' }),
-  portalOrders: () => call<WorkOrder[]>('/portal/orders'),
-  invoicing: () => call<Underlag[]>('/invoicing'),
-  underlag: (id: string) =>
-    call<{ underlag: Underlag; lines: UnderlagLine[]; total: string }>(`/invoicing/${id}`),
-  exportUnderlag: (id: string) => call<Underlag>(`/invoicing/${id}/export`, { method: 'POST', body: '{}' }),
-  prices: () => call<Price[]>('/prices'),
-  createCustomer: (input: { number: string; name: string; orgRef?: string }) =>
-    call<Omit<Customer, 'facilities'>>('/customers', { method: 'POST', body: JSON.stringify(input) }),
-  createFacility: (customerId: string, input: { name: string; address?: string; accessNote?: string }) =>
-    call<Facility>(`/customers/${customerId}/facilities`, { method: 'POST', body: JSON.stringify(input) }),
-  upsertPrice: (input: {
-    article: string;
-    description: string;
-    unit: string;
-    priceAmount: string;
-    minQty?: string;
-    internal?: boolean;
-  }) => call<Price>('/prices', { method: 'POST', body: JSON.stringify(input) }),
-  protocolTemplates: () => call<ProtocolTemplate[]>('/protocol-templates'),
+  /** `protocol/list-for-entity`, unbound for the same reason. */
   orderProtocols: (orderId: string) => call<ProtocolSummary[]>(`/workorders/${orderId}/protocols`),
-  instantiateProtocol: (orderId: string, templateKey: string) =>
-    call<ProtocolInstance>(`/workorders/${orderId}/protocols`, {
-      method: 'POST',
-      body: JSON.stringify({ templateKey }),
-    }),
-  protocol: (id: string) => call<ProtocolDetail>(`/protocols/${id}`),
-  fillProtocol: (id: string, itemKey: string, value: boolean | string, note?: string) =>
-    call<ProtocolResponse>(`/protocols/${id}/responses`, {
-      method: 'POST',
-      body: JSON.stringify({ itemKey, value, note }),
-    }),
-  signProtocol: (id: string) =>
-    call<{ instance: ProtocolInstance; signature: ProtocolSignature }>(`/protocols/${id}/sign`, {
-      method: 'POST',
-      body: '{}',
-    }),
-  voidProtocol: (id: string, reason: string) =>
-    call<ProtocolInstance>(`/protocols/${id}/void`, {
-      method: 'POST',
-      body: JSON.stringify({ reason }),
-    }),
 };
+
+export interface TimelineEntry {
+  type: string;
+  occurred_at: string;
+  actor: string;
+}
+
+/** What `GET /workorders/{id}/protocols` answers — a hand-mounted route's own shape. */
+export interface ProtocolSummary {
+  instance: ProtocolInstance;
+  title: string;
+  answered: number;
+  total: number;
+  signedBy: string | null;
+  signedAt: string | null;
+}
+
+/**
+ * The generated client, wired to this app's two auth modes.
+ *
+ * `errorMessage` is the default: callout's routes answer `{ error }`, which is the
+ * first shape it reads.
+ */
+export const api = createClient({
+  headers: (): Record<string, string> => {
+    const principal = currentPrincipal();
+    return headerAuth && principal ? { 'x-principal': principal } : {};
+  },
+  fetch: (input, init) => fetch(input, { credentials: 'same-origin', ...init }),
+});

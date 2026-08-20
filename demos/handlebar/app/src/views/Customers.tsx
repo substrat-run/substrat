@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
-import { api, type Customer } from '../api';
+import { api, type CustomerWithBikes } from '../api';
 
 /**
- * Customer & bike management (fsm spec/views.md §1.3 in Handlebar
+ * CustomerWithBikes & bike management (fsm spec/views.md §1.3 in Handlebar
  * vocabulary): list with bikes, create customer, register bike. A bike is
  * this vertical's facility-shaped entity — the repair's permission walk is
  * workorder → bike → customer.
  */
 export function CustomersView() {
-  const [customers, setCustomers] = useState<Customer[] | null>(null);
+  const [customers, setCustomers] = useState<CustomerWithBikes[] | null>(null);
   const [error, setError] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [number, setNumber] = useState('');
@@ -20,7 +20,7 @@ export function CustomersView() {
   const [bikeFrameNo, setBikeFrameNo] = useState('');
 
   const load = () => {
-    api.customers().then(setCustomers).catch((e: Error) => setError(e.message));
+    api.listCustomers().then(setCustomers).catch((e: Error) => setError(e.message));
   };
   useEffect(load, []);
 
@@ -50,10 +50,8 @@ export function CustomersView() {
 
   const registerBike = (customerId: string) =>
     act(async () => {
-      await api.registerBike(customerId, {
-        label: bikeLabel,
-        ...(bikeFrameNo ? { frameNo: bikeFrameNo } : {}),
-      });
+      await api.registerBike({ customerId: customerId, label: bikeLabel,
+        ...(bikeFrameNo ? { frameNo: bikeFrameNo } : {}), });
       setAddingFor('');
     })();
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Repair, type TimelineEntry } from '../api';
+import { api, extra, type Repair, type TimelineEntry } from '../api';
 import { ConditionReportPanel } from './ConditionReport';
 
 const PLAIN: Record<string, string> = {
@@ -29,7 +29,7 @@ export function PortalView() {
 
   const toggle = async (id: string) => {
     if (openId === id) return setOpenId('');
-    const t = await api.timeline(id);
+    const t = await extra.timeline(id);
     setTimeline(t.filter((e) => PORTAL_EVENTS[e.type]));
     setOpenId(id);
   };
