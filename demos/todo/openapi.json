@@ -162,69 +162,58 @@
         ],
         "responses": {
           "200": {
-            "description": "One page of results, with the total matching this list’s filter.",
+            "description": "One page of results. The walk is in the response headers.",
+            "headers": {
+              "Link": {
+                "description": "RFC 8288 link to the next page, e.g. `<https://…/customers?limit=20&cursor=01J8Z…>; rel=\"next\"`. Follow it verbatim — it carries this request's filters and page size. Absent when the walk is over, so a client stops rather than fetching an empty page.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Total-Count": {
+                "description": "Rows matching this request's filter — the same `WHERE` the page ran under, never the whole table. A snapshot: rows written mid-walk can make it disagree with the rows eventually seen.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "entries": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string"
-                          },
-                          "list_id": {
-                            "type": "string"
-                          },
-                          "text": {
-                            "type": "string"
-                          },
-                          "done": {
-                            "type": "number"
-                          },
-                          "added_by": {
-                            "type": "string"
-                          },
-                          "created_at": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "id",
-                          "list_id",
-                          "text",
-                          "done",
-                          "added_by",
-                          "created_at"
-                        ],
-                        "additionalProperties": false
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "list_id": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "done": {
+                        "type": "number"
+                      },
+                      "added_by": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "string"
                       }
                     },
-                    "nextCursor": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "total": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    }
-                  },
-                  "required": [
-                    "entries",
-                    "nextCursor",
-                    "total"
-                  ],
-                  "additionalProperties": false
+                    "required": [
+                      "id",
+                      "list_id",
+                      "text",
+                      "done",
+                      "added_by",
+                      "created_at"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               }
             }

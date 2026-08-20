@@ -135,6 +135,58 @@ describe('a read documents its query string', () => {
   });
 });
 
+describe('a paged read documents its walk (#829)', () => {
+  const paged = buildOpenApiDocument({ title: 'Test', version: '1.0.0' }, {
+    'customer/list': {
+      summary: 'List customers',
+      input: z.object({ limit: z.number().int().optional(), cursor: z.string().optional() }),
+      output: z.object({ id: z.string(), name: z.string() }),
+      paged: { sortKey: 'id', total: true },
+      http: { method: 'GET', path: '/customers' },
+    },
+    'customer/list-untotalled': {
+      summary: 'List customers',
+      output: z.object({ id: z.string() }),
+      paged: { sortKey: 'id' },
+      http: { method: 'GET', path: '/customers/plain' },
+    },
+  } as never) as Record<string, any>;
+  const ok = (url: string) => paged.paths[url].get.responses['200'];
+
+  /**
+   * The body is the entries. Wrapping it renamed a live endpoint's response, which
+   * made adopting paging a break for consumers a vertical cannot see — and was
+   * impossible for a list whose published shape was a bare array.
+   */
+  it('describes the body as an array of the declared entry', () => {
+    expect(ok('/api/customers').content['application/json'].schema).toMatchObject({
+      type: 'array',
+      items: { properties: { id: {}, name: {} } },
+    });
+  });
+
+  it('documents the Link header, so the walk is discoverable', () => {
+    const link = ok('/api/customers').headers.Link;
+    expect(link.schema).toEqual({ type: 'string' });
+    expect(link.description).toContain('rel="next"');
+    expect(link.description).toMatch(/absent/i);
+  });
+
+  it('documents the total only when the operation asked for one', () => {
+    expect(ok('/api/customers').headers['X-Total-Count']).toBeDefined();
+    expect(ok('/api/customers/plain').headers['X-Total-Count']).toBeUndefined();
+    expect(ok('/api/customers/plain').headers.Link).toBeDefined();
+  });
+
+  it('says the total counts the filtered set, which is the mistake worth naming', () => {
+    expect(ok('/api/customers').headers['X-Total-Count'].description).toMatch(/never the whole table/);
+  });
+
+  it('adds no headers to a read that is not paged', () => {
+    expect(op('/api/customers/search', 'get').responses['200'].headers).toBeUndefined();
+  });
+});
+
 describe('a write is untouched', () => {
   it('still documents its body, and adds no query parameters', () => {
     const post = op('/api/customers', 'post');

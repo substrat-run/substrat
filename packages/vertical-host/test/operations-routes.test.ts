@@ -63,6 +63,128 @@ function harness(ops: Readonly<Record<string, object>> = operations) {
   return { app, calls, mounted };
 }
 
+/**
+ * A paged read, and a stub that answers with a real `Page` (#829).
+ *
+ * Separate harness because the shared one echoes `{ ok: true }` — the projection
+ * only fires on something page-shaped, which is itself part of the contract.
+ */
+function pagedHarness(result: unknown, ops?: Record<string, object>) {
+  const app = new Hono();
+  mountOperations(
+    app,
+    ops ?? {
+      'todo/list-items': {
+        input: z.object({ listId: z.string(), limit: z.number().optional(), cursor: z.string().optional() }),
+        paged: { sortKey: 'id', total: true },
+        http: { method: 'GET', path: '/lists/{listId}/items' },
+      },
+    },
+    async () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ({ invoke: async () => result }) as any,
+  );
+  return app;
+}
+
+describe('a paged read on the wire (#829)', () => {
+  const page = { entries: [{ id: 'a' }, { id: 'b' }], nextCursor: 'b', total: 42 };
+
+  it('answers with the entries, not an envelope — so adopting paging breaks no client', async () => {
+    const res = await pagedHarness(page).request('/api/lists/L1/items?limit=2');
+    await expect(res.json()).resolves.toEqual([{ id: 'a' }, { id: 'b' }]);
+  });
+
+  it('carries the next page as an RFC 8288 Link the client can follow verbatim', async () => {
+    const res = await pagedHarness(page).request('http://api.test/api/lists/L1/items?limit=2');
+    const link = res.headers.get('Link');
+    expect(link).toBe('<http://api.test/api/lists/L1/items?limit=2&cursor=b>; rel="next"');
+  });
+
+  it("keeps the request's own filters in the next link, so a walk stays filtered", async () => {
+    const ops = {
+      'todo/list-items': {
+        input: z.object({ listId: z.string(), q: z.string().optional() }),
+        paged: { sortKey: 'id' },
+        http: { method: 'GET', path: '/lists/{listId}/items' },
+      },
+    };
+    const res = await pagedHarness(page, ops).request('http://api.test/api/lists/L1/items?q=milk');
+    expect(res.headers.get('Link')).toContain('q=milk');
+    expect(res.headers.get('Link')).toContain('cursor=b');
+  });
+
+  it('replaces the cursor rather than appending a second one', async () => {
+    const res = await pagedHarness(page).request('http://api.test/api/lists/L1/items?cursor=OLD');
+    const link = res.headers.get('Link') ?? '';
+    expect(link).toContain('cursor=b');
+    expect(link).not.toContain('OLD');
+  });
+
+  it('omits the Link when the walk is over, so a client stops', async () => {
+    const res = await pagedHarness({ entries: [{ id: 'a' }], nextCursor: null }).request(
+      '/api/lists/L1/items',
+    );
+    expect(res.headers.get('Link')).toBeNull();
+    await expect(res.json()).resolves.toEqual([{ id: 'a' }]);
+  });
+
+  it('carries the opt-in total as a count', async () => {
+    const res = await pagedHarness(page).request('/api/lists/L1/items');
+    expect(res.headers.get('X-Total-Count')).toBe('42');
+  });
+
+  it('omits the total when the operation did not ask for one', async () => {
+    const res = await pagedHarness({ entries: [], nextCursor: null }).request('/api/lists/L1/items');
+    expect(res.headers.get('X-Total-Count')).toBeNull();
+  });
+
+  /**
+   * A declaration whose handler has not adopted `pageOf` yet must reach the client
+   * unchanged — projecting blindly would answer a body of `undefined`.
+   */
+  it('leaves a result that is not page-shaped alone', async () => {
+    const res = await pagedHarness({ ok: true }).request('/api/lists/L1/items');
+    await expect(res.json()).resolves.toEqual({ ok: true });
+    expect(res.headers.get('Link')).toBeNull();
+  });
+
+  it('does not touch an operation that declares no paging', async () => {
+    const ops = {
+      'todo/my-lists': { http: { method: 'GET', path: '/lists' } },
+    };
+    const res = await pagedHarness(page, ops).request('/api/lists');
+    await expect(res.json()).resolves.toEqual(page);
+  });
+
+  /** Two mounts cannot both decide the body; the vertical's own statement wins. */
+  it('yields the whole Page to a vertical that supplies `respond`', async () => {
+    const app = new Hono();
+    let seen: unknown;
+    mountOperations(
+      app,
+      {
+        'todo/list-items': {
+          input: z.object({ listId: z.string() }),
+          paged: { sortKey: 'id' },
+          http: { method: 'GET', path: '/lists/{listId}/items' },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async () => ({ invoke: async () => page }) as any,
+      {
+        respond: (c, result) => {
+          seen = result;
+          return c.json({ ok: true, result });
+        },
+      },
+    );
+    const res = await app.request('/api/lists/L1/items');
+    expect(seen).toEqual(page);
+    expect(res.headers.get('Link')).toBeNull();
+  });
+});
+
 describe('mountOperations', () => {
   it('mounts one route per operation that declares http, and no others', () => {
     const { mounted } = harness();

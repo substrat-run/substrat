@@ -100,6 +100,78 @@ export function countedPageOf<T>(
 }
 
 /**
+ * Where a page's metadata rides on the WIRE (#829).
+ *
+ * The kernel-side shape is `Page<T>` above and stays that way — an operation is
+ * transport-agnostic, and an in-process caller (a test, a seed, another
+ * operation, an MCP tool) must be able to walk a list without an HTTP response to
+ * read headers off. What changes is only the HTTP PROJECTION: the body is the
+ * entries, and the walk is described in headers.
+ *
+ * **Because the alternative made adoption a breaking change.** Wrapping the body
+ * renames a live endpoint's response — `[…]` or `{ customers: […] }` becomes
+ * `{ entries: […] }` — and a vertical with API consumers it cannot see has no way
+ * to soften that. The rational move was then to NOT adopt paging, which is the
+ * opposite of what an unbounded list read deserves. In headers, a list endpoint
+ * returns what it always returned and gains a walk; nobody's client breaks, and
+ * the bare-array lists (which cannot carry a second key at all) adopt for free.
+ *
+ * `Link` rather than a bare cursor header: it is RFC 8288, it is what GitHub
+ * serves, and it hands the client a URL to FOLLOW rather than one to assemble —
+ * so the filter and page size travel with it automatically. The absence of a
+ * `rel="next"` link is how the walk ends.
+ *
+ * Deliberately NOT `Content-Range: items 0-19/340`. That describes an OFFSET
+ * window, and keyset paging does not know its offset — that ignorance is exactly
+ * what keeps it correct while rows are being written. Emitting a start index
+ * would be inventing a number.
+ */
+export const PAGE_LINK_HEADER = 'Link';
+
+/** The opt-in total (`paged.total`), as a count — never a range. */
+export const PAGE_TOTAL_HEADER = 'X-Total-Count';
+
+/**
+ * The headers a cross-origin browser client cannot read unless the server says
+ * it may. Nothing in the platform sets CORS today (a vertical serves its app and
+ * its API from one origin), so this exists for the vertical that opens its API to
+ * browser callers and would otherwise ship a walk no browser can follow — a
+ * failure that looks like "there is only one page".
+ */
+export const PAGE_EXPOSED_HEADERS = [PAGE_LINK_HEADER, PAGE_TOTAL_HEADER] as const;
+
+/**
+ * The `Link` header value for the next page, or null when the walk is over.
+ *
+ * Built from the REQUEST url so every other query parameter — the filters, the
+ * page size, a declared sort — rides along untouched. Only `cursor` is replaced,
+ * which is the one thing the client must not have to reassemble.
+ */
+export function nextPageLink(requestUrl: string, nextCursor: string | null): string | null {
+  if (nextCursor === null) return null;
+  const url = new URL(requestUrl);
+  url.searchParams.set('cursor', nextCursor);
+  return `<${url.toString()}>; rel="next"`;
+}
+
+/**
+ * Is this an operation result the page projection applies to?
+ *
+ * Structural, and checked rather than assumed: a paged operation whose handler
+ * returns something else (mid-refactor, or a vertical that declared `paged` and
+ * has not adopted `pageOf` yet) must reach the client unchanged rather than be
+ * silently emptied into a body of `undefined`.
+ */
+export function isPage(value: unknown): value is Page<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as Page<unknown>).entries) &&
+    'nextCursor' in value
+  );
+}
+
+/**
  * The Zod shape of a page of `entry` — what a paged operation actually returns.
  *
  * Built from the entry schema rather than declared beside it, so a vertical states
