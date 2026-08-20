@@ -6,6 +6,7 @@ import { platformActorId, principalId, tenantId } from '@substrat-run/contracts'
 import { ulid } from '@substrat-run/kernel';
 import { mintSession, type OidcEnv } from '@substrat-run/oidc-rp';
 import { d1StaffRoster, listStaff } from '../src/staff-roster.js';
+import { platformStoreClients } from '../src/worker.js';
 
 /**
  * Slice 1's definition of done, as an automated workerd test (first-flow.md §4):
@@ -469,5 +470,30 @@ describe('members surface (console → Members)', () => {
     // The actor is that person's identity in the admin log forever — never re-minted.
     expect(second?.actor).toBe(first?.actor);
     expect(second?.revokedAt).toBeNull();
+  });
+});
+
+/**
+ * #828: the deployed worker must actually CONSTRUCT every platform client the host
+ * refuses without. `createR2BlobStores` shipped with #473, was exported, and was covered
+ * by tests against an injected fake — and nothing in the worker ever called it, so every
+ * declared blob store refused in production on a control plane that looked configured.
+ * The suite could not have caught it: no test asserted the WIRING, only the client.
+ *
+ * This is that assertion, and it is deliberately about the pairing rather than about R2:
+ * the next store substrate added to the host has to appear here too, or this test fails
+ * on the same shape of omission.
+ */
+describe('platform store clients (#828)', () => {
+  it('constructs BOTH store clients when the platform credential is present', () => {
+    const stores = platformStoreClients({ CF_API_TOKEN: 'tok', CF_ACCOUNT_ID: 'acct' } as never);
+    expect(stores.tenantStores).toBeDefined();
+    expect(stores.blobStores).toBeDefined();
+  });
+
+  it('constructs neither without the credential — the host then refuses loudly, not halfway', () => {
+    expect(platformStoreClients({} as never)).toEqual({ tenantStores: undefined, blobStores: undefined });
+    expect(platformStoreClients({ CF_ACCOUNT_ID: 'acct' } as never).blobStores).toBeUndefined();
+    expect(platformStoreClients({ CF_API_TOKEN: 'tok' } as never).tenantStores).toBeUndefined();
   });
 });

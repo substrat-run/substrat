@@ -1,4 +1,5 @@
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { errorCodeOf } from '@substrat-run/contracts';
 import { SecretBoxUnconfiguredError } from '@substrat-run/kernel';
 import { ControlPlaneError } from './client.js';
 import { ConnectionRelayError } from './connection-relay.js';
@@ -88,15 +89,27 @@ export function mapError(err: unknown): ApiError {
   if (err instanceof ControlPlaneError) {
     return { status: err.status as ContentfulStatusCode, body: { error: err.message } };
   }
-  // A deployment fact, not a fault in the request (#603): this host was started without a
-  // seal key, so nothing that stores a credential can work — the connection store, the
-  // subject keys, the per-tenant D1 credential seal. The relay checks up front and answers
-  // 503 itself; this catches every OTHER consumer, which would otherwise reach the generic
-  // 500 below and read as a bug in the caller's payload. The message is the kernel's own —
-  // it names what to set, and carries no secret. The typed error is exactly what this
-  // file's header calls the durable fix; it is the first case that has one.
-  if (err instanceof SecretBoxUnconfiguredError) {
-    return { status: 503, body: { error: err.message } };
+  // A deployment fact, not a fault in the request (#603, #828): this host was started
+  // without a piece of platform wiring, so a whole capability cannot work — no seal key
+  // (the connection store, the subject keys, the per-tenant D1 credential seal), or no
+  // store client (`provisionTenantStore` / `provisionBlobStore` with nothing to mint on).
+  // Whatever the caller sent, the same request succeeds unchanged once the host is wired.
+  //
+  // Without this branch such a throw reached the generic 500 below and read as a bug in
+  // the caller's payload — the shape of #828, where the control plane answered
+  // `internal error` to a provision for four hours while the throw it was hiding named
+  // its own fix in full. The message is OURS in every case (kernel or adapter, written
+  // to be read by an operator, carrying no tenant data and no secret), which is what
+  // licenses passing it through where an unreviewed message must not be.
+  //
+  // Matched by CODE, not by class: `errorCodeOf` reads the live property, the
+  // `Substrat.<code>` name a throw keeps across an RPC hop, and the legacy class names —
+  // so an adapter's refusal survives the DO boundary as itself. `SecretBoxUnconfiguredError`
+  // is one of those legacy names and is covered here; the explicit check stays because it
+  // predates the code and its absence would be silent.
+  if (err instanceof SecretBoxUnconfiguredError || errorCodeOf(err) === 'unavailable') {
+    const message = err instanceof Error ? err.message : String(err);
+    return { status: 503, body: { error: message } };
   }
   // The relay's own refusals already carry a reviewed status and message. The connection
   // route answers the 4xx ones itself (a 422 additionally carries the provider's probe);
