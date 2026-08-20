@@ -843,6 +843,26 @@ export function permissionContractSuite(
         expect((await connProbe(PERM_ADMIN)).allowed).toBe(false);
       });
 
+      // #726 gap 1. The read-back exists so a deployment can answer "may this
+      // connection act here" without staff access to the control plane — which is
+      // the question nothing could answer when `protocol:attach` went missing from a
+      // live connection for months (#716). Its whole worth is agreeing with the
+      // checker, so that is what is asserted: not the rows it selected, but that
+      // every permission it reports is one the probe allows, and every permission it
+      // omits is one the probe denies.
+      it('reads back exactly what the checker would allow for this connection', async () => {
+        const reported = new Set(
+          (await host.connectionGrantsInScope(t1, s1))
+            .filter((g) => g.connectionId === connId)
+            .map((g) => g.permission),
+        );
+        // PERM_USE was granted above; PERM_ADMIN never was. Both must agree.
+        for (const perm of [PERM_USE, PERM_ADMIN]) {
+          const { allowed } = await connProbe(perm);
+          expect({ perm, reported: reported.has(perm) }).toEqual({ perm, reported: allowed });
+        }
+      });
+
       it('inherits no memberships and no roles — it is not a person', async () => {
         // Roles reach principals through role tuples and orgs through
         // membership. A connection has neither, so a role that carries a

@@ -58,14 +58,17 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       { key: 'tokenId', label: 'Token credentials identifier', secret: false },
       { key: 'tokenSecret', label: 'Token credentials secret', secret: true },
     ],
-    // `read` opens the document the vertical bound to the instance (connector-scrive
-    // 0.9.0, #711) — a bound-but-unreadable document dead-letters rather than sending
-    // the attestation sheet instead, so a connection without it cannot send an avtal at
-    // all. `record-signature` lands the signature; `attach` lands the sealed signed PDF
+    // `record-signature` lands the signature; `attach` lands the sealed signed PDF
     // (the attachmentTargets write gate). Without `attach` the reconcile retries the
-    // upload forever — the three grants travel together, and this list is the only
-    // place the dashboard door can carry them, so it must track the connector's needs.
-    grants: ['protocol:read', 'protocol:record-signature', 'protocol:attach'],
+    // upload forever — and since this list is the only place the dashboard door can
+    // carry a grant, it must track what the connector's RETURN path needs.
+    //
+    // `protocol:read` is deliberately absent since #726. Reading the bound document is
+    // a per-dispatch act, and its authority is now the delivery itself: the host admits
+    // the attachments of the entity the delivered event names, resolved against the
+    // deployment's own spine. There is no grant to hold, so there is none to miss —
+    // which is the failure this catalog reproduced for months (#841, #711).
+    grants: ['protocol:record-signature', 'protocol:attach'],
   },
 };
 

@@ -31,6 +31,7 @@ import {
   systemGrant,
   subjectRef,
   createConnectionInput,
+  projectedConnectionGrant,
   projectedConnectionKey,
   moduleManifest,
   createOrgInput,
@@ -82,6 +83,7 @@ import {
   type EntitlementGrant,
   type EntitlementGrantInput,
   type EntitlementView,
+  type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type EntityRef,
   type MeterReading,
@@ -703,6 +705,55 @@ function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
   });
 }
 
+/**
+ * The dispatch capability (#726 remedy B): a connector delivery may read the attachments
+ * of the entity the DELIVERED EVENT names, and nothing else.
+ *
+ * The read a signing connector needs is inherently per-dispatch — the event names one
+ * `documentAttachmentId`, `bindDocument` already refused to bind an attachment owned by
+ * anything but the instance being signed, and `openAttachment` takes an id rather than a
+ * search. Modelling that as a standing scope-wide `protocol:read` grant was the mismatch
+ * this closes: the grant site has no entity leg, so the narrow check was being asked a
+ * question the grant model could only answer broadly — and `protocol:read` also gates
+ * `protocol/get`, `list-templates` and `list-for-entity`, none of which a connector
+ * sending one named document has any business reaching.
+ *
+ * **Derived here, never asserted by the caller.** The entity comes from this scope's own
+ * kernel-stamped spine row, looked up by event id. On the hosted path the platform runs
+ * the connector, so an entity passed across the seam would be the platform's word for
+ * what it is allowed to read; an event id it must resolve against the deployment's own
+ * outbox is not. The platform can name any delivery; it cannot name an entity.
+ *
+ * **No fallback to the permission check.** Inside a dispatch this IS the authority. A
+ * grant would only re-widen what the whole point is to narrow, and there is no read a
+ * connector legitimately makes during a delivery that the delivery does not name.
+ */
+const admitByDelivery = (
+  rt: ScopeRuntime,
+  eventId: string,
+  row: { entity_type: string; entity_id: string; id: string },
+): void => {
+  const event = rt.db
+    .prepare('SELECT entity_type, entity_id FROM _substrat_outbox WHERE id = ?')
+    .get(eventId) as { entity_type: string; entity_id: string } | undefined;
+  if (!event) {
+    throw new PermissionDenied(
+      `attachment ${row.id}: delivery ${eventId} is not an event of this scope, so it ` +
+        `carries no authority to read anything here`,
+    );
+  }
+  if (event.entity_type !== row.entity_type || event.entity_id !== row.entity_id) {
+    throw new PermissionDenied(
+      `attachment ${row.id} belongs to ${row.entity_type}/${row.entity_id}, and this ` +
+        `delivery is for ${event.entity_type}/${event.entity_id} — a connector may read ` +
+        `the attachments of the entity its event names, and no others`,
+    );
+  }
+};
+
+/** One grant tuple as `connectionGrantsInScope` reads it — either tuple store, same shape. */
+type TupleReadRow = { subject: string; relation: string; expires_at: string | null };
+
 export class SqliteScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
   private readonly dir: string;
@@ -1284,6 +1335,8 @@ export class SqliteScopeHost implements ScopeHost {
     rt: ScopeRuntime,
     timeoutMs: number,
     holdsActor: boolean,
+    /** The delivery this context is FOR (#726) — the dispatch capability's whole basis. */
+    eventId: string,
   ): ConnectorContext {
     const vertical =
       (
@@ -1324,10 +1377,20 @@ export class SqliteScopeHost implements ScopeHost {
           // serialized turn and stays under K-6 like every other reader. Assuming
           // the reentrant case everywhere would have dropped serialization on a path
           // that never needed it.
+          // #726 gap 1: this connection's live grants IN THIS SCOPE, so a connector can
+          // assert its preconditions at the top of a dispatch rather than discovering a
+          // missing grant as a refusal several calls later.
+          grants: async () =>
+            (await this.connectionGrantsInScope(rt.tenantId, rt.scopeId))
+              .filter((g) => g.connectionId === open.id)
+              .map((g) => g.permission),
           openAttachment: async (attachmentId: string) => {
             const store = this.attachmentStore(rt.tenantId, vertical);
             return this.buildAttachments(rt, { kind: 'connection', id: open.id }, store, {
               reentrant: holdsActor,
+              // #726 remedy (B): inside a dispatch the authority to read is the DELIVERY,
+              // not a standing grant. See `admitByEvent` on `buildAttachments`.
+              admitByEvent: eventId,
             }).open(attachmentId);
           },
           // #687: open a cell the scope sealed TO this connection. The keyId-indexed
@@ -1854,7 +1917,7 @@ export class SqliteScopeHost implements ScopeHost {
     rt: ScopeRuntime,
     subject: CheckSubject,
     store: TenantBlobStore,
-    opts: { reentrant?: boolean } = {},
+    opts: { reentrant?: boolean; admitByEvent?: string } = {},
   ): ScopeAttachments {
     const targetGate = (entityType: string): { read: PermissionKey; write: PermissionKey } => {
       const gate = this.attachmentTargets.get(entityType);
@@ -2008,6 +2071,10 @@ export class SqliteScopeHost implements ScopeHost {
             .prepare('SELECT * FROM _substrat_attachments WHERE id = ?')
             .get(attachmentId) as AttachmentRow | undefined;
           if (!row) return null;
+          if (opts.admitByEvent !== undefined) {
+            admitByDelivery(rt, opts.admitByEvent, row);
+            return rowToRecord(row);
+          }
           const gate = targetGate(row.entity_type);
           assertAllowed(
             await ctx.check(gate.read, { entityType: row.entity_type, entityId: row.entity_id }),
@@ -2662,7 +2729,7 @@ export class SqliteScopeHost implements ScopeHost {
           if (executor.kind === 'connector') {
             // `true`: dispatchExecutors is only ever reached from inside
             // `rt.actor.enqueue` (invoke's post-commit tail, or drainDue).
-            await executor.handler(this.connectorContext(rt, executor.timeoutMs, true), event);
+            await executor.handler(this.connectorContext(rt, executor.timeoutMs, true, event.id), event);
           } else {
             await executor.handler(this.admin, event);
           }
@@ -2753,10 +2820,55 @@ export class SqliteScopeHost implements ScopeHost {
     try {
       // `false`: this path deliberately does NOT enqueue, so nothing is held and
       // the connection's reads take an ordinary serialized turn.
-      await handler(this.connectorContext(rt, options?.timeoutMs ?? 30_000, false), event);
+      await handler(this.connectorContext(rt, options?.timeoutMs ?? 30_000, false, event.id), event);
     } finally {
       this.causedBy = null;
     }
+  }
+
+  /**
+   * The scope's own answer to "what may this connection do here" (#726 gap 1) — read
+   * from the delivered `connection:<id>` tuples, which is the same row the checker
+   * walks, so this cannot disagree with what would be enforced.
+   *
+   * Live only: a tombstoned tuple (K-21) and one past `expires_at` are both unenforced,
+   * and reporting either would make the read a worse answer than no read at all.
+   */
+  async connectionGrantsInScope(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ProjectedConnectionGrant[]> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    const now = new Date().toISOString();
+    // BOTH tuple stores, because a scope check consults both: rule 2 inheritance means
+    // a tenant-level grant (`grantToConnection` with `scopeId: null`) is enforced here
+    // exactly as a scope-level one is. Reading only the scope's own table would answer
+    // "not granted" where the checker answers allow — a read-back that disagrees with
+    // enforcement is worse than none, since it is the read an operator would trust.
+    const rows = [
+      ...(rt.db
+        .prepare(
+          `SELECT subject, relation, expires_at FROM _substrat_tuples
+           WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+             AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+        )
+        .all(now) as TupleReadRow[]),
+      ...(this.directory
+        .prepare(
+          `SELECT subject, relation, expires_at FROM _substrat_tenant_tuples
+           WHERE tenant_id = ? AND subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+             AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+        )
+        .all(tenantId, now) as TupleReadRow[]),
+    ].sort((a, b) => a.subject.localeCompare(b.subject) || a.relation.localeCompare(b.relation));
+    return rows.map((r) =>
+      projectedConnectionGrant.parse({
+        connectionId: r.subject.slice('connection:'.length),
+        permission: r.relation.slice('granted:'.length),
+        ...(r.expires_at ? { expiresAt: r.expires_at } : {}),
+      }),
+    );
   }
 
   migrationFrontier(): MigrationFrontier {

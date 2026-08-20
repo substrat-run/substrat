@@ -351,6 +351,65 @@ pinned by the scope-record derivation and the store's grant guards. If provider/
 allowlists ever prove necessary, the `package.json substrat` declaration + staff capability
 shape is the known pattern to add.
 
+### 3.5.2 What a connection may do, and why there is no button for it (#726)
+
+A connection's grants were, for a long time, the one authority in this model that could
+only be *written* from where a vertical sits. The permission surface is diffed at promote,
+role tuples are readable from the scope, entitlements and identity links are projected and
+read back locally — and the grants behind the one actor that is not a person were readable
+only with staff access to the control plane. That blind spot cost a live tenant months of
+silently failing sealed-copy landings, found by a human reading a diff on an unrelated PR
+(#716). Three things closed it, and one deliberate absence keeps it closed.
+
+**The read.** `connectionGrantsInScope` (and `conn.grants()` inside a dispatch) answers
+from the scope's own delivered tuples — the rows the checker itself walks, both stores,
+because a scope check consults both. The directory's view is a different fact and stays on
+`HostAdmin`; a caller asking "will this be refused *here*" wants the enforced one. A
+read-back that could disagree with enforcement would be worse than none, since it is the
+read an operator would believe.
+
+**The per-dispatch capability.** The check site is entity-aware and the grant site is not
+— `connectionGrant.node` has no entity leg — so a connector's inherently per-dispatch read
+could only be modelled as a standing scope-wide grant. It no longer is: a connector
+dispatch may open the attachments of the entity the delivered event names, and no others.
+The entity is derived from the deployment's own kernel-stamped spine row, so what crosses
+the `/internal` seam is the *name* of a delivery rather than a claim about what the
+platform may reach. There is no fallback to a grant on mismatch, and none on an
+unresolvable delivery: "we could not resolve it, so check the grant instead" is how a
+narrowing becomes a no-op.
+
+**The declaration.** A connector exports the standing grants its RETURN path needs — the
+path that runs top-level, with no delivered event behind it, and therefore genuinely
+requires standing authority. `pnpm lint:connector-grants` fails when the dashboard's
+provider catalog cannot carry one, so a requirement no door can grant is a red in CI
+rather than a dispatch that dead-letters months later.
+
+**And no grant-only write route** — but the thing that replaces it is not built yet, and
+saying so is the point of this paragraph.
+
+The obvious fourth piece is a button that adds a missing grant without re-submitting a
+working credential. It stays unbuilt because it is the wrong repair: it would hand-patch
+drift a declaration should prevent, put the fix in a console nobody diffs, and ask a tenant
+to decide something that is not theirs to decide — a connection's grants are the
+*vertical's* requirement, not the tenant's choice. §3.5.1's law is then satisfied by
+construction rather than by care: there is no act to launder if there is no act.
+
+The right repair is **reconcile-to-target**: the platform computes the grant set a
+connection should hold from the declaration, and grants or revokes directory rows to match
+— bounded by the declared universe, exactly as `setEntitlementsHandler` already reconciles
+a managed tenant's entitlements ("grant what the target names, revoke any declared key
+absent from it"). Then a missing grant is repaired by a push, and the ask lands in the
+permission diff that already exists.
+
+**Today it does not work that way.** The reconcile gathers grants that already exist as
+directory rows (`listConnectionGrants`) and delivers them to scopes; it creates none. So an
+EXISTING connection missing a standing grant is now *visible* — the read-back says so — and
+still repairable only through the credential upsert, which is the disproportion #726 gap 2
+named. What is closed is the other three quarters of the problem: the per-dispatch read
+needs no grant at all, a NEW connection gets what the connector declares, and a declaration
+no door can carry is a red. The last quarter is the target reconcile, and until it lands
+this section describes an intent, not a behaviour.
+
 ### 3.6 Token refresh
 
 Scrive is OAuth2: 1-hour access token, 30-day refresh. So refresh is not optional and it is not

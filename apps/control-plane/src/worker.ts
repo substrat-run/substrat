@@ -607,6 +607,9 @@ function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
         tenantId: a.tenantId,
         scopeId: a.scopeId,
         attachmentId: a.attachmentId,
+        // #726 remedy B: carry the delivery through. The deployment resolves it against
+        // its own outbox, so this is a name to check, never a claim to trust.
+        eventId: a.eventId,
       }),
     grant: async (a) =>
       (await clientFor(a.tenantId, a.scopeId)).connectorGrant({

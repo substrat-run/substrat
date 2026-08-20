@@ -142,6 +142,34 @@ export const scriveCallbackPath = (ref: ScriveCallbackRef): string =>
 export const SCRIVE_CALLBACK_ROUTE = '/hooks/scrive/:connectionId/:instanceId/:token';
 
 /**
+ * The standing grants this connector's RETURN path needs (#726 gap 3).
+ *
+ * Declared here because this is the only place that knows: the connector is what
+ * calls `protocol/record-signature` and lands the sealed PDF through the
+ * `attachmentTargets` write gate. Before this existed the requirement lived in prose
+ * — a README line and a CHANGELOG entry — while the dashboard's catalog hardcoded a
+ * list beside it, and nothing checked that the two agreed. They did not: `attach`
+ * was missing from a live connection for months, failing the sealed-copy landing into
+ * a `skipped` reason nobody reads, and it was found by a human reading a diff on an
+ * unrelated PR (#716).
+ *
+ * `pnpm lint:connector-grants` is what makes this load-bearing rather than a second
+ * piece of prose: a requirement no dashboard door can carry is a red in CI, not a
+ * dispatch that dead-letters months later.
+ *
+ * **`protocol:read` is deliberately absent.** Reading the bound document is a
+ * per-dispatch act, and since #726 its authority is the delivery itself — the host
+ * admits the attachments of the entity the delivered event names. There is no standing
+ * grant to hold, so there is none to miss. Only the return path, which runs top-level
+ * with no delivered event behind it, still needs standing authority — which is exactly
+ * what this list is.
+ */
+export const SCRIVE_CONNECTION_GRANTS = [
+  'protocol:record-signature',
+  'protocol:attach',
+] as const;
+
+/**
  * What the connector remembers about a dispatch, stored per-connection in the
  * directory (`ctx.admin.putConnectorState`).
  *
@@ -377,8 +405,15 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // runs inside the scope's dispatch, and on the pure adapter that surface
     // re-enters the scope actor and wedges it (#711). On the connection, so the
     // read is authorized as the very credential this dispatch is using — the same
-    // `conn` the document is about to be sent with, gated on its own
-    // `protocol:read` grant like every other door a connection walks through.
+    // `conn` the document is about to be sent with.
+    //
+    // It needs NO grant (#726 remedy B). The authority is the delivery: this event
+    // names the instance, `bindDocument` refused to bind an attachment owned by
+    // anything else, and the host admits exactly the attachments of the entity its
+    // own spine row names. A standing `protocol:read` would have been both wider
+    // than this read (it also gates `protocol/get`, `list-templates`,
+    // `list-for-entity`) and unreadable from here — which is how it came to be
+    // missing on a live tenant with nothing able to say so (#841).
     // Fall back only when NOTHING was named. Once a vertical has said which bytes
     // its signatory must see, sending different paper instead is the exact failure
     // this seam exists to end — quieter than a refusal and worse, because a document

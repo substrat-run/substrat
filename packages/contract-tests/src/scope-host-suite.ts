@@ -1962,6 +1962,99 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- the read-back: what the SCOPE says a connection may do (#726 gap 1) ----
+    //
+    // The grants above are the DIRECTORY's record. This is the other half, and the
+    // one a deployment can reach: the delivered tuples, read from where they are
+    // enforced. #716 found `protocol:attach` missing from a live connection after
+    // months of silent failure precisely because nothing outside the control plane
+    // could answer this question.
+    //
+    // The invariant that matters is agreement with the checker: whatever this
+    // returns must be exactly what `check` would allow for that connection in that
+    // scope. A read-back that disagreed would be worse than none, because it is the
+    // read an operator would believe. That agreement is asserted against real
+    // evaluation in `permission-suite` (which has the probe operation); what is
+    // pinned here is the shape — liveness, inheritance, and per-connection narrowing.
+
+    describe('connection grants, read back from the scope (#726)', () => {
+      const rt = tenantId.parse(ulid());
+      const rs = scopeId.parse(ulid());
+      const rconn = connectionId.parse(ulid());
+      const SCOPED = permissionKey.parse('protocol:record-signature');
+      const INHERITED = permissionKey.parse('protocol:attach');
+      const EXPIRED = permissionKey.parse('protocol:read');
+
+      beforeAll(async () => {
+        await host.admin.createTenant(staff, { id: rt, slug: 'tenant-readback', name: 'Readback' });
+        await host.provisionScope(staff, { tenantId: rt, scopeId: rs, vertical: 'signing' });
+        await host.admin.activateScope(staff, rt, rs);
+        await host.admin.createConnection(staff, {
+          id: rconn,
+          tenantId: rt,
+          vertical: 'signing',
+          provider: 'signer',
+          label: 'Signer',
+          secret: { accessToken: 'tok-readback' },
+        });
+        // Scope-targeted, tenant-wide, and one already past its expiry.
+        await host.admin.grantToConnection(staff, {
+          connectionId: rconn,
+          permission: SCOPED,
+          node: { tenantId: rt, scopeId: rs },
+          grantedBy: staff,
+        });
+        await host.admin.grantToConnection(staff, {
+          connectionId: rconn,
+          permission: INHERITED,
+          node: { tenantId: rt, scopeId: null },
+          grantedBy: staff,
+        });
+        await host.admin.grantToConnection(staff, {
+          connectionId: rconn,
+          permission: EXPIRED,
+          node: { tenantId: rt, scopeId: rs },
+          expiresAt: instant.parse('2020-01-01T00:00:00.000Z'),
+          grantedBy: staff,
+        });
+      });
+
+      it('answers with the live grants, tenant-wide ones included', async () => {
+        const grants = await host.connectionGrantsInScope(rt, rs);
+        expect(grants.map((g) => g.permission).sort()).toEqual([INHERITED, SCOPED].sort());
+        expect(grants.every((g) => g.connectionId === rconn)).toBe(true);
+      });
+
+      it('omits an expired grant — it would not be enforced either', async () => {
+        const grants = await host.connectionGrantsInScope(rt, rs);
+        expect(grants.map((g) => g.permission)).not.toContain(EXPIRED);
+      });
+
+      it('is scoped to the connection — another connection in the tenant is not reported', async () => {
+        const other = connectionId.parse(ulid());
+        await host.admin.createConnection(staff, {
+          id: other,
+          tenantId: rt,
+          vertical: 'signing',
+          provider: 'other-signer',
+          label: 'Other',
+          secret: { accessToken: 'tok-other' },
+        });
+        await host.admin.grantToConnection(staff, {
+          connectionId: other,
+          permission: EXPIRED,
+          node: { tenantId: rt, scopeId: rs },
+          grantedBy: staff,
+        });
+        const byConnection = new Map<string, string[]>();
+        for (const g of await host.connectionGrantsInScope(rt, rs)) {
+          byConnection.set(g.connectionId, [...(byConnection.get(g.connectionId) ?? []), g.permission]);
+        }
+        expect(byConnection.get(other)).toEqual([EXPIRED]);
+        expect(byConnection.get(rconn)?.sort()).toEqual([INHERITED, SCOPED].sort());
+      });
+    });
+
     // -- connector state: a connector's own durable bookkeeping (#101 gap 3) ---
 
     describe('connector state', () => {
