@@ -196,19 +196,45 @@ a PITR rewind the worst case is an orphaned object (harmless, GC-able via the st
 never a row silently re-pointed at different content. Bucket deletion at tenant reap is the same
 tracked follow-up as tenant stores — the ledger row is the teardown list.
 
-**Adoption by an already-provisioned tenant (#636):** minting happens only in the
-tenant-provisioning lifecycle — first install, sibling provision, manager-driven
-`provision-tenant` — never at promote. A serving upload re-derives the `r2_bucket` bindings
-from the `blob_stores` **ledger** (so a re-deploy cannot drop an existing tenant's bucket),
-but a ledger with no row for a tenant yields no binding, and promote mints nothing. So when a
-new version *first* declares `blobStores`, a tenant provisioned before that declaration adopts
-it with **one idempotent re-provision** (the K-31 provision endpoint, same tenant + scope):
-`collectBlobStoreHandles` re-resolves the declared needs against the *serving* version's
-manifest, mints the missing bucket, ledgers it, and attaches the binding — a retried or
-repeated call re-resolves the same bucket. Adoption is therefore "promote, then re-provision
-each pre-existing tenant once" — an explicit ops step (the same self-healing re-provision the
-restore runbook already uses), not push-and-it-works. Until it runs, attachment routes on that
-tenant fail loudly ("no blob store provisioned") — the fail-closed posture, not a bug.
+**Adoption by an already-provisioned tenant (#636, closed by #825):** minting is per tenant,
+and for a long time it happened *only* in the tenant-provisioning lifecycle — first install,
+sibling provision, manager-driven `provision-tenant`. A serving upload re-derives the
+`r2_bucket` bindings from the `blob_stores` **ledger** (so a re-deploy cannot drop an existing
+tenant's bucket), but a ledger with no row for a tenant yields no binding. Every tenant that
+already existed had therefore passed the only gate that mints, weeks before the declaration was
+written, and would never pass it again: declaring a store in version N+1 gave it to **nobody**,
+and adoption was an ops step — "promote, then re-provision each pre-existing tenant once" — that
+someone had to remember, per tenant, for a need the code had already started depending on. They
+don't remember. The vertical then fails at first use, in production, arbitrarily long after the
+deploy that introduced it (the Egeryds attachment outage: contract signing renders the PDF and
+uploads it *before* the operation that freezes it, so a refusing `attachments()` meant no
+contract could be sent for signature at all).
+
+**Promote reconciles the fleet's stores to the version it makes serving.** After the in-place
+serve — and only after, because until then `verticalServing` still names the *old* version and
+the declaration read would be the previous one — the promote diffs each declared need against
+the `tenant_stores` / `blob_stores` ledgers for every tenant in the directory holding a
+servable install (`provisioning`/`active`/`suspended`; archived and reaped scopes are skipped),
+mints what is missing, and attaches the bindings in **one** ledger-derived PATCH rather than one
+per tenant. Both ledgers are read once and diffed in memory, so the overwhelming common case —
+nothing newly declared — costs two reads and mints nothing, and re-promoting the same version is
+silent. Declaring a store is therefore push-and-it-works, like every other part of a deploy.
+
+It is deliberately **not** part of the serve's success: a minting failure (the platform's
+Cloudflare credential, the store API refusing) must not make a promote report failure when the
+new code is already live and serving. It lands an ops-failure row, rides back in the promote
+response so `substrat promote` prints it at the terminal, and leaves the two per-scope paths as
+the retry — `POST /verticals/:slug/instances` (re-running the install mints as a side effect) and
+`POST /tenants/:t/scopes/:s/provision` (`substrat scope provision`, which mints the declared needs
+before reconciling and carries a freshly minted `tenantStores` handle into the reconcile so the
+vertical migrates it inside the usual ready-gate). Both are idempotent; so is the promote sweep.
+
+**And the gap is visible while it lasts.** The real defect was never the missing mint — it was
+that nothing said so. `/scopes/:id/health` reported green on a scope whose next upload was
+guaranteed to throw. It now compares DECLARED (the serving version's manifest) against MINTED
+(the ledger) and returns `missingStores`, which the console's scope detail and `substrat scope
+status` render with the lever that fixes it. Until it closes, attachment routes on that tenant
+fail loudly ("no blob store provisioned") — the fail-closed posture, not a bug.
 
 **Static assets (#340) are admitted, and they are not a binding.** A vertical's built SPA is
 declared as `runtimeNeeds.assets` — a *directory*, plus how the runtime should route paths

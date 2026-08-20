@@ -21,7 +21,28 @@ export interface PromoteOptions {
   acknowledge?: { permissionChange?: boolean; migrationChange?: boolean };
 }
 
-export async function promote(opts: PromoteOptions): Promise<{ channel: string; versionId: string }> {
+/**
+ * One store the promote minted for an already-installed tenant (#825) — a store declared
+ * by THIS version that the tenant, having been created before the declaration existed,
+ * did not have. Reported so adopting a new store is something the builder watches happen
+ * rather than an ops step someone has to remember.
+ */
+export interface MintedStore {
+  tenantId: string;
+  binding: string;
+  kind: 'relational' | 'blob';
+}
+
+export interface PromoteResult {
+  channel: string;
+  versionId: string;
+  /** Present only when this promote minted stores, or tried and could not. `minted` names
+   *  only tenants the caller may see (a builder reads its own tenant's directory rows and no
+   *  one else's); `otherTenants` counts the rest of the fleet the sweep also covered. */
+  storeBackfill?: { minted: MintedStore[]; otherTenants?: number; error?: string };
+}
+
+export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
   const base = opts.controlPlaneUrl.replace(/\/$/, '');
   const url = `${base}/verticals/${encodeURIComponent(opts.slug)}/channels/${encodeURIComponent(opts.channel)}/promote`;
   const res = await fetch(url, {
@@ -35,5 +56,5 @@ export async function promote(opts: PromoteOptions): Promise<{ channel: string; 
   warnIfStale(res.headers);
   const body = await res.text();
   if (!res.ok) throw new Error(`promote failed (${res.status}): ${body.slice(0, 300)}`);
-  return parseJsonBody<{ channel: string; versionId: string }>(body, url);
+  return parseJsonBody<PromoteResult>(body, url);
 }

@@ -81,10 +81,13 @@ import type {
 } from './deploy.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 import {
+  backfillDeclaredStores,
   blobStoreBindings,
   collectBlobStoreHandles,
   collectTenantStoreHandles,
+  missingStoresForTenant,
   tenantStoreBindings,
+  type MintedStore,
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import type { ObservabilityReader } from './observability.js';
@@ -1558,6 +1561,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // a new scope-DO route. `roleProjectionEmpty` on an active scope is the flag a console
   // fleet view raises; a scope whose roles live off-DO (adapter-sqlite's directory) reports
   // a null count and is not flagged.
+  //
+  // `missingStores` (#825) is the second silent condition, and the same shape of failure:
+  // per-tenant stores are minted in the TENANT-creation lifecycle, so a tenant that predates
+  // a newly declared `runtimeNeeds` store never gets one — the vertical's declaration and the
+  // tenant's ledger simply disagree, forever, and the only signal was a runtime throw at
+  // first use (an attachment upload refusing in production, long after the deploy that
+  // introduced the need). Comparing DECLARED against MINTED here makes a scope that cannot
+  // serve its own declared surface report unhealthy at the moment the need ships, and
+  // re-provisioning the scope is the repair (that path now mints what this reports).
   app.get('/tenants/:tenantId/scopes/:scopeId/health', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -1575,12 +1587,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const roles = tables.find((t) => t.name === '_substrat_roles');
     const roleCount = roles ? roles.rowCount : null;
     const roleProjectionEmpty = scope.status === 'active' && roleCount === 0;
+    const missingStores = scope.vertical
+      ? await missingStoresForTenant({
+          host: options.host,
+          actor: c.get('actor'),
+          slug: scope.vertical,
+          tenantId,
+        })
+      : [];
     return c.json({
       scopeId,
       status: scope.status,
       servingRef: scope.servingRef ?? null,
       roleCount,
       roleProjectionEmpty,
+      missingStores,
     });
   });
 
@@ -1665,6 +1686,33 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const connectionKeys = scope.vertical
       ? await admin.connectionSealingKeys(tenantId, scope.vertical)
       : [];
+    // #825: the BACKFILL seam for per-tenant stores. Minting lived only in the
+    // tenant-creation lifecycle, so a tenant created before its vertical declared a
+    // `runtimeNeeds` store never got one and nothing ever gave it one — the vertical then
+    // fails at first use, in production, with nothing an operator can reach. This is the
+    // lever they already reach for (`substrat scope provision`, the idempotent repair), so
+    // it mints and attaches what the serving version declares before reconciling. Safe to
+    // re-run by construction: both collectors are idempotent on (tenant, vertical, binding)
+    // and the binding attach is additive, so a scope whose stores already exist re-resolves
+    // the same refs and changes nothing.
+    const tenantStores = scope.vertical
+      ? await collectTenantStoreHandles({
+          host: options.host,
+          actor,
+          slug: scope.vertical,
+          tenantId,
+          patchBindings: options.patchScriptBindings,
+        })
+      : [];
+    if (scope.vertical) {
+      await collectBlobStoreHandles({
+        host: options.host,
+        actor,
+        slug: scope.vertical,
+        tenantId,
+        patchBindings: options.patchScriptBindings,
+      });
+    }
     try {
       const result = await vertical.reconcileInstance({
         tenantId,
@@ -1673,6 +1721,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         identityLinks,
         connectionGrants,
         connectionKeys,
+        // Handed over exactly as at provision: a store minted HERE has never been migrated
+        // by the vertical, so the reconcile must carry it into the same ready-gate — a bound
+        // but unmigrated database fails as loudly as an absent one.
+        ...(tenantStores.length ? { tenantStores } : {}),
       });
       return c.json(result);
     } catch (e) {
@@ -3060,6 +3112,58 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
   };
 
+  /**
+   * Reconcile the INSTALLED FLEET's per-tenant stores to what the version now being served
+   * declares (#825). Runs on promote, after the in-place serve, because that is the act
+   * that makes a declaration real: until the serve, `verticalServing` still names the old
+   * version and the declaration being backfilled would be the previous one.
+   *
+   * Without this, minting existed only in the tenant-creation lifecycle — a gate every
+   * installed tenant passed long before the declaration was written — so declaring a store
+   * in version N+1 gave it to nobody, and adopting it meant an operator remembering to
+   * re-provision each install by hand. They forget, and the vertical then fails at first
+   * use, in production, arbitrarily long after the deploy that introduced the need.
+   *
+   * Best-effort by construction, and deliberately NOT part of the serve's success: a
+   * minting failure (the platform's Cloudflare credential, a store API refusing) must not
+   * make a promote report failure when the new code is already live and serving. It lands
+   * an ops-failure row, rides back in the promote response so the builder sees it at the
+   * terminal, and the scope's own `/health` keeps reporting the gap until it closes —
+   * `substrat scope provision` remains the per-scope retry.
+   */
+  const backfillFleetStores = async (
+    c: { get: (k: 'actor') => PlatformActorId },
+    slug: string,
+  ): Promise<{ minted: MintedStore[]; error?: string }> => {
+    const actor = c.get('actor');
+    try {
+      // Every tenant with an install that can still serve. Archived/reaped scopes are
+      // excluded — minting a bucket for storage that is gone is pure waste.
+      const scopes = await admin.listScopes(actor, {
+        vertical: slug,
+        status: ['provisioning', 'active', 'suspended'],
+      });
+      const tenantIds = [...new Set(scopes.map((s) => s.tenantId))];
+      if (tenantIds.length === 0) return { minted: [] };
+      const minted = await backfillDeclaredStores({
+        host: options.host,
+        actor,
+        slug,
+        tenantIds,
+        patchBindings: options.patchScriptBindings,
+      });
+      if (minted.length) {
+        console.log('stores.backfilled', { slug, count: minted.length });
+      }
+      return { minted };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error('stores.backfill.failed', { slug, detail: message });
+      recordFailure({ actor, operation: 'promote.store-backfill', vertical: slug, message });
+      return { minted: [], error: message };
+    }
+  };
+
   app.post('/verticals/:slug/channels/:channel/promote', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
@@ -3099,6 +3203,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // uploading first would deploy to live scopes before the acknowledgement check.
     // A failed serve is NOT a failed promote: the channel moved (audited), old code
     // still serves, and promoting again retries the upload.
+    let backfill: { minted: MintedStore[]; error?: string } = { minted: [] };
     if (channel === 'prod') {
       try {
         await serveVersionInPlace(c.get('actor'), slug, versionId);
@@ -3108,6 +3213,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // so a legacy scope's data survives the promote instead of being stranded on a
         // fresh per-version script. Retry-safe: nothing rebound these scopes yet.
         await adoptAndRebindOwnedScopes(c, slug, versionId);
+        // #825: and mint whatever THIS version newly declares for the tenants already
+        // installed — after the serve, so the declaration being read is the one now live.
+        backfill = await backfillFleetStores(c, slug);
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
         console.error('serve.inplace.failed', { slug, versionId, detail });
@@ -3120,7 +3228,38 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         );
       }
     }
-    return c.json((await admin.listChannels(c.get('actor'), slug)).find((ch) => ch.channel === channel));
+    const promoted = (await admin.listChannels(c.get('actor'), slug)).find(
+      (ch) => ch.channel === channel,
+    );
+    // The store backfill rides the response only when it has something to say (#825), so
+    // nothing changes for the overwhelming majority of promotes — and when a store WAS
+    // minted, or could not be, the builder reads it at the terminal rather than finding out
+    // from a runtime throw weeks later.
+    //
+    // Named tenants are narrowed to what the caller may see: the sweep is fleet-wide (it has
+    // to be — every install needs the store), but a BUILDER reads only its own tenant's
+    // directory rows everywhere else (K-3, the forced filter on `GET /scopes`), and a promote
+    // report must not be the one place that hands them the tenant ids of everyone who
+    // installed their vertical. The rest is a count, which tells them the fleet was covered
+    // without naming who is in it.
+    const p2 = c.get('principal');
+    const visible =
+      p2.kind === 'builder' ? backfill.minted.filter((m) => m.tenantId === p2.tenantId) : backfill.minted;
+    const otherTenants = new Set(
+      backfill.minted.filter((m) => !visible.includes(m)).map((m) => m.tenantId),
+    ).size;
+    return c.json({
+      ...promoted,
+      ...(backfill.minted.length || backfill.error
+        ? {
+            storeBackfill: {
+              minted: visible,
+              ...(otherTenants ? { otherTenants } : {}),
+              ...(backfill.error ? { error: backfill.error } : {}),
+            },
+          }
+        : {}),
+    });
   });
 
   // The deploy seam (self-serve-deploy.md): a `substrat push` uploads a built bundle

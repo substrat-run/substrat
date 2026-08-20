@@ -74,7 +74,12 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
   // Role-projection health (#321): fetched lazily on select so the fleet list stays
   // one directory read while this detail still reveals the silent "active but zero
   // roles" condition. Null = not-yet/unavailable (degrades to nothing shown).
-  const [health, setHealth] = useState<{ roleProjectionEmpty: boolean; roleCount: number | null } | null>(null);
+  const [health, setHealth] = useState<{
+    roleProjectionEmpty: boolean;
+    roleCount: number | null;
+    /** Declared-but-never-minted per-tenant stores (#825) — empty on a healthy scope. */
+    missingStores: { binding: string; kind: 'relational' | 'blob' }[];
+  } | null>(null);
   // The script this scope's DO actually lives in. `servingRef` when it has adopted the
   // stable serving script (#286); otherwise the BOUND version's own script — the same
   // ladder introspection walks, because a scope's storage is in the deployment it was
@@ -102,7 +107,12 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
     api
       .scopeHealth(scope.tenantId, scope.id)
       .then((h) => {
-        if (!cancelled) setHealth({ roleProjectionEmpty: h.roleProjectionEmpty, roleCount: h.roleCount });
+        if (!cancelled)
+          setHealth({
+            roleProjectionEmpty: h.roleProjectionEmpty,
+            roleCount: h.roleCount,
+            missingStores: h.missingStores ?? [],
+          });
       })
       .catch(() => {
         if (!cancelled) setHealth(null);
@@ -288,6 +298,24 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
             </p>
           </div>
         )}
+        {health?.missingStores.length ? (
+          <div style={{ margin: '12px 0 0', display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <Badge status="danger">Store never minted</Badge>
+            <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: '18px' }}>
+              This vertical declares{' '}
+              {health.missingStores.map((s, i) => (
+                <span key={s.binding}>
+                  {i > 0 ? ', ' : ''}
+                  <code>{s.binding}</code> ({s.kind})
+                </span>
+              ))}{' '}
+              as a per-tenant store, and this tenant has none. Per-tenant stores are minted in the
+              tenant-creation lifecycle, so a tenant that <strong>predates the declaration</strong> never
+              gets one and the vertical throws at first use (#825). Re-provision the scope to mint and
+              bind them: <code>substrat scope provision {scope.id}</code>.
+            </p>
+          </div>
+        ) : null}
         {eff === 'reaped' && (
           <p style={{ margin: '12px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
             Storage reaped — this scope's Durable Object was wiped (§4.4). The row is kept

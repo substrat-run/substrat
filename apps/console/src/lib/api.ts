@@ -245,11 +245,18 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       call<Scope>(`/tenants/${tenantId}/scopes/${scopeId}`),
     // Scope health (#321): an ACTIVE scope with a resolvable serving script but an empty
     // role projection serves traffic every check denies — surfaced as a platform condition
-    // here instead of only as a per-app 403.
+    // here instead of only as a per-app 403. `missingStores` (#825) is the same kind of
+    // condition one layer down: a per-tenant store the vertical declares that this tenant
+    // was never minted, invisible until the code touches it.
     scopeHealth: (tenantId: TenantId, scopeId: ScopeId) =>
-      call<{ scopeId: ScopeId; status: string; servingRef: string | null; roleCount: number | null; roleProjectionEmpty: boolean }>(
-        `/tenants/${tenantId}/scopes/${scopeId}/health`,
-      ),
+      call<{
+        scopeId: ScopeId;
+        status: string;
+        servingRef: string | null;
+        roleCount: number | null;
+        roleProjectionEmpty: boolean;
+        missingStores?: { binding: string; kind: 'relational' | 'blob' }[];
+      }>(`/tenants/${tenantId}/scopes/${scopeId}/health`),
     provisionScope: (input: {
       tenantId: TenantId;
       scopeId: ScopeId;
