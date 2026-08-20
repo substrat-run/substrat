@@ -54,7 +54,7 @@ export interface ApiOperationDoc {
    * builder emits the query parameters and the `{ entries, nextCursor }` envelope —
    * so the wrapper is written once here rather than restated by every list operation.
    */
-  paged?: { sortKey: string; order?: 'asc' | 'desc' };
+  paged?: { sortKey: string; order?: 'asc' | 'desc'; total?: boolean };
 }
 
 /** operation name (module-namespaced, e.g. 'hr/create-employee') → its doc. */
@@ -209,13 +209,17 @@ export function buildOpenApiDocument(
           : {}),
         responses: {
           '200': {
-            description: op.paged ? 'One page of results.' : 'The operation result.',
+            description: op.paged
+              ? op.paged.total
+                ? 'One page of results, with the total matching this list’s filter.'
+                : 'One page of results.'
+              : 'The operation result.',
             ...(op.output
               ? {
                   content: {
                     'application/json': {
                       schema: jsonSchema(
-                        op.paged ? pageSchema(op.output) : op.output,
+                        op.paged ? pageSchema(op.output, op.paged.total === true) : op.output,
                         'output',
                       ),
                     },

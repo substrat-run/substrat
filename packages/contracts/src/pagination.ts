@@ -55,6 +55,28 @@ export interface Page<T> {
 }
 
 /**
+ * A page that also knows how many rows the walk covers — `1–20 of 340`.
+ *
+ * Opt-in per operation, because it is not free: keyset paging gives no total for
+ * free (that is the trade for correctness under concurrent writes), so a total is a
+ * SECOND query on every request. Business software asks for it constantly — a list
+ * of work orders or invoices with no count reads as broken to an office admin — so
+ * the platform supports it rather than pretending nobody needs it. It just refuses
+ * to charge every list for it.
+ *
+ * `total` counts the FILTERED set — the same `WHERE` the page ran under, never the
+ * table. A count of the whole table beside a filtered page is a number that is
+ * wrong in a way nobody notices until a customer does.
+ *
+ * It is also a snapshot: rows may be inserted or deleted mid-walk, so a total read
+ * on page one can disagree with the rows eventually seen. That is inherent to
+ * counting a moving set, not a defect to design around.
+ */
+export interface CountedPage<T> extends Page<T> {
+  total: number;
+}
+
+/**
  * Wrap a just-read page. `nextCursor` is the last entry's sort key when the
  * page came back full (there MAY be more), null when it came back short (the
  * walk is done — no trailing empty fetch).
@@ -65,6 +87,19 @@ export function pageOf<T>(entries: T[], limit: number, key: (entry: T) => string
 }
 
 /**
+ * Wrap a page that carries a total. `total` must come from a count over the SAME
+ * filter the page ran under — see `CountedPage`.
+ */
+export function countedPageOf<T>(
+  entries: T[],
+  limit: number,
+  key: (entry: T) => string,
+  total: number,
+): CountedPage<T> {
+  return { ...pageOf(entries, limit, key), total };
+}
+
+/**
  * The Zod shape of a page of `entry` — what a paged operation actually returns.
  *
  * Built from the entry schema rather than declared beside it, so a vertical states
@@ -72,10 +107,16 @@ export function pageOf<T>(entries: T[], limit: number, key: (entry: T) => string
  * OpenAPI uses this same builder, which is what keeps the document and the handler
  * describing one thing (D-22).
  */
-export function pageSchema<T extends z.ZodType>(entry: T) {
-  return z.object({
+export function pageSchema<T extends z.ZodType>(entry: T, withTotal = false) {
+  const base = z.object({
     entries: z.array(entry),
     /** The cursor to pass back for the next page, or `null` when the walk is done. */
     nextCursor: z.string().nullable(),
   });
+  return withTotal
+    ? base.extend({
+        /** Rows matching this list's filter, counted at the time of this page. */
+        total: z.number().int().nonnegative(),
+      })
+    : base;
 }

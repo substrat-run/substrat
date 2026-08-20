@@ -143,7 +143,7 @@ platform supplies the envelope:
   permission: 'customer:read',
   input: z.object({ limit: z.number().int().positive().max(200).optional(), cursor: z.string().optional() }),
   output: entities.customer.fields,   // the ENTRY, not an array
-  paged: { sortKey: 'id', order: 'desc' },
+  paged: { sortKey: 'id', order: 'desc', total: true },
   http: { method: 'GET', path: '/customers' },
 },
 ```
@@ -155,17 +155,22 @@ const limit = input.limit ?? LIST_PAGE_DEFAULT;
 const rows = input.cursor
   ? ctx.sql.query<Row>('SELECT * FROM acme_customers WHERE id < ? ORDER BY id DESC LIMIT ?', [input.cursor, limit])
   : ctx.sql.query<Row>('SELECT * FROM acme_customers ORDER BY id DESC LIMIT ?', [limit]);
-return pageOf(rows, limit, (row) => row.id);
+const total = ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM acme_customers')[0]!.n;
+return countedPageOf(rows, limit, (row) => row.id, total);
 ```
 
 Three things follow from the declaration, none of which you write twice:
 
-- the **handler's return type** becomes `Page<Entry>`, so declaring `paged` and returning a
-  bare array does not compile;
+- the **handler's return type** becomes `Page<Entry>` — or `CountedPage<Entry>` with
+  `total: true` — so declaring `paged` and returning a bare array does not compile;
 - **`sortKey` must name a field of the entry** — a cursor over a field that is not there is a
   page that silently skips or repeats rows;
 - the **emitted OpenAPI** grows `limit` / `cursor` / `order` parameters and the
-  `{ entries, nextCursor }` response.
+  `{ entries, nextCursor }` response, with `total` when declared.
+
+`total` is opt-in because a keyset page cannot produce one for free: it costs a second
+query per request, and it must count the **same filter** the page ran under. Say `true`
+where a screen renders `1–20 of 340`.
 
 See [What a good API looks like](/concepts/api-design#lists-are-pages-not-dumps) for why it
 is keyset rather than offset.

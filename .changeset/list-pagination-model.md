@@ -32,6 +32,19 @@ An operation declares `paged`, and `output` then carries the **entry** shape:
   `{ entries, nextCursor }` response schema, built with the same `pageSchema` the handler
   is typed against, so document and code cannot disagree.
 
+A **total count is opt-in**, because you cannot get one from a keyset page for free and
+business software asks for it constantly:
+
+```ts
+paged: { sortKey: 'id', total: true },
+```
+
+The handler then returns `countedPageOf` instead of `pageOf`, and the compiler holds it to
+that — swapping one for the other is a type error, not a missing field discovered in the
+UI. The number counts the **filtered** set, the same `WHERE` the page ran under: counting
+the table instead is the mistake that looks right until a second list exists, so there is a
+test for exactly that.
+
 `todo/list-items` adopts it end to end — declaration, keyset SQL, route, artifact — as the
 worked example the next vertical copies. Its `ORDER BY created_at, id` collapses to
 `ORDER BY id`: a ULID is creation-ordered, so that is the same sequence with one fewer

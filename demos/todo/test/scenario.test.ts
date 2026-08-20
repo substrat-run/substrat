@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Page } from '@substrat-run/contracts';
+import type { CountedPage } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { buildHost, seed, type World } from '../src/seed.js';
 
@@ -78,13 +78,14 @@ describe('the happy path', () => {
 
   it('Ada sees both changes', async () => {
     const ada = await as('ada');
-    const page = await ada.invoke<Page<{ text: string; done: number }>>('todo/list-items', {
+    const page = await ada.invoke<CountedPage<{ text: string; done: number }>>('todo/list-items', {
       listId: groceries,
     });
     expect(page.entries.map((i) => `${i.text}:${i.done}`)).toEqual(['milk:1', 'bread:0']);
     // Short page: the walk is over, so a client stops here rather than making one more
     // request that returns nothing.
     expect(page.nextCursor).toBeNull();
+    expect(page.total).toBe(2);
   });
 
   it('walks a long list one page at a time, without repeating or skipping a row', async () => {
@@ -95,14 +96,16 @@ describe('the happy path', () => {
     }
 
     const seen: string[] = [];
+    const totals: number[] = [];
     let cursor: string | null = null;
     let requests = 0;
     do {
-      const page: Page<{ text: string }> = await ada.invoke<Page<{ text: string }>>(
+      const page: CountedPage<{ text: string }> = await ada.invoke<CountedPage<{ text: string }>>(
         'todo/list-items',
         { listId: list.id, limit: 2, ...(cursor ? { cursor } : {}) },
       );
       seen.push(...page.entries.map((i) => i.text));
+      totals.push(page.total);
       cursor = page.nextCursor;
       requests++;
     } while (cursor !== null);
@@ -113,6 +116,26 @@ describe('the happy path', () => {
     expect(new Set(seen).size).toBe(seen.length);
     // 2 + 2 + 1: the short final page ends the walk, so three requests and no fourth.
     expect(requests).toBe(3);
+    // `1–2 of 5` on page one: the count is the whole filtered set, not the page.
+    expect(totals).toEqual([5, 5, 5]);
+  });
+
+  it('counts the filter, not the table', async () => {
+    const ada = await as('ada');
+    const mine = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Counted' });
+    const other = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Decoy' });
+    await ada.invoke('todo/add-item', { listId: mine.id, text: 'only one here' });
+    for (const text of ['a', 'b', 'c']) {
+      await ada.invoke('todo/add-item', { listId: other.id, text });
+    }
+
+    const page = await ada.invoke<CountedPage<{ text: string }>>('todo/list-items', {
+      listId: mine.id,
+    });
+    // 1, not 4. A count over the table instead of the list's own WHERE is a number
+    // that looks right until a second list exists.
+    expect(page.total).toBe(1);
+    expect(page.entries).toHaveLength(1);
   });
 
   it('does not repeat a row when the list is written to mid-walk', async () => {
@@ -122,7 +145,7 @@ describe('the happy path', () => {
       await ada.invoke('todo/add-item', { listId: list.id, text });
     }
 
-    const first = await ada.invoke<Page<{ text: string }>>('todo/list-items', {
+    const first = await ada.invoke<CountedPage<{ text: string }>>('todo/list-items', {
       listId: list.id,
       limit: 2,
     });
@@ -133,7 +156,7 @@ describe('the happy path', () => {
     // position in the ordering, so it cannot.
     await ada.invoke('todo/add-item', { listId: list.id, text: 'd' });
 
-    const second = await ada.invoke<Page<{ text: string }>>('todo/list-items', {
+    const second = await ada.invoke<CountedPage<{ text: string }>>('todo/list-items', {
       listId: list.id,
       limit: 2,
       cursor: first.nextCursor!,

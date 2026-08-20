@@ -114,9 +114,26 @@ offset window silently skips and duplicates rows. A cursor names a *position in 
 ordering* instead of a count of rows that have scrolled past, so a row inserted mid-walk
 cannot push another onto a page you already read.
 
-The cost is honest and worth stating: keyset gives you *next*, not *jump to page 7*, and no
-total count. If a screen needs "1–20 of 340" it pays for a separate count query. Most do
-not, and the ones that do are usually asking for a report rather than a list.
+The cost is honest and worth stating: keyset gives you *next*, not *jump to page 7*. A page
+number is not recoverable from a cursor, and asking for one is usually a sign the screen
+wants a report rather than a list.
+
+**A total count is available, and is opt-in.** Keyset cannot produce one for free — that is
+the trade for correctness under concurrent writes — so a total is a second query per
+request. Business software asks for it constantly (a table of work orders with no `1–20 of
+340` reads as broken), so the platform supports it rather than pretending nobody needs it.
+It just declines to charge every list for it:
+
+```ts
+paged: { sortKey: 'id', total: true },
+```
+
+The handler then returns `countedPageOf(...)` instead of `pageOf(...)`, and the compiler
+holds it to that. Two things to know about the number: it counts the **filtered** set — the
+same `WHERE` the page ran under, never the table, which is the mistake that looks right
+until a second list exists — and it is a snapshot, so rows written mid-walk can make page
+one's total disagree with the rows eventually seen. That is inherent to counting a moving
+set, not something to design around.
 
 Two defaults worth knowing: HTTP list reads **default to a page** (20, capped at 200),
 because egress is where an ever-growing table has to stop being a dump. Kernel-side reads
@@ -131,7 +148,7 @@ supplies the envelope, the query parameters and the handler's return type:
 ```ts
 'acme/list-customers': {
   output: entities.customer.fields,   // the ENTRY, not an array
-  paged: { sortKey: 'id', order: 'desc' },
+  paged: { sortKey: 'id', order: 'desc', total: true },
   http: { method: 'GET', path: '/customers' },
 },
 ```
@@ -277,7 +294,7 @@ Two things follow that are worth stating, because they cut against instinct:
 | Boundary parsing | Zod at the edge | Shipped |
 | Money | decimal string + currency | Shipped |
 | Identifiers | ULID | Shipped |
-| Pagination | keyset cursor, `{ entries, nextCursor }`, declared with `paged` | Declaration shipped; [#129](https://github.com/substrat-run/substrat/issues/129) / [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
+| Pagination | keyset cursor, `{ entries, nextCursor }` (+ opt-in `total`), declared with `paged` | Declaration shipped; [#129](https://github.com/substrat-run/substrat/issues/129) / [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
 | Errors | RFC 9457 problem+json, closed codes | [#113](https://github.com/substrat-run/substrat/issues/113) |
 | Clock | `ctx.now()` | [#812](https://github.com/substrat-run/substrat/issues/812) |
 | Idempotent writes | `Idempotency-Key` | [#116](https://github.com/substrat-run/substrat/issues/116) |

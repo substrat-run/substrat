@@ -212,7 +212,9 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
     output: todoEntities.item.fields,
     // A list's items are the one table here that grows without bound — one per line of
     // shopping, forever. Keyset over the ULID id, which is creation-ordered for free.
-    paged: { sortKey: 'id' },
+    // `total` because the app renders a count beside the list; it costs a second
+    // query per request, which is why it is asked for rather than assumed.
+    paged: { sortKey: 'id', total: true },
     http: { method: 'GET', path: '/lists/{listId}/items' },
   },
 

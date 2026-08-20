@@ -12,11 +12,11 @@
  * one implemented and not declared, is a compile error naming the exact method.
  */
 import {
+  countedPageOf,
   dataSubjectId,
   LIST_PAGE_DEFAULT,
   type HandlerInput,
   type HandlerOutput,
-  pageOf,
   z,
   type EntityRow,
   type PrincipalId,
@@ -172,7 +172,13 @@ const operations = {
           input.listId,
           limit,
         ]);
-    return pageOf(rows, limit, (row) => row.id);
+    // Counted over the SAME filter the page ran under. Counting the table instead
+    // would put a number beside the list that is wrong the moment there are two lists.
+    const total = ctx.sql.query<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM todo_items WHERE list_id = ?',
+      [input.listId],
+    )[0]!.n;
+    return countedPageOf(rows, limit, (row) => row.id, total);
   },
 
   'todo/add-item': async (ctx, input) => {

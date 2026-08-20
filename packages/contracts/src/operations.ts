@@ -20,7 +20,7 @@
  * schema language would need the shape written twice, and transcription is what
  * produced 40 wrong argument names in the one app where this was measured.
  */
-import type { Page } from './pagination.js';
+import type { CountedPage, Page } from './pagination.js';
 import { z } from 'zod';
 import type { EntityDef } from './model.js';
 
@@ -244,6 +244,15 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
     readonly sortKey: OutputKeys<O>;
     /** Walk direction. Defaults to `asc`; a feed reading newest-first says `desc`. */
     readonly order?: 'asc' | 'desc';
+    /**
+     * Also return `total` — the count of rows matching this list's filter.
+     *
+     * Opt-in, because a keyset page cannot produce one for free: it is a second
+     * query per request. Say `true` where a screen renders `1–20 of 340`, which in
+     * business software is most tables and in a feed is none of them. The handler
+     * must then return `countedPageOf`, and the compiler holds it to that.
+     */
+    readonly total?: boolean;
   };
   readonly emits?: {
     /**
@@ -607,8 +616,10 @@ export type HandlerInput<O> = O extends { input: infer I }
 
 export type HandlerOutput<O> = O extends { output: infer R }
   ? R extends z.ZodType
-    ? O extends { paged: unknown }
-      ? Page<z.infer<R>>
-      : z.infer<R>
+    ? O extends { paged: { total: true } }
+      ? CountedPage<z.infer<R>>
+      : O extends { paged: unknown }
+        ? Page<z.infer<R>>
+        : z.infer<R>
     : unknown
   : unknown;
