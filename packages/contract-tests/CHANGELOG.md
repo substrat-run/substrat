@@ -1,5 +1,14 @@
 # @substrat-run/contract-tests
 
+## 0.82.0
+
+### Patch Changes
+
+- Updated dependencies [885ccf8]
+- Updated dependencies [31ab573]
+  - @substrat-run/contracts@0.82.0
+  - @substrat-run/kernel@0.82.0
+
 ## 0.81.0
 
 ### Minor Changes
@@ -2208,7 +2217,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
