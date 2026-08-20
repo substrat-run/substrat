@@ -16,7 +16,7 @@ const layers = [
   {
     key: 'engine',
     name: 'Engines',
-    desc: 'Shared domain machinery — work orders, invoicing, protocols — that owns invariants: state machines can’t skip states, exported invoices are immutable, every mutation emits an event.',
+    desc: 'Shared domain machinery — work orders, invoicing, protocols — that owns invariants: state machines are declared and can’t skip states, exported invoices are immutable, every mutation emits an event.',
   },
   {
     key: 'vertical',
@@ -74,7 +74,7 @@ const pkgs = [
   ['@substrat-run/adapter-sqlite', 'Pure-SQLite scope host — local dev, CI, self-host', 'Working'],
   ['@substrat-run/adapter-cloudflare', 'Durable-Object scope host — production', 'Working'],
   ['@substrat-run/contract-tests', 'The conformance suite both adapters pass unchanged', 'Working'],
-  ['@substrat-run/model-emit', 'DDL emitted from your declared entities, and the reader that checks it', 'Working'],
+  ['@substrat-run/model-emit', 'DDL and state machines emitted from your declared model, and the reader that checks it', 'Working'],
   ['@substrat-run/vertical-host', 'The platform surface a hosted vertical mounts', 'Working'],
   ['@substrat-run/cli', 'substrat login / push — authenticated deploy', 'Working'],
   ['@substrat-run/engine-workorder', 'Work orders, time & material', 'Seed'],
@@ -134,7 +134,7 @@ const didnt = [
 const forAgents = [
   [
     'Derived, not generated',
-    'Entities are declared once; the DDL and the model artifact are emitted by code, and CI fails on drift. Cheaper than a model in tokens, latency and exactness — and smaller to hold in context afterwards.',
+    'Entities, operations and state machines are declared once; the DDL and the model artifact are emitted by code, and CI fails on drift. Cheaper than a model in tokens, latency and exactness — and smaller to hold in context afterwards.',
     '/concepts/model',
   ],
   [

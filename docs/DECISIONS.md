@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-96 decisions · 57 plan · 39 kernel
+97 decisions · 57 plan · 40 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -108,3 +108,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-57](decisions/D-057-the-agent-loop-acceptance-benchmark-is-retired-the-run-record.md) | 2026-08-19 | plan | The agent-loop acceptance benchmark is retired; the run records are kept |  |
 | [K-38](decisions/K-038-cross-engine-transition-guards-ship-as-both-poles-chosen-per.md) | 2026-08-19 | kernel | Cross-engine transition guards ship as both poles, chosen per case |  |
 | [K-39](decisions/K-039-payload-changes-are-loud-failure-replaces-until-dispatch-rou.md) | 2026-08-19 | kernel | Payload changes are loud-failure replaces; dual-emit is unavailable, not merely awkward | #128 |
+| [K-40](decisions/K-040-an-entity-s-state-machine-is-declared-in-the-model-not-w.md) | 2026-08-21 | kernel | An entity's state machine is declared in the model, not written a second time as guards | #844 |

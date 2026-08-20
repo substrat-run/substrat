@@ -1,0 +1,134 @@
+{
+  "entities": {
+    "workorder": {
+      "table": "workorder_orders",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "number"
+          },
+          "facility_type": {
+            "type": "string"
+          },
+          "facility_id": {
+            "type": "string"
+          },
+          "customer_type": {
+            "type": "string"
+          },
+          "customer_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "in_progress",
+              "completed",
+              "closed"
+            ]
+          },
+          "assigned_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "facility_type",
+          "facility_id",
+          "customer_type",
+          "customer_id",
+          "kind",
+          "title",
+          "description",
+          "status",
+          "assigned_to",
+          "created_by",
+          "created_at",
+          "completed_at"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "lifecycles": {
+    "workorder": {
+      "field": "status",
+      "initial": "planned",
+      "states": {
+        "closed": {
+          "terminal": true
+        },
+        "completed": {
+          "on": {
+            "workorder/close": "closed"
+          }
+        },
+        "in_progress": {
+          "on": {
+            "workorder/complete": "completed"
+          },
+          "allow": [
+            "workorder/report-material",
+            "workorder/report-time"
+          ],
+          "extensible": true
+        },
+        "planned": {
+          "on": {
+            "workorder/start": "in_progress"
+          },
+          "allow": [
+            "workorder/assign",
+            "workorder/report-material",
+            "workorder/report-time"
+          ]
+        }
+      }
+    }
+  }
+}

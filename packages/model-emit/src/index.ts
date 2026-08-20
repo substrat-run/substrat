@@ -22,3 +22,11 @@ export {
   methodName,
   type ClientConfig,
 } from './emit-client.js';
+export {
+  emitXState,
+  type EmitXStateOptions,
+  type GuardWiring,
+  type XStateMachine,
+  type XStateNode,
+  type XStateTransition,
+} from './emit-xstate.js';
