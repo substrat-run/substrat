@@ -1,5 +1,194 @@
 # @substrat-run/control-plane
 
+## 0.12.0
+
+### Minor Changes
+
+- 15df906: Updating a permission on an existing connection no longer means re-typing a working credential.
+
+  The entry above this one closed three quarters of #726 and said plainly that this quarter was
+  not built. This is that quarter.
+
+  A connection's grants could only ever be written **alongside a credential**. Both writing doors —
+  the dashboard's connect flow and the tenant relay — write the secret and then loop `grants`, so
+  the remedy for "a capability is missing" was "re-submit your Scrive credential", on a rotation
+  path that, done wrong, replaces a working one. And the #592 reconcile did not help, though it
+  looked like it should: it gathers grants that **already exist** as directory rows and delivers
+  them to scopes. It repairs a dropped _delivery_; it never creates a grant that was never made.
+
+  So `protocol:attach` sat missing on a live connection for months (#716) with no proportionate way
+  to add it — and once the read-back landed, the situation was that an operator could finally _see_
+  the problem and still had only the disproportionate repair.
+
+  ## Heal first, gather second
+
+  `reconcileConnectionGrants` runs before the gather on both the reconcile route and
+  provision-instance, so no path can forget it. A key the connector declares and the connection
+  does not hold is granted **tenant-wide** — materialized per scope by the existing #592 machinery,
+  so it reaches installs that do not exist yet — and the lever that applies it is the one operators
+  already reach for, the idempotent re-provision. A connector that declares a new grant delivers it
+  on the next reconcile.
+
+  Best-effort by contract: healing reaches the directory, and a failure there must never take down
+  the reconcile it rides on. A bad pass leaves exactly the behaviour that shipped before it existed.
+
+  ## Why this is not the button that was declined
+
+  The distinction is the whole reason this one is legitimate, so it is worth stating rather than
+  assuming.
+
+  A grant-only write route would let a person add an arbitrary permission to a connection from a
+  console: an authority decision, taken by someone, with no tenant principal behind it — precisely
+  the laundering `connections.md` §3.5.1 forbids.
+
+  This decides nothing. It materializes a requirement the **connector declared in code**, exactly
+  as a module's declared schedules are projected as `system:<moduleId>` grants at provisioning. No
+  one chose it, so there is no act to attribute, and the platform actor on `grantedBy` is honest
+  rather than a stand-in for a person. What a connection may do still follows from a declaration
+  that lands in a diff — it simply no longer needs a credential to deliver.
+
+  ## A floor, never a ceiling
+
+  Declared keys are granted; nothing is ever revoked. A connection may legitimately hold more than
+  its connector declares — a second connector on the same provider, a key granted for a path not
+  modelled here — and a reconcile that pruned to the declaration would revoke authority nobody
+  asked it to touch, on every tenant at once the day a declaration shrinks. `lint:connector-grants`
+  checks that same floor against the dashboard's catalog, so the two cannot drift apart in the
+  direction that matters.
+
+  The trade that buys, stated rather than hidden: a key that stops being declared is not cleaned
+  up. `protocol:read` — needed by nothing since the per-dispatch capability — stays on connections
+  already granted it. Harmless, visible in the read-back, and deliberate.
+
+  ## Verified against a real host, not a mock directory
+
+  The load-bearing assertion is that the healed grant is **enforced**, so it is made through the
+  scope's own read-back rather than the directory's list: a row nobody delivers is the #592 failure
+  mode in reverse, and asserting on the list would have passed for it. Around that: the grant
+  reaches a later install, a second pass changes nothing, a key the declaration does not name
+  survives, a working scope-targeted grant is not shadowed by a tenant-wide twin, nothing outside
+  the declaration's (tenant, vertical, provider) is touched, and a host that declares no connectors
+  behaves exactly as before. The route-level test drives the whole path and checks the credential
+  comes out untouched.
+
+- ca3377d: A connection's grants become readable, and a connector's per-dispatch read stops being a standing one.
+
+  Every other authority in this model is inspectable from where a vertical sits: the permission
+  surface is diffed at promote, role tuples are readable from the scope, entitlements and identity
+  links are projected and read back locally. A connection's grants were the exception — write-only
+  from the deployment, readable only with staff access to the control plane — and they are the
+  authority behind the one actor that is not a person.
+
+  That blind spot has a cost on the record. `protocol:attach` was missing from a live Scrive
+  connection for months, failing the sealed-copy landing into a `skipped` reason nobody reads, on
+  a path whose whole purpose is to bring a legal signature home. It was found by a human reading a
+  diff on an unrelated PR (#716). There was no read that could have surfaced it and no alarm that
+  would have.
+
+  ## The read
+
+  `ScopeHost.connectionGrantsInScope(tenantId, scopeId)` answers from the scope's **own delivered
+  tuples** — the rows the permission checker itself walks — so what it returns is what would
+  actually be enforced there, including a scope whose delivery is behind the directory. The
+  directory's view is a different fact and stays on `HostAdmin`. `conn.grants()` narrows it to one
+  connection inside a dispatch, so a connector can assert its preconditions at the top of a
+  delivery instead of meeting a missing grant as a refusal several calls later.
+
+  Both tuple stores are read, and getting that wrong was the near-miss. A scope check consults
+  tenant-level tuples too (rule-2 inheritance), and the two adapters split them differently: the
+  pure adapter keeps tenant-wide grants in the directory, while a Cloudflare scope holds _projected_
+  tenant tuples in its DO and _live_ ones in the control plane. Reading only the scope's own table
+  reports a tenant-wide grant absent while it is being enforced — a read-back that disagrees with
+  the checker is worse than none, because it is the read an operator would believe. The contract
+  suite pins the agreement against real evaluation via the probe operation, not against the rows
+  the query happened to select.
+
+  ## The per-dispatch capability (#726 remedy B)
+
+  The check site is entity-aware and the grant site is not. `attachments.open` asks
+  `ctx.check(gate.read, { entityType, entityId })`; `connectionGrant.node` is `{ tenantId, scopeId }`
+  with no entity leg, so a connection could only ever hold a permission scope-wide. The narrow
+  question was being answered by the one model that could not answer it narrowly.
+
+  And the read a signing connector makes is per-dispatch by nature. The event names one
+  `documentAttachmentId`; `bindDocument` already refuses to bind an attachment owned by anything
+  but the instance being signed; `openAttachment` takes an id rather than a search. So the
+  authority becomes the delivery:
+
+  > A connector dispatch may open attachments owned by the entity the delivered event names.
+
+  Nothing new had to be invented to carry it — both facts were already kernel-stamped, and both
+  adapters already tracked the delivery as ambient dispatch state (`causedBy`). The entity is
+  **derived, never asserted by the caller**: what crosses the hosted `/internal` seam is an event
+  id the serving deployment resolves against its own outbox. The platform runs the connector and
+  can name any delivery; it cannot name an entity.
+
+  There is no fallback to the permission check, on either a mismatch or an unresolvable id.
+  "We could not resolve the delivery, so check the grant instead" is how a narrowing becomes a
+  no-op — and a grant would re-widen exactly what this narrows, since `protocol:read` is not a
+  keyhole: it also gates `protocol/get`, `list-templates` and `list-for-entity`, none of which a
+  connector sending one named document reaches.
+
+  `protocol:read` accordingly leaves the dashboard's Scrive catalog. There is no grant to hold, so
+  there is none to miss.
+
+  ## The declaration, and the gate that makes it load-bearing
+
+  Three lists described one fact and nothing checked that they agreed: the connector declared what
+  it needed in prose, the dashboard's catalog hardcoded what it would grant, and a vertical passed
+  a third list with its own upsert. They did disagree — the catalog still read
+  `['protocol:record-signature', 'protocol:attach']` after connector-scrive 0.9.0 shipped needing
+  more, so no tenant connecting through the dashboard could be granted what the connector
+  required, and that surfaced as an avtal failing to reach Scrive (#841).
+
+  `SCRIVE_CONNECTION_GRANTS` puts the requirement where the knowledge is. `pnpm
+lint:connector-grants` (new CI step) fails when no dashboard door can carry one. Standing grants
+  only, deliberately: per-dispatch reads are authorized by the delivery now, so they belong in
+  neither list; what remains is the return path, which runs top-level with no delivered event
+  behind it. It checks a floor rather than an equality, so tightening a connector's needs never
+  reds the repo on a stale extra.
+
+  ## What did NOT get built, and why
+
+  No grant-only write route — a button adding a missing grant without re-submitting a working
+  credential. It is declined and recorded in `connections.md` §3.5.2: it would hand-patch drift a
+  declaration should prevent, put the repair in a console nobody diffs, and ask a tenant to decide
+  something that is the vertical's requirement rather than their choice. §3.5.1's law then holds by
+  construction — there is no act to launder if there is no act.
+
+  What replaces it is **not in this change**, and the doc says so rather than implying otherwise.
+  The right repair is reconcile-to-target — compute the grant set from the declaration, then grant
+  and revoke directory rows to match, exactly as `setEntitlementsHandler` already does for a managed
+  tenant's entitlements — after which a missing grant is fixed by a push. Today the reconcile only
+  delivers grants that ALREADY exist as directory rows (`listConnectionGrants`); it creates none. So
+  an existing connection missing a standing grant is now _visible_ and still repairable only through
+  the credential upsert. Closed here: the per-dispatch read needs no grant at all, a NEW connection
+  gets what the connector declares, and a declaration no door can carry is a red.
+
+  ## Three tests changed behaviour rather than breaking
+
+  That change is the substance, so each was rewritten to pin the new rule from both sides rather
+  than deleted:
+
+  - The connector sends the bound document **holding no read grant at all** — and refuses an
+    attachment the delivery does not name **while holding the key**.
+  - The invariant those tests were really protecting — send NOTHING rather than the wrong paper —
+    moves onto the failure that can still happen: a binding whose bytes are gone still
+    dead-letters rather than substituting the attestation sheet.
+  - The `/internal` seam test now asserts the delivery is carried through, because a dropped
+    `eventId` would silently fall back to the grant check — which looks like it works, right up
+    until the grant is the one that was removed.
+
+### Patch Changes
+
+- Updated dependencies [15df906]
+- Updated dependencies [ca3377d]
+  - @substrat-run/control-plane-api@0.83.0
+  - @substrat-run/contracts@0.83.0
+  - @substrat-run/kernel@0.83.0
+  - @substrat-run/adapter-cloudflare@0.83.0
+  - @substrat-run/connector-scrive@0.12.0
+
 ## 0.11.18
 
 ### Patch Changes

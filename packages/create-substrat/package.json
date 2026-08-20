@@ -1,6 +1,6 @@
 {
   "name": "create-substrat",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "description": "Scaffold a Substrat vertical — `npm create substrat <dir>`.",
   "license": "Apache-2.0",
   "repository": {
