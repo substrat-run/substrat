@@ -68,7 +68,7 @@ Field by field:
 | `guards` | manifest-declared operation pre-conditions: a named predicate the kernel runs inside the operation's transaction, before the handler (a throw blocks it) | kernel |
 | `schedules` | recurring work — operations the platform invokes on every live scope of this vertical, on a cadence, under a system actor (a date-triggered business rule) | the platform sweep ([recurring work](#recurring-work-schedules)) |
 | `withdraws` | operation names whose default binding this module suppresses — the name stops resolving, so a vertical can re-offer the transition behind its own guarded operation | kernel operation resolver |
-| `searchables` | entity types and fields registered for tenant-scoped search | search service |
+| `searchables` | entity types and fields to index for search — the kernel derives a per-scope FTS5 index and the triggers that maintain it | kernel ([Reads & scaling](/concepts/reads#finding-a-row-by-what-someone-typed)) |
 | `api` | path to the emitted OpenAPI for the module's HTTP surface, if any | tooling / SDK generation |
 | `ui` | routes, nav items, entity views, widgets — permission-keyed, composed into the vertical's app at build time | app shell |
 | `ui.settingsPanels` | permission-keyed settings screens the shell mounts for the app | app shell |

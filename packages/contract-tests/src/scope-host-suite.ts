@@ -19,7 +19,13 @@ import {
   type PrincipalId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { runPlatformSweep, ulid, type OperationHandler, type ScopeHost } from '@substrat-run/kernel';
+import {
+  isSearchIndexTable,
+  runPlatformSweep,
+  ulid,
+  type OperationHandler,
+  type ScopeHost,
+} from '@substrat-run/kernel';
 import {
   billedMod,
   contractTestBareOps,
@@ -783,8 +789,15 @@ export function scopeHostContractSuite(
         const dumped = new Set(dump.tables.map((t) => t.name));
         for (const t of tables) {
           if (t.name.startsWith('sqlite_')) continue;
+          // A derived search index (#827) is introspectable but deliberately NOT
+          // dumped: its shadow tables cannot be replayed, and the import rebuilds
+          // the whole index from the content tables it loads. Excluded here, and
+          // asserted positively below, so the exemption is a contract rather than
+          // a hole this loop happens not to notice.
+          if (isSearchIndexTable(t.name)) continue;
           expect(dumped.has(t.name)).toBe(true);
         }
+        expect(dump.tables.some((t) => isSearchIndexTable(t.name))).toBe(false);
         // The vertical table's rows are dumped in full (count matches introspection).
         const marker = dump.tables.find((t) => t.name === 'marker')!;
         const introMarker = tables.find((t) => t.name === 'marker')!;

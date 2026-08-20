@@ -87,6 +87,19 @@ export const calloutManifest = moduleManifest.parse({
     // engines — and are now checked against their registries.
     engines: [protocolEntities, workorderEntities],
     relations: [{ entityType: 'protocol', parentType: 'workorder' }],
+    // #827. The kernel derives a per-scope FTS5 index from this and maintains it
+    // with triggers; `table` and the id column come from `calloutEntities`, so
+    // nothing here restates where a customer lives.
+    //
+    // Left on the default `prefix` tokenizer deliberately. `substring` matches
+    // inside a word ("ande" → "Andersson") and costs a substantially larger
+    // index; a dispatcher types the start of a name or a customer number, which
+    // is what a prefix index is for. Switching is one word here, and the
+    // migration re-runs on the next deploy.
+    searchables: [
+      { entityType: 'customer', fields: ['name', 'number'] },
+      { entityType: 'facility', fields: ['name', 'address'] },
+    ],
   }),
   entitlementKey: 'callout',
   envSpec: CALLOUT_ENV,

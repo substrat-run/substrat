@@ -254,6 +254,7 @@ export const manifest = moduleManifest.parse({
     engines: [protocolEntities],
     attachmentTargets: [{ entityType: 'customer', readPermission: 'customer:read' }],
     relations: [{ entityType: 'protocol', parentType: 'customer' }],
+    searchables: [{ entityType: 'customer', fields: ['name', 'number'] }],
   }),
 });
 ```
@@ -261,6 +262,13 @@ export const manifest = moduleManifest.parse({
 `entityRelations` is **derived** from each entity's `parents` — local edges are never written
 twice. `relations` is only for edges involving a composed engine's entity, and both sides are
 checked against local ∪ engine names.
+
+`searchables` is derived in the other direction: you name the entity and the fields, and the
+helper carries the entity's **table and id column** across from the registry, because the
+kernel cannot build an index without them and you should not have to say where a customer
+lives twice. A field the entity does not have is a compile error, and so is a
+composite-keyed entity — a search hit is one id, and a table keyed by `(customer, year,
+month)` has none to return. See [Reads & scaling](/concepts/reads#finding-a-row-by-what-someone-typed).
 
 ## From entities to tables {#emit-tables}
 

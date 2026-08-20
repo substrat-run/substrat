@@ -82,6 +82,34 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
     ),
     http: { method: 'GET', path: '/customers' },
   },
+  /**
+   * The picker's read (#827). A separate operation rather than a `q` on
+   * `list-customers`: search is capped and relevance-ordered, a list is sorted
+   * and (once #811 lands) paged, and one endpoint cannot carry both contracts —
+   * which is why Stripe ships `/v1/customers/search` beside `/v1/customers`.
+   *
+   * `GET /customers/search` does NOT collide with `/customers/{customerId}/…`:
+   * `mountOperations` registers a static segment ahead of its parameter sibling
+   * (#785), the same way OpenAPI resolves a concrete path before a templated one.
+   */
+  'callout/search-customers': {
+    summary: 'Find customers by name or number',
+    permission: 'customer:manage',
+    input: z.object({
+      // Two characters is the prefix index's floor, enforced here so a caller
+      // gets a 400 naming the field rather than a throw from inside the kernel.
+      q: z.string().min(2),
+      limit: z.number().int().min(1).max(50).optional(),
+    }),
+    // Not a bare array: a capped read has to say it was capped, or a picker
+    // silently shows the first 20 of 200 matches as if that were all of them.
+    output: z.object({
+      results: z.array(calloutEntities.customer.fields),
+      limit: z.number().int(),
+      capped: z.boolean(),
+    }),
+    http: { method: 'GET', path: '/customers/search' },
+  },
   'callout/create-facility': {
     summary: 'Register a facility for a customer',
     permission: 'facility:manage',

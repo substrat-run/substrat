@@ -93,6 +93,38 @@ const listCustomersOp: OperationHandler<
   }));
 };
 
+/**
+ * #827. Three steps, and the middle one is the only new verb: check, ask the
+ * index for ids, hydrate through the read path that already exists.
+ *
+ * Hydrating rather than returning what the index holds is what keeps one answer
+ * to "what is a customer" — the index stores terms, not rows. The `IN (…)` loses
+ * the rank order, so the ids are re-sorted back into it: a picker that lists the
+ * best match third is a picker people stop trusting.
+ */
+const searchCustomersOp: OperationHandler<
+  { q: string; limit?: number },
+  { results: CustomerRow[]; limit: number; capped: boolean }
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(SC_PERM.customerManage));
+  const limit = input.limit ?? 20;
+  const hits = ctx.search('customer', input.q, { limit });
+  if (hits.length === 0) return { results: [], limit, capped: false };
+  const rows = ctx.sql.query<CustomerRow>(
+    `SELECT * FROM callout_customers WHERE id IN (${hits.map(() => '?').join(', ')})`,
+    hits.map((h) => h.id),
+  );
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return {
+    results: hits.map((h) => byId.get(h.id)).filter((r): r is CustomerRow => r !== undefined),
+    limit,
+    // The honest reading of a full page from a capped read: there may be more,
+    // and the caller should narrow the term rather than page — a ranked read has
+    // no stable cursor to page WITH.
+    capped: hits.length === limit,
+  };
+};
+
 const createFacilityOp: OperationHandler<
   { customerId: string; name: string; address?: string; accessNote?: string },
   FacilityRow
@@ -339,6 +371,7 @@ const declaredOperations = {
   'callout/whoami': whoamiOp,
   'callout/create-customer': createCustomerOp,
   'callout/list-customers': listCustomersOp,
+  'callout/search-customers': searchCustomersOp,
   'callout/create-facility': createFacilityOp,
   'callout/upsert-price': upsertPriceOp,
   'callout/price-list': priceListOp,

@@ -314,9 +314,34 @@ manifestEntities(entities, {
 });
 
 // --- searchables: the entity name ------------------------------------------
-manifestEntities(entities, {
-  // @ts-expect-error 'custmer' is not a declared entity
-  searchables: [{ entityType: 'custmer', fields: ['name'] }],
+// Inside a `toThrow`, unlike its neighbours: since #827 the enrichment READS the
+// named entity (for its table and id column), so a typo is refused at runtime as
+// well as rejected by the compiler. Both halves matter — the type check is what a
+// vertical author sees, the throw is what a hand-written manifest hits.
+describe('searchables', () => {
+  it('refuses an entity name the registry does not have, at runtime too', () => {
+    expect(() =>
+      manifestEntities(entities, {
+        // @ts-expect-error 'custmer' is not a declared entity
+        searchables: [{ entityType: 'custmer', fields: ['name'] }],
+      }),
+    ).toThrow(/not a declared entity/);
+  });
+
+  it('carries the table and id column across from the registry', () => {
+    expect(manifestEntities(entities, { searchables: [{ entityType: 'customer', fields: ['name'] }] }).searchables).toEqual([
+      { entityType: 'customer', fields: ['name'], table: 'vertical_customer', idColumn: 'id' },
+    ]);
+  });
+
+  it('refuses a composite-keyed entity, which has no single id to return', () => {
+    expect(() =>
+      manifestEntities(mixedKeys, {
+        // @ts-expect-error `budget` is keyed by three columns, so it is not pointable
+        searchables: [{ entityType: 'budget', fields: ['hours'] }],
+      }),
+    ).toThrow(/cannot be searchable/);
+  });
 });
 
 // --- searchables: the FIELDS, against that entity's own schema --------------

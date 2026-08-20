@@ -8,6 +8,7 @@ import {
   permissionContractSuite,
   scheduleContractSuite,
   scopeHostContractSuite,
+  searchContractSuite,
 } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
@@ -71,6 +72,21 @@ atomicContractSuite('adapter-sqlite', async () => {
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #827: the derived FTS index. Allow-all checker — the suite is about what the
+// index answers, and the permission gate over a search operation is the
+// vertical's own `assertAllowed`, exercised by the demo scenario.
+searchContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-search-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,
     cleanup: async () => {

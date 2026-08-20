@@ -942,6 +942,86 @@ export const contractTestInitialModules: ModuleRegistration[] = [
  * permission suite's module. The DO closes over all of them at construction; the
  * facade still gates/withdraws exactly as each suite drives it.
  */
+// -- search (#827) -----------------------------------------------------------
+
+/**
+ * A module whose entity is DECLARED searchable, so both adapters have to derive
+ * the index, run the triggers and answer `ctx.search`.
+ *
+ * The manifest carries `table`/`idColumn` because `manifestEntities()` puts them
+ * there — written out longhand here rather than pulling the registry into a
+ * fixture, which is the one place the enrichment is worth restating.
+ */
+export const searchModManifest = moduleManifest.parse({
+  id: '@test/search',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'search:use', description: 'search the things' }],
+  events: { emits: [], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'search',
+  searchables: [
+    { entityType: 'searchcustomer', fields: ['name', 'number'], table: 'search_customers', idColumn: 'id' },
+    // The same rows, matched inside the word — so the suite can hold the two
+    // tokenizers to their documented difference rather than assuming it.
+    { entityType: 'searchnote', fields: ['body'], table: 'search_notes', idColumn: 'id', tokenizer: 'substring' },
+  ],
+});
+
+export const searchMod: ModuleRegistration = {
+  manifest: searchModManifest,
+  migrations: [
+    {
+      version: '0001-init',
+      sql: `CREATE TABLE search_customers (id TEXT PRIMARY KEY, number TEXT NOT NULL, name TEXT NOT NULL);
+            CREATE TABLE search_notes (id TEXT PRIMARY KEY, body TEXT NOT NULL);`,
+    },
+  ],
+  operations: {
+    'search/add': (async (ctx, input) => {
+      const i = input as { id: string; number: string; name: string };
+      ctx.sql.exec('INSERT INTO search_customers (id, number, name) VALUES (?, ?, ?)', [
+        i.id,
+        i.number,
+        i.name,
+      ]);
+      return { id: i.id };
+    }) as OperationHandler<never, unknown>,
+    'search/rename': (async (ctx, input) => {
+      const i = input as { id: string; name: string };
+      ctx.sql.exec('UPDATE search_customers SET name = ? WHERE id = ?', [i.name, i.id]);
+      return { id: i.id };
+    }) as OperationHandler<never, unknown>,
+    'search/remove': (async (ctx, input) => {
+      ctx.sql.exec('DELETE FROM search_customers WHERE id = ?', [(input as { id: string }).id]);
+      return { removed: true };
+    }) as OperationHandler<never, unknown>,
+    'search/add-note': (async (ctx, input) => {
+      const i = input as { id: string; body: string };
+      ctx.sql.exec('INSERT INTO search_notes (id, body) VALUES (?, ?)', [i.id, i.body]);
+      return { id: i.id };
+    }) as OperationHandler<never, unknown>,
+    // The read under test. Returns hits verbatim — the suite asserts on ids and
+    // on the ORDER, which is the half a naive implementation gets wrong.
+    'search/find': (async (ctx, input) => {
+      const i = input as { entityType: string; term: string; limit?: number };
+      return ctx.search(i.entityType, i.term, i.limit === undefined ? undefined : { limit: i.limit });
+    }) as OperationHandler<never, unknown>,
+    // Write and read back INSIDE one operation: the read-after-write guarantee
+    // that picking triggers over event-sourced indexing exists to buy.
+    'search/add-then-find': (async (ctx, input) => {
+      const i = input as { id: string; number: string; name: string; term: string };
+      ctx.sql.exec('INSERT INTO search_customers (id, number, name) VALUES (?, ?, ?)', [
+        i.id,
+        i.number,
+        i.name,
+      ]);
+      return ctx.search('searchcustomer', i.term);
+    }) as OperationHandler<never, unknown>,
+  },
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -950,6 +1030,7 @@ export const contractTestModules: ModuleRegistration[] = [
   connectorMod,
   scheduleMod,
   atomicMod,
+  searchMod,
 ];
 
 export const brokenModManifest = moduleManifest.parse({

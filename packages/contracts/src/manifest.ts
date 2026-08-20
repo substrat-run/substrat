@@ -240,11 +240,19 @@ export const moduleManifest = z.object({
   provides: z.array(capability).optional(),
   requires: z.array(capability).optional(),
   api: z.string().optional(), // path to emitted OAS for the HTTP surface, if any (D-22)
+  // #827: what the kernel derives a per-scope FTS5 index from. `table`/`idColumn`
+  // are not authored — `manifestEntities()` fills them in from the entity registry,
+  // which is also what checks `fields`. Optional here because a hand-written
+  // manifest may predate the registry; the kernel refuses to provision an index
+  // without them rather than guessing at a table name.
   searchables: z
     .array(
       z.object({
         entityType: z.string().min(1),
         fields: z.array(z.string().min(1)).min(1),
+        table: z.string().min(1).optional(),
+        idColumn: z.string().min(1).optional(),
+        tokenizer: z.enum(['prefix', 'substring']).optional(),
       }),
     )
     .optional(),

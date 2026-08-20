@@ -197,6 +197,17 @@ import {
   type TenantStoreRecord,
   createAtomic,
   type RunSub,
+  NotSearchable,
+  isSearchIndexTable,
+  searchIndexDdl,
+  searchIndexMigrations,
+  searchIndexPlans,
+  searchLimit,
+  searchMatchExpression,
+  searchQuery,
+  type SearchHit,
+  type SearchIndexPlan,
+  type SearchOptions,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -712,6 +723,8 @@ export class SqliteScopeHost implements ScopeHost {
   /** operation names whose default binding some manifest withdrew (K-17). */
   private readonly withdrawn = new Map<string, string>(); // operation → withdrawing module
   private readonly relations = new Map<string, Set<string>>();
+  /** entityType → its derived FTS5 index (#827). One entity type, one index. */
+  private readonly searchPlans = new Map<string, SearchIndexPlan>();
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
   /** operation name → its owning module's entitlementKey (§4.3 gate). */
@@ -1404,9 +1417,30 @@ export class SqliteScopeHost implements ScopeHost {
       });
       this.guards.set(guard.before, forOperation);
     }
+    // #827: the search indexes this module's `searchables` declare, appended
+    // AFTER its own migrations — which is what makes the content table exist by
+    // the time a trigger references it. Derived, never authored: a module does
+    // not write the DDL for an index the kernel owns.
+    const searchMigrations = searchIndexMigrations(manifest.id, manifest.searchables);
+    for (const m of searchMigrations) {
+      if (seen.has(m.version)) {
+        throw new Error(`duplicate migration version in ${manifest.id}: ${m.version}`);
+      }
+      seen.add(m.version);
+    }
+    for (const plan of searchIndexPlans(manifest.id, manifest.searchables)) {
+      const existing = this.searchPlans.get(plan.entityType);
+      if (existing) {
+        throw new Error(
+          `search: '${plan.entityType}' is declared searchable by both '${existing.moduleId}' and ` +
+            `'${plan.moduleId}' — one entity type, one index; rename one`,
+        );
+      }
+      this.searchPlans.set(plan.entityType, plan);
+    }
     this.modules.set(manifest.id, {
       id: manifest.id,
-      migrations,
+      migrations: [...migrations, ...searchMigrations],
       consumers,
       schedules: manifest.schedules ?? [],
     });
@@ -2075,9 +2109,18 @@ export class SqliteScopeHost implements ScopeHost {
       const existing = db
         .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
         .all() as { name: string }[];
-      for (const { name } of existing) db.exec(`DROP TABLE IF EXISTS "${name}"`);
-      for (const t of dumped) db.exec(t.ddl);
-      for (const t of dumped) {
+      // Search index tables are left alone here and rebuilt below (#827). Dropping a
+      // shadow table directly is an error, and dropping them in `sqlite_master` order
+      // would reach one before its virtual table.
+      for (const { name } of existing) {
+        if (isSearchIndexTable(name)) continue;
+        db.exec(`DROP TABLE IF EXISTS "${name}"`);
+      }
+      // A dump written before indexes were excluded may still carry them; skip those
+      // too rather than failing a restore over data that is about to be recomputed.
+      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name));
+      for (const t of replayable) db.exec(t.ddl);
+      for (const t of replayable) {
         if (t.rows.length === 0) continue;
         const cols = t.columns.map((c) => `"${c}"`).join(', ');
         const placeholders = t.columns.map(() => '?').join(', ');
@@ -2090,6 +2133,21 @@ export class SqliteScopeHost implements ScopeHost {
       // KERNEL_DDL is all IF NOT EXISTS, so it fills only the gaps and never disturbs a
       // table the dump carried.
       db.exec(KERNEL_DDL);
+      // Rebuild the derived search indexes over the rows just loaded (#827). The DDL
+      // drops and recreates, so this also repairs an index the dump left stale, and
+      // the triggers it recreates are what keep the restored scope in step from here.
+      // Skipped for a plan whose content table this dump did not carry — a restore
+      // must not invent a table for an index to point at.
+      const present = new Set(
+        (
+          db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as {
+            name: string;
+          }[]
+        ).map((r) => r.name),
+      );
+      for (const plan of this.searchPlans.values()) {
+        if (present.has(plan.table)) db.exec(searchIndexDdl(plan));
+      }
       // Re-point scope-level grants at the scope they now live in. They are written as
       // `object = scope:<scopeId>`, so a fork, a restore into a different scope, or #286's
       // migration onto a stable script name all land rows naming a scope that is not this
@@ -4923,13 +4981,20 @@ export class SqliteScopeHost implements ScopeHost {
         // Every real table, keeping the `_substrat_*` spine but dropping SQLite's own
         // `sqlite_*` internals — those are auto-managed and `CREATE TABLE sqlite_*` is
         // rejected on reload. `sql` is the CREATE statement, replayed to rebuild the schema.
-        const defs = db
-          .prepare(
-            `SELECT name, sql FROM sqlite_master
-              WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
-              ORDER BY name`,
-          )
-          .all() as { name: string; sql: string }[];
+        //
+        // The derived search index (#827) is dropped too, and for the same class of
+        // reason: its shadow tables cannot be replayed (the DO host rejects the name
+        // outright), and it is recomputable — `loadDump` rebuilds it from the content
+        // tables it just loaded. A dump carries the rows, never the index over them.
+        const defs = (
+          db
+            .prepare(
+              `SELECT name, sql FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+                ORDER BY name`,
+            )
+            .all() as { name: string; sql: string }[]
+        ).filter(({ name }) => !isSearchIndexTable(name));
         const tables: ScopeDumpTable[] = defs.map(({ name, sql }) => {
           // `.raw(true)` gives positional rows; cells stay as-is (blobs are Buffers, not
           // nulled as in a UI read) so the dump is byte-faithful. The name is from the live
@@ -6280,6 +6345,7 @@ export class SqliteScopeHost implements ScopeHost {
     const principal = subject.id as PrincipalId;
     const checker = this.checker;
     const relations = this.relations;
+    const searchPlans = this.searchPlans;
     // K-34: the checks that passed in THIS operation. The context is created per invoke
     // (see buildStub), so this accumulates one operation's authorizations; `emit` snapshots
     // whatever has passed up to that point. A system/override actor is unconditionally
@@ -6441,6 +6507,24 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       check: runCheck,
+      /**
+       * #827. The plan is registration state, the index is scope state: an entity
+       * type nobody declared is `NotSearchable` (a wiring mistake), and a declared
+       * one whose index has not been provisioned in THIS scope cannot happen —
+       * the DDL rides the same journal as the module's own migrations.
+       */
+      search: (entityType: string, term: string, options?: SearchOptions): SearchHit[] => {
+        const plan = searchPlans.get(entityType);
+        if (!plan) throw new NotSearchable(entityType);
+        const q = searchQuery(
+          plan,
+          searchMatchExpression(term, plan.tokenizer),
+          searchLimit(options?.limit),
+        );
+        return (rt.db.prepare(q.sql).all(...q.params) as { id: string; rank: number }[]).map(
+          (row) => ({ entityType, id: row.id, rank: row.rank }),
+        );
+      },
       /**
        * Narrow a permission this caller already holds onto one entity (#K-sharing).
        *
