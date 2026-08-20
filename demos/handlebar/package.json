@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-handlebar",
-  "version": "0.0.78",
+  "version": "0.0.79",
   "private": true,
   "substrat": {
     "permissions": "src/seed.ts",

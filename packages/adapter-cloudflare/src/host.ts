@@ -1,4 +1,6 @@
 import {
+  fromWireFailure,
+  type WireFailure,
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
@@ -680,10 +682,18 @@ interface ScopeStubRpc {
     requiredEntitlement?: string,
     /** Set when the caller is a MODULE's system principal on a timer (#383). */
     systemModuleId?: string,
+    /**
+     * #113 phase 3: ask for failures as a value rather than a throw. A ScopeDO still
+     * running older code ignores the argument and throws, which the caller handles —
+     * so this is safe to deploy in either direction (see `scope-do.ts`).
+     */
+    failureEnvelope?: boolean,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
     platformRequests: number;
+    /** Present iff the operation failed and the DO understood `failureEnvelope`. */
+    failure?: WireFailure;
   }>;
   /** Whether this scope holds a live `system:<moduleId>` grant (#383) — the schedule switch. */
   hasSystemGrant(moduleId: string): Promise<boolean>;
@@ -2211,7 +2221,13 @@ export class CloudflareScopeHost implements ScopeHost {
           connectionId,
           requiredKey,
           systemModuleId,
+          true,
         );
+        // The operation failed and the DO handed the error back as DATA — so it still
+        // has its code and extensions, which a throw across this boundary would have
+        // stripped down to a message (#113 §3). Rethrown here, where the caller expects
+        // a throw: the envelope is the wire's shape, never the API's.
+        if (envelope.failure) throw fromWireFailure(envelope.failure);
         const drained = await this.drainExecutors(tenantId, scopeId);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).

@@ -63,3 +63,19 @@ export function pageOf<T>(entries: T[], limit: number, key: (entry: T) => string
   const last = entries.length >= limit ? entries[entries.length - 1] : undefined;
   return { entries, nextCursor: last === undefined ? null : key(last) };
 }
+
+/**
+ * The Zod shape of a page of `entry` — what a paged operation actually returns.
+ *
+ * Built from the entry schema rather than declared beside it, so a vertical states
+ * the entry once and the envelope cannot drift from `pageOf`'s output. The emitted
+ * OpenAPI uses this same builder, which is what keeps the document and the handler
+ * describing one thing (D-22).
+ */
+export function pageSchema<T extends z.ZodType>(entry: T) {
+  return z.object({
+    entries: z.array(entry),
+    /** The cursor to pass back for the next page, or `null` when the walk is done. */
+    nextCursor: z.string().nullable(),
+  });
+}

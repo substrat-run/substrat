@@ -465,3 +465,199 @@ describe('journalPrimaryKeys', () => {
     expect(journalPrimaryKeys(sql).get('t')).toEqual(['c', 'b']);
   });
 });
+
+/**
+ * #807 — the readers parsed LINES, not statements.
+ *
+ * Every case here is ordinary SQL that a real journal contains and the readers
+ * disagreed with. The first four are the reporter's, measured against a
+ * production vertical whose 63 entities produced 64 refusals, none of which was
+ * the model being wrong. The rest turned up probing the same cause.
+ *
+ * A journal is under no obligation to format itself for a parser. Whitespace is
+ * not semantics, and asking an adopter to reformat 38 shipped entries — history
+ * that is never rewritten — to satisfy a reader is the wrong side of the trade.
+ */
+describe('#807 — a journal is read as SQL, not as lines', () => {
+  const read = (sql: string) => ({
+    columns: [...(journalColumns(sql).get('t') ?? [])],
+    key: journalPrimaryKeys(sql).get('t'),
+    uniques: [...(journalUniques(sql).get('t') ?? [])],
+  });
+
+  it('reads a table with several columns on one line', () => {
+    // The reporter's case 1, and the one that cost 59 of the 64 refusals:
+    // splitting the SAME table onto one column per line used to change the
+    // answer, which is a reader disagreeing with itself about one schema.
+    expect(read('CREATE TABLE t (\n  a TEXT NOT NULL, b TEXT NOT NULL UNIQUE, PRIMARY KEY (a, b)\n);')).toEqual({
+      columns: ['a', 'b'],
+      key: ['a', 'b'],
+      uniques: ['b'],
+    });
+  });
+
+  it('...and agrees with itself when the same table is written one column per line', () => {
+    // The control: reformatting must not change a single answer.
+    expect(read('CREATE TABLE t (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL UNIQUE,\n  PRIMARY KEY (a, b)\n);')).toEqual(
+      { columns: ['a', 'b'], key: ['a', 'b'], uniques: ['b'] },
+    );
+  });
+
+  it('reads all three spellings of a uniqueness rule', () => {
+    // Table-level was the only one read. Column-level and CREATE UNIQUE INDEX
+    // are the same constraint by a different route, and both appear in real
+    // journals — they were the other 4 refusals, the ones no reformatting fixes.
+    expect(journalUniques('CREATE TABLE t (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL,\n  UNIQUE (b)\n);').get('t')).toEqual(
+      new Set(['b']),
+    );
+    expect(journalUniques('CREATE TABLE t (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL UNIQUE\n);').get('t')).toEqual(
+      new Set(['b']),
+    );
+    expect(
+      journalUniques(
+        'CREATE TABLE t (\n  a TEXT PRIMARY KEY NOT NULL,\n  b TEXT NOT NULL\n);\nCREATE UNIQUE INDEX ux_t_b ON t(b);',
+      ).get('t'),
+    ).toEqual(new Set(['b']));
+  });
+
+  it('does NOT read a partial unique index as a constraint', () => {
+    // `… WHERE deleted_at IS NULL` constrains a subset of the rows. Reading it
+    // as a whole-table key would claim a guarantee the database does not make —
+    // and the planner would then report "up to date" over a missing one.
+    const sql =
+      'CREATE TABLE t (\n  a TEXT PRIMARY KEY NOT NULL,\n  b TEXT,\n  deleted_at TEXT\n);\n' +
+      'CREATE UNIQUE INDEX ux ON t(b) WHERE deleted_at IS NULL;';
+    expect(journalUniques(sql).get('t')).toEqual(new Set());
+  });
+
+  it('sees a CREATE TABLE written entirely on one line', () => {
+    // The worst of the family: an invisible table is not a refusal. The planner
+    // read it as new and emitted a SECOND `CREATE TABLE` for a table that
+    // already existed — a wrong migration, generated silently.
+    expect(read('CREATE TABLE t (a TEXT PRIMARY KEY NOT NULL, b TEXT NOT NULL);')).toEqual({
+      columns: ['a', 'b'],
+      key: ['a'],
+      uniques: [],
+    });
+  });
+
+  it('sees a table with a STRICT or WITHOUT ROWID suffix', () => {
+    // Invisible the same way, because the body matcher required `);` to end a
+    // line. Both are ordinary SQLite that a journal is entitled to use.
+    for (const suffix of ['STRICT', 'WITHOUT ROWID']) {
+      expect(read(`CREATE TABLE t (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL,\n  PRIMARY KEY (a, b)\n) ${suffix};`)).toEqual(
+        { columns: ['a', 'b'], key: ['a', 'b'], uniques: [] },
+      );
+    }
+  });
+
+  it('reads a primary key whose column list wraps over lines', () => {
+    expect(journalPrimaryKeys('CREATE TABLE t (\n  a TEXT NOT NULL,\n  b TEXT NOT NULL,\n  PRIMARY KEY (\n    a,\n    b\n  )\n);').get('t')).toEqual(['a', 'b']);
+  });
+
+  it('reads a quoted identifier as the column it declares', () => {
+    expect(read('CREATE TABLE t (\n  "order" TEXT PRIMARY KEY NOT NULL,\n  b TEXT NOT NULL\n);')).toEqual({
+      columns: ['order', 'b'],
+      key: ['order'],
+      uniques: [],
+    });
+  });
+
+  it('does not read a constraint out of a comment', () => {
+    // The inverse error, and the dangerous direction: believing a uniqueness
+    // guarantee that nothing enforces is how a duplicate gets in.
+    const sql =
+      'CREATE TABLE t (\n  a TEXT PRIMARY KEY NOT NULL,\n' +
+      '  -- b is UNIQUE (b) per the spec, enforced elsewhere\n  b TEXT NOT NULL\n);';
+    expect(journalUniques(sql).get('t')).toEqual(new Set());
+    expect(journalColumns(sql).get('t')).toEqual(new Set(['a', 'b']));
+  });
+
+  it('does not read syntax out of a string literal or a CHECK body', () => {
+    const sql =
+      "CREATE TABLE t (\n  a TEXT PRIMARY KEY NOT NULL,\n" +
+      "  b TEXT NOT NULL DEFAULT 'x, y' CHECK (b <> 'UNIQUE'),\n  c TEXT NOT NULL\n);";
+    expect(journalColumns(sql).get('t')).toEqual(new Set(['a', 'b', 'c']));
+    expect(journalUniques(sql).get('t')).toEqual(new Set());
+  });
+
+  it('plans nothing new for a journal reformatted onto one line', () => {
+    // The end-to-end statement of the defect, and the one an adopter feels:
+    // formatting must not change a plan. Built by collapsing the EMITTER's own
+    // journal rather than by hand, so the fixture cannot drift from what
+    // `emitTables` actually produces.
+    const shipped = first(base);
+    const collapsed: Journal = {
+      entries: shipped.entries.map((e) => ({ ...e, sql: e.sql.replace(/\s+/g, ' ') })),
+    };
+    expect(collapsed.entries[0]?.sql).not.toContain('\n');
+    expect(planMigration(base, shipped).kind).toBe('up-to-date');
+    expect(planMigration(base, collapsed).kind).toBe('up-to-date');
+  });
+});
+
+/**
+ * The reader replays the journal instead of parsing it.
+ *
+ * Everything above this block is unchanged and still passes, which is the point:
+ * the readers answer the same questions, they just stopped guessing at the
+ * answers. What follows is what only a replay can do.
+ */
+describe('the journal is replayed, not parsed', () => {
+  it('follows a table rebuild without a line of replay code', () => {
+    // An append-only journal rebuilds a table by creating a `_new`, copying,
+    // dropping the original and renaming onto its name. Three hand-written
+    // replay loops used to implement this, one per reader. SQLite does it.
+    const sql =
+      'CREATE TABLE t (a TEXT PRIMARY KEY NOT NULL);\n' +
+      'CREATE TABLE t_new (a TEXT NOT NULL, b TEXT NOT NULL, PRIMARY KEY (a, b));\n' +
+      "INSERT INTO t_new (a, b) SELECT a, 'x' FROM t;\n" +
+      'DROP TABLE t;\n' +
+      'ALTER TABLE t_new RENAME TO t;';
+    expect(journalColumns(sql).get('t')).toEqual(new Set(['a', 'b']));
+    expect(journalPrimaryKeys(sql).get('t')).toEqual(['a', 'b']);
+    expect(journalColumns(sql).has('t_new')).toBe(false);
+  });
+
+  it('rewrites a constraint when a column is renamed, because the database does', () => {
+    const sql =
+      'CREATE TABLE t (a TEXT NOT NULL, b TEXT NOT NULL UNIQUE, PRIMARY KEY (a, b));\n' +
+      'ALTER TABLE t RENAME COLUMN b TO c;';
+    expect(journalColumns(sql).get('t')).toEqual(new Set(['a', 'c']));
+    expect(journalPrimaryKeys(sql).get('t')).toEqual(['a', 'c']);
+    expect(journalUniques(sql).get('t')).toEqual(new Set(['c']));
+  });
+
+  it('reads a vertical journal that hands data to another module', () => {
+    // Decision 28's extraction handoff: a vertical copies rows into a table that
+    // lives in the ENGINE's journal. Replaying the vertical alone can never
+    // satisfy that INSERT — so the DML is not replayed at all. It changes no
+    // schema, which is the only thing being asked about here.
+    const sql =
+      'CREATE TABLE vertical_thing (id TEXT PRIMARY KEY NOT NULL);\n' +
+      'INSERT INTO engine_thing (id) SELECT id FROM vertical_thing;';
+    expect(journalColumns(sql).get('vertical_thing')).toEqual(new Set(['id']));
+    expect(journalColumns(sql).has('engine_thing')).toBe(false);
+  });
+
+  it('refuses a journal whose schema statements do not apply', () => {
+    // The old readers answered anyway. A journal that cannot be replayed here
+    // would not apply to a scope either, and reporting a schema for it is how a
+    // broken migration passes a parity test.
+    expect(() => journalColumns('CREATE TABLE t (a TEXT, a TEXT);')).toThrow(/does not apply/);
+    expect(() => journalColumns('ALTER TABLE nope ADD COLUMN x TEXT;')).toThrow(/does not apply/);
+  });
+
+  it('does not trip over a semicolon inside a string literal', () => {
+    const sql = "CREATE TABLE t (a TEXT PRIMARY KEY NOT NULL, b TEXT NOT NULL DEFAULT 'x; y');";
+    expect(journalColumns(sql).get('t')).toEqual(new Set(['a', 'b']));
+  });
+
+  it('reads a key whose order is not declaration order', () => {
+    // `(b, a)` is a different index from `(a, b)`, and a reader that reported
+    // declaration order would call a moved key up to date.
+    expect(
+      journalPrimaryKeys('CREATE TABLE t (a TEXT NOT NULL, b TEXT NOT NULL, PRIMARY KEY (b, a));').get('t'),
+    ).toEqual(['b', 'a']);
+  });
+});

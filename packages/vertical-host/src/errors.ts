@@ -16,6 +16,7 @@
  * it is not, and the message last.
  */
 import { HTTPException } from 'hono/http-exception';
+import { errorCodeOf, PROBLEM_CATALOG } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
@@ -93,6 +94,16 @@ export function classifyError(err: unknown): ErrorClassification | undefined {
   const explicit = err instanceof HTTPException ? err.status : undefined;
   if (explicit !== undefined && explicit !== 400) return { status: explicit, message };
   if (isPlatformFault(err, message)) return { status: 502, message, platformFault: true };
+
+  // The taxonomy first (#113): a throw that declared what it is outranks every guess
+  // below it. This reads the code by SHAPE — the live property in-process, the `name`
+  // once it has crossed the ScopeDO hop — so it is the same answer on both paths,
+  // which is exactly what the message patterns underneath could never manage.
+  const code = errorCodeOf(err);
+  if (code !== undefined) {
+    return { status: PROBLEM_CATALOG[code].status as ContentfulStatusCode, message };
+  }
+
   if (isPermissionDenied(err, message)) return { status: 403, message };
   if (isParseFailure(err)) return { status: 400, message };
   if (/not found|unknown scope/i.test(message)) return { status: 404, message };

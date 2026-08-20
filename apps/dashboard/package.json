@@ -1,11 +1,10 @@
 {
   "name": "@substrat-run/dashboard",
-  "version": "0.26.15",
+  "version": "0.26.16",
   "private": true,
   "substrat": {
     "permissions": "src/provision.ts"
   },
-  "license": "Apache-2.0",
   "description": "The Dashboard — Substrat’s tenant-facing self-service surface (the platform vertical). See docs/architecture/dashboard.md.",
   "type": "module",
   "scripts": {

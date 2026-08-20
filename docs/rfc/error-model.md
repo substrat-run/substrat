@@ -6,7 +6,7 @@ description: One error model — RFC 9457 problem+json, a closed code taxonomy, 
 
 # The error model — problem+json, a closed taxonomy, and errors that survive the hop
 
-Status: **proposed** (v0.1)
+Status: **proposed** (v0.3 — §3 rewritten after measurement, then built as the envelope)
 
 > Answers issue [#113](https://github.com/substrat-run/substrat/issues/113), the first item
 > of the [#132](https://github.com/substrat-run/substrat/issues/132) tracking list — and the
@@ -109,29 +109,54 @@ Two rules that are not negotiable:
   This is the star topology applied to failure: a vertical can branch on the engine's reason
   without importing the engine's types.
 
-## 3. Surviving the RPC hop
+## 3. Surviving the RPC hop — measured, and it changed the answer
 
 This is the part that decides whether the whole design is real, because it is where the
-current one dies.
+current one dies. **v0.1 proposed a sentinel prefix on `message`, and then guessed that
+`name` would be a cleaner carrier. Phase 2 measured both against workerd. The measurement
+is in `packages/adapter-cloudflare/test/contract.test.ts` and it says:**
 
-`SubstratError extends Error` carries `code` and its declared extensions. Across the
-`ScopeDO` boundary, Workers RPC preserves only `name`, `message` and `stack` — so the
-structured payload has to travel *inside* one of those. Both ends of that hop are our code
-([`scope-do.ts:328`](../../packages/adapter-cloudflare/src/scope-do.ts#L328)), so:
+> Across the `ScopeDO` boundary, **only `message` survives.** `name` is not a second
+> channel: setting it on the rewrapped error does not deliver a `name` on the far side —
+> workerd folds it into the message as `"<name>: <message>"` and resets `name` to
+> `'Error'`. Own properties do not survive at all.
 
-```
-message = "substrat{\"code\":\"permission_denied\",\"permission\":\"customer:manage\"}permission denied: customer:manage"
-```
+That kills the `name` carrier outright: adopting it silently rewrites every error message
+on the Cloudflare path (`permission denied: perm:use` becomes `PermissionDenied:
+permission denied: perm:use`) for every log line, every vertical's `onError`, and every
+UI string. It was tried, the test caught it, and it was reverted.
 
-The rebuild on the far side parses the sentinel-prefixed header back into a `SubstratError`
-and restores `message` to the human tail. An error **without** the sentinel stays a plain
-`Error` and maps to `internal`, so nothing regresses while adoption is partial.
+It also weakens the message sentinel, which remains mechanically possible — `message` is
+a carrier — but is only *safe* if every reader decodes it before display. There is no
+single place to do that: `host.ts` obtains the stub and calls it directly from dozens of
+sites, so a sentinel would leak into whatever forgets. Wrapping the stub in a decoding
+proxy is conceivable and was not attempted; an RPC stub has delicate property and
+disposal semantics, and that is a real change rather than a two-line one.
 
-This is a wire hack and should read as one. It is chosen over the alternative — making
-`ScopeDO.invoke` return a discriminated `{ ok, error }` envelope instead of throwing —
-because that alternative changes the shape of every adapter method and every call site, and
-this RFC should not be that large. **If the sentinel proves fragile in practice, the
-envelope is the correct successor**, and this paragraph is the note that says so.
+**So the successor was promoted from contingency to plan, and then built.** Structure
+crossing this boundary travels as a **value**, not as a throw: `ScopeDO.invoke` returns
+`{ result, platformRequests, failure? }`, where `failure` is a `WireFailure` — name,
+message, code, extensions, plain JSON. The coordinator rebuilds an error from it and
+throws THAT, so the envelope is the wire's shape and never the API's: every caller above
+`host.ts` still writes `try`/`catch` exactly as before.
+
+**It is opt-in per call, and that is what makes it deployable.** The coordinator passes
+`failureEnvelope: true`; a ScopeDO instance still running older code ignores an unknown
+trailing argument and throws exactly as it always did, which the coordinator still
+handles. The reverse skew cannot silently swallow an error either: without the flag the
+DO throws. No flag day, and no window where a failure reads as a success.
+
+**What it deliberately does not do.** The rebuilt error is a `SubstratError` wearing the
+original `name`, NOT an instance of the class that was thrown — contracts cannot import
+the kernel, and reviving arbitrary classes across a wire is a capability nobody should
+want. `instanceof PermissionDenied` stays false on this path and always will. That is
+the wrong question; `errorCodeOf` is the right one, and every consumer in the repo asks
+it that way.
+
+**Still to convert.** `invoke` carries the envelope; the five other throwing RPC methods
+(`attachmentAdd`, `attachmentList`, `attachmentAuthorize`, `attachmentRemove`,
+`introspectQuery`) still throw across the hop and lose their structure. Same pattern,
+mechanical, lower traffic.
 
 ## 4. Where it lands
 
@@ -146,17 +171,23 @@ envelope is the correct successor**, and this paragraph is the note that says so
   replicator keeps running and the next generated vertical needs migrating on the day it
   is born.
 
-## 5. Rollout — four phases, no flag day
+## 5. Rollout — five phases, no flag day
 
 1. **Contracts.** Registry, schema, `SubstratError`, `toProblem`, OpenAPI wiring. Purely
    additive; nothing throws it yet, nothing breaks.
 2. **Kernel + adapters.** `PermissionDenied` becomes a `SubstratError` subclass — same
-   name, same message, now with `code`. Typed throws replace the highest-traffic bare
-   `Error`s. The sentinel lands at the RPC seam.
-3. **Transports.** `mapError` and every vertical `onError` read `code` first and **keep the
+   name, same message, now with `code`; `SecretBoxUnconfiguredError` likewise.
+   `errorCodeOf` reads a code by shape, and `vertical-host`'s classifier consults it
+   before its message patterns. **The RPC seam is NOT solved here** — see §3: it needs
+   the envelope, which is its own change. Converting the remaining bare `Error` throw
+   sites in the adapters is phase 2b, mechanical and message-preserving.
+3. **The wire.** Failures cross the ScopeDO boundary as a value (§3), so a code and its
+   extensions reach the coordinator intact. `vertical-host`'s classifier reads the code
+   before its message patterns.
+4. **Transports.** `mapError` and every vertical `onError` read `code` first and **keep the
    regex table as a fallback**, deleting patterns as each throw site is typed. Bodies gain
    the problem shape while retaining `error` (§1), so no client breaks.
-4. **Cleanup.** Contract-suite assertions migrate from message text to `code`; the regex
+5. **Cleanup.** Contract-suite assertions migrate from message text to `code`; the regex
    fallback and the `error` duplicate are deleted.
 
 **The constraint phase 4 exists to respect:** the contract suite asserts on roughly thirty

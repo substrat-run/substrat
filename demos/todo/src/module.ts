@@ -11,7 +11,16 @@
  * disagrees with the declared operation, one declared and not implemented, or
  * one implemented and not declared, is a compile error naming the exact method.
  */
-import { dataSubjectId, z, type EntityRow, type PrincipalId } from '@substrat-run/contracts';
+import {
+  dataSubjectId,
+  LIST_PAGE_DEFAULT,
+  type HandlerInput,
+  type HandlerOutput,
+  pageOf,
+  z,
+  type EntityRow,
+  type PrincipalId,
+} from '@substrat-run/contracts';
 import {
   assertAllowed,
   ulid,
@@ -149,10 +158,21 @@ const operations = {
 
   'todo/list-items': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
-    return ctx.sql.query<ItemRow>(
-      'SELECT * FROM todo_items WHERE list_id = ? ORDER BY created_at, id',
-      [input.listId],
-    );
+    // Keyset, not offset: the cursor is the last row's id and the walk is exclusive, so
+    // an item added mid-walk cannot push a row onto a page the caller already read.
+    // `ORDER BY id` alone — a ULID is creation-ordered, so the old `created_at, id`
+    // ordering is the same sequence with a second column the cursor could not name.
+    const limit = input.limit ?? LIST_PAGE_DEFAULT;
+    const rows = input.cursor
+      ? ctx.sql.query<ItemRow>(
+          'SELECT * FROM todo_items WHERE list_id = ? AND id > ? ORDER BY id LIMIT ?',
+          [input.listId, input.cursor, limit],
+        )
+      : ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE list_id = ? ORDER BY id LIMIT ?', [
+          input.listId,
+          limit,
+        ]);
+    return pageOf(rows, limit, (row) => row.id);
   },
 
   'todo/add-item': async (ctx, input) => {
@@ -276,17 +296,11 @@ const operations = {
     return { id: share.id, revoked: true };
   },
 } satisfies {
+  // Derived by the platform, not restated here — `HandlerOutput` is what knows that a
+  // `paged` declaration means the handler returns a Page of the declared entry.
   [K in keyof typeof todoOperations]: OperationHandler<
-    (typeof todoOperations)[K] extends { input: infer I }
-      ? I extends z.ZodType
-        ? z.infer<I>
-        : undefined
-      : undefined,
-    (typeof todoOperations)[K] extends { output: infer O }
-      ? O extends z.ZodType
-        ? z.infer<O>
-        : unknown
-      : unknown
+    HandlerInput<(typeof todoOperations)[K]>,
+    HandlerOutput<(typeof todoOperations)[K]>
   >;
 };
 

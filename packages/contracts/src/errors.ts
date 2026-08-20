@@ -15,16 +15,16 @@ import { entityRef } from './events.js';
  * - **Documentable.** The same schema that validates a problem body is emitted into
  *   `/openapi.json` (`openapi.ts`), so the API surface finally describes how it can
  *   FAIL and not only how it succeeds. Decision 22 cashed in again.
- * - **Additive to adopt.** Nothing throws these yet. `toProblem` maps an unrecognised
- *   throw to `internal` exactly as today's transports do, so this module can land,
- *   ship and be reviewed before a single call site changes.
+ * - **Additive to adopt.** `toProblem` maps an unrecognised throw to `internal` exactly
+ *   as the hand-rolled handlers do, so each layer could adopt this without a flag day.
  *
- * ## Phase 1 of four
+ * ## Where the rollout stands
  *
- * This is the contracts layer only. The kernel throwing typed errors, and the
- * `ScopeDO` RPC hop preserving them (Workers RPC rebuilds a thrown error as a plain
- * `Error`, which is why `instanceof PermissionDenied` is false in production today),
- * are phase 2 — see the RFC's §3 and §5.
+ * Phases 1–3 are in: the taxonomy and `toProblem` (contracts), the kernel's own error
+ * classes joined to it, and `wireFailure` — the value an error becomes when it has to
+ * cross the ScopeDO boundary, because a throw cannot carry structure across it. What
+ * remains is phase 4: the transports reading `code` instead of matching messages, and
+ * the deprecated `error` duplicate coming back out of the body.
  */
 
 /**
@@ -158,12 +158,42 @@ export const problem = z.object({
 export type Problem = z.infer<typeof problem>;
 
 /**
+ * Where a `SubstratError` keeps its code when the class itself is unavailable.
+ *
+ * `name` is a SECOND reading of the code, not a transport for it. Phase 2 proposed it
+ * as the way to cross the `ScopeDO` hop and that was wrong — measured against workerd,
+ * a thrown error arrives carrying its message and nothing else, with `name` folded into
+ * the message and reset. **Errors cross that boundary as a value now** (`wireFailure`,
+ * below), not as a throw.
+ *
+ * What this prefix still earns: a duplicate copy of a package in one build, a structured
+ * clone, or any other place the prototype is gone but the object survives — `errorCodeOf`
+ * reads the name and still answers correctly. Cheap, and it costs nothing to keep.
+ */
+export const ERROR_NAME_PREFIX = 'Substrat.';
+
+/**
+ * Class names that predate the taxonomy and already mean a code.
+ *
+ * Keeping `PermissionDenied` named `PermissionDenied` rather than renaming it to the
+ * generic form is deliberate: `vertical-host`'s classifier and several verticals match
+ * on that exact string today, and a rename would be a silent behaviour change bundled
+ * into a refactor. `ZodError` earns its row because a parse failure crossing the hop
+ * loses its `issues` array — the code is all that is left, and `validation_failed`
+ * without fields still beats `internal`.
+ */
+const CODE_BY_ERROR_NAME: Readonly<Record<string, ErrorCode>> = {
+  PermissionDenied: 'permission_denied',
+  SecretBoxUnconfiguredError: 'unavailable',
+  ZodError: 'validation_failed',
+};
+
+/**
  * A throw that already knows what it means.
  *
  * `message` stays the human sentence and nothing more, so logs, stack traces and the
- * ~30 message assertions the contract suite makes against both adapters all read
- * exactly as they do today. The structure rides alongside it, which is what lets the
- * rollout keep `detail` byte-identical through phases 1–3.
+ * contract suite's message assertions all read exactly as they do today. The code
+ * rides in `name`, which is what lets it survive the hop.
  */
 export class SubstratError extends Error {
   readonly code: ErrorCode;
@@ -172,11 +202,36 @@ export class SubstratError extends Error {
 
   constructor(code: ErrorCode, message: string, extensions: Record<string, unknown> = {}) {
     super(message);
-    this.name = 'SubstratError';
+    this.name = `${ERROR_NAME_PREFIX}${code}`;
     this.code = code;
     this.status = PROBLEM_CATALOG[code].status;
     this.extensions = extensions;
   }
+}
+
+/**
+ * The code a throw carries, however little of it survived.
+ *
+ * Three readings, in order of fidelity: the live `code` property (same isolate), the
+ * `Substrat.<code>` name (crossed a boundary), and the legacy class names above. A
+ * throw this cannot classify is not ours, and `toProblem` answers `internal` for it.
+ */
+export function errorCodeOf(err: unknown): ErrorCode | undefined {
+  if (err === null || typeof err !== 'object') return undefined;
+
+  const own = (err as { code?: unknown }).code;
+  if (typeof own === 'string') {
+    const parsed = errorCode.safeParse(own);
+    if (parsed.success) return parsed.data;
+  }
+
+  const name = (err as { name?: unknown }).name;
+  if (typeof name !== 'string') return undefined;
+  if (name.startsWith(ERROR_NAME_PREFIX)) {
+    const parsed = errorCode.safeParse(name.slice(ERROR_NAME_PREFIX.length));
+    if (parsed.success) return parsed.data;
+  }
+  return CODE_BY_ERROR_NAME[name];
 }
 
 /**
@@ -194,19 +249,13 @@ export function substratError<C extends ErrorCode>(
 }
 
 /**
- * Recognise one of ours.
+ * Recognise one of ours — by shape, never by `instanceof` alone.
  *
- * `instanceof` is checked first and is NOT trusted alone: an error crossing the
- * `ScopeDO` RPC boundary is rebuilt by the adapter as a plain `Error`, so the
- * prototype is gone by the time a transport sees it. Duck-typing on `code` costs two
- * lines and is the difference between this working in production and only in tests.
- * Making the structure actually survive that hop is phase 2 (RFC §3).
+ * Two copies of a package in one build already make `instanceof` a coin toss; a
+ * serialising boundary makes it a certainty in the wrong direction.
  */
 export function isSubstratError(err: unknown): err is SubstratError {
-  if (err instanceof SubstratError) return true;
-  if (!(err instanceof Error)) return false;
-  const code = (err as { code?: unknown }).code;
-  return typeof code === 'string' && errorCode.safeParse(code).success;
+  return err instanceof Error && errorCodeOf(err) !== undefined;
 }
 
 /** Zod's issue list, flattened to the wire shape. */
@@ -232,9 +281,13 @@ export function toProblem(err: unknown, instance?: string): Problem {
       errors: validationIssuesFrom(err),
     });
   }
-  if (isSubstratError(err)) {
+  const code = errorCodeOf(err);
+  if (code !== undefined && err instanceof Error) {
+    // `internal` is still generic even when a throw asked for it by name: the rule is
+    // about what reaches a client, not about who chose the code.
+    if (code === 'internal') return build('internal', undefined, instance);
     const extensions = (err as SubstratError).extensions ?? {};
-    return build(err.code, err.message, instance, extensions);
+    return build(code, err.message, instance, extensions);
   }
   return build('internal', undefined, instance);
 }
@@ -278,3 +331,55 @@ export const DOCUMENTED_ERROR_CODES: readonly ErrorCode[] = [
   'unavailable',
   'internal',
 ];
+
+/**
+ * An error flattened for a boundary that carries only data — the DO↔coordinator wire
+ * (#113 phase 3, `docs/rfc/error-model.md` §3).
+ *
+ * This exists because a THROW cannot carry structure across the ScopeDO hop: workerd
+ * delivers a thrown error's message and nothing else, folding `name` into it and
+ * dropping every own property (measured — `adapter-cloudflare`'s contract suite pins
+ * it). So the error stops being thrown across the boundary and starts being returned
+ * across it, as a value, which is the one shape that survives intact.
+ */
+export const wireFailure = z.object({
+  /** The original `name`, so `PermissionDenied` still reads as itself on the far side. */
+  name: z.string().min(1),
+  message: z.string(),
+  /** Absent when the throw was never ours — a bare `Error` stays a bare `Error`. */
+  code: errorCode.optional(),
+  extensions: z.record(z.string(), z.unknown()).optional(),
+});
+export type WireFailure = z.infer<typeof wireFailure>;
+
+/** Flatten a throw for the wire, losing nothing this side of the boundary knows. */
+export function toWireFailure(err: unknown): WireFailure {
+  if (!(err instanceof Error)) return { name: 'Error', message: String(err) };
+  const code = errorCodeOf(err);
+  if (code === undefined) return { name: err.name, message: err.message };
+  return {
+    name: err.name,
+    message: err.message,
+    code,
+    extensions: { ...((err as SubstratError).extensions ?? {}) },
+  };
+}
+
+/**
+ * Rebuild a throw from the wire.
+ *
+ * The rebuilt error is a `SubstratError` carrying the original `name`, NOT an instance
+ * of the original class — contracts cannot import the kernel, and reviving arbitrary
+ * classes over a wire is a capability nobody should want. That is enough for every
+ * consumer in the repo, because they all read the code or the name, never the
+ * constructor. `instanceof PermissionDenied` stays false here and always will; it is
+ * the wrong question, and `errorCodeOf` is the right one.
+ */
+export function fromWireFailure(failure: WireFailure): Error {
+  const err =
+    failure.code === undefined
+      ? new Error(failure.message)
+      : new SubstratError(failure.code, failure.message, { ...(failure.extensions ?? {}) });
+  err.name = failure.name;
+  return err;
+}

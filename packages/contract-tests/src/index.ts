@@ -13,6 +13,7 @@ export {
   contractTestBareOps,
   contractTestInitialModules,
   contractTestModules,
+  permMod,
   scheduleMod,
 } from './modules.js';
 export {

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   buildOpenApiDocument,
+  errorCodeOf,
+  fromWireFailure,
+  toWireFailure,
   DOCUMENTED_ERROR_CODES,
   errorCode,
   isSubstratError,
@@ -187,13 +190,140 @@ describe('validationIssuesFrom', () => {
 });
 
 describe('SubstratError', () => {
-  it('is catchable as an Error and names itself', () => {
+  it('is catchable as an Error and carries its code in the name', () => {
     try {
       throw new SubstratError('unavailable', 'no seal key configured');
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
-      expect((err as Error).name).toBe('SubstratError');
+      expect((err as Error).name).toBe('Substrat.unavailable');
       expect((err as SubstratError).status).toBe(503);
     }
+  });
+});
+
+// The mechanism phase 2 rests on: `name` is what Workers RPC preserves, so `name` is
+// where the code rides. Everything here simulates the far side of that hop — a PLAIN
+// Error with nothing but message and name left.
+describe('errorCodeOf', () => {
+  it('reads the live property in-process', () => {
+    expect(errorCodeOf(substratError('conflict', 'already exported'))).toBe('conflict');
+  });
+
+  it('reads the name once the class is gone', () => {
+    const crossed = new Error('already exported');
+    crossed.name = 'Substrat.conflict';
+    expect(errorCodeOf(crossed)).toBe('conflict');
+    expect(isSubstratError(crossed)).toBe(true);
+  });
+
+  it('reads the legacy class names that already meant a code', () => {
+    const denied = new Error('permission denied: customer:manage');
+    denied.name = 'PermissionDenied';
+    expect(errorCodeOf(denied)).toBe('permission_denied');
+
+    const unsealed = new Error('no seal key');
+    unsealed.name = 'SecretBoxUnconfiguredError';
+    expect(errorCodeOf(unsealed)).toBe('unavailable');
+
+    // A parse failure loses its `issues` across the hop; the code is all that is left,
+    // and validation_failed without fields still beats internal.
+    const parse = new Error('invalid input');
+    parse.name = 'ZodError';
+    expect(errorCodeOf(parse)).toBe('validation_failed');
+  });
+
+  // The one mapping in CODE_BY_ERROR_NAME keyed to a class we do NOT own. The tests
+  // above construct the name by hand, which would keep passing if Zod ever stopped
+  // producing it; this asks Zod itself.
+  it('maps a real ZodError, not just one we named ourselves', () => {
+    const parsed = z.object({ a: z.string() }).safeParse({ a: 1 });
+    expect(parsed.success).toBe(false);
+    expect(parsed.error!.name).toBe('ZodError');
+    expect(errorCodeOf(parsed.error!)).toBe('validation_failed');
+  });
+
+  it('has no opinion about a foreign error', () => {
+    expect(errorCodeOf(new Error('boom'))).toBeUndefined();
+    expect(errorCodeOf(Object.assign(new Error('boom'), { code: 'ENOENT' }))).toBeUndefined();
+    expect(errorCodeOf(Object.assign(new Error('boom'), { name: 'Substrat.nonsense' }))).toBeUndefined();
+    expect(errorCodeOf(null)).toBeUndefined();
+    expect(errorCodeOf('boom')).toBeUndefined();
+  });
+
+  it('classifies a post-hop throw exactly as it classified the original', () => {
+    const original = substratError('conflict', 'work order is already exported', {
+      reason: 'already_exported',
+    });
+    const crossed = new Error(original.message);
+    crossed.name = original.name;
+
+    const before = toProblem(original);
+    const after = toProblem(crossed);
+
+    expect(after.status).toBe(before.status);
+    expect(after.code).toBe(before.code);
+    expect(after.detail).toBe(before.detail);
+    // The documented cost: own properties do not survive, so the extension is lost.
+    expect(before.reason).toBe('already_exported');
+    expect(after.reason).toBeUndefined();
+  });
+
+  it('keeps `internal` generic even when a throw asked for it by name', () => {
+    const crossed = new Error('connection string postgres://user:hunter2@db');
+    crossed.name = 'Substrat.internal';
+    const body = toProblem(crossed);
+    expect(body.code).toBe('internal');
+    expect(body.detail).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain('hunter2');
+  });
+});
+
+
+/**
+ * The value an error becomes when it has to cross a boundary a throw cannot survive.
+ * `adapter-cloudflare` proves the boundary end; this proves the round trip.
+ */
+describe('the wire failure', () => {
+  const roundTrip = (err: unknown): Error =>
+    fromWireFailure(JSON.parse(JSON.stringify(toWireFailure(err))));
+
+  it('keeps the code, the message and the declared extensions', () => {
+    const original = substratError('conflict', 'the period is closed for edits', {
+      reason: 'period_closed',
+    });
+    const rebuilt = roundTrip(original);
+
+    expect(rebuilt.message).toBe('the period is closed for edits');
+    expect(errorCodeOf(rebuilt)).toBe('conflict');
+    // The half the `name` carrier could never deliver.
+    expect(toProblem(rebuilt).reason).toBe('period_closed');
+    expect(toProblem(rebuilt).status).toBe(409);
+  });
+
+  it('keeps a name that predates the taxonomy', () => {
+    const denied = Object.assign(new Error('permission denied: customer:manage'), {
+      name: 'PermissionDenied',
+    });
+    const rebuilt = roundTrip(denied);
+    expect(rebuilt.name).toBe('PermissionDenied');
+    expect(errorCodeOf(rebuilt)).toBe('permission_denied');
+  });
+
+  it('leaves a foreign throw foreign rather than inventing a code for it', () => {
+    const rebuilt = roundTrip(new Error('something a vertical understands'));
+    expect(rebuilt.message).toBe('something a vertical understands');
+    expect(errorCodeOf(rebuilt)).toBeUndefined();
+    expect(toProblem(rebuilt).code).toBe('internal');
+  });
+
+  it('survives a throw that was never an Error at all', () => {
+    const rebuilt = roundTrip('a bare string');
+    expect(rebuilt).toBeInstanceOf(Error);
+    expect(rebuilt.message).toBe('a bare string');
+  });
+
+  it('is JSON — no prototypes, no getters, nothing that needs a class to read', () => {
+    const wire = toWireFailure(substratError('not_found', 'gone'));
+    expect(JSON.parse(JSON.stringify(wire))).toEqual(wire);
   });
 });

@@ -101,7 +101,40 @@ Columns per table, replayed from a migration journal: `CREATE TABLE`, `ADD COLUM
 `DROP TABLE`, and `RENAME TO`. That last one matters — append-only journals rebuild a table
 by creating a `_new`, copying, dropping the original and renaming onto its name, and a
 reader that misses that reports the pre-rebuild columns forever. `journalUniques` does the
-same for unique constraints.
+same for unique constraints and `journalPrimaryKeys` for the key.
+
+**Your journal is not parsed — it is replayed.** The readers run it into a throwaway
+in-memory SQLite and read the schema back through `PRAGMA table_info` / `index_list` /
+`index_info`. So the answer is the one your production database would give, and every SQL
+spelling works because SQLite is the thing reading it: several columns on one line, a
+`CREATE TABLE` on one line, a `) STRICT;` suffix, a quoted `"order"` identifier, a wrapped
+`PRIMARY KEY (` list, a comma inside a literal, a `--` or `/* */` comment. Reformatting a
+journal never changes an answer, which matters because history is the one thing an
+append-only journal may not rewrite.
+
+Only **schema** statements are replayed. Your `INSERT`s do not change your schema, and
+skipping them is what lets a vertical's journal be read on its own when it hands data to an
+engine whose tables live in a different journal. Foreign keys stay off, so a `REFERENCES`
+pointing at another module's table is created rather than refused.
+
+A journal whose schema statements **do not apply** now throws, naming the statement. That
+is deliberate: a journal that cannot be replayed will not apply to a scope either, and the
+old parser answered anyway.
+
+::: warning Node only
+The readers use `node:sqlite`, so they need **Node 22.5+**. That is not a new restriction in
+practice — this package is a build-time devDependency and nothing in it runs inside a scope.
+:::
+
+`journalUniques` reads all three spellings of a uniqueness rule, because real journals use
+all three:
+
+| in the journal | read as |
+|---|---|
+| `UNIQUE (a, b)` — table-level | `a, b` |
+| `b TEXT NOT NULL UNIQUE` — column-level | `b` |
+| `CREATE UNIQUE INDEX ux ON t (b)` | `b` |
+| `CREATE UNIQUE INDEX ux ON t (b) WHERE deleted_at IS NULL` | **nothing** — a partial index constrains a subset of the rows, so reading it as a key would claim a guarantee the database does not make |
 
 It ships with the emitter because the two are one claim: the emitter says *what the database
 ends up with*, and this is how that gets checked. Until your migrations are derived, use it

@@ -1,5 +1,6 @@
 import {
   objectRef,
+  SubstratError,
   type Decision,
   type EntityRef,
   type Node,
@@ -42,11 +43,15 @@ export const asPrincipal = (id: PrincipalId): CheckSubject => ({ kind: 'principa
  * so the host can record the denial (actor, permission, where) without re-parsing the
  * message — and a plain message-only denial simply carries neither and is not recorded.
  */
-export class PermissionDenied extends Error {
+export class PermissionDenied extends SubstratError {
   readonly permission?: PermissionKey;
   readonly node?: Node;
   constructor(message: string, detail?: { permission: PermissionKey; node: Node }) {
-    super(message);
+    super('permission_denied', message, detail ? { permission: detail.permission } : {});
+    // NOT `Substrat.permission_denied`, which is what `SubstratError` would have set:
+    // `vertical-host`'s classifier and several verticals match this exact string, and
+    // the taxonomy recognises it as the code (contracts' `CODE_BY_ERROR_NAME`). A
+    // rename here would be a silent behaviour change smuggled into a refactor.
     this.name = 'PermissionDenied';
     this.permission = detail?.permission;
     this.node = detail?.node;
