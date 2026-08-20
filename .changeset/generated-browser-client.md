@@ -1,4 +1,5 @@
 ---
+'@substrat-run/model-emit': minor
 '@substrat-run/demo-handlebar': minor
 '@substrat-run/demo-callout': minor
 '@substrat-run/demo-todo': minor
@@ -19,7 +20,21 @@ first twenty items of a list as though that were the list, and shipped no search
 Nothing was red, and nothing could be — there was no gate over a file a person maintained
 by remembering to.
 
-## `tools/client-emit.mts` (`pnpm lint:client`)
+## `renderClient` in `@substrat-run/model-emit`, `tools/client-emit.mts` around it
+
+The printer lives in the package because that is already the package's job — build-time
+tooling over a Substrat model, where `emitTables` turns entities into DDL. The tool keeps
+the sweep and the IO.
+
+The split is what makes it testable, and it needed to be. `--check` re-emits and compares,
+so it catches a client that fell BEHIND its model; it cannot catch a printer that has been
+confidently mis-spelling `z.array(z.union([...]))` since the day it was written — the
+emitted file and the re-emitted file agree perfectly, and both are wrong. 118 tests now
+assert exact strings for optionality (`a?: T`, never `a?: T | undefined`), parenthesised
+unions inside arrays, brands, pipes, discriminated unions, identity naming, every refusal,
+and a rendered client end to end.
+
+## Opting in (`pnpm lint:client`)
 
 A vertical opts in from its `package.json`, naming its model and where the client lands.
 The output is **standalone TypeScript with no imports at all**. That is not tidiness: the
@@ -73,9 +88,9 @@ client is not a thing a vertical may do.
   would have thrown on `.sections` of undefined. `underlagLine.source_id` is nullable, and
   Handlebar's invoicing view linked through it unconditionally.
 - **Ten operations declared without an `http` block** (four in Callout, six in Handlebar),
-  so each SPA hand-wrote calls to routes the vertical already served. Binding them changes
-  nothing at runtime — both still mount their tables by hand — and Callout's route-parity
-  test proves every new path is one it already serves.
+  so each SPA hand-wrote calls to routes the vertical already served. Binding them is also
+  what let both route tables become derived below; each new path was verified against the
+  one the hand-written table served before it was replaced.
 - **A name shadow.** Callout and `engine-protocol` both export `instantiateProtocolInput`
   with different shapes. Harmless, but it is why the emitter resolves each configured export
   individually and refuses only a name it was actually asked for.
@@ -99,10 +114,42 @@ re-emitted hermetically, so `rate-card.generated.ts` (models.dev) and `packages/
 (the public suffix list) carry the suffix and header plus a `GENERATED_AT` stamp instead of a
 gate. An in-repo source with no gate is a defect, not a style.
 
+## Both hand-written route tables go too
+
+Callout's `src/routes.ts` (180 → 102) and Handlebar's route block in `src/server.ts`
+(129 lines → a `mountOperations` call) were the other half of the same duplication: every
+line restated a method and a path the operations already declare. The comments they had
+accumulated are the argument against them — one explaining that `/customers/search` must be
+registered before any `/customers/:id` route or Hono answers it with `id: 'search'`, another
+explaining that `limit` arrives as a string and must be coerced because the operation
+declares a number. Both are real, and `mountOperations` derives both from the same
+declarations (#785). A hand-written table has to remember.
+
+What stays hand-written in each is the two routes that supply a CONSTANT — `timeline` and
+`protocol/list-for-entity` both take an entity-agnostic `entityType`, and binding either
+would let a caller read the timeline, or the protocols, of anything in the scope.
+
+Callout's route-parity test is rewritten rather than kept. It existed to prove the
+derivation matched the hand-written table so the table could be replaced; now that
+`routes.ts` IS the derivation, that assertion is one thing equalling itself, and a test that
+cannot fail is worse than no test because it still reads like coverage. What replaces it is
+the part that was never tautological: the declared surface pinned as an exact list, the two
+exceptions still being served, and the static-before-parameter ordering.
+
+**One deliberate behaviour change.** Handlebar's pickup refusal now answers **409**, not
+400. The engine declares that error's taxonomy code (#113) and `mountOperations` honours it;
+Handlebar's hand-written `onError` could not see the code and flattened everything
+unrecognised to 400. Both apps' `onError` now converts the mount's `HTTPException` back into
+their own `{ error }` body — Callout's previously returned `err.getResponse()`, whose body is
+Hono's, not `{ error }`, which the SPA reads off every failure.
+
 ## Verified
 
 Each client was driven against its own running server, not just typechecked: todo walks a
 45-item list across three pages with a correct total; Callout runs an order from creation
 through protocol sign to invoicing and refuses a portal user's write with a typed 403;
 Handlebar's pickup rule holds — `closeRepair` is refused until the customer counter-signs the
-tillståndsrapport, and succeeds after.
+tillståndsrapport, and succeeds after. Both were driven again after their route tables became
+derived: same lifecycle, same 403/404/400 envelopes, the `z.literal('workorder')` pin still
+holding against a caller who sends `entityType: 'customer'`, and `/customers/search` still
+reached rather than swallowed by its parameter sibling.
