@@ -384,16 +384,31 @@ requires standing authority. `pnpm lint:connector-grants` fails when the dashboa
 provider catalog cannot carry one, so a requirement no door can grant is a red in CI
 rather than a dispatch that dead-letters months later.
 
-**And no grant-only write route.** The obvious fourth piece — a button that adds a missing
-grant without re-submitting a working credential — is deliberately absent, because the
-three above remove the thing it would repair. Grants follow from what a connector declares
-and are re-delivered by every reconcile (#592), so the fix for a missing one is a push,
-which lands in the permission diff that already exists. A button would exist only to
-hand-patch drift the declaration prevents; it would put the repair in a console nobody
-diffs; and it would ask a tenant to decide something that is not theirs to decide — a
-connection's grants are the *vertical's* requirement, not the tenant's choice. §3.5.1's
-law is then satisfied by construction rather than by care: there is no act to launder if
-there is no act.
+**And no grant-only write route** — but the thing that replaces it is not built yet, and
+saying so is the point of this paragraph.
+
+The obvious fourth piece is a button that adds a missing grant without re-submitting a
+working credential. It stays unbuilt because it is the wrong repair: it would hand-patch
+drift a declaration should prevent, put the fix in a console nobody diffs, and ask a tenant
+to decide something that is not theirs to decide — a connection's grants are the
+*vertical's* requirement, not the tenant's choice. §3.5.1's law is then satisfied by
+construction rather than by care: there is no act to launder if there is no act.
+
+The right repair is **reconcile-to-target**: the platform computes the grant set a
+connection should hold from the declaration, and grants or revokes directory rows to match
+— bounded by the declared universe, exactly as `setEntitlementsHandler` already reconciles
+a managed tenant's entitlements ("grant what the target names, revoke any declared key
+absent from it"). Then a missing grant is repaired by a push, and the ask lands in the
+permission diff that already exists.
+
+**Today it does not work that way.** The reconcile gathers grants that already exist as
+directory rows (`listConnectionGrants`) and delivers them to scopes; it creates none. So an
+EXISTING connection missing a standing grant is now *visible* — the read-back says so — and
+still repairable only through the credential upsert, which is the disproportion #726 gap 2
+named. What is closed is the other three quarters of the problem: the per-dispatch read
+needs no grant at all, a NEW connection gets what the connector declares, and a declaration
+no door can carry is a red. The last quarter is the target reconcile, and until it lands
+this section describes an intent, not a behaviour.
 
 ### 3.6 Token refresh
 

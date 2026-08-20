@@ -90,13 +90,20 @@ reds the repo on a stale extra.
 
 ## What did NOT get built, and why
 
-No grant-only write route. The obvious fourth piece — a button adding a missing grant without
-re-submitting a working credential — is declined and recorded in `connections.md` §3.5.2, because
-the three above remove what it would repair. Grants follow from a declaration and ride every
-reconcile (#592), so the fix for a missing one is a push that lands in the permission diff. A
-button would hand-patch drift the declaration prevents, put the repair in a console nobody diffs,
-and ask a tenant to decide something that is the vertical's requirement rather than their choice.
-§3.5.1's law then holds by construction: there is no act to launder if there is no act.
+No grant-only write route — a button adding a missing grant without re-submitting a working
+credential. It is declined and recorded in `connections.md` §3.5.2: it would hand-patch drift a
+declaration should prevent, put the repair in a console nobody diffs, and ask a tenant to decide
+something that is the vertical's requirement rather than their choice. §3.5.1's law then holds by
+construction — there is no act to launder if there is no act.
+
+What replaces it is **not in this change**, and the doc says so rather than implying otherwise.
+The right repair is reconcile-to-target — compute the grant set from the declaration, then grant
+and revoke directory rows to match, exactly as `setEntitlementsHandler` already does for a managed
+tenant's entitlements — after which a missing grant is fixed by a push. Today the reconcile only
+delivers grants that ALREADY exist as directory rows (`listConnectionGrants`); it creates none. So
+an existing connection missing a standing grant is now *visible* and still repairable only through
+the credential upsert. Closed here: the per-dispatch read needs no grant at all, a NEW connection
+gets what the connector declares, and a declaration no door can carry is a red.
 
 ## Three tests changed behaviour rather than breaking
 
