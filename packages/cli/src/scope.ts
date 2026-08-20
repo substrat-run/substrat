@@ -292,7 +292,15 @@ export async function scopeStatus(opts: {
   // Health is best-effort: it reaches into the vertical's own deployment, which can be
   // unreachable while the scope record itself still answers — show what we have.
   const health = await fetch(`${base}/health`, { headers: opts.header })
-    .then((r) => (r.ok ? readJson<{ roleCount: number | null; roleProjectionEmpty: boolean }>(r, `${base}/health`) : null))
+    .then((r) =>
+      r.ok
+        ? readJson<{
+            roleCount: number | null;
+            roleProjectionEmpty: boolean;
+            missingStores?: { binding: string; kind: string }[];
+          }>(r, `${base}/health`)
+        : null,
+    )
     .catch(() => null);
   console.log(`scope     ${opts.scopeId}`);
   console.log(`name      ${record.name} (${record.slug})`);
@@ -304,6 +312,17 @@ export async function scopeStatus(opts: {
   console.log(`created   ${record.createdAt}`);
   if (health) {
     console.log(`roles     ${health.roleCount ?? 'off-DO'}${health.roleProjectionEmpty ? '  ⚠ EMPTY on an active scope — run `substrat scope provision`' : ''}`);
+  }
+  // #825: a store this vertical DECLARES that the tenant was never minted. Silent until
+  // the code touches it — the tenant passed the minting gate before the need was declared
+  // — so it is named here, with the lever that fixes it.
+  const missing = health?.missingStores ?? [];
+  if (missing.length) {
+    console.log(
+      `\n⚠ ${missing.length} declared store(s) were never minted for this tenant: ` +
+        `${missing.map((m) => `${m.binding} (${m.kind})`).join(', ')}\n` +
+        '  The vertical will throw at first use. Run `substrat scope provision` to mint and bind them.',
+    );
   }
   if (record.status === 'provisioning') {
     console.log(

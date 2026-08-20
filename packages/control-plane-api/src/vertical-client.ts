@@ -217,6 +217,12 @@ export interface ReconcileInstanceInput {
    *  channel a connection made AFTER provision rides. A revoked connection's key is absent
    *  from the gather, so the scope stops being able to seal to it. */
   connectionKeys?: ProjectedConnectionKey[];
+  /** Per-tenant relational stores, minted (or re-resolved) on the reconcile itself (#825) and
+   *  handed over exactly as at provision: a tenant that predates its vertical's `tenantStores`
+   *  declaration is given its store HERE, and has therefore never migrated it — so the handle
+   *  must ride the reconcile into the same fail-closed K-31 ready-gate. A vertical that
+   *  predates the field ignores it (its body parse strips unknown keys). */
+  tenantStores?: TenantStoreHandle[];
 }
 
 /**

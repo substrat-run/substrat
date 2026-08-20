@@ -36,12 +36,19 @@ describe('control-plane API — per-tenant stores (#301)', () => {
   const patches: { script: string; ensure: ScriptBindingSpec[] }[] = [];
   /** The provision callbacks the fake vertical received. */
   const provisioned: { tenantId: string; tenantStores?: { binding: string; kind: string; ref: string }[] }[] = [];
+  /** The reconcile callbacks the fake vertical received (#825's backfill rides these). */
+  const reconciled: { tenantId: string; tenantStores?: { binding: string; kind: string; ref: string }[] }[] = [];
 
   const fakeVertical = {
     provisionInstance: async (input: (typeof provisioned)[number]) => {
       provisioned.push(input);
       return { tenantId: input.tenantId };
     },
+    reconcileInstance: async (input: (typeof reconciled)[number] & { scopeId?: string }) => {
+      reconciled.push(input);
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: '01JZ00000000000000000000OW' };
+    },
+    listScopeTables: async () => [{ name: '_substrat_roles', rowCount: 4, system: true }],
   } as unknown as VerticalClient;
 
   beforeAll(() => {
@@ -203,6 +210,158 @@ describe('control-plane API — per-tenant stores (#301)', () => {
       name: blobStoreBindingName('ATTACHMENTS', t),
       bucket_name: ledger[0]!.ref,
     });
+  });
+
+  /**
+   * #825, the per-scope retry. Promote reconciles the fleet from the DIRECTORY's inventory,
+   * so a tenant it could not see — a row written after the sweep, or a mint that failed
+   * against the store API — is still left without the store it was declared. That tenant
+   * used to have no lever at all and no signal either: the vertical simply threw at first
+   * use, in production. Health must name it, and the repair an operator already reaches for
+   * must close it.
+   */
+  it('reports a store the promote sweep missed, and mints it on re-provision (#825)', async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'late-co', name: 'Late Co' });
+    // Installed while the vertical declared NO per-tenant stores.
+    const v1 = await (await push('late-co', manifest({ tenantStores: [] }))).json();
+    const slug: string = v1.verticalSlug;
+    expect((await promote(slug, v1.id)).status).toBe(200);
+    const install = await app.request(`/verticals/${encodeURIComponent(slug)}/instances`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ tenantId: t, scopeId: s, owner: '01JZ00000000000000000000OW', slug: 'main', name: 'Main' }),
+    });
+    expect(install.status).toBe(201);
+
+    // The version that first declares the stores is promoted while this install is still
+    // invisible to the directory (K-31 is two-phase: the vertical first, the row after) —
+    // so the fleet sweep cannot mint for it.
+    const v2 = await (
+      await push(
+        'late-co',
+        manifest({
+          version: '0.2.0',
+          tenantStores: [{ binding: 'AUTH_DB', kind: 'relational' }],
+          blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }],
+        }),
+      )
+    ).json();
+    const promoted = await promote(slug, v2.id);
+    expect(promoted.status).toBe(200);
+    expect((await promoted.json()).storeBackfill).toBeUndefined();
+
+    // The row lands, and the scope is now a tenant with no stores against a version that
+    // declares two.
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: slug } as never);
+    await host.admin.activateScope(staff, t, s);
+    expect(await host.admin.listBlobStores(staff, { tenantId: t })).toHaveLength(0);
+
+    // Health names both declared-but-unminted stores — before this, it reported green while
+    // the first upload was guaranteed to throw.
+    const before = await (await app.request(`/tenants/${t}/scopes/${s}/health`, { headers: auth })).json();
+    expect(before.roleProjectionEmpty).toBe(false);
+    expect(before.missingStores).toEqual([
+      { binding: 'AUTH_DB', kind: 'relational' },
+      { binding: 'ATTACHMENTS', kind: 'blob' },
+    ]);
+
+    // The repair lever an operator already reaches for mints and binds them.
+    const repair = await app.request(`/tenants/${t}/scopes/${s}/provision`, { method: 'POST', headers: auth });
+    expect(repair.status).toBe(200);
+    const relational = await host.admin.listTenantStores(staff, { tenantId: t, vertical: slug });
+    const blobs = await host.admin.listBlobStores(staff, { tenantId: t, vertical: slug });
+    expect(relational.map((r) => r.binding)).toEqual(['AUTH_DB']);
+    expect(blobs.map((r) => r.binding)).toEqual(['ATTACHMENTS']);
+    // A store minted HERE has never been migrated, so its handle rides the reconcile into
+    // the vertical's ready-gate exactly as it would at provision.
+    expect(reconciled.at(-1)!.tenantStores).toEqual([
+      { binding: 'AUTH_DB', kind: 'relational', ref: relational[0]!.ref },
+    ]);
+    // …and both worker-side bindings landed on the serving script.
+    const ensured = patches.filter((p) => p.script === stableDeploymentRefFor(slug)).flatMap((p) => p.ensure);
+    expect(ensured).toContainEqual({ type: 'd1', name: tenantStoreBindingName('AUTH_DB', t), id: relational[0]!.ref });
+    expect(ensured).toContainEqual({
+      type: 'r2_bucket',
+      name: blobStoreBindingName('ATTACHMENTS', t),
+      bucketName: blobs[0]!.ref,
+    });
+
+    // Health is clean afterwards, and re-running the repair converges rather than duplicating.
+    const after = await (await app.request(`/tenants/${t}/scopes/${s}/health`, { headers: auth })).json();
+    expect(after.missingStores).toEqual([]);
+    expect((await app.request(`/tenants/${t}/scopes/${s}/provision`, { method: 'POST', headers: auth })).status).toBe(200);
+    expect(await host.admin.listBlobStores(staff, { tenantId: t, vertical: slug })).toHaveLength(1);
+    expect(await host.admin.listTenantStores(staff, { tenantId: t, vertical: slug })).toHaveLength(1);
+  });
+
+  /**
+   * #825, the deploy-time half: promoting the version that FIRST declares a store mints it
+   * for every tenant already installed. Without this the declaration reaches nobody and
+   * adoption is an ops step someone has to remember per tenant — which is exactly how a
+   * store stayed unminted for three weeks and became a production outage.
+   */
+  it('mints a newly declared store for every already-installed tenant on promote (#825)', async () => {
+    const a = tenantId.parse(ulid());
+    const b = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: a, slug: 'fleet-a', name: 'Fleet A' });
+    await host.admin.createTenant(staff, { id: b, slug: 'fleet-b', name: 'Fleet B' });
+    // The vertical ships declaring nothing, and both tenants install it.
+    const v1 = await (await push('fleet-a', manifest({ tenantStores: [] }))).json();
+    const slug: string = v1.verticalSlug;
+    expect((await promote(slug, v1.id)).status).toBe(200);
+    for (const t of [a, b]) {
+      const s = scopeId.parse(ulid());
+      const res = await app.request(`/verticals/${encodeURIComponent(slug)}/instances`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId: t, scopeId: s, owner: '01JZ00000000000000000000OW', slug: 'main', name: 'Main' }),
+      });
+      expect(res.status).toBe(201);
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: slug } as never);
+      await host.admin.activateScope(staff, t, s);
+    }
+    expect(await host.admin.listBlobStores(staff, { vertical: slug })).toHaveLength(0);
+
+    // Now a version declares an attachment bucket, and is promoted.
+    const v2 = await (
+      await push('fleet-a', manifest({ version: '0.2.0', tenantStores: [], blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] }))
+    ).json();
+    const promoted = await promote(slug, v2.id);
+    expect(promoted.status).toBe(200);
+
+    // Both installed tenants were minted a bucket by the promote itself — no per-tenant
+    // ops step — and the promote REPORTS it, so the builder sees the adoption happen.
+    const ledger = await host.admin.listBlobStores(staff, { vertical: slug });
+    expect(ledger.map((r) => r.tenantId).sort()).toEqual([a, b].sort());
+    const body = await promoted.json();
+    expect(body.storeBackfill.minted.map((m: { tenantId: string }) => m.tenantId).sort()).toEqual([a, b].sort());
+    expect(body.storeBackfill.minted[0]).toMatchObject({ binding: 'ATTACHMENTS', kind: 'blob' });
+    // One ledger-derived PATCH carries BOTH tenants' bindings — not one attach per tenant.
+    const patch = patches.at(-1)!;
+    expect(patch.script).toBe(stableDeploymentRefFor(slug));
+    for (const t of [a, b]) {
+      expect(patch.ensure).toContainEqual({
+        type: 'r2_bucket',
+        name: blobStoreBindingName('ATTACHMENTS', t),
+        bucketName: ledger.find((r) => r.tenantId === t)!.ref,
+      });
+    }
+
+    // Health on those scopes is green, with nothing left for an operator to do…
+    const scopes = await host.admin.listScopes(staff, { vertical: slug });
+    const health = await (
+      await app.request(`/tenants/${scopes[0]!.tenantId}/scopes/${scopes[0]!.id}/health`, { headers: auth })
+    ).json();
+    expect(health.missingStores).toEqual([]);
+
+    // …and re-promoting the same version mints nothing and says nothing: the fleet already
+    // matches the declaration, so the backfill is silent rather than noisy.
+    const again = await promote(slug, v2.id);
+    expect(again.status).toBe(200);
+    expect((await again.json()).storeBackfill).toBeUndefined();
+    expect(await host.admin.listBlobStores(staff, { vertical: slug })).toHaveLength(2);
   });
 });
 

@@ -23,7 +23,7 @@ import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
 import { push, readVerticalMeta, nextVersion, previewVersion, pinTenant } from './push.js';
 import { printVersions } from './versions.js';
-import { promote } from './promote.js';
+import { promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
 import { cliVersion, warnIfDistStale } from './version.js';
@@ -366,6 +366,7 @@ async function cmdPush(): Promise<void> {
   if (promoteTo) {
     const ch = await promote({ controlPlaneUrl, header, slug: v.verticalSlug ?? slug, channel: promoteTo, versionId: v.id });
     console.log(`✓ ${v.verticalSlug ?? slug} → ${ch.channel} now points at ${version}`);
+    reportStoreBackfill(ch);
   } else if (v.admission === 'admitted') {
     console.log('  promote it to a channel to go live (or push with --promote prod).');
   } else {
@@ -427,6 +428,32 @@ async function cmdPromote(): Promise<void> {
       : undefined;
   const ch = await promote({ controlPlaneUrl, header, slug, channel, versionId: version, acknowledge });
   console.log(`✓ ${slug} → ${ch.channel} now points at ${ch.versionId}`);
+  reportStoreBackfill(ch);
+}
+
+/**
+ * Report what a promote minted for tenants that predate the declaration (#825). Silent
+ * unless something happened: a version that declares no new store says nothing, a version
+ * that declares one names each tenant it was minted for, and a backfill the platform could
+ * not complete is a loud warning with the per-scope retry — never a silent gap that
+ * surfaces later as a runtime throw in production.
+ */
+function reportStoreBackfill(result: PromoteResult): void {
+  const backfill = result.storeBackfill;
+  if (!backfill) return;
+  for (const s of backfill.minted) {
+    console.log(`  + minted ${s.binding} (${s.kind}) for tenant ${s.tenantId}`);
+  }
+  if (backfill.otherTenants) {
+    console.log(`  + declared store(s) minted for ${backfill.otherTenants} other installed tenant(s)`);
+  }
+  if (backfill.error) {
+    console.error(
+      `\n⚠ declared store(s) could NOT be minted for every installed tenant: ${backfill.error}\n` +
+        '  Those tenants will fail at first use. Retry with `substrat promote` again, or per\n' +
+        '  scope with `substrat scope provision <scopeId>`; `substrat scope status` shows the gap.',
+    );
+  }
 }
 
 async function cmdPublish(): Promise<void> {
