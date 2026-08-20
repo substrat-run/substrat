@@ -10,14 +10,28 @@ between those three things — and those joins are where the defects live.
 
 | tier | contents | written by |
 |---|---|---|
-| **Declared** | entities, fields, relations, operations, permissions, events, returns | the model, human-approved |
-| **Prose** | state machines, pricing, denial reasons, the seed cast | `spec/concept.md` |
+| **Declared** | entities, fields, relations, operations, permissions, events, returns, [lifecycles](/concepts/lifecycle) | the model, human-approved |
+| **Prose** | pricing, denial reasons, the seed cast | `spec/concept.md` |
 | **Emitted** | `model.json`, the manifest's entity fragments, derived permission and event lists | code |
 | **Authored** | handler bodies — the business logic | you |
 
-The line: **the model says what exists and what shape it has; prose says how it behaves.**
-If you find yourself inventing a way to declare a state *transition*, the boundary has
-slipped.
+The line: **the model says what exists and what is legal; prose says what to do about it.**
+
+::: warning This page used to say the opposite
+Until #844 this table put state machines under *Prose*, and this paragraph read *"if you
+find yourself inventing a way to declare a state transition, the boundary has slipped."*
+
+That was wrong in a way the codebase had already demonstrated. Six entities across four
+engines and two demos carried a `status` enum, and every one of them described its
+transitions a second time as hand-written guards in operation bodies — held to the enum by
+nothing. One engine wrote its state *set* out twice, as two independent `z.enum` literals.
+The boundary had not been holding; it had been quietly redrawn at every call site.
+
+What the old line was protecting is still protected, and now explicitly: a lifecycle
+declares **which states exist and which operation moves between them**, and it cannot
+declare an action, a condition, an effect or a timer. See
+[Lifecycles](/concepts/lifecycle#what-a-lifecycle-cannot-say).
+:::
 
 There is deliberately **no tenancy annotation**, and there never will be. An operation runs
 inside a scope that already *is* a tenant, and `ctx.sql` cannot reach another — so there is

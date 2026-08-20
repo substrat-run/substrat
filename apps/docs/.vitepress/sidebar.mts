@@ -64,6 +64,7 @@ export function guideSidebar() {
         { text: 'The deploy model', link: '/concepts/deploying' },
         { text: 'Reads & scaling', link: '/concepts/reads' },
         { text: 'The model', link: '/concepts/model' },
+        { text: 'Lifecycles', link: '/concepts/lifecycle' },
         { text: 'Modules & the manifest', link: '/concepts/modules' },
         { text: 'What a good API looks like', link: '/concepts/api-design' },
         { text: 'Money', link: '/concepts/money' },

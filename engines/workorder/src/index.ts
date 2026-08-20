@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
   addMoney,
+  assertTransition,
+  INVALID_TRANSITION,
   dataSubjectId,
   entityRef,
   money,
@@ -23,12 +25,11 @@ import {
  * do not change spelling.
  */
 export const WORKORDER_CONFLICT_REASONS = [
-  'invalid_transition',
+  // Raised by `assertTransition` from the declared lifecycle (#844), not by this
+  // file — so it is the shared constant rather than a second spelling of it.
+  INVALID_TRANSITION,
 ] as const;
 export type WorkorderConflictReason = (typeof WORKORDER_CONFLICT_REASONS)[number];
-
-/** `conflict(reason, message)` — reason first, so the classification reads before the prose. */
-const conflict = (reason: WorkorderConflictReason, message: string) => substratError('conflict', message, { reason });
 
 import {
   billableLine,
@@ -42,6 +43,7 @@ import {
   type MaterialLine,
 } from './schemas.js';
 import { workorderEntities } from './entities.js';
+import { workorderLifecycle } from './lifecycle.js';
 
 // The entity registry is PUBLIC: a composing vertical imports it to check
 // relation edges naming this engine's entities, and to declare an operation's
@@ -59,6 +61,9 @@ export {
   type MaterialLine,
 } from './schemas.js';
 export { workorderOperations, WORKORDER_PERMISSIONS } from './operations.js';
+// The declared state machine (#844). PUBLIC: a composing vertical reads it to
+// render available actions, and `substrat.model` emits it into `model.json`.
+export { workorderLifecycles, workorderLifecycle } from './lifecycle.js';
 import {
   assertAllowed,
   ulid,
@@ -225,12 +230,21 @@ function getRow(ctx: OperationContext, orderId: string): OrderRow {
   return row;
 }
 
-function requireStatus(row: OrderRow, ...allowed: OrderRow['status'][]): void {
-  if (!allowed.includes(row.status)) {
-    throw conflict('invalid_transition', 
-      `invalid transition: work order ${row.number} is '${row.status}', requires ${allowed.join('|')}`,
-    );
-  }
+/**
+ * The declared machine, applied (#844).
+ *
+ * This used to be a guard taking the states that admitted the verb, restated at
+ * each of its six call sites and held to the `status` enum by nothing. The
+ * states now live in `lifecycle.ts`, where the compiler holds them to that enum,
+ * and each call site names the VERB instead of re-deriving the set permitting it.
+ *
+ * The throw is the platform's own `conflict` carrying `reason:
+ * 'invalid_transition'` — the same code, the same reason and the same
+ * `invalid transition: ...` prefix this engine raised before, now raised from
+ * one place for every module that adopts a lifecycle.
+ */
+function requireTransition(row: OrderRow, operation: string): void {
+  assertTransition(workorderLifecycle, `work order ${row.number}`, row.status, operation);
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +264,7 @@ export function createWorkOrder(ctx: OperationContext, rawInput: CreateWorkOrder
     `INSERT INTO workorder_orders
        (id, number, facility_type, facility_id, customer_type, customer_id,
         kind, title, description, status, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       number,
@@ -261,6 +275,9 @@ export function createWorkOrder(ctx: OperationContext, rawInput: CreateWorkOrder
       input.kind,
       input.title,
       input.description ?? null,
+      // Not the literal `'planned'`: the declaration owns where a row starts, so
+      // the machine and the INSERT cannot disagree about it.
+      workorderLifecycle.initial,
       ctx.principal,
       createdAt,
     ],
@@ -314,7 +331,7 @@ export function completeWorkOrder(
   input: { orderId: string; billable: BillableLine[] },
 ): { order: WorkOrder; total: Money } {
   const row = getRow(ctx, input.orderId);
-  requireStatus(row, 'in_progress');
+  requireTransition(row, 'workorder/complete');
   const billable = z.array(billableLine).parse(input.billable);
   const total = billable.reduce(
     (sum, line) => addMoney(sum, line.lineTotal),
@@ -350,7 +367,7 @@ export function completeWorkOrder(
  */
 export function closeWorkOrder(ctx: OperationContext, input: { orderId: string }): WorkOrder {
   const row = getRow(ctx, input.orderId);
-  requireStatus(row, 'completed');
+  requireTransition(row, 'workorder/close');
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'closed' WHERE id = ?`, [row.id]);
   ctx.emit({
     type: 'workorder.closed',
@@ -389,7 +406,7 @@ const assignOp: OperationHandler<{ orderId: string; technician: string }, WorkOr
 ) => {
   assertAllowed(await ctx.check(PERM.assign));
   const row = getRow(ctx, input.orderId);
-  requireStatus(row, 'planned');
+  requireTransition(row, 'workorder/assign');
   ctx.sql.exec('UPDATE workorder_orders SET assigned_to = ? WHERE id = ?', [
     input.technician,
     row.id,
@@ -408,7 +425,7 @@ const assignOp: OperationHandler<{ orderId: string; technician: string }, WorkOr
 const startOp: OperationHandler<{ orderId: string }, WorkOrder> = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.report));
   const row = getRow(ctx, input.orderId);
-  requireStatus(row, 'planned');
+  requireTransition(row, 'workorder/start');
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'in_progress' WHERE id = ?`, [row.id]);
   ctx.emit({
     type: 'workorder.started',
@@ -427,7 +444,7 @@ const reportTimeOp: OperationHandler<
   assertAllowed(await ctx.check(PERM.report));
   const hours = decimal.parse(input.hours);
   const row = getRow(ctx, input.orderId);
-  requireStatus(row, 'planned', 'in_progress');
+  requireTransition(row, 'workorder/report-time');
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO workorder_time_entries (id, order_id, technician, hours, note, reported_at)
@@ -452,7 +469,7 @@ const reportMaterialOp: OperationHandler<
   assertAllowed(await ctx.check(PERM.report));
   const qty = decimal.parse(input.qty);
   const row = getRow(ctx, input.orderId);
-  requireStatus(row, 'planned', 'in_progress');
+  requireTransition(row, 'workorder/report-material');
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO workorder_material_lines (id, order_id, article, qty, note, reported_by, reported_at)

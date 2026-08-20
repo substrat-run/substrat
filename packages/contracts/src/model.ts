@@ -22,6 +22,7 @@
  * from is #680/#685's question; the registry is a prerequisite either way.
  */
 import { z } from 'zod';
+import { emitLifecycles, type EmittedLifecycle, type LifecycleDef } from './lifecycle.js';
 
 /**
  * One entity: the table it lives in, its field schema, and its place in the
@@ -243,6 +244,12 @@ export interface EmittedEntity {
 
 export interface EmittedModel {
   readonly entities: Record<string, EmittedEntity>;
+  /**
+   * The declared state machines (#844), keyed by entity. Absent when a module
+   * declares none — an empty object would claim "this module has no lifecycles"
+   * where absence honestly says "it has not declared any."
+   */
+  readonly lifecycles?: Record<string, EmittedLifecycle>;
 }
 
 /**
@@ -250,7 +257,10 @@ export interface EmittedModel {
  * are emitted in sorted order, so the checked-in artifact diffs cleanly and a
  * reordered declaration is not a spurious change.
  */
-export function emitModel<T extends Record<string, EntityDef>>(entities: T): EmittedModel {
+export function emitModel<T extends Record<string, EntityDef>>(
+  entities: T,
+  options: { readonly lifecycles?: Record<string, LifecycleDef> } = {},
+): EmittedModel {
   const out: Record<string, EmittedEntity> = {};
   for (const name of Object.keys(entities).sort()) {
     const e = entities[name];
@@ -271,7 +281,18 @@ export function emitModel<T extends Record<string, EntityDef>>(entities: T): Emi
       ...(e.erasable ? { erasable: [...e.erasable].sort() } : {}),
     };
   }
-  return { entities: out };
+  const lifecycles = options.lifecycles ? emitLifecycles(options.lifecycles) : undefined;
+  if (lifecycles) {
+    // A machine over an entity the registry does not declare is the same class
+    // of defect as a `parents` edge naming nothing: it parses, it emits, and it
+    // describes an entity that does not exist.
+    for (const entity of Object.keys(lifecycles)) {
+      if (!(entity in entities)) {
+        throw new Error(`model: a lifecycle is declared for '${entity}', which is not a declared entity`);
+      }
+    }
+  }
+  return { entities: out, ...(lifecycles && Object.keys(lifecycles).length ? { lifecycles } : {}) };
 }
 
 /**

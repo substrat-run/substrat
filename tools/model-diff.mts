@@ -29,10 +29,22 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const DEMOS = 'demos';
+/**
+ * Engines declare entities too, and since #844 they declare LIFECYCLES — the
+ * state machines that used to live as hand-written guards in operation bodies.
+ * A changed edge is exactly as consequential as a changed table, so it belongs
+ * in the same reviewed artifact.
+ *
+ * Engines OPT IN by exporting an emitted model (`src/model.ts`). One that does
+ * not is reported at the end rather than skipped in silence — the tool's whole
+ * posture is that a checkpoint which checked nothing must never print green.
+ */
+const ENGINES = 'engines';
 const check = process.argv.includes('--check');
 
 interface EmittedModel {
   entities: Record<string, { table: string; fields: unknown }>;
+  lifecycles?: Record<string, unknown>;
 }
 
 /**
@@ -64,6 +76,7 @@ async function main(): Promise<number> {
   const demos = readdirSync(DEMOS).filter((d) => statSync(join(DEMOS, d)).isDirectory());
   let drift = 0;
   let emitted = 0;
+  let lifecycles = 0;
 
   for (const demo of demos) {
     // `spec/model.ts` is where a vertical built through the model phase declares
@@ -95,6 +108,7 @@ async function main(): Promise<number> {
       return 2;
     }
 
+    lifecycles += Object.keys(models[0]?.lifecycles ?? {}).length;
     const rendered = `${JSON.stringify(models[0], null, 2)}\n`;
     const target = join(DEMOS, demo, 'model.json');
     const current = existsSync(target) ? readFileSync(target, 'utf8') : null;
@@ -113,6 +127,43 @@ async function main(): Promise<number> {
     }
   }
 
+  // Engines, same emit-and-diff, opting in through `src/model.ts`.
+  const skipped: string[] = [];
+  for (const engine of readdirSync(ENGINES).filter((d) => statSync(join(ENGINES, d)).isDirectory())) {
+    const src = join(ENGINES, engine, 'src', 'model.ts');
+    if (!existsSync(src)) {
+      skipped.push(engine);
+      continue;
+    }
+    const mod = (await import(pathToFileURL(join(process.cwd(), src)).href)) as Record<string, unknown>;
+    const models = emittedModelIn(mod);
+    if (models.length !== 1) {
+      console.error(`model-diff: ${src} exports ${models.length} emitted models, expected exactly 1`);
+      return 2;
+    }
+    lifecycles += Object.keys(models[0]?.lifecycles ?? {}).length;
+    const rendered = `${JSON.stringify(models[0], null, 2)}\n`;
+    const target = join(ENGINES, engine, 'model.json');
+    const current = existsSync(target) ? readFileSync(target, 'utf8') : null;
+    emitted += 1;
+    if (check) {
+      if (current !== rendered) {
+        console.error(`model-diff: ${target} is stale — re-run \`pnpm lint:model\` and commit the diff`);
+        drift += 1;
+      }
+      continue;
+    }
+    if (current !== rendered) {
+      writeFileSync(target, rendered);
+      console.log(`model-diff: wrote ${target}`);
+    }
+  }
+  if (skipped.length > 0) {
+    // Named, not silent. These are the engines whose entities and state machines
+    // are still described only in TypeScript nobody re-emits.
+    console.log(`model-diff: ${skipped.length} engine(s) declare no src/model.ts — ${skipped.join(', ')}`);
+  }
+
   if (emitted === 0) {
     // The whole point of the checkpoint is to be read. One that scanned nothing
     // and printed green would be worse than absent.
@@ -121,7 +172,10 @@ async function main(): Promise<number> {
   }
 
   if (drift > 0) return 1;
-  console.log(`model-diff: ${emitted} model${emitted === 1 ? '' : 's'} ${check ? 'up to date' : 'emitted'}`);
+  console.log(
+    `model-diff: ${emitted} model${emitted === 1 ? '' : 's'} ${check ? 'up to date' : 'emitted'}` +
+      `, ${lifecycles} lifecycle${lifecycles === 1 ? '' : 's'}`,
+  );
   return 0;
 }
 

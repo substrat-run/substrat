@@ -2,24 +2,36 @@
 
 ## The state machine
 
+**Declared**, in `engines/workorder/src/lifecycle.ts`, and emitted to
+`engines/workorder/model.json` — this is the first engine to adopt a
+[lifecycle](/concepts/lifecycle). The table below is written from that declaration; the
+declaration is the source, and `pnpm lint:model --check` is what keeps this page from
+drifting away from it.
+
 ```
-planned ──assign──▶ planned ──start──▶ in_progress ──complete──▶ completed ──close──▶ closed
+planned ──start──▶ in_progress ──complete──▶ completed ──close──▶ closed
 ```
 
-| Transition | Operation | Requires status | Permission |
+| Operation | Legal in | Moves to | Permission |
 |---|---|---|---|
-| create | `workorder/create` | — | `workorder:create` |
-| assign technician | `workorder/assign` | `planned` | `workorder:assign` |
-| start work | `workorder/start` | `planned` | `workorder:report` |
-| report time | `workorder/report-time` | `planned` or `in_progress` | `workorder:report` |
-| report material | `workorder/report-material` | `planned` or `in_progress` | `workorder:report` |
-| complete (with billable lines) | `workorder/complete` | `in_progress` | `workorder:complete` |
-| close | `workorder/close` | `completed` | `workorder:close` |
+| `workorder/create` | — | `planned` (the declared `initial`) | `workorder:create` |
+| `workorder/assign` | `planned` | — | `workorder:assign` |
+| `workorder/start` | `planned` | `in_progress` | `workorder:report` |
+| `workorder/report-time` | `planned`, `in_progress` | — | `workorder:report` |
+| `workorder/report-material` | `planned`, `in_progress` | — | `workorder:report` |
+| `workorder/complete` | `in_progress` | `completed` | `workorder:complete` |
+| `workorder/close` | `completed` | `closed` | `workorder:close` |
 
-Invalid transitions throw — a `completed` order cannot be started, a `planned` order cannot
-be completed. The engine owns this; no caller can skip a state.
+The rows with no target are `allow` entries — legal in that state, moving nothing.
+Assignment is a field, not a state, which is why `assign` leaves the order in `planned`.
 
-Note that `assign` leaves the order in `planned`: assignment is a field, not a state.
+`in_progress` is the one state marked `extensible`, so a vertical may refine it with
+substates (`awaiting_parts`, `pending_customer_approval`). `completed` and `closed` carry
+billing consequences and admit none. `closed` is `terminal`.
+
+Invalid transitions throw a `conflict` carrying `reason: 'invalid_transition'` — a
+`completed` order cannot be started, a `planned` order cannot be completed. The engine owns
+this; no caller can skip a state.
 
 ## Tables
 
