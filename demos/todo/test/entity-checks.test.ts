@@ -76,6 +76,10 @@ entityCheckConformanceSuite(
       // A real person in the scope, as a literal — the seed's own address. The
       // world is not built when the suite is constructed.
       'todo/share-list': { email: 'ada@example.com' },
+      // Any term above the prefix index's two-character floor. What is under test
+      // is the entity check, which runs before the index is ever consulted — a
+      // term matching nothing still proves Björn was let in or turned away.
+      'todo/search-list-items': { q: 'conformance' },
     },
     // `share-list` opens on `list:manage` and honours it, then delegates
     // `list:contribute` to the invitee — and `ctx.grant` only narrows a
@@ -91,8 +95,12 @@ entityCheckConformanceSuite(
       },
     },
     // The three the kit cannot generate, and why. Asserted exactly: turning one
-    // of the six above into a `resolved` check fails here until this list says
+    // of the seven above into a `resolved` check fails here until this list says
     // so, which is the coverage loss made visible in the diff.
+    //
+    // `todo/search-items` is absent because it is out of scope rather than
+    // uncovered: it declares `narrows`, so it claims no entity check for this
+    // suite to honour. Its walk is proved by the scenario instead.
     uncovered: {
       'todo/set-item-done':
         "declares 'resolved' (the list the item is on) — the entity id is not in the input, " +

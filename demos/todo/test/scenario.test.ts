@@ -227,3 +227,104 @@ describe('the happy path', () => {
     });
   });
 });
+
+/**
+ * Search (#827) — concept §9's "find the thing I wrote down somewhere".
+ *
+ * Its own world, so nothing here depends on what the blocks above left behind.
+ * Two lists on purpose: "search found it" and "search found it HERE" are
+ * different claims, and one list cannot tell them apart.
+ */
+describe('finding an item by what someone typed', () => {
+  let pantry: string;
+  let cellar: string;
+
+  beforeAll(async () => {
+    const ada = await as('ada');
+    pantry = (await ada.invoke<{ id: string }>('todo/create-list', { name: 'Pantry' })).id;
+    cellar = (await ada.invoke<{ id: string }>('todo/create-list', { name: 'Cellar' })).id;
+    await ada.invoke('todo/add-item', { listId: pantry, text: 'cardamom pods' });
+    await ada.invoke('todo/add-item', { listId: pantry, text: 'saffron threads' });
+    await ada.invoke('todo/add-item', { listId: cellar, text: 'cardamom liqueur' });
+  });
+
+  it('finds an item from the start of a word', async () => {
+    const ada = await as('ada');
+    const found = await ada.invoke<{ results: { text: string }[]; capped: boolean }>(
+      'todo/search-list-items',
+      { listId: pantry, q: 'carda' },
+    );
+    expect(found.results.map((r) => r.text)).toEqual(['cardamom pods']);
+    // Nothing was withheld, and the screen may say so.
+    expect(found.capped).toBe(false);
+  });
+
+  it('does not reach a matching item on a list it was not asked about', async () => {
+    // 'cardamom liqueur' is in the same scope-wide index and matches the term just
+    // as well. Only the `list_id` filter keeps it out — drop it and this returns two.
+    const ada = await as('ada');
+    const found = await ada.invoke<{ results: { text: string }[] }>('todo/search-list-items', {
+      listId: pantry,
+      q: 'cardamom',
+    });
+    expect(found.results.map((r) => r.text)).toEqual(['cardamom pods']);
+  });
+
+  it('finds a row written in the breath before', async () => {
+    // Maintained by triggers rather than off the event spine, so there is no
+    // indexing lag to wait out and no flake to retry around.
+    const ada = await as('ada');
+    await ada.invoke('todo/add-item', { listId: pantry, text: 'juniper berries' });
+    const found = await ada.invoke<{ results: { text: string }[] }>('todo/search-list-items', {
+      listId: pantry,
+      q: 'juniper',
+    });
+    expect(found.results.map((r) => r.text)).toEqual(['juniper berries']);
+  });
+
+  it('refuses a term too short to index, at the operation boundary', async () => {
+    // `q: z.string().min(2)` refuses it before the kernel would, so the caller gets
+    // a parse failure naming the field instead of a throw from inside the index.
+    const ada = await as('ada');
+    await expect(
+      ada.invoke('todo/search-list-items', { listId: pantry, q: 'c' }),
+    ).rejects.toThrow();
+  });
+
+  describe('across every list you can reach', () => {
+    it('Ada gets both of her lists in one answer', async () => {
+      const ada = await as('ada');
+      const found = await ada.invoke<{ results: { text: string }[] }>('todo/search-items', {
+        q: 'cardamom',
+      });
+      expect(found.results.map((r) => r.text).sort()).toEqual([
+        'cardamom liqueur',
+        'cardamom pods',
+      ]);
+    });
+
+    it('Björn, shared on one list, finds only that list’s item', async () => {
+      const ada = await as('ada');
+      await ada.invoke('todo/share-list', { listId: pantry, email: 'bjorn@example.com' });
+
+      const bjorn = await as('bjorn');
+      const found = await bjorn.invoke<{ results: { text: string }[] }>('todo/search-items', {
+        q: 'cardamom',
+      });
+      // The Cellar item ranks alongside it and sits in the same index. What keeps it
+      // out is the per-list check run AFTER the ranking — never a WHERE on ownership.
+      expect(found.results.map((r) => r.text)).toEqual(['cardamom pods']);
+    });
+
+    it('Cleo, holding a handle on someone else’s scope, finds nothing', async () => {
+      // The index is Ada's scope's and holds every item above; `ctx.search` checks
+      // nothing, so an empty answer here is the walk doing its job rather than an
+      // empty index.
+      const cleo = await host.getScope(world.cleo.principal, world.tenant, world.scope);
+      const found = await cleo.invoke<{ results: unknown[] }>('todo/search-items', {
+        q: 'cardamom',
+      });
+      expect(found.results).toEqual([]);
+    });
+  });
+});

@@ -17,6 +17,26 @@ import {
   LIST_PAGE_MAX,
   z,
 } from '@substrat-run/contracts';
+import { MAX_SEARCH_LIMIT } from '@substrat-run/kernel';
+
+/**
+ * How much wider than the answer the handlers ask the index for.
+ *
+ * Every search here filters hits AFTER ranking — by list, or by which lists the
+ * caller reaches — and a ranked top-N filtered afterwards returns fewer than N.
+ * Asking for more is the only defence.
+ */
+export const SEARCH_OVERFETCH = 4;
+
+/**
+ * This vertical's own cap, and deliberately NOT the kernel's.
+ *
+ * `ctx.search` clamps every ask to `MAX_SEARCH_LIMIT`, so a caller allowed to
+ * request the ceiling leaves the over-fetch no headroom at all: the ask and the
+ * answer become the same number and the filter above eats into the result. Deriving
+ * the bound keeps the two from drifting apart — raise the ceiling and this follows.
+ */
+export const TODO_SEARCH_MAX = Math.floor(MAX_SEARCH_LIMIT / SEARCH_OVERFETCH);
 
 export const todoEntities = defineEntities({
   /**
@@ -216,6 +236,72 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
     // query per request, which is why it is asked for rather than assumed.
     paged: { sortKey: 'id', total: true },
     http: { method: 'GET', path: '/lists/{listId}/items' },
+  },
+
+  /**
+   * Search on ONE list (#827) — the read that `paged` above took away.
+   *
+   * Filtering `list-items` in the browser searched whatever page had loaded, which
+   * at forty items looked like search and at four thousand looked like a bug. This
+   * asks the index instead.
+   *
+   * A separate operation rather than a `q` on `list-items`: that read is sorted and
+   * paged, this one is ranked and capped, and one endpoint cannot carry both
+   * contracts. `GET /lists/{listId}/items/search` does not collide with the paged
+   * read — `mountOperations` registers a static segment ahead of its parameter
+   * sibling (#785).
+   *
+   * Permission is the ordinary entity-narrowed one: the caller either reaches this
+   * list or they do not, and one check settles it.
+   */
+  'todo/search-list-items': {
+    summary: 'Find items on a list by text',
+    permission: { key: 'list:contribute', entity: 'list', idFrom: 'listId' },
+    input: z.object({
+      listId: z.string(),
+      // Two characters is the prefix index's floor. Declared here so a short term is
+      // a 400 naming the field, not a throw from inside the kernel.
+      q: z.string().min(2),
+      limit: z.number().int().positive().max(TODO_SEARCH_MAX).optional(),
+    }),
+    // Not a bare array: a capped read has to say it was capped, or the screen shows
+    // the first twenty of two hundred matches as though that were all of them.
+    output: z.object({
+      results: z.array(todoEntities.item.fields),
+      limit: z.number().int(),
+      capped: z.boolean(),
+    }),
+    http: { method: 'GET', path: '/lists/{listId}/items/search' },
+  },
+
+  /**
+   * Search across every list the caller can reach — "where did I put milk?".
+   *
+   * The same `narrows` shape as `my-lists`, and for the same reason: nobody holds
+   * `list:contribute` scope-wide, so the answer is assembled by asking, per list,
+   * whether this caller reaches it. The index is scope-wide and checks nothing —
+   * `ctx.search` never does — so the filter after it is what keeps one member's
+   * items out of another's results.
+   *
+   * The trap here is real and documented (concepts/reads.md): a ranked top-N
+   * filtered afterwards returns FEWER than N. The handler over-fetches on purpose.
+   */
+  'todo/search-items': {
+    summary: 'Find items across the lists you can see',
+    narrows: {
+      reason: 'Returns only items on lists the caller owns or has been shared',
+      checks: ['list:contribute'],
+    },
+    input: z.object({
+      q: z.string().min(2),
+      limit: z.number().int().positive().max(TODO_SEARCH_MAX).optional(),
+    }),
+    output: z.object({
+      results: z.array(todoEntities.item.fields),
+      limit: z.number().int(),
+      capped: z.boolean(),
+    }),
+    http: { method: 'GET', path: '/items/search' },
   },
 
   'todo/add-item': {

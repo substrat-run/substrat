@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { API_DOCUMENT } from './api.js';
 import { buildHost, seed, type World } from './seed.js';
 import { mountApi } from './routes.js';
 
@@ -38,6 +39,16 @@ async function boot() {
   // Re-branded on the way in: everything loaded from JSON crossed a
   // serialization boundary, so it is a plain string until parsed.
   const cast = [world.ada, world.bjorn, world.cleo];
+
+  // The document this vertical's own operations describe, served from its own
+  // origin. Computed once at boot from the same declarations the routes below are
+  // derived from — never read from the checked-in `openapi.json`, which exists so
+  // a surface change shows up in a PR diff (api-surface.md §2.4) rather than to be
+  // served. No `/api/docs` page: rendering one means bundling Scalar, and the
+  // smallest vertical that is still a real one does not need a second dependency
+  // to prove the document is reachable.
+  app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
+
   mountApi(app, async (c) => {
     const header = c.req.header('x-principal');
     if (!header) throw new HTTPException(401, { message: 'x-principal header required' });
