@@ -49,10 +49,20 @@ src/migrations.ts      the SqlMigration[]                         ← module cod
 src/module.ts          imports both; operations + registration    ← module code
 src/provision.ts       MODULES, ROLES, grant shapes — node-free    ← module code
 src/seed.ts            host, tenants, demo cast, seed world        ← harness
-src/server.ts          thin wrapper, one route per operation       ← harness
-src/worker.ts          the deployable Cloudflare worker            ← harness
+src/routes.ts          the HTTP route table — BOTH hosts mount it   ← harness
+src/server.ts          the dev entrypoint (node + persona picker)   ← harness
+src/worker.ts          the deployable Cloudflare worker             ← harness
+src/config-do.ts       per-instance config store (Cloudflare only)  ← harness
 test/scenario.test.ts  the scenario — including the denials
 ```
+
+**A new route goes in `src/routes.ts`, never in an entrypoint.** Both `server.ts`
+and `worker.ts` mount that one table, so a route added there is live on both — and
+a route added to only one is a surface that works in dev and 404s in production
+(or the reverse), which nothing catches until you deploy: the scenario tests call
+operations directly and never boot either host. What an entrypoint may still own
+is only what is genuinely its own — building a host, resolving a caller, and its
+own auth-shaped route (`/api/cast` in dev, `/api/me` in the worker).
 
 `provision.ts` is deliberately node-free: both hosts register from it (the dev
 server's SQLite host and the worker's `ScopeDO`), and `substrat push` reads the
@@ -61,10 +71,23 @@ modules defined anywhere else will run locally and silently not deploy.
 `worker.ts` **mounts** the platform's `/internal/*` management contract via
 `mountPlatformSurface` from `@substrat-run/vertical-host` (one call — the routes
 and the `{ error }` envelope are authored there, not here, so they can't drift or
-ship half-done). What `worker.ts` still owns is your app routes and **the auth
-seam** — the dev `x-principal` header is the only caller resolution until you wire
-real auth there; deploying with `ALLOW_DEV_HEADER` set is a cross-tenant hole with
-a UI.
+ship half-done). What `worker.ts` still owns is **the auth seam** — the dev
+`x-principal` header is the only caller resolution until you wire real auth there;
+deploying with `ALLOW_DEV_HEADER` set is a cross-tenant hole with a UI.
+
+Among the hooks it passes, **`onConfigure` is the one you must not drop.** It is
+how per-instance settings reach the running app: the dashboard's Settings → Env
+and Identity tabs POST to `/internal/configure`, and a vertical that supplies no
+hook answers **501** to that call for its whole life — the setting is saved, the
+dashboard reports `delivered: false`, and the app never sees it. That includes the
+`substrat:auth` issuer choice, i.e. the difference between a working login and
+401-on-everything. The starter stores deliveries in `config-do.ts` and reads them
+back through `resolveScopedEnvSpec` (`instanceConfig`). Read settings that way and
+never off `env` directly: an `envSpec` default rides as a worker binding shared by
+every install of one serving script, so `env.FOO` is the same string for every
+tenant no matter what any of them saved. Declare a setting in **both**
+`src/manifest.ts` (`SHOP_ENV`) and package.json `substrat.envSpec` — `substrat
+push` reads the JSON, not the TypeScript.
 
 ## The rules (non-negotiable)
 
