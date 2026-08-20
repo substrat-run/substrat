@@ -48,6 +48,7 @@ import {
   platformRequestFilter,
   platformRequestId,
   platformRequestStatus,
+  platformRequestFailure,
   readScopeTableInput,
   queryScopeInput,
   type ScopeId,
@@ -69,6 +70,7 @@ import {
   type PlatformRequestFilter,
   type PlatformRequestId,
   type PlatformRequestStatus,
+  type PlatformRequestFailure,
 } from '@substrat-run/contracts';
 
 /**
@@ -118,7 +120,12 @@ export interface VerticalScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     id: PlatformRequestId,
-    outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
+    outcome: {
+      status: PlatformRequestStatus;
+      result?: unknown;
+      lastError?: string | null;
+      failure?: PlatformRequestFailure | null;
+    },
   ): Promise<void>;
   // The connector write-back's far end (#574): the shared control plane runs the
   // connector pass for this CP-less deployment and reaches back through these. The
@@ -215,6 +222,9 @@ const settleBody = z.object({
   status: platformRequestStatus,
   result: z.unknown().optional(),
   lastError: z.string().nullable().optional(),
+  // #841. Optional so a control plane too old to attribute still settles — the column
+  // then stays NULL, which reads as "nobody classified this" rather than a guess.
+  failure: platformRequestFailure.nullable().optional(),
 });
 
 /** `/internal/connector-invoke` body (#574) — one operation, invoked as the connection. */
@@ -522,6 +532,7 @@ export function mountPlatformSurface<Env extends object>(
       status: body.status,
       result: body.result,
       lastError: body.lastError ?? null,
+      failure: body.failure ?? null,
     });
     return c.json({ ok: true });
   });

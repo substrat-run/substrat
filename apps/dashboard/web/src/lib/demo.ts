@@ -227,7 +227,9 @@ export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
     lastErrorAt: null,
     createdAt: new Date(Date.now() - 86400_000).toISOString(),
   },
-  grants: ['protocol:read', 'protocol:record-signature', 'protocol:attach'],
+  // Deliberately WITHOUT `protocol:read`, so the preview renders the #841 join: the second
+  // intent below names a permission that is missing from exactly this list.
+  grants: ['protocol:record-signature', 'protocol:attach'],
   // #618: the failure the preview must be able to show. A 4xx settles `failed` on the first
   // attempt now, so this is one attempt with the provider's whole sentence — not attempt 78
   // of a two-day retry loop whose error nobody could read.
@@ -241,6 +243,22 @@ export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
       requestedAt: new Date(Date.now() - 3600_000).toISOString(),
       settledAt: new Date(Date.now() - 3540_000).toISOString(),
       eventType: 'protocol.signature-requested',
+      // The provider genuinely answered — the one origin that may be quoted as their words.
+      failure: { origin: 'provider', code: null, permission: null },
+    },
+    {
+      // #841 as it actually happened on a live tenant: our own permission check refused
+      // before egress, and the drawer captioned it as Scrive's refusal. Kept in the preview
+      // so the two origins are visibly different renderings, not one sentence with a flag.
+      id: '01MOCKINTENT00000000000003',
+      status: 'failed',
+      attempts: 1,
+      lastError:
+        'permission denied: protocol:read — refused by this platform before anything was sent — scrive never saw this request, so its credential is not implicated; the same call would be refused again, so this delivery was not retried',
+      requestedAt: new Date(Date.now() - 5400_000).toISOString(),
+      settledAt: new Date(Date.now() - 5340_000).toISOString(),
+      eventType: 'protocol.signatures-requested',
+      failure: { origin: 'platform', code: 'permission_denied', permission: 'protocol:read' },
     },
     {
       id: '01MOCKINTENT00000000000002',
@@ -250,6 +268,7 @@ export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
       requestedAt: new Date(Date.now() - 7200_000).toISOString(),
       settledAt: new Date(Date.now() - 7190_000).toISOString(),
       eventType: 'protocol.signature-requested',
+      failure: null,
     },
   ],
   credential: [

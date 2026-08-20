@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { ControlPlaneError } from '../src/client.js';
 import { ulid } from '@substrat-run/kernel';
 import {
   platformActorId,
@@ -71,7 +72,10 @@ describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
     const report = await drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler });
 
     expect(report).toEqual({ drained: 1, done: 1, failed: 0, pending: 0 });
-    expect(settled).toEqual([{ id: done.id, status: 'done', result: { scopeId: 'NEW' }, lastError: null }]);
+    // `failure: null` on a success — nothing refused, so there is nothing to attribute (#841).
+    expect(settled).toEqual([
+      { id: done.id, status: 'done', result: { scopeId: 'NEW' }, lastError: null, failure: null },
+    ]);
   });
 
   it('settles an unknown kind as failed — never a silent drop', async () => {
@@ -211,6 +215,7 @@ describe('connectorDispatchHandler — executes a routed connector delivery (#57
       status: 'done',
       result: { eventId: event.id },
       lastError: null,
+      failure: null,
     });
   });
 
@@ -275,6 +280,57 @@ describe('connectorDispatchHandler — executes a routed connector delivery (#57
     expect(failures).toEqual([
       expect.objectContaining({ operation: 'intent.connector:scrive', stage: 'terminal' }),
     ]);
+  });
+
+  /**
+   * #841, end to end and in the shape it actually happened: the connector's call back into the
+   * VERTICAL is refused by our own permission check, arrives as a `ControlPlaneError`, and the
+   * delivery was journaled as "a client error the provider will refuse identically on retry".
+   * Scrive never saw the request. The operator audited their Scrive account and pressed **Test
+   * connection**, which passed, because the credential was fine all along.
+   */
+  it('attributes a refusal raised on OUR side of egress to the platform, never to the provider', async () => {
+    const req = intent('connector:scrive', { payload: { executorId: 'scrive', event: routedEvent() } });
+    const { client, settled } = fakeTransport([req]);
+    const { host, dispatched } = recordingHost();
+    // What `dispatchConnector` really throws when the vertical refuses `openAttachment`.
+    host.dispatchConnector = async () => {
+      throw new ControlPlaneError(403, 'permission denied: protocol:read');
+    };
+
+    const report = await drainScopePlatformRequests(client, ctx, {
+      'connector:scrive': connectorDispatchHandler({ host, connector }),
+    });
+
+    // Still terminal — a refused check refuses the retry identically. That was never the bug.
+    expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+    expect(dispatched).toEqual([]); // nothing was ever sent
+
+    // The attribution is a VALUE now, not a sentence a reader has to parse.
+    expect(settled[0]!.failure).toEqual({
+      origin: 'platform',
+      code: null,
+      permission: 'protocol:read',
+    });
+
+    // …and the sentence beside it names us, clears the credential, and does not blame scrive.
+    expect(settled[0]!.lastError).toMatch(/permission denied: protocol:read/);
+    expect(settled[0]!.lastError).toMatch(/refused by this platform/);
+    expect(settled[0]!.lastError).toMatch(/scrive never saw this request/);
+    expect(settled[0]!.lastError).not.toMatch(/will refuse identically/);
+  });
+
+  it("still attributes a real provider refusal to the provider, and quotes it as their answer", async () => {
+    const req = intent('connector:scrive', { payload: { executorId: 'scrive', event: routedEvent() } });
+    const { client, settled } = fakeTransport([req]);
+    const { host } = recordingHost('scrive start failed: HTTP 409 requires valid personal number field', 409);
+
+    await drainScopePlatformRequests(client, ctx, {
+      'connector:scrive': connectorDispatchHandler({ host, connector }),
+    });
+
+    expect(settled[0]!.failure).toEqual({ origin: 'provider', code: null, permission: null });
+    expect(settled[0]!.lastError).toMatch(/scrive will refuse identically on retry/);
   });
 
   it('keeps a 5xx, a timeout and a rate limit retryable — those say nothing about the request', async () => {

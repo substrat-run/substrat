@@ -84,6 +84,55 @@ const INTENT_STATUS: Record<ConnectionIntentView['status'], { kind: PillKind; la
 };
 
 /**
+ * Who refused this delivery, and — when it was us — the grant that explains it (#841).
+ *
+ * The drawer already held both halves of this diagnosis and never joined them. `permission
+ * denied: protocol:read` was rendered under a caption saying Scrive had refused, while the
+ * list of grants directly above it did not contain `protocol:read`. Both facts on one screen,
+ * inches apart, and nothing said that one was the other's answer. The operator went to audit
+ * their Scrive account, pressed **Test connection** (which passes — the credential is fine),
+ * and lost an afternoon to a platform that was telling them the wrong thing confidently.
+ *
+ * The join is mechanical, not inferred: the drain records the permission key the refusal
+ * named, and this asks whether the connection holds it. When the key IS held the sentence is
+ * deliberately not written — a refusal that names a grant the connection has is a different
+ * bug, and guessing at it here would rebuild the wall this removes.
+ */
+function IntentAttribution({
+  intent,
+  providerName,
+  held,
+}: {
+  intent: ConnectionIntentView;
+  providerName: string;
+  held: Set<string>;
+}) {
+  // Nothing to attribute: a success, or a row settled before anyone classified it. Silence
+  // is the honest rendering — the previous caption's whole failure was speaking anyway.
+  if (intent.status !== 'failed' || !intent.failure) return null;
+  const { origin, permission } = intent.failure;
+  const missing = permission !== null && !held.has(permission);
+  return (
+    <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+      {origin === 'provider'
+        ? `Refused by ${providerName}. This is their answer, quoted in full.`
+        : origin === 'platform'
+          ? `Refused by this platform before anything was sent — ${providerName} never saw this request, and its credential is not implicated.`
+          : `Refused before this delivery completed; the origin could not be attributed.`}
+      {missing && (
+        <>
+          {' '}
+          <span style={{ color: 'var(--status-danger-fg)' }}>
+            This connection does not hold <code style={{ fontFamily: 'var(--font-mono)' }}>{permission}</code> — it is
+            absent from the grants listed above.
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
  * **What the platform tried to send, and what came back** (#618).
  *
  * The card above this one used to be the whole diagnosis available for a broken connector:
@@ -97,9 +146,23 @@ const INTENT_STATUS: Record<ConnectionIntentView['status'], { kind: PillKind; la
  * the platform is not coming back to it — and a 4xx now settles that way on the first attempt
  * rather than after two days of identical retries.
  */
-function IntentLedger({ intents, providerName }: { intents: ConnectionIntentView[]; providerName: string }) {
+function IntentLedger({
+  intents,
+  providerName,
+  grants,
+}: {
+  intents: ConnectionIntentView[];
+  providerName: string;
+  /** The live grants rendered directly above — the other half of the join. */
+  grants: string[];
+}) {
   if (intents.length === 0) return null;
+  const held = new Set(grants);
   const failed = intents.filter((i) => i.status === 'failed').length;
+  // Only a delivery the drain actually attributed to the provider may be quoted as their
+  // words. An unattributed one (older plane or older vertical) says nothing about origin
+  // rather than guessing — saying less is the fix, not a weaker version of it.
+  const quotable = intents.some((i) => i.status === 'failed' && i.failure?.origin === 'provider');
   return (
     <div>
       <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
@@ -133,14 +196,17 @@ function IntentLedger({ intents, providerName }: { intents: ConnectionIntentView
                   {i.lastError}
                 </div>
               )}
+              <IntentAttribution intent={i} providerName={providerName} held={held} />
             </div>
           );
         })}
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
-        {failed > 0
-          ? `What ${providerName} said, in full. A failed delivery is not retried — ${providerName} refused the request itself, so the same bytes would be refused again.`
-          : `What this platform sent to ${providerName} on this app's behalf, newest first.`}
+        {failed === 0
+          ? `What this platform sent to ${providerName} on this app's behalf, newest first.`
+          : quotable
+            ? `A failed delivery is not retried. Where the refusal came from ${providerName}, it is quoted in full and the same bytes would be refused again.`
+            : `A failed delivery is not retried. Each one says above whether ${providerName} refused it or this platform did.`}
       </div>
     </div>
   );
@@ -333,7 +399,13 @@ function IntegrationDetail({
 
         {/* Above the ledger on purpose: when something is broken this is the answer, and it
             should not be below a list of documents that all look fine. */}
-        {activity && <IntentLedger intents={activity.intents ?? []} providerName={provider.name} />}
+        {activity && (
+          <IntentLedger
+            intents={activity.intents ?? []}
+            providerName={provider.name}
+            grants={activity.grants}
+          />
+        )}
 
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, gap: 8 }}>

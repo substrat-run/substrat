@@ -8,6 +8,7 @@ import type {
   PlatformRequestFilter,
   PlatformRequestId,
   PlatformRequestStatus,
+  PlatformRequestFailure,
   PrincipalId,
   ConnectionGrantRecord,
   ProjectedConnectionGrant,
@@ -511,7 +512,12 @@ export class VerticalClient {
     tenantId: TenantId,
     scopeId: ScopeId,
     id: PlatformRequestId,
-    outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
+    outcome: {
+      status: PlatformRequestStatus;
+      result?: unknown;
+      lastError?: string | null;
+      failure?: PlatformRequestFailure | null;
+    },
   ): Promise<void> {
     await this.postInternal<unknown>(
       '/internal/platform-requests/settle',

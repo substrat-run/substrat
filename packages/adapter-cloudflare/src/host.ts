@@ -101,6 +101,7 @@ import {
   type PlatformRequestFilter,
   type PlatformRequestId,
   type PlatformRequestStatus,
+  type PlatformRequestFailure,
   type ScopeStatus,
   type ScopeTable,
   type ScopeQueryResult,
@@ -615,6 +616,7 @@ interface PlatformRequestRawRow {
   status: string;
   attempts: number;
   last_error: string | null;
+  last_failure: string | null;
   result: string | null;
   requested_at: string;
   settled_at: string | null;
@@ -630,6 +632,7 @@ function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
     status: r.status,
     attempts: r.attempts,
     lastError: r.last_error,
+    failure: r.last_failure == null ? null : JSON.parse(r.last_failure),
     result: r.result === null ? null : JSON.parse(r.result),
     requestedAt: r.requested_at,
     settledAt: r.settled_at,
@@ -662,6 +665,8 @@ interface ScopeStubRpc {
     status: 'pending' | 'done' | 'failed',
     result: string | null,
     lastError: string | null,
+    /** #841 attribution, JSON-encoded. Defaulted in the DO so an older stub still binds. */
+    lastFailure?: string | null,
   ): Promise<void>;
   /** #574 phase 3: enqueue a `connector:<provider>` intent + journal the delivery, atomically. */
   routeExecutorEventToPlatform(
@@ -1301,7 +1306,12 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     id: PlatformRequestId,
-    outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
+    outcome: {
+      status: PlatformRequestStatus;
+      result?: unknown;
+      lastError?: string | null;
+      failure?: PlatformRequestFailure | null;
+    },
   ): Promise<void> {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
@@ -1310,6 +1320,7 @@ export class CloudflareScopeHost implements ScopeHost {
       outcome.status,
       outcome.result === undefined ? null : JSON.stringify(outcome.result),
       outcome.lastError ?? null,
+      outcome.failure == null ? null : JSON.stringify(outcome.failure),
     );
   }
 

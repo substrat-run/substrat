@@ -385,6 +385,54 @@ export function scopeHostContractSuite(
       expect((await host.listPlatformRequestHistory(t1, s1, { limit: 1 })).length).toBe(1);
     });
 
+    /**
+     * #841. `lastError` says WHAT happened; this says WHO refused — and until it existed the
+     * dashboard assumed the provider every time, so a `permission denied: protocol:read`
+     * raised by our own check, before a byte left the platform, was rendered as the provider's
+     * own words. Pinned in the shared suite because both adapters store it in their own spine
+     * table, and a read-back that disagreed between them would be worse than no read at all.
+     */
+    it('journals WHO refused beside what was refused, and survives the round trip (#841)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const id = await stub.invoke<string>('platform/request', { kind: 'connector:test', payload: { doc: 9 } });
+      const row = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+
+      await host.settlePlatformRequest(t1, s1, row.id, {
+        status: 'failed',
+        lastError: 'permission denied: protocol:read',
+        failure: { origin: 'platform', code: 'permission_denied', permission: 'protocol:read' },
+      });
+
+      const settled = (await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' })).find(
+        (r) => r.id === id,
+      )!;
+      expect(settled.failure).toEqual({
+        origin: 'platform',
+        code: 'permission_denied',
+        permission: 'protocol:read',
+      });
+    });
+
+    /**
+     * A caller that does not attribute leaves the column NULL, and NULL must read back as
+     * "nobody classified this" rather than as an origin nobody decided. This is the shape a
+     * control plane older than the field produces, and the drawer renders it by saying
+     * nothing about origin at all.
+     */
+    it('leaves attribution null when the settling caller did not attribute (#841)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const id = await stub.invoke<string>('platform/request', { kind: 'connector:test', payload: { doc: 10 } });
+      const row = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+
+      await host.settlePlatformRequest(t1, s1, row.id, { status: 'failed', lastError: 'something broke' });
+
+      const settled = (await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' })).find(
+        (r) => r.id === id,
+      )!;
+      expect(settled.lastError).toBe('something broke');
+      expect(settled.failure).toBeNull();
+    });
+
     it('newest first, so a limit is a recency window rather than an arbitrary page (#618)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const first = await stub.invoke<string>('platform/request', { kind: 'order-check', payload: { n: 1 } });

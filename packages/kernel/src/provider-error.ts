@@ -13,6 +13,7 @@
  * numeric `status` — so the drain never has to import a provider's error class to classify it,
  * and a connector gets the behaviour by raising the status it already knows.
  */
+import { isSubstratError } from '@substrat-run/contracts';
 
 /**
  * 4xx statuses that are nevertheless worth retrying: the provider is refusing this attempt,
@@ -34,11 +35,32 @@ export function providerErrorStatus(error: unknown): number | undefined {
 }
 
 /**
- * The provider refused the REQUEST — a 4xx that will refuse the identical request forever.
- * A 5xx is the provider's own fault and stays retryable; so does anything without a status,
- * because "we could not tell" must never settle a delivery terminally.
+ * Is this delivery over? — the DRAIN's question, and the only one that decides retries.
+ *
+ * A non-retryable 4xx, whoever raised it: attempt 101 carries the identical bytes past the
+ * identical check. Deliberately blind to WHO refused, because terminality does not depend on
+ * it — our own `validation_failed` is as final as the provider's 409, and both statuses come
+ * from the same structural read (`SubstratError` carries its catalog status; a connector's
+ * error carries the provider's).
  */
-export function isTerminalProviderError(error: unknown): boolean {
+export function isTerminalDispatchFailure(error: unknown): boolean {
   const status = providerErrorStatus(error);
   return status !== undefined && status >= 400 && status < 500 && !RETRYABLE_CLIENT_STATUSES.has(status);
+}
+
+/**
+ * The PROVIDER refused the request — a 4xx that came back over the wire, not one we raised.
+ *
+ * The exclusion is the whole point (#841). This predicate reads a bare numeric `status`, and
+ * every `SubstratError` carries one from the problem catalog — so a `permission denied:
+ * protocol:read` raised on our own side of egress answered `true` here, and the drain
+ * captioned it "a client error the provider will refuse identically on retry". Scrive never
+ * saw that request. An operator who reads that sentence goes and audits their Scrive account.
+ *
+ * Terminality was never the part that was wrong, so it did not move: see
+ * {@link isTerminalDispatchFailure}, which is what the drain now asks. This one answers only
+ * "may we quote this as the provider's words", and one of ours never may.
+ */
+export function isTerminalProviderError(error: unknown): boolean {
+  return !isSubstratError(error) && isTerminalDispatchFailure(error);
 }
