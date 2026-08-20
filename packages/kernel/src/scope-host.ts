@@ -9,6 +9,7 @@ import type {
   ConnectionSecret,
   CreateConnectionInput,
   OpenConnection,
+  ProjectedConnectionGrant,
   ProjectedConnectionKey,
   AccessLogEntry,
   BindHostnameInput,
@@ -571,6 +572,21 @@ export interface ScopedConnectorConnection extends ConnectorConnection {
    * falls back rather than failing a dispatch over a missing file.
    */
   openAttachment(attachmentId: string): Promise<OpenedAttachment | null>;
+  /**
+   * What this connection may do in the scope this delivery is for (#726 gap 1) —
+   * `connectionGrantsInScope`, narrowed to this connection.
+   *
+   * Here so a connector can check its own preconditions at the top of a dispatch and
+   * fail saying which grant is missing, instead of discovering it three calls later as
+   * a refusal the drain then captions as the provider's (#841). A connector that needs
+   * a standing grant for its RETURN path — where there is no delivered event to carry
+   * authority — can say so on the way out, which is the only moment it is cheap to fix.
+   *
+   * Deliberately the permission keys and nothing else: a connector asks whether it may
+   * act, never who granted it or when. Both are the operator's question, and both are
+   * on the drawer that already renders them.
+   */
+  grants(): Promise<PermissionKey[]>;
   /**
    * Open a cell the scope sealed TO this connection (#687) — the egress half of
    * `ctx.sealToConnection`.
@@ -2664,6 +2680,34 @@ export interface ScopeHost {
     connectionId: ConnectionId,
     scopeId: ScopeId,
   ): Promise<ScopeAttachments>;
+
+  /**
+   * What this scope's own tuples say a connection may do (#726 gap 1).
+   *
+   * Every other authority in the model is inspectable from where the vertical sits:
+   * the permission surface is diffed at promote, role tuples are readable from the
+   * scope, entitlements and identity links are projected and read back locally. A
+   * connection's grants were the exception — writable from the platform, readable only
+   * with staff access to the control plane — and they are the authority behind the one
+   * actor that is not a person. #716 found `protocol:attach` missing from the demo
+   * Scrive connection after months of silently failing the sealed-copy landing; nothing
+   * in the deployment could have answered the question that would have caught it.
+   *
+   * **The scope's own answer, not the directory's.** These are the delivered
+   * `connection:<id>` / `granted:<perm>` tuples — the same rows the permission checker
+   * reads, so what this returns is what would actually be enforced here, including a
+   * scope whose delivery is behind the directory. The directory's view is a different
+   * fact and lives on `HostAdmin`; a caller asking "may this connection act HERE" wants
+   * this one.
+   *
+   * Live grants only: revoked tuples are tombstoned rather than deleted (K-21) and
+   * expired ones are past their `expires_at`, and neither would be enforced, so neither
+   * is reported.
+   */
+  connectionGrantsInScope(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ProjectedConnectionGrant[]>;
 
   /**
    * A scope stub whose authority is a MODULE acting on a timer (#383) — the

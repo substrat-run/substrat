@@ -33,6 +33,7 @@ import {
   meterReading,
   subjectRef,
   createConnectionInput,
+  projectedConnectionGrant,
   projectedConnectionKey,
   moduleManifest,
   org as orgSchema,
@@ -702,6 +703,12 @@ interface ScopeStubRpc {
   scheduleLastRun(operation: string): Promise<string | null>;
   /** Record a schedule run's timestamp + outcome (#383). */
   recordScheduleRun(operation: string, at: string, status: 'ok' | 'failed'): Promise<void>;
+  /** This scope's live `connection:<id>` grant tuples (#726 gap 1) — the read-back.
+   *  Unions the scope's own tuples with the projected tenant-level ones, because a
+   *  scope check consults both (rule 2 inheritance). */
+  listConnectionGrants(
+    now: string,
+  ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
   writeTuple(
     subject: string,
     relation: string,
@@ -1100,6 +1107,13 @@ export class CloudflareScopeHost implements ScopeHost {
           // delegated read verb when the serving deployment is elsewhere (#574) —
           // the control plane holds the directory and the credential but not the
           // vertical's R2, so the bytes come back over the seam.
+          // #726 gap 1: this connection's live grants IN THIS SCOPE, so a connector can
+          // assert its preconditions at the top of a dispatch rather than meeting a
+          // missing grant as a refusal several calls later.
+          grants: async () =>
+            (await this.connectionGrantsInScope(tenantId, scopeId))
+              .filter((g) => g.connectionId === open.id)
+              .map((g) => g.permission),
           openAttachment: (attachmentId: string) =>
             this.getConnectorAttachments(open.id, scopeId).then((a) => a.open(attachmentId)),
           // #687: open a cell the scope sealed TO this connection. The keyId-indexed
@@ -4130,6 +4144,30 @@ export class CloudflareScopeHost implements ScopeHost {
       after: after ?? null,
       at: new Date().toISOString(),
     });
+  }
+
+  /**
+   * The scope's own answer to "what may this connection do here" (#726 gap 1).
+   *
+   * Read from the ScopeDO's delivered tuples rather than the directory's grant rows:
+   * the two are different facts, and the one a caller wants when asking whether a
+   * dispatch will be refused is what this deployment would actually enforce. The
+   * directory's view stays on `HostAdmin.listConnectionGrants`.
+   */
+  async connectionGrantsInScope(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ProjectedConnectionGrant[]> {
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    const rows = await this.scopeStub(scopeId).listConnectionGrants(new Date().toISOString());
+    return rows.map((r) =>
+      projectedConnectionGrant.parse({
+        connectionId: r.subject.slice('connection:'.length),
+        permission: r.relation.slice('granted:'.length),
+        ...(r.expires_at ? { expiresAt: r.expires_at } : {}),
+      }),
+    );
   }
 
   private async writeScopeTuple(

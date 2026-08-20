@@ -31,6 +31,7 @@ import {
   systemGrant,
   subjectRef,
   createConnectionInput,
+  projectedConnectionGrant,
   projectedConnectionKey,
   moduleManifest,
   createOrgInput,
@@ -82,6 +83,7 @@ import {
   type EntitlementGrant,
   type EntitlementGrantInput,
   type EntitlementView,
+  type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type EntityRef,
   type MeterReading,
@@ -702,6 +704,9 @@ function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
     settledAt: r.settled_at,
   });
 }
+
+/** One grant tuple as `connectionGrantsInScope` reads it — either tuple store, same shape. */
+type TupleReadRow = { subject: string; relation: string; expires_at: string | null };
 
 export class SqliteScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
@@ -1324,6 +1329,13 @@ export class SqliteScopeHost implements ScopeHost {
           // serialized turn and stays under K-6 like every other reader. Assuming
           // the reentrant case everywhere would have dropped serialization on a path
           // that never needed it.
+          // #726 gap 1: this connection's live grants IN THIS SCOPE, so a connector can
+          // assert its preconditions at the top of a dispatch rather than discovering a
+          // missing grant as a refusal several calls later.
+          grants: async () =>
+            (await this.connectionGrantsInScope(rt.tenantId, rt.scopeId))
+              .filter((g) => g.connectionId === open.id)
+              .map((g) => g.permission),
           openAttachment: async (attachmentId: string) => {
             const store = this.attachmentStore(rt.tenantId, vertical);
             return this.buildAttachments(rt, { kind: 'connection', id: open.id }, store, {
@@ -2757,6 +2769,51 @@ export class SqliteScopeHost implements ScopeHost {
     } finally {
       this.causedBy = null;
     }
+  }
+
+  /**
+   * The scope's own answer to "what may this connection do here" (#726 gap 1) — read
+   * from the delivered `connection:<id>` tuples, which is the same row the checker
+   * walks, so this cannot disagree with what would be enforced.
+   *
+   * Live only: a tombstoned tuple (K-21) and one past `expires_at` are both unenforced,
+   * and reporting either would make the read a worse answer than no read at all.
+   */
+  async connectionGrantsInScope(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ProjectedConnectionGrant[]> {
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    const now = new Date().toISOString();
+    // BOTH tuple stores, because a scope check consults both: rule 2 inheritance means
+    // a tenant-level grant (`grantToConnection` with `scopeId: null`) is enforced here
+    // exactly as a scope-level one is. Reading only the scope's own table would answer
+    // "not granted" where the checker answers allow — a read-back that disagrees with
+    // enforcement is worse than none, since it is the read an operator would trust.
+    const rows = [
+      ...(rt.db
+        .prepare(
+          `SELECT subject, relation, expires_at FROM _substrat_tuples
+           WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+             AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+        )
+        .all(now) as TupleReadRow[]),
+      ...(this.directory
+        .prepare(
+          `SELECT subject, relation, expires_at FROM _substrat_tenant_tuples
+           WHERE tenant_id = ? AND subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+             AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+        )
+        .all(tenantId, now) as TupleReadRow[]),
+    ].sort((a, b) => a.subject.localeCompare(b.subject) || a.relation.localeCompare(b.relation));
+    return rows.map((r) =>
+      projectedConnectionGrant.parse({
+        connectionId: r.subject.slice('connection:'.length),
+        permission: r.relation.slice('granted:'.length),
+        ...(r.expires_at ? { expiresAt: r.expires_at } : {}),
+      }),
+    );
   }
 
   migrationFrontier(): MigrationFrontier {

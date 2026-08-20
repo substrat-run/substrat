@@ -110,6 +110,13 @@ interface DeclaredGuard {
   declaredBy: string;
 }
 
+/** One `connection:<id>` grant tuple as the read-back reads it (#726) — either store. */
+interface ConnectionGrantTupleRow {
+  subject: string;
+  relation: string;
+  expires_at: string | null;
+}
+
 interface OutboxRow {
   id: string;
   type: string;
@@ -778,6 +785,45 @@ export function defineScopeDO(
       // would take the RPC response down with it.
       setTimeout(() => this.ctx.abort(), 100);
       return { rewindingTo: confirmed ?? bookmark };
+    }
+
+    /**
+     * The scope's live `connection:<id>` grant tuples (#726 gap 1) — the read half of
+     * the delivery `applyProjection` and `writeTuple` make.
+     *
+     * Read from the same rows the checker walks, so the answer is what would actually be
+     * enforced HERE rather than what the directory believes was delivered. Tombstoned
+     * (K-21) and expired tuples are excluded: neither is enforced, and reporting either
+     * would make this read worse than none.
+     */
+    async listConnectionGrants(now: string): Promise<ConnectionGrantTupleRow[]> {
+      return this.queue.enqueue(() => {
+        // BOTH stores, because a scope check consults both: rule 2 inheritance makes a
+        // tenant-level grant enforceable here exactly as a scope-level one is, and the
+        // projected `_substrat_tenant_tuples` is where this DO holds them. A read-back
+        // that disagreed with enforcement would be worse than none.
+        const rows = [
+          ...(this.sql
+            .exec(
+              `SELECT subject, relation, expires_at FROM _substrat_tuples
+               WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+                 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+              now,
+            )
+            .toArray() as unknown as ConnectionGrantTupleRow[]),
+          ...(this.sql
+            .exec(
+              `SELECT subject, relation, expires_at FROM _substrat_tenant_tuples
+               WHERE subject LIKE 'connection:%' AND relation LIKE 'granted:%'
+                 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+              now,
+            )
+            .toArray() as unknown as ConnectionGrantTupleRow[]),
+        ];
+        return rows.sort(
+          (a, b) => a.subject.localeCompare(b.subject) || a.relation.localeCompare(b.relation),
+        );
+      });
     }
 
     /** Admin scope-tuple write (role assignment / grant scoped to this scope). */
