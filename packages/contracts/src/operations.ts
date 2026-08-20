@@ -20,6 +20,7 @@
  * schema language would need the shape written twice, and transcription is what
  * produced 40 wrong argument names in the one app where this was measured.
  */
+import type { Page } from './pagination.js';
 import { z } from 'zod';
 import type { EntityDef } from './model.js';
 
@@ -218,6 +219,31 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
   readonly http?: {
     readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     readonly path: CheckedPath<O>;
+  };
+  /**
+   * This read returns a PAGE, not the whole table (#811, #129).
+   *
+   * A list endpoint that returns everything is a bug with a delay on it: it passes
+   * review, it passes tests, and then one tenant's table gets large. Declaring
+   * `paged` is what lets that be caught mechanically rather than noticed.
+   *
+   * When present, `output` declares the **entry** shape and the platform wraps it:
+   * the emitted document gains `limit` / `cursor` / `order` query parameters and a
+   * `{ entries, nextCursor }` envelope, and the handler returns `Page<Entry>`
+   * (`pageOf` builds one). Declaring the entry rather than the envelope is what
+   * keeps `sortKey` checkable and stops twelve operations from restating the same
+   * wrapper.
+   *
+   * `sortKey` names the output field the cursor walks — the same compile-checked
+   * join as `entityIdFrom`, and for the same reason: a cursor over a field the
+   * entry does not have is a page that silently skips or repeats rows, and nothing
+   * downstream would ever flag it. Keyset, never offset: on live data an offset
+   * shifts between requests, so pages drop and duplicate.
+   */
+  readonly paged?: {
+    readonly sortKey: OutputKeys<O>;
+    /** Walk direction. Defaults to `asc`; a feed reading newest-first says `desc`. */
+    readonly order?: 'asc' | 'desc';
   };
   readonly emits?: {
     /**
@@ -550,3 +576,39 @@ export function defineEngineRoutes<const Ops extends Record<string, object>>(ope
     return out as { [K in keyof R]: (K extends keyof Ops ? Ops[K] : never) & { http: R[K] } };
   };
 }
+
+/**
+ * The input and output a HANDLER must have, derived from its declaration.
+ *
+ * These exist so a vertical writes the `satisfies` clause once against the model
+ * instead of restating how a declaration maps to a handler signature — and, more to
+ * the point, so `paged` is understood in ONE place. A paged read declares its ENTRY
+ * shape and returns a `Page` of it; deriving that in each vertical's module file
+ * would mean each vertical could get it wrong, and one that did would typecheck
+ * against an envelope it never returns.
+ *
+ * `OperationHandler` itself stays in the kernel (contracts cannot import it, and does
+ * not need to) — these describe only the two type arguments.
+ *
+ * ```ts
+ * } satisfies {
+ *   [K in keyof typeof todoOperations]: OperationHandler<
+ *     HandlerInput<(typeof todoOperations)[K]>,
+ *     HandlerOutput<(typeof todoOperations)[K]>
+ *   >;
+ * };
+ * ```
+ */
+export type HandlerInput<O> = O extends { input: infer I }
+  ? I extends z.ZodType
+    ? z.infer<I>
+    : undefined
+  : undefined;
+
+export type HandlerOutput<O> = O extends { output: infer R }
+  ? R extends z.ZodType
+    ? O extends { paged: unknown }
+      ? Page<z.infer<R>>
+      : z.infer<R>
+    : unknown
+  : unknown;

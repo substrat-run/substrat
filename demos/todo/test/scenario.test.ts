@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Page } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { buildHost, seed, type World } from '../src/seed.js';
 
@@ -77,10 +78,67 @@ describe('the happy path', () => {
 
   it('Ada sees both changes', async () => {
     const ada = await as('ada');
-    const items = await ada.invoke<{ text: string; done: number }[]>('todo/list-items', {
+    const page = await ada.invoke<Page<{ text: string; done: number }>>('todo/list-items', {
       listId: groceries,
     });
-    expect(items.map((i) => `${i.text}:${i.done}`)).toEqual(['milk:1', 'bread:0']);
+    expect(page.entries.map((i) => `${i.text}:${i.done}`)).toEqual(['milk:1', 'bread:0']);
+    // Short page: the walk is over, so a client stops here rather than making one more
+    // request that returns nothing.
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('walks a long list one page at a time, without repeating or skipping a row', async () => {
+    const ada = await as('ada');
+    const list = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Big shop' });
+    for (let i = 0; i < 5; i++) {
+      await ada.invoke('todo/add-item', { listId: list.id, text: `item ${i}` });
+    }
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let requests = 0;
+    do {
+      const page: Page<{ text: string }> = await ada.invoke<Page<{ text: string }>>(
+        'todo/list-items',
+        { listId: list.id, limit: 2, ...(cursor ? { cursor } : {}) },
+      );
+      seen.push(...page.entries.map((i) => i.text));
+      cursor = page.nextCursor;
+      requests++;
+    } while (cursor !== null);
+
+    // Every row exactly once, in order — the property an offset cannot promise on a
+    // table being written to.
+    expect(seen).toEqual(['item 0', 'item 1', 'item 2', 'item 3', 'item 4']);
+    expect(new Set(seen).size).toBe(seen.length);
+    // 2 + 2 + 1: the short final page ends the walk, so three requests and no fourth.
+    expect(requests).toBe(3);
+  });
+
+  it('does not repeat a row when the list is written to mid-walk', async () => {
+    const ada = await as('ada');
+    const list = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Live list' });
+    for (const text of ['a', 'b', 'c']) {
+      await ada.invoke('todo/add-item', { listId: list.id, text });
+    }
+
+    const first = await ada.invoke<Page<{ text: string }>>('todo/list-items', {
+      listId: list.id,
+      limit: 2,
+    });
+    expect(first.entries.map((i) => i.text)).toEqual(['a', 'b']);
+
+    // A row lands BEFORE the second page is fetched. Under offset paging the window
+    // would shift and 'b' would come back a second time; a keyset cursor names a
+    // position in the ordering, so it cannot.
+    await ada.invoke('todo/add-item', { listId: list.id, text: 'd' });
+
+    const second = await ada.invoke<Page<{ text: string }>>('todo/list-items', {
+      listId: list.id,
+      limit: 2,
+      cursor: first.nextCursor!,
+    });
+    expect(second.entries.map((i) => i.text)).toEqual(['c', 'd']);
   });
 
   describe('the denials that prove it', () => {

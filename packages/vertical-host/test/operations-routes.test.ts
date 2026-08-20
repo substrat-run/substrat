@@ -424,3 +424,45 @@ describe('the success shape', () => {
     expect(seen).toEqual(['todo/list-items']);
   });
 });
+
+/**
+ * The paged read, driven over HTTP (#811).
+ *
+ * The scenario suites invoke operations directly, so they never exercise the one step
+ * that can silently not work: `?limit=2` arrives as the STRING `'2'`, and a handler
+ * declaring `z.number()` would reject it — or worse, a `LIMIT '2'` would reach SQLite.
+ * The coercion that prevents that is derived from the declared input, so this drives
+ * the query string through a real Hono app and looks at what the handler was handed.
+ */
+describe('a paged operation over HTTP', () => {
+  const pagedOps = {
+    'todo/list-items': {
+      input: z.object({
+        listId: z.string(),
+        limit: z.number().int().positive().max(200).optional(),
+        cursor: z.string().optional(),
+      }),
+      paged: { sortKey: 'id' },
+      http: { method: 'GET', path: '/lists/{listId}/items' },
+    },
+  } as const;
+
+  it('coerces limit to a number and passes the cursor through', async () => {
+    const { app, calls } = harness(pagedOps);
+    await app.request('/api/lists/L1/items?limit=2&cursor=01JABC');
+
+    expect(calls[0]?.name).toBe('todo/list-items');
+    expect(calls[0]?.input).toEqual({ listId: 'L1', limit: 2, cursor: '01JABC' });
+    // Not the string '2' — the whole point of the coercion, and what a bare
+    // `Number.isInteger` check downstream would have caught only in production.
+    expect(typeof (calls[0]?.input as { limit: unknown }).limit).toBe('number');
+  });
+
+  it('omits the page params entirely when the caller sends none', async () => {
+    const { app, calls } = harness(pagedOps);
+    await app.request('/api/lists/L1/items');
+    // Absent, not `undefined` keys — the handler applies its own default, and an
+    // explicit undefined would defeat a `??` on the other side.
+    expect(calls[0]?.input).toEqual({ listId: 'L1' });
+  });
+});

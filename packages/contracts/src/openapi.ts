@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LIST_PAGE_DEFAULT, LIST_PAGE_MAX, pageSchema } from './pagination.js';
 import {
   DOCUMENTED_ERROR_CODES,
   type ErrorCode,
@@ -48,6 +49,12 @@ export interface ApiOperationDoc {
    * the router cannot describe different surfaces.
    */
   http?: { method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; path: string };
+  /**
+   * Declared by a paged read (#811). `output` then carries the ENTRY schema, and this
+   * builder emits the query parameters and the `{ entries, nextCursor }` envelope —
+   * so the wrapper is written once here rather than restated by every list operation.
+   */
+  paged?: { sortKey: string; order?: 'asc' | 'desc' };
 }
 
 /** operation name (module-namespaced, e.g. 'hr/create-employee') → its doc. */
@@ -149,12 +156,40 @@ export function buildOpenApiDocument(
     const verb = op.http ? op.http.method.toLowerCase() : 'post';
     // `{listId}` in the path is a path PARAMETER, and OpenAPI requires it
     // declared or the document is invalid — a renderer will not infer it.
-    const params = [...url.matchAll(/\{(\w+)\}/g)].map((m) => ({
+    const params: Record<string, unknown>[] = [...url.matchAll(/\{(\w+)\}/g)].map((m) => ({
       name: m[1] as string,
       in: 'path',
       required: true,
       schema: { type: 'string' },
     }));
+    // A paged read advertises the walk itself (#811). Written here rather than by each
+    // operation: the convention is the platform's, so restating it twelve times per
+    // vertical is twelve chances to state it differently.
+    if (op.paged) {
+      params.push(
+        {
+          name: 'limit',
+          in: 'query',
+          required: false,
+          description: `Page size. Defaults to ${LIST_PAGE_DEFAULT}, capped at ${LIST_PAGE_MAX}.`,
+          schema: { type: 'integer', minimum: 1, maximum: LIST_PAGE_MAX, default: LIST_PAGE_DEFAULT },
+        },
+        {
+          name: 'cursor',
+          in: 'query',
+          required: false,
+          description: `The previous page's \`nextCursor\`. Keyset over \`${op.paged.sortKey}\` — exclusive, so no row is repeated.`,
+          schema: { type: 'string' },
+        },
+        {
+          name: 'order',
+          in: 'query',
+          required: false,
+          description: 'Walk direction.',
+          schema: { type: 'string', enum: ['asc', 'desc'], default: op.paged.order ?? 'asc' },
+        },
+      );
+    }
     const existing = (paths[url] ?? {}) as Record<string, unknown>;
     paths[url] = {
       ...existing,
@@ -174,9 +209,18 @@ export function buildOpenApiDocument(
           : {}),
         responses: {
           '200': {
-            description: 'The operation result.',
+            description: op.paged ? 'One page of results.' : 'The operation result.',
             ...(op.output
-              ? { content: { 'application/json': { schema: jsonSchema(op.output, 'output') } } }
+              ? {
+                  content: {
+                    'application/json': {
+                      schema: jsonSchema(
+                        op.paged ? pageSchema(op.output) : op.output,
+                        'output',
+                      ),
+                    },
+                  },
+                }
               : {}),
           },
           ...ERROR_RESPONSES,
@@ -257,6 +301,9 @@ export function apiCatalogFrom(
       ...(op.output ? { output: op.output } : {}),
       ...((op as { http?: ApiOperationDoc['http'] }).http
         ? { http: (op as { http: NonNullable<ApiOperationDoc['http']> }).http }
+        : {}),
+      ...((op as { paged?: ApiOperationDoc['paged'] }).paged
+        ? { paged: (op as { paged: NonNullable<ApiOperationDoc['paged']> }).paged }
         : {}),
     };
   }
