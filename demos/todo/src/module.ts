@@ -15,6 +15,7 @@ import {
   countedPageOf,
   dataSubjectId,
   LIST_PAGE_DEFAULT,
+  substratError,
   type HandlerInput,
   type HandlerOutput,
   z,
@@ -23,12 +24,14 @@ import {
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
+  DEFAULT_SEARCH_LIMIT,
+  MAX_SEARCH_LIMIT,
   ulid,
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
 } from '@substrat-run/kernel';
-import { todoEntities, todoOperations } from '../spec/model.js';
+import { SEARCH_OVERFETCH, todoEntities, todoOperations } from '../spec/model.js';
 import { TODO_PERM, todoManifest } from './manifest.js';
 import { todoMigrations } from './migrations.js';
 
@@ -40,17 +43,34 @@ type ShareRow = EntityRow<typeof todoEntities, 'share'>;
 const now = () => new Date().toISOString();
 const listRef = (id: string) => ({ entityType: 'list', entityId: id });
 
+/**
+ * Ask the index for more than the caller wants (#827).
+ *
+ * `SEARCH_OVERFETCH` is a guess, and an honest one: it is not a guarantee, which is
+ * why both handlers still report `capped` rather than pretending the answer is
+ * complete. The `min` is a backstop rather than the design — `TODO_SEARCH_MAX` is
+ * derived so that the widened ask stays inside the kernel's ceiling, and the clamp
+ * only ever fires if that derivation is broken.
+ */
+const overfetch = (limit: number) => Math.min(limit * SEARCH_OVERFETCH, MAX_SEARCH_LIMIT);
+
+/** Hits carry the rank; rows carry the shape. Re-join them in the index's order. */
+function rankOrder(hits: readonly { id: string }[], rows: readonly ItemRow[]): ItemRow[] {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return hits.map((hit) => byId.get(hit.id)).filter((row): row is ItemRow => row !== undefined);
+}
+
 /** The list, or a refusal — never a silent empty answer. */
 function listOrThrow(ctx: OperationContext, id: string): ListRow {
   const row = ctx.sql.query<ListRow>('SELECT * FROM todo_lists WHERE id = ?', [id])[0];
-  if (!row) throw new Error(`list not found: ${id}`);
+  if (!row) throw substratError('not_found', `list not found: ${id}`);
   return row;
 }
 
 /** The list an item sits on — every item permission is really the list's. */
 function itemAndList(ctx: OperationContext, itemId: string): { item: ItemRow; list: ListRow } {
   const item = ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE id = ?', [itemId])[0];
-  if (!item) throw new Error(`item not found: ${itemId}`);
+  if (!item) throw substratError('not_found', `item not found: ${itemId}`);
   return { item, list: listOrThrow(ctx, item.list_id) };
 }
 
@@ -87,7 +107,11 @@ const operations = {
     const owner = ctx.sql.query<OwnerRow>('SELECT * FROM todo_owners WHERE id = ?', [
       ctx.principal,
     ])[0];
-    if (!owner) throw new Error('no account here — you were never invited to this scope');
+    if (!owner)
+      throw substratError(
+        'precondition_failed',
+        'no account here — join before creating a list',
+      );
 
     const id = ulid();
     ctx.sql.exec(
@@ -181,6 +205,81 @@ const operations = {
     return countedPageOf(rows, limit, (row) => row.id, total);
   },
 
+  /**
+   * Search on one list (#827) — one check, then hydrate.
+   *
+   * The index is SCOPE-wide: `ctx.search` knows nothing about lists, so the hits
+   * arrive from every list in the scope and the `list_id` in the WHERE is what
+   * narrows them. That filter runs AFTER the ranking, which is why the index is
+   * asked for more than the caller wants — a top-20 that loses 18 rows to the
+   * filter would answer with two and call it the whole result.
+   */
+  'todo/search-list-items': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
+    const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;
+    const fetch = overfetch(limit);
+    const hits = ctx.search('item', input.q, { limit: fetch });
+    if (hits.length === 0) return { results: [], limit, capped: false };
+
+    const rows = ctx.sql.query<ItemRow>(
+      `SELECT * FROM todo_items WHERE list_id = ? AND id IN (${hits.map(() => '?').join(', ')})`,
+      [input.listId, ...hits.map((h) => h.id)],
+    );
+    // `IN (…)` returns rows in whatever order the table hands them back, so the
+    // rank has to be put back deliberately: a search that lists the best match
+    // third is a search people stop using.
+    const ordered = rankOrder(hits, rows);
+    return {
+      results: ordered.slice(0, limit),
+      limit,
+      capped: ordered.length > limit || hits.length === fetch,
+    };
+  },
+
+  /**
+   * Search across every list the caller reaches — the same proof walk as
+   * `my-lists`, run over search hits instead of over every row.
+   *
+   * `narrows` rather than a node-level check, because there is no node-level
+   * answer: nobody holds `list:contribute` scope-wide, so "may you see this item"
+   * is only ever a question about the list it sits on. Asked once per distinct
+   * list rather than once per hit — forty matching items on one list is one
+   * question, not forty.
+   *
+   * Stopping at `limit` is what makes this cheap: the walk ends as soon as the
+   * answer is full, so a scope with many unreachable matches costs the checks it
+   * takes to find `limit` reachable ones, not one per hit.
+   */
+  'todo/search-items': async (ctx, input) => {
+    const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;
+    const fetch = overfetch(limit);
+    const hits = ctx.search('item', input.q, { limit: fetch });
+    if (hits.length === 0) return { results: [], limit, capped: false };
+
+    const rows = ctx.sql.query<ItemRow>(
+      `SELECT * FROM todo_items WHERE id IN (${hits.map(() => '?').join(', ')})`,
+      hits.map((h) => h.id),
+    );
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const reachable = new Map<string, boolean>();
+    const results: ItemRow[] = [];
+    for (const hit of hits) {
+      const row = byId.get(hit.id);
+      if (!row) continue;
+      let allowed = reachable.get(row.list_id);
+      if (allowed === undefined) {
+        allowed = (await ctx.check(TODO_PERM.listContribute, listRef(row.list_id))).allowed;
+        reachable.set(row.list_id, allowed);
+      }
+      if (!allowed) continue;
+      results.push(row);
+      if (results.length === limit) break;
+    }
+    // Full either because the walk stopped early or because the index itself
+    // capped — both mean there may be more, and neither can be paged past.
+    return { results, limit, capped: results.length === limit || hits.length === fetch };
+  },
+
   'todo/add-item': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
     listOrThrow(ctx, input.listId);
@@ -246,7 +345,7 @@ const operations = {
     const invitee = ctx.sql.query<OwnerRow>('SELECT * FROM todo_owners WHERE email = ?', [
       input.email,
     ])[0];
-    if (!invitee) throw new Error(`nobody here with that address: ${input.email}`);
+    if (!invitee) throw substratError('not_found', `nobody here with that address: ${input.email}`);
 
     const existing = ctx.sql.query<ShareRow>(
       'SELECT * FROM todo_shares WHERE list_id = ? AND principal = ?',
@@ -287,7 +386,7 @@ const operations = {
     const share = ctx.sql.query<ShareRow>('SELECT * FROM todo_shares WHERE id = ?', [
       input.shareId,
     ])[0];
-    if (!share) throw new Error(`share not found: ${input.shareId}`);
+    if (!share) throw substratError('not_found', `share not found: ${input.shareId}`);
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(share.list_id)));
 
     ctx.sql.exec('DELETE FROM todo_shares WHERE id = ?', [input.shareId]);

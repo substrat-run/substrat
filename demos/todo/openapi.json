@@ -957,6 +957,244 @@
         }
       }
     },
+    "/api/items/search": {
+      "get": {
+        "operationId": "todo-search-items",
+        "summary": "Find items across the lists you can see",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 25
+            }
+          }
+        ],
+        "description": "The same proof walk as `my-lists`, run over search hits instead of every row.",
+        "tags": [
+          "Items"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "list_id": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "done": {
+                            "type": "number"
+                          },
+                          "added_by": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "list_id",
+                          "text",
+                          "done",
+                          "added_by",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "capped": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "results",
+                    "limit",
+                    "capped"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/lists/{listId}/items/search": {
+      "get": {
+        "operationId": "todo-search-list-items",
+        "summary": "Find items on a list by text",
+        "parameters": [
+          {
+            "name": "listId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 25
+            }
+          }
+        ],
+        "description": "Ranked and capped, not paged — narrow the term rather than paging a relevance order.",
+        "tags": [
+          "Items"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "list_id": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "done": {
+                            "type": "number"
+                          },
+                          "added_by": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "list_id",
+                          "text",
+                          "done",
+                          "added_by",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "capped": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "results",
+                    "limit",
+                    "capped"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/items/{itemId}/done": {
       "post": {
         "operationId": "todo-set-item-done",

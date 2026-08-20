@@ -32,6 +32,20 @@ export const todoManifest = moduleManifest.parse({
       'list:contribute': 'See a list, add items to it, and tick them off',
     },
   }),
-  ...manifestEntities(todoEntities, {}),
+  // #827. `item` only, and only `text`. The kernel derives a per-scope FTS5 index
+  // and its triggers from this line; `table` and the id column come from
+  // `todoEntities`, so nothing here restates where an item lives.
+  //
+  // Nothing else is declared, deliberately. `list.name` would index a handful of
+  // rows a person can already see in one screen, and `owner`/`share` carry the
+  // only `erasable` fields in the app — an index over an address is a second copy
+  // of it, and the migration that builds it is not the place to discover that.
+  //
+  // Left on the default `prefix` tokenizer: someone typing into a todo list is
+  // completing a word they wrote, not searching inside one, and `substring` costs a
+  // substantially larger index. Switching is one word, and the migration re-runs.
+  ...manifestEntities(todoEntities, {
+    searchables: [{ entityType: 'item', fields: ['text'] }],
+  }),
   entitlementKey: 'todo',
 });
