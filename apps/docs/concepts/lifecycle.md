@@ -150,5 +150,9 @@ than becoming the truth.
 export const workorderModel = emitModel(workorderEntities, { lifecycles: workorderLifecycles });
 ```
 
-Today `engines/workorder` is the adopter. Booking, protocol, invoicing, manyfold and shop
-have declared machines and hand-written guards; they are the queue.
+`engines/workorder` and `engines/booking` have adopted. Protocol, invoicing, manyfold and
+shop still carry declared state sets with hand-written guards; they are the queue.
+
+Booking is worth reading as the harder example: seven states, three operations that are
+`allow` rather than edges, a state reachable by lapse rather than by transition, and a
+transition performed by composition. It needed no addition to the format.

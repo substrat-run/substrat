@@ -24,16 +24,33 @@ held ──confirm──▶ confirmed ──start──▶ in_service ──comp
   └──expire──▶ expired
 ```
 
-That is the happy path; the terminal branches are wider than it, and each is guarded by
-`requireState`, so the exact legal source states matter:
+**Declared**, at the foot of `engines/booking/src/index.ts`, and emitted to
+`engines/booking/model.json` — see [Lifecycles](/concepts/lifecycle). The prose below is
+written from that declaration, and `pnpm lint:model --check` is what stops this page
+drifting from it.
+
+That is the happy path; the terminal branches are wider than it, and the exact legal source
+states matter:
 
 - **cancel** → `cancelled`, from `held` **or** `confirmed`
 - **complete** → `completed`, from `confirmed` **or** `in_service` (you can complete a booking
   that was never explicitly started)
 - **no-show** → `no_show`, from `confirmed` **or** `in_service`
 
-States that consume capacity: `held` (unexpired), `confirmed`, `in_service`. Terminal states
-release it.
+Three operations are declared `allow` rather than as edges — **`join`, `open` and `move` are
+legal in `held` or `confirmed` and move nothing**. A join that fills the last place does end
+with a confirmed reservation, but the move belongs to `booking/confirm`, the in-scope
+function join composes; declaring `join → confirmed` would claim every join confirms.
+
+States that consume capacity: `held` (unexpired), `confirmed`, `in_service`. The four
+terminal states — `expired`, `cancelled`, `completed`, `no_show` — release it, and none of
+them admits substates.
+
+**Lazy expiry is not a declared edge.** `held → expired` is one, performed by
+`booking/expire`. What is not declared is the *lapse*: a hold past its deadline reads as
+`expired` through `effectiveState` with no transition having occurred. The guard therefore
+runs on the stored state, and a lapsed hold is refused by `confirm` with its own
+`hold_expired` reason — which tells a caller something `invalid_transition` never could.
 
 `confirm` re-runs the allocation check rather than trusting the hold, because the hold may
 have lapsed and the slot been taken since.
@@ -59,7 +76,8 @@ not a staff principal, and the type says so because the value keys crypto-shredd
 4. **Lazy expiry.** A lapsed hold stops counting without being swept. Correct for
    *allocation* — and a trap for *display*, which is why every reservation also carries
    `effectiveState` (below).
-5. **No skipped transitions.**
+5. **No skipped transitions** — the state machine is declared, and the guard is derived
+   from it rather than restated per operation.
 6. **Participants are never deleted.**
 
 ## Instants are canonicalised

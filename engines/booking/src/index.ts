@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import {
+  assertTransition,
   dataSubjectId,
+  defineLifecycles,
+  INVALID_TRANSITION,
   moduleManifest,
   money,
   permissionKey,
@@ -23,7 +26,9 @@ export const BOOKING_CONFLICT_REASONS = [
   'already_left',
   'capacity_below_joined',
   'hold_expired',
-  'invalid_transition',
+  // Raised by `assertTransition` from the declared lifecycle (#844), not by this
+  // file — so it is the shared constant rather than a second spelling of it.
+  INVALID_TRANSITION,
   'not_yet_expired',
   'reservation_full',
   'resource_inactive',
@@ -37,6 +42,7 @@ const conflict = (reason: BookingConflictReason, message: string) => substratErr
 // The entity registry is PUBLIC: a vertical composing this engine needs the
 // entity-type constants its relation edges name, and the row schema to declare
 // an operation's output against without retyping this engine's shape.
+import { bookingEntities } from './entities.js';
 export { bookingEntities, reservationRow, resourceRow } from './entities.js';
 import {
   assertAllowed,
@@ -206,15 +212,16 @@ export class SlotUnavailable extends Error {
 // Schemas & shapes
 // ---------------------------------------------------------------------------
 
-export const reservationState = z.enum([
-  'held',
-  'confirmed',
-  'in_service',
-  'completed',
-  'expired',
-  'cancelled',
-  'no_show',
-]);
+/**
+ * The reservation's states — **taken from the entity registry, not restated**.
+ *
+ * These seven values used to be written out twice: here, and as the `state`
+ * column's `z.enum` in `entities.ts`. Two descriptions of one fact, agreeing
+ * only by everyone remembering to change both (#844). Reading the column's own
+ * schema makes storage and domain unable to disagree, the same way
+ * `engine-workorder` takes its published `status` from the registry.
+ */
+export const reservationState = bookingEntities.reservation.fields.shape.state;
 export type ReservationState = z.infer<typeof reservationState>;
 
 /** States that consume capacity. `held` additionally requires an unexpired `expires_at`. */
@@ -417,12 +424,26 @@ function getRow(ctx: OperationContext, id: string): ReservationRow {
   return row;
 }
 
-function requireState(row: ReservationRow, ...allowed: ReservationState[]): void {
-  if (!allowed.includes(row.state)) {
-    throw conflict('invalid_transition', 
-      `invalid transition: reservation ${row.id} is '${row.state}', requires ${allowed.join('|')}`,
-    );
-  }
+/**
+ * The declared machine, applied (#844).
+ *
+ * The seven states used to be written out twice — once as the `state` enum in
+ * `entities.ts`, once as `reservationState` above (now derived from it) — and
+ * the EDGES between them a third time, as the states each of these nine call
+ * sites happened to pass. The
+ * machine now lives in `bookingLifecycles` (bottom of this file), where the
+ * compiler holds it to that enum.
+ *
+ * **Gated on the STORED state, not the effective one, and that is deliberate.**
+ * Lazy expiry means a `held` row past its deadline reads as `expired`
+ * (`effectiveStateOf`) — but that is a projection for display and allocation,
+ * not a transition that happened. `confirmReservation` still refuses a lapsed
+ * hold; it does so with its own `hold_expired` reason, which tells a caller
+ * something `invalid_transition` never could. Feeding the effective state in
+ * here would collapse those two refusals into one worse message.
+ */
+function requireTransition(row: ReservationRow, operation: string): void {
+  assertTransition(bookingLifecycles.reservation, `reservation ${row.id}`, row.state, operation);
 }
 
 /** Participants who have not left — the count the fill target is measured against. */
@@ -602,7 +623,7 @@ export function confirmReservation(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireState(row, 'held');
+  requireTransition(row, 'booking/confirm');
   const now = nowOr(input.now);
   if (row.expires_at && row.expires_at <= now) {
     throw conflict('hold_expired', `hold expired at ${row.expires_at}`);
@@ -645,7 +666,7 @@ export function expireReservation(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireState(row, 'held');
+  requireTransition(row, 'booking/expire');
   const now = nowOr(input.now);
   if (!row.expires_at || row.expires_at > now) {
     throw conflict('not_yet_expired', `reservation ${row.id} has not expired yet`);
@@ -677,7 +698,7 @@ export function joinReservation(
 ): { participant: Participant; reservation: Reservation } {
   const input = joinReservationInput.parse(rawInput);
   const row = getRow(ctx, input.reservationId);
-  requireState(row, 'held', 'confirmed');
+  requireTransition(row, 'booking/join');
   const now = nowOr(input.now);
 
   const active = activeParticipants(ctx, row.id);
@@ -741,7 +762,7 @@ export function openReservation(
   input: { reservationId: string; fillTarget: number | null; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireState(row, 'held', 'confirmed');
+  requireTransition(row, 'booking/open');
   const joined = activeParticipants(ctx, row.id).length;
   if (input.fillTarget !== null && input.fillTarget < joined) {
     throw conflict('capacity_below_joined', 
@@ -805,7 +826,7 @@ export function cancelReservation(
   input: { reservationId: string; reason?: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireState(row, 'held', 'confirmed');
+  requireTransition(row, 'booking/cancel');
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'cancelled' WHERE id = ?`, [row.id]);
   ctx.emit({
     type: 'booking.cancelled',
@@ -843,7 +864,7 @@ export function moveReservation(
 ): Reservation {
   const input = moveReservationInput.parse(rawInput);
   const row = getRow(ctx, input.reservationId);
-  requireState(row, 'held', 'confirmed');
+  requireTransition(row, 'booking/move');
   const now = nowOr(input.now);
 
   const targetResourceId = input.resourceId ?? row.resource_id;
@@ -897,7 +918,7 @@ export function startReservation(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireState(row, 'confirmed');
+  requireTransition(row, 'booking/start');
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'in_service' WHERE id = ?`, [row.id]);
   ctx.emit({
     type: 'booking.started',
@@ -920,7 +941,7 @@ export function completeReservation(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireState(row, 'confirmed', 'in_service');
+  requireTransition(row, 'booking/complete');
   const resource = getResourceRow(ctx, row.resource_id);
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'completed' WHERE id = ?`, [row.id]);
   ctx.emit({
@@ -945,7 +966,7 @@ export function markNoShow(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireState(row, 'confirmed', 'in_service');
+  requireTransition(row, 'booking/no-show');
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'no_show' WHERE id = ?`, [row.id]);
   ctx.emit({
     type: 'booking.no-show',
@@ -1182,10 +1203,18 @@ const availabilityOp: OperationHandler<
   return availability(ctx, input);
 };
 
-export const bookingModule: ModuleRegistration = {
-  manifest: bookingManifest,
-  migrations: bookingMigrations,
-  operations: {
+/**
+ * The registered handlers, extracted so the lifecycle below can be checked
+ * against them.
+ *
+ * This is why booking's lifecycle lives at the bottom of `index.ts` rather than
+ * in its own `lifecycle.ts` the way workorder's does: booking has not adopted
+ * `defineOperations`, so the only description of its operation surface is this
+ * map — and a separate file importing it would close a cycle. Declaring an
+ * operation-name list beside it instead would be exactly the second description
+ * this change exists to delete.
+ */
+const OPERATIONS = {
     'booking/create-resource': createResourceOp as OperationHandler<never, unknown>,
     'booking/set-resource-active': setResourceActiveOp as OperationHandler<never, unknown>,
     'booking/list-resources': listResourcesOp as OperationHandler<never, unknown>,
@@ -1202,6 +1231,90 @@ export const bookingModule: ModuleRegistration = {
     'booking/no-show': noShowOp as OperationHandler<never, unknown>,
     'booking/get': getOp as OperationHandler<never, unknown>,
     'booking/list': listOp as OperationHandler<never, unknown>,
-    'booking/availability': availabilityOp as OperationHandler<never, unknown>,
-  },
+  'booking/availability': availabilityOp as OperationHandler<never, unknown>,
 };
+
+export const bookingModule: ModuleRegistration = {
+  manifest: bookingManifest,
+  migrations: bookingMigrations,
+  operations: OPERATIONS,
+};
+
+/**
+ * The reservation's state machine, declared (#844).
+ *
+ * ## `on` versus `allow` — the distinction this engine forced
+ *
+ * Three of the nine guards gate operations that move NOTHING. `booking/move`
+ * changes a reservation's times, `booking/open` its fill target, `booking/join`
+ * adds a participant — each legal only in `held` or `confirmed`, and none of
+ * them a transition. Declaring them as edges would have put three self-loops on
+ * the diagram that no code performs.
+ *
+ * ## Why `booking/join` is `allow` even though joining can confirm
+ *
+ * A join that fills the last place calls `confirmReservation` — so a join CAN
+ * end with a confirmed reservation. It is still not an edge. The move is
+ * `booking/confirm`'s, performed by the in-scope function join composes, and it
+ * goes through this same check on the way. Declaring `join: 'confirmed'` would
+ * claim every join confirms, which is false for all but the last one.
+ *
+ * That is the composition rule holding: an engine composed BY CALL gets its
+ * invariant from the callee, so the machine describes what each verb does
+ * itself, not what its callees might do next.
+ *
+ * ## Lazy expiry is not an edge either
+ *
+ * `held → expired` IS declared — `booking/expire` performs it. What is not
+ * declared is the lapse: a hold past its deadline reads as `expired` through
+ * `effectiveStateOf` without any transition occurring, which is a projection for
+ * display and allocation. The condition on the edge (`not_yet_expired`) stays in
+ * the handler, where a lifecycle deliberately cannot reach.
+ *
+ * ## No `extensible` states
+ *
+ * Every state here carries an allocation or capacity consequence, and the four
+ * terminal ones release capacity. Refining any of them is not a vertical's to do
+ * yet, and the absence says so rather than leaving it to be inferred.
+ */
+export const bookingLifecycles = defineLifecycles(
+  bookingEntities,
+  OPERATIONS,
+)({
+  reservation: {
+    field: 'state',
+    initial: 'held',
+    states: {
+      /** A deadline-bearing claim on capacity. */
+      held: {
+        on: {
+          'booking/confirm': 'confirmed',
+          'booking/expire': 'expired',
+          'booking/cancel': 'cancelled',
+        },
+        allow: ['booking/join', 'booking/open', 'booking/move'],
+      },
+      /** Capacity is committed. `complete` may skip `in_service` — starting is optional. */
+      confirmed: {
+        on: {
+          'booking/start': 'in_service',
+          'booking/complete': 'completed',
+          'booking/no-show': 'no_show',
+          'booking/cancel': 'cancelled',
+        },
+        allow: ['booking/join', 'booking/open', 'booking/move'],
+      },
+      /** Under way. No longer cancellable, and no longer re-timeable. */
+      in_service: {
+        on: {
+          'booking/complete': 'completed',
+          'booking/no-show': 'no_show',
+        },
+      },
+      expired: { terminal: true },
+      cancelled: { terminal: true },
+      completed: { terminal: true },
+      no_show: { terminal: true },
+    },
+  },
+});
