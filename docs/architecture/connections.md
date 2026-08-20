@@ -384,31 +384,34 @@ requires standing authority. `pnpm lint:connector-grants` fails when the dashboa
 provider catalog cannot carry one, so a requirement no door can grant is a red in CI
 rather than a dispatch that dead-letters months later.
 
-**And no grant-only write route** — but the thing that replaces it is not built yet, and
-saying so is the point of this paragraph.
+**The repair, and the button that is deliberately not it.** Every reconcile now heals a
+connection toward its connector's declaration before gathering
+(`reconcileConnectionGrants`): a declared key the connection does not hold is granted
+tenant-wide, so the operator's existing lever — the idempotent re-provision — repairs a
+missing capability, and a connector that declares a new one delivers it on the next
+reconcile. No credential is anywhere in that path.
 
-The obvious fourth piece is a button that adds a missing grant without re-submitting a
-working credential. It stays unbuilt because it is the wrong repair: it would hand-patch
-drift a declaration should prevent, put the fix in a console nobody diffs, and ask a tenant
-to decide something that is not theirs to decide — a connection's grants are the
-*vertical's* requirement, not the tenant's choice. §3.5.1's law is then satisfied by
-construction rather than by care: there is no act to launder if there is no act.
+That is not the same thing as a grant-only write route, and the difference is the whole
+reason this one is legitimate. A button would let a person add an arbitrary permission to a
+connection from a console: an authority decision, taken by someone, with no tenant
+principal behind it — precisely the laundering §3.5.1 forbids. This decides nothing. It
+materializes a requirement the connector declared in code, exactly as a module's declared
+schedules are projected as `system:<moduleId>` grants at provisioning. No one chose it, so
+there is no act to attribute and `grantedBy` being the platform actor is honest rather than
+a stand-in for a person. What a connection may do still follows from a declaration that
+lands in a diff; it simply no longer needs a credential to deliver.
 
-The right repair is **reconcile-to-target**: the platform computes the grant set a
-connection should hold from the declaration, and grants or revokes directory rows to match
-— bounded by the declared universe, exactly as `setEntitlementsHandler` already reconciles
-a managed tenant's entitlements ("grant what the target names, revoke any declared key
-absent from it"). Then a missing grant is repaired by a push, and the ask lands in the
-permission diff that already exists.
+**A floor, never a ceiling.** Declared keys are granted; nothing is ever revoked. A
+connection may legitimately hold more than its connector declares — a second connector on
+the same provider, a key granted for a path not modelled here — and a reconcile that pruned
+to the declaration would revoke authority nobody asked it to touch, on every tenant at once
+the day a declaration shrinks. `lint:connector-grants` checks the same floor against the
+dashboard's catalog, so the two cannot drift apart in the direction that matters.
 
-**Today it does not work that way.** The reconcile gathers grants that already exist as
-directory rows (`listConnectionGrants`) and delivers them to scopes; it creates none. So an
-EXISTING connection missing a standing grant is now *visible* — the read-back says so — and
-still repairable only through the credential upsert, which is the disproportion #726 gap 2
-named. What is closed is the other three quarters of the problem: the per-dispatch read
-needs no grant at all, a NEW connection gets what the connector declares, and a declaration
-no door can carry is a red. The last quarter is the target reconcile, and until it lands
-this section describes an intent, not a behaviour.
+The consequence worth stating: a key that stops being declared is not cleaned up. Removing
+one is still a deliberate revoke, and `protocol:read` — no longer needed by anything after
+the per-dispatch capability — stays on connections that were granted it. Harmless, and
+visible in the read-back, which is the trade this makes on purpose.
 
 ### 3.6 Token refresh
 

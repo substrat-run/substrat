@@ -53,6 +53,7 @@ import {
   scriveCallbackPath,
   scriveConnectionActivity,
   scriveConnector,
+  SCRIVE_CONNECTION_GRANTS,
   scriveCredentialSummary,
   sweepScriveReconciliations,
 } from '@substrat-run/connector-scrive';
@@ -1272,6 +1273,12 @@ export default {
         ),
         pushTokenSecret: env.PUSH_TOKEN_SECRET,
         verticals: verticalsFor(env),
+        // #726 gap 2: what each connector this platform operates DECLARES it needs, so
+        // every reconcile heals a connection toward it. Wired from the connector's own
+        // exported constant rather than a list here — a second copy is how the dashboard
+        // catalog came to disagree with the connector for months (#716), and
+        // `lint:connector-grants` holds that catalog to this same declaration.
+        connectorGrants: { scrive: SCRIVE_CONNECTION_GRANTS },
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         resolveVerticalRef: resolveVerticalRefFor(env),

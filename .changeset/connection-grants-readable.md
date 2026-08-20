@@ -90,20 +90,32 @@ reds the repo on a stale extra.
 
 ## What did NOT get built, and why
 
-No grant-only write route — a button adding a missing grant without re-submitting a working
-credential. It is declined and recorded in `connections.md` §3.5.2: it would hand-patch drift a
-declaration should prevent, put the repair in a console nobody diffs, and ask a tenant to decide
-something that is the vertical's requirement rather than their choice. §3.5.1's law then holds by
-construction — there is no act to launder if there is no act.
+## Updating a permission on an existing connection
 
-What replaces it is **not in this change**, and the doc says so rather than implying otherwise.
-The right repair is reconcile-to-target — compute the grant set from the declaration, then grant
-and revoke directory rows to match, exactly as `setEntitlementsHandler` already does for a managed
-tenant's entitlements — after which a missing grant is fixed by a push. Today the reconcile only
-delivers grants that ALREADY exist as directory rows (`listConnectionGrants`); it creates none. So
-an existing connection missing a standing grant is now *visible* and still repairable only through
-the credential upsert. Closed here: the per-dispatch read needs no grant at all, a NEW connection
-gets what the connector declares, and a declaration no door can carry is a red.
+A connection's grants could only ever be written alongside a credential: both writing doors
+write the secret and then loop `grants`, so the remedy for "a capability is missing" was "re-type
+your Scrive credential" — on a rotation path that, done wrong, replaces a working one. The #592
+reconcile did not help, because it gathers grants that ALREADY exist as directory rows and
+delivers them to scopes; it repairs a dropped *delivery*, never a grant that was never made.
+
+Every reconcile now heals toward the connector's declaration before gathering. A declared key the
+connection lacks is granted tenant-wide — so it reaches installs that do not exist yet — and the
+operator's existing lever, the idempotent re-provision, is what applies it. A connector that
+declares a new grant delivers it on the next reconcile.
+
+**This is not the grant-only button that was declined**, and the difference is what makes it
+legitimate. A button would let a person add an arbitrary permission from a console: an authority
+decision, taken by someone, with no tenant principal behind it — precisely the laundering
+§3.5.1 forbids. This decides nothing; it materializes a requirement declared in code, the way a
+module's declared schedules are projected as `system:<moduleId>` grants. No one chose it, so
+there is no act to attribute.
+
+**A floor, never a ceiling.** Declared keys are granted; nothing is ever revoked, because a
+connection may legitimately hold more than its connector declares and a pruning reconcile would
+revoke authority nobody asked it to touch — on every tenant at once, the day a declaration
+shrinks. The trade that buys: a key that stops being declared is not cleaned up, so
+`protocol:read` stays on connections already granted it. Harmless, visible in the read-back, and
+deliberate.
 
 ## Three tests changed behaviour rather than breaking
 

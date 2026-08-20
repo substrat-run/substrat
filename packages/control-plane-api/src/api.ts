@@ -57,6 +57,7 @@ import { migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
+import { reconcileConnectionGrants } from './connection-grants.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
 import { ControlPlaneError } from './client.js';
 import { provisionSiblingScope } from './platform-drain.js';
@@ -153,6 +154,16 @@ export interface ControlPlaneApiOptions {
    * the same Workers-for-Platforms swap later.
    */
   verticals?: Record<string, VerticalClient>;
+  /**
+   * The standing grants each connector declares, by provider (#726 gap 2) — e.g.
+   * `{ scrive: SCRIVE_CONNECTION_GRANTS }`.
+   *
+   * Every reconcile heals a connection toward this floor before gathering, which is what
+   * makes a missing capability repairable by a PUSH rather than by re-typing a working
+   * credential. Absent ⇒ nothing is healed and the gather behaves exactly as before, so a
+   * host that configures no connectors is unaffected.
+   */
+  connectorGrants?: Readonly<Record<string, readonly string[]>>;
   /**
    * Resolves a vertical dynamically — the dispatch swap for provisioning (orchestration.md
    * §5.4), the mirror of the router's `verticalFor`. Given a slug, the host looks up the
@@ -1674,6 +1685,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #592: connection grants ride the same authoritative gather — the back-fill for a
     // scope provisioned before `grantToConnection` ran, and how a revoked connection's
     // grants stop being delivered (they are absent from the directory's live rows).
+    // #726 gap 2: heal FIRST, gather second. The gather only ever delivered grants that
+    // already existed as directory rows, so a capability the connector requires and the
+    // connection never received was repairable only by re-submitting the credential. This
+    // is the operator's existing lever (`substrat scope provision`, the idempotent
+    // repair), so a missing grant is now fixed by the same command that fixes everything
+    // else — and by a push, once a connector's declaration changes.
+    //
+    // Best-effort: healing reaches the directory and must never take the reconcile down
+    // with it. A failure here leaves exactly the behaviour that shipped before it existed.
+    try {
+      await reconcileConnectionGrants(
+        { admin, actor, declared: options.connectorGrants ?? {} },
+        tenantId,
+        scope.vertical,
+      );
+    } catch {
+      // The next reconcile tries again; the read-back still shows what is missing.
+    }
     const connectionGrants = connectionGrantsForScope(
       await admin.listConnectionGrants(actor, tenantId),
       scope.vertical,
@@ -2721,6 +2750,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // install provisioned after `grantToConnection` holds the same `connection:<id>` tuple
     // as one provisioned before it, and the connector return path works without a human
     // replaying grants per install.
+    // #726 gap 2: heal before gathering here too, so a NEW install of a vertical whose
+    // connector has since declared another grant receives it — rather than inheriting the
+    // gap the tenant's first install was created with.
+    try {
+      await reconcileConnectionGrants(
+        { admin, actor: c.get('actor'), declared: options.connectorGrants ?? {} },
+        input.tenantId,
+        slug,
+      );
+    } catch {
+      // Best-effort, exactly as on the reconcile route.
+    }
     const connectionGrants = connectionGrantsForScope(
       await admin.listConnectionGrants(c.get('actor'), input.tenantId),
       slug,
