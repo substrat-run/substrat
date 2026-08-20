@@ -1695,23 +1695,66 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // re-run by construction: both collectors are idempotent on (tenant, vertical, binding)
     // and the binding attach is additive, so a scope whose stores already exist re-resolves
     // the same refs and changes nothing.
-    const tenantStores = scope.vertical
-      ? await collectTenantStoreHandles({
-          host: options.host,
+    //
+    // BEST-EFFORT, and each substrate independently (#828). Minting reaches Cloudflare, so
+    // it fails for reasons that have nothing to do with this scope — a credential missing a
+    // permission, a store API refusing, a client the deployment never configured. Letting
+    // that throw took the whole call down, which cost the caller the RECONCILE they came
+    // for: the owner re-grant and role re-projection that is this lever's original job
+    // (#332) and that has no relation to stores. It also answered a bare 500, so the
+    // operator could not tell a missing credential from a bad scope id.
+    //
+    // This is the posture the promote-path backfill already has (`backfillFleetStores`) and
+    // for the same reason: the repair must report what it could not do, not refuse to do
+    // the rest. The two paths now agree. What does NOT get this treatment is a NEW install
+    // (`POST /verticals/:slug/instances`, below): there the store is handed into the K-31
+    // ready-gate and a fresh install without it is simply broken, so a failed mint must
+    // fail the provision rather than hand back a half-built scope.
+    const storeErrors: string[] = [];
+    const mintBestEffort = async <T>(stage: string, mint: () => Promise<T>): Promise<T | undefined> => {
+      try {
+        return await mint();
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        console.error('stores.provision.failed', { tenantId, scopeId, vertical: scope.vertical, stage, detail: message });
+        recordFailure({
           actor,
-          slug: scope.vertical,
+          operation: 'scope.provision.stores',
+          stage,
           tenantId,
-          patchBindings: options.patchScriptBindings,
-        })
+          scopeId,
+          vertical: scope.vertical,
+          status: e instanceof ControlPlaneError ? e.status : null,
+          message,
+        });
+        storeErrors.push(message);
+        return undefined;
+      }
+    };
+    // Independently, so a D1 refusal does not silently skip the R2 mint (and vice versa):
+    // a scope declaring both would otherwise report one fault, get half its stores, and
+    // need a second run to discover the other.
+    const tenantStores = scope.vertical
+      ? ((await mintBestEffort('tenant-stores', () =>
+          collectTenantStoreHandles({
+            host: options.host,
+            actor,
+            slug: scope.vertical as string,
+            tenantId,
+            patchBindings: options.patchScriptBindings,
+          }),
+        )) ?? [])
       : [];
     if (scope.vertical) {
-      await collectBlobStoreHandles({
-        host: options.host,
-        actor,
-        slug: scope.vertical,
-        tenantId,
-        patchBindings: options.patchScriptBindings,
-      });
+      await mintBestEffort('blob-stores', () =>
+        collectBlobStoreHandles({
+          host: options.host,
+          actor,
+          slug: scope.vertical as string,
+          tenantId,
+          patchBindings: options.patchScriptBindings,
+        }),
+      );
     }
     try {
       const result = await vertical.reconcileInstance({
@@ -1726,9 +1769,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // but unmigrated database fails as loudly as an absent one.
         ...(tenantStores.length ? { tenantStores } : {}),
       });
-      return c.json(result);
+      // The reconcile succeeded; a store that did not mint rides back as a diagnosis
+      // (`substrat scope provision` prints it, and `/health` keeps reporting the gap
+      // until it closes). Absent when nothing failed, so the response is unchanged for
+      // every scope that has no declared store or already has them all.
+      return c.json(storeErrors.length ? { ...result, storeError: storeErrors.join('; ') } : result);
     } catch (e) {
-      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      if (e instanceof ControlPlaneError) {
+        // Both halves failed. The store fault is usually the CAUSE (an unmigrated or
+        // unbound store is exactly what makes a vertical refuse its own reconcile), so
+        // it must not be the half that gets dropped.
+        const detail = storeErrors.length ? `${e.message} (stores: ${storeErrors.join('; ')})` : e.message;
+        return c.json({ error: detail }, e.status as ContentfulStatusCode);
+      }
       throw e;
     }
   });

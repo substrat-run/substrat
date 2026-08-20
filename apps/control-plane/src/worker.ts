@@ -41,6 +41,7 @@ import {
   CloudflareScopeHost,
   ControlPlaneDO,
   createD1TenantStores,
+  createR2BlobStores,
   defineScopeDO,
   type ConnectorDelegation,
 } from '@substrat-run/adapter-cloudflare';
@@ -617,18 +618,48 @@ function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
   };
 }
 
+/**
+ * The two per-tenant store clients, minted on the platform's own Cloudflare credential.
+ *
+ * They are built TOGETHER, in one place, because they are one capability with two
+ * substrates: a vertical declares `runtimeNeeds.tenantStores` (D1) and
+ * `runtimeNeeds.blobStores` (R2) through the same seam, and the host refuses either the
+ * same way when its client is absent. Constructing them apart is exactly how #828
+ * happened — the D1 line was written and the R2 twin never was, so `createR2BlobStores`
+ * existed, was exported, was covered by tests against an injected fake, and was
+ * constructed by nothing. Every declared blob store then refused at provision time on a
+ * host that looked fully configured.
+ *
+ * Absent creds ⇒ both undefined ⇒ the host refuses loudly at the provision call instead
+ * of half-provisioning. Exported so the wiring itself is assertable (control-plane.test):
+ * "this client is reachable from the deployed worker" is the property that was missing,
+ * and it cannot be tested through a route that needs a live Cloudflare account.
+ */
+export function platformStoreClients(env: Env): {
+  tenantStores: ReturnType<typeof createD1TenantStores> | undefined;
+  blobStores: ReturnType<typeof createR2BlobStores> | undefined;
+} {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return { tenantStores: undefined, blobStores: undefined };
+  const creds = { accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN };
+  return {
+    // #301: the token additionally needs D1 write.
+    tenantStores: createD1TenantStores(creds),
+    // #473: and Workers R2 Storage write — minting a bucket is `POST /r2/buckets`,
+    // account-level bucket administration, not the bucket-scoped object permission.
+    blobStores: createR2BlobStores(creds),
+  };
+}
+
 /** The coordinator is stateless — rebuilt per request; durable state is in the DOs. */
 function hostFor(env: Env): CloudflareScopeHost {
+  const stores = platformStoreClients(env);
   return new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
-    // Per-tenant relational stores (#301): the live D1 mint/query client, on the same
-    // platform credential the WfP uploader holds (the token additionally needs D1 write).
-    // Absent creds ⇒ provisionTenantStore refuses loudly instead of half-provisioning.
-    tenantStores:
-      env.CF_API_TOKEN && env.CF_ACCOUNT_ID
-        ? createD1TenantStores({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN })
-        : undefined,
+    // Per-tenant relational (#301) and blob (#473) stores, on the same platform
+    // credential the WfP uploader holds.
+    tenantStores: stores.tenantStores,
+    blobStores: stores.blobStores,
     // Connections (#574): seal/open credentials coordinator-side, and route connector
     // write-backs to the vertical deployment serving the scope — this worker's own
     // SCOPE namespace is the module-less placeholder and must never receive one.

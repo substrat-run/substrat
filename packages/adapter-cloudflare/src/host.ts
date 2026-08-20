@@ -110,6 +110,7 @@ import {
   type TenantStatus,
   type TenantStoreHandle,
   outboundOfManifestJson,
+  substratError,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -1647,10 +1648,12 @@ export class CloudflareScopeHost implements ScopeHost {
     };
   }
 
-  /** The injected D1 client, or a loud refusal naming what to configure. */
+  /** The injected D1 client, or a loud refusal naming what to configure — typed
+   *  `unavailable` for the reason its blob-store twin below is (#828). */
   private requireTenantStores(what: string): D1TenantStores {
     if (!this.tenantStores) {
-      throw new Error(
+      throw substratError(
+        'unavailable',
         `per-tenant stores are not configured on this host (#301): pass ` +
           `CloudflareScopeHostOptions.tenantStores (createD1TenantStores with the platform's ` +
           `Cloudflare credential) — refused ${what}`,
@@ -1704,10 +1707,20 @@ export class CloudflareScopeHost implements ScopeHost {
     return { binding: input.binding, kind: 'blob', ref };
   }
 
-  /** The injected R2 client, or a loud refusal naming what to configure. */
+  /**
+   * The injected R2 client, or a loud refusal naming what to configure.
+   *
+   * Typed `unavailable` (#828) for the reason `SecretBoxUnconfiguredError` is: this is a
+   * DEPLOYMENT fact, not a fault in the caller's request — the same request succeeds
+   * unchanged once the host is wired. Untyped, it reached the control-plane transport as
+   * an unrecognised throw and was flattened to a bare `500 internal error`, so a message
+   * that names its own fix was discarded at the boundary and the operator was left
+   * unable to tell a missing client from a bad scope id.
+   */
   private requireBlobStores(what: string): R2BlobStores {
     if (!this.blobStores) {
-      throw new Error(
+      throw substratError(
+        'unavailable',
         `per-tenant blob stores are not configured on this host (#473): pass ` +
           `CloudflareScopeHostOptions.blobStores (createR2BlobStores with the platform's ` +
           `Cloudflare credential) — refused ${what}`,

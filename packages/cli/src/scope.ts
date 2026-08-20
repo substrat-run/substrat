@@ -257,8 +257,19 @@ export async function provisionScope(opts: {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `provision refused: ${res.status} ${res.statusText}`);
   }
-  const body = await readJson<{ owner?: string }>(res, res.url);
+  const body = await readJson<{ owner?: string; storeError?: string }>(res, res.url);
   console.log(`✓ reconciled scope ${opts.scopeId} — owner ${body.owner ?? '(unknown)'} re-granted; logins restored.`);
+  // #828: the reconcile is done, but a declared store did not mint. Printed rather than
+  // thrown — the half that ran is real and worth keeping — and named in full, because the
+  // platform's own message is what says whether this is a credential, a client that was
+  // never configured, or the store API refusing.
+  if (body.storeError) {
+    console.log(
+      `\n⚠ declared store(s) could NOT be minted for this tenant:\n  ${body.storeError}\n` +
+        '  The vertical will still throw at first use. `substrat scope status` keeps reporting\n' +
+        '  the gap; re-run this command once the cause above is fixed.',
+    );
+  }
 }
 
 /**
