@@ -1,5 +1,15 @@
 # @substrat-run/demo-shop
 
+## 0.0.82
+
+### Patch Changes
+
+- Updated dependencies [ca3377d]
+  - @substrat-run/contracts@0.83.0
+  - @substrat-run/kernel@0.83.0
+  - @substrat-run/adapter-sqlite@0.83.0
+  - @substrat-run/engine-invoicing@0.8.3
+
 ## 0.0.81
 
 ### Patch Changes
