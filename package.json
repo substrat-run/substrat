@@ -13,6 +13,8 @@
     "lint:permissions": "tsx tools/permission-diff.mts",
     "lint:model": "tsx tools/model-diff.mts",
     "lint:api": "tsx tools/api-diff.mts",
+    "lint:client": "tsx tools/client-emit.mts",
+    "lint:migrations": "pnpm -r --if-present --filter='!./.builder/projects/**' run emit:migrations",
     "lint:playbook": "tsx tools/playbook-sync.mts",
     "substrat": "node packages/cli/dist/cli.js",
     "typecheck": "pnpm -r --filter='!./.builder/projects/**' typecheck",

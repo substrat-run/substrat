@@ -8,7 +8,7 @@
  * anywhere in this file.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError, getPrincipal, setPrincipal, type Item, type List, type Share } from './api.js';
+import { api, ApiError, getPrincipal, setPrincipal, type Item, type List, type Paged, type Share } from './api.js';
 
 const PERSONAS = [
   { key: 'ada', label: 'Ada' },
@@ -76,7 +76,7 @@ function Lists() {
 
   const load = useCallback(() => {
     api
-      .lists()
+      .myLists()
       .then(setLists)
       .catch((e: unknown) => setError(e));
   }, []);
@@ -86,7 +86,7 @@ function Lists() {
     e.preventDefault();
     setError(null);
     try {
-      await api.createList(name.trim());
+      await api.createList({ name: name.trim() });
       setName('');
       load();
     } catch (e) {
@@ -140,7 +140,7 @@ function SharedTag({ list }: { list: List }) {
   useEffect(() => {
     // Only the owner may read a list's shares, so this doubles as the answer.
     api
-      .shares(list.id)
+      .listShares({ listId: list.id })
       .then(() => setMine(true))
       .catch(() => setMine(false));
   }, [list.id]);
@@ -149,7 +149,10 @@ function SharedTag({ list }: { list: List }) {
 }
 
 function ListView({ listId }: { listId: string }) {
-  const [items, setItems] = useState<Item[] | null>(null);
+  // A PAGE, not an array. `todo/list-items` declares `paged`, so what comes back is
+  // the first twenty items plus a link to the next twenty — and an app that kept a
+  // bare array would render those twenty as though they were the list.
+  const [page, setPage] = useState<Paged<Item> | null>(null);
   const [shares, setShares] = useState<Share[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [text, setText] = useState('');
@@ -157,13 +160,13 @@ function ListView({ listId }: { listId: string }) {
 
   const load = useCallback(() => {
     api
-      .items(listId)
-      .then(setItems)
+      .listItems({ listId })
+      .then(setPage)
       .catch((e: unknown) => setError(e));
     // Owner-only. A 403 here is the honest answer for someone the list was
     // shared with, so it is not surfaced as an error.
     api
-      .shares(listId)
+      .listShares({ listId })
       .then(setShares)
       .catch(() => setShares(null));
   }, [listId]);
@@ -179,33 +182,59 @@ function ListView({ listId }: { listId: string }) {
     }
   };
 
+  /**
+   * Follow the walk. `next` is a URL the server handed over, filters and page size
+   * already on it, so there is no cursor to reassemble here — which is the whole
+   * point of RFC 8288 over a bare cursor field.
+   */
+  const more = async () => {
+    if (!page?.next) return;
+    setError(null);
+    try {
+      const rest = await api.follow<Item>(page.next);
+      setPage({ entries: [...page.entries, ...rest.entries], next: rest.next, total: rest.total });
+    } catch (e) {
+      setError(e);
+    }
+  };
+
   return (
     <>
       <a className="back" href="#/">
         ← all lists
       </a>
-      <h2 style={{ marginTop: '.6rem' }}>Items</h2>
+      <h2 style={{ marginTop: '.6rem' }}>
+        Items
+        {/* `paged: { total: true }` is the reason this number exists — it costs a second
+            query per request, so it is asked for rather than assumed, and a screen that
+            never renders it should stop asking. */}
+        {page !== null && page.total !== null && (
+          <span className="tag">
+            {page.entries.length} of {page.total}
+          </span>
+        )}
+      </h2>
       <p className="sub">Tick things off, add your own. Both are things a share lets you do.</p>
       <Problem error={error} />
 
-      {items === null ? (
+      {page === null ? (
         <p className="empty">Loading…</p>
-      ) : items.length === 0 ? (
+      ) : page.entries.length === 0 ? (
         <div className="card">
           <p className="empty">Nothing on this list yet.</p>
         </div>
       ) : (
-        items.map((i) => (
+        page.entries.map((i) => (
           <div className="card" key={i.id}>
             <div className="row">
               <input
                 type="checkbox"
                 checked={i.done === 1}
-                onChange={() => guard(() => api.setDone(i.id, i.done !== 1))}
+                onChange={() => guard(() => api.setItemDone({ itemId: i.id, done: i.done !== 1 }))}
               />
               <span className={i.done === 1 ? 'done' : undefined}>{i.text}</span>
               <span className="spacer" />
-              <button className="link" onClick={() => guard(() => api.deleteItem(i.id))}>
+              <button className="link" onClick={() => guard(() => api.deleteItem({ itemId: i.id }))}>
                 delete
               </button>
             </div>
@@ -213,11 +242,19 @@ function ListView({ listId }: { listId: string }) {
         ))
       )}
 
+      {/* Absent `next` is how the walk ends, so this button disappears rather than
+          going grey — there is no page to be disabled about. */}
+      {page?.next && (
+        <button className="link" onClick={() => void more()}>
+          Load more
+        </button>
+      )}
+
       <form
         className="inline"
         onSubmit={(e) => {
           e.preventDefault();
-          void guard(() => api.addItem(listId, text.trim())).then(() => setText(''));
+          void guard(() => api.addItem({ listId, text: text.trim() })).then(() => setText(''));
         }}
       >
         <input
@@ -244,7 +281,7 @@ function ListView({ listId }: { listId: string }) {
                 <div className="row">
                   <span>{s.email}</span>
                   <span className="spacer" />
-                  <button className="link" onClick={() => guard(() => api.revokeShare(s.id))}>
+                  <button className="link" onClick={() => guard(() => api.revokeShare({ shareId: s.id }))}>
                     revoke
                   </button>
                 </div>
@@ -255,7 +292,7 @@ function ListView({ listId }: { listId: string }) {
             className="inline"
             onSubmit={(e) => {
               e.preventDefault();
-              void guard(() => api.shareList(listId, email.trim())).then(() => setEmail(''));
+              void guard(() => api.shareList({ listId, email: email.trim() })).then(() => setEmail(''));
             }}
           >
             <input
