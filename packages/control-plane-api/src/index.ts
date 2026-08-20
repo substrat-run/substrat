@@ -12,6 +12,11 @@ export {
   firstBuilderAuth,
 } from './auth.js';
 export { relayConnectionUpsert, ConnectionRelayError } from './connection-relay.js';
+export {
+  reconcileConnectionGrants,
+  type ConnectionGrantReconcileDeps,
+  type ConnectionGrantReconcileReport,
+} from './connection-grants.js';
 export { mintPushToken, verifyPushToken, pushTokenBuilderAuth, pushActorFor } from './push-token.js';
 export type {
   PlatformActorAuth,
