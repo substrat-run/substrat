@@ -17,7 +17,7 @@ The adapter seam. Full semantics in
 |---|---|---|
 | `ScopeHost` | interface | `getScope`, `getConnectorScope`, `getSystemScope` (the scheduler's door — a stub whose authority is a module on a timer, #383), `provisionScope`, `registerModule`, `defineOperation`, `registeredSchedules` / `runDueSchedules` (the recurring-work seam the platform sweep drives), `admin`, `close` |
 | `ScopeStub` | interface | the capability — the only way code outside a scope reaches it |
-| `OperationContext` | interface | what a handler sees: ambient `tenantId`/`scopeId`/`principal`, `sql`, `emit`, `check`, `entitlement`/`entitlements` (read a held SKU/quota at request time — the gate a CP-less vertical uses), `link`, `grant`/`revoke` (delegation, never elevation), `requestPlatform`/`platformRequests`, `sealToConnection` |
+| `OperationContext` | interface | what a handler sees: ambient `tenantId`/`scopeId`/`principal`, `sql`, `emit`, `check`, `search` (ids from the declared FTS index), `entitlement`/`entitlements` (read a held SKU/quota at request time — the gate a CP-less vertical uses), `link`, `grant`/`revoke` (delegation, never elevation), `requestPlatform`/`platformRequests`, `sealToConnection` |
 | `OperationHandler<I, O>` | type | `(ctx, input) => O \| Promise<O>` |
 | `ConsumerHandler` | type | event consumer; at-least-once, must be idempotent |
 | `ModuleRegistration` | interface | manifest + migrations + operations + consumers |

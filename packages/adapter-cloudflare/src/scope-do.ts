@@ -56,6 +56,17 @@ import {
   type SqlMigration,
   createAtomic,
   type RunSub,
+  NotSearchable,
+  isSearchIndexTable,
+  searchIndexDdl,
+  searchIndexMigrations,
+  searchIndexPlans,
+  searchLimit,
+  searchMatchExpression,
+  searchQuery,
+  type SearchHit,
+  type SearchIndexPlan,
+  type SearchOptions,
 } from '@substrat-run/kernel';
 import type { CheckSubject, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
@@ -416,7 +427,19 @@ function cellToJson(v: unknown): unknown {
  * a top-level `;`. Comments are dropped from the emitted statements — which also
  * means a trailing comment can never become a comment-only "statement" that
  * `exec` rejects. Blank fragments are skipped.
+ *
+ * **A trigger body is not top level.** `CREATE TRIGGER … BEGIN …; …; END;` carries
+ * semicolons that belong to the trigger, and splitting on them produces four
+ * fragments that are each a syntax error — the same "incomplete input" this
+ * function exists to prevent, from the other direction. So inside a `CREATE
+ * TRIGGER` the scanner keeps accumulating until a `;` that follows `END`. Found by
+ * #827's derived search index, which is the first thing in the repo to emit a
+ * trigger: it passed on better-sqlite3 (whose `exec` takes the whole blob) and
+ * failed every scope on the DO host.
  */
+const IS_CREATE_TRIGGER = /^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
+const ENDS_WITH_END = /\bEND\s*$/i;
+
 export function splitSqlStatements(sql: string): string[] {
   const out: string[] = [];
   let cur = '';
@@ -454,6 +477,15 @@ export function splitSqlStatements(sql: string): string[] {
       continue;
     }
     if (c === ';') {
+      // Inside a trigger body, a `;` ends an inner statement, not the CREATE.
+      // `END` is matched as a bare word at the end of what has accumulated —
+      // a string literal ending in END reads as `…END'`, so the quote keeps it
+      // from matching, and the string scanner above has already copied it whole.
+      if (IS_CREATE_TRIGGER.test(cur) && !ENDS_WITH_END.test(cur)) {
+        cur += c;
+        i += 1;
+        continue;
+      }
       if (cur.trim()) out.push(cur.trim());
       cur = '';
       i += 1;
@@ -479,6 +511,8 @@ export function defineScopeDO(
     private readonly predicates = new Map<string, { module: string; handler: GuardPredicate }>();
     private readonly withdrawn = new Map<string, string>();
     private readonly relations = new Map<string, Set<string>>();
+    /** entityType → its derived FTS5 index (#827). One entity type, one index. */
+    private readonly searchPlans = new Map<string, SearchIndexPlan>();
     /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
     private readonly checker: PermissionChecker;
@@ -539,9 +573,26 @@ export function defineScopeDO(
 
     private registerModule(registration: ModuleRegistration): void {
       const manifest = registration.manifest;
+      // #827: the FTS indexes `searchables` declares, appended after the module's
+      // own migrations so the content table exists when the trigger references it.
+      // Same derivation as the pure adapter — both call the kernel, neither owns
+      // an opinion about the DDL.
+      for (const plan of searchIndexPlans(manifest.id, manifest.searchables)) {
+        const existing = this.searchPlans.get(plan.entityType);
+        if (existing) {
+          throw new Error(
+            `search: '${plan.entityType}' is declared searchable by both '${existing.moduleId}' and ` +
+              `'${plan.moduleId}' — one entity type, one index; rename one`,
+          );
+        }
+        this.searchPlans.set(plan.entityType, plan);
+      }
       this.modules.set(manifest.id, {
         id: manifest.id,
-        migrations: registration.migrations ?? [],
+        migrations: [
+          ...(registration.migrations ?? []),
+          ...searchIndexMigrations(manifest.id, manifest.searchables),
+        ],
         consumers: Object.entries(registration.consumers ?? {}).map(([eventType, handler]) => ({
           eventType,
           handler,
@@ -1612,13 +1663,19 @@ export function defineScopeDO(
      * with the scope's identity after the K-3 check (host.ts admin.exportScope).
      */
     exportDump(): ScopeDumpTable[] {
-      const defs = this.sql
-        .exec(
-          `SELECT name, sql FROM sqlite_master
-            WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
-            ORDER BY name`,
-        )
-        .toArray() as unknown as { name: string; sql: string }[];
+      // The derived search index (#827) is excluded: its shadow tables cannot be
+      // replayed — this host answers "object name reserved for internal use" — and
+      // it is recomputable, so `importDump` rebuilds it from the loaded rows. A dump
+      // carries the rows, never the index over them.
+      const defs = (
+        this.sql
+          .exec(
+            `SELECT name, sql FROM sqlite_master
+              WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+              ORDER BY name`,
+          )
+          .toArray() as unknown as { name: string; sql: string }[]
+      ).filter(({ name }) => !isSearchIndexTable(name));
       return defs.map(({ name, sql }) => {
         // Raw positional rows, cells as-is (blobs kept as bytes, not nulled like a UI
         // read) so the dump reloads faithfully. The name is from the live schema.
@@ -1663,9 +1720,18 @@ export function defineScopeDO(
         const existing = this.sql
           .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
           .toArray() as unknown as { name: string }[];
-        for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
-        for (const t of tables) this.sql.exec(t.ddl);
-        for (const t of tables) {
+        // Search index tables are left alone here and rebuilt below (#827): dropping a
+        // shadow table directly is an error, and `sqlite_master` order would reach one
+        // before its virtual table.
+        for (const { name } of existing) {
+          if (isSearchIndexTable(name)) continue;
+          this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+        }
+        // A dump written before indexes were excluded may still carry them; skipped
+        // rather than failing a restore over data about to be recomputed.
+        const replayable = tables.filter((t) => !isSearchIndexTable(t.name));
+        for (const t of replayable) this.sql.exec(t.ddl);
+        for (const t of replayable) {
           if (t.rows.length === 0) continue;
           const cols = t.columns.map((c) => `"${c}"`).join(', ');
           const placeholders = t.columns.map(() => '?').join(', ');
@@ -1684,6 +1750,22 @@ export function defineScopeDO(
       // by the restore's repair leg (host.projectRolesLocal) — the spine's job is only to
       // exist so the checker can read it.
       for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+      // Rebuild the derived search indexes over the rows just loaded (#827). Drop-then-
+      // create, so it also repairs an index a dump left stale, and the triggers it
+      // recreates are what keep the restored scope in step from here. Skipped for a plan
+      // whose content table this dump did not carry — a restore must not invent a table
+      // for an index to point at.
+      const present = new Set(
+        (
+          this.sql
+            .exec(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+            .toArray() as unknown as { name: string }[]
+        ).map((r) => r.name),
+      );
+      for (const plan of this.searchPlans.values()) {
+        if (!present.has(plan.table)) continue;
+        for (const stmt of splitSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
+      }
       // Re-point the restored grants at THIS scope (after the spine exists, so a dump
       // that carried no tuples table still finds one here).
       if (destScopeId) this.rewriteScopeTuples(destScopeId);
@@ -1891,6 +1973,7 @@ export function defineScopeDO(
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
+      const searchPlans = this.searchPlans;
       const sql = this.sql;
       // The permission subject and the derived event actor for a NON-override caller
       // (#383/#97): a scheduled module, a connection, or a person. `systemActor` (the
@@ -2031,6 +2114,22 @@ export function defineScopeDO(
           );
         },
         check: runCheck,
+        // #827. Mirror of the pure adapter: the plan comes from registration, the
+        // rows from this DO's own SQLite, and the index is maintained by triggers
+        // that workerd's regulator has to permit — which is exactly what the
+        // contract suite proves here and cannot prove anywhere else.
+        search: (entityType: string, term: string, options?: SearchOptions): SearchHit[] => {
+          const plan = searchPlans.get(entityType);
+          if (!plan) throw new NotSearchable(entityType);
+          const q = searchQuery(
+            plan,
+            searchMatchExpression(term, plan.tokenizer),
+            searchLimit(options?.limit),
+          );
+          return (sql.exec(q.sql, ...q.params).toArray() as unknown as { id: string; rank: number }[]).map(
+            (row) => ({ entityType, id: row.id, rank: row.rank }),
+          );
+        },
         /**
          * Delegate a permission this caller holds onto one entity — see the
          * kernel's `OperationContext.grant` for why the verb exists.

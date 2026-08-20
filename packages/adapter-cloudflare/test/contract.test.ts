@@ -24,6 +24,7 @@ import {
   scheduleContractSuite,
   scheduleMod,
   scopeHostContractSuite,
+  searchContractSuite,
   permMod,
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -999,4 +1000,18 @@ describe('what an operation failure carries across the ScopeDO boundary', () => 
       expect(envelope.result).toBeUndefined();
     });
   });
+});
+
+// #827: the derived FTS index, on the substrate where it is least obvious that it
+// works. Durable Object SQLite ships FTS5, but it also runs every statement past a
+// regulator that decides whether a trigger may fire at all — so "it works in
+// better-sqlite3" is not evidence about this host, and this suite is the evidence.
+searchContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
 });

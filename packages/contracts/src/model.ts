@@ -330,7 +330,17 @@ type EntityRefs<T extends Record<string, EntityDef>, M> = {
     ? {
         readonly [I in keyof S]: S[I] extends { entityType: infer N }
           ? N extends keyof T & string
-            ? { readonly entityType: N; readonly fields: readonly EntityFields<T[N]>[] }
+            ? // A hit is one id, so a composite-keyed entity has none to return —
+              // the same position as an attachment target, and refused the same
+              // way. Inlined rather than aliased, per `PointableName`.
+              T[N] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] }
+              ? never
+              : {
+                readonly entityType: N;
+                readonly fields: readonly EntityFields<T[N]>[];
+                /** `substring` buys inside-the-word matching for a bigger index. Default `prefix`. */
+                readonly tokenizer?: 'prefix' | 'substring';
+              }
             : never
           : never;
       }
@@ -420,6 +430,63 @@ type PointableNamesOf<R> = R extends Record<string, EntityDef>
  * A typo in any `entityType` is now a compile error naming the declared
  * entities, and a `searchables` field that the entity does not have is too.
  */
+/**
+ * A searchable as the MANIFEST carries it — the declaration plus the two facts
+ * the kernel cannot build an index without.
+ *
+ * Not authored. `table` and `idColumn` come from the same registry entry whose
+ * fields the declaration is already checked against, so there is no second
+ * statement of where a customer lives to drift from the first (#827).
+ */
+export interface EnrichedSearchable {
+  readonly entityType: string;
+  readonly fields: readonly string[];
+  readonly table: string;
+  readonly idColumn: string;
+  readonly tokenizer?: 'prefix' | 'substring';
+}
+
+/**
+ * Fill each declared searchable in from its entity.
+ *
+ * **A composite-keyed entity is refused, for the same reason it cannot be
+ * pointed at.** A hit is an id — one column — and an entity keyed by
+ * `(customer_id, year, month)` has none to return. The compiler already stops a
+ * composite key reaching an attachment target or a `parents` edge (see
+ * `PointableName`); search is the same position, and the refusal names it rather
+ * than emitting an index whose hits identify a third of a row.
+ */
+function enrichSearchables(
+  entities: Record<string, EntityDef>,
+  searchables: unknown,
+): EnrichedSearchable[] {
+  const declared = (searchables ?? []) as readonly {
+    entityType: string;
+    fields: readonly string[];
+    tokenizer?: 'prefix' | 'substring';
+  }[];
+  return declared.map((decl) => {
+    const entity = entities[decl.entityType];
+    if (!entity) {
+      throw new Error(`model: searchables names '${decl.entityType}', which is not a declared entity`);
+    }
+    const key = primaryKeyOf(decl.entityType, entity);
+    if (key.length !== 1) {
+      throw new Error(
+        `model: '${decl.entityType}' is keyed by (${key.join(', ')}) and cannot be searchable — ` +
+          'a hit is one id, and a composite key has none to return',
+      );
+    }
+    return {
+      entityType: decl.entityType,
+      fields: decl.fields,
+      table: entity.table,
+      idColumn: key[0] as string,
+      ...(decl.tokenizer ? { tokenizer: decl.tokenizer } : {}),
+    };
+  });
+}
+
 export function manifestEntities<
   const T extends Record<string, EntityDef>,
   const M extends EntityRefs<T, M>,
@@ -428,13 +495,13 @@ export function manifestEntities<
   refs: M,
 ): {
   attachmentTargets: NonNullable<M['attachmentTargets']> | [];
-  searchables: M['searchables'];
+  searchables: EnrichedSearchable[];
   entityRelations: { entityType: string; parentType: string }[];
   ui: { entityViews: M['entityViews'] };
 } {
   return {
     attachmentTargets: (refs.attachmentTargets ?? []) as NonNullable<M['attachmentTargets']> | [],
-    searchables: refs.searchables as M['searchables'],
+    searchables: enrichSearchables(entities, refs.searchables),
     // Derived edges first, then the ones this module cannot check.
     // Local edges are derived from the entities' own `parents`; edges involving
     // a composed engine's entity are declared, and both sides are checked.

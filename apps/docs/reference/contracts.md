@@ -83,7 +83,9 @@ The results: `decision` / `Decision` (proof-carrying discriminated union) and
 
 `moduleManifest` / `ModuleManifest` — the self-description every module ships:
 permissions, events (emits/consumes), migrations + skew window, attachment targets,
-entity relations, entitlement key, searchables, UI contributions, `envSpec`
+entity relations, entitlement key, searchables (`{ entityType, fields, tokenizer? }` — the
+table and id column are filled in by `manifestEntities` from the entity registry, and the
+kernel derives a per-scope FTS5 index from the result), UI contributions, `envSpec`
 (`envVarSpec[]` — the declared environment that the Dashboard's Env form renders from),
 and `schedules` (`scheduleSpec[]` — recurring work: `{ operation, cadence: { everyMinutes },
 input?, permissions }` the platform sweep runs on every live scope under a system actor).

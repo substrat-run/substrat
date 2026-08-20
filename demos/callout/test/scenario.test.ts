@@ -68,10 +68,17 @@ describe('FSM demo scenario (spec §8)', () => {
       .prepare("SELECT version FROM _substrat_migrations WHERE module_id = '@substrat-run/demo-callout' ORDER BY version")
       .all() as { version: string }[];
     db.close();
+    // The last two are DERIVED, not authored (#827): the kernel turns each
+    // `searchables` entry into an index migration and journals it like any other,
+    // so a changed declaration shows up in the migration diff a human reads —
+    // rather than an index quietly changing shape under a running scope. The
+    // version IS the declaration, which is what makes that diff legible.
     expect(fsmVersions.map((v) => v.version)).toEqual([
       '0001-init',
       '0002-protocols',
       '0003-protocols-to-engine',
+      'search/customer:prefix:name+number',
+      'search/facility:prefix:name+address',
     ]);
   });
 
@@ -430,5 +437,65 @@ describe('FSM demo scenario (spec §8)', () => {
     await expect(
       anna.invoke('protocol/fill', { instanceId: inst.id, itemKey: 'markning', value: true }),
     ).rejects.toThrow(/frozen/);
+  });
+
+  /**
+   * 14 (#827). The picker. `list-customers` returns every customer in number
+   * order, which is the read a dispatcher uses at three customers and cannot use
+   * at three thousand — and once #811 wraps that list in a `Page<T>`, filtering
+   * it client-side searches the first page only.
+   *
+   * The seeded world is small, so this seeds a crowd first: the assertion that
+   * matters is that the answer is found by an INDEX rather than by the caller
+   * reading everything and filtering.
+   */
+  describe('14. finding a customer among many (#827)', () => {
+    interface SearchResult {
+      results: { id: string; name: string; number: string }[];
+      limit: number;
+      capped: boolean;
+    }
+
+    beforeAll(async () => {
+      for (let i = 0; i < 60; i++) {
+        await anna.invoke('callout/create-customer', {
+          number: `9${String(i).padStart(3, '0')}`,
+          name: `Bostadsrättsföreningen Nummer ${i}`,
+        });
+      }
+      await anna.invoke('callout/create-customer', { number: '8100', name: 'Andersson Fastigheter AB' });
+    });
+
+    it('finds one customer among many by a prefix of the name', async () => {
+      const found = await anna.invoke<SearchResult>('callout/search-customers', { q: 'anders' });
+      expect(found.results.map((r) => r.name)).toEqual(['Andersson Fastigheter AB']);
+      expect(found.capped).toBe(false);
+    });
+
+    it('finds by customer number, the key a human actually quotes', async () => {
+      const found = await anna.invoke<SearchResult>('callout/search-customers', { q: '8100' });
+      expect(found.results.map((r) => r.number)).toEqual(['8100']);
+    });
+
+    it('says when it capped, so a picker can ask for a narrower term', async () => {
+      const found = await anna.invoke<SearchResult>('callout/search-customers', {
+        q: 'bostadsrättsföreningen',
+        limit: 5,
+      });
+      expect(found.results).toHaveLength(5);
+      expect(found.capped).toBe(true);
+    });
+
+    it('sees a customer created moments earlier — no indexing lag to wait out', async () => {
+      await anna.invoke('callout/create-customer', { number: '8200', name: 'Zetterlund Kyla' });
+      const found = await anna.invoke<SearchResult>('callout/search-customers', { q: 'zetterlund' });
+      expect(found.results.map((r) => r.number)).toEqual(['8200']);
+    });
+
+    it('is gated by the same permission as the list it replaces', async () => {
+      await expect(
+        harald.invoke('callout/search-customers', { q: 'anders' }),
+      ).rejects.toThrow(/permission|denied/i);
+    });
   });
 });

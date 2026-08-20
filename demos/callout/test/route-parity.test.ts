@@ -57,6 +57,7 @@ describe('derived routes vs the routes Callout serves', () => {
       'callout/instantiate-protocol',
       'callout/list-customers',
       'callout/price-list',
+      'callout/search-customers',
       'invoicing/export',
       'invoicing/get',
       'invoicing/list',

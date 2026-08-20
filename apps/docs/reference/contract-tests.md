@@ -14,7 +14,7 @@ project — the suite *is* the specification of what an adapter must do.
 pnpm add -D @substrat-run/contract-tests vitest
 ```
 
-## The three suites
+## The suites
 
 The package exports test *suites* built on [Vitest](https://vitest.dev); it runs nothing
 itself. Each adapter calls them from its own `test/` folder, passing a factory that returns
@@ -25,6 +25,8 @@ a fresh host.
 | `scopeHostContractSuite` | the scope-host contract — isolation, serialization, the spine, snapshots, connectors | `UNSAFE_allowAllChecker`, so a failure is never a permission failure in disguise |
 | `permissionContractSuite` | the tuple checker — roles, grants, orgs, identity, the audit and access logs | the **default** checker; the whole point is the real engine |
 | `scheduleContractSuite` | registered schedules firing under the system actor | the **default** checker, so the system grant resolves for real |
+| `atomicContractSuite` | `ctx.atomic` — a caught engine error discards that region's writes and nothing else | the **default** checker; the K-34 assertion needs a real authorization |
+| `searchContractSuite` | the derived FTS index — triggers, tokenizers, read-after-write, and a fork that searches without a re-index | `UNSAFE_allowAllChecker`; what the index answers, not who may ask |
 
 ```ts
 // packages/adapter-yours/test/contract.test.ts

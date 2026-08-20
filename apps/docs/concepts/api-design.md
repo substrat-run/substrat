@@ -140,6 +140,30 @@ because egress is where an ever-growing table has to stop being a dump. Kernel-s
 default to **unbounded**, because internal callers — provisioning, catalogs, sweeps — mean
 "everything", and a silent cap there would let them mistake a page for the whole set.
 
+**A search is not a list, and does not go on the list endpoint.** Once a list is paged, a
+client filtering the page it received is searching the first page only — so a picker over a
+large table needs a real index, not a `q` parameter bolted onto the list. Give it its own
+route:
+
+```http
+GET /api/customers/search?q=ander&limit=10
+```
+
+The two reads have genuinely different contracts. A list is ordered by a declared sort key
+and paged by a cursor over it; a search is ordered by *relevance*, which has no stable sort
+key and therefore no honest cursor — paging a ranked result set reorders rows, and rows go
+missing or double. So a search is **capped** and says so, and the caller narrows the term
+rather than paging. One endpoint cannot carry both contracts, which is why every API that
+has tried ends up with two anyway.
+
+`/customers/search` does not collide with `/customers/{id}`: a static segment is registered
+ahead of its parameter sibling, the same rule OpenAPI uses to resolve a concrete path before
+a templated one. Declaring the operation is what gets you that ordering — a hand-written
+route table has to do it by hand.
+
+How the index itself is declared and read is in
+[Reads & scaling](/concepts/reads#finding-a-row-by-what-someone-typed).
+
 #### Declaring it
 
 An operation declares `paged` and its `output` carries the **entry** shape; the platform

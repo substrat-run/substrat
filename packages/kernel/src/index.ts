@@ -89,6 +89,29 @@ export { asPrincipal } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
 export { createAtomic } from './sub-transaction.js';
 export type { RunSub, AtomicMarks } from './sub-transaction.js';
+export {
+  DEFAULT_SEARCH_LIMIT,
+  MAX_SEARCH_LIMIT,
+  MIN_SEARCH_TERM,
+  NotSearchable,
+  SEARCH_INDEX_PREFIX,
+  SearchTermTooShort,
+  isSearchIndexTable,
+  searchIndexDdl,
+  searchIndexMigrations,
+  searchIndexPlans,
+  searchLimit,
+  searchMatchExpression,
+  searchPlansByEntityType,
+  searchQuery,
+} from './search-index.js';
+export type {
+  SearchHit,
+  SearchIndexPlan,
+  SearchOptions,
+  SearchTokenizer,
+  SearchableDeclaration,
+} from './search-index.js';
 export { ulid } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { readRoutedNode, RouterAssertionError } from './routed-node.js';

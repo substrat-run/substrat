@@ -114,6 +114,67 @@ columnar and seconds-scale by construction: it is for **reporting, reconciliatio
 and cross-scope history**. It is not a UI list view, and treating it as one is a category
 error.
 
+## Finding a row by what someone typed
+
+A picker is not a list. `listCustomers` sorted by number is the right read at forty
+customers and the wrong one at forty thousand — and once a list is paged, filtering the
+page in the browser searches the first page only. Declare the entity **searchable** and the
+kernel builds a real index for it:
+
+```ts
+// The vertical's manifest, through `manifestEntities` — the same helper that checks
+// `fields` against the entity registry.
+...manifestEntities(calloutEntities, {
+  searchables: [
+    { entityType: 'customer', fields: ['name', 'number'] },
+    // `substring` matches inside a word ("ande" → "Andersson") for a larger index.
+    { entityType: 'note', fields: ['body'], tokenizer: 'substring' },
+  ],
+}),
+```
+
+From that declaration the kernel provisions a per-scope FTS5 index and the triggers that
+maintain it, journaled like any other migration. Nothing else changes: rows are still
+written with `ctx.sql`, and the index stays correct because the trigger fires no matter who
+writes. That also means it is **read-after-write correct** — a customer created in one
+breath is findable in the next, with no indexing lag to wait out.
+
+The read returns ids, and you hydrate them through the query you already have:
+
+```ts
+const searchCustomers = async (ctx, { q, limit = 20 }) => {
+  assertAllowed(await ctx.check(PERM.customerManage));
+  const hits = ctx.search('customer', q, { limit });
+  if (hits.length === 0) return { results: [], limit, capped: false };
+  const rows = ctx.sql.query<CustomerRow>(
+    `SELECT * FROM callout_customers WHERE id IN (${hits.map(() => '?').join(', ')})`,
+    hits.map((h) => h.id),
+  );
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  // `IN (…)` loses the rank order — put it back, or the best match lands third.
+  return { results: hits.map((h) => byId.get(h.id)!), limit, capped: hits.length === limit };
+};
+```
+
+Three things worth knowing before you design a screen around it:
+
+- **It is capped, not paged.** A relevance order has no stable sort key, so it has no
+  honest cursor either — paging a ranked result set reorders rows, and rows go missing or
+  double. Ask for the top N and tell the user to narrow the term. Deep, ordered paging is
+  what a declared sort on a list read is for.
+- **It does not check permission.** Nothing on `ctx` does. Your `assertAllowed` comes
+  first, and if your entity uses narrowed grants, filter the hits you hydrate — a ranked
+  top-N filtered afterwards returns *fewer* than N, so over-fetch deliberately.
+- **Give it its own route.** `GET /customers/search` beside `GET /customers`, not a `q`
+  parameter on the list: the two have different pagination contracts and one endpoint
+  cannot carry both. The static segment is registered ahead of `/customers/{id}`
+  automatically, so the two never collide.
+
+Short terms are refused rather than answered by a scan — two characters for the default
+`prefix` tokenizer, three for `substring`, which is the trigram index's own floor. Enforce
+the same minimum in your operation's input schema so a caller gets a 400 that names the
+field.
+
 ## Two more surfaces, and neither is a read tier
 
 Distinct from the three read paths, a vertical's manifest can declare stores the platform

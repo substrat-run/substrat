@@ -674,7 +674,7 @@ interface ModuleManifest {
                                               // permission flows along them (§4.2 rule 3)
   entitlementKey: string;          // the SKU flag that gates loading (D-20)
   api?: OpenApiRef;                // emitted OAS for the HTTP surface, if any (D-22)
-  searchables?: SearchableDeclaration[];   // FTS/vector registration (§6 of the plan)
+  searchables?: SearchableDeclaration[];   // FTS registration; the kernel derives the index (#827)
   ui?: UiContributions;            // routes, nav, entity views, widgets (§7.4)
 }
 ```
@@ -928,10 +928,27 @@ Every row: pure TypeScript interface; two adapters minimum; contract tests pass 
 | Key management | CF secrets | local encrypted store | ✅ (shredding needs it) |
 | Notification transport | Resend/SES/SMS | console/file sink | stub |
 | Telemetry | OTel → Datadog | OTel → stdout | convention only |
-| Search backends | D1/FTS + Vectorize | SQLite FTS5 + sqlite-vec | defer to first search consumer |
+| Search backends | SQLite FTS5 (both hosts) | SQLite FTS5 | **built** (#827) — FTS only; vector deferred, see below |
 
 Never adapters (D-18): event spine semantics, tenancy/permission model, entitlements,
 module manifest.
+
+**Search, as built (#827).** The row above used to read "defer to first search consumer";
+this is what arriving looked like. `searchables` is no longer a declaration nothing reads —
+the kernel derives a per-scope FTS5 index and its maintenance triggers from it, journaled
+like any other migration, and `ctx.search` answers from it. Triggers rather than the event
+spine, so the index is read-after-write correct and no module gains a write path it has to
+remember. Two consequences worth carrying:
+
+- **The vector half stays deferred, and not for lack of interest.** Durable Object SQLite
+  permits `fts5`/`fts5vocab` virtual tables and rejects `vec0`, so semantic search is not
+  implementable in-scope today whatever we decide about it. FTS was the half that could be
+  built honestly.
+- **An index never enters a dump.** Export skips the index and its shadow tables — they
+  cannot be replayed (this host answers "object name reserved for internal use", and D1's
+  own exporter refuses a database that merely *contains* an fts5 table) — and import
+  rebuilds the whole index from the content tables it just loaded. Derived data is
+  recomputed, never carried.
 
 ## 9. Repository and package layout (§5.8)
 

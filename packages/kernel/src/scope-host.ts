@@ -82,6 +82,7 @@ import type {
   TenantStatus,
 } from '@substrat-run/contracts';
 import type { SealedSecret } from './secret-box.js';
+import type { SearchHit, SearchOptions } from './search-index.js';
 
 /**
  * The scope-host contract — the adapter seam (§5.1 of the design doc).
@@ -145,6 +146,36 @@ export interface OperationContext {
   platformRequests(filter?: PlatformRequestFilter): PlatformRequest[];
   /** Node-level check; pass `entity` for per-entity checks (portal access, §4.2 rule 3). */
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
+  /**
+   * Find entities of one type by what a person typed (#827) — the read a picker
+   * over 40 000 customers needs and `ctx.sql` cannot express without every
+   * vertical hand-rolling an index.
+   *
+   * Answers from the FTS5 index the kernel derives from `manifest.searchables`,
+   * maintained by triggers, so it sees a row the same transaction wrote. Returns
+   * **ids and ranks only** — the row shape is the module's own, so hydrate the
+   * hits through the read path that already exists rather than growing a second
+   * answer to "what is a customer".
+   *
+   * ```ts
+   * const hits = ctx.search('customer', term, { limit: 10 });
+   * const rows = ctx.sql.query(
+   *   `SELECT * FROM callout_customers WHERE id IN (${hits.map(() => '?').join(',')})`,
+   *   hits.map((h) => h.id),
+   * );
+   * ```
+   *
+   * **This does not check permission** — nothing on `ctx` does. The operation's
+   * own `assertAllowed` still comes first, and an entity-narrowed vertical has to
+   * filter the hits it hydrates: a ranked top-N filtered afterwards returns FEWER
+   * than N, so over-fetch deliberately rather than discovering it at a customer
+   * whose picker looks half-empty.
+   *
+   * Throws `SearchTermTooShort` for a term below the index's floor and
+   * `NotSearchable` for an entity type no module declared — never an empty array
+   * standing in for a misconfiguration.
+   */
+  search(entityType: string, term: string, options?: SearchOptions): SearchHit[];
   /**
    * Read one of the tenant's currently-held entitlements at request time (#304) — the
    * sanctioned way a hosted vertical gates a feature or enforces its own quota WITHOUT a

@@ -33,6 +33,22 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
 
   // -- customers + facilities ------------------------------------------------
   app.get('/api/customers', async (c) => c.json(await (await S(c)).invoke('callout/list-customers')));
+  // #827. BEFORE any `/api/customers/:id` route: Hono dispatches in registration
+  // order, so a parameter sibling registered first would swallow this and answer
+  // with `id: 'search'`. `mountOperations` orders declared paths for exactly this
+  // (#785); a hand-written table has to do it by hand.
+  //
+  // `limit` arrives as a string and the operation declares a number, so it is
+  // coerced here — the same coercion `mountOperations` derives from the schema.
+  app.get('/api/customers/search', async (c) => {
+    const limit = c.req.query('limit');
+    return c.json(
+      await (await S(c)).invoke('callout/search-customers', {
+        q: c.req.query('q') ?? '',
+        ...(limit === undefined ? {} : { limit: Number(limit) }),
+      }),
+    );
+  });
   app.post('/api/customers', async (c) =>
     c.json(await (await S(c)).invoke('callout/create-customer', await c.req.json())),
   );
