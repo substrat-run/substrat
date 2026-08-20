@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { journalColumns } from '@substrat-run/model-emit';
-import { manyfoldEntities, manyfoldModel } from '../src/entities.js';
+import { manyfoldEntities } from '../src/entities.js';
+import { manyfoldModel } from '../src/model.js';
 import { manyfoldMigrations } from '../src/migrations.js';
 
 const journal = journalColumns(manyfoldMigrations.map((m) => m.sql).join('\n'));

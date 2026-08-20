@@ -1,4 +1,4 @@
-import { defineEntities, emitModel } from '@substrat-run/contracts';
+import { defineEntities } from '@substrat-run/contracts';
 import { z } from 'zod';
 
 /**
@@ -69,4 +69,8 @@ export const shopEntities = defineEntities({
   },
 });
 
-export const shopModel = emitModel(shopEntities);
+/**
+ * Moved to `src/model.ts` (#844): the emitted model now carries the order's
+ * lifecycle, which is declared beside the operation map in `module.ts` — and
+ * that file imports this one, so emitting from here would be a cycle.
+ */

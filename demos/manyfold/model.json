@@ -12,7 +12,15 @@
             "type": "string"
           },
           "status": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "draft",
+              "in_review",
+              "approved",
+              "published",
+              "unpublished",
+              "archived"
+            ]
           },
           "slug": {
             "anyOf": [
@@ -55,6 +63,49 @@
           "updated_at"
         ],
         "additionalProperties": false
+      }
+    }
+  },
+  "lifecycles": {
+    "manyfold-entry": {
+      "field": "status",
+      "initial": "draft",
+      "states": {
+        "approved": {
+          "on": {
+            "manyfold/archive": "archived",
+            "manyfold/publish": "published",
+            "manyfold/submit-for-review": "in_review"
+          }
+        },
+        "archived": {
+          "terminal": true
+        },
+        "draft": {
+          "on": {
+            "manyfold/archive": "archived",
+            "manyfold/submit-for-review": "in_review"
+          }
+        },
+        "in_review": {
+          "on": {
+            "manyfold/approve": "approved",
+            "manyfold/archive": "archived",
+            "manyfold/reject": "draft"
+          }
+        },
+        "published": {
+          "on": {
+            "manyfold/archive": "archived",
+            "manyfold/unpublish": "unpublished"
+          }
+        },
+        "unpublished": {
+          "on": {
+            "manyfold/archive": "archived",
+            "manyfold/submit-for-review": "in_review"
+          }
+        }
       }
     }
   }

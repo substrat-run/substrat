@@ -218,5 +218,29 @@
         "sku"
       ]
     }
+  },
+  "lifecycles": {
+    "order": {
+      "field": "status",
+      "initial": "placed",
+      "states": {
+        "cancelled": {
+          "terminal": true
+        },
+        "closed": {
+          "terminal": true
+        },
+        "fulfilled": {
+          "on": {
+            "shop/close-order": "closed"
+          }
+        },
+        "placed": {
+          "on": {
+            "shop/fulfil-order": "fulfilled"
+          }
+        }
+      }
+    }
   }
 }

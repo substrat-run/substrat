@@ -1,0 +1,70 @@
+{
+  "entities": {
+    "underlag": {
+      "table": "invoicing_underlag",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "number"
+          },
+          "customer_type": {
+            "type": "string"
+          },
+          "customer_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "exported"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "exported_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "customer_type",
+          "customer_id",
+          "status",
+          "created_at",
+          "exported_at"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "lifecycles": {
+    "underlag": {
+      "field": "status",
+      "initial": "open",
+      "states": {
+        "exported": {
+          "terminal": true
+        },
+        "open": {
+          "on": {
+            "invoicing/export": "exported"
+          }
+        }
+      }
+    }
+  }
+}

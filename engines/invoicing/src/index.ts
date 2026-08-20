@@ -23,11 +23,13 @@
 import { z } from 'zod';
 import {
   addMoney,
+  defineLifecycles,
   entityRef,
   money,
   moduleManifest,
   moneyOf,
   permissionKey,
+  transitionFor,
   type EntityRow,
   type Money,
   substratError,
@@ -604,7 +606,11 @@ const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (c
     input.underlagId,
   ])[0];
   if (!underlag) throw substratError('not_found', `underlag not found: ${input.underlagId}`);
-  if (underlag.status !== 'open') {
+  // `transitionFor`, not `assertTransition` (#844): the declaration answers
+  // whether the verb is legal here, and this engine keeps its OWN reason for
+  // the refusal. `immutable_after_export` is the invariant a caller needs to
+  // hear; flattening it into `invalid_transition` would tell them less.
+  if (!transitionFor(invoicingLifecycles.underlag, underlag.status, 'invoicing/export')) {
     throw conflict('immutable_after_export', `underlag ${underlag.number} is '${underlag.status}' — exported underlag are immutable`);
   }
   ctx.sql.exec(
@@ -629,14 +635,43 @@ const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (c
   ])[0]!;
 };
 
+const OPERATIONS = {
+  'invoicing/list': listOp as never,
+  'invoicing/get': getOp as never,
+  'invoicing/export': exportOp as never,
+};
+
+/**
+ * The underlag's state machine, declared (#844).
+ *
+ * Two states and one edge — the smallest machine in the repo, and the one whose
+ * invariant is quoted most often. `exported` is terminal because that IS
+ * immutable-after-export: there is no verb that takes an underlag back.
+ *
+ * **This engine is composed BY EVENT**, so the edge's operation is the only way
+ * a state moves — consumers build and update an `open` underlag, and nothing but
+ * `invoicing/export` closes it. That is why the declaration is worth having on a
+ * two-state machine: it says, in the reviewed artifact, that no consumer may
+ * move it.
+ */
+export const invoicingLifecycles = defineLifecycles(
+  invoicingEntities,
+  OPERATIONS,
+)({
+  underlag: {
+    field: 'status',
+    initial: 'open',
+    states: {
+      open: { on: { 'invoicing/export': 'exported' } },
+      exported: { terminal: true },
+    },
+  },
+});
+
 export const invoicingModule: ModuleRegistration = {
   manifest: invoicingManifest,
   migrations: invoicingMigrations,
-  operations: {
-    'invoicing/list': listOp as never,
-    'invoicing/get': getOp as never,
-    'invoicing/export': exportOp as never,
-  },
+  operations: OPERATIONS,
   consumers: {
     'workorder.completed': onWorkOrderCompleted,
     'commerce.order-placed': onCommerceOrderPlaced,

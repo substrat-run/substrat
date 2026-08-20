@@ -1,4 +1,4 @@
-import { defineEntities, emitModel } from '@substrat-run/contracts';
+import { defineEntities } from '@substrat-run/contracts';
 import { z } from 'zod';
 
 /**
@@ -19,7 +19,13 @@ export const manyfoldEntities = defineEntities({
     fields: z.object({
       id: z.string(),
       type_key: z.string(),
-      status: z.string(),
+      /**
+       * The six editorial statuses (#844). Declared HERE, on the column, rather
+       * than as a bare `z.string()` with the real set living in a `const` array
+       * in `module.ts` — two descriptions of one fact. `ENTRY_STATUSES` now
+       * reads this schema's own options.
+       */
+      status: z.enum(['draft', 'in_review', 'approved', 'published', 'unpublished', 'archived']),
       slug: z.string().nullable(),
       draft_rev: z.number(),
       published_rev: z.number().nullable(),
@@ -29,4 +35,8 @@ export const manyfoldEntities = defineEntities({
   },
 });
 
-export const manyfoldModel = emitModel(manyfoldEntities);
+/**
+ * Moved to `src/model.ts` (#844): the emitted model now carries the entry's
+ * lifecycle, and the lifecycle is declared beside the operation map in
+ * `module.ts` — which imports this file, so emitting from here would be a cycle.
+ */

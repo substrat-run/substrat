@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { journalColumns } from '@substrat-run/model-emit';
-import { shopEntities, shopModel } from '../src/entities.js';
+import { shopEntities } from '../src/entities.js';
+import { shopModel } from '../src/model.js';
 import { shopModule } from '../src/module.js';
 
 const journal = journalColumns((shopModule.migrations ?? []).map((m) => m.sql).join('\n'));

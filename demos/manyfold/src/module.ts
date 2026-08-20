@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { type EntityRef, PROVISION_SIBLING_KIND, ARCHIVE_SCOPE_KIND } from '@substrat-run/contracts';
+import { type EntityRef, PROVISION_SIBLING_KIND, ARCHIVE_SCOPE_KIND, assertTransition, defineLifecycles } from '@substrat-run/contracts';
+import { manyfoldEntities } from './entities.js';
 import {
   assertAllowed,
   ulid,
@@ -31,7 +32,11 @@ import { manyfoldMigrations } from './migrations.js';
 
 // ── Rows ────────────────────────────────────────────────────────────────────
 
-export const ENTRY_STATUSES = ['draft', 'in_review', 'approved', 'published', 'unpublished', 'archived'] as const;
+/**
+ * The editorial statuses — **taken from the entity registry, not restated** (#844).
+ * The column's `z.enum` is the one description; this reads its options.
+ */
+export const ENTRY_STATUSES = manyfoldEntities['manyfold-entry'].fields.shape.status.options;
 export type EntryStatus = (typeof ENTRY_STATUSES)[number];
 
 // The operation input schemas — named and exported so the API catalog
@@ -168,19 +173,28 @@ async function contentHash(typeKey: string, revNo: number, bodyJson: string): Pr
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-const ALLOWED: Record<EntryStatus, EntryStatus[]> = {
-  draft: ['in_review', 'archived'],
-  in_review: ['approved', 'draft', 'archived'],
-  approved: ['published', 'in_review', 'archived'],
-  published: ['unpublished', 'archived'],
-  unpublished: ['in_review', 'archived'],
-  archived: [],
-};
-
-function transition(ctx: OperationContext, entry: EntryRow, to: EntryStatus, note?: string): void {
-  if (!ALLOWED[entry.status].includes(to)) {
-    throw new Error(`invalid transition: ${entry.type_key} entry is '${entry.status}', cannot go to '${to}'`);
-  }
+/**
+ * The declared machine, applied (#844).
+ *
+ * This replaced a `Record<EntryStatus, EntryStatus[]>` keyed by TARGET state. That
+ * table could say `approved` may become `in_review`; it could not say which verb
+ * does it, so the answer lived in whichever operation happened to pass that
+ * target. Naming the operation makes the edge complete — and it is what lets a
+ * guard, a diagram and the emitted `model.json` all read the same fact.
+ *
+ * It also threw a bare `new Error(...)`, so a 409 refusal reached the caller as a
+ * 500. `assertTransition` puts this vertical on the platform's error contract.
+ */
+function transition(ctx: OperationContext, entry: EntryRow, operation: string, note?: string): void {
+  const outcome = assertTransition(
+    manyfoldLifecycles['manyfold-entry'],
+    `${entry.type_key} entry`,
+    entry.status,
+    operation,
+  );
+  // Every caller here performs a move; `allow` entries never reach this function.
+  if (outcome.kind !== 'transition') return;
+  const to = outcome.to as EntryStatus;
   const now = new Date().toISOString();
   ctx.sql.exec('UPDATE manyfold_entry SET status = ?, updated_at = ? WHERE id = ?', [to, now, entry.id]);
   ctx.sql.exec(
@@ -292,7 +306,7 @@ const submitForReviewOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow
   assertAllowed(await ctx.check(MF_PERM.author));
   const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
-  transition(ctx, entry, 'in_review');
+  transition(ctx, entry, 'manyfold/submit-for-review');
   ctx.emit({ type: 'content.submitted', schemaVersion: 1, entity: entryRef(entry.id), piiClass: 'none', payload: { entryId: entry.id, typeKey: entry.type_key } });
   return getEntry(ctx, input.entryId);
 };
@@ -301,7 +315,7 @@ const approveOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = asyn
   assertAllowed(await ctx.check(MF_PERM.review));
   const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
-  transition(ctx, entry, 'approved');
+  transition(ctx, entry, 'manyfold/approve');
   ctx.emit({ type: 'content.approved', schemaVersion: 1, entity: entryRef(entry.id), piiClass: 'none', payload: { entryId: entry.id, typeKey: entry.type_key } });
   return getEntry(ctx, input.entryId);
 };
@@ -310,7 +324,7 @@ const rejectOp: OperationHandler<z.infer<typeof rejectInput>, EntryRow> = async 
   assertAllowed(await ctx.check(MF_PERM.review));
   const { entryId, note } = rejectInput.parse(raw);
   const entry = getEntry(ctx, entryId);
-  transition(ctx, entry, 'draft', note);
+  transition(ctx, entry, 'manyfold/reject', note);
   ctx.emit({ type: 'content.rejected', schemaVersion: 1, entity: entryRef(entry.id), piiClass: 'none', payload: { entryId: entry.id, typeKey: entry.type_key, note } });
   return getEntry(ctx, entryId);
 };
@@ -319,15 +333,15 @@ const publishOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = asyn
   assertAllowed(await ctx.check(MF_PERM.publish));
   const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
-  if (entry.status !== 'approved') {
-    throw new Error(`invalid transition: publish requires an approved entry — '${entry.type_key}' is '${entry.status}'`);
-  }
+  // Checked before the freeze/hash work below, so a refusal costs nothing. The
+  // legal source states come from the declaration, not from a second sentence.
+  assertTransition(manyfoldLifecycles['manyfold-entry'], `${entry.type_key} entry`, entry.status, 'manyfold/publish');
   const rev = currentDraft(ctx, entry);
   const hash = await contentHash(entry.type_key, rev.rev_no, rev.body_json);
   // Freeze the revision: immutable-after-export. Any later edit targets a new revision.
   ctx.sql.exec('UPDATE manyfold_revision SET frozen = 1, hash = ? WHERE id = ?', [hash, rev.id]);
   ctx.sql.exec('UPDATE manyfold_entry SET published_rev = ? WHERE id = ?', [rev.rev_no, entry.id]);
-  transition(ctx, entry, 'published');
+  transition(ctx, entry, 'manyfold/publish');
   const frozen: RevisionRow = { ...rev, frozen: 1, hash };
   upsertDelivery(ctx, { ...entry, published_rev: rev.rev_no }, frozen);
   const body = JSON.parse(rev.body_json) as Record<string, unknown>;
@@ -352,7 +366,7 @@ const unpublishOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = as
   assertAllowed(await ctx.check(MF_PERM.publish));
   const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
-  transition(ctx, entry, 'unpublished');
+  transition(ctx, entry, 'manyfold/unpublish');
   removeDelivery(ctx, entry.id);
   ctx.emit({ type: 'content.unpublished', schemaVersion: 1, entity: entryRef(entry.id), piiClass: 'none', payload: { entryId: entry.id, typeKey: entry.type_key } });
   return getEntry(ctx, input.entryId);
@@ -362,7 +376,7 @@ const archiveOp: OperationHandler<z.infer<typeof entryIdInput>, EntryRow> = asyn
   assertAllowed(await ctx.check(MF_PERM.publish));
   const input = entryIdInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
-  transition(ctx, entry, 'archived');
+  transition(ctx, entry, 'manyfold/archive');
   removeDelivery(ctx, entry.id);
   ctx.emit({ type: 'content.archived', schemaVersion: 1, entity: entryRef(entry.id), piiClass: 'none', payload: { entryId: entry.id, typeKey: entry.type_key } });
   return getEntry(ctx, input.entryId);
@@ -611,30 +625,81 @@ const timelineOp: OperationHandler<z.infer<typeof timelineInput>, { type: string
   );
 };
 
+const OPERATIONS = {
+  'manyfold/create-entry': createEntryOp as never,
+  'manyfold/save-draft': saveDraftOp as never,
+  'manyfold/restore-revision': restoreRevisionOp as never,
+  'manyfold/submit-for-review': submitForReviewOp as never,
+  'manyfold/approve': approveOp as never,
+  'manyfold/reject': rejectOp as never,
+  'manyfold/publish': publishOp as never,
+  'manyfold/unpublish': unpublishOp as never,
+  'manyfold/archive': archiveOp as never,
+  'manyfold/list-entries': listEntriesOp as never,
+  'manyfold/review-queue': reviewQueueOp as never,
+  'manyfold/get-entry': getEntryOp as never,
+  'manyfold/list-types': listTypesOp as never,
+  'manyfold/save-type': saveTypeOp as never,
+  'manyfold/delete-type': deleteTypeOp as never,
+  'manyfold/request-site': requestSiteOp as never,
+  'manyfold/archive-site': archiveSiteOp as never,
+  'manyfold/deliver': deliverOp as never,
+  'manyfold/list-delivery': listDeliveryOp as never,
+  'manyfold/whoami': whoamiOp as never,
+  'manyfold/timeline': timelineOp as never,
+};
+
+/**
+ * The entry's editorial lifecycle, declared (#844).
+ *
+ * A **vertical-owned** machine: there is no engine lifecycle beneath it to
+ * refine, which is why it declares states outright rather than substates. The
+ * format permits that deliberately — not every machine belongs to an engine.
+ *
+ * Every non-terminal state can be archived, so `manyfold/archive` appears on
+ * five of the six. That repetition is the honest shape: an edge per source
+ * state is what a reviewer needs to see, and collapsing it into a wildcard would
+ * hide which states an entry can leave.
+ */
+export const manyfoldLifecycles = defineLifecycles(
+  manyfoldEntities,
+  OPERATIONS,
+)({
+  'manyfold-entry': {
+    field: 'status',
+    initial: 'draft',
+    states: {
+      draft: {
+        on: { 'manyfold/submit-for-review': 'in_review', 'manyfold/archive': 'archived' },
+      },
+      in_review: {
+        on: {
+          'manyfold/approve': 'approved',
+          'manyfold/reject': 'draft',
+          'manyfold/archive': 'archived',
+        },
+      },
+      approved: {
+        on: {
+          'manyfold/publish': 'published',
+          'manyfold/submit-for-review': 'in_review',
+          'manyfold/archive': 'archived',
+        },
+      },
+      published: {
+        on: { 'manyfold/unpublish': 'unpublished', 'manyfold/archive': 'archived' },
+      },
+      unpublished: {
+        on: { 'manyfold/submit-for-review': 'in_review', 'manyfold/archive': 'archived' },
+      },
+      /** Terminal, and the only state an entry cannot leave. */
+      archived: { terminal: true },
+    },
+  },
+});
+
 export const manyfoldModule: ModuleRegistration = {
   manifest: manyfoldManifest,
   migrations: manyfoldMigrations,
-  operations: {
-    'manyfold/create-entry': createEntryOp as never,
-    'manyfold/save-draft': saveDraftOp as never,
-    'manyfold/restore-revision': restoreRevisionOp as never,
-    'manyfold/submit-for-review': submitForReviewOp as never,
-    'manyfold/approve': approveOp as never,
-    'manyfold/reject': rejectOp as never,
-    'manyfold/publish': publishOp as never,
-    'manyfold/unpublish': unpublishOp as never,
-    'manyfold/archive': archiveOp as never,
-    'manyfold/list-entries': listEntriesOp as never,
-    'manyfold/review-queue': reviewQueueOp as never,
-    'manyfold/get-entry': getEntryOp as never,
-    'manyfold/list-types': listTypesOp as never,
-    'manyfold/save-type': saveTypeOp as never,
-    'manyfold/delete-type': deleteTypeOp as never,
-    'manyfold/request-site': requestSiteOp as never,
-    'manyfold/archive-site': archiveSiteOp as never,
-    'manyfold/deliver': deliverOp as never,
-    'manyfold/list-delivery': listDeliveryOp as never,
-    'manyfold/whoami': whoamiOp as never,
-    'manyfold/timeline': timelineOp as never,
-  },
+  operations: OPERATIONS,
 };
