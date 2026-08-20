@@ -529,6 +529,69 @@ describe('control-plane API', () => {
 
   // -- #592: connection grants ride the same gather-and-deliver channel --------
 
+  it('heals a connection toward the connector\'s declaration before gathering (#726)', async () => {
+    // The route-level proof that the repair reaches a deployment. `reconcileConnectionGrants`
+    // is unit-tested next door; what matters here is that the operator's existing lever —
+    // the idempotent re-provision — now DELIVERS a declared grant the connection never
+    // received, with no credential anywhere in the path. Before this, the gather could only
+    // ever deliver rows that already existed, so a missing capability was repairable solely
+    // by re-typing a working credential (#716, #841).
+    // Its own tenant: this leaves live connections and grants behind, and the sibling
+    // tests below count both for t1.
+    const tH = tenantId.parse(ulid());
+    const sH = scopeId.parse(ulid());
+    const owner = principalId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tH, slug: `heal-${tH.toLowerCase()}`, name: 'Heal' });
+    await host.provisionScope(staff, { tenantId: tH, scopeId: sH, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, tH, sH);
+    const connId = connectionId.parse(ulid());
+    await host.admin.createConnection(staff, {
+      id: connId,
+      tenantId: tH,
+      vertical: 'demo-vert',
+      provider: 'signer',
+      label: 'Signer',
+      secret: { accessToken: 'a-working-credential' },
+    });
+    const RECORD = permissionKey.parse('protocol:record-signature');
+    const ATTACH = permissionKey.parse('protocol:attach');
+    // Connected before the connector declared `attach` — the live tenant's exact shape.
+    await host.admin.grantToConnection(staff, {
+      connectionId: connId,
+      permission: RECORD,
+      node: { tenantId: tH, scopeId: sH },
+      grantedBy: staff,
+    });
+
+    type Delivered = { connectionGrants?: { connectionId: string; permission: string }[] };
+    let reconciled: Delivered | undefined;
+    const fakeVertical = {
+      reconcileInstance: async (input: Delivered) => {
+        reconciled = input;
+        return { tenantId: tH, scopeId: sH, owner };
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+      connectorGrants: { signer: [RECORD, ATTACH] },
+    });
+
+    const res = await delegated.request(`/tenants/${tH}/scopes/${sH}/provision`, {
+      method: 'POST',
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    expect(new Set(reconciled?.connectionGrants?.map((g) => g.permission))).toEqual(
+      new Set([RECORD, ATTACH]),
+    );
+    // The credential is exactly as it was — the repair never went near it.
+    expect((await host.admin.openConnection(tH, 'demo-vert', 'signer'))?.secret).toEqual({
+      accessToken: 'a-working-credential',
+    });
+  });
+
   it('gathers connection grants and delivers them WITH provisioning and reconcile (#592)', async () => {
     const sA = scopeId.parse(ulid()); // exists when the grants are written
     const sB = scopeId.parse(ulid()); // provisioned AFTER the grants — the issue's failing case
