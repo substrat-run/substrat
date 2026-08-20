@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { LIST_PAGE_DEFAULT, LIST_PAGE_MAX, pageSchema } from './pagination.js';
+import {
+  LIST_PAGE_DEFAULT,
+  LIST_PAGE_MAX,
+  PAGE_LINK_HEADER,
+  PAGE_TOTAL_HEADER,
+} from './pagination.js';
 import {
   DOCUMENTED_ERROR_CODES,
   type ErrorCode,
@@ -142,6 +147,38 @@ const jsonSchema = (schema: z.ZodType, io: 'input' | 'output') => {
 };
 
 /**
+ * The response headers a paged read carries (#829) — documented, because a walk a
+ * client cannot discover is a walk that does not exist.
+ *
+ * `Link` is RFC 8288 and hands over a URL to FOLLOW, so the filters and the page
+ * size travel with it and a client never reassembles a query string. Its absence
+ * is how the walk ends.
+ */
+function pageResponseHeaders(withTotal: boolean): Record<string, unknown> {
+  return {
+    [PAGE_LINK_HEADER]: {
+      description:
+        'RFC 8288 link to the next page, e.g. `<https://…/customers?limit=20&cursor=01J8Z…>; ' +
+        'rel="next"`. Follow it verbatim — it carries this request\'s filters and page ' +
+        'size. Absent when the walk is over, so a client stops rather than fetching an ' +
+        'empty page.',
+      schema: { type: 'string' },
+    },
+    ...(withTotal
+      ? {
+          [PAGE_TOTAL_HEADER]: {
+            description:
+              'Rows matching this request\'s filter — the same `WHERE` the page ran under, ' +
+              'never the whole table. A snapshot: rows written mid-walk can make it ' +
+              'disagree with the rows eventually seen.',
+            schema: { type: 'integer', minimum: 0 },
+          },
+        }
+      : {}),
+  };
+}
+
+/**
  * Render a catalog as an OpenAPI 3.1 document (a plain JSON-able object).
  * Pure and deterministic: same catalog in, byte-identical document out — that
  * is what lets the checked-in artifact double as a drift check.
@@ -251,15 +288,21 @@ export function buildOpenApiDocument(
           '200': {
             description: op.paged
               ? op.paged.total
-                ? 'One page of results, with the total matching this list’s filter.'
-                : 'One page of results.'
+                ? 'One page of results. The walk is in the response headers.'
+                : 'One page of results. The walk is in the response headers.'
               : 'The operation result.',
+            // A page's BODY is the entries, and the walk rides in headers (#829).
+            // Wrapping the body renamed a live endpoint's response, which made
+            // adopting paging a breaking change for consumers a vertical cannot see —
+            // and could not be done at all for the list reads whose published shape
+            // was a bare array. In headers the body is what it always was.
+            ...(op.paged ? { headers: pageResponseHeaders(op.paged.total === true) } : {}),
             ...(op.output
               ? {
                   content: {
                     'application/json': {
                       schema: jsonSchema(
-                        op.paged ? pageSchema(op.output, op.paged.total === true) : op.output,
+                        op.paged ? z.array(op.output) : op.output,
                         'output',
                       ),
                     },

@@ -95,18 +95,48 @@ A list endpoint that returns everything is a bug with a delay on it. It passes r
 passes tests, and then one tenant's table gets large.
 
 The platform convention is **keyset pagination** — a cursor over the list's own sort key,
-never an offset:
+never an offset. The request carries the walk in the query string, and the response carries
+it in **headers**, so the body stays the list it always was:
 
 ```http
 GET /api/customers?limit=20&cursor=01J8Z3K7Q9WRT0P
 ```
 
-```json
-{ "entries": [ … ], "nextCursor": "01J8Z3K7Q9WRT0P" }
+```http
+200 OK
+Link: <https://api…/customers?limit=20&cursor=01J9A2M4X8QER1S>; rel="next"
+X-Total-Count: 340
+
+[ … ]
 ```
 
-`nextCursor` is the last entry's sort key when the page came back full, and `null` when it
-came back short — so a client walks until null and never makes a trailing empty request.
+The `Link` is [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288), the same header GitHub
+serves, and it hands the client a URL to **follow** rather than one to assemble — so the
+filters and the page size travel with it and cannot be dropped by accident. Its absence is
+how the walk ends: no `rel="next"`, no further request. `X-Total-Count` appears only for a
+list that asked for a total.
+
+**Why headers and not a `{ entries, nextCursor }` body.** Because the body is a published
+contract and the walk is not. Wrapping the body renames a live endpoint's response — `[…]`
+becomes `{ "entries": […] }` — so adopting paging broke every consumer a vertical could not
+see, and the rational move was to leave an unbounded list unbounded, which is the opposite
+of the point. It also could not be done at all for a list whose published shape was a bare
+array: a body cannot be an array and an object at once. In headers, adopting paging changes
+nothing a client was already reading.
+
+A caveat that follows from the choice: a browser client on a **different origin** cannot
+read `Link` or `X-Total-Count` unless the server lists them in
+`Access-Control-Expose-Headers` — and the symptom is not an error, it is a list that looks
+like it has exactly one page. `PAGE_EXPOSED_HEADERS` in `@substrat-run/contracts` is the
+list to expose.
+
+**Inside the platform, a page is still a value.** `ctx`-side and `stub.invoke` callers get
+`Page<T>` — `{ entries, nextCursor }` — because an operation is transport-agnostic and a
+test, a seed or another operation has no HTTP response to read a header off. The handler
+returns `pageOf(...)`; the HTTP mount projects it. That is also why the platform's own
+control-plane API still answers with the envelope in the body: its only consumers are the
+console and dashboard, versioned and deployed with it, so it has no migration problem to
+solve and no unknown client to protect.
 
 There is **one** way to page, not two. Page numbers and `offset` are not offered, and that
 is a decision rather than an omission: on live data rows shift between requests, so an
@@ -129,7 +159,7 @@ paged: { sortKey: 'id', total: true },
 ```
 
 The handler then returns `countedPageOf(...)` instead of `pageOf(...)`, and the compiler
-holds it to that. Two things to know about the number: it counts the **filtered** set — the
+holds it to that; the total reaches the client as `X-Total-Count`. Two things to know about the number: it counts the **filtered** set — the
 same `WHERE` the page ran under, never the table, which is the mistake that looks right
 until a second list exists — and it is a snapshot, so rows written mid-walk can make page
 one's total disagree with the rows eventually seen. That is inherent to counting a moving
@@ -318,7 +348,7 @@ Two things follow that are worth stating, because they cut against instinct:
 | Boundary parsing | Zod at the edge | Shipped |
 | Money | decimal string + currency | Shipped |
 | Identifiers | ULID | Shipped |
-| Pagination | keyset cursor, `{ entries, nextCursor }` (+ opt-in `total`), declared with `paged` | Declaration shipped; [#129](https://github.com/substrat-run/substrat/issues/129) / [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
+| Pagination | keyset cursor, declared with `paged`; entries in the body, the walk in `Link` / `X-Total-Count` | Declaration shipped; [#129](https://github.com/substrat-run/substrat/issues/129) / [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
 | Errors | RFC 9457 problem+json, closed codes | [#113](https://github.com/substrat-run/substrat/issues/113) |
 | Clock | `ctx.now()` | [#812](https://github.com/substrat-run/substrat/issues/812) |
 | Idempotent writes | `Idempotency-Key` | [#116](https://github.com/substrat-run/substrat/issues/116) |

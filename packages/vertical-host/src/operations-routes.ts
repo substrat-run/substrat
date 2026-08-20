@@ -25,6 +25,12 @@
  */
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import {
+  isPage,
+  nextPageLink,
+  PAGE_LINK_HEADER,
+  PAGE_TOTAL_HEADER,
+} from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { classifyError } from './errors.js';
 
@@ -41,6 +47,8 @@ export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 interface HttpDecl {
   readonly http?: { readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; readonly path: string };
   readonly input?: { readonly shape?: Record<string, unknown> };
+  /** Declared by a paged read (#811). Its presence is what turns on the projection below. */
+  readonly paged?: { readonly sortKey?: string; readonly total?: boolean };
 }
 
 /** Zod's internal definition, across the layouts this reads structurally. */
@@ -186,6 +194,12 @@ export interface MountOperationsOptions {
    * caller may not see, relaying a credential, sending mail. The alternative
    * verticals were reaching for is a `resolveStub` whose `invoke` returns an
    * envelope instead of the operation's result, which makes `ScopeStub` a lie.
+   *
+   * **It also owns a paged read's wire shape.** The default path projects a
+   * `Page<T>` into an entries body plus `Link`/`X-Total-Count` (#829); a vertical
+   * that supplies `respond` receives the `Page` whole and answers however its own
+   * envelope requires. Two mounts cannot both decide the body, and the vertical's
+   * own statement is the one that should win.
    */
   readonly respond?: (c: Context, result: unknown, operation: string) => Response | Promise<Response>;
   /**
@@ -402,7 +416,32 @@ export function mountOperations(
       if (!op.input && params.length === 0) payload = undefined;
 
       const result = await stub.invoke(name, payload);
-      return options.respond ? await options.respond(c, result, name) : c.json(result);
+      if (options.respond) return await options.respond(c, result, name);
+      // A paged read's BODY is the entries; the walk rides in headers (#829).
+      //
+      // The kernel-side shape stays `Page<T>` — an operation is transport-agnostic, and
+      // an in-process caller (a test, a seed, another operation) must be able to walk a
+      // list with no HTTP response to read headers off. So this is a PROJECTION at the
+      // wire, not a change to what an operation returns.
+      //
+      // Why it is worth a projection at all: wrapping the body renames a live endpoint's
+      // response — `[…]` or `{ customers: […] }` becomes `{ entries: […] }` — so adopting
+      // paging broke every consumer a vertical could not see, and the rational move was
+      // to leave an unbounded list unbounded. It also could not be done AT ALL for a list
+      // whose published shape was a bare array: a body cannot be an array and an object
+      // at once. In headers, the body is what it always was.
+      //
+      // `isPage` is checked rather than assumed: a declaration whose handler has not
+      // adopted `pageOf` yet must reach the client unchanged, not be emptied into a body
+      // of `undefined`.
+      if (op.paged && isPage(result)) {
+        const link = nextPageLink(c.req.url, result.nextCursor);
+        if (link) c.header(PAGE_LINK_HEADER, link);
+        const total = (result as { total?: unknown }).total;
+        if (typeof total === 'number') c.header(PAGE_TOTAL_HEADER, String(total));
+        return c.json(result.entries);
+      }
+      return c.json(result);
     };
 
     const handler = async (c: Context) => {

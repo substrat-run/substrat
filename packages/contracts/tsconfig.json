@@ -2,7 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // DOM for the ambient `URL` — `nextPageLink` composes the next page's link from
+    // the request's own URL, and the module rules mandate the web-standard `URL`
+    // over hand-rolled query-string surgery. Same shape vertical-host uses.
+    "lib": ["ES2023", "DOM"]
   },
   "include": ["src"]
 }
