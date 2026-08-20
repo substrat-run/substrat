@@ -93,8 +93,27 @@ function packageJson(name) {
             { binding: 'SCOPE', class: 'ScopeDO' },
             // The scope-local sweep singleton — the deployment's own timer (#461).
             { binding: 'SWEEPER', class: 'SweeperDO' },
+            // Per-instance config delivered by the platform (/internal/configure) —
+            // one DO per tenant, rows per scope. Without it the app cannot receive
+            // the settings the dashboard offers its users.
+            { binding: 'CONFIG', class: 'ConfigDO' },
           ],
         },
+        // The declared per-instance settings — MIRRORED from src/manifest.ts
+        // (`SHOP_ENV`), because `substrat push` reads JSON, not TS. The dashboard
+        // renders its Settings form from this; keep the two in sync.
+        envSpec: [
+          {
+            key: 'SHOP_NAME',
+            label: 'Workshop name',
+            description: 'The workshop name shown to customers. Set per install.',
+            placeholder: 'Söder Cykel & Service',
+            default: 'Substrat Bike Shop',
+            required: false,
+            secret: false,
+            group: 'General',
+          },
+        ],
         devServers: DEV_SERVERS,
       },
       scripts: {
@@ -150,9 +169,11 @@ const TSCONFIG = `${JSON.stringify(
       types: ['node'],
     },
     include: ['src', 'test'],
-    // The worker compiles against workers-types under its own config
-    // (tsconfig.worker.json) — the node config must not see it.
-    exclude: ['src/worker.ts'],
+    // The worker and its Cloudflare-only stores compile against workers-types
+    // under their own config (tsconfig.worker.json) — the node config must not
+    // see them. `src/routes.ts` is deliberately NOT excluded: the shared route
+    // table must typecheck under both, which is what keeps it host-agnostic.
+    exclude: ['src/worker.ts', 'src/config-do.ts'],
   },
   null,
   2,

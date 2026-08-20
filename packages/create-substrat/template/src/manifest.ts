@@ -1,4 +1,4 @@
-import { moduleManifest, permissionKey } from '@substrat-run/contracts';
+import { moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
 
 // ============================================================================
 // The vertical's MANIFEST — the reviewable contract the kernel reads at
@@ -18,6 +18,32 @@ export const SHOP_PERM = {
   customerManage: permissionKey.parse('customer:manage'),
   bikeManage: permissionKey.parse('bike:manage'),
 };
+
+/**
+ * The vertical's DECLARED per-instance settings — the allow-list of config keys this
+ * app consumes, and what the dashboard renders a form from. A key not declared here is
+ * a key the app cannot read, however it is delivered.
+ *
+ * Read them with `resolveScopedEnvSpec(SHOP_ENV, env, delivered)` (never `env.FOO`
+ * directly): precedence is delivered > env > default, and only that overlay sees a
+ * value one tenant saved for one install — a spec `default` rides as a worker binding
+ * shared by every install of the serving script.
+ *
+ * MIRRORED in package.json `substrat.envSpec` (what `substrat push` carries — it reads
+ * JSON, not TS); keep the two in sync.
+ */
+export const SHOP_ENV: EnvVarSpec[] = [
+  {
+    key: 'SHOP_NAME',
+    label: 'Workshop name',
+    description: 'The workshop name shown to customers. Set per install.',
+    placeholder: 'Söder Cykel & Service',
+    default: 'Substrat Bike Shop',
+    required: false,
+    secret: false,
+    group: 'General',
+  },
+];
 
 export const bikeShopManifest = moduleManifest.parse({
   id: 'bikeshop',
@@ -44,5 +70,6 @@ export const bikeShopManifest = moduleManifest.parse({
     { entityType: 'bike', parentType: 'customer' },
     { entityType: 'workorder', parentType: 'bike' },
   ],
+  envSpec: SHOP_ENV,
   entitlementKey: 'bikeshop',
 });

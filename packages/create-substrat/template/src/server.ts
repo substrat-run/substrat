@@ -7,12 +7,14 @@ import type { Context } from 'hono';
 import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
 import type { PrincipalId } from '@substrat-run/contracts';
 import { buildBikeShopHost, seedBikeShop, type BikeShopWorld } from './seed.js';
+import { mountApi } from './routes.js';
 
 // ============================================================================
-// A deliberately THIN dev API. Each route authenticates (a dev principal picker
-// via the `x-principal` header — a real deployment swaps in a session), gets the
-// scope, and invokes ONE operation. There is no business logic here: every rule
-// lives in an operation or an engine.
+// The DEV entrypoint. It owns exactly three things — a SQLite host on disk, the
+// `x-principal` persona picker, and the port — and then mounts `routes.ts`, the
+// same route table `worker.ts` mounts. There is no business logic here and no
+// route here either: a route added to this file would exist in dev and 404 in
+// production, which is the one failure this split exists to prevent.
 // ============================================================================
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', '.data');
@@ -44,100 +46,13 @@ function stub(c: Context): Promise<ScopeStub> {
 
 const app = new Hono();
 
-app.onError((err, c) => {
-  const message = err instanceof Error ? err.message : String(err);
-  if (err instanceof PermissionDenied) return c.json({ error: message }, 403);
-  if (/invalid transition|immutable|already/.test(message)) return c.json({ error: message }, 409);
-  if (/not found|unknown scope|unknown operation/.test(message)) return c.json({ error: message }, 404);
-  return c.json({ error: message }, 400);
-});
-
+// The persona picker — genuinely dev-only, so it stays out of the shared table.
+// Its ABSENCE in the worker is how a client can tell it is talking to a real
+// deployment; the worker answers `/api/me` instead.
 app.get('/api/cast', (c) => c.json(CAST));
 
-// Customers, bikes, price list (the vertical's own tables).
-app.get('/api/customers', async (c) => c.json(await (await stub(c)).invoke('shop/list-customers')));
-app.post('/api/customers', async (c) =>
-  c.json(await (await stub(c)).invoke('shop/create-customer', await c.req.json())),
-);
-app.post('/api/customers/:id/bikes', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('shop/register-bike', {
-      customerId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
-app.get('/api/prices', async (c) => c.json(await (await stub(c)).invoke('shop/price-list')));
-app.post('/api/prices', async (c) =>
-  c.json(await (await stub(c)).invoke('shop/upsert-price', await c.req.json())),
-);
-
-// Repairs — the vertical's create/complete/close wrap the engine; assign/start/
-// report/get/list are the engine's own operations, invoked directly.
-app.get('/api/repairs', async (c) =>
-  c.json(await (await stub(c)).invoke('workorder/list', { status: c.req.query('status') })),
-);
-app.post('/api/repairs', async (c) =>
-  c.json(await (await stub(c)).invoke('shop/create-repair', await c.req.json())),
-);
-app.get('/api/repairs/:id', async (c) =>
-  c.json(await (await stub(c)).invoke('workorder/get', { orderId: c.req.param('id') })),
-);
-app.get('/api/repairs/:id/timeline', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('shop/timeline', {
-      entityType: 'workorder',
-      entityId: c.req.param('id'),
-    }),
-  ),
-);
-app.post('/api/repairs/:id/assign', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('workorder/assign', {
-      orderId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
-app.post('/api/repairs/:id/start', async (c) =>
-  c.json(await (await stub(c)).invoke('workorder/start', { orderId: c.req.param('id') })),
-);
-app.post('/api/repairs/:id/time', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('workorder/report-time', {
-      orderId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
-app.post('/api/repairs/:id/material', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('workorder/report-material', {
-      orderId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
-app.post('/api/repairs/:id/complete', async (c) =>
-  c.json(await (await stub(c)).invoke('shop/complete-repair', { orderId: c.req.param('id') })),
-);
-app.post('/api/repairs/:id/close', async (c) =>
-  c.json(await (await stub(c)).invoke('shop/close-repair', { orderId: c.req.param('id') })),
-);
-
-// The customer portal — the per-entity proof walk.
-app.get('/api/portal/repairs', async (c) =>
-  c.json(await (await stub(c)).invoke('shop/portal-repairs')),
-);
-
-// Invoicing (the sibling engine, fed by event).
-app.get('/api/invoicing', async (c) => c.json(await (await stub(c)).invoke('invoicing/list')));
-app.get('/api/invoicing/:id', async (c) =>
-  c.json(await (await stub(c)).invoke('invoicing/get', { underlagId: c.req.param('id') })),
-);
-app.post('/api/invoicing/:id/export', async (c) =>
-  c.json(await (await stub(c)).invoke('invoicing/export', { underlagId: c.req.param('id') })),
-);
+// Everything else — including `/api/invoke` and the shared error envelope.
+mountApi(app, stub);
 
 const PORT = Number(process.env.PORT ?? 8873);
 serve({ fetch: app.fetch, port: PORT });

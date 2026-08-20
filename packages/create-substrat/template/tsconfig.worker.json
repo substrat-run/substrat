@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/worker.ts", "src/provision.ts", "src/manifest.ts", "src/migrations.ts", "src/module.ts"]
+  "include": ["src/worker.ts", "src/routes.ts", "src/config-do.ts", "src/provision.ts", "src/manifest.ts", "src/migrations.ts", "src/module.ts"]
 }
