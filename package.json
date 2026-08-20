@@ -39,7 +39,8 @@
     "lint:launch": "tsx tools/launch-emit.mts",
     "lint:pins": "tsx tools/pins-emit.mts",
     "lint:decisions": "node tools/decisions.mjs",
-    "lint:plugin": "tsx tools/plugin-emit.mts"
+    "lint:plugin": "tsx tools/plugin-emit.mts",
+    "lint:connector-grants": "tsx tools/connector-grants.mts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
