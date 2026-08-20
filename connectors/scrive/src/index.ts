@@ -377,8 +377,15 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // runs inside the scope's dispatch, and on the pure adapter that surface
     // re-enters the scope actor and wedges it (#711). On the connection, so the
     // read is authorized as the very credential this dispatch is using — the same
-    // `conn` the document is about to be sent with, gated on its own
-    // `protocol:read` grant like every other door a connection walks through.
+    // `conn` the document is about to be sent with.
+    //
+    // It needs NO grant (#726 remedy B). The authority is the delivery: this event
+    // names the instance, `bindDocument` refused to bind an attachment owned by
+    // anything else, and the host admits exactly the attachments of the entity its
+    // own spine row names. A standing `protocol:read` would have been both wider
+    // than this read (it also gates `protocol/get`, `list-templates`,
+    // `list-for-entity`) and unreadable from here — which is how it came to be
+    // missing on a live tenant with nothing able to say so (#841).
     // Fall back only when NOTHING was named. Once a vertical has said which bytes
     // its signatory must see, sending different paper instead is the exact failure
     // this seam exists to end — quieter than a refusal and worse, because a document

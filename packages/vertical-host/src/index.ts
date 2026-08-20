@@ -143,12 +143,16 @@ export interface VerticalScopeHost {
       body: Uint8Array;
     },
   ): Promise<unknown>;
-  /** The outbound read (#711) — the vertical's own document, handed back by id. */
+  /** The outbound read (#711) — the vertical's own document, handed back by id.
+   *  `eventId` (#726) names the delivery asking; resolved HERE against this
+   *  deployment's own outbox, it admits the attachments of that event's entity and
+   *  nothing else, which is what lets the read need no standing grant. */
   connectorAttachmentOpenLocal(
     connectionId: ConnectionId,
     tenantId: TenantId,
     scopeId: ScopeId,
     attachmentId: string,
+    eventId?: string,
   ): Promise<{ record: unknown; body: Uint8Array; contentType: string } | null>;
   connectorGrantLocal(
     connectionId: ConnectionId,
@@ -486,7 +490,13 @@ export function mountPlatformSurface<Env extends object>(
     const s = scopeIdOf.parse(c.req.query('scopeId'));
     const opened = await deps
       .hostFor(c.env)
-      .connectorAttachmentOpenLocal(connection, t, s, c.req.param('attachmentId'));
+      .connectorAttachmentOpenLocal(
+        connection,
+        t,
+        s,
+        c.req.param('attachmentId'),
+        c.req.query('eventId'),
+      );
     if (!opened) return c.body(null, 404);
     return c.body(opened.body as unknown as ArrayBuffer, 200, {
       'content-type': opened.contentType,

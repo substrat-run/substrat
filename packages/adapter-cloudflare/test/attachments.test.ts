@@ -280,8 +280,13 @@ describe('attachment surface (cloudflare host)', () => {
     return { ...w, connId, rec };
   };
 
+  /**
+   * Since #726 the authority for this read is the DELIVERY, not a standing grant: the
+   * event names `item/i1`, the document is on `item/i1`, and the connection holds
+   * nothing at all. That is the whole of remedy (B) — see `admitByDelivery`.
+   */
   it('opens the vertical’s document from inside a dispatch, as the connection it opened', async () => {
-    const { host, t, s, editor, rec } = await dispatchReading({ grantRead: true });
+    const { host, t, s, editor, rec } = await dispatchReading({ grantRead: false });
 
     let seen: { body: Uint8Array; record: { filename: string } } | null = null;
     let failed: string | undefined;
@@ -302,7 +307,12 @@ describe('attachment surface (cloudflare host)', () => {
     );
 
     const scope = await host.getScope(editor, t, s);
-    await scope.invoke('perm/authorized-emit', { permission: PERM_USE });
+    // The delivery is ABOUT the entity the document hangs off — which is what makes
+    // the read admissible without any grant.
+    await scope.invoke('perm/authorized-emit', {
+      permission: PERM_USE,
+      entity: { entityType: 'item', entityId: 'i1' },
+    });
     await host.drainDue(t, s);
 
     expect(failed).toBeUndefined();
@@ -311,11 +321,17 @@ describe('attachment surface (cloudflare host)', () => {
     expect(seen!.record.filename).toBe('avtal.pdf');
   });
 
-  it('refuses the dispatch-time read when the connection was never granted the read key', async () => {
+  it('refuses the dispatch-time read of an attachment the delivery does not name', async () => {
     // Fail closed, and specifically NOT null — `null` means "this scope does not
     // know that id" and tells a connector to fall back. A refusal must not be
-    // mistaken for an absence, or a missing grant would quietly send other paper.
-    const { host, t, s, editor, rec } = await dispatchReading({ grantRead: false });
+    // mistaken for an absence, or a document the delivery never named would quietly
+    // go out as the one it did.
+    //
+    // The connection holds the read key here, and it changes nothing: inside a
+    // dispatch the delivery IS the authority, with no fallback to a standing grant —
+    // which is what makes remedy (B) narrower than what it replaced rather than
+    // merely different.
+    const { host, t, s, editor, rec } = await dispatchReading({ grantRead: true });
 
     let outcome: unknown = 'never ran';
     host.registerConnector(
@@ -329,10 +345,16 @@ describe('attachment surface (cloudflare host)', () => {
     );
 
     const scope = await host.getScope(editor, t, s);
-    await scope.invoke('perm/authorized-emit', { permission: PERM_USE });
+    // A delivery about a DIFFERENT entity than the one the document is on.
+    await scope.invoke('perm/authorized-emit', {
+      permission: PERM_USE,
+      entity: { entityType: 'item', entityId: 'i2' },
+    });
     await host.drainDue(t, s);
 
     expect(String(outcome)).toMatch(/^refused:/);
+    expect(String(outcome)).toMatch(/item\/i1/);
+    expect(String(outcome)).toMatch(/item\/i2/);
     expect(outcome).not.toBeNull();
   });
 

@@ -10,6 +10,7 @@ import {
   principalId,
   scopeId,
   tenantId,
+  type DomainEvent,
   type PrincipalId,
 } from '@substrat-run/contracts';
 import {
@@ -97,12 +98,13 @@ describe('connector attachment reads during dispatch (#711)', () => {
    * Stand up a scope with the doc module, a blob store, a connection, and one
    * attachment already landed on `doc/d1`. `connector` is the handler under test.
    *
-   * `grantRead` is the connection's own `doc:read` — the permission-diff line an
-   * operator would have to add for a connector to read the vertical's document.
-   * Off in one test precisely to show the read is gated on it.
+   * `grantRead` is the connection's own `doc:read`. Since #726 it no longer gates the
+   * dispatch read at all — the delivered event does — so the tests that turn it off are
+   * showing exactly that: a connector reads the document its delivery names holding no
+   * grant, and still cannot reach one the delivery does not name while holding it.
    */
   const world = async (
-    connector: (ctx: ConnectorContext) => Promise<void>,
+    connector: (ctx: ConnectorContext, event: DomainEvent) => Promise<void>,
     opts: { grantRead?: boolean } = {},
   ) => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-connector-reads-'));
@@ -115,7 +117,7 @@ describe('connector attachment reads during dispatch (#711)', () => {
     // The registration id is deliberately NOT the provider slug: the connector asks
     // for its credential by name (`ctx.connection('provider')`) and the read hangs
     // off that connection, so nothing here can be passing by accident on the id.
-    host.registerConnector('outbound', 'doc.send-requested', (ctx) => connector(ctx), {
+    host.registerConnector('outbound', 'doc.send-requested', (ctx, event) => connector(ctx, event), {
       maxAttempts: 1,
     });
 
@@ -170,7 +172,7 @@ describe('connector attachment reads during dispatch (#711)', () => {
     });
 
     const stub = await host.getScope(author, t, s);
-    return { host, staff, t, s, connId, record, stub };
+    return { host, staff, author, t, s, connId, record, stub };
   };
 
   /** Resolves to 'timeout' if `p` has not settled within `ms` — a wedge, observable. */
@@ -266,9 +268,19 @@ describe('connector attachment reads during dispatch (#711)', () => {
     holds.set('k', new Promise<void>((r) => { release = r; }));
 
     let read: OpenedAttachment | null | undefined;
-    const { host, t, s, record, stub } = await world(async (ctx) => {
+    let deliveredId: string | undefined;
+    const { host, t, s, record, stub } = await world(async (ctx, event) => {
+      deliveredId = event.id;
       read = await (await ctx.connection('provider')).openAttachment(record.id);
     });
+
+    // One ordinary send first, purely to obtain a REAL delivery: since #726 the
+    // authority to read is the delivered event, resolved against this scope's own
+    // outbox, so a hand-synthesized event id carries no authority here (which is
+    // the property that keeps the platform from naming its own).
+    await stub.invoke('doc/send', { docId: 'd1' });
+    expect(deliveredId).toBeDefined();
+    read = undefined;
 
     // Occupy the actor. `doc/hold` parks mid-operation, so the scope's task queue
     // is not empty until the test says so.
@@ -283,7 +295,7 @@ describe('connector attachment reads during dispatch (#711)', () => {
         read = await (await ctx.connection('provider')).openAttachment(record.id);
       },
       {
-        id: ulid(),
+        id: deliveredId,
         type: 'doc.send-requested',
         schemaVersion: 1,
         tenantId: t,
@@ -320,25 +332,66 @@ describe('connector attachment reads during dispatch (#711)', () => {
   });
 
   /**
-   * Authority is the CONNECTION's, not the ambient one of whoever triggered the
-   * event. This connection was granted nothing, so the read is refused — running
-   * inside a permitted operation buys a connector no authority of its own.
+   * The dispatch capability (#726 remedy B), which replaced the standing grant this
+   * test used to assert.
+   *
+   * The read a signing connector makes is per-dispatch by nature: the event names
+   * one attachment, `bindDocument` already refused to bind one owned by anything but
+   * the instance being signed, and `openAttachment` takes an id rather than a search.
+   * Modelling it as a standing scope-wide `doc:read` was the mismatch — the check
+   * site is entity-aware and the grant site is not, so the narrow question could only
+   * be answered broadly, and the grant additionally opened every other door that key
+   * gates.
+   *
+   * So: no grant at all, and the delivered entity's document still reads.
    */
-  it('refuses the read when the connection holds no read grant', async () => {
-    let error: string | undefined;
+  it('reads the delivered entity’s document holding no grant whatsoever', async () => {
+    let seen: OpenedAttachment | null | undefined;
     const { host, record, stub } = await world(
       async (ctx) => {
-        try {
-          await (await ctx.connection('provider')).openAttachment(record.id);
-        } catch (err) {
-          error = err instanceof Error ? err.message : String(err);
-        }
+        seen = await (await ctx.connection('provider')).openAttachment(record.id);
       },
       { grantRead: false },
     );
     await stub.invoke('doc/send', { docId: 'd1' });
+    expect(new TextDecoder().decode(seen!.body)).toBe('%PDF-1.4 the real avtal');
+    await host.close();
+  });
+
+  /**
+   * …and the other half, which is what makes the capability narrower than the grant
+   * it replaced rather than merely different. A delivery for `doc/d1` carries no
+   * authority over `doc/d2`, and holding `doc:read` does not change that: inside a
+   * dispatch the delivery IS the authority, with no fallback to a standing grant
+   * that would re-widen exactly what this narrows.
+   */
+  it('refuses an attachment belonging to an entity the delivery does not name', async () => {
+    let error: string | undefined;
+    let other: string | undefined;
+    const { host, author, t, s, stub } = await world(async (ctx) => {
+      try {
+        await (await ctx.connection('provider')).openAttachment(other!);
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+      }
+    });
+    // A second document, on a different doc, uploaded by the same author. The
+    // connection holds `doc:read` scope-wide — under the old model that was enough.
+    const attachments = await host.attachments(author, t, s);
+    other = (
+      await attachments.upload({
+        entity: { entityType: 'doc', entityId: 'd2' },
+        filename: 'someone-elses.pdf',
+        contentType: 'application/pdf',
+        visibility: 'customer',
+        body: new TextEncoder().encode('%PDF-1.4 not yours'),
+      })
+    ).id;
+
+    await stub.invoke('doc/send', { docId: 'd1' });
     expect(error).toBeDefined();
-    expect(error).toMatch(/doc:read|permission|denied/i);
+    expect(error).toMatch(/doc\/d2/);
+    expect(error).toMatch(/doc\/d1/);
     await host.close();
   });
 });

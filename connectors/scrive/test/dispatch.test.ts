@@ -620,29 +620,85 @@ describe('scrive connector — outbound dispatch', () => {
       expect((await dispatchState(instanceId))!.documentAttachmentId).toBe(record.id);
     });
 
-    it('sends NOTHING rather than the wrong paper when the connection cannot read', async () => {
-      // Authority is the connection's own, so a bound document stays unreadable
-      // until an operator grants `protocol:read`. The tempting behaviour here is to
-      // shrug and send the attestation sheet — and it is the wrong one. The vertical
-      // has stated which bytes its signatory must see; substituting different paper
-      // is quieter than a refusal and worse, because a document still goes out and a
-      // counterparty still signs it.
+    it('sends the bound document holding no read grant at all (#726)', async () => {
+      // This test used to assert the opposite, and the reason it changed is the whole
+      // of #726 remedy (B): the authority for this read is the DELIVERY, not a standing
+      // `protocol:read` on the scope.
       //
-      // So this dead-letters. The operator sees the missing grant, and because the
-      // dispatch ledger is only written after `start`, the retry that follows the
-      // fix sends the real document rather than being skipped as already done.
+      // The read a signing connector makes is per-dispatch by nature — the event names
+      // one `documentAttachmentId`, `bindDocument` already refused to bind an attachment
+      // owned by anything but the instance being signed, and `openAttachment` takes an
+      // id rather than a search. Modelling that as a standing scope-wide grant meant an
+      // operator had to add a permission that also opens `protocol/get`,
+      // `list-templates` and `list-for-entity` — and, on a live tenant, meant an avtal
+      // dead-lettering because nobody knew the grant was missing (#841).
+      //
+      // So: no grant, real document, and nothing widened.
       const discarded = dir;
       await host.close();
-      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, {}, { grantConnectionRead: false });
+      await boot({}, {}, { grantConnectionRead: false });
       rmSync(discarded, { recursive: true, force: true });
 
-      const { instanceId } = await issueWithDocument();
+      const { instanceId, record } = await issueWithDocument();
+
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.file!.bytes).toBe(AVTAL.byteLength); // the avtal, not the attestation sheet
+      expect((await dispatchState(instanceId))!.documentAttachmentId).toBe(record.id);
+    });
+
+    it('still sends NOTHING rather than the wrong paper when the bytes are gone', async () => {
+      // The invariant the test above used to carry, kept on the failure that can
+      // still happen. The tempting behaviour is to shrug and send the attestation
+      // sheet, and it is the wrong one: the vertical has stated which bytes its
+      // signatory must see, and substituting different paper is quieter than a
+      // refusal and worse, because a document still goes out and a counterparty
+      // still signs it.
+      //
+      // So this dead-letters. Because the dispatch ledger is written only after
+      // `start`, the retry that follows a fix sends the real document rather than
+      // being skipped as already done.
+      const discarded = dir;
+      await host.close();
+      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } });
+      rmSync(discarded, { recursive: true, force: true });
+
+      const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
+        templateKey: 'anstallningsavtal',
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      });
+      const attachments = await host.attachments(principal, t, s);
+      const doc = await attachments.upload({
+        entity: { entityType: 'protocol', entityId: inst.id },
+        filename: 'anstallningsavtal.pdf',
+        contentType: 'application/pdf',
+        visibility: 'customer',
+        body: AVTAL,
+      });
+      await stub.invoke('protocol/bind-document', {
+        instanceId: inst.id,
+        contentRef: { entityType: 'employment-terms', entityId: '01JTERMS00000000000000009X' },
+        contentHash: 'ab'.repeat(32),
+        documentAttachmentId: doc.id,
+      });
+      // Bound, then removed — the frozen binding now names bytes this scope no
+      // longer holds.
+      await attachments.remove(doc.id);
+
+      await stub.invoke('protocol/request-signatures', {
+        instanceId: inst.id,
+        method: 'scrive',
+        parties: [
+          { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+        ],
+      });
 
       expect(scrive.documents.size).toBe(0); // nothing reached the provider
-      expect(await dispatchState(instanceId)).toBeUndefined(); // …so nothing is "done"
+      expect(await dispatchState(inst.id)).toBeUndefined(); // …so nothing is "done"
       const [dead] = await host.executorDeadLetters(t, s);
       expect(dead!.eventType).toBe('protocol.signatures-requested');
-      expect(dead!.error).toMatch(/protocol:read|permission|denied/i);
+      expect(dead!.error).toMatch(/no longer holds|refusing to send an attestation/i);
     });
   });
 

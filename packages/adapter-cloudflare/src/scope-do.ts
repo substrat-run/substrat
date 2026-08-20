@@ -845,6 +845,36 @@ export function defineScopeDO(
       });
     }
 
+    /**
+     * The dispatch capability's admission (#726 remedy B): this delivery may read the
+     * attachments of the entity its own spine row names, and no others.
+     *
+     * Refuses an unknown event id rather than falling through to a permission check —
+     * "we could not resolve the delivery" must never widen into "so check the grant
+     * instead", which is how a narrowing becomes a no-op.
+     */
+    private admitByDelivery(eventId: string, record: AttachmentRecord): void {
+      const row = this.sql
+        .exec(
+          'SELECT entity_type, entity_id FROM _substrat_outbox WHERE id = ?',
+          eventId,
+        )
+        .toArray()[0] as { entity_type: string; entity_id: string } | undefined;
+      if (!row) {
+        throw new PermissionDenied(
+          `attachment ${record.id}: delivery ${eventId} is not an event of this scope, so ` +
+            `it carries no authority to read anything here`,
+        );
+      }
+      if (row.entity_type !== record.entity.entityType || row.entity_id !== record.entity.entityId) {
+        throw new PermissionDenied(
+          `attachment ${record.id} belongs to ${record.entity.entityType}/${record.entity.entityId}, ` +
+            `and this delivery is for ${row.entity_type}/${row.entity_id} — a connector may read ` +
+            `the attachments of the entity its event names, and no others`,
+        );
+      }
+    }
+
     /** Tombstone a scope tuple (K-21) — the row stays, the walk skips it. Returns
      *  whether anything changed so a repeat revoke is a silent no-op. */
     async revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean> {
@@ -1192,10 +1222,33 @@ export function defineScopeDO(
       tenantId: TenantId,
       scopeId: ScopeId,
       connectionId?: string,
+      forEventId?: string,
     ): Promise<AttachmentRecord | null> {
       await this.ensureMigrations();
       const record = this.attachmentRow(attachmentId);
       if (!record) return null;
+      // #726 remedy B: inside a connector dispatch the authority to read is the
+      // DELIVERY, not a standing grant — see `admitByDelivery` in adapter-sqlite for
+      // why, and note that the entity is resolved HERE, from this scope's own
+      // kernel-stamped outbox row. The platform runs the connector and can name any
+      // delivery; it cannot name an entity, which is what keeps the capability from
+      // being the caller's assertion about its own reach.
+      if (forEventId !== undefined && mode === 'read') {
+        try {
+          this.admitByDelivery(forEventId, record);
+        } catch (err) {
+          if (err instanceof PermissionDenied) {
+            this.recordDenial(
+              attachSubject(principal, connectionId),
+              tenantId,
+              'attachments.open',
+              err,
+            );
+          }
+          throw toRpcError(err);
+        }
+        return record;
+      }
       const gate = this.attachmentGate(record.entity.entityType);
       try {
         const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);

@@ -451,11 +451,18 @@ export class VerticalClient {
     tenantId: TenantId;
     scopeId: ScopeId;
     attachmentId: string;
+    /**
+     * The delivery this read is for (#726 remedy B). Sent as a NAME, not a claim: the
+     * deployment resolves it against its own outbox and admits only the attachments of
+     * the entity that row names, so the platform cannot widen its own reach by asking.
+     */
+    eventId?: string;
   }): Promise<OpenedAttachment | null> {
     const q = new URLSearchParams({
       connectionId: input.connectionId,
       tenantId: input.tenantId,
       scopeId: input.scopeId,
+      ...(input.eventId ? { eventId: input.eventId } : {}),
     });
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const path = `/internal/connector-attachment/${encodeURIComponent(input.attachmentId)}`;

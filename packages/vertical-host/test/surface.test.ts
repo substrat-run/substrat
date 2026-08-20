@@ -546,7 +546,34 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     expect(record.filename).toBe('avtal.pdf');
     // The id comes from the PATH, and tenant/scope/connection from the query — all
     // four reach the host, so nothing is read from a body the platform never sends.
-    expect(asked).toEqual([CONN, TENANT, SCOPE, 'att-1']);
+    // `eventId` is absent here, which is the pre-#726 shape: no delivery named, so the
+    // far end falls back to the ordinary grant check rather than admitting anything.
+    expect(asked).toEqual([CONN, TENANT, SCOPE, 'att-1', undefined]);
+  });
+
+  /**
+   * The delivery leg (#726 remedy B). What crosses this seam is the NAME of a delivery,
+   * not a claim about which entity the platform may reach — the deployment resolves it
+   * against its own outbox — so the only thing the transport has to get right is that
+   * the name arrives at all. A dropped `eventId` would silently fall back to the grant
+   * check, which is the failure mode worth a test: it looks like it works, right up
+   * until the grant is the one that was removed.
+   */
+  it('connector-attachment GET: carries the delivery through to the host', async () => {
+    let asked: unknown[] = [];
+    const host = fakeHost({
+      connectorAttachmentOpenLocal: async (...args: unknown[]) => {
+        asked = args;
+        return null;
+      },
+    });
+    const q = `connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}&eventId=01JZEVENT`;
+    await appWith(host).request(
+      `/internal/connector-attachment/att-1?${q}`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(asked).toEqual([CONN, TENANT, SCOPE, 'att-1', '01JZEVENT']);
   });
 
   it('connector-attachment GET: an id this scope does not know is a 404, not an error', async () => {

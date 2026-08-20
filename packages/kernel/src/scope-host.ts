@@ -2679,6 +2679,13 @@ export interface ScopeHost {
   getConnectorAttachments(
     connectionId: ConnectionId,
     scopeId: ScopeId,
+    /**
+     * Build the surface for ONE delivery (#726 remedy B). When set, `open` is admitted
+     * by ownership of the entity this event names — resolved against the scope's own
+     * spine, never taken on the caller's word — instead of by a standing grant. Absent
+     * (the return path, a poll driver) the ordinary permission check applies.
+     */
+    forEvent?: { eventId: string },
   ): Promise<ScopeAttachments>;
 
   /**

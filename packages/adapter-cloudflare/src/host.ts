@@ -740,6 +740,8 @@ interface ScopeStubRpc {
     tenantId: TenantId,
     scopeId: ScopeId,
     connectionId?: string,
+    /** #726 remedy B: admit by ownership of THIS delivery's entity, resolved here. */
+    forEventId?: string,
   ): Promise<AttachmentRecord | null>;
   attachmentRemove(
     attachmentId: string,
@@ -843,6 +845,12 @@ export interface ConnectorDelegation {
     scopeId: ScopeId;
     vertical: string;
     attachmentId: string;
+    /**
+     * The delivery this read is for (#726 remedy B). The serving deployment resolves it
+     * against its OWN outbox to decide what may be read — so what crosses this seam is
+     * the name of a delivery, not a claim about which entity the platform may reach.
+     */
+    eventId?: string;
   }): Promise<OpenedAttachment | null>;
   /** Write the scope-local `connection:<id>` grant tuple in the serving deployment. */
   grant(args: {
@@ -1074,6 +1082,8 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     timeoutMs: number,
+    /** The delivery this context is FOR (#726) — the dispatch capability's whole basis. */
+    eventId: string,
   ): Promise<ConnectorContext> {
     const scope = await this.cp.getScopeRecord(tenantId, scopeId);
     const vertical = scope?.vertical ?? null;
@@ -1115,7 +1125,9 @@ export class CloudflareScopeHost implements ScopeHost {
               .filter((g) => g.connectionId === open.id)
               .map((g) => g.permission),
           openAttachment: (attachmentId: string) =>
-            this.getConnectorAttachments(open.id, scopeId).then((a) => a.open(attachmentId)),
+            this.getConnectorAttachments(open.id, scopeId, { eventId }).then((a) =>
+              a.open(attachmentId),
+            ),
           // #687: open a cell the scope sealed TO this connection. The keyId-indexed
           // map goes in, never out — a connector receives the plaintext of one cell,
           // not a private key it could mislay. Retired keys are in the map too, so a
@@ -1198,7 +1210,7 @@ export class CloudflareScopeHost implements ScopeHost {
             report.routedToPlatform! += 1;
           } else if (executor.kind === 'connector') {
             await executor.handler(
-              await this.connectorContext(tenantId, scopeId, executor.timeoutMs),
+              await this.connectorContext(tenantId, scopeId, executor.timeoutMs, event.id),
               event,
             );
             await stub.recordExecutorAttempt(event.id, deliveryId, null, null);
@@ -1255,7 +1267,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.causedBy = event.id;
     try {
       await handler(
-        await this.connectorContext(tenantId, scopeId, options?.timeoutMs ?? 30_000),
+        await this.connectorContext(tenantId, scopeId, options?.timeoutMs ?? 30_000, event.id),
         event,
       );
     } finally {
@@ -1761,6 +1773,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async getConnectorAttachments(
     connectionId: ConnectionId,
     scopeId: ScopeId,
+    forEvent?: { eventId: string },
   ): Promise<ScopeAttachments> {
     // The exact door `getConnectorScope` opens — same (tenant, vertical) gate — but it
     // returns the attachment surface instead of the invoke stub, gated as the connection
@@ -1803,6 +1816,10 @@ export class CloudflareScopeHost implements ScopeHost {
             scopeId,
             vertical,
             attachmentId,
+            // #726 remedy B: the delivery, resolved at the far end against the
+            // deployment's own outbox. Absent outside a dispatch, where the ordinary
+            // permission check still applies.
+            eventId: forEvent?.eventId,
           }),
         list: notDelegated('list'),
         remove: notDelegated('remove'),
@@ -1810,7 +1827,13 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(conn.tenant_id as TenantId);
-    return this.buildAttachmentSurface({ connectionId }, conn.tenant_id as TenantId, scopeId, store);
+    return this.buildAttachmentSurface(
+      { connectionId },
+      conn.tenant_id as TenantId,
+      scopeId,
+      store,
+      forEvent,
+    );
   }
 
   /** Resolve the per-tenant R2 blob store, or fail closed exactly as `attachments` did. */
@@ -1843,6 +1866,8 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     store: TenantBlobStore,
+    /** The delivery admitting this surface's reads (#726 remedy B), when there is one. */
+    forEvent?: { eventId: string },
   ): ScopeAttachments {
     const connectionId = 'connectionId' in subject ? subject.connectionId : undefined;
     const createdBy = 'principal' in subject ? subject.principal : subject.connectionId;
@@ -1891,6 +1916,7 @@ export class CloudflareScopeHost implements ScopeHost {
           tenantId,
           scopeId,
           connectionId,
+          forEvent?.eventId,
         );
         if (!record) return null;
         const obj = await store.get(attachmentBlobKey(scopeId, record.id));
@@ -4160,8 +4186,36 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<ProjectedConnectionGrant[]> {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    const rows = await this.scopeStub(scopeId).listConnectionGrants(new Date().toISOString());
-    return rows.map((r) =>
+    const now = new Date().toISOString();
+    // Both stores again, but the CF split is not the pure adapter's. The DO holds the
+    // scope's own tuples plus whatever tenant-level ones were PROJECTED into it (the
+    // CP-less shape); a scope with a live control plane has its tenant-level grants in
+    // the directory instead, where the checker reads them from (`cp.tenantTuples`). Read
+    // only the DO and a tenant-wide grant would be reported absent on exactly the
+    // deployments that have a control plane — the fleet — while being enforced.
+    const rows = [
+      ...(await this.scopeStub(scopeId).listConnectionGrants(now)),
+      ...(await this.cp.dumpTenantTuples(tenantId))
+        .filter(
+          (r) =>
+            r.subject.startsWith('connection:') &&
+            r.relation.startsWith('granted:') &&
+            r.revoked_at === null &&
+            (r.expires_at === null || r.expires_at > now),
+        )
+        .map((r) => ({ subject: r.subject, relation: r.relation, expires_at: r.expires_at })),
+    ];
+    // One tuple per (connection, permission) however many stores answered.
+    const seen = new Set<string>();
+    return rows
+      .filter((r) => {
+        const key = `${r.subject}\u0000${r.relation}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => a.subject.localeCompare(b.subject) || a.relation.localeCompare(b.relation))
+      .map((r) =>
       projectedConnectionGrant.parse({
         connectionId: r.subject.slice('connection:'.length),
         permission: r.relation.slice('granted:'.length),
@@ -4598,12 +4652,19 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     attachmentId: string,
+    eventId?: string,
   ): Promise<OpenedAttachment | null> {
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
-    return this.buildAttachmentSurface({ connectionId }, tenantId, scopeId, store).open(
-      attachmentId,
-    );
+    return this.buildAttachmentSurface(
+      { connectionId },
+      tenantId,
+      scopeId,
+      store,
+      // #726 remedy B: the platform named a delivery; this deployment decides what that
+      // delivery reaches, from its own spine row. Absent ⇒ the ordinary grant check.
+      eventId === undefined ? undefined : { eventId },
+    ).open(attachmentId);
   }
 
   /**
