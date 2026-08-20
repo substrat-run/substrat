@@ -190,6 +190,43 @@ export function buildOpenApiDocument(
         },
       );
     }
+    // A GET or DELETE carries its input in the QUERY STRING, and the document has to
+    // say so (#830). It used to emit every input field as a `requestBody` regardless of
+    // verb, so a paged read documented `limit`/`cursor` twice — once as the parameters
+    // this builder adds, once inside a JSON body — and documented `q`, `status` and the
+    // rest ONLY as body properties. A client generated from that could not discover the
+    // filters at all, and the one calling convention that works (`?q=…&limit=100`) did
+    // not appear anywhere in the document.
+    //
+    // The split is not a new declaration: `mountOperations` already decides it, and
+    // decides it by VERB — `takesBody = POST | PUT | PATCH`, everything else reads
+    // `c.req.query()`. Mirroring that rule here is what keeps the document and the router
+    // describing one surface, which is the whole point of deriving both from the model.
+    const takesBody = verb === 'post' || verb === 'put' || verb === 'patch';
+    if (!takesBody && op.input) {
+      const named = new Set(params.map((p) => p['name'] as string));
+      const shape = jsonSchema(op.input, 'input') as {
+        properties?: Record<string, Record<string, unknown>>;
+        required?: string[];
+      };
+      const required = new Set(shape.required ?? []);
+      for (const [field, fieldSchema] of Object.entries(shape.properties ?? {})) {
+        // Already stated: a path parameter, or one of the paged trio the input restates
+        // (`limit`/`cursor` are declared by the operation AND added above). Emitting it
+        // twice is the wart #823 acknowledged; deduping by name is the whole fix.
+        if (named.has(field)) continue;
+        // A single-valued literal is SUPPLIED BY THE ROUTE, not chosen by the caller —
+        // `mountOperations` pins it and overrides whatever arrived. Documenting it as a
+        // query parameter would invite a client to send a value that cannot matter.
+        if ('const' in fieldSchema) continue;
+        params.push({
+          name: field,
+          in: 'query',
+          required: required.has(field),
+          schema: fieldSchema,
+        });
+      }
+    }
     const existing = (paths[url] ?? {}) as Record<string, unknown>;
     paths[url] = {
       ...existing,
@@ -199,7 +236,10 @@ export function buildOpenApiDocument(
         ...(params.length > 0 ? { parameters: params } : {}),
         ...(op.description ? { description: op.description } : {}),
         ...(op.tag ? { tags: [op.tag] } : {}),
-        ...(op.input
+        // Only for a verb that carries one. A `requestBody` on a GET describes a call
+        // nobody can make: the mount never reads a body there, so a client that sent one
+        // would be ignored (#830).
+        ...(op.input && takesBody
           ? {
               requestBody: {
                 required: !op.inputOptional,

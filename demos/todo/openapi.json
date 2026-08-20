@@ -160,32 +160,6 @@
         "tags": [
           "Items"
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "listId": {
-                    "type": "string"
-                  },
-                  "limit": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 200
-                  },
-                  "cursor": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "listId"
-                ]
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "One page of results, with the total matching this list’s filter.",
@@ -443,24 +417,6 @@
         "tags": [
           "Items"
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "itemId": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "itemId"
-                ]
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "The operation result.",
@@ -526,24 +482,6 @@
         "tags": [
           "Lists"
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "listId": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "listId"
-                ]
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "The operation result.",
@@ -791,24 +729,6 @@
         "tags": [
           "Sharing"
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "listId": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "listId"
-                ]
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "The operation result.",
@@ -989,24 +909,6 @@
         "tags": [
           "Sharing"
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "shareId": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "shareId"
-                ]
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "The operation result.",
