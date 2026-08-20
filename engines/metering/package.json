@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/engine-metering",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "Substrat engine: billable usage — an append-only, idempotent meter ledger (counters and gauges) whose closed periods are frozen billing evidence",
   "license": "AGPL-3.0-only",
   "repository": {
