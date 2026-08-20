@@ -1,5 +1,97 @@
 # @substrat-run/contracts
 
+## 0.82.0
+
+### Minor Changes
+
+- 885ccf8: A read's query string is documented, and a GET no longer claims to take a body (#830).
+
+  `buildOpenApiDocument` emitted `requestBody` for every operation declaring an input,
+  whatever the verb. On a `GET` that describes a call nobody can make — `mountOperations`
+  never reads a body there — and it left the fields that _do_ work undocumented. A paged
+  list came out like this:
+
+  ```
+  /api/customers (GET)
+    parameters:  limit, cursor, order
+    requestBody: limit, cursor, q, status, customerType, costCentreId
+  ```
+
+  `limit`/`cursor` documented twice (the wart #823 acknowledged), and `q`, `status`,
+  `customerType`, `costCentreId` documented **only** as JSON body properties — so a client
+  generated from the document could not discover the filters at all, and `?q=…&limit=100`,
+  the convention that actually works, appeared nowhere.
+
+  The split is not new vocabulary: the router already decides it, and decides it by verb —
+  `takesBody = POST | PUT | PATCH`, everything else reads `c.req.query()`. The builder now
+  mirrors that rule, so the document and the router describe one surface, which is the point
+  of deriving both from the same model.
+
+  - `GET`/`DELETE` inputs are emitted as **query parameters**, with each field's schema and
+    its required-ness, and no `requestBody`.
+  - A field already named as a path parameter, or by the paged trio the platform writes, is
+    not restated — which closes the double-documented `limit`/`cursor` as a side effect. The
+    platform's own `limit` survives, so the documented bounds are the real ones rather than
+    the operation's bare `z.number()`.
+  - A single-valued literal is **omitted**: the route pins it and overrides whatever arrived,
+    so documenting it would invite a client to send a value that cannot matter.
+  - Writes are untouched — body as before, no query parameters.
+
+  Sharpest on a search route (#827): with no path parameters and no `paged`, `parameters` was
+  previously _empty_, so `GET /items/search` documented its `q` as a JSON body and nothing
+  else. `demos/todo`'s two search routes are the visible fix in the re-emitted artifacts.
+
+- 31ab573: A page's walk moves to response headers, so adopting paging breaks no client (#829).
+
+  `paged` (#811 / #823) wrapped a list read's response body: `[…]` — or a vertical's own
+  `{ customers: […] }` — became `{ entries: […], nextCursor }`. That renames a live
+  endpoint's contract, and a vertical publishing a REST API has no way to soften it: no
+  "serve both for one release", no version to hang a transition on, nothing in the emitted
+  document marking the change as breaking. So the rational move for anyone with API
+  consumers was **not to adopt**, which is the opposite of what an unbounded list read
+  deserves — and for the list reads whose published shape was a bare array it could not be
+  softened at all, because a body cannot be an array and an object at once.
+
+  The body is now the entries, and the walk rides in headers:
+
+  ```http
+  GET /api/customers?limit=20&status=active
+
+  200 OK
+  Link: <https://api…/customers?limit=20&status=active&cursor=01J9A…>; rel="next"
+  X-Total-Count: 340
+
+  [ … ]
+  ```
+
+  `Link` is RFC 8288 — the header GitHub serves — and it hands the client a URL to **follow**
+  rather than one to assemble, so the filters and page size travel with it. Its absence is
+  how a walk ends. Deliberately not `Content-Range: items 0-19/340`: that describes an offset
+  window, and keyset paging does not know its offset — that ignorance is what keeps it
+  correct while rows are being written, so a start index would be a number we invented.
+
+  **Inside the platform a page is still a value.** `stub.invoke` returns `Page<T>` exactly as
+  before — an operation is transport-agnostic, and a test, a seed or another operation has no
+  HTTP response to read a header off. This is a projection at the wire, applied by
+  `mountOperations`; handlers, `pageOf`/`countedPageOf` and the `paged` declaration are all
+  unchanged. A vertical supplying its own `respond` receives the whole `Page` and keeps
+  deciding its own body.
+
+  New in `@substrat-run/contracts`: `nextPageLink`, `isPage`, `PAGE_LINK_HEADER`,
+  `PAGE_TOTAL_HEADER`, `PAGE_EXPOSED_HEADERS`. The emitted OpenAPI documents the response as
+  an array of the declared entry plus both headers, so the walk is discoverable where a
+  client generator looks.
+
+  **One caveat this choice creates:** a browser client on a different origin cannot read
+  `Link` or `X-Total-Count` unless the server lists them in `Access-Control-Expose-Headers` —
+  and the symptom is not an error, it is a list that appears to have one page.
+  `PAGE_EXPOSED_HEADERS` is the list to expose. Nothing in the platform sets CORS today.
+
+  This changes a wire format shipped days ago in #823, whose adopters are `demos/todo` and
+  one production vertical. The platform's own control-plane API keeps the body envelope: its
+  consumers are the console and dashboard, versioned and deployed with it, so it has no
+  unknown client to protect.
+
 ## 0.81.0
 
 ### Minor Changes
@@ -3221,7 +3313,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
