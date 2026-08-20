@@ -4,10 +4,18 @@ import { dirname, join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import {
   platformActorId, principalId, type PrincipalId } from '@substrat-run/contracts';
 import Database from 'better-sqlite3';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
+import { mountOperations } from '@substrat-run/vertical-host';
+import {
+  handlebarInvoicingRoutes,
+  handlebarOperations,
+  handlebarProtocolRoutes,
+  handlebarWorkorderRoutes,
+} from './operations.js';
 import { buildAuthNode, migrateAuth } from './auth-node.js';
 import {
   betterAuthAdapter,
@@ -74,6 +82,11 @@ async function stub(c: Context): Promise<ScopeStub> {
 }
 
 app.onError((err, c) => {
+  // `mountOperations` decides the STATUS for everything the kernel itself names — a
+  // refused permission, an input that failed to parse (#791) — and re-throws it as an
+  // HTTPException. This turns that into THIS app's `{ error }` body, which the SPA
+  // reads off every failure.
+  if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
   if (err instanceof PermissionDenied) return c.json({ error: err.message }, 403);
   if (/not found|unknown scope/.test(err.message)) return c.json({ error: err.message }, 404);
   return c.json({ error: err.message }, 400);
@@ -81,32 +94,21 @@ app.onError((err, c) => {
 
 app.get('/api/cast', (c) => c.json(CAST));
 
-app.get('/api/customers', async (c) => c.json(await (await stub(c)).invoke('bike-shop/list-customers')));
-app.post('/api/customers', async (c) =>
-  c.json(await (await stub(c)).invoke('bike-shop/create-customer', await c.req.json())),
-);
-app.post('/api/customers/:id/bikes', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('bike-shop/register-bike', {
-      customerId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
-app.get('/api/prices', async (c) => c.json(await (await stub(c)).invoke('bike-shop/price-list')));
-app.post('/api/prices', async (c) =>
-  c.json(await (await stub(c)).invoke('bike-shop/upsert-price', await c.req.json())),
-);
-
-app.get('/api/repairs', async (c) =>
-  c.json(await (await stub(c)).invoke('workorder/list', { status: c.req.query('status') })),
-);
-app.post('/api/repairs', async (c) =>
-  c.json(await (await stub(c)).invoke('bike-shop/create-repair', await c.req.json())),
-);
-app.get('/api/repairs/:id', async (c) =>
-  c.json(await (await stub(c)).invoke('workorder/get', { orderId: c.req.param('id') })),
-);
+// ---------------------------------------------------------------------------
+// The two routes that supply a CONSTANT the caller must not choose.
+//
+// Both invoke an operation whose `entityType` is an ordinary `z.string()`, because
+// both belong to entity-agnostic surfaces — `bike-shop/timeline` reads the event
+// spine, `protocol/list-for-entity` belongs to an engine that knows nothing about
+// repairs. Binding either to a URL would put `entityType` in the query string and
+// let a caller read the timeline, or the protocols, of anything in the scope. This
+// is where the vertical stops being entity-agnostic, so it says 'workorder' here
+// and both operations stay unbound.
+//
+// Registered before the derived table: neither can be shadowed by it today, but
+// "the hand-written exception wins" is the ordering that stays safe as the
+// declared table grows.
+// ---------------------------------------------------------------------------
 app.get('/api/repairs/:id/timeline', async (c) =>
   c.json(
     await (await stub(c)).invoke('bike-shop/timeline', {
@@ -114,46 +116,6 @@ app.get('/api/repairs/:id/timeline', async (c) =>
       entityId: c.req.param('id'),
     }),
   ),
-);
-app.post('/api/repairs/:id/assign', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('workorder/assign', {
-      orderId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
-app.post('/api/repairs/:id/start', async (c) =>
-  c.json(await (await stub(c)).invoke('workorder/start', { orderId: c.req.param('id') })),
-);
-app.post('/api/repairs/:id/time', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('workorder/report-time', {
-      orderId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
-app.post('/api/repairs/:id/material', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('workorder/report-material', {
-      orderId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
-app.post('/api/repairs/:id/complete', async (c) =>
-  c.json(await (await stub(c)).invoke('bike-shop/complete-repair', { orderId: c.req.param('id') })),
-);
-// Pickup — the only door to `closed`. The engine's `workorder/close` binding is
-// withdrawn in the bike-shop manifest, and this operation is guarded: the kernel
-// refuses it until the customer has counter-signed the tillståndsrapport.
-app.post('/api/repairs/:id/close', async (c) =>
-  c.json(await (await stub(c)).invoke('bike-shop/close-repair', { orderId: c.req.param('id') })),
-);
-
-app.get('/api/protocol-templates', async (c) =>
-  c.json(await (await stub(c)).invoke('protocol/list-templates')),
 );
 app.get('/api/repairs/:id/protocols', async (c) =>
   c.json(
@@ -163,49 +125,29 @@ app.get('/api/repairs/:id/protocols', async (c) =>
     }),
   ),
 );
-app.post('/api/repairs/:id/condition-report', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('bike-shop/start-condition-report', {
-      orderId: c.req.param('id'),
-    }),
-  ),
-);
-app.get('/api/protocols/:id', async (c) =>
-  c.json(await (await stub(c)).invoke('protocol/get', { instanceId: c.req.param('id') })),
-);
-app.post('/api/protocols/:id/responses', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('protocol/fill', {
-      instanceId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
-app.post('/api/protocols/:id/sign', async (c) =>
-  c.json(await (await stub(c)).invoke('protocol/sign', { instanceId: c.req.param('id') })),
-);
-app.post('/api/protocols/:id/countersign', async (c) =>
-  c.json(await (await stub(c)).invoke('protocol/countersign', { instanceId: c.req.param('id') })),
-);
-app.post('/api/protocols/:id/void', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('protocol/void', {
-      instanceId: c.req.param('id'),
-      ...(await c.req.json<Record<string, unknown>>()),
-    }),
-  ),
-);
 
-app.get('/api/portal/repairs', async (c) =>
-  c.json(await (await stub(c)).invoke('bike-shop/portal-repairs')),
-);
-
-app.get('/api/invoicing', async (c) => c.json(await (await stub(c)).invoke('invoicing/list')));
-app.get('/api/invoicing/:id', async (c) =>
-  c.json(await (await stub(c)).invoke('invoicing/get', { underlagId: c.req.param('id') })),
-);
-app.post('/api/invoicing/:id/export', async (c) =>
-  c.json(await (await stub(c)).invoke('invoicing/export', { underlagId: c.req.param('id') })),
+/**
+ * Everything else, derived from the declarations.
+ *
+ * There was a 129-line table here, and every line restated a method and a path the
+ * operations already declare. It had drifted: `bike-shop/price-list` declared
+ * `GET /price-list` while this file served `/prices`, and nothing could notice,
+ * because the declaration was decorative.
+ *
+ * `workorder/close` is absent from `handlebarWorkorderRoutes` and that absence is
+ * load-bearing — the engine's default binding is WITHDRAWN in this host, because a
+ * repair is not closed until the customer counter-signs the tillståndsrapport.
+ * `bike-shop/close-repair` is the only door.
+ */
+mountOperations(
+  app,
+  {
+    ...handlebarOperations,
+    ...handlebarWorkorderRoutes,
+    ...handlebarProtocolRoutes,
+    ...handlebarInvoicingRoutes,
+  },
+  stub,
 );
 
 // Better Auth owns /api/auth/*. Mounted last so it cannot shadow a demo route.

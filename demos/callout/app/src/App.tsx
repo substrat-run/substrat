@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   api,
+  extra,
   currentPrincipal,
   loginAt,
   me,
@@ -134,7 +135,7 @@ function HeaderModeApp() {
   const [who, setWho] = useState<string>('');
 
   useEffect(() => {
-    void api.cast().then((c) => {
+    void extra.cast().then((c) => {
       setCast(c);
       const saved = currentPrincipal();
       const current = Object.entries(c).find(([, m]) => m.principal === saved)?.[0];

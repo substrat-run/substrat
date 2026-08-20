@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, currentPrincipal, setPrincipal, type CastMember } from './api';
+import { api, extra, currentPrincipal, setPrincipal, type CastMember } from './api';
 import { RepairsView } from './views/Repairs';
 import { RepairDetailView } from './views/RepairDetail';
 import { InvoicingView } from './views/Invoicing';
@@ -23,7 +23,7 @@ export default function App() {
   const route = useHashRoute();
 
   useEffect(() => {
-    void api.cast().then((c) => {
+    void extra.cast().then((c) => {
       setCast(c);
       const saved = currentPrincipal();
       const current = Object.entries(c).find(([, m]) => m.principal === saved)?.[0];

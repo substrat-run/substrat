@@ -48,6 +48,15 @@ jobs:
       # if no vertical declares entities, so the checkpoint can never pass by
       # scanning nothing.
       - run: pnpm lint:model --check
+      # The browser-client checkpoint (tools/client-emit.mts): re-emit each opted-in
+      # vertical's typed fetch client from its model and fail on drift. This is the
+      # gate that did not exist when demos/todo's hand-written client silently fell
+      # two releases behind its own model — no paging, no search, nothing red.
+      - run: pnpm lint:client --check
+      # The migration checkpoint (CLAUDE.md), both halves: the journal must not be
+      # behind the model, AND the generated module must still match the journal. The
+      # second half is the one a "do not edit" comment was doing on its own.
+      - run: pnpm lint:migrations --check
       # The decision-log checkpoint. docs/decisions/*.md is the source; the tables in
       # master-plan §12 and kernel-design §14 and docs/DECISIONS.md are rendered from
       # it. Fails on a stale table, a duplicate or aliased-twice id, a gap in either

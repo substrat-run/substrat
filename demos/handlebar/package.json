@@ -4,6 +4,44 @@
   "private": true,
   "substrat": {
     "permissions": "src/seed.ts",
+    "client": {
+      "model": [
+        "src/entities.ts",
+        "src/operations.ts",
+        "@substrat-run/engine-workorder",
+        "@substrat-run/engine-protocol",
+        "@substrat-run/engine-invoicing",
+        "@substrat-run/contracts"
+      ],
+      "entities": [
+        "handlebarEntities",
+        "workorderEntities",
+        "protocolEntities",
+        "invoicingEntities"
+      ],
+      "operations": [
+        "handlebarOperations",
+        "handlebarWorkorderRoutes",
+        "handlebarProtocolRoutes",
+        "handlebarInvoicingRoutes"
+      ],
+      "schemas": {
+        "Money": "money",
+        "Price": "priceRow",
+        "WorkOrder": "workOrder",
+        "BillableLine": "billableLine",
+        "MaterialLine": "materialLine",
+        "ProtocolInstance": "protocolInstanceRow",
+        "ProtocolTemplateRow": "protocolTemplateRow",
+        "ProtocolResponse": "protocolResponseRow",
+        "ProtocolSignature": "protocolSignatureRow",
+        "ProtocolSignatureRequest": "protocolSignatureRequestRow",
+        "UnderlagLine": "underlagLine",
+        "UnderlagListRow": "underlagListRow"
+      },
+      "out": "app/src/api.generated.ts",
+      "name": "Handlebar"
+    },
     "devServers": [
       {
         "name": "api",
@@ -24,7 +62,7 @@
     ]
   },
   "license": "Apache-2.0",
-  "description": "Handlebar demo vertical — the v2 bike-shop skin, see spec/concept.md",
+  "description": "Handlebar demo vertical \u2014 the v2 bike-shop skin, see spec/concept.md",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -41,6 +79,7 @@
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/engine-workorder": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
     "better-auth": "^1.6.23",
     "better-sqlite3": "^13.0.3",
     "hono": "^4.6.0",

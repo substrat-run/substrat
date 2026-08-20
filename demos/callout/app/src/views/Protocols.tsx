@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
+  extra,
   type ProtocolDetail,
   type ProtocolItem,
   type ProtocolSummary,
@@ -40,7 +41,7 @@ function ItemRow({
 
   const save = async (value: boolean | string) => {
     try {
-      await api.fillProtocol(detail.instance.id, item.key, value);
+      await api.protocolFill({ instanceId: detail.instance.id, itemKey: item.key, value });
       onSaved();
     } catch (e) {
       onError((e as Error).message);
@@ -106,7 +107,7 @@ function ProtocolDetailCard({
   const [error, setError] = useState('');
 
   const load = useCallback(() => {
-    api.protocol(instanceId).then(setDetail).catch((e: Error) => setError(e.message));
+    api.protocolGet({ instanceId }).then(setDetail).catch((e: Error) => setError(e.message));
   }, [instanceId]);
   useEffect(load, [load]);
 
@@ -121,7 +122,7 @@ function ProtocolDetailCard({
   const sign = async () => {
     setError('');
     try {
-      await api.signProtocol(instance.id);
+      await api.protocolSign({ instanceId: instance.id });
       refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -131,7 +132,21 @@ function ProtocolDetailCard({
   return (
     <div style={{ marginTop: 12 }}>
       {error && <div className="alert error">{error}</div>}
-      {template.content.sections.map((section) => (
+      {/*
+        `content` is a union — a checklist has sections, a DOCUMENT protocol has a
+        hash recipe and no items at all. The hand-written `ProtocolDetail` this file
+        used to import declared only the checklist arm, so a document instance would
+        have thrown on `.sections` of undefined with nothing to warn about it. The
+        generated type carries the engine's actual union, which is what makes this
+        branch necessary rather than optional.
+      */}
+      {template.content.kind !== 'checklist' ? (
+        <p className="muted" style={{ marginTop: 8 }}>
+          Detta är ett dokumentprotokoll ({template.content.documentType}) — det signeras i sin
+          helhet, inte rad för rad.
+        </p>
+      ) : (
+        template.content.sections.map((section) => (
         <div key={section.title} style={{ marginBottom: 8 }}>
           <h3 style={{ fontSize: 13, margin: '10px 0 4px' }}>{section.title}</h3>
           <table className="grid">
@@ -148,7 +163,8 @@ function ProtocolDetailCard({
             </tbody>
           </table>
         </div>
-      ))}
+        ))
+      )}
       {instance.status === 'open' && (
         <div className="row" style={{ marginTop: 10 }}>
           <button className="btn primary" onClick={sign}>
@@ -182,8 +198,8 @@ export function ProtocolPanel({ order }: { order: WorkOrder }) {
   const [error, setError] = useState('');
 
   const load = useCallback(() => {
-    api.orderProtocols(order.id).then(setProtocols).catch(() => setProtocols([]));
-    api.protocolTemplates().then(setTemplates).catch(() => setTemplates([]));
+    extra.orderProtocols(order.id).then(setProtocols).catch(() => setProtocols([]));
+    api.protocolListTemplates().then(setTemplates).catch(() => setTemplates([]));
   }, [order.id]);
   useEffect(load, [load]);
 
@@ -198,7 +214,7 @@ export function ProtocolPanel({ order }: { order: WorkOrder }) {
   const start = async () => {
     setError('');
     try {
-      const inst = await api.instantiateProtocol(order.id, templateKey);
+      const inst = await api.instantiateProtocol({ entityType: 'workorder', entityId: order.id, templateKey });
       setExpanded(inst.id);
       load();
     } catch (e) {

@@ -33,7 +33,7 @@ import {
 } from '@substrat-run/kernel';
 import { SEARCH_OVERFETCH, todoEntities, todoOperations } from '../spec/model.js';
 import { TODO_PERM, todoManifest } from './manifest.js';
-import { todoMigrations } from './migrations.js';
+import { todoMigrations } from './migrations.generated.js';
 
 type OwnerRow = EntityRow<typeof todoEntities, 'owner'>;
 type ListRow = EntityRow<typeof todoEntities, 'list'>;

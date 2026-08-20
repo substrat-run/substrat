@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
+  extra,
   type BillableLine,
   type CastMember,
   type Money,
@@ -39,7 +40,7 @@ function money(m: Money | { amount: string; currency?: string }): string {
 }
 
 export function OrderDetailView({ orderId, cast }: { orderId: string; cast: Record<string, CastMember> }) {
-  const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.workorder>> | null>(null);
+  const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.workorderGet>> | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [error, setError] = useState('');
   const [hours, setHours] = useState('1');
@@ -49,8 +50,8 @@ export function OrderDetailView({ orderId, cast }: { orderId: string; cast: Reco
   const [billed, setBilled] = useState<{ billable: BillableLine[]; total: Money } | null>(null);
 
   const load = useCallback(() => {
-    api.workorder(orderId).then(setDetail).catch((e: Error) => setError(e.message));
-    api.timeline(orderId).then(setTimeline).catch(() => setTimeline([]));
+    api.workorderGet({ orderId }).then(setDetail).catch((e: Error) => setError(e.message));
+    extra.timeline(orderId).then(setTimeline).catch(() => setTimeline([]));
   }, [orderId]);
   useEffect(load, [load]);
 
@@ -96,10 +97,10 @@ export function OrderDetailView({ orderId, cast }: { orderId: string; cast: Reco
                   </option>
                 ))}
               </select>
-              <button className="btn" disabled={!technician} onClick={act(() => api.assign(orderId, technician))}>
+              <button className="btn" disabled={!technician} onClick={act(() => api.workorderAssign({ orderId, technician }))}>
                 Tilldela
               </button>
-              <button className="btn primary" onClick={act(() => api.start(orderId))}>
+              <button className="btn primary" onClick={act(() => api.workorderStart({ orderId }))}>
                 Starta arbete
               </button>
             </>
@@ -107,12 +108,12 @@ export function OrderDetailView({ orderId, cast }: { orderId: string; cast: Reco
           {(order.status === 'planned' || order.status === 'in_progress') && (
             <>
               <input style={{ width: 70 }} value={hours} onChange={(e) => setHours(e.target.value)} />
-              <button className="btn" onClick={act(() => api.reportTime(orderId, hours))}>
+              <button className="btn" onClick={act(() => api.workorderReportTime({ orderId, hours }))}>
                 Rapportera tid
               </button>
               <input style={{ width: 180 }} value={article} onChange={(e) => setArticle(e.target.value)} />
               <input style={{ width: 50 }} value={qty} onChange={(e) => setQty(e.target.value)} />
-              <button className="btn" onClick={act(() => api.reportMaterial(orderId, article, qty))}>
+              <button className="btn" onClick={act(() => api.workorderReportMaterial({ orderId, article, qty }))}>
                 Material
               </button>
             </>
@@ -120,13 +121,13 @@ export function OrderDetailView({ orderId, cast }: { orderId: string; cast: Reco
           {order.status === 'in_progress' && (
             <button
               className="btn primary"
-              onClick={act(async () => setBilled(await api.complete(orderId)))}
+              onClick={act(async () => setBilled(await api.completeWorkorder({ orderId })))}
             >
               Slutför & prissätt
             </button>
           )}
           {order.status === 'completed' && (
-            <button className="btn primary" onClick={act(() => api.close(orderId))}>
+            <button className="btn primary" onClick={act(() => api.workorderClose({ orderId }))}>
               Stäng order
             </button>
           )}

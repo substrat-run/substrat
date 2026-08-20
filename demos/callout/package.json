@@ -8,6 +8,47 @@
     "slug": "callout",
     "name": "Callout",
     "permissions": "src/provision.ts",
+    "client": {
+      "model": [
+        "src/entities.ts",
+        "src/operations.ts",
+        "@substrat-run/engine-workorder",
+        "@substrat-run/engine-protocol",
+        "@substrat-run/engine-invoicing",
+        "@substrat-run/contracts"
+      ],
+      "entities": [
+        "calloutEntities",
+        "workorderEntities",
+        "protocolEntities",
+        "invoicingEntities"
+      ],
+      "schemas": {
+        "Price": "priceRow",
+        "Money": "money",
+        "WorkOrder": "workOrder",
+        "BillableLine": "billableLine",
+        "MaterialLine": "materialLine",
+        "ProtocolInstance": "protocolInstanceRow",
+        "ProtocolTemplateRow": "protocolTemplateRow",
+        "ProtocolResponse": "protocolResponseRow",
+        "ProtocolSignature": "protocolSignatureRow",
+        "ProtocolSignatureRequest": "protocolSignatureRequestRow",
+        "UnderlagLine": "underlagLine",
+        "UnderlagListRow": "underlagListRow"
+      },
+      "operations": [
+        "calloutOperations",
+        "calloutEngineRoutes",
+        "calloutProtocolRoutes",
+        "calloutInvoicingRoutes"
+      ],
+      "out": "app/src/api.generated.ts",
+      "name": "Callout",
+      "types": {
+        "protocol/define-template.input.content": "unknown"
+      }
+    },
     "requires": [
       "oidc-issuer"
     ],

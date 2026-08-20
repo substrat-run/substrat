@@ -1,82 +1,86 @@
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
+import { mountOperations, type ResolveStub } from '@substrat-run/vertical-host';
+import {
+  calloutEngineRoutes,
+  calloutInvoicingRoutes,
+  calloutOperations,
+  calloutProtocolRoutes,
+} from './operations.js';
 
 /**
- * The Callout (fsm) HTTP API — one route table, adapter- and auth-agnostic.
+ * The Callout (fsm) HTTP API — derived from the declared operations, plus the two
+ * routes that cannot be.
  *
- * Both entrypoints mount this: `server.ts` (node, on the pure-SQLite adapter,
- * `x-principal` dev auth) and `worker.ts` (Cloudflare, on the Durable-Object
- * adapter, Better Auth). Each supplies a `resolveStub` that authenticates the
- * caller and returns a capability `ScopeStub`; every route is a thin wrapper over
- * a single operation, with no business logic. Sharing this table is D-14 made
- * concrete — the SAME vertical surface runs on both adapters, so the two entries
- * cannot drift apart.
+ * Both entrypoints mount this: `server.ts` (node, pure-SQLite adapter, `x-principal`
+ * dev auth) and `worker.ts` (Cloudflare, Durable-Object adapter, OIDC). Each supplies
+ * a `resolveStub` that authenticates the caller and returns a capability `ScopeStub`.
+ * Sharing this table is D-14 made concrete — the SAME vertical surface runs on both
+ * adapters, so the two entries cannot drift apart.
+ *
+ * ## Why there is no table here any more
+ *
+ * There was one, 180 lines of it, and every line restated something the operations
+ * already declare: the method, the path, which input fields the path carries. The
+ * comments it accumulated are the argument against it — one explaining that
+ * `/customers/search` must be registered before any `/customers/:id` route or Hono
+ * will answer it with `id: 'search'`, another explaining that `limit` arrives as a
+ * string and has to be coerced because the operation declares a number. Both are
+ * real, and `mountOperations` derives both from the same declarations (#785): it
+ * orders static segments ahead of their parameter siblings, and it coerces query
+ * values per the declared shape. A hand-written table has to remember, and it had
+ * already drifted once.
  */
-export type ResolveStub = (c: Context) => Promise<ScopeStub>;
+export type { ResolveStub };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): void {
+/** Every operation that carries a URL: this vertical's own, and the three engines it composes. */
+const ROUTED = {
+  ...calloutOperations,
+  ...calloutEngineRoutes,
+  ...calloutProtocolRoutes,
+  ...calloutInvoicingRoutes,
+};
+
+export function mountApi(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app: Hono<any, any, any>,
+  resolveStub: ResolveStub,
+): { operation: string; method: string; path: string }[] {
   const S = resolveStub;
-  const body = (c: Context) => c.req.json<Record<string, unknown>>();
 
-  // Shared error mapping: auth (HTTPException 401), permission (403), missing
-  // entity / scope / operation (404), everything else a validation 400.
-  app.onError((err, c) => {
-    if (err instanceof HTTPException) return err.getResponse();
-    if (err instanceof PermissionDenied) return c.json({ error: err.message }, 403);
+  // The mount decides the STATUS for everything the kernel itself names — a refused
+  // permission, an input that failed to parse, `resolveStub` refusing an anonymous
+  // call (#791) — and re-throws the rest untouched. This turns the status into THIS
+  // app's `{ error }` body.
+  //
+  // `c.json(...)` rather than `err.getResponse()`, which is what the hand-written
+  // table did: Hono's own response body is not `{ error }`, and the SPA reads
+  // `error` off every failure to decide between "not allowed" and "we broke".
+  app.onError((err, c: Context) => {
+    if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+    // What is left is PLATFORM vocabulary the mount has no opinion on: a missing
+    // entity, an unknown scope or operation, a feature this tenant does not hold.
     if (/not found|unknown scope|unknown operation|not entitled/.test(err.message)) {
       return c.json({ error: err.message }, 404);
     }
     return c.json({ error: err.message }, 400);
   });
 
-  // -- customers + facilities ------------------------------------------------
-  app.get('/api/customers', async (c) => c.json(await (await S(c)).invoke('callout/list-customers')));
-  // #827. BEFORE any `/api/customers/:id` route: Hono dispatches in registration
-  // order, so a parameter sibling registered first would swallow this and answer
-  // with `id: 'search'`. `mountOperations` orders declared paths for exactly this
-  // (#785); a hand-written table has to do it by hand.
+  // ---------------------------------------------------------------------------
+  // The two routes that supply a CONSTANT the caller must not choose.
   //
-  // `limit` arrives as a string and the operation declares a number, so it is
-  // coerced here — the same coercion `mountOperations` derives from the schema.
-  app.get('/api/customers/search', async (c) => {
-    const limit = c.req.query('limit');
-    return c.json(
-      await (await S(c)).invoke('callout/search-customers', {
-        q: c.req.query('q') ?? '',
-        ...(limit === undefined ? {} : { limit: Number(limit) }),
-      }),
-    );
-  });
-  app.post('/api/customers', async (c) =>
-    c.json(await (await S(c)).invoke('callout/create-customer', await c.req.json())),
-  );
-  app.post('/api/customers/:id/facilities', async (c) =>
-    c.json(
-      await (await S(c)).invoke('callout/create-facility', {
-        customerId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-
-  // -- price list ------------------------------------------------------------
-  app.get('/api/prices', async (c) => c.json(await (await S(c)).invoke('callout/price-list')));
-  app.post('/api/prices', async (c) =>
-    c.json(await (await S(c)).invoke('callout/upsert-price', await c.req.json())),
-  );
-
-  // -- work orders -----------------------------------------------------------
-  app.get('/api/workorders', async (c) =>
-    c.json(await (await S(c)).invoke('workorder/list', { status: c.req.query('status') })),
-  );
-  app.post('/api/workorders', async (c) =>
-    c.json(await (await S(c)).invoke('callout/create-workorder', await c.req.json())),
-  );
-  app.get('/api/workorders/:id', async (c) =>
-    c.json(await (await S(c)).invoke('workorder/get', { orderId: c.req.param('id') })),
-  );
+  // Both invoke an operation whose `entityType` is an ordinary `z.string()`, because
+  // both belong to entity-agnostic surfaces — `callout/timeline` reads the event
+  // spine, `protocol/list-for-entity` belongs to an engine that knows nothing about
+  // work orders. Binding either to a URL would put `entityType` in the query string
+  // and let a caller list the timeline, or the protocols, of anything at all. This is
+  // exactly where the vertical is supposed to stop being entity-agnostic, so it says
+  // 'workorder' here and the operations stay unbound.
+  //
+  // Registered BEFORE the derived table. Neither can actually be shadowed by it — no
+  // declared route dispatches at their shape — but "the hand-written exception wins"
+  // is the only ordering that stays safe as the declared table grows.
+  // ---------------------------------------------------------------------------
   app.get('/api/workorders/:id/timeline', async (c) =>
     c.json(
       await (await S(c)).invoke('callout/timeline', {
@@ -84,47 +88,6 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
         entityId: c.req.param('id'),
       }),
     ),
-  );
-  app.post('/api/workorders/:id/assign', async (c) =>
-    c.json(
-      await (await S(c)).invoke('workorder/assign', {
-        orderId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-  app.post('/api/workorders/:id/start', async (c) =>
-    c.json(await (await S(c)).invoke('workorder/start', { orderId: c.req.param('id') })),
-  );
-  app.post('/api/workorders/:id/time', async (c) =>
-    c.json(
-      await (await S(c)).invoke('workorder/report-time', {
-        orderId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-  app.post('/api/workorders/:id/material', async (c) =>
-    c.json(
-      await (await S(c)).invoke('workorder/report-material', {
-        orderId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-  app.post('/api/workorders/:id/complete', async (c) =>
-    c.json(await (await S(c)).invoke('callout/complete-workorder', { orderId: c.req.param('id') })),
-  );
-  app.post('/api/workorders/:id/close', async (c) =>
-    c.json(await (await S(c)).invoke('workorder/close', { orderId: c.req.param('id') })),
-  );
-
-  // -- protocols -------------------------------------------------------------
-  app.get('/api/protocol-templates', async (c) =>
-    c.json(await (await S(c)).invoke('protocol/list-templates')),
-  );
-  app.post('/api/protocol-templates', async (c) =>
-    c.json(await (await S(c)).invoke('protocol/define-template', await c.req.json())),
   );
   app.get('/api/workorders/:id/protocols', async (c) =>
     c.json(
@@ -134,47 +97,6 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
       }),
     ),
   );
-  app.post('/api/workorders/:id/protocols', async (c) =>
-    c.json(
-      await (await S(c)).invoke('callout/instantiate-protocol', {
-        entityType: 'workorder',
-        entityId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-  app.get('/api/protocols/:id', async (c) =>
-    c.json(await (await S(c)).invoke('protocol/get', { instanceId: c.req.param('id') })),
-  );
-  app.post('/api/protocols/:id/responses', async (c) =>
-    c.json(
-      await (await S(c)).invoke('protocol/fill', {
-        instanceId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-  app.post('/api/protocols/:id/sign', async (c) =>
-    c.json(await (await S(c)).invoke('protocol/sign', { instanceId: c.req.param('id') })),
-  );
-  app.post('/api/protocols/:id/void', async (c) =>
-    c.json(
-      await (await S(c)).invoke('protocol/void', {
-        instanceId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
 
-  // -- portal + invoicing ----------------------------------------------------
-  app.get('/api/portal/orders', async (c) =>
-    c.json(await (await S(c)).invoke('callout/portal-orders')),
-  );
-  app.get('/api/invoicing', async (c) => c.json(await (await S(c)).invoke('invoicing/list')));
-  app.get('/api/invoicing/:id', async (c) =>
-    c.json(await (await S(c)).invoke('invoicing/get', { underlagId: c.req.param('id') })),
-  );
-  app.post('/api/invoicing/:id/export', async (c) =>
-    c.json(await (await S(c)).invoke('invoicing/export', { underlagId: c.req.param('id') })),
-  );
+  return mountOperations(app, ROUTED, resolveStub);
 }

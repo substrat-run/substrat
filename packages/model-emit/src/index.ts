@@ -15,3 +15,10 @@ export {
   type JournalEntry,
   type MigrationPlan,
 } from './plan.js';
+export {
+  renderClient,
+  ClientEmitError,
+  tsTypeOf,
+  methodName,
+  type ClientConfig,
+} from './emit-client.js';

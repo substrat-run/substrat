@@ -19,7 +19,7 @@ export const instantiateProtocolInput = z.object({
 });
 
 /** A price-list row. A table, not an entity — so its shape lives here, not in the registry. */
-const priceRow = z.object({
+export const priceRow = z.object({
   article: z.string(),
   description: z.string(),
   unit: z.string(),
@@ -141,6 +141,7 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
       internal: z.boolean().optional(),
     }),
     output: priceRow,
+    http: { method: 'POST', path: '/prices' },
   },
   'callout/create-workorder': {
     summary: 'Open a work order against a facility',
@@ -152,12 +153,14 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
       description: z.string().optional(),
     }),
     output: workOrder,
+    http: { method: 'POST', path: '/workorders' },
   },
   'callout/complete-workorder': {
     summary: 'Complete a work order and price its billable lines',
     permission: 'customer:manage',
     input: z.object({ orderId: z.string() }),
     output: z.object({ order: workOrder, billable: z.array(billableLine), total: money }),
+    http: { method: 'POST', path: '/workorders/{orderId}/complete' },
   },
   'callout/instantiate-protocol': {
     summary: 'Instantiate a protocol against an entity',
@@ -178,6 +181,7 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
       checks: [],
     },
     output: z.array(workOrder),
+    http: { method: 'GET', path: '/portal/orders' },
   },
   'callout/timeline': {
     summary: 'The event timeline for one entity',

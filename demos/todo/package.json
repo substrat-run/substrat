@@ -36,6 +36,13 @@
     "slug": "todo",
     "name": "Todo",
     "permissions": "src/provision.ts",
+    "client": {
+      "model": "spec/model.ts",
+      "entities": "todoEntities",
+      "operations": "todoOperations",
+      "out": "app/src/api.generated.ts",
+      "name": "Todo"
+    },
     "devServers": [
       {
         "name": "api",

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Customer, type WorkOrder } from '../api';
+import { api, type CustomerWithFacilities, type WorkOrder } from '../api';
 
 export function StatusPill({ status }: { status: string }) {
   const label: Record<string, string> = {
@@ -15,7 +15,7 @@ export function StatusPill({ status }: { status: string }) {
 
 export function OrdersView() {
   const [orders, setOrders] = useState<WorkOrder[] | null>(null);
-  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customers, setCustomers] = useState<CustomerWithFacilities[]>([]);
   const [error, setError] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [facilityId, setFacilityId] = useState('');
@@ -23,8 +23,8 @@ export function OrdersView() {
   const [title, setTitle] = useState('');
 
   const load = () => {
-    api.workorders().then(setOrders).catch((e: Error) => setError(e.message));
-    api.customers().then(setCustomers).catch(() => setCustomers([]));
+    api.workorderList({}).then(setOrders).catch((e: Error) => setError(e.message));
+    api.listCustomers().then(setCustomers).catch(() => setCustomers([]));
   };
   useEffect(load, []);
 
@@ -38,7 +38,7 @@ export function OrdersView() {
 
   const create = async () => {
     try {
-      const order = await api.createOrder({ facilityId, kind, title });
+      const order = await api.createWorkorder({ facilityId, kind, title });
       location.hash = `#/orders/${order.id}`;
     } catch (e) {
       setError((e as Error).message);

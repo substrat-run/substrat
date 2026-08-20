@@ -1,15 +1,26 @@
 /**
- * Does the DERIVED route table match the one Callout actually serves?
+ * What Callout serves, and what it deliberately does not.
  *
- * Both tables are mounted on real Hono apps and compared through `app.routes` —
- * a structural comparison of what each would dispatch, not a reading of the
- * source. Only the operations that declare `http` are in scope; the rest of
- * Callout's surface invokes ENGINE operations, which carry no URL shape of
- * their own.
+ * This began as a parity test: two tables — the hand-written one and the derived one
+ * — mounted on real Hono apps and compared through `app.routes`. That question is
+ * settled. `src/routes.ts` now IS the derivation, so asking whether the two agree
+ * would be asking whether one thing equals itself, and a test that cannot fail is
+ * worse than no test because it still reads like coverage.
+ *
+ * What is left is the part that was never tautological:
+ *
+ *  1. The declared surface, pinned as an exact list. Adding or removing a URL is a
+ *     change to a published API, and it should be impossible to make without seeing
+ *     it here.
+ *  2. The two routes that are NOT derived, and the reason — an entity-agnostic
+ *     `entityType` a caller must not choose.
+ *  3. That the pin actually holds, driven through a real request.
+ *  4. That ordering resolves `/customers/search` against its parameter sibling, which
+ *     the hand-written table had a comment about and now nothing has to remember.
  *
  * Path parameter NAMES are normalised away: `/customers/:id/facilities` and
- * `/customers/:customerId/facilities` dispatch identically, and the name is
- * internal to the handler.
+ * `/customers/:customerId/facilities` dispatch identically, and the name is internal
+ * to the handler.
  */
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
@@ -49,15 +60,23 @@ function derivedRoutes() {
   );
 }
 
-describe('derived routes vs the routes Callout serves', () => {
-  it('derives a route for every operation that declares http', () => {
-    expect(derivedRoutes().map((r) => r.operation).sort()).toEqual([
+describe('the declared surface', () => {
+  it('serves a route for every operation that declares http, and only those', () => {
+    // Pinned as a list because each entry is a published URL. Four of these were
+    // declared without an `http` block until the client became generated — an
+    // operation with no binding is invisible to the emitter, so the SPA hand-wrote
+    // the call to a route Callout was already serving.
+    expect(mountApi(new Hono(), async () => ({}) as never).map((r) => r.operation).sort()).toEqual([
+      'callout/complete-workorder',
       'callout/create-customer',
       'callout/create-facility',
+      'callout/create-workorder',
       'callout/instantiate-protocol',
       'callout/list-customers',
+      'callout/portal-orders',
       'callout/price-list',
       'callout/search-customers',
+      'callout/upsert-price',
       'invoicing/export',
       'invoicing/get',
       'invoicing/list',
@@ -77,17 +96,30 @@ describe('derived routes vs the routes Callout serves', () => {
     ]);
   });
 
-  it('every derived route is one the hand-written table already serves', () => {
-    const served = servedRoutes();
-    const missing = derivedRoutes()
-      .map((r) => `${r.method} ${shape(r.path)}`)
-      .filter((r) => !served.has(r));
-    expect(missing).toEqual([]);
+  it('serves the two hand-written exceptions alongside the derived table', () => {
+    // They are not in the list above — they have no operation binding — so nothing
+    // else would notice them disappearing.
+    expect(servedRoutes()).toContain('GET /api/workorders/:x/timeline');
+    expect(servedRoutes()).toContain('GET /api/workorders/:x/protocols');
+  });
+
+  it('registers a static segment ahead of its parameter sibling', () => {
+    // `/customers/search` before `/customers/:id/...`: Hono dispatches in
+    // registration order, and getting this wrong answers the search endpoint with
+    // `id: 'search'` — no error, just a route that silently belongs to its
+    // neighbour (#785). The hand-written table carried a comment asking a person to
+    // remember; the derivation orders it.
+    const paths = mountApi(new Hono(), async () => ({}) as never)
+      .filter((r) => r.path.startsWith('/api/customers'))
+      .map((r) => r.path);
+    expect(paths.indexOf('/api/customers/search')).toBeLessThan(
+      paths.indexOf('/api/customers/:customerId/facilities'),
+    );
   });
 });
 
 describe('what is NOT derived, and why', () => {
-  it('leaves the two routes that supply a constant to the hand-written table', () => {
+  it('leaves the two routes that supply a constant out of the derived table', () => {
     // Callout's policy is that protocols live on work orders, so both
     // `/workorders/{id}/protocols` routes fix `entityType` rather than letting a
     // caller choose it. The POST already has a home — `callout/instantiate-
