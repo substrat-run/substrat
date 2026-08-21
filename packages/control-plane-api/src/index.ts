@@ -51,6 +51,7 @@ export {
   type ProvisionSiblingInput,
   type ProvisionSiblingResult,
 } from './platform-drain.js';
+export { attributeFailure, terminalFailureNote } from './failure-attribution.js';
 export type {
   VerticalClientOptions,
   ProvisionInstanceInput,

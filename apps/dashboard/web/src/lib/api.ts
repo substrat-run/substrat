@@ -617,6 +617,21 @@ export interface ConnectionIntentView {
   settledAt: string | null;
   /** The routed event's type — what was sent, beside what came back. */
   eventType: string;
+  /**
+   * WHO refused (#841), as the drain attributed it — `null` on an intent settled by a
+   * control plane too old to say, or by a vertical whose spine predates the column.
+   *
+   * A caption may only quote a failure as the provider's words when `origin` is
+   * `provider`. It was captioning ALL of them that way, so a `permission denied:
+   * protocol:read` raised by our own check — before a byte reached Scrive — was rendered
+   * as "what Scrive said, in full", and the operator went to audit their Scrive account.
+   */
+  failure: {
+    origin: 'platform' | 'provider' | 'unknown';
+    code: string | null;
+    /** The permission key the refusal named, when it named one — the grant join's key. */
+    permission: string | null;
+  } | null;
 }
 
 /**

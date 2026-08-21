@@ -80,6 +80,7 @@ import {
   type PlatformRequest,
   type PlatformRequestFilter,
   type PlatformRequestStatus,
+  type PlatformRequestFailure,
   type EntitlementGrant,
   type EntitlementGrantInput,
   type EntitlementView,
@@ -161,6 +162,7 @@ import {
   type ExecutorRetryPolicy,
   backoffAt,
   platformRequestHistoryQuery,
+  PLATFORM_REQUEST_COLUMNS,
   resolveRetryPolicy,
   isSecretBoxConfigured,
   unconfiguredSecretBox,
@@ -303,6 +305,12 @@ const KERNEL_DDL = `
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
+    -- #841: WHO refused, as JSON {origin, code, permission}. last_error says WHAT
+    -- happened and always did; this says whether it was the provider's answer or our
+    -- own refusal before egress -- the distinction the dashboard was guessing wrong.
+    -- NULL = never classified (a row settled before this column, or one that never
+    -- failed), which is not the same fact as an origin of 'unknown'.
+    last_failure TEXT,
     result TEXT,
     requested_at TEXT NOT NULL,
     settled_at TEXT
@@ -684,6 +692,7 @@ interface PlatformRequestRawRow {
   status: string;
   attempts: number;
   last_error: string | null;
+  last_failure: string | null;
   result: string | null;
   requested_at: string;
   settled_at: string | null;
@@ -699,6 +708,7 @@ function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
     status: r.status,
     attempts: r.attempts,
     lastError: r.last_error,
+    failure: r.last_failure == null ? null : JSON.parse(r.last_failure),
     result: r.result === null ? null : JSON.parse(r.result),
     requestedAt: r.requested_at,
     settledAt: r.settled_at,
@@ -2969,7 +2979,7 @@ export class SqliteScopeHost implements ScopeHost {
     await this.applyPendingMigrations(rt);
     const rows = rt.db
       .prepare(
-        `SELECT id, kind, payload, requested_by, status, attempts, last_error, result, requested_at, settled_at
+        `SELECT ${PLATFORM_REQUEST_COLUMNS}
            FROM _substrat_platform_requests WHERE status = 'pending' ORDER BY id`,
       )
       .all() as PlatformRequestRawRow[];
@@ -2993,7 +3003,12 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     id: PlatformRequestId,
-    outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
+    outcome: {
+      status: PlatformRequestStatus;
+      result?: unknown;
+      lastError?: string | null;
+      failure?: PlatformRequestFailure | null;
+    },
   ): Promise<void> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -3001,7 +3016,7 @@ export class SqliteScopeHost implements ScopeHost {
       rt.db
         .prepare(
           `UPDATE _substrat_platform_requests
-             SET status = ?, result = COALESCE(?, result), last_error = ?,
+             SET status = ?, result = COALESCE(?, result), last_error = ?, last_failure = ?,
                  attempts = attempts + 1, settled_at = ?
            WHERE id = ?`,
         )
@@ -3009,6 +3024,7 @@ export class SqliteScopeHost implements ScopeHost {
           outcome.status,
           outcome.result === undefined ? null : JSON.stringify(outcome.result),
           outcome.lastError ?? null,
+          outcome.failure == null ? null : JSON.stringify(outcome.failure),
           outcome.status === 'pending' ? null : new Date().toISOString(),
           id,
         );
@@ -6902,6 +6918,10 @@ export class SqliteScopeHost implements ScopeHost {
     // so legacy outbox rows read as "unrecorded" — the honest value. (_substrat_denials
     // is a whole new table, so KERNEL_DDL's IF NOT EXISTS covers it with no ALTER.)
     this.ensureColumn(db, '_substrat_outbox', 'authorization', 'authorization TEXT');
+    // #841: refusal attribution on a scope DB that predates it. Nullable, so every row
+    // already settled reads as "nobody classified this" rather than claiming an origin
+    // the drain never actually decided.
+    this.ensureColumn(db, '_substrat_platform_requests', 'last_failure', 'last_failure TEXT');
     const appliedMigrations = new Set<string>(
       (
         db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {

@@ -1,5 +1,5 @@
 import {
-  isTerminalProviderError,
+  isTerminalDispatchFailure,
   ulid,
   type ConnectorHandler,
   type OpsFailureInput,
@@ -14,13 +14,16 @@ import {
   provisionTenantPayload,
   setEntitlementsPayload,
   connectorDispatchPayload,
+  CONNECTOR_DISPATCH_KIND_PREFIX,
   type PlatformActorId,
   type PlatformRequest,
+  type PlatformRequestFailure,
   type Scope,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from './client.js';
+import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import { collectBlobStoreHandles, collectTenantStoreHandles } from './tenant-stores.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
@@ -46,6 +49,12 @@ export interface PlatformRequestOutcome {
   status: 'done' | 'failed' | 'pending';
   result?: unknown;
   error?: string;
+  /**
+   * WHO refused (#841) — journaled beside `error` so a reader never has to infer it from the
+   * message. A handler that does not attribute leaves this undefined and the column stays
+   * NULL, which reads as "nobody classified this" rather than a guess nobody made.
+   */
+  failure?: PlatformRequestFailure;
 }
 
 /** Executes one intent kind with platform authority. Registered per `kind` (mirrors connector sweepers). */
@@ -107,7 +116,13 @@ export async function drainScopePlatformRequests(
         outcome = await handler(ctx, request);
       } catch (e) {
         // A thrown handler is a transient failure — keep the intent drainable for the next pass.
-        outcome = { status: 'pending', error: e instanceof Error ? e.message : String(e) };
+        // Attributed anyway: a pending row is what an operator watching a stuck delivery reads,
+        // and the ceiling below carries whatever the last pass decided into the give-up.
+        outcome = {
+          status: 'pending',
+          error: e instanceof Error ? e.message : String(e),
+          failure: attributeFailure(e),
+        };
       }
     }
     // The attempt ceiling (#570): `attempts` counts SETTLED passes, so this pass is
@@ -121,6 +136,9 @@ export async function drainScopePlatformRequests(
         status: 'failed',
         result: outcome.result,
         error: `gave up after ${request.attempts + 1} drain attempts — last error: ${outcome.error ?? 'unknown'}`,
+        // The give-up inherits the last pass's attribution rather than inventing one: what
+        // refused a hundred times is what refused on the last attempt.
+        failure: outcome.failure,
       };
       opts?.recordFailure?.({
         operation: `intent.${request.kind}`,
@@ -148,6 +166,7 @@ export async function drainScopePlatformRequests(
       status: outcome.status,
       result: outcome.result,
       lastError: outcome.error ?? null,
+      failure: outcome.failure ?? null,
     });
     report[outcome.status]++;
   }
@@ -599,15 +618,25 @@ export function connectorDispatchHandler(deps: ConnectorDispatchDeps): PlatformR
         deps.timeoutMs === undefined ? undefined : { timeoutMs: deps.timeoutMs },
       );
     } catch (e) {
-      // #618: a 4xx is the provider telling the CALLER its request is wrong, and attempt 101
-      // sends the identical bytes. Settling it terminal here — rather than letting the drain's
-      // blanket catch call every throw transient — is what turns a payload bug into an answer
-      // the same day instead of a fortnight of silent retries. The provider's own words ride
-      // `lastError` into the journal, which is what a console now reads back.
-      if (isTerminalProviderError(e)) {
+      // #618: a non-retryable 4xx will be refused identically on attempt 101, so it settles
+      // terminal here rather than falling to the drain's blanket catch and retrying for a
+      // fortnight. Terminality is asked of the STATUS alone (`isTerminalDispatchFailure`) —
+      // our own refusal is as final as the provider's, and that part was never wrong.
+      //
+      // #841: WHO refused is a different question, and conflating the two is what put
+      // "the provider will refuse identically" under a `permission denied: protocol:read`
+      // that the provider never saw. The attribution is journaled as a value, and the
+      // sentence beside it is written in the voice of whoever actually refused.
+      if (isTerminalDispatchFailure(e)) {
+        const failure = attributeFailure(e);
+        // `connector:scrive` → `scrive`; the intent kind is the only provider name in scope here.
+        const provider = request.kind.startsWith(CONNECTOR_DISPATCH_KIND_PREFIX)
+          ? request.kind.slice(CONNECTOR_DISPATCH_KIND_PREFIX.length)
+          : 'the provider';
         return {
           status: 'failed',
-          error: `${e instanceof Error ? e.message : String(e)} — a client error the provider will refuse identically on retry, so this delivery was not retried`,
+          error: `${e instanceof Error ? e.message : String(e)} — ${terminalFailureNote(failure, provider)}`,
+          failure,
         };
       }
       throw e; // transient (5xx, timeout, rate limit, no live connection yet) — drain retries

@@ -471,6 +471,47 @@ sweep's `sweepers` — so `control-plane-api` still imports no connector. An unr
 **501s**: "this platform cannot verify a Fortnox key yet" is true, and an empty `200` would read
 as "your Fortnox key is fine".
 
+#### 3.8.1 Who refused, recorded rather than assumed (#841)
+
+A dispatch crosses two authorities. On the way to the bytes the connector calls back into the
+**vertical** — opening the bound attachment, invoking the return-path operation — and that call is
+checked against the connection's grants. Only once those pass does anything reach the provider.
+
+Both ends refuse by throwing, and for a long time both landed in the same `lastError` string with
+nothing recording which was which. The drain asked `isTerminalProviderError`, which reads a bare
+numeric `status` — and every `SubstratError` carries one from the problem catalog. So a
+`permission denied: protocol:read` raised *inside the vertical* answered yes, and the delivery was
+journaled as **"a client error the provider will refuse identically on retry"** for a request the
+provider never received. The integration drawer then captioned it *"what Scrive said, in full"*.
+An operator read that, went to audit their Scrive account, pressed **Test connection** — which
+passed, because the credential was fine — and concluded the platform was broken.
+
+Three rules now hold, and they are the general form of that bug rather than a patch for it:
+
+1. **Terminality and attribution are different questions.** `isTerminalDispatchFailure` decides
+   whether to retry and is deliberately blind to who refused: our own `validation_failed` is as
+   final as the provider's 409. `isTerminalProviderError` answers only "may this be quoted as the
+   provider's words", and one of ours never may. No delivery changed its retry behaviour when
+   these were split — only what is said about it.
+2. **The attribution is a value, not a sentence.** `PlatformRequestFailure` (`origin`, `code`,
+   `permission`) is journaled beside `lastError` in the scope's own spine, so a reader never
+   parses prose to learn who refused. `origin: 'unknown'` is a real answer — a socket that never
+   opened is not the provider's refusal either — and a NULL is a *different* fact again: nobody
+   classified this row, rather than somebody classifying it as unattributable.
+3. **A `ControlPlaneError` is always ours.** It is constructed in exactly one place — a call *we*
+   made to the vertical's `/internal` surface came back non-2xx — so whatever status it carries is
+   the vertical's answer to the platform, never the provider's to us. That is what lets the fix
+   land in the control plane alone: a 403 raised by a deployment that predates the change is still
+   attributed correctly, with no vertical redeploy in the path.
+
+The drawer joins it to the grants it already renders: when a failed delivery names a permission
+absent from the connection's live grants, it says so where the failure is, instead of leaving both
+halves of the diagnosis on screen inches apart and unconnected. When the key *is* held the sentence
+is deliberately not written — that is a different bug, and guessing at it would rebuild the wall
+this removes.
+
+The repair itself is §3.5.2's reconcile, not a button.
+
 #### Connecting means verified, not stored
 
 The upsert (§3.5.2) used to mean *store it*: the row landed, the console said **Connected**,

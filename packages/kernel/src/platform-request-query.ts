@@ -18,7 +18,7 @@ import {
 
 /** Every column of `_substrat_platform_requests`, in the order the row mappers expect. */
 export const PLATFORM_REQUEST_COLUMNS =
-  'id, kind, payload, requested_by, status, attempts, last_error, result, requested_at, settled_at';
+  'id, kind, payload, requested_by, status, attempts, last_error, last_failure, result, requested_at, settled_at';
 
 export function platformRequestHistoryQuery(filter?: PlatformRequestFilter): {
   sql: string;

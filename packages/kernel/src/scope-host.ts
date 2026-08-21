@@ -25,6 +25,7 @@ import type {
   PlatformRequest,
   PlatformRequestFilter,
   PlatformRequestStatus,
+  PlatformRequestFailure,
   EntitlementGrant,
   EntitlementGrantInput,
   EntitlementView,
@@ -2882,7 +2883,13 @@ export interface ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     id: PlatformRequestId,
-    outcome: { status: PlatformRequestStatus; result?: unknown; lastError?: string | null },
+    outcome: {
+      status: PlatformRequestStatus;
+      result?: unknown;
+      lastError?: string | null;
+      /** WHO refused (#841). Omitted by a caller too old to attribute — stored as NULL. */
+      failure?: PlatformRequestFailure | null;
+    },
   ): Promise<void>;
 
   /** Bare operation registration (tests, glue). Names are module-namespaced: 'workorder/create'. */

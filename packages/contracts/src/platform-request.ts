@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { instant, platformRequestId, scopeId } from './ids.js';
 import { actor, domainEvent } from './events.js';
+import { errorCode } from './errors.js';
 
 /**
  * Platform intents (docs/architecture/platform-intents.md) — how a sandbox-clean vertical asks the
@@ -25,6 +26,49 @@ export const platformRequestInput = z.object({
 });
 export type PlatformRequestInput = z.infer<typeof platformRequestInput>;
 
+/**
+ * WHO refused a settled intent — the fact the drawer's caption was guessing at (#841).
+ *
+ * A `connector:<provider>` delivery passes through two authorities before it is over: our
+ * own permission check on the way to the bytes, and the provider's answer once they are
+ * sent. Both surfaced as a `lastError` string and nothing distinguished them, so the
+ * dashboard captioned every failure as the provider's — and a `permission denied:
+ * protocol:read` raised on OUR side of egress was rendered as *"what Scrive said, in
+ * full"*. An operator reading that goes to look at their Scrive account, presses **Test
+ * connection** (which passes, because the credential is fine), and concludes the platform
+ * is broken. That is the failure this record exists to end.
+ *
+ * - `platform` — one of ours, raised before anything reached the provider. The refusal
+ *   carries a taxonomy `code`, so it can be said precisely rather than quoted.
+ * - `provider` — the provider ANSWERED and refused. Only this one may be captioned as
+ *   their words.
+ * - `unknown` — classified and could not be told apart: a bug, a socket that never
+ *   opened, a give-up at the attempt ceiling. Distinct from a NULL `failure`, which means
+ *   nobody classified at all (a row settled before this field existed, or one that never
+ *   failed) — honestly unrecorded rather than honestly unknown.
+ */
+export const platformRequestFailureOrigin = z.enum(['platform', 'provider', 'unknown']);
+export type PlatformRequestFailureOrigin = z.infer<typeof platformRequestFailureOrigin>;
+
+/**
+ * How a settled intent's last failure was attributed. Written by the drain from the throw
+ * itself, never re-derived downstream from the message — a reader that has to regex prose
+ * to know who refused is the bug, not the fix.
+ *
+ * `permission` is the one extension lifted out of the error and given a column of its own,
+ * because it is what makes the join mechanical: a refused key that is absent from the
+ * connection's grants is the whole diagnosis, and both halves are already rendered inches
+ * apart in the integration drawer. Every other extension stays in the message.
+ */
+export const platformRequestFailure = z.object({
+  origin: platformRequestFailureOrigin,
+  /** The taxonomy code, when the refusal was one of ours. `null` for a provider's answer. */
+  code: errorCode.nullable(),
+  /** The permission key a `permission_denied` names, when it named one. */
+  permission: z.string().min(1).nullable(),
+});
+export type PlatformRequestFailure = z.infer<typeof platformRequestFailure>;
+
 /** The full kernel-stamped intent record as it lives in the spine and is read by the drain. */
 export const platformRequest = z.object({
   id: platformRequestId,
@@ -34,6 +78,8 @@ export const platformRequest = z.object({
   status: platformRequestStatus,
   attempts: z.number().int().nonnegative(),
   lastError: z.string().nullable(),
+  /** How `lastError` was attributed (#841). `null` = unrecorded, never "nobody's fault". */
+  failure: platformRequestFailure.nullable(),
   result: z.unknown().nullable(),
   requestedAt: instant, // stamped kernel-side
   settledAt: instant.nullable(),

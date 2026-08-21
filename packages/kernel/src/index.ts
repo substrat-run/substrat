@@ -128,6 +128,7 @@ export {
   platformRequestHistoryQuery,
 } from './platform-request-query.js';
 export {
+  isTerminalDispatchFailure,
   isTerminalProviderError,
   providerErrorStatus,
   RETRYABLE_CLIENT_STATUSES,

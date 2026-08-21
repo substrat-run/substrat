@@ -2257,6 +2257,9 @@ app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
       attempts: r.attempts,
       // Verbatim, never truncated — the nine words past "HTTP 409" ARE the diagnosis.
       lastError: r.lastError,
+      // #841: who refused, carried as the drain attributed it. Null stays null — the UI
+      // must say less rather than guess when nothing classified this row.
+      failure: r.failure ?? null,
       requestedAt: r.requestedAt,
       settledAt: r.settledAt,
       // What was SENT, next to what came back. The intent payload is the routed domain

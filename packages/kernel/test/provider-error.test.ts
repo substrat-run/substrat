@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { isTerminalProviderError, providerErrorStatus } from '../src/provider-error.js';
+import {
+  isTerminalDispatchFailure,
+  isTerminalProviderError,
+  providerErrorStatus,
+} from '../src/provider-error.js';
+import { substratError } from '@substrat-run/contracts';
 
 /**
  * #618. Three signature requests sat in `pending_signature` for a fortnight because the drain
@@ -49,5 +54,41 @@ describe('isTerminalProviderError — is another attempt worth anything?', () =>
     expect(providerErrorStatus(withStatus(409))).toBe(409);
     expect(providerErrorStatus({ status: 404 })).toBe(404); // duck-typed on purpose
     expect(providerErrorStatus(new Error('nope'))).toBeUndefined();
+  });
+});
+
+/**
+ * #841. The predicate above reads a bare numeric `status`, and every `SubstratError` carries
+ * one from the problem catalog — so our OWN `permission denied: protocol:read` answered "yes,
+ * the provider refused this", and the drain journaled it as such under a delivery the provider
+ * never received. Splitting the question is the fix: terminality is about the status, and
+ * attribution is about who threw.
+ */
+describe('the two questions #618 conflated — is it over, and whose answer is it', () => {
+  const withStatus = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
+
+  it('keeps our own 4xx TERMINAL — that part was never wrong', () => {
+    // A refusal we raised is as final as the provider's: the retry re-runs the same check.
+    expect(isTerminalDispatchFailure(substratError('permission_denied', 'permission denied: protocol:read'))).toBe(
+      true,
+    );
+    expect(isTerminalDispatchFailure(substratError('validation_failed', 'bad payload'))).toBe(true);
+    // …and a provider 4xx too, so no delivery changed its retry behaviour with this split.
+    expect(isTerminalDispatchFailure(withStatus(409))).toBe(true);
+    expect(isTerminalDispatchFailure(withStatus(503))).toBe(false);
+  });
+
+  it('stops calling our own refusal the PROVIDER\'s — the regression itself', () => {
+    expect(isTerminalProviderError(substratError('permission_denied', 'permission denied: protocol:read'))).toBe(
+      false,
+    );
+    expect(isTerminalProviderError(substratError('validation_failed', 'bad payload'))).toBe(false);
+    // Our 5xx was never the provider's either, and still is not.
+    expect(isTerminalProviderError(substratError('unavailable', 'secret box unconfigured'))).toBe(false);
+  });
+
+  it('still recognises a real provider refusal, which is the only thing it may now name', () => {
+    expect(isTerminalProviderError(withStatus(409))).toBe(true);
+    expect(isTerminalProviderError(withStatus(422))).toBe(true);
   });
 });
