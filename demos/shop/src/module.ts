@@ -2,6 +2,8 @@ import { z } from 'zod';
 import {
   addDecimal,
   addMoney,
+  assertTransition,
+  defineLifecycles,
   compareDecimal,
   moneyOf,
   mulDecimal,
@@ -969,12 +971,19 @@ const myCustomerOp: OperationHandler<undefined, { id: string; number: string; na
   return null;
 };
 
+/**
+ * The declared machine, applied. Named after the VERB, so the legal states are
+ * read off the declaration rather than restated at each call site.
+ */
+function requireTransition(order: OrderRow, operation: string): void {
+  assertTransition(shopLifecycles.order, `order ${order.number}`, order.status, operation);
+}
+
 const fulfilOrderOp: OperationHandler<{ orderId: string }, OrderRow> = async (ctx, input) => {
   assertAllowed(await ctx.check(SHOP_PERM.orderFulfil));
   const order = ctx.sql.query<OrderRow>('SELECT * FROM shop_orders WHERE id = ?', [input.orderId])[0];
   if (!order) throw new Error(`order not found: ${input.orderId}`);
-  if (order.status !== 'placed')
-    throw new Error(`invalid transition: order ${order.number} is '${order.status}', requires placed`);
+  requireTransition(order, 'shop/fulfil-order');
   ctx.sql.exec("UPDATE shop_orders SET status = 'fulfilled' WHERE id = ?", [order.id]);
   return ctx.sql.query<OrderRow>('SELECT * FROM shop_orders WHERE id = ?', [order.id])[0]!;
 };
@@ -983,16 +992,18 @@ const closeOrderOp: OperationHandler<{ orderId: string }, OrderRow> = async (ctx
   assertAllowed(await ctx.check(SHOP_PERM.orderFulfil));
   const order = ctx.sql.query<OrderRow>('SELECT * FROM shop_orders WHERE id = ?', [input.orderId])[0];
   if (!order) throw new Error(`order not found: ${input.orderId}`);
-  if (order.status !== 'fulfilled')
-    throw new Error(`invalid transition: order ${order.number} is '${order.status}', requires fulfilled`);
+  requireTransition(order, 'shop/close-order');
   ctx.sql.exec("UPDATE shop_orders SET status = 'closed' WHERE id = ?", [order.id]);
   return ctx.sql.query<OrderRow>('SELECT * FROM shop_orders WHERE id = ?', [order.id])[0]!;
 };
 
-export const shopModule: ModuleRegistration = {
-  manifest: shopManifest,
-  migrations: shopMigrations,
-  operations: {
+/**
+ * The registered handlers, extracted so the lifecycle below can be checked
+ * against them (#844). Same placement reasoning as `engine-booking`: this map is
+ * the only description of the operation surface, so a separate file importing it
+ * would close a cycle.
+ */
+const OPERATIONS = {
     'shop/create-product': createProductOp as never,
     'shop/add-variant': addVariantOp as never,
     'shop/publish-product': publishProductOp as never,
@@ -1012,7 +1023,50 @@ export const shopModule: ModuleRegistration = {
     'shop/order': orderOp as never,
     'shop/portal-orders': portalOrdersOp as never,
     'shop/my-customer': myCustomerOp as never,
-    'shop/fulfil-order': fulfilOrderOp as never,
-    'shop/close-order': closeOrderOp as never,
-  },
+  'shop/fulfil-order': fulfilOrderOp as never,
+  'shop/close-order': closeOrderOp as never,
 };
+
+export const shopModule: ModuleRegistration = {
+  manifest: shopManifest,
+  migrations: shopMigrations,
+  operations: OPERATIONS,
+};
+
+/**
+ * The order's state machine, declared (#844).
+ *
+ * ## The bug this closed
+ *
+ * Both guards threw a bare `new Error(...)`, so a shopper fulfilling an already-
+ * fulfilled order got a **500** where every engine answers **409**. Nothing was
+ * red: the scenario test asserted `/invalid transition/`, which a bare `Error`
+ * carries just as well as a `conflict` does. Routing the check through
+ * `assertTransition` puts this demo back on the platform's error contract, and
+ * the message keeps the same prefix.
+ *
+ * ## `cancelled` is declared and unreachable, deliberately visibly
+ *
+ * The column admits `cancelled` — it is in the enum and in the migration's
+ * `CHECK` — and **nothing in this vertical ever writes it**. Declaring the
+ * machine is what surfaced that: `states` must be total over the enum, so the
+ * dead state cannot stay invisible. It is left declared rather than quietly
+ * dropped, because removing it is a migration and a product decision, and the
+ * emitted `model.json` now shows a state with no way in.
+ */
+export const shopLifecycles = defineLifecycles(
+  shopEntities,
+  OPERATIONS,
+)({
+  order: {
+    field: 'status',
+    initial: 'placed',
+    states: {
+      placed: { on: { 'shop/fulfil-order': 'fulfilled' } },
+      fulfilled: { on: { 'shop/close-order': 'closed' } },
+      closed: { terminal: true },
+      /** No inbound edge — see above. Not terminal by intent, terminal by neglect. */
+      cancelled: { terminal: true },
+    },
+  },
+});

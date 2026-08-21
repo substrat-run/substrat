@@ -225,13 +225,17 @@ describe('Manyfold demo scenario', () => {
       typeKey: 'post',
       body: { title: 'Skip', slug: 'skip' },
     });
+    // The refusal comes from the declared lifecycle now (#844): the same
+    // `invalid transition: …` phrasing every engine uses, naming the operation
+    // and the states that would have worked — and it reports the CURRENT state,
+    // which the vertical's old hand-written sentence also did but had to repeat.
     await expect(emilCafe.invoke('manyfold/publish', { entryId: fresh.id })).rejects.toThrow(
-      /publish requires an approved entry/,
+      /invalid transition: post entry is 'draft', but 'manyfold\/publish' requires approved/,
     );
     // And after submit, still not approved → still blocked (the guard MOVES with state).
     await sofiaCafe.invoke('manyfold/submit-for-review', { entryId: fresh.id });
     await expect(emilCafe.invoke('manyfold/publish', { entryId: fresh.id })).rejects.toThrow(
-      /publish requires an approved entry/,
+      /invalid transition: post entry is 'in_review', but 'manyfold\/publish' requires approved/,
     );
   });
 

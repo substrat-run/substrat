@@ -84,7 +84,14 @@ async function main(): Promise<number> {
     // Looking only at the second silently skipped every vertical built the new
     // way — CI green over an entity model nobody reviewed, which is the failure
     // this tool exists to prevent.
-    const candidates = [join(DEMOS, demo, 'spec', 'model.ts'), join(DEMOS, demo, 'src', 'entities.ts')];
+    // `src/model.ts` sits between the two: a vertical whose emitted model carries
+    // a LIFECYCLE cannot emit from `src/entities.ts`, because the lifecycle is
+    // declared beside the operation map that imports the entities (#844).
+    const candidates = [
+      join(DEMOS, demo, 'spec', 'model.ts'),
+      join(DEMOS, demo, 'src', 'model.ts'),
+      join(DEMOS, demo, 'src', 'entities.ts'),
+    ];
     const src = candidates.find((c) => existsSync(c));
     if (!src) {
       // Same guard permission-diff carries: a directory that is clearly a
