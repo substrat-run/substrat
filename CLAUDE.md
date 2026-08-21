@@ -176,7 +176,7 @@ request is made as, and the error envelope the vertical picked in its own `app.o
 
 Two phases, in order. **Design** with the **substrat** skill
 (`.claude/skills/substrat/SKILL.md`): interview the user, map the domain onto the engines,
-and land a reviewable `DESIGN.md` / `spec/concept.md` the user approves *before any code*.
+and land a reviewable `spec/concept.md` the user approves *before any code*.
 Then **build** with the **new-vertical** skill (`.claude/skills/new-vertical/SKILL.md`),
 which turns that approved design into a working vertical. Reference implementation:
 `demos/callout` (spec in `demos/callout/spec/`, **declared model in `src/entities.ts` +

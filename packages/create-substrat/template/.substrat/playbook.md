@@ -7,8 +7,8 @@ reshape the reference into it. Read the whole thing before starting — both the
 (Step 4) and the checkpoints (Step 7) are hard stops.
 
 **The target is a reviewed design, not running code.** Steps 1–2 learn the domain and map it
-onto what already exists; Step 3 writes a checked-in `DESIGN.md` in the user's own vocabulary;
-Step 4 is a **hard stop** where the user reads and approves it. Only then does Step 5 reshape
+onto what already exists; Step 3 writes a checked-in `spec/concept.md` in the user's own
+vocabulary; Step 4 is a **hard stop** where the user reads and approves it. Only then does Step 5 reshape
 the reference into their domain. The design gate (Step 4) is *upstream* of the two code
 checkpoints (Step 7) — a user with zero Substrat knowledge gets to say "yes, that's the app I
 want" before implementation, not after.
@@ -147,8 +147,9 @@ stop. Do not scaffold.
 ## Step 3 — Write the design document
 
 **This is the deliverable.** Everything before now was learning; this is where it lands
-somewhere the user can hold. Write a **checked-in `DESIGN.md`** in the project root, in the
-user's own vocabulary — no Substrat internals, no decision refs, no cross-references to
+somewhere the user can hold. Write a **checked-in `spec/concept.md`** — beside
+`spec/model.ts`, which is this same design one rung more concrete — in the user's own
+vocabulary — no Substrat internals, no decision refs, no cross-references to
 platform docs. Someone who has never heard of Substrat must be able to read it and recognise
 their own business.
 
@@ -291,8 +292,8 @@ and event subjects all need one id, so naming such an entity in `parents`,
 compile error. It is still a full model member with migrations and a row type. A
 single-column key that is not called `id` stays fully pointable.
 
-Behaviour stays prose in `DESIGN.md`. Inventing a way to declare a state *transition* means
-the boundary slipped.
+Behaviour stays prose in `spec/concept.md`. Inventing a way to declare a state *transition*
+means the boundary slipped.
 
 Full reference: https://substrat.net/concepts/model
 
@@ -307,7 +308,7 @@ to make the build pass.
 The design is approved. The scaffold already contains a working vertical in `src/` + `test/` —
 the bike-repair shop. **Read it first** (it's your Callout: the real, green implementation of
 every pattern this step describes), then reshape it into the user's domain from the approved
-`DESIGN.md`:
+`spec/concept.md`:
 
 - **Rename the vocabulary** — `shop_customers`/`shop_bikes` → the user's nouns, the `shop/*`
   operation names, the roles, the price-list shape. If the user's core noun maps onto a work

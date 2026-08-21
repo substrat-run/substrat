@@ -8,8 +8,8 @@ description: Scaffold a complete Substrat vertical (manifest, migrations, operat
 > **Start from an approved design.** This skill *builds*; it does not decide what to build.
 > If you arrived here without a reviewed design document, start from the **substrat** skill
 > (`.claude/skills/substrat/SKILL.md`) — it interviews the user, maps the domain onto the
-> engines, and lands the `DESIGN.md` / `spec/concept.md` this skill turns into code, gated
-> on the user's approval. Do not re-interview the user here.
+> engines, and lands the `spec/concept.md` this skill turns into code, gated on the
+> user's approval. Do not re-interview the user here.
 
 A vertical is a private package under `demos/<name>/` that composes the published
 engines with its own vocabulary, tables, pricing, roles, and screens. The reference
@@ -33,14 +33,14 @@ human checkpoints). The engines' surfaces are their `src/index.ts`:
 
 ### 1. Start from the approved design
 
-The design already exists — it is the `DESIGN.md` / `spec/concept.md` the **substrat**
-skill produced and the user approved. **Do not re-derive the domain; translate it.** The
+The design already exists — it is the `spec/concept.md` the **substrat** skill produced
+and the user approved. **Do not re-derive the domain; translate it.** The
 design's sections map straight onto the build: the cast and roles → seed roles/grants; "the
 thing that moves" and its lifecycle → engine composition; "the data we'll store" →
 migrations; "who is denied what" → permission checks and portal grants; "the scenario the
 test will replay" → `test/scenario.test.ts`.
 
-If you are inside the monorepo and the design lives elsewhere (e.g. `DESIGN.md`), copy it to
+If the concept was written outside the vertical's own directory, copy it to
 `demos/<name>/spec/concept.md` as the vertical's checked-in spec, keeping its content. The
 vertical owns **vocabulary, extra fields, price list, roles, screens** — nothing that
 belongs to an engine's state machine. If a needed decision is genuinely missing from the
