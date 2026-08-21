@@ -24,6 +24,24 @@
  *                      EntityRefs, and event payloads. One-time extraction
  *                      handoffs (decision 27) opt out explicitly with a
  *                      `boundary-lint-allow R5` … `boundary-lint-end R5` block.
+ *   R6 no clock        module code never reads the wall clock (`new Date()`,
+ *                      `Date.now()`) — the operation's instant is `ctx.now()`
+ *                      (#812). The same class of ban as R2's `node:*`: a
+ *                      capability the host owns and injects, so a scenario can
+ *                      freeze it and a replay can control it. `new Date(value)`
+ *                      with an argument is untouched — parsing a timestamp you
+ *                      were given is not reading a clock. Code that must read
+ *                      the REAL clock — a JWT whose `exp` a remote server
+ *                      judges, host-driving code outside any operation — opts
+ *                      out explicitly with a `boundary-lint-allow R6` …
+ *                      `boundary-lint-end R6` block, the same reviewable hatch
+ *                      R5 uses. Unlike R5's, this one has a recurring
+ *                      legitimate case, so it is a hatch rather than a
+ *                      one-time handoff.
+ *
+ * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
+ * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
+ * unbuilt; this one landed first and took the number, so that rule becomes R7.
  *
  * TABLE OWNERSHIP IS DERIVED FROM MIGRATIONS, NEVER DECLARED. A table is owned
  * by whichever module's `CREATE TABLE` made it. That fact ships inside the
@@ -49,7 +67,7 @@ export interface Violation {
   file: string;
   /** 1-indexed, when the rule is line-anchored. */
   line?: number;
-  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5';
+  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6';
   message: string;
 }
 
@@ -130,6 +148,12 @@ export const DEFAULT_HARNESS = [
   'auth-node.ts',
   'auth-do.ts',
   'auth-adapters.ts',
+  // The auth adapter's own table definitions (Better Auth's Drizzle schema),
+  // imported only by auth-do.ts / server.ts. Same class as the rest of auth*.ts
+  // and named separately only because the list is literal: its `new Date()`
+  // defaults are the LIBRARY's storage contract, not a Substrat row's stamp, so
+  // R6 has nothing to say about them.
+  'auth-schema.ts',
   'do-contract.ts',
   'oidc.ts',
   'worker.ts',
@@ -228,6 +252,52 @@ function checkForeignTables(
   }
 }
 
+/**
+ * R6 — module code has no clock (#812).
+ *
+ * Argless `new Date()` and `Date.now()` only. `new Date(row.created_at)` and
+ * `Date.parse(x)` are reading a value somebody already stamped, which is
+ * ordinary data handling; the ban is on ORIGINATING a timestamp, because that
+ * is the act the host has to own for a frozen clock or a replay to mean
+ * anything.
+ *
+ * Comment lines are skipped. This file's own header names both spellings, and a
+ * rule that cannot be described in a comment without firing on the description
+ * is a rule people delete.
+ */
+const WALL_CLOCK = /\bnew\s+Date\s*\(\s*\)|\bDate\s*\.\s*now\s*\(\s*\)/;
+
+function checkClock(rel: string, source: string, out: Violation[]): void {
+  const lines = source.split('\n');
+  let inBlockComment = false;
+  let allowed = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const trimmed = line.trim();
+    if (line.includes('boundary-lint-allow R6')) allowed = true;
+    else if (line.includes('boundary-lint-end R6')) allowed = false;
+    if (allowed) continue;
+    if (inBlockComment) {
+      if (trimmed.includes('*/')) inBlockComment = false;
+      continue;
+    }
+    if (trimmed.startsWith('/*')) {
+      if (!trimmed.includes('*/')) inBlockComment = true;
+      continue;
+    }
+    if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+    const m = WALL_CLOCK.exec(line);
+    if (m) {
+      out.push({
+        file: rel,
+        line: i + 1,
+        rule: 'R6',
+        message: `no clock — module code reads the wall clock ('${m[0]}'); use ctx.now()`,
+      });
+    }
+  }
+}
+
 function checkModuleFile(
   file: string,
   rel: string,
@@ -238,6 +308,7 @@ function checkModuleFile(
   const source = readFileSync(file, 'utf8');
 
   checkForeignTables(rel, source, pkg.name, tableOwners, out);
+  checkClock(rel, source, out);
 
   for (const spec of importsOf(source)) {
     if (pkg.engine && spec.startsWith('@substrat-run/engine-') && spec !== pkg.name) {

@@ -71,7 +71,7 @@ const createCustomerOp: OperationHandler<
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO shop_customers (id, number, name, phone, created_at) VALUES (?, ?, ?, ?, ?)`,
-    [id, input.number, input.name, input.phone ?? null, new Date().toISOString()],
+    [id, input.number, input.name, input.phone ?? null, ctx.now()],
   );
   return ctx.sql.query<CustomerRow>('SELECT * FROM shop_customers WHERE id = ?', [id])[0]!;
 };
@@ -101,7 +101,7 @@ const registerBikeOp: OperationHandler<
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO shop_bikes (id, customer_id, label, frame_no, created_at) VALUES (?, ?, ?, ?, ?)`,
-    [id, customer.id, input.label, input.frameNo ?? null, new Date().toISOString()],
+    [id, customer.id, input.label, input.frameNo ?? null, ctx.now()],
   );
   // Record the bike → customer edge the manifest declared, so the portal walk
   // (workorder → bike → customer) can resolve an entity-narrowed grant.

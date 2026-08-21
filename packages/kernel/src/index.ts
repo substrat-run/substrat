@@ -16,6 +16,7 @@ export type {
   ConnectorOptions,
   ConnectorRequestInit,
   ConnectorResponse,
+  Clock,
   FetchLike,
   GuardPredicate,
   HostAdmin,
@@ -112,6 +113,8 @@ export type {
   SearchTokenizer,
   SearchableDeclaration,
 } from './search-index.js';
+export { frozenClock, manualClock } from './clock.js';
+export type { ManualClock } from './clock.js';
 export { ulid } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { readRoutedNode, RouterAssertionError } from './routed-node.js';

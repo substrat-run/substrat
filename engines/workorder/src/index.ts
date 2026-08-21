@@ -259,7 +259,7 @@ export function createWorkOrder(ctx: OperationContext, rawInput: CreateWorkOrder
     (ctx.sql.query<{ n: number }>('SELECT COALESCE(MAX(number), 0) + 1 AS n FROM workorder_orders')[0]
       ?.n as number) ?? 1;
   const id = ulid();
-  const createdAt = new Date().toISOString();
+  const createdAt = ctx.now();
   ctx.sql.exec(
     `INSERT INTO workorder_orders
        (id, number, facility_type, facility_id, customer_type, customer_id,
@@ -337,7 +337,7 @@ export function completeWorkOrder(
     (sum, line) => addMoney(sum, line.lineTotal),
     moneyOf('0', billable[0]?.lineTotal.currency ?? 'SEK'),
   );
-  const completedAt = new Date().toISOString();
+  const completedAt = ctx.now();
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'completed', completed_at = ? WHERE id = ?`, [
     completedAt,
     row.id,
@@ -449,7 +449,7 @@ const reportTimeOp: OperationHandler<
   ctx.sql.exec(
     `INSERT INTO workorder_time_entries (id, order_id, technician, hours, note, reported_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, row.id, ctx.principal, hours, input.note ?? null, new Date().toISOString()],
+    [id, row.id, ctx.principal, hours, input.note ?? null, ctx.now()],
   );
   ctx.emit({
     type: 'workorder.time-reported',
@@ -474,7 +474,7 @@ const reportMaterialOp: OperationHandler<
   ctx.sql.exec(
     `INSERT INTO workorder_material_lines (id, order_id, article, qty, note, reported_by, reported_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, row.id, input.article, qty, input.note ?? null, ctx.principal, new Date().toISOString()],
+    [id, row.id, input.article, qty, input.note ?? null, ctx.principal, ctx.now()],
   );
   ctx.emit({
     type: 'workorder.material-reported',

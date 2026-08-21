@@ -188,8 +188,12 @@ const instantIn = z
   .refine((s) => !Number.isNaN(Date.parse(s)), { message: 'invalid instant' })
   .transform(toInstant);
 
-/** `now` is injectable so hold expiry is testable and replayable; it defaults to wall clock. */
-const nowOr = (now?: string): string => (now ? toInstant(now) : new Date().toISOString());
+/**
+ * `now` is injectable so hold expiry is testable and replayable; absent, it is the
+ * operation's instant (#812) rather than a fresh wall-clock reading, so every
+ * expiry decision inside one operation is judged against the same moment.
+ */
+const nowOr = (ctx: OperationContext, now?: string): string => (now ? toInstant(now) : ctx.now());
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -509,7 +513,7 @@ function allocatedOver(
 export function createResource(ctx: OperationContext, rawInput: CreateResourceInput): Resource {
   const input = createResourceInput.parse(rawInput);
   const id = ulid();
-  const createdAt = new Date().toISOString();
+  const createdAt = ctx.now();
   ctx.sql.exec(
     `INSERT INTO booking_resources (id, kind, name, capacity, active, created_at)
      VALUES (?, ?, ?, ?, 1, ?)`,
@@ -559,7 +563,7 @@ export function holdReservation(
   rawInput: HoldReservationInput,
 ): Reservation {
   const input = holdReservationInput.parse(rawInput);
-  const now = nowOr(input.now);
+  const now = nowOr(ctx, input.now);
   if (input.startsAt >= input.endsAt) {
     throw substratError('validation_failed', `invalid interval: ${input.startsAt} is not before ${input.endsAt}`);
   }
@@ -624,7 +628,7 @@ export function confirmReservation(
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
   requireTransition(row, 'booking/confirm');
-  const now = nowOr(input.now);
+  const now = nowOr(ctx, input.now);
   if (row.expires_at && row.expires_at <= now) {
     throw conflict('hold_expired', `hold expired at ${row.expires_at}`);
   }
@@ -653,7 +657,7 @@ export function confirmReservation(
       participantCount: activeParticipants(ctx, row.id).length,
     },
   });
-  return toReservation(getRow(ctx, row.id), nowOr(input.now));
+  return toReservation(getRow(ctx, row.id), nowOr(ctx, input.now));
 }
 
 /**
@@ -667,7 +671,7 @@ export function expireReservation(
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
   requireTransition(row, 'booking/expire');
-  const now = nowOr(input.now);
+  const now = nowOr(ctx, input.now);
   if (!row.expires_at || row.expires_at > now) {
     throw conflict('not_yet_expired', `reservation ${row.id} has not expired yet`);
   }
@@ -699,7 +703,7 @@ export function joinReservation(
   const input = joinReservationInput.parse(rawInput);
   const row = getRow(ctx, input.reservationId);
   requireTransition(row, 'booking/join');
-  const now = nowOr(input.now);
+  const now = nowOr(ctx, input.now);
 
   const active = activeParticipants(ctx, row.id);
   if (active.some((p) => p.party_ref === input.partyRef)) {
@@ -787,7 +791,7 @@ export function openReservation(
       participantCount: joined,
     },
   });
-  return toReservation(getRow(ctx, row.id), nowOr(input.now));
+  return toReservation(getRow(ctx, row.id), nowOr(ctx, input.now));
 }
 
 export function leaveReservation(
@@ -795,7 +799,7 @@ export function leaveReservation(
   input: { reservationId: string; participantId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  const now = nowOr(input.now);
+  const now = nowOr(ctx, input.now);
   const participant = ctx.sql.query<ParticipantRow>(
     'SELECT * FROM booking_participants WHERE id = ? AND reservation_id = ?',
     [input.participantId, row.id],
@@ -842,7 +846,7 @@ export function cancelReservation(
       participantCount: activeParticipants(ctx, row.id).length,
     },
   });
-  return toReservation(getRow(ctx, row.id), nowOr(input.now));
+  return toReservation(getRow(ctx, row.id), nowOr(ctx, input.now));
 }
 
 /**
@@ -865,7 +869,7 @@ export function moveReservation(
   const input = moveReservationInput.parse(rawInput);
   const row = getRow(ctx, input.reservationId);
   requireTransition(row, 'booking/move');
-  const now = nowOr(input.now);
+  const now = nowOr(ctx, input.now);
 
   const targetResourceId = input.resourceId ?? row.resource_id;
   let startsAt = input.startsAt ?? row.starts_at;
@@ -910,7 +914,7 @@ export function moveReservation(
       participantCount: activeParticipants(ctx, row.id).length,
     },
   });
-  return toReservation(getRow(ctx, row.id), nowOr(input.now));
+  return toReservation(getRow(ctx, row.id), nowOr(ctx, input.now));
 }
 
 export function startReservation(
@@ -927,7 +931,7 @@ export function startReservation(
     piiClass: 'none',
     payload: { reservationId: row.id, resourceId: row.resource_id },
   });
-  return toReservation(getRow(ctx, row.id), nowOr(input.now));
+  return toReservation(getRow(ctx, row.id), nowOr(ctx, input.now));
 }
 
 /**
@@ -958,7 +962,7 @@ export function completeReservation(
       participantCount: activeParticipants(ctx, row.id).length,
     },
   });
-  return toReservation(getRow(ctx, row.id), nowOr(input.now));
+  return toReservation(getRow(ctx, row.id), nowOr(ctx, input.now));
 }
 
 export function markNoShow(
@@ -981,7 +985,7 @@ export function markNoShow(
       participantCount: activeParticipants(ctx, row.id).length,
     },
   });
-  return toReservation(getRow(ctx, row.id), nowOr(input.now));
+  return toReservation(getRow(ctx, row.id), nowOr(ctx, input.now));
 }
 
 export function getReservation(
@@ -990,7 +994,7 @@ export function getReservation(
   now?: string,
 ): { reservation: Reservation; participants: Participant[] } {
   return {
-    reservation: toReservation(getRow(ctx, reservationId), nowOr(now)),
+    reservation: toReservation(getRow(ctx, reservationId), nowOr(ctx, now)),
     participants: allParticipants(ctx, reservationId),
   };
 }
@@ -1014,7 +1018,7 @@ export function listReservations(
     params.push(toInstant(input.from));
   }
   const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
-  const now = nowOr(input.now);
+  const now = nowOr(ctx, input.now);
   return ctx.sql
     .query<ReservationRow>(
       `SELECT * FROM booking_reservations${where} ORDER BY starts_at, id`,
@@ -1041,7 +1045,7 @@ export function availability(
   const from = toInstant(input.from);
   const to = toInstant(input.to);
   if (from >= to) return [];
-  const now = nowOr(input.now);
+  const now = nowOr(ctx, input.now);
   const resource = getResourceRow(ctx, input.resourceId);
   if (resource.active !== 1) return [];
 

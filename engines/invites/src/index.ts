@@ -165,8 +165,6 @@ export async function hashIdentifier(scopeSalt: string, identifier: string): Pro
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-const nowIso = () => new Date().toISOString();
-
 /**
  * Settle this org's overdue invitations.
  *
@@ -179,7 +177,7 @@ export function expireOverdue(ctx: OperationContext, orgId: OrgId): void {
   ctx.sql.exec(
     `UPDATE invites_invitation SET state = 'expired', settled_at = ?
      WHERE org_id = ? AND state = 'invited' AND expires_at <= ?`,
-    [nowIso(), orgId, nowIso()],
+    [ctx.now(), orgId, ctx.now()],
   );
 }
 
@@ -228,12 +226,12 @@ export async function sendInvite(
   if (existing[0]) return { id: existing[0].id };
 
   const id = ulid();
-  const expiresAt = new Date(Date.now() + (input.ttlMs ?? DEFAULT_TTL_MS)).toISOString();
+  const expiresAt = new Date(Date.parse(ctx.now()) + (input.ttlMs ?? DEFAULT_TTL_MS)).toISOString();
   ctx.sql.exec(
     `INSERT INTO invites_invitation
        (id, org_id, identifier_hash, role_key, state, invited_by, created_at, expires_at)
      VALUES (?, ?, ?, ?, 'invited', ?, ?, ?)`,
-    [id, input.orgId, hash, input.roleKey, ctx.principal, nowIso(), expiresAt],
+    [id, input.orgId, hash, input.roleKey, ctx.principal, ctx.now(), expiresAt],
   );
 
   ctx.emit({
@@ -268,9 +266,9 @@ export async function acceptInvite(
   // expired. Distinguishing them would turn this into an oracle.
   const refuse = () => new Error('invitation is not acceptable');
   if (!row || row.state !== 'invited') throw refuse();
-  if (row.expires_at <= nowIso()) {
+  if (row.expires_at <= ctx.now()) {
     ctx.sql.exec(`UPDATE invites_invitation SET state = 'expired', settled_at = ? WHERE id = ?`, [
-      nowIso(),
+      ctx.now(),
       row.id,
     ]);
     throw refuse();
@@ -280,7 +278,7 @@ export async function acceptInvite(
 
   ctx.sql.exec(
     `UPDATE invites_invitation SET state = 'accepted', accepted_by = ?, settled_at = ? WHERE id = ?`,
-    [ctx.principal, nowIso(), row.id],
+    [ctx.principal, ctx.now(), row.id],
   );
 
   ctx.emit({
@@ -324,7 +322,7 @@ export function revokeInvite(ctx: OperationContext, invitationId: string): void 
   const changed = ctx.sql.query<{ id: string }>(
     `UPDATE invites_invitation SET state = 'revoked', settled_at = ?
      WHERE id = ? AND state = 'invited' RETURNING id`,
-    [nowIso(), invitationId],
+    [ctx.now(), invitationId],
   );
   if (!changed[0]) return; // already settled, or never existed — idempotent and silent
   ctx.emit({

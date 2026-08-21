@@ -39,8 +39,6 @@ type OwnerRow = EntityRow<typeof todoEntities, 'owner'>;
 type ListRow = EntityRow<typeof todoEntities, 'list'>;
 type ItemRow = EntityRow<typeof todoEntities, 'item'>;
 type ShareRow = EntityRow<typeof todoEntities, 'share'>;
-
-const now = () => new Date().toISOString();
 const listRef = (id: string) => ({ entityType: 'list', entityId: id });
 
 /**
@@ -84,7 +82,7 @@ const operations = {
 
     ctx.sql.exec(
       'INSERT INTO todo_owners (id, email, display_name, created_at) VALUES (?, ?, ?, ?)',
-      [ctx.principal, input.email, input.displayName, now()],
+      [ctx.principal, input.email, input.displayName, ctx.now()],
     );
     const row = ctx.sql.query<OwnerRow>('SELECT * FROM todo_owners WHERE id = ?', [
       ctx.principal,
@@ -116,7 +114,7 @@ const operations = {
     const id = ulid();
     ctx.sql.exec(
       'INSERT INTO todo_lists (id, owner_id, name, created_at) VALUES (?, ?, ?, ?)',
-      [id, owner.id, input.name, now()],
+      [id, owner.id, input.name, ctx.now()],
     );
     // The edge the permission walk follows. Without it the owner's grant on
     // their own entity would reach nothing.
@@ -286,7 +284,7 @@ const operations = {
     const id = ulid();
     ctx.sql.exec(
       'INSERT INTO todo_items (id, list_id, text, done, added_by, created_at) VALUES (?, ?, ?, 0, ?, ?)',
-      [id, input.listId, input.text, ctx.principal, now()],
+      [id, input.listId, input.text, ctx.principal, ctx.now()],
     );
     const row = ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE id = ?', [id])[0]!;
     ctx.emit({
@@ -356,7 +354,7 @@ const operations = {
     const id = ulid();
     ctx.sql.exec(
       'INSERT INTO todo_shares (id, list_id, principal, email, created_at) VALUES (?, ?, ?, ?, ?)',
-      [id, input.listId, invitee.id, invitee.email, now()],
+      [id, input.listId, invitee.id, invitee.email, ctx.now()],
     );
     await ctx.grant(invitee.id as PrincipalId, TODO_PERM.listContribute, listRef(input.listId));
 

@@ -244,7 +244,7 @@ const createEmployeeOp: OperationHandler<z.infer<typeof createEmployeeInput>, Em
       input.nationalId ?? null,
       input.principalRef ?? null,
       input.startedAt ?? null,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   // PII stays out of the event payload; the record carries it, the spine does not.
@@ -324,7 +324,7 @@ const defineLeaveTypeOp: OperationHandler<z.infer<typeof defineLeaveTypeInput>, 
     ctx.sql.exec(
       `INSERT OR REPLACE INTO hr_leave_types (key, label, kind, annual_days, created_at)
        VALUES (?, ?, ?, ?, ?)`,
-      [input.key, input.label, input.kind, input.annualDays ?? null, new Date().toISOString()],
+      [input.key, input.label, input.kind, input.annualDays ?? null, ctx.now()],
     );
     // Same transaction: the vocabulary row here, the POLICY registration in the
     // engine (floor 0 — Sweden's förskottssemester would be a negative floor).
@@ -374,7 +374,7 @@ const accrueOp: OperationHandler<z.infer<typeof accrueInput>, LedgerRow> = async
     leaveTypeKey: input.leaveTypeKey,
     entryKind: 'accrual',
     delta: input.days,
-    effectiveDate: input.effectiveDate ?? new Date().toISOString().slice(0, 10),
+    effectiveDate: input.effectiveDate ?? ctx.now().slice(0, 10),
     note: input.note,
   });
   return ledgerRowOf(entry);
@@ -494,7 +494,7 @@ const createProjectOp: OperationHandler<z.infer<typeof createProjectInput>, Proj
     id,
     input.code,
     input.name,
-    new Date().toISOString(),
+    ctx.now(),
   ]);
   return ctx.sql.query<ProjectRow>('SELECT * FROM hr_projects WHERE id = ?', [id])[0]!;
 };
@@ -534,7 +534,7 @@ const logTimeOp: OperationHandler<z.infer<typeof logTimeInput>, TimeEntryRow> = 
   ctx.sql.exec(
     `INSERT INTO hr_time_entries (id, employee_id, project_id, work_date, hours, note, created_by, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.employeeId, input.projectId ?? null, input.workDate, input.hours, input.note ?? null, ctx.principal, new Date().toISOString()],
+    [id, input.employeeId, input.projectId ?? null, input.workDate, input.hours, input.note ?? null, ctx.principal, ctx.now()],
   );
   ctx.emit({
     type: 'hr.time-logged',
@@ -588,7 +588,7 @@ const submitExpenseOp: OperationHandler<z.infer<typeof submitExpenseInput>, Expe
   ctx.sql.exec(
     `INSERT INTO hr_expenses (id, employee_id, project_id, description, amount, currency, category, status, created_by, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?)`,
-    [id, input.employeeId, input.projectId ?? null, input.description, input.amount, input.currency, input.category, ctx.principal, new Date().toISOString()],
+    [id, input.employeeId, input.projectId ?? null, input.description, input.amount, input.currency, input.category, ctx.principal, ctx.now()],
   );
   ctx.emit({
     type: 'hr.expense-submitted',
@@ -621,7 +621,7 @@ const decideExpenseOp: OperationHandler<z.infer<typeof decideExpenseInput>, Expe
   ctx.sql.exec(`UPDATE hr_expenses SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?`, [
     status,
     ctx.principal,
-    new Date().toISOString(),
+    ctx.now(),
     exp.id,
   ]);
   ctx.emit({
@@ -797,7 +797,7 @@ const setTermsOp: OperationHandler<z.infer<typeof setTermsInput>, EmploymentTerm
       input.startDate,
       input.noticeMonths,
       ctx.principal,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   // Compensation is not spine material: the event says terms exist, not what

@@ -548,7 +548,7 @@ function addEntry(
       input.deltaOre,
       input.reason,
       input.reservationId ?? null,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
 }
@@ -683,7 +683,7 @@ const addClosureOp: OperationHandler<
       input.opensAt ?? null,
       input.closesAt ?? null,
       input.reason,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   return ctx.sql.query<ClosureRow>('SELECT * FROM rally_closures WHERE id = ?', [id])[0]!;
@@ -724,7 +724,7 @@ const upsertPriceRuleOp: OperationHandler<
       input.duration ?? null,
       input.amount,
       input.currency ?? 'SEK',
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   return ctx.sql.query<PriceRuleRow>('SELECT * FROM rally_price_rules WHERE id = ?', [id])[0]!;
@@ -816,7 +816,7 @@ const cancelSubscriptionOp: OperationHandler<{ subscriptionId: string }, Subscri
   assertAllowed(await ctx.check(BK.read, memberRef(sub.member_id)));
   ctx.sql.exec(
     `UPDATE rally_subscriptions SET status = 'cancelled', cancelled_at = ? WHERE id = ?`,
-    [new Date().toISOString(), sub.id],
+    [ctx.now(), sub.id],
   );
   return ctx.sql.query<SubscriptionRow>('SELECT * FROM rally_subscriptions WHERE id = ?', [sub.id])[0]!;
 };
@@ -872,7 +872,7 @@ const createMemberOp: OperationHandler<
   ctx.sql.exec(
     `INSERT INTO rally_members (id, party_ref, name, phone, level, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, partyRef, input.name, input.phone ?? null, input.level ?? null, new Date().toISOString()],
+    [id, partyRef, input.name, input.phone ?? null, input.level ?? null, ctx.now()],
   );
   return ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [id])[0]!;
 };
@@ -1294,7 +1294,7 @@ const bookCourtOp: OperationHandler<
     duration: input.duration,
   });
 
-  const now = input.now ?? new Date().toISOString();
+  const now = input.now ?? ctx.now();
   const reservation = holdReservation(ctx, {
     resourceId,
     startsAt,
@@ -1412,7 +1412,7 @@ const createOpenMatchOp: OperationHandler<
     duration: input.duration,
   });
 
-  const now = input.now ?? new Date().toISOString();
+  const now = input.now ?? ctx.now();
   const reservation = holdReservation(ctx, {
     resourceId,
     startsAt,
@@ -1513,7 +1513,7 @@ const blockMaintenanceOp: OperationHandler<
   assertAllowed(await ctx.check(RALLY_PERM.manageVenue));
   const v = venue(ctx);
   const startsAt = zonedToInstant(input.date, input.time, v.timezone);
-  const now = input.now ?? new Date().toISOString();
+  const now = input.now ?? ctx.now();
   const held = holdReservation(ctx, {
     resourceId: input.resourceId,
     startsAt,
@@ -1559,7 +1559,7 @@ const openMatchesOp: OperationHandler<{ now?: string } | undefined, OpenMatchLis
   input,
 ) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
-  const now = input?.now ?? new Date().toISOString();
+  const now = input?.now ?? ctx.now();
   const courts = new Map(listResources(ctx, 'court').map((r) => [r.id, r.name] as const));
   const out: OpenMatchListing[] = [];
 
@@ -1628,7 +1628,7 @@ const matchLandingOp: OperationHandler<
   MatchLanding | null
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
-  const now = input.now ?? new Date().toISOString();
+  const now = input.now ?? ctx.now();
   const r = listReservations(ctx, { now }).find((x) => x.id === input.reservationId);
   if (!r || r.fillTarget === null) return null;
 
@@ -1727,7 +1727,7 @@ const occupancyOp: OperationHandler<{ from: string; to: string; now?: string }, 
 ) => {
   assertAllowed(await ctx.check(BK.read));
   const v = venue(ctx);
-  const now = input.now ?? new Date().toISOString();
+  const now = input.now ?? ctx.now();
   const fromInstant = zonedToInstant(input.from, '00:00', v.timezone);
   const toInstant = zonedToInstant(input.to, '23:59', v.timezone);
 
@@ -1987,7 +1987,7 @@ const onInviteAccepted: ConsumerHandler = (ctx, event) => {
   ctx.sql.exec(
     `INSERT INTO rally_members (id, party_ref, name, phone, level, created_at)
      VALUES (?, ?, ?, NULL, NULL, ?)`,
-    [ulid(), invited.party_ref, invited.name, new Date().toISOString()],
+    [ulid(), invited.party_ref, invited.name, ctx.now()],
   );
 };
 

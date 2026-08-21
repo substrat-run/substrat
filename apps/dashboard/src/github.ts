@@ -85,7 +85,13 @@ async function importKey(pem: string): Promise<CryptoKey> {
 
 /** A GitHub App JWT — proves we are the App. Short-lived (10 min max, per GitHub). */
 async function appJwt(cfg: GithubConfig): Promise<string> {
+  // boundary-lint-allow R6
+  // GitHub judges `iat`/`exp` against ITS clock, not ours, so this is one of the
+  // few timestamps that must be the real wall clock: a frozen or replayed one
+  // would mint a token the remote end rejects as expired or not-yet-valid. The
+  // operation instant would be wrong here even when it is available.
   const now = Math.floor(Date.now() / 1000);
+  // boundary-lint-end R6
   const header = b64url(new TextEncoder().encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
   // `iat` back-dated 60s for clock drift; `exp` well inside GitHub's 10-min ceiling.
   const payload = b64url(new TextEncoder().encode(JSON.stringify({ iat: now - 60, exp: now + 540, iss: cfg.appId })));

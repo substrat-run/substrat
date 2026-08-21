@@ -51,6 +51,7 @@ interface OperationContext {
   readonly scopeId: ScopeId;
   readonly principal: PrincipalId;
   readonly sql: ScopedSql;          // synchronous, scope-local SQL
+  now(): Instant;                   // the operation's instant — the only clock
   emit(event: DomainEventInput): void;
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
   entitlement(key: string): Promise<EntitlementView | null>;
@@ -66,6 +67,13 @@ interface OperationContext {
 
 - **`sql`** queries the scope's own database — synchronously, because the data is local
   to the execution domain. One network hop to reach the scope, then local queries.
+- **`now`** is the operation's instant, and the **only** clock module code may read —
+  `new Date()` and `Date.now()` are `boundary-lint` R6 violations, the same class of ban
+  as `node:*`. It is **stable for the whole invocation**: every call returns the same
+  value, so two rows written in one transaction cannot disagree about when they were
+  written, and an event carries the same instant as the row it describes. The host
+  injects it (`clock` on the host options), which is what makes elapsed time assertable —
+  see [Testing with a clock](#testing-with-a-clock).
 - **`emit`** validates the event input and stamps the envelope kernel-side (id,
   timestamp, tenant, scope, actor). See [Events & audit](/concepts/events).
 - **`check`** asks the permission checker about the ambient principal at the ambient
@@ -101,6 +109,42 @@ interface OperationContext {
   see. It **fails closed and legibly**: no projected key for that provider throws, rather
   than emitting a request that silently reaches nobody. Await it *before* `ctx.emit`, which
   is what lets `emit` stay synchronous.
+
+## Testing with a clock
+
+Anything whose behaviour is a function of *elapsed* time — an absence request going
+stale, a metering period rolling, a cart hold lapsing — is untestable against the wall
+clock: the interesting branch never runs inside a 40 ms test. The usual workarounds are
+to sleep (slow and flaky) or to shrink the window to zero, which proves that an
+already-expired thing is expired and nothing about expiry.
+
+The host takes a `clock`, so a suite can move time on purpose:
+
+```ts
+import { manualClock } from '@substrat-run/kernel';
+
+const clock = manualClock('2026-03-02T09:00:00.000Z');
+const host = new SqliteScopeHost({ dir, clock: clock.read });
+
+await guest.invoke('shop/add-to-cart', { cartId, variantId, qty: 1 });
+
+clock.advance(14 * 60_000);   // inside the 15-minute hold — still reserved
+await expect(otto.invoke('shop/add-to-cart', { … })).rejects.toThrow(/out of stock/);
+
+clock.advance(2 * 60_000);    // past it — the unit is sellable again
+await otto.invoke('shop/add-to-cart', { … });
+```
+
+No real time passes. `frozenClock(at)` is the simpler form when a test only needs one
+fixed instant. Both come from `@substrat-run/kernel`, so a vertical's own suite gets them
+without depending on our test tooling.
+
+**Timestamps are stored as ISO 8601 text.** `ctx.now()` returns an `Instant` — an ISO
+string with an offset — and that is what goes in the column (`created_at TEXT NOT NULL`).
+Text sorts and compares correctly, reads correctly in a `.sqlite` file someone opens by
+hand, and needs no per-table convention about seconds versus milliseconds. Epoch integers
+appear in this repo only inside a third-party schema that defines its own storage
+(Better Auth's tables in `demos/auth-server`), which is that library's contract, not ours.
 
 ## Contract semantics — what every adapter guarantees
 

@@ -12,7 +12,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, type Clock } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { shopModule, SHOP_PERM } from './module.js';
@@ -104,8 +104,14 @@ export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }
  */
 export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
 
-export function buildShopHost(dir: string): SqliteScopeHost {
-  const host = new SqliteScopeHost({ dir });
+/**
+ * `clock` is the #812 seam: absent, the host reads the wall clock, which is every
+ * dev and production path. A test hands one in to make elapsed time an assertion
+ * rather than a `setTimeout` — see `test/hold-expiry.test.ts`, where a cart hold
+ * lapses after its real 15 minutes instead of being declared zero-length.
+ */
+export function buildShopHost(dir: string, options?: { clock?: Clock }): SqliteScopeHost {
+  const host = new SqliteScopeHost({ dir, ...(options?.clock ? { clock: options.clock } : {}) });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }
