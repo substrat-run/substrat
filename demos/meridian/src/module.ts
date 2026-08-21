@@ -887,11 +887,39 @@ const issueContractOp: OperationHandler<
         'nowhere to go — set one before issuing',
     );
   }
+  // THE EMPLOYER SIGNS, AND IS INVITED LIKE ANYONE ELSE (#852).
+  //
+  // This party used to carry no address, on the reasoning that it was the document's
+  // author and Scrive reached it as our own API account. That was true and it was the
+  // bug: the author slot is bound to the ACCOUNT HOLDER, so whoever issued the contract
+  // was silently replaced by whoever owns the Scrive account — and the return path could
+  // never record their signature, because the substituted name never matched the label.
+  // The connector now sends the account as a non-signing sender, which makes this an
+  // ordinary signatory that needs an ordinary address.
+  //
+  // It is the issuing HR user's own, looked up the same way the employee's is, and
+  // refused by name when it is missing rather than guessed at.
+  const signer = ctx.sql.query<{ name: string; email: string | null }>(
+    'SELECT name, email FROM hr_employees WHERE principal_ref = ? LIMIT 1',
+    [ctx.principal],
+  )[0];
+  if (!signer?.email) {
+    throw new Error(
+      'the issuing user has no email on their employee record — the employer signs the ' +
+        'contract too and is invited by mail, so it cannot be sent without one',
+    );
+  }
   const sent = await requestSignatures(ctx, {
     instanceId: instance.id,
     method: 'scrive',
     parties: [
-      { label: 'Arbetsgivare', kind: 'principal', ref: ctx.principal, signatureKind: 'primary' },
+      {
+        label: 'Arbetsgivare',
+        kind: 'principal',
+        ref: ctx.principal,
+        signatureKind: 'primary',
+        contact: { email: signer.email },
+      },
       { label: 'Anställd', kind: 'external', ref: employee.id, contact: { email: employee.email } },
     ],
   });

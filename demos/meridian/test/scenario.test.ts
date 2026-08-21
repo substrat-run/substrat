@@ -64,7 +64,9 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
 
   it('2. the directory and starting balance are seeded', async () => {
     const employees = await hedda.invoke<EmployeeRow[]>('hr/list-employees');
-    expect(employees.map((e) => e.number)).toEqual(['SE-001', 'SE-002', 'SE-003']);
+    // SE-004 is Hedda herself — HR is staff, and since #852 the issuing user needs
+    // an employee row to be reachable as the employer signatory.
+    expect(employees.map((e) => e.number)).toEqual(['SE-001', 'SE-002', 'SE-003', 'SE-004']);
     const bal = await hedda.invoke<{ balances: { leaveTypeKey: string; balance: string }[] }>(
       'hr/balance',
       { employeeId: w.elinEmpId },

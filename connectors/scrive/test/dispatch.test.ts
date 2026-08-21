@@ -22,6 +22,7 @@ import {
   ScriveMock,
   registerScriveConnector,
   scriveCallbackPath,
+  SENDER_PARTY_LABEL,
   type ScriveConnectorOptions,
   type ScriveDispatchState,
   type ScriveMockOptions,
@@ -199,7 +200,7 @@ describe('scrive connector — outbound dispatch', () => {
         instanceId: inst.id,
         method: 'scrive',
         parties: [
-          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
           { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
         ],
       },
@@ -223,9 +224,13 @@ describe('scrive connector — outbound dispatch', () => {
     // party — the hardcoded requirement that made Scrive refuse every document
     // this connector ever sent (`409 … requires valid personal number field`),
     // since the platform supplies no personnummer by design.
-    expect(doc!.parties.map((p) => [p.name, p.auth])).toEqual([
-      ['Arbetsgivare', 'standard'],
-      ['Anställd', 'standard'],
+    // #852: party 0 is the SENDER — the author, which does not sign, and which the
+    // provider rewrites to the account holder whatever we put on it (verified live).
+    // Both named parties follow it and keep their own identity.
+    expect(doc!.parties.map((p) => [p.name, p.auth, p.isAuthor, p.isSignatory])).toEqual([
+      ['Mock Operator', 'standard', true, false],
+      ['Arbetsgivare', 'standard', false, true],
+      ['Anställd', 'standard', false, true],
     ]);
 
     // A capability URL, because Scrive's callbacks carry no signature to verify:
@@ -270,7 +275,7 @@ describe('scrive connector — outbound dispatch', () => {
             contact: { email: 'anstalld@example.se' },
             ...(level ? { authLevel: level } : {}),
           },
-          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
         ],
       });
     };
@@ -280,7 +285,7 @@ describe('scrive connector — outbound dispatch', () => {
       const [doc] = [...scrive.documents.values()];
       expect(doc!.status).toBe('pending'); // started — the 409 is gone
       // Two parties now — the counterparty and the issuer it is sent by (#687).
-      expect(doc!.parties.map((p) => p.auth)).toEqual(['standard', 'standard']);
+      expect(doc!.parties.map((p) => p.auth)).toEqual(['standard', 'standard', 'standard']);
     });
 
     it("honours a connection-level default for parties that ask for 'basic'", async () => {
@@ -294,7 +299,8 @@ describe('scrive connector — outbound dispatch', () => {
       await issueAt();
       const [doc] = [...scrive.documents.values()];
       expect(doc!.status).toBe('pending');
-      expect(doc!.parties.map((p) => p.auth)).toEqual(['se_bankid', 'se_bankid']);
+      // The sender is never a BankID party — it does not sign (#852).
+      expect(doc!.parties.map((p) => p.auth)).toEqual(['standard', 'se_bankid', 'se_bankid']);
     });
 
     it("dispatches 'strong' as BankID, carrying the EMPTY personal_number field (#687)", async () => {
@@ -309,11 +315,11 @@ describe('scrive connector — outbound dispatch', () => {
       const [doc] = [...scrive.documents.values()];
       expect(doc!.status).toBe('pending'); // it starts — no refusal, no 409
       // Only the party that ASKED for strong; the issuer keeps the default.
-      expect(doc!.parties.map((p) => p.auth)).toEqual(['se_bankid', 'standard']);
+      expect(doc!.parties.map((p) => p.auth)).toEqual(['standard', 'se_bankid', 'standard']);
       // The mock enforces the rule the testbed enforces: presence, not value.
       // Without `update` sending the empty field this assertion — and `start` —
       // would both fail.
-      expect(doc!.parties[0]!.hasPersonalNumber).toBe(true);
+      expect(doc!.parties[1]!.hasPersonalNumber).toBe(true);
     });
 
     it('DELIVERS to the counterparty: the sealed address reaches the provider (#687 item 1)', async () => {
@@ -346,7 +352,7 @@ describe('scrive connector — outbound dispatch', () => {
         instanceId: inst.id,
         method: 'scrive',
         parties: [
-          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
           { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
         ],
       });
@@ -356,12 +362,94 @@ describe('scrive connector — outbound dispatch', () => {
       expect(doc!.status).toBe('pending');
       expect(await host.executorDeadLetters(t, s)).toEqual([]);
 
-      // Participant #2 — the counterparty — carries the address the vertical
-      // supplied. #1 is the author, whom Scrive reaches as our own account and
-      // never invites, so it carries none and needs none.
-      expect(doc!.parties[1]!.email).toBe('anstalld@example.se');
+      // #852: BOTH named parties carry the address the vertical supplied — the
+      // issuing side included, because it signs like anyone else now. Party 0 is
+      // the sender: author, non-signing, and stamped with the ACCOUNT's identity
+      // rather than anything we sent, which is what the provider actually does.
+      expect(doc!.parties[1]!.email).toBe('arbetsgivare@example.se');
+      expect(doc!.parties[2]!.email).toBe('anstalld@example.se');
       expect(doc!.parties[0]!.isAuthor).toBe(true);
-      expect(doc!.parties[0]!.email).toBeNull();
+      expect(doc!.parties[0]!.isSignatory).toBe(false);
+      expect(doc!.parties[0]!.email).toBe('mock@substrat.test');
+    });
+
+    /**
+     * #852 — the regression, in the shape it reached production.
+     *
+     * Scrive binds the author slot to the API ACCOUNT HOLDER and silently overwrites
+     * the name and email the caller put on it. Measured against the real testbed, not
+     * inferred. While the issuing party was the author, that decided who signs for the
+     * sender's organisation — the Scrive account owner, always, whoever the vertical
+     * named. An avtal went out with the wrong person on it and nobody could see why:
+     * the drawer showed the address we sent, the provider showed somebody else.
+     *
+     * It also broke the RETURN path. The reconcile refuses to attribute a signature
+     * when the provider's party name disagrees with the dispatched label — a fail-closed
+     * guard doing its job — and the substituted name never agrees, so the issuer's
+     * signature could not be recorded at all. The document could never complete.
+     */
+    it('the account holder is the SENDER, never silently a signatory (#852)', async () => {
+      const sent = await issue();
+      const [doc] = [...scrive.documents.values()];
+
+      // Exactly one author, it does not sign, and it carries the ACCOUNT's identity.
+      const authors = doc!.parties.filter((p) => p.isAuthor);
+      expect(authors).toHaveLength(1);
+      expect(authors[0]!.isSignatory).toBe(false);
+      expect(authors[0]!.email).toBe('mock@substrat.test');
+
+      // Every party the VERTICAL named signs, under its own name and address —
+      // none of them is the author, so none of them is overwritten.
+      const signatories = doc!.parties.filter((p) => p.isSignatory);
+      expect(signatories.map((p) => p.name)).toEqual(['Arbetsgivare', 'Anställd']);
+      expect(signatories.every((p) => !p.isAuthor)).toBe(true);
+
+      // The dispatch ledger records the sender, which is what keeps the reconcile's
+      // "Nth signatory is provider party N+1" alignment true rather than assumed.
+      const state = await dispatchState(sent.instance.id);
+      expect(state!.senderParty).toEqual({ label: SENDER_PARTY_LABEL });
+      expect(state!.parties.map((p) => p.label)).toEqual(['Arbetsgivare', 'Anställd']);
+    });
+
+    /**
+     * The issuing party is no longer exempt from needing an address, because it is
+     * no longer reached as the account — it is invited like anyone else. Refused
+     * BEFORE egress, naming the party: Scrive's own version is `409 Invitation
+     * delivery for participant #2 requires valid email field`, a positional index
+     * into a list the vertical never saw, and reading that cost a production
+     * afternoon (#841).
+     */
+    it('refuses a party it cannot invite, naming it, before anything is created (#852)', async () => {
+      const discarded = dir;
+      await host.close();
+      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, { strictDelivery: true });
+      rmSync(discarded, { recursive: true, force: true });
+
+      const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
+        templateKey: 'anstallningsavtal',
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      });
+      await stub.invoke('protocol/bind-document', {
+        instanceId: inst.id,
+        contentRef: { entityType: 'employment-terms', entityId: '01JTERMS000000000000000AUT' },
+        contentHash: '22'.repeat(32),
+      });
+      await stub.invoke('protocol/request-signatures', {
+        instanceId: inst.id,
+        method: 'scrive',
+        parties: [
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
+        ],
+      });
+
+      // Nothing was created at the provider — the refusal is upstream of `new`.
+      expect(scrive.documents.size).toBe(0);
+      const dead = await host.executorDeadLetters(t, s);
+      expect(dead).toHaveLength(1);
+      expect(dead[0]!.error).toMatch(/Arbetsgivare/);
+      expect(dead[0]!.error).toMatch(/no email or mobile/);
     });
 
     it('a LONE party is refused before anything freezes (#687)', async () => {
@@ -460,7 +548,7 @@ describe('scrive connector — outbound dispatch', () => {
           instanceId: inst.id,
           method: 'scrive',
           parties: [
-            { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+            { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
             { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
           ],
         },
@@ -543,7 +631,7 @@ describe('scrive connector — outbound dispatch', () => {
         method: 'scrive',
         parties: [
           { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
-          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
         ],
       });
 
@@ -690,7 +778,7 @@ describe('scrive connector — outbound dispatch', () => {
         method: 'scrive',
         parties: [
           { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
-          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
         ],
       });
 
@@ -731,7 +819,7 @@ describe('scrive connector — outbound dispatch', () => {
       instanceId: inst.id,
       method: 'scrive',
       parties: [
-        { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+        { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
         { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
       ],
     });
@@ -773,7 +861,7 @@ describe('scrive connector — outbound dispatch', () => {
       instanceId: inst.id,
       method: 'assently',
       parties: [
-        { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+        { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
         { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
       ],
     });
@@ -842,7 +930,7 @@ describe('scrive connector — outbound dispatch', () => {
         instanceId: inst.id,
         method: 'scrive',
         parties: [
-          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
           { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
         ],
       }),

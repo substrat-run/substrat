@@ -151,7 +151,7 @@ describe('scrive connector — return path (record signatures back)', () => {
         instanceId: inst.id,
         method: 'scrive',
         parties: [
-          { label: 'Arbetsgivare', kind: 'principal', ref: employerRef, signatureKind: 'primary' },
+          { label: 'Arbetsgivare', kind: 'principal', ref: employerRef, signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
           { label: 'Anställd', kind: 'external', ref: employeeRef, contact: { email: 'anstalld@example.se' } },
         ],
       },
@@ -202,8 +202,8 @@ describe('scrive connector — return path (record signatures back)', () => {
     expect(early.documentStatus).toBe('pending');
 
     // Both parties complete BankID at the provider; the mock closes the document.
-    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
-    scrive.sign(docId, 1, '2026-07-21T10:30:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
 
     const result = await reconcile(instanceId);
     expect(result.documentStatus).toBe('closed');
@@ -228,8 +228,8 @@ describe('scrive connector — return path (record signatures back)', () => {
     await host.provisionBlobStore(staff, { tenantId: t, vertical: 'meridian', binding: 'ATTACHMENTS' });
     const { instanceId, docId } = await issue();
 
-    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
-    scrive.sign(docId, 1, '2026-07-21T10:30:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
 
     const result = await reconcile(instanceId);
     expect(result.complete).toBe(true);
@@ -260,7 +260,7 @@ describe('scrive connector — return path (record signatures back)', () => {
     const [primaryReq] = requestIds;
 
     // Only the employer has signed.
-    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
     const first = await reconcile(instanceId);
     expect(first.recorded.map((r) => r.requestId)).toEqual([primaryReq]);
     expect(first.complete).toBe(false);
@@ -273,7 +273,7 @@ describe('scrive connector — return path (record signatures back)', () => {
     expect((await detail(instanceId)).signatures).toHaveLength(1);
 
     // The employee signs; the next poll records only the newcomer and completes.
-    scrive.sign(docId, 1, '2026-07-21T10:30:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
     const second = await reconcile(instanceId);
     expect(second.recorded.map((r) => r.requestId)).toEqual([requestIds[1]]);
     expect(second.complete).toBe(true);
@@ -283,8 +283,8 @@ describe('scrive connector — return path (record signatures back)', () => {
   it('refuses to record when the connection lacks the grant', async () => {
     // No grantRecordSignature() here — the connection was never allowed to write.
     const { instanceId, docId } = await issue();
-    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
-    scrive.sign(docId, 1, '2026-07-21T10:30:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
 
     // getConnectorScope admits the connection (right tenant, right vertical), but
     // record-signature's own permission check fails closed without the grant.
@@ -304,9 +304,9 @@ describe('scrive connector — return path (record signatures back)', () => {
     const b = await issue('employee-b', '01JTERMS0000000000000000B0');
 
     // A signs fully; B only its first party.
-    scrive.sign(a.docId, 0, '2026-07-21T09:00:00.000Z');
-    scrive.sign(a.docId, 1, '2026-07-21T10:00:00.000Z');
-    scrive.sign(b.docId, 0, '2026-07-21T09:30:00.000Z');
+    scrive.sign(a.docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(a.docId, 2, '2026-07-21T10:00:00.000Z');
+    scrive.sign(b.docId, 1, '2026-07-21T09:30:00.000Z');
 
     const first = await sweep();
     expect(first.found).toBe(2);
@@ -320,7 +320,7 @@ describe('scrive connector — return path (record signatures back)', () => {
 
     // B's second party signs. A re-sweep completes B and does NOT re-poll A —
     // the ledger already shows A fully recorded.
-    scrive.sign(b.docId, 1, '2026-07-21T11:00:00.000Z');
+    scrive.sign(b.docId, 2, '2026-07-21T11:00:00.000Z');
     const second = await sweep();
     expect(second.found).toBe(2);
     expect(second.skipped).toBe(1); // A: settled, not re-fetched
@@ -343,8 +343,8 @@ describe('scrive connector — return path (record signatures back)', () => {
   it('runPlatformSweep drives the connector sweep across the fleet', async () => {
     await grantRecordSignature();
     const { instanceId, docId } = await issue();
-    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
-    scrive.sign(docId, 1, '2026-07-21T10:00:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:00:00.000Z');
 
     // The scheduler's unit of work: it discovers the scope (drainDue) and the
     // scrive connection (via the injected sweeper) from the directory — nobody

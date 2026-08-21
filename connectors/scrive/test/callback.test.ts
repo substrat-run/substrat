@@ -156,7 +156,7 @@ describe('scrive connector — webhook ingress (capability URL → reconcile)', 
         instanceId: inst.id,
         method: 'scrive',
         parties: [
-          { label: 'Arbetsgivare', kind: 'principal', ref: employerRef, signatureKind: 'primary' },
+          { label: 'Arbetsgivare', kind: 'principal', ref: employerRef, signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
           { label: 'Anställd', kind: 'external', ref: employeeRef, contact: { email: 'anstalld@example.se' } },
         ],
       },
@@ -202,8 +202,8 @@ describe('scrive connector — webhook ingress (capability URL → reconcile)', 
     const { instanceId, docId, callbackUrl } = await issue();
     const ref = refFrom(callbackUrl!);
 
-    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
-    scrive.sign(docId, 1, '2026-07-21T10:30:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
 
     const outcome = await callback(ref);
     expect(outcome.accepted).toBe(true);
@@ -219,8 +219,8 @@ describe('scrive connector — webhook ingress (capability URL → reconcile)', 
   it('a replayed callback is a harmless nudge — idempotent, records nothing new', async () => {
     const { instanceId, docId, callbackUrl } = await issue();
     const ref = refFrom(callbackUrl!);
-    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
-    scrive.sign(docId, 1, '2026-07-21T10:30:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
 
     const first = await callback(ref);
     expect(first.accepted && first.result.recorded).toHaveLength(2);
@@ -237,8 +237,8 @@ describe('scrive connector — webhook ingress (capability URL → reconcile)', 
   it('rejects a wrong token with a uniform answer and ZERO provider egress', async () => {
     const { docId, callbackUrl } = await issue();
     const ref = refFrom(callbackUrl!);
-    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
-    scrive.sign(docId, 1, '2026-07-21T10:30:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
 
     const before = egressCalls;
     const outcomes = await Promise.all([
@@ -332,7 +332,7 @@ describe('scrive connector — webhook ingress (capability URL → reconcile)', 
         instanceId: inst.id,
         method: 'scrive',
         parties: [
-          { label: 'Arbetsgivare', kind: 'principal', ref: employerRef, signatureKind: 'primary' },
+          { label: 'Arbetsgivare', kind: 'principal', ref: employerRef, signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
           { label: 'Anställd', kind: 'external', ref: employeeRef, contact: { email: 'anstalld@example.se' } },
         ],
       });
@@ -374,8 +374,8 @@ describe('scrive connector — webhook ingress (capability URL → reconcile)', 
     });
 
     const { instanceId, docId } = await issue();
-    scrive.sign(docId, 0, '2026-07-21T09:00:00.000Z');
-    scrive.sign(docId, 1, '2026-07-21T10:30:00.000Z');
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
     await Promise.all(deliveries);
 
     expect(delivered).toEqual(['pending', 'closed']);

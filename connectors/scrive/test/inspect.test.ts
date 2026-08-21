@@ -137,7 +137,7 @@ describe('scrive connector — inspection (probe + activity)', () => {
       instanceId: inst.id,
       method: 'scrive',
       parties: [
-        { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
+        { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
         { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
       ],
     });
