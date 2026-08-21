@@ -1,0 +1,178 @@
+{
+  "entities": {
+    "reservation": {
+      "table": "booking_reservations",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "starts_at": {
+            "type": "string"
+          },
+          "ends_at": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "held",
+              "confirmed",
+              "in_service",
+              "completed",
+              "expired",
+              "cancelled",
+              "no_show"
+            ]
+          },
+          "quantity": {
+            "type": "number"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fill_target": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "resource_id",
+          "starts_at",
+          "ends_at",
+          "state",
+          "quantity",
+          "expires_at",
+          "fill_target",
+          "note",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "resource"
+      ]
+    },
+    "resource": {
+      "table": "booking_resources",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "capacity": {
+            "type": "number"
+          },
+          "active": {
+            "type": "number"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "capacity",
+          "active",
+          "created_at"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "lifecycles": {
+    "reservation": {
+      "field": "state",
+      "initial": "held",
+      "states": {
+        "cancelled": {
+          "terminal": true
+        },
+        "completed": {
+          "terminal": true
+        },
+        "confirmed": {
+          "on": {
+            "booking/cancel": "cancelled",
+            "booking/complete": "completed",
+            "booking/no-show": "no_show",
+            "booking/start": "in_service"
+          },
+          "allow": [
+            "booking/join",
+            "booking/move",
+            "booking/open"
+          ]
+        },
+        "expired": {
+          "terminal": true
+        },
+        "held": {
+          "on": {
+            "booking/cancel": "cancelled",
+            "booking/confirm": "confirmed",
+            "booking/expire": "expired"
+          },
+          "allow": [
+            "booking/join",
+            "booking/move",
+            "booking/open"
+          ]
+        },
+        "in_service": {
+          "on": {
+            "booking/complete": "completed",
+            "booking/no-show": "no_show"
+          }
+        },
+        "no_show": {
+          "terminal": true
+        }
+      }
+    }
+  }
+}
