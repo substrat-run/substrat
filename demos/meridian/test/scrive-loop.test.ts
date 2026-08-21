@@ -70,7 +70,14 @@ describe('Meridian — Scrive signature loop (Gate 1)', () => {
     expect(mock.documents.size).toBe(1);
     const [doc] = [...mock.documents.values()];
     expect(doc!.status).toBe('pending');
-    expect(doc!.parties.map((p) => p.name)).toEqual(['Arbetsgivare', 'Anställd']);
+    // #852: party 0 is the SENDER — the Scrive account, which does not sign and whose
+    // identity the provider stamps on regardless of what we send. The two named
+    // parties follow it and keep their own.
+    expect(doc!.parties.map((p) => [p.name, p.isSignatory])).toEqual([
+      ['Mock Operator', false],
+      ['Arbetsgivare', true],
+      ['Anställd', true],
+    ]);
   });
 
   it('leaves the contract pending until the parties actually sign', async () => {
@@ -85,8 +92,8 @@ describe('Meridian — Scrive signature loop (Gate 1)', () => {
   it('records both signatures and marks the contract signed once they sign', async () => {
     const [doc] = [...mock.documents.values()];
     // The provider-side event we cannot cause for real: both parties complete.
-    mock.sign(doc!.id, 0, '2026-08-01T09:00:00.000Z');
-    mock.sign(doc!.id, 1, '2026-08-01T10:30:00.000Z');
+    mock.sign(doc!.id, 1, '2026-08-01T09:00:00.000Z');
+    mock.sign(doc!.id, 2, '2026-08-01T10:30:00.000Z');
 
     const report = await sweep();
     expect(report.errors).toEqual([]);

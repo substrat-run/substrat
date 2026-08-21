@@ -164,6 +164,16 @@ export const SCRIVE_CALLBACK_ROUTE = '/hooks/scrive/:connectionId/:instanceId/:t
  * with no delivered event behind it, still needs standing authority — which is exactly
  * what this list is.
  */
+/**
+ * The label sent for the non-signing author party (#852).
+ *
+ * Cosmetic by construction: Scrive overwrites the author's name and email with the
+ * account holder's, so this string never reaches a signatory. It exists so that a
+ * developer reading an outbound payload can tell the sender party from a signatory,
+ * and so the reconcile has a name to skip rather than a blank.
+ */
+export const SENDER_PARTY_LABEL = 'Avsandare (Scrive-kontot)';
+
 export const SCRIVE_CONNECTION_GRANTS = [
   'protocol:record-signature',
   'protocol:attach',
@@ -209,6 +219,17 @@ export interface ScriveDispatchState {
     /** The substrat signatory, when known up front; null when identity is only learned at signing. */
     ref: string | null;
   }[];
+  /**
+   * The non-signing author party sent AHEAD of `parties` (#852), when one was.
+   *
+   * `parties` stays exactly the substrat signatories, so everything that counts
+   * signatures or renders progress is unchanged. What moved is the provider index:
+   * the Nth signatory is now provider party N+1, because party 0 is the sender.
+   * Recording it here rather than assuming it is what keeps a dispatch made by the
+   * PREVIOUS version readable — that state has no `senderParty`, the offset is 0,
+   * and its reconcile behaves exactly as it did before.
+   */
+  senderParty?: { label: string };
   /**
    * The attachment whose bytes were SENT (#711), when the vertical bound one — absent
    * when the signatory was shown this connector's own attestation sheet.
@@ -384,6 +405,41 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
       contacts.push(p.contact ? partyContact.parse(JSON.parse(await conn.unseal(p.contact))) : undefined);
     }
 
+    // NOBODY TO DELIVER TO — refused here, before a document exists (#852).
+    //
+    // README caveat 2 named this as the companion invariant a contact carrier
+    // needs, and the author change is what makes it reachable: the sender party
+    // never signs, so a dispatch whose signatories are all unreachable now
+    // produces a document that starts, reports itself sent, and invites no one.
+    // That is the worst possible outcome — an avtal frozen at the provider, a
+    // ledger row saying it went out, and silence — so it is a refusal instead,
+    // raised before `createDocument` so there is nothing to clean up.
+    //
+    // EVERY party, not just some. The old rule had one exemption — the issuing
+    // party, which was the author, and an author is reached as the account rather
+    // than invited. That exemption is gone with the author, so the rule is now the
+    // simple one: every party signs, so every party must be reachable. Mobile
+    // counts; Scrive delivers by SMS too.
+    //
+    // Refusing here rather than letting Scrive answer is the point. The provider's
+    // version is `409 Invitation delivery for participant #2 requires valid email
+    // field` — a positional index into a party list the vertical never saw, which
+    // cost a production afternoon to read (#841). This names the party.
+    if (payload.parties.length === 0) {
+      throw new Error(
+        `instance ${payload.instanceId} names no signatories — the sender does not sign, ` +
+          `so this document would go out with nobody to deliver to`,
+      );
+    }
+    const unreachable = payload.parties.filter((_, i) => !contacts[i]?.email && !contacts[i]?.mobile);
+    if (unreachable.length > 0) {
+      throw new Error(
+        `instance ${payload.instanceId}: ${unreachable.map((p) => p.label).join(', ')} ` +
+          `${unreachable.length === 1 ? 'carries' : 'carry'} no email or mobile — every party signs ` +
+          `and is invited, so this document cannot be sent without one`,
+      );
+    }
+
     const api = new ScriveApi(conn, baseUrl);
 
     // The artifact — the vertical's own document when it bound one (#711),
@@ -474,36 +530,61 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
       // here — but it makes the eventual provider-side reconciliation that would
       // close the narrow create-then-record window (below) a filter away.
       tags: [{ name: 'substrat_instance', value: payload.instanceId }],
-      parties: payload.parties.map(
-        (p, i): ScriveParty => ({
-          name: p.label,
-          // #620: the REQUEST decides, then this connection's default, then
-          // `standard` — resolved above, before any egress. It used to be
-          // `p.kind === 'external' ? 'se_bankid' : 'standard'`: a requirement the
-          // caller could neither see nor satisfy, and the reason every document
-          // this connector ever sent came back a 409. `update` adds the empty
-          // `personal_number` field a `se_bankid` party needs (#687).
-          authenticationMethodToSign: authMethods[i]!,
-          // #687: the egress slot that has been plumbed and producerless since
-          // this connector was written. `ScriveParty.email` was declared, wired
-          // into the fields array, and never filled by anything — which is why
-          // every document started and then had nobody to deliver to, at both
-          // auth levels. This is the producer.
-          //
-          // Undefined for a party the engine sent no contact for: the issuing
-          // author (reached as our own API account), or an engine that predates
-          // the carrier. The party is sent as it was before, which is the
-          // version-skew floor §7 asks for — no better, no worse.
-          ...(contacts[i]?.email ? { email: contacts[i]!.email } : {}),
-          ...(contacts[i]?.mobile ? { mobile: contacts[i]!.mobile } : {}),
-          // Scrive auto-adds the API user as the author, and exactly one party
-          // must be it. The issuing (primary) party is the sender's side, so it
-          // is the author — and it still signs. Verified: an explicit author
-          // party in `update` replaces the auto one.
-          isAuthor: p.signatureKind === 'primary',
-          isSignatory: true,
-        }),
-      ),
+      parties: [
+        // THE SENDER, AND NOTHING ELSE (#852).
+        //
+        // Scrive binds the author slot to the API ACCOUNT HOLDER and silently
+        // overwrites whatever name and email the caller put on it. Measured against
+        // `api-testbed.scrive.com`, not inferred: a party sent as
+        // `Not The Account Holder <someone.else@example.com>` comes back as the
+        // account's own name and address, with no error — and sending NO author at
+        // all does not avoid it, Scrive simply claims party #1 and overwrites that.
+        //
+        // While the issuing party was the author, that substitution decided who
+        // signs for the sender's organisation: the Scrive account owner, always,
+        // whoever the vertical actually named. It also broke the return path — the
+        // reconcile below refuses to attribute a signature when the provider's party
+        // name disagrees with the dispatched label, and the substituted name never
+        // agrees, so the issuer's signature could never be recorded at all.
+        //
+        // So the author is now a party of its own that does NOT sign. Scrive still
+        // rewrites it to the account holder, which is correct: the account IS the
+        // sender. Every party the vertical named is an ordinary signatory that keeps
+        // its own identity — verified, including the case where a named signatory's
+        // address happens to equal the account holder's, which stays a separate
+        // signing party rather than collapsing into the author.
+        {
+          name: SENDER_PARTY_LABEL,
+          authenticationMethodToSign: 'standard',
+          isAuthor: true,
+          isSignatory: false,
+        },
+        ...payload.parties.map(
+          (p, i): ScriveParty => ({
+            name: p.label,
+            // #620: the REQUEST decides, then this connection's default, then
+            // `standard` — resolved above, before any egress. It used to be
+            // `p.kind === 'external' ? 'se_bankid' : 'standard'`: a requirement the
+            // caller could neither see nor satisfy, and the reason every document
+            // this connector ever sent came back a 409. `update` adds the empty
+            // `personal_number` field a `se_bankid` party needs (#687).
+            authenticationMethodToSign: authMethods[i]!,
+            // #687: the egress slot that has been plumbed and producerless since
+            // this connector was written. `ScriveParty.email` was declared, wired
+            // into the fields array, and never filled by anything — which is why
+            // every document started and then had nobody to deliver to, at both
+            // auth levels. This is the producer.
+            //
+            // Undefined only for an engine that predates the carrier. The issuing
+            // party is no longer an exception: it is invited like anyone else, at
+            // the address the vertical gave it, because it is no longer the author.
+            ...(contacts[i]?.email ? { email: contacts[i]!.email } : {}),
+            ...(contacts[i]?.mobile ? { mobile: contacts[i]!.mobile } : {}),
+            isAuthor: false,
+            isSignatory: true,
+          }),
+        ),
+      ],
     });
     await api.start(doc.id);
 
@@ -530,6 +611,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
         kind: p.kind,
         ref: p.ref,
       })),
+      senderParty: { label: SENDER_PARTY_LABEL },
       ...(bound ? { documentAttachmentId: bound.record.id } : {}),
       ...(webhookToken ? { webhookToken } : {}),
       dispatchedAt: event.occurredAt,
@@ -653,9 +735,14 @@ export async function reconcileScriveDispatch(
   const skipped: { requestId: string; reason: string }[] = [];
   const done = new Set(state.recordedRequestIds ?? []);
 
+  // Party 0 is the sender when this dispatch sent one (#852) — it does not sign and
+  // carries no request, so the substrat signatories start one later. Absent on state
+  // written by the previous version, where the issuing party WAS provider party 0.
+  const partyOffset = state.senderParty ? 1 : 0;
+
   for (const [i, party] of state.parties.entries()) {
     if (done.has(party.requestId)) continue; // recorded on an earlier poll
-    const providerParty = doc.parties[i];
+    const providerParty = doc.parties[i + partyOffset];
     const signedAt = providerParty?.sign_time ?? null;
     if (!signedAt) continue; // not signed yet
 
@@ -668,7 +755,7 @@ export async function reconcileScriveDispatch(
     if (providerName !== undefined && providerName !== party.label) {
       skipped.push({
         requestId: party.requestId,
-        reason: `provider party ${i} is '${String(providerName)}', dispatch expected '${party.label}' — refusing to attribute`,
+        reason: `provider party ${i + partyOffset} is '${String(providerName)}', dispatch expected '${party.label}' — refusing to attribute`,
       });
       continue;
     }

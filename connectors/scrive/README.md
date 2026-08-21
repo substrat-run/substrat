@@ -86,21 +86,40 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
    populated. This is the live blocker, and it is one carrier away
    (`docs/architecture/signature-contact-carrier.md`); every other caveat here is downstream of it.
 
-   Read the participant number: **#2**, not #1. Scrive never invites the **author** — it is the
-   sending account — so the rule does not reach it, and the gap splits in two:
+   **CLOSED by #852.** The author is now a party of its own that does not sign, so no party the
+   vertical names is ever the author, and every one of them is invited normally. The dispatch
+   refuses before egress when any party carries neither email nor mobile, naming the party —
+   which is the companion invariant this caveat asked for. Both are asserted in
+   `test/dispatch.test.ts`.
 
-   | party set | what happens |
-   |---|---|
-   | a real counterparty to invite | refused at `start` — loud, retried, journalled |
-   | only the author (see below) | **starts, reports itself sent, delivers to nobody** |
+### The author is the account, and the API does not say so
 
-   The second row is reachable without anyone choosing it. `requestSignatures` resolves the
-   issuing party unconditionally — the declared one, else the **first** — so a caller naming only
-   counterparties has one of them silently made the issuer, and this connector maps `primary` to
-   `is_author`. Production reached it that way. A contact field alone will not close it: an
-   author is uninvitable whatever address it carries, so the carrier needs the companion
-   invariant that no document goes out with nobody to deliver to. Both rows are asserted in
-   `test/dispatch.test.ts`, the second one so that closing it is a deliberate edit.
+Worth stating plainly, because it is not in Scrive's documentation and it decides who signs:
+
+**Scrive binds the author party to the API account holder and silently overwrites the `name` and
+`email` you send on it.** Measured against `api-testbed.scrive.com`, not inferred — a party sent
+as `Not The Account Holder <someone.else@example.com>` with `is_author: true` comes back carrying
+the account's own name and address, with no error and no warning. Sending *no* author party does
+not avoid it: Scrive claims party #1 and overwrites that instead.
+
+Two consequences, both of which reached production before this was understood:
+
+- While the issuing party was the author, **the Scrive account owner signed for the sender's
+  organisation** — whoever the vertical actually named. Egeryds sent an avtal naming one person
+  and a different person was invited to sign it.
+- The **return path could never record that signature.** `reconcileScriveSignatures` refuses to
+  attribute when the provider's party name disagrees with the dispatched label — a fail-closed
+  guard doing exactly its job — and the substituted name never agrees.
+
+So the connector sends the account as a **non-signing author** (`is_author: true`,
+`is_signatory: false` → `signatory_role: "viewer"`), and every party the vertical names is an
+ordinary signatory that keeps its own identity. A named signatory whose address happens to equal
+the account holder's stays a separate signing party rather than folding into the author — also
+verified live.
+
+`ScriveDispatchState.senderParty` records that the sender was sent, because the reconcile matches
+the Nth signatory to provider party N+1. State written before #852 has no `senderParty`, reads an
+offset of 0, and reconciles exactly as it did before.
 
 3. **The live BankID signing round-trip is unverified.** The outbound lifecycle is checked
    against `api-testbed.scrive.com`, but `se_bankid`-to-sign is **disabled on the testbed

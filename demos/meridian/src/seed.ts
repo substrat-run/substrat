@@ -264,6 +264,13 @@ export async function seedDemo(
     const matsEmp = await se.invoke<{ id: string }>('hr/create-employee', {
       number: 'SE-003', name: 'Mats Lund', email: 'mats@nordljus.se', principalRef: world.mats, startedAt: '2022-09-01',
     });
+    // Hedda is HR, and HR is staff: she has her own employee row like anyone else.
+    // It is also what lets her ISSUE a contract since #852 — the employer signs and
+    // is invited by mail, so the issuing user needs a reachable address of their own,
+    // and hers is looked up here rather than assumed.
+    await se.invoke('hr/create-employee', {
+      number: 'SE-004', name: 'Hedda Ohlsson', email: 'hedda@nordljus.se', principalRef: world.hedda, startedAt: '2021-03-01',
+    });
     await se.invoke('hr/accrue', { employeeId: elinEmp.id, leaveTypeKey: 'vacation', days: '25' });
     await se.invoke('hr/accrue', { employeeId: matsEmp.id, leaveTypeKey: 'vacation', days: '25' });
     const project = await se.invoke<{ id: string }>('hr/create-project', { code: 'nordljus-app', name: 'Nordljus App' });
@@ -299,6 +306,12 @@ export async function seedDemo(
     await es.invoke('hr/define-leave-type', { key: 'baja', label: 'Baja médica', kind: 'sick' });
     const pabloEmp = await es.invoke<{ id: string }>('hr/create-employee', {
       number: 'ES-001', name: 'Pablo Ruiz', email: 'pablo@nordljus.es', nationalId: '00000000-A', principalRef: world.pablo, startedAt: '2024-03-01',
+    });
+    // Hedda again: she administers BOTH countries, so she needs a reachable row in
+    // each scope she issues a contract from (#852). Scopes are separate worlds — an
+    // employee row in Sweden says nothing about Spain.
+    await es.invoke('hr/create-employee', {
+      number: 'ES-002', name: 'Hedda Ohlsson', email: 'hedda@nordljus.se', principalRef: world.hedda, startedAt: '2021-03-01',
     });
     await es.invoke('hr/accrue', { employeeId: pabloEmp.id, leaveTypeKey: 'vacation', days: '22' });
     await es.invoke('protocol/define-template', ONBOARDING_ES);

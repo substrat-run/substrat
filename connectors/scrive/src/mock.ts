@@ -49,8 +49,10 @@ interface MockDocument {
     hasPersonalNumber: boolean;
     /** The `email` field's value, or null when the party carried none. */
     email: string | null;
-    /** The sending account. Scrive never invites it, so it needs no address. */
+    /** The sending account. Scrive rewrites this party to the account holder (#852). */
     isAuthor: boolean;
+    /** An author that does not sign is a `viewer`; every named party signs. */
+    isSignatory: boolean;
   }[];
 }
 
@@ -98,6 +100,13 @@ export class ScriveMock {
   private readonly onCallback: ScriveMockOptions['onCallback'];
   private readonly strictDelivery: boolean;
 
+  /**
+   * Who this mock's credential belongs to — the identity Scrive stamps onto the
+   * author party regardless of what the caller sent (#852). Matches the values
+   * `/getprofile` answers, because at the provider they are the same account.
+   */
+  readonly accountHolder = { name: 'Mock Operator', email: 'mock@substrat.test' };
+
   constructor(options: ScriveMockOptions = {}) {
     this.failWith = options.failWith;
     this.onCallback = options.onCallback;
@@ -110,9 +119,12 @@ export class ScriveMock {
     const party = doc.parties[partyIndex];
     if (!party) throw new Error(`mock: no party ${partyIndex} on ${documentId}`);
     party.signTime = at;
-    // Scrive closes a document only when EVERY party has signed — the same rule
-    // engine-protocol applies to its own request set, arrived at independently.
-    if (doc.parties.every((p) => p.signTime)) doc.status = 'closed';
+    // Scrive closes a document when every SIGNATORY has signed. A viewer never
+    // signs, so counting it would leave every document that carries one open
+    // forever — which is what happened here the moment the author stopped being a
+    // signatory (#852). The same rule engine-protocol applies to its own request
+    // set, arrived at independently.
+    if (doc.parties.every((p) => !p.isSignatory || p.signTime)) doc.status = 'closed';
     this.fireCallback(doc);
   }
 
@@ -276,15 +288,32 @@ export class ScriveMock {
           }
           doc.parties = patch.parties.map((p, i) => {
             const email = p.fields.find((f) => f.type === 'email')?.value;
+            const isAuthor = p.is_author === true;
+            // THE AUTHOR IS THE ACCOUNT, whatever the caller sent (#852).
+            //
+            // Measured against `api-testbed.scrive.com`, not assumed: a party sent
+            // as `Not The Account Holder <someone.else@example.com>` with
+            // `is_author: true` comes back carrying the ACCOUNT HOLDER's name and
+            // address, silently and with no error. The mock modelled the caller's
+            // values instead, which is why every test agreed with a connector that
+            // was, in production, putting the Scrive account owner's signature
+            // where the vertical had named someone else.
+            //
+            // A named signatory at the same address is NOT folded into the author —
+            // also verified — so this substitution is deliberately limited to the
+            // author party.
             return {
               id: `party-${i}`,
-              name: String(p.fields.find((f) => f.type === 'name')?.value ?? ''),
+              name: isAuthor
+                ? this.accountHolder.name
+                : String(p.fields.find((f) => f.type === 'name')?.value ?? ''),
               signTime: null,
               auth: p.authentication_method_to_sign,
               // Presence, not value — that is exactly the rule `start` applies.
               hasPersonalNumber: p.fields.some((f) => f.type === 'personal_number'),
-              email: email === undefined ? null : String(email),
-              isAuthor: p.is_author === true,
+              email: isAuthor ? this.accountHolder.email : email === undefined ? null : String(email),
+              isAuthor,
+              isSignatory: p.is_signatory !== false,
             };
           });
         }
