@@ -2089,6 +2089,14 @@ export function defineScopeDO(
       const relations = this.relations;
       const searchPlans = this.searchPlans;
       const sql = this.sql;
+      /**
+       * The operation's instant (#812), read once. The DO reads the wall clock —
+       * there is no options bag to inject through, since workerd constructs it —
+       * but the STABILITY half of the contract is the half module code depends
+       * on, and it holds identically here: `ctx.now()`, every `occurredAt` and
+       * every `requested_at` in one operation are the same value.
+       */
+      const at = instant.parse(new Date().toISOString());
       // The permission subject and the derived event actor for a NON-override caller
       // (#383/#97): a scheduled module, a connection, or a person. `systemActor` (the
       // override, used only by consumer dispatch) stays a separate bypass path below.
@@ -2159,12 +2167,13 @@ export function defineScopeDO(
         scopeId,
         principal,
         sql: doScopedSql(sql),
+        now: () => at,
         emit: (event: DomainEventInput) => {
           const parsed = domainEventInput.parse(event);
           const full = domainEvent.parse({
             ...parsed,
             id: eventId.parse(ulid()),
-            occurredAt: instant.parse(new Date().toISOString()),
+            occurredAt: at,
             tenantId,
             scopeId,
             actor: systemActor ?? derivedActor,
@@ -2214,7 +2223,7 @@ export function defineScopeDO(
             input.kind,
             JSON.stringify(input.payload ?? null),
             JSON.stringify(requestedBy),
-            instant.parse(new Date().toISOString()),
+            at,
           );
           if (signals) signals.platformRequests += 1;
           return id;

@@ -18,6 +18,7 @@ import type {
   CapabilityGrant,
   CreateTenantInput,
   Decision,
+  Instant,
   DomainEvent,
   DomainEventInput,
   PlatformRequestInput,
@@ -115,6 +116,34 @@ export interface OperationContext {
   readonly scopeId: ScopeId;
   readonly principal: PrincipalId;
   readonly sql: ScopedSql;
+  /**
+   * The operation's instant (#812) — the ONLY clock module code may read.
+   *
+   * Module code has no other one: `new Date()` and `Date.now()` are R6
+   * violations, the same way `node:*` is an R2 one. Reaching for the wall clock
+   * directly is how 95 call sites came to stamp rows the kernel could not see,
+   * and how anything genuinely time-dependent — an absence window, a metering
+   * period, a booking hold — became untestable except against real time.
+   *
+   * **Stable for the whole invocation.** Every call within one operation returns
+   * the same instant, so two rows written in one transaction cannot disagree
+   * about when they were written, and an event agrees with the row it describes.
+   * That is a promise about the value, not an optimisation: it is what lets a
+   * frozen clock make a scenario deterministic rather than merely slower.
+   *
+   * Read at the top of the operation, not lazily — the host stamps it when the
+   * context is built, so the value is the instant the operation BEGAN, not the
+   * instant a particular line ran.
+   *
+   * ```ts
+   * const now = ctx.now();
+   * ctx.sql.exec('INSERT INTO shop_carts (id, owner, created_at) VALUES (?, ?, ?)', [id, owner, now]);
+   * ```
+   *
+   * Injectable host-side (`clock` on the host options, the same seam as `fetch`),
+   * which is what a frozen-clock test and a deterministic replay both need.
+   */
+  now(): Instant;
   /** Envelope is stamped kernel-side (id, occurredAt, tenant, scope, actor); input is validated. */
   emit(event: DomainEventInput): void;
   /**
@@ -471,6 +500,23 @@ export interface ScheduleRunReport {
  */
 export interface FetchLike {
   (input: string, init?: ConnectorRequestInit): Promise<ConnectorResponse>;
+}
+
+/**
+ * The host's clock (#812) — what `ctx.now()` reads.
+ *
+ * Injectable for the same reason `FetchLike` is: the thing outside the process
+ * that a test cannot otherwise control. A host given no clock reads the wall
+ * clock, which is every production path; a test hands in a frozen or scripted
+ * one and gets a scenario that asserts the interesting case instead of avoiding
+ * it.
+ *
+ * Returns an `Instant` rather than a number so there is exactly one timestamp
+ * format on the way in, and the host never has to guess whether it was handed
+ * seconds or milliseconds.
+ */
+export interface Clock {
+  (): Instant;
 }
 export interface ConnectorRequestInit {
   method?: string;

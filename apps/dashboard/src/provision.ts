@@ -762,10 +762,17 @@ export async function snapshotApp(
   },
 ): Promise<{ id: string; expiresAt: string | null; url: string | null }> {
   const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
+  // boundary-lint-allow R6
+  // App-level code, not module code: this drives the host from outside (see the
+  // note atop module.ts — `provisionScope` is a ScopeHost action), so there is no
+  // operation and no `ctx` to take an instant from. The lint classifies it as
+  // module code only because the harness list keys on filenames and `provision.ts`
+  // is too common a name to exempt fleet-wide.
   const expiresAt =
     input.ttlDays && input.ttlDays > 0
       ? new Date(Date.now() + input.ttlDays * 86_400_000).toISOString()
       : undefined;
+  // boundary-lint-end R6
   await scope.invoke('dashboard/snapshot-app', {
     appScopeId: input.appScopeId,
     detail: expiresAt ? `test copy, expires ${expiresAt.slice(0, 10)}` : 'test copy, kept until deleted',
@@ -951,7 +958,13 @@ export async function restoreAppData(
     await host.restoreScope(staff, input.node.tenantId, input.appScopeId, {
       tenantId: input.node.tenantId,
       scopeId: input.appScopeId,
+      // boundary-lint-allow R6
+      // Host-driving code, not module code: this is the app calling INTO a scope
+      // from outside, so there is no operation whose instant to borrow. The value
+      // is provenance on a dump ("when was this captured"), which is a real
+      // wall-clock fact about the export, not a stamp on a row inside a transaction.
       capturedAt: new Date().toISOString(),
+      // boundary-lint-end R6
       tables: input.tables,
     });
   }

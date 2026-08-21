@@ -963,7 +963,13 @@ export class TenantNarrowedControlPlane {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/restore`, {
       tenantId: this.tenantId,
       scopeId,
+      // boundary-lint-allow R6
+      // Host-driving code, not module code: this is the app calling INTO a scope
+      // from outside, so there is no operation whose instant to borrow. The value
+      // is provenance on a dump ("when was this captured"), which is a real
+      // wall-clock fact about the export, not a stamp on a row inside a transaction.
       capturedAt: new Date().toISOString(),
+      // boundary-lint-end R6
       tables,
     });
   }

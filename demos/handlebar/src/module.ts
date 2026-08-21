@@ -181,7 +181,7 @@ const createCustomerOp: OperationHandler<
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO bike_shop_customers (id, number, name, phone, created_at) VALUES (?, ?, ?, ?, ?)`,
-    [id, input.number, input.name, input.phone ?? null, new Date().toISOString()],
+    [id, input.number, input.name, input.phone ?? null, ctx.now()],
   );
   return ctx.sql.query<CustomerRow>('SELECT * FROM bike_shop_customers WHERE id = ?', [id])[0]!;
 };
@@ -214,7 +214,7 @@ const registerBikeOp: OperationHandler<
   ctx.sql.exec(
     `INSERT INTO bike_shop_bikes (id, customer_id, label, frame_no, created_at)
      VALUES (?, ?, ?, ?, ?)`,
-    [id, customer.id, input.label, input.frameNo ?? null, new Date().toISOString()],
+    [id, customer.id, input.label, input.frameNo ?? null, ctx.now()],
   );
   ctx.link({ entityType: 'bike', entityId: id }, { entityType: 'customer', entityId: customer.id });
   return ctx.sql.query<BikeRow>('SELECT * FROM bike_shop_bikes WHERE id = ?', [id])[0]!;

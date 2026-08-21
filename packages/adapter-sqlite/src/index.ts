@@ -176,6 +176,7 @@ import {
   type ConnectorContext,
   type ConnectorHandler,
   type ConnectorOptions,
+  type Clock,
   type FetchLike,
   type SecretBox,
   type GuardPredicate,
@@ -273,6 +274,15 @@ export interface SqliteScopeHostOptions {
    * provider will not produce on demand.
    */
   fetch?: FetchLike;
+  /**
+   * What `ctx.now()` reads (#812). Defaults to the wall clock.
+   *
+   * The same seam as `fetch`, for the same reason: a scenario that needs an
+   * absence window to lapse, a metering period to roll, or a booking hold to
+   * expire cannot get there by waiting. Hand in a frozen or scripted clock and
+   * the interesting case becomes assertable.
+   */
+  clock?: Clock;
 }
 
 const KERNEL_DDL = `
@@ -803,10 +813,12 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
   private readonly secretBox: SecretBox;
   private readonly fetchImpl: FetchLike;
+  private readonly clock: Clock;
 
   constructor(options: SqliteScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.fetchImpl = options.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
+    this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.dir = options.dir;
     mkdirSync(this.dir, { recursive: true });
     this.directory = new Database(join(this.dir, '_directory.sqlite'));
@@ -6481,6 +6493,18 @@ export class SqliteScopeHost implements ScopeHost {
     const passed: EventAuthorization[] = [];
 
     /**
+     * The operation's instant (#812), read ONCE when the context is built.
+     *
+     * Everything the operation stamps — its own rows via `ctx.now()`, the
+     * `occurredAt` on every event it emits, the `requested_at` on every platform
+     * intent it enqueues — comes from here, so a row and the event announcing it
+     * can never disagree about when. Reading the clock per-call would have made
+     * `ctx.now()` deterministic only in the sense that each reading is separately
+     * unpredictable.
+     */
+    const at = this.clock();
+
+    /**
      * The scope host's half of `ctx.atomic` (#770) — everything else is the
      * kernel's (`createAtomic`). SQLite gives us savepoints, which nest inside
      * the operation's `BEGIN IMMEDIATE` and roll back independently.
@@ -6550,12 +6574,13 @@ export class SqliteScopeHost implements ScopeHost {
       scopeId: rt.scopeId,
       principal,
       sql: scopedSql(rt.db),
+      now: () => at,
       emit: (event: DomainEventInput) => {
         const input = domainEventInput.parse(event);
         const full = domainEvent.parse({
           ...input,
           id: eventId.parse(ulid()),
-          occurredAt: instant.parse(new Date().toISOString()),
+          occurredAt: at,
           tenantId: rt.tenantId,
           scopeId: rt.scopeId,
           actor:
@@ -6621,7 +6646,7 @@ export class SqliteScopeHost implements ScopeHost {
             input.kind,
             JSON.stringify(input.payload ?? null),
             JSON.stringify(requestedBy),
-            instant.parse(new Date().toISOString()),
+            at,
           );
         if (signals) signals.platformRequests += 1;
         return id;

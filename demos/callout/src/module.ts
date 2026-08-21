@@ -71,7 +71,7 @@ const createCustomerOp: OperationHandler<
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO callout_customers (id, number, name, org_ref, created_at) VALUES (?, ?, ?, ?, ?)`,
-    [id, input.number, input.name, input.orgRef ?? null, new Date().toISOString()],
+    [id, input.number, input.name, input.orgRef ?? null, ctx.now()],
   );
   return ctx.sql.query<CustomerRow>('SELECT * FROM callout_customers WHERE id = ?', [id])[0]!;
 };
@@ -138,7 +138,7 @@ const createFacilityOp: OperationHandler<
   ctx.sql.exec(
     `INSERT INTO callout_facilities (id, customer_id, name, address, access_note, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, customer.id, input.name, input.address ?? null, input.accessNote ?? null, new Date().toISOString()],
+    [id, customer.id, input.name, input.address ?? null, input.accessNote ?? null, ctx.now()],
   );
   ctx.link({ entityType: 'facility', entityId: id }, { entityType: 'customer', entityId: customer.id });
   return ctx.sql.query<FacilityRow>('SELECT * FROM callout_facilities WHERE id = ?', [id])[0]!;

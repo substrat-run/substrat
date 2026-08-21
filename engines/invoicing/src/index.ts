@@ -386,7 +386,7 @@ const onWorkOrderCompleted: ConsumerHandler = (ctx, event) => {
     ctx.sql.exec(
       `INSERT INTO invoicing_underlag (id, number, customer_type, customer_id, status, created_at)
        VALUES (?, ?, ?, ?, 'open', ?)`,
-      [id, number, p.customer.entityType, p.customer.entityId, new Date().toISOString()],
+      [id, number, p.customer.entityType, p.customer.entityId, ctx.now()],
     );
     underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [id])[0]!;
   }
@@ -413,7 +413,7 @@ const onWorkOrderCompleted: ConsumerHandler = (ctx, event) => {
         line.unitPrice.amount,
         line.unitPrice.currency,
         line.lineTotal.amount,
-        new Date().toISOString(),
+        ctx.now(),
       ],
     );
   }
@@ -460,7 +460,7 @@ const onCommerceOrderPlaced: ConsumerHandler = (ctx, event) => {
     ctx.sql.exec(
       `INSERT INTO invoicing_underlag (id, number, customer_type, customer_id, status, created_at)
        VALUES (?, ?, ?, ?, 'open', ?)`,
-      [id, number, p.customer.entityType, p.customer.entityId, new Date().toISOString()],
+      [id, number, p.customer.entityType, p.customer.entityId, ctx.now()],
     );
     underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [id])[0]!;
   }
@@ -485,7 +485,7 @@ const onCommerceOrderPlaced: ConsumerHandler = (ctx, event) => {
         line.unitPrice.amount,
         line.unitPrice.currency,
         line.lineTotal.amount,
-        new Date().toISOString(),
+        ctx.now(),
       ],
     );
   }
@@ -530,7 +530,7 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
     ctx.sql.exec(
       `INSERT INTO invoicing_underlag (id, number, customer_type, customer_id, status, created_at)
        VALUES (?, ?, ?, ?, 'open', ?)`,
-      [id, number, p.customer.entityType, p.customer.entityId, new Date().toISOString()],
+      [id, number, p.customer.entityType, p.customer.entityId, ctx.now()],
     );
     underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [id])[0]!;
   }
@@ -555,7 +555,7 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
         line.unitPrice.amount,
         line.unitPrice.currency,
         line.lineTotal.amount,
-        new Date().toISOString(),
+        ctx.now(),
       ],
     );
   }
@@ -615,7 +615,7 @@ const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (c
   }
   ctx.sql.exec(
     `UPDATE invoicing_underlag SET status = 'exported', exported_at = ? WHERE id = ?`,
-    [new Date().toISOString(), underlag.id],
+    [ctx.now(), underlag.id],
   );
   ctx.emit({
     type: 'invoicing.underlag-exported',

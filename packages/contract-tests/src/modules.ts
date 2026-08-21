@@ -292,6 +292,22 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
       payload: {},
     });
   }) as OperationHandler<never, unknown>,
+  /**
+   * The clock seam (#812). Reads `ctx.now()` twice around an `emit`, so the suite
+   * can assert the two things module code is entitled to rely on: the value does
+   * not move within one operation, and the event envelope agrees with it.
+   */
+  'test/now': ((ctx) => {
+    const first = ctx.now();
+    ctx.emit({
+      type: 'test.happened',
+      schemaVersion: 1,
+      entity: { entityType: 'test-thing', entityId: 'clock' },
+      piiClass: 'none',
+      payload: {},
+    });
+    return { first, second: ctx.now() };
+  }) as OperationHandler<never, unknown>,
   'test/read-outbox': ((ctx) =>
     ctx.sql.query<OutboxRow>('SELECT * FROM _substrat_outbox ORDER BY id')) as OperationHandler<
     never,

@@ -329,7 +329,7 @@ function insertEntry(
       input.requestId ?? null,
       input.note ?? null,
       ctx.principal,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   const entry = toEntry(getEntryRow(ctx, id));
@@ -380,7 +380,7 @@ export function configureLeaveType(
       input.key,
       input.floor ?? '0',
       input.active === false ? 0 : 1,
-      new Date().toISOString(),
+      ctx.now(),
       input.floor ?? null,
       input.active === undefined ? null : input.active ? 1 : 0,
     ],
@@ -483,7 +483,7 @@ export function requestAbsence(ctx: OperationContext, rawInput: RequestAbsenceIn
       input.days,
       input.note ?? null,
       ctx.principal,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   ctx.emit({
@@ -521,7 +521,7 @@ export function decideAbsence(
   if (req.status !== 'requested') {
     throw conflict('wrong_status', `absence request ${req.id} is '${req.status}' — only a requested absence can be decided`);
   }
-  const now = new Date().toISOString();
+  const now = ctx.now();
   const subject: AbsenceSubject = {
     ref: subjectRefOf(req),
     dataSubjectId: dataSubjectId.parse(req.data_subject_id),
@@ -612,7 +612,7 @@ export function cancelAbsence(
   if (req.status !== 'requested' && req.status !== 'approved') {
     throw conflict('wrong_status', `absence request ${req.id} is '${req.status}' — only requested or approved can be cancelled`);
   }
-  const now = new Date().toISOString();
+  const now = ctx.now();
   const subject: AbsenceSubject = {
     ref: subjectRefOf(req),
     dataSubjectId: dataSubjectId.parse(req.data_subject_id),
@@ -664,14 +664,14 @@ export function cancelAbsence(
  * 'requested' rows past their start) and paged (a bounded batch per pass).
  */
 export function expireStaleRequests(ctx: OperationContext): { expired: number } {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = ctx.now().slice(0, 10);
   const stale = ctx.sql.query<RequestRow>(
     `SELECT * FROM absence_requests
        WHERE status = 'requested' AND start_date < ?
        ORDER BY start_date LIMIT 100`,
     [today],
   );
-  const now = new Date().toISOString();
+  const now = ctx.now();
   for (const req of stale) {
     ctx.sql.exec(
       `UPDATE absence_requests

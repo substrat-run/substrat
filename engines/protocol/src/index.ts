@@ -870,7 +870,7 @@ export function defineTemplate(
   ctx.sql.exec(
     `INSERT INTO protocol_templates (id, key, version, title, content_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, input.key, version, input.title, JSON.stringify(input.content), new Date().toISOString()],
+    [id, input.key, version, input.title, JSON.stringify(input.content), ctx.now()],
   );
   return ctx.sql.query<ProtocolTemplateRow>('SELECT * FROM protocol_templates WHERE id = ?', [
     id,
@@ -928,7 +928,7 @@ export function instantiateProtocol(
       input.entity.entityType,
       input.entity.entityId,
       ctx.principal,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   // The permission walk (portal counter-sign, per-entity reads) flows along
@@ -1009,7 +1009,7 @@ export function fillProtocol(
       JSON.stringify(input.value),
       input.note ?? null,
       ctx.principal,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   ctx.emit({
@@ -1231,7 +1231,7 @@ export async function requestSignatures(
       sealedCell.parse(await ctx.sealToConnection(input.method, JSON.stringify(party.contact))),
     );
   }
-  const now = new Date().toISOString();
+  const now = ctx.now();
   ctx.sql.exec(
     `UPDATE protocol_instances
      SET status = 'pending_signature', frozen_hash = ?, frozen_at = ? WHERE id = ?`,
@@ -1484,7 +1484,7 @@ export function declineSignature(
   ctx.sql.exec(
     `UPDATE protocol_signature_requests
      SET status = ?, resolved_at = ?, resolved_note = ? WHERE id = ?`,
-    [input.outcome ?? 'declined', new Date().toISOString(), input.reason, request.id],
+    [input.outcome ?? 'declined', ctx.now(), input.reason, request.id],
   );
   ctx.emit({
     type: 'protocol.signature-declined',
@@ -1529,7 +1529,7 @@ export function cancelSignatureRequests(
       `protocol is ${instance.status}: only a protocol out for signature can be withdrawn`,
     );
   }
-  const now = new Date().toISOString();
+  const now = ctx.now();
   const cancelled = ctx.sql.exec(
     `UPDATE protocol_signature_requests
      SET status = 'cancelled', resolved_at = ?, resolved_note = ?
@@ -1653,7 +1653,7 @@ export async function signProtocol(
   }
   const latest = latestPerItem(getResponseRows(ctx, instance.id));
   const contentHash = await currentHash(ctx, instance);
-  const now = new Date().toISOString();
+  const now = ctx.now();
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO protocol_signatures
@@ -1712,7 +1712,7 @@ export async function countersignProtocol(
        (id, instance_id, signed_by, kind, method, content_hash, evidence_ref, signed_at,
         request_id, signatory_kind, signatory_label)
      VALUES (?, ?, ?, 'counter', 'in-app', ?, NULL, ?, NULL, 'principal', NULL)`,
-    [id, instance.id, ctx.principal, contentHash, new Date().toISOString()],
+    [id, instance.id, ctx.principal, contentHash, ctx.now()],
   );
   const signature = getSignatureRows(ctx, instance.id).find((s) => s.id === id)!;
   emitSignatureEvent(ctx, {
@@ -1733,7 +1733,7 @@ export function voidProtocol(
   const reason = z.string().min(1).parse(input.reason);
   const instance = getInstanceRow(ctx, z.string().min(1).parse(input.instanceId));
   if (instance.status === 'voided') throw conflict('already_voided', 'protocol is already voided');
-  const now = new Date().toISOString();
+  const now = ctx.now();
   // An outstanding request set dies with the protocol — leaving rows `pending`
   // on a voided instance would keep `requireAllSigned` reading a live gate on
   // a document that is out of play.

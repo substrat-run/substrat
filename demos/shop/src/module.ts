@@ -309,7 +309,7 @@ const createProductOp: OperationHandler<
   ctx.sql.exec(
     `INSERT INTO shop_products (id, slug, name, origin, notes, roast, published, created_at)
      VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
-    [id, input.slug, input.name, input.origin, input.notes, input.roast ?? 1, new Date().toISOString()],
+    [id, input.slug, input.name, input.origin, input.notes, input.roast ?? 1, ctx.now()],
   );
   return ctx.sql.query<ProductRow>('SELECT * FROM shop_products WHERE id = ?', [id])[0]!;
 };
@@ -325,7 +325,7 @@ const addVariantOp: OperationHandler<
   if (!product) throw new Error(`product not found: ${input.productId}`);
   moneyOf(input.priceAmount, input.currency ?? 'SEK'); // validate money shape at the boundary
   const id = ulid();
-  const now = new Date().toISOString();
+  const now = ctx.now();
   ctx.sql.exec(
     `INSERT INTO shop_variants (id, product_id, sku, grind, size_label, price_amount, currency, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -358,7 +358,7 @@ const setStockOp: OperationHandler<{ variantId: string; onHand: number }, { vari
     ctx.sql.exec(
       `INSERT INTO shop_stock (variant_id, on_hand, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(variant_id) DO UPDATE SET on_hand = excluded.on_hand, updated_at = excluded.updated_at`,
-      [input.variantId, qty, new Date().toISOString()],
+      [input.variantId, qty, ctx.now()],
     );
     return { variantId: input.variantId, onHand: qty };
   };
@@ -384,7 +384,7 @@ const catalogOp: OperationHandler<{ includeUnpublished?: boolean } | undefined, 
   // author's privilege, not a browser's. Checked here rather than at the route,
   // so the flag cannot be widened by a future caller.
   if (input?.includeUnpublished) assertAllowed(await ctx.check(SHOP_PERM.catalogManage));
-  const now = new Date().toISOString();
+  const now = ctx.now();
   const products = input?.includeUnpublished
     ? ctx.sql.query<ProductRow>('SELECT * FROM shop_products ORDER BY name')
     : ctx.sql.query<ProductRow>('SELECT * FROM shop_products WHERE published = 1 ORDER BY name');
@@ -426,7 +426,7 @@ interface StockRow {
  */
 const stockOverviewOp: OperationHandler<undefined, StockRow[]> = async (ctx) => {
   assertAllowed(await ctx.check(SHOP_PERM.stockManage));
-  const now = new Date().toISOString();
+  const now = ctx.now();
   const products = ctx.sql.query<ProductRow>('SELECT * FROM shop_products ORDER BY name');
   const rows: StockRow[] = [];
   for (const p of products) {
@@ -468,7 +468,7 @@ const createCustomerOp: OperationHandler<
   const id = ulid();
   ctx.sql.exec(
     'INSERT INTO shop_customers (id, number, name, org_ref, created_at) VALUES (?, ?, ?, ?, ?)',
-    [id, input.number, input.name, input.orgRef ?? null, new Date().toISOString()],
+    [id, input.number, input.name, input.orgRef ?? null, ctx.now()],
   );
   return { id, number: input.number, name: input.name };
 };
@@ -498,7 +498,7 @@ const createDiscountOp: OperationHandler<
       parsed.minSpend ?? null,
       parsed.validTo ?? null,
       parsed.uses ?? null,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   return { code: parsed.code.toUpperCase(), kind: parsed.kind, value: parsed.value };
@@ -514,7 +514,7 @@ const createCartOp: OperationHandler<undefined, { id: string }> = async (ctx) =>
   ctx.sql.exec('INSERT INTO shop_carts (id, owner, status, created_at) VALUES (?, ?, \'open\', ?)', [
     id,
     ctx.principal,
-    new Date().toISOString(),
+    ctx.now(),
   ]);
   return { id };
 };
@@ -527,7 +527,7 @@ const addToCartOp: OperationHandler<
   requireOwnOpenCart(ctx, input.cartId);
   const variant = getVariant(ctx, input.variantId);
   const qty = z.number().int().positive().parse(input.qty);
-  const now = new Date().toISOString();
+  const now = ctx.now();
 
   // Sweep elapsed holds first, then check availability atomically (K-6 serializes
   // the whole operation per scope — no other cart can slip in between).
@@ -540,7 +540,7 @@ const addToCartOp: OperationHandler<
   }
 
   const holdSeconds = input.holdSeconds ?? DEFAULT_HOLD_SECONDS;
-  const expiresAt = new Date(Date.now() + holdSeconds * 1000).toISOString();
+  const expiresAt = new Date(Date.parse(ctx.now()) + holdSeconds * 1000).toISOString();
 
   // Merge into an existing line for this variant so a product shows once; the
   // availability check above already accounts for the current hold, so `qty` is
@@ -584,7 +584,7 @@ const setLineQtyOp: OperationHandler<
     ctx.sql.exec('DELETE FROM shop_cart_lines WHERE id = ?', [line.id]);
     return { lineId: line.id, qty: 0, removed: true };
   }
-  const now = new Date().toISOString();
+  const now = ctx.now();
   const delta = qty - line.qty;
   if (delta > 0) {
     sweepExpired(ctx, line.variant_id, now);
@@ -594,7 +594,7 @@ const setLineQtyOp: OperationHandler<
       throw new Error(`out of stock: ${v.sku} — ${available} available, ${delta} more requested`);
     }
   }
-  const expiresAt = new Date(Date.now() + DEFAULT_HOLD_SECONDS * 1000).toISOString();
+  const expiresAt = new Date(Date.parse(ctx.now()) + DEFAULT_HOLD_SECONDS * 1000).toISOString();
   ctx.sql.exec('UPDATE shop_cart_lines SET qty = ?, expires_at = ? WHERE id = ?', [qty, expiresAt, line.id]);
   return { lineId: line.id, qty, removed: false };
 };
@@ -633,7 +633,7 @@ const quoteOp: OperationHandler<
   const raw = input.discountCode?.trim();
   if (raw) {
     try {
-      const r = resolveDiscount(ctx, raw, subtotal, new Date().toISOString().slice(0, 10));
+      const r = resolveDiscount(ctx, raw, subtotal, ctx.now().slice(0, 10));
       discount = moneyOf(r.amount, currency);
       discountValid = true;
       discountCode = r.row.code;
@@ -787,8 +787,7 @@ const checkoutOp: OperationHandler<
   // invoices (consumer ignores non-'invoice') nor charges.
   const paymentMethod = z.enum(['invoice', 'card']).parse(input.paymentMethod ?? 'invoice');
 
-  const now = new Date();
-  const nowIso = now.toISOString();
+  const nowIso = ctx.now();
   const today = nowIso.slice(0, 10);
 
   // Realize the sale against on_hand. Our own reservation guaranteed availability

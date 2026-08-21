@@ -411,7 +411,7 @@ function recordAppEvent(
   ctx.sql.exec(
     `INSERT INTO dashboard_app_events (id, app_scope_id, kind, detail, actor, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [ulid(), appScopeId, kind, detail ?? null, ctx.principal, new Date().toISOString()],
+    [ulid(), appScopeId, kind, detail ?? null, ctx.principal, ctx.now()],
   );
 }
 
@@ -441,7 +441,7 @@ const provisionAppOp: OperationHandler<z.infer<typeof provisionAppInput>, Dashbo
   ctx.sql.exec(
     `INSERT INTO dashboard_apps (id, app_scope_id, vertical_slug, name, status, hostname, created_by, created_at)
      VALUES (?, ?, ?, ?, 'provisioning', NULL, ?, ?)`,
-    [id, input.appScopeId, input.verticalSlug, input.name, ctx.principal, new Date().toISOString()],
+    [id, input.appScopeId, input.verticalSlug, input.name, ctx.principal, ctx.now()],
   );
   recordAppEvent(ctx, input.appScopeId, 'created', input.verticalSlug);
   return ctx.sql.query<DashboardAppRow>('SELECT * FROM dashboard_apps WHERE id = ?', [id])[0]!;
@@ -650,7 +650,7 @@ const recordInstallStepOp: OperationHandler<z.infer<typeof recordInstallStepInpu
 ) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
   const input = recordInstallStepInput.parse(raw);
-  const now = new Date().toISOString();
+  const now = ctx.now();
   if (input.status === 'running') {
     // A fresh attempt at this step: back to 'running', attempts += 1, the previous
     // outcome cleared (its error already lives on the Activity trail if it mattered).
@@ -761,7 +761,7 @@ const deleteAppOp: OperationHandler<z.infer<typeof deleteAppInput>, DashboardApp
     [input.appScopeId],
   )[0];
   ctx.sql.exec('UPDATE dashboard_apps SET deleted_at = ? WHERE app_scope_id = ? AND deleted_at IS NULL', [
-    new Date().toISOString(),
+    ctx.now(),
     input.appScopeId,
   ]);
   // Only record on the transition (first delete), not on an idempotent repeat.
@@ -807,7 +807,7 @@ const setAppEnvInput = z.object({
 const setAppEnvOp: OperationHandler<z.infer<typeof setAppEnvInput>, { saved: number }> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
   const input = setAppEnvInput.parse(raw);
-  const now = new Date().toISOString();
+  const now = ctx.now();
   const saved: string[] = [];
   for (const e of input.entries) {
     if (e.value === '') continue; // leave-unchanged (untouched secret)
@@ -912,7 +912,7 @@ const setAppAuthOp: OperationHandler<z.infer<typeof setAppAuthInput>, AppAuthCon
      VALUES (?, ?, ?, ?, 1, ?, ?)
      ON CONFLICT (app_scope_id, key) DO UPDATE SET
        value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
-    [ulid(), input.appScopeId, APP_AUTH_KEY, JSON.stringify(merged), ctx.principal, new Date().toISOString()],
+    [ulid(), input.appScopeId, APP_AUTH_KEY, JSON.stringify(merged), ctx.principal, ctx.now()],
   );
   recordAppEvent(ctx, input.appScopeId, 'updated', `identity: ${merged.issuer}`);
   return merged;
@@ -983,7 +983,7 @@ const initTeamOp: OperationHandler<z.infer<typeof initTeamInput>, void> = async 
   assertAllowed(await ctx.check(DASHBOARD_PERM.manageMembers));
   const input = initTeamInput.parse(raw);
   if (ctx.sql.query<{ org_id: string }>('SELECT org_id FROM dashboard_team LIMIT 1')[0]) return;
-  const now = new Date().toISOString();
+  const now = ctx.now();
   ctx.sql.exec('INSERT INTO dashboard_team (org_id) VALUES (?)', [input.orgId]);
   ctx.sql.exec(
     `INSERT INTO dashboard_members (id, principal, email, role_key, status, invited_by, invited_at, joined_at)
@@ -1026,7 +1026,7 @@ const inviteMemberOp: OperationHandler<z.infer<typeof inviteMemberInput>, { invi
     ctx.sql.exec(
       `INSERT INTO dashboard_members (id, email, role_key, status, invitation_id, invited_by, invited_at)
        VALUES (?, ?, ?, 'invited', ?, ?, ?)`,
-      [ulid(), input.email, input.roleKey, invitationId, ctx.principal, new Date().toISOString()],
+      [ulid(), input.email, input.roleKey, invitationId, ctx.principal, ctx.now()],
     );
   }
   return { invitationId };
@@ -1050,7 +1050,7 @@ const acceptInviteOp: OperationHandler<z.infer<typeof acceptInviteInput>, { role
   const invitation = await acceptInvite(ctx, input); // throws "not acceptable" on any mismatch
   ctx.sql.exec(
     `UPDATE dashboard_members SET principal = ?, status = 'active', joined_at = ? WHERE invitation_id = ?`,
-    [ctx.principal, new Date().toISOString(), input.invitationId],
+    [ctx.principal, ctx.now(), input.invitationId],
   );
   return { roleKey: invitation.role_key };
 };

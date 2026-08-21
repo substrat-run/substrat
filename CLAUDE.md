@@ -116,6 +116,14 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   window); permission keys are never renamed.
 - IDs come from `ulid()`; money/decimals are strings via `@substrat-run/contracts`
   helpers (`moneyOf`, `mulMoney`, `addDecimal`, `compareDecimal`) — never floats.
+- **Time comes from `ctx.now()`** — module code has no other clock, and `new Date()` /
+  `Date.now()` are boundary-lint **R6** violations (the same class of ban as `node:*`).
+  It is stable for the whole invocation, so rows and the events announcing them agree
+  about when. Timestamps are stored as **ISO 8601 text**, never epoch integers. A host
+  takes a `clock`, so a scenario asserts elapsed time with `manualClock`/`frozenClock`
+  instead of sleeping or shrinking the window to zero. Code that must read the *real*
+  clock — a JWT whose `exp` a remote server judges — opts out with a reviewable
+  `boundary-lint-allow R6` … `boundary-lint-end R6` block.
 - Web-standard APIs always, node-only imports never: hashing/crypto is
   `globalThis.crypto` (Web Crypto — same API in Node, Workers, browsers), encoding is
   `TextEncoder`/`TextDecoder`, URLs are `URL`. Never hand-roll a hash to dodge an
@@ -176,7 +184,7 @@ request is made as, and the error envelope the vertical picked in its own `app.o
 
 Two phases, in order. **Design** with the **substrat** skill
 (`.claude/skills/substrat/SKILL.md`): interview the user, map the domain onto the engines,
-and land a reviewable `DESIGN.md` / `spec/concept.md` the user approves *before any code*.
+and land a reviewable `spec/concept.md` the user approves *before any code*.
 Then **build** with the **new-vertical** skill (`.claude/skills/new-vertical/SKILL.md`),
 which turns that approved design into a working vertical. Reference implementation:
 `demos/callout` (spec in `demos/callout/spec/`, **declared model in `src/entities.ts` +

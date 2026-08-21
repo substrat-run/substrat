@@ -371,7 +371,7 @@ export function configureMeter(ctx: OperationContext, rawInput: ConfigureMeterIn
         input.unit,
         input.description ?? null,
         input.active === false ? 0 : 1,
-        new Date().toISOString(),
+        ctx.now(),
       ],
     );
   }
@@ -432,7 +432,7 @@ export function recordUsage(
     return { entry: toEntry(existing), deduped: true };
   }
 
-  const occurredAt = input.occurredAt ?? new Date().toISOString();
+  const occurredAt = input.occurredAt ?? ctx.now();
   const horizon = closeHorizon(ctx);
   if (horizon !== null && occurredAt < horizon) {
     throw conflict('period_closed', 
@@ -455,7 +455,7 @@ export function recordUsage(
       input.dedupeKey,
       input.note ?? null,
       ctx.principal,
-      new Date().toISOString(),
+      ctx.now(),
     ],
   );
   const entry = toEntry(
@@ -550,7 +550,7 @@ export function closePeriod(
   }
 
   const id = ulid();
-  const now = new Date().toISOString();
+  const now = ctx.now();
   ctx.sql.exec(
     `INSERT INTO metering_periods (id, from_at, to_at, closed_by, closed_at) VALUES (?, ?, ?, ?, ?)`,
     [id, input.from, input.to, ctx.principal, now],

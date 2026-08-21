@@ -119,7 +119,7 @@ function rowToDef(r: ContentTypeRow): ContentTypeDef {
 function ensureTypes(ctx: OperationContext): void {
   const n = ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM manyfold_content_type')[0]!.n;
   if (n > 0) return;
-  const now = new Date().toISOString();
+  const now = ctx.now();
   for (const def of CONTENT_TYPES) {
     ctx.sql.exec(
       'INSERT OR IGNORE INTO manyfold_content_type (key, version, title, title_field, slug_field, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -195,7 +195,7 @@ function transition(ctx: OperationContext, entry: EntryRow, operation: string, n
   // Every caller here performs a move; `allow` entries never reach this function.
   if (outcome.kind !== 'transition') return;
   const to = outcome.to as EntryStatus;
-  const now = new Date().toISOString();
+  const now = ctx.now();
   ctx.sql.exec('UPDATE manyfold_entry SET status = ?, updated_at = ? WHERE id = ?', [to, now, entry.id]);
   ctx.sql.exec(
     'INSERT INTO manyfold_status_log (id, entry_id, from_status, to_status, actor, note, at) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -218,7 +218,7 @@ function upsertDelivery(ctx: OperationContext, entry: EntryRow, rev: RevisionRow
     `INSERT OR REPLACE INTO manyfold_delivery
        (entry_id, type_key, slug, rev_no, hash, body_json, title, published_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [entry.id, entry.type_key, entry.slug, rev.rev_no, rev.hash!, rev.body_json, titleOf(def, body, entry), new Date().toISOString()],
+    [entry.id, entry.type_key, entry.slug, rev.rev_no, rev.hash!, rev.body_json, titleOf(def, body, entry), ctx.now()],
   );
 }
 
@@ -234,7 +234,7 @@ const createEntryOp: OperationHandler<z.infer<typeof createEntryInput>, EntryRow
   const def = loadType(ctx, input.typeKey);
   const { body, slug } = validateBody(def, input.body);
   const id = ulid();
-  const now = new Date().toISOString();
+  const now = ctx.now();
   try {
     ctx.sql.exec(
       'INSERT INTO manyfold_entry (id, type_key, status, slug, draft_rev, published_rev, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -265,7 +265,7 @@ const saveDraftOp: OperationHandler<z.infer<typeof saveDraftInput>, EntryRow> = 
   const def = loadType(ctx, entry.type_key);
   const { body, slug } = validateBody(def, input.body);
   const revNo = entry.draft_rev + 1;
-  const now = new Date().toISOString();
+  const now = ctx.now();
   ctx.sql.exec(
     'INSERT INTO manyfold_revision (id, entry_id, rev_no, body_json, hash, frozen, author, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)',
     [ulid(), entry.id, revNo, JSON.stringify(body), null, ctx.principal, now],
@@ -293,7 +293,7 @@ const restoreRevisionOp: OperationHandler<z.infer<typeof restoreRevisionInput>, 
   if (!src) throw new Error(`revision not found: ${input.entryId}@${input.revNo}`);
   // A restore is a NEW revision copying the old body — never a mutation of history.
   const revNo = entry.draft_rev + 1;
-  const now = new Date().toISOString();
+  const now = ctx.now();
   ctx.sql.exec(
     'INSERT INTO manyfold_revision (id, entry_id, rev_no, body_json, hash, frozen, author, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)',
     [ulid(), entry.id, revNo, src.body_json, null, ctx.principal, now],
@@ -488,7 +488,7 @@ const saveTypeOp: OperationHandler<z.infer<typeof saveTypeInput>, ContentTypeDef
   for (const [name, f] of Object.entries(input.fields)) {
     if ((f.type === 'ref' || f.type === 'refMany') && !f.target) throw new Error(`field '${name}' is a ${f.type} but names no target type`);
   }
-  const now = new Date().toISOString();
+  const now = ctx.now();
   const existing = ctx.sql.query<{ version: number }>('SELECT version FROM manyfold_content_type WHERE key = ?', [input.key])[0];
   const version = existing ? existing.version + 1 : 1;
   ctx.sql.exec(

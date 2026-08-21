@@ -258,6 +258,33 @@ export function scopeHostContractSuite(
       expect(row.pii_class).toBe('none');
     });
 
+    it('ctx.now() is one instant for the whole operation, and the envelope agrees (#812)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const { first, second } = await stub.invoke<{ first: string; second: string }>('test/now');
+
+      // A valid instant, and the SAME one on both reads. Two rows written in one
+      // transaction cannot disagree about when they were written — that is the
+      // promise a frozen clock rests on, not an implementation detail.
+      expect(instant.safeParse(first).success).toBe(true);
+      expect(second).toBe(first);
+
+      // And the event announcing the work carries the same instant as the work.
+      const rows = await stub.invoke<OutboxRow[]>('test/read-outbox');
+      const row = rows[rows.length - 1]!;
+      expect(row.occurred_at).toBe(first);
+    });
+
+    it('ctx.now() advances between operations — stable is not frozen (#812)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const a = await stub.invoke<{ first: string }>('test/now');
+      await new Promise((r) => setTimeout(r, 5));
+      const b = await stub.invoke<{ first: string }>('test/now');
+      // Held within an operation, re-read for the next one. A host that stamped
+      // once per process would pass every assertion above and be useless.
+      expect(Date.parse(b.first)).toBeGreaterThanOrEqual(Date.parse(a.first));
+      expect(b.first).not.toBe(a.first);
+    });
+
     it('rejects PII-classed events without a subjectId (§6.1)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       await expect(stub.invoke('test/emit-unclassified-pii')).rejects.toThrow(/subjectId/);

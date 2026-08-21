@@ -87,7 +87,7 @@ push` reads the JSON, not the TypeScript.
 ## The rules (non-negotiable)
 
 **Module code** = everything reachable from a `ModuleRegistration` (operations,
-consumers). Rules 1–4 are enforced mechanically by `boundary-lint`.
+consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
 
 1. **Data access is `ctx.sql` only.** Never import `better-sqlite3`, an adapter, or
    `node:*` in module code.
@@ -102,16 +102,22 @@ consumers). Rules 1–4 are enforced mechanically by `boundary-lint`.
    the shortcut *works* and silently welds you to an engine's private schema forever. Need
    extra data on an engine entity? Add **your own side table keyed by the engine's id** —
    never a column upstream.
-5. **Every operation checks a permission first.** `assertAllowed(await ctx.check(PERM))`
+5. **Time comes from `ctx.now()`.** Module code has no other clock — `new Date()` and
+   `Date.now()` are banned exactly like `node:*`. It is the same instant for the whole
+   operation, so your rows and the events announcing them agree about when. Store it as
+   ISO text, never an epoch integer. Because the host injects the clock, a scenario can
+   test elapsed time (`manualClock` from `@substrat-run/kernel`) instead of sleeping or
+   shrinking the window to zero — the workaround that proves nothing.
+6. **Every operation checks a permission first.** `assertAllowed(await ctx.check(PERM))`
    is the first line.
-6. **Every mutation emits a fat event** — a consumer must never need a cross-module read.
-7. **Never fork an engine.** Extend by composition. If you must fork, the engine drew its
+7. **Every mutation emits a fat event** — a consumer must never need a cross-module read.
+8. **Never fork an engine.** Extend by composition. If you must fork, the engine drew its
    line wrong — that's design feedback, not a coding problem.
-8. **IDs are `ulid()`. Money is strings** via `@substrat-run/contracts` helpers
+9. **IDs are `ulid()`. Money is strings** via `@substrat-run/contracts` helpers
    (`moneyOf`, `mulMoney`, `addDecimal`, `compareDecimal`) — never floats.
-9. **Web-standard APIs always** — `globalThis.crypto`, `TextEncoder`, `URL`. Never
-   hand-roll a hash to dodge an import ban.
-10. **Parse, don't trust.** Zod at every boundary — but import `z` from
+10. **Web-standard APIs always** — `globalThis.crypto`, `TextEncoder`, `URL`. Never
+    hand-roll a hash to dodge an import ban.
+11. **Parse, don't trust.** Zod at every boundary — but import `z` from
     `@substrat-run/contracts`, **never from `zod`**. Zod schemas don't compose across
     copies or majors; composing a contracts schema into one built from a separate `zod`
     fails at *runtime* (`expected a Zod schema`) with an error pointing nowhere near the
@@ -128,7 +134,7 @@ This is also what lets a portal permission-walk reach the owner.
 
 ```sh
 npm test                        # the scenario, including the denials
-npx @substrat-run/boundary-lint # the layer rules (1–4)
+npx @substrat-run/boundary-lint # the layer rules (1–5)
 npm run typecheck
 ```
 
