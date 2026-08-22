@@ -1,5 +1,15 @@
 # @substrat-run/demo-manyfold
 
+## 0.7.1
+
+### Patch Changes
+
+- @substrat-run/contracts@0.85.0
+- @substrat-run/kernel@0.85.0
+- @substrat-run/adapter-sqlite@0.85.0
+- @substrat-run/adapter-cloudflare@0.85.0
+- @substrat-run/vertical-host@0.85.0
+
 ## 0.7.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @substrat-run/engine-metering
 
+## 0.3.5
+
+### Patch Changes
+
+- @substrat-run/contracts@0.85.0
+- @substrat-run/kernel@0.85.0
+
 ## 0.3.4
 
 ### Patch Changes
