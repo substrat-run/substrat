@@ -38,6 +38,13 @@
  * job. Honest pins and a working template are two different questions, and this
  * answers the first one only.
  *
+ * Both halves of the second question now have a home, and neither is here:
+ * `lint:scaffold` (#797) installs from the registry post-release, and
+ * `packages/template-check` (#878) compiles the template against the WORKSPACE on
+ * every PR. The second one exists because of what this file does automatically —
+ * advancing a pin across a minor in the same PR as the bump means the template
+ * silently adopts a new surface, and #811 is what that costs when nobody compiles it.
+ *
  *   pnpm lint:pins            re-emit the pin block from the workspace versions
  *   pnpm lint:pins --check    CI: exit 1 on drift
  *

@@ -415,9 +415,18 @@ function discoverExternals(root: string, configured?: string[]): PackageSpec[] {
   for (const name of entries) {
     if (!name.startsWith('engine-')) continue;
     const dir = join(scopeDir, name);
+    const dist = join(dir, 'dist');
     specs.push({
+      // The OWNER is the package; the SCAN is its dist, where the migration SQL
+      // lives verbatim. Narrowed to dist when there is one, because a directory
+      // that is not shipped code can still contain the words `CREATE TABLE` —
+      // an assertion message reading "no CREATE TABLE for <name>" in an engine's own
+      // test suite registers a table called `for`, and every consumer that says
+      // `for` in any SQL then "references a private table". A published install is
+      // dist-only so this never fired there; a workspace-linked one (a monorepo
+      // linting its own scaffold template) points at the full source tree.
       name: packageNameOf(dir, `@substrat-run/${name}`),
-      dir,
+      dir: existsSync(dist) ? dist : dir,
       lint: false,
       engine: false,
       harness: [],

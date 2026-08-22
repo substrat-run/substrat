@@ -30,3 +30,14 @@ secrets/*.env
 # Builder studio projects — each is its OWN git repo (builder-studio.md §4.6);
 # never part of this repo. The nested .git keeps their history out of ours.
 .builder/
+
+# The create-substrat template, materialized against the workspace so a compiler
+# sees it (#878, tools/template-sync.mjs). A copy of packages/create-substrat/
+# template — rewritten on every run, never edited, never committed. The member's
+# package.json (the dependency links) IS committed.
+packages/template-check/src/
+packages/template-check/test/
+packages/template-check/tsconfig.json
+packages/template-check/tsconfig.worker.json
+packages/template-check/vitest.config.ts
+packages/template-check/GENERATED.md

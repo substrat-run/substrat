@@ -1,7 +1,7 @@
 {
   "name": "create-substrat",
   "version": "0.7.2",
-  "description": "Scaffold a Substrat vertical — `npm create substrat <dir>`.",
+  "description": "Scaffold a Substrat vertical \u2014 `npm create substrat <dir>`.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -25,6 +25,7 @@
   "files": [
     "index.js",
     "dev-servers.js",
+    "project-files.js",
     "template"
   ],
   "engines": {

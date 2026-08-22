@@ -78,6 +78,37 @@ describe('standalone vertical (engines in node_modules)', () => {
     expect(owners).toContain('@substrat-run/engine-invoicing');
   });
 
+  // A workspace-linked engine (a monorepo linting its own scaffold template, #878)
+  // points at the whole source tree rather than the npm payload, so `dist` is not
+  // the only thing under the package. Ownership must still come from the shipped
+  // code: an engine's own test suite saying "no CREATE TABLE for <name>" otherwise
+  // registers a table called `for`, and every consumer whose SQL contains the word
+  // `for` is then told it references a private table. Six such violations is what
+  // this repo's template lint reported before the scan was narrowed.
+  it('ignores CREATE TABLE outside the shipped dist', () => {
+    const dir = 'node_modules/@substrat-run/engine-invoicing';
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      ...engine('engine-invoicing', ['invoicing_lines']),
+      // Not shipped, and not a table declaration — an assertion message.
+      [`${dir}/test/entities.test.ts`]:
+        "expect(actual, `no CREATE TABLE for '${entity.table}'`).toBeDefined();",
+      // A `for` loop and an ordinary English `for` — R5 matches table names as whole
+      // words anywhere on a line, so a phantom table called `for` flags both.
+      'src/module.ts': `
+        export const migrations = [{ version: '0001', sql: \`CREATE TABLE shop_jobs (id TEXT);\` }];
+        /** Totals the jobs, one row for each. */
+        export function ok(ctx) {
+          let n = 0;
+          for (const row of ctx.sql.query('SELECT * FROM shop_jobs')) n += 1;
+          return n;
+        }
+      `,
+    });
+
+    expect(lint(root)).toEqual([]);
+  });
+
   it('a clean vertical passes', () => {
     const root = project({
       'package.json': VERTICAL_PKG,

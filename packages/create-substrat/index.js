@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DEV_SERVERS } from './dev-servers.js';
+import { TSCONFIG, VITEST_CONFIG } from './project-files.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = join(HERE, 'template');
@@ -153,40 +154,6 @@ function packageJson(name) {
     2,
   )}\n`;
 }
-
-const TSCONFIG = `${JSON.stringify(
-  {
-    compilerOptions: {
-      target: 'ES2022',
-      module: 'NodeNext',
-      moduleResolution: 'NodeNext',
-      lib: ['ES2022'],
-      strict: true,
-      esModuleInterop: true,
-      skipLibCheck: true,
-      forceConsistentCasingInFileNames: true,
-      noEmit: true,
-      types: ['node'],
-    },
-    include: ['src', 'test'],
-    // The worker and its Cloudflare-only stores compile against workers-types
-    // under their own config (tsconfig.worker.json) — the node config must not
-    // see them. `src/routes.ts` is deliberately NOT excluded: the shared route
-    // table must typecheck under both, which is what keeps it host-agnostic.
-    exclude: ['src/worker.ts', 'src/config-do.ts'],
-  },
-  null,
-  2,
-)}\n`;
-
-const VITEST_CONFIG = `import { defineConfig } from 'vitest/config';
-
-export default defineConfig({
-  test: {
-    include: ['test/**/*.test.ts'],
-  },
-});
-`;
 
 const GITIGNORE = `node_modules/
 dist/

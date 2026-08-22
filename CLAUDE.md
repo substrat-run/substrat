@@ -34,10 +34,20 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   published version, `npm install` from the registry with no workspace links, then the
   three gates a scaffolded project ships with. `packages/create-substrat/template` is
   **not** a workspace member — deliberately, since its job is to prove an npm install
-  works — so nothing else in the repo ever runs it. Runs post-release and weekly
-  (`.github/workflows/scaffold.yml`), never on a PR: between a merge that adds a surface
-  and the release that publishes it, the template legitimately runs ahead of npm.
-  `--from=local` checks this checkout's template instead of the published one.
+  works. Runs post-release and weekly (`.github/workflows/scaffold.yml`), never on a
+  PR: between a merge that adds a surface and the release that publishes it, the
+  template legitimately runs ahead of npm. `--from=local` checks this checkout's
+  template instead of the published one.
+- **The template is compiled on every PR too** (#878), against the **workspace** rather
+  than the registry: `tools/template-sync.mjs` materializes it into
+  `packages/template-check`, a member that owns the `workspace:*` links, and
+  `pnpm -r typecheck`, `pnpm -r test` and `node tools/boundary-lint.mjs` all reach it
+  with no new command to remember. This is the gate that makes a **non-additive engine
+  surface** red in its own PR: the template is a call site of every engine it imports,
+  and it used to be the only one the compiler never saw — so #811's paged `listOrders`
+  was merged, released, and reached `npm create substrat` failing all three of the
+  gates a scaffold ships with. Registry-vs-workspace is the whole distinction: being
+  ahead of npm is a pass here and a legitimate red there.
 - `pnpm callout-demo dev` — run the Callout demo (API :8871 + web :5271). Demo dev
   ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ` overrides both ends of the proxy.

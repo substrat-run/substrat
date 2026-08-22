@@ -1,0 +1,31 @@
+{
+  "name": "@substrat-run/template-check",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Compiles create-substrat's template against THIS checkout — the call site the compiler never saw (#878)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "node ../../tools/template-sync.mjs && tsc --noEmit && tsc -p tsconfig.worker.json --noEmit",
+    "test": "node ../../tools/template-sync.mjs && vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@substrat-run/adapter-cloudflare": "workspace:^",
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/engine-invoicing": "workspace:^",
+    "@substrat-run/engine-workorder": "workspace:^",
+    "@substrat-run/kernel": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
+    "better-sqlite3": "^13.0.3",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "catalog:",
+    "typescript": "^7.0.0",
+    "vitest": "catalog:"
+  }
+}
