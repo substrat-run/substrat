@@ -198,6 +198,15 @@ interface Env extends OidcEnv {
   CF_ACCOUNT_ID?: string;
   DISPATCH_NAMESPACE?: string;
   /**
+   * Head sampling rate (0–1) for Workers automatic tracing on pushed verticals (#858).
+   * Unset ⇒ pushed scripts declare no `traces` block and emit logs only, which is every
+   * push to date. Set to `1` on TEST to answer whether tracing reaches dispatch-namespace
+   * user workers at all, and whether `durable_object_subrequest` spans see the DO-originated
+   * egress D-46 cannot police. A malformed or out-of-range value is IGNORED rather than
+   * clamped — a typo that silently samples 1% would make an absent span unfalsifiable.
+   */
+  VERTICAL_TRACE_SAMPLING?: string;
+  /**
    * Cloudflare-for-SaaS custom-hostname issuance (#305, §4.7). The zone whose fallback
    * origin fronts tenant apps (the `substrat.run` zone), the CNAME value tenants point a
    * custom domain at, and the comma-separated base domains a PLATFORM hostname is minted
@@ -272,6 +281,19 @@ interface DispatchNamespace {
   get(name: string): Fetcher;
 }
 
+/**
+ * The tracing sample rate for pushed verticals (#858), or undefined for "declare no
+ * `traces` block". Refuses anything that is not a finite 0–1 number: an unparseable rate
+ * must read as *off*, never as *some*, because the experiment this exists for concludes
+ * from an ABSENCE of spans and a silently-clamped typo would make that absence meaningless.
+ */
+function traceSamplingFor(env: Env): number | undefined {
+  const raw = env.VERTICAL_TRACE_SAMPLING?.trim();
+  if (!raw) return undefined;
+  const rate = Number(raw);
+  return Number.isFinite(rate) && rate >= 0 && rate <= 1 ? rate : undefined;
+}
+
 /** The WfP uploader, when the platform's CF credential is configured (self-serve-deploy.md). */
 function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
@@ -289,6 +311,7 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
       ROUTER_SECRET: env.ROUTER_SECRET,
       CONTROL_PLANE_URL: env.PLATFORM_CP_URL,
     },
+    traceSampling: traceSamplingFor(env),
   });
 }
 
