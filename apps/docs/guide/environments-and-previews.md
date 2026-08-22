@@ -38,6 +38,8 @@ differs is **what triggers the rebind, and how gated it is**:
 - **test** — the binding moves automatically on every merge to `main`, on one scope, ungated,
   driven from CI.
 
+<InstanceResolution />
+
 ## Previews: the non-prod primitive
 
 A preview is a scope with data bound to a version, at its own `--<tag>` hostname. You create and

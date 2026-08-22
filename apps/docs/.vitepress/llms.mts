@@ -155,6 +155,22 @@ function twinUrl(link: string): string {
 }
 
 /**
+ * A component on a line of its own: `<LayerStack />`, `<StateMachine engine="booking" />`.
+ *
+ * Props are part of the match because one component can serve many pages — the
+ * five engine state machines are one component and five props. `tools/llms-index.mts`
+ * matches with the same pattern, so a page it passes is a page this can flatten.
+ */
+export const COMPONENT_LINE = /^<([A-Z]\w*)((?:\s+[a-z][\w-]*="[^"]*")*)\s*\/>$/;
+
+/** `engine="booking"` → `{ engine: 'booking' }`. String props only, by design. */
+export function propsOf(attrs: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [, k, v] of attrs.matchAll(/([a-z][\w-]*)="([^"]*)"/g)) out[k] = v;
+  return out;
+}
+
+/**
  * Source markdown → the twin an agent should read.
  *
  * VitePress containers become blockquotes (the closest markdown has to an
@@ -201,11 +217,12 @@ export function toTwin(raw: string): string {
       continue;
     }
 
-    // A bare theme component. Its content is markdown when the component keeps
-    // it in a data module; a pointer at the page when it does not.
-    const component = /^<([A-Z]\w*)\s*\/>\s*$/.exec(line.trim());
+    // A theme component on a line of its own, with or without simple string
+    // props. Its content is markdown when the component keeps it in a content
+    // module; a pointer at the page when it does not.
+    const component = COMPONENT_LINE.exec(line.trim());
     if (component) {
-      const flattened = altFor(component[1]);
+      const flattened = altFor(component[1], propsOf(component[2] ?? ''));
       push(
         flattened ??
           `*(Diagram: ${component[1]} — rendered at the HTML page for this document.)*`,

@@ -31,6 +31,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArtifacts, describe, kernelVersion } from '../apps/docs/.vitepress/llms.mjs';
+import { COMPONENT_LINE } from '../apps/docs/.vitepress/llms.mjs';
 import { COMPONENT_ALT } from '../apps/docs/.vitepress/theme/components/alt.mjs';
 import { tableOfContents } from '../apps/docs/.vitepress/sidebar.mjs';
 
@@ -108,7 +109,10 @@ for (const file of onDisk) {
 // 3 — every component a page renders must reach the twin as markdown.
 for (const file of sourcePages(true)) {
   const body = readFileSync(join(DOCS, file), 'utf8');
-  for (const [, name] of body.matchAll(/^<([A-Z]\w*)\s*\/>\s*$/gm)) {
+  for (const line of body.split('\n')) {
+    const match = COMPONENT_LINE.exec(line.trim());
+    if (!match) continue;
+    const name = match[1];
     if (name in COMPONENT_ALT || ALT_NOT_NEEDED.has(name)) continue;
     problems.push(
       `${file} renders <${name} /> with no markdown twin — it will degrade to a ` +
