@@ -77,7 +77,7 @@ function Lists() {
   const load = useCallback(() => {
     api
       .myLists()
-      .then(setLists)
+      .then((page) => setLists(page.entries))
       .catch((e: unknown) => setError(e));
   }, []);
   useEffect(load, [load]);
@@ -167,7 +167,7 @@ function ListView({ listId }: { listId: string }) {
     // shared with, so it is not surfaced as an error.
     api
       .listShares({ listId })
-      .then(setShares)
+      .then((page) => setShares(page.entries))
       .catch(() => setShares(null));
   }, [listId]);
   useEffect(load, [load]);

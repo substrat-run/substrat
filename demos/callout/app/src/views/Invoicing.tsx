@@ -9,7 +9,7 @@ export function InvoicingView() {
   const [error, setError] = useState('');
 
   const load = () => {
-    void api.invoicingList({}).then(setUnderlag).catch((e: Error) => setError(e.message));
+    void api.invoicingList({}).then((page) => setUnderlag(page.entries)).catch((e: Error) => setError(e.message));
   };
   useEffect(load, []);
 

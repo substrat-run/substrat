@@ -51,7 +51,8 @@ export type {
  */
 export type Repair = Awaited<ReturnType<HandlebarClient['workorderGet']>>['order'];
 export type RepairDetail = Awaited<ReturnType<HandlebarClient['workorderGet']>>;
-export type CustomerWithBikes = Awaited<ReturnType<HandlebarClient['listCustomers']>>[number];
+export type CustomerWithBikes =
+  Awaited<ReturnType<HandlebarClient['listCustomers']>>['entries'][number];
 export type ProtocolDetail = Awaited<ReturnType<HandlebarClient['protocolGet']>>;
 export type CompletedRepair = Awaited<ReturnType<HandlebarClient['completeRepair']>>;
 

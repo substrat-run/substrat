@@ -46,7 +46,7 @@ export function PricesView() {
   const [simQty, setSimQty] = useState('1');
 
   const load = () => {
-    api.priceList().then(setPrices).catch((e: Error) => setError(e.message));
+    api.priceList().then((page) => setPrices(page.entries)).catch((e: Error) => setError(e.message));
   };
   useEffect(load, []);
 

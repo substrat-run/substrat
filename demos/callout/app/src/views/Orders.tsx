@@ -23,8 +23,8 @@ export function OrdersView() {
   const [title, setTitle] = useState('');
 
   const load = () => {
-    api.workorderList({}).then(setOrders).catch((e: Error) => setError(e.message));
-    api.listCustomers().then(setCustomers).catch(() => setCustomers([]));
+    api.workorderList({}).then((page) => setOrders(page.entries)).catch((e: Error) => setError(e.message));
+    api.listCustomers().then((page) => setCustomers(page.entries)).catch(() => setCustomers([]));
   };
   useEffect(load, []);
 

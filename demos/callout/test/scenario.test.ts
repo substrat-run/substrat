@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Page } from '@substrat-run/contracts';
-import type { Page } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { WorkOrder, BillableLine } from '@substrat-run/engine-workorder';
 import {
