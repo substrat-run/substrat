@@ -8,9 +8,7 @@
 declaration is the source, and `pnpm lint:model --check` is what keeps this page from
 drifting away from it.
 
-```
-planned ──start──▶ in_progress ──complete──▶ completed ──close──▶ closed
-```
+<StateMachine engine="workorder" />
 
 | Operation | Legal in | Moves to | Permission |
 |---|---|---|---|

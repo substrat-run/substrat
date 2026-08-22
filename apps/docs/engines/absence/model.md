@@ -90,12 +90,7 @@ ledger" from a convention into a construction.
 
 ## The state machine
 
-```
-requested ──approve──▶ approved ──cancel──▶ cancelled   (+ reversal entry)
-    │
-    ├──reject──▶ rejected
-    └──cancel / expire──▶ cancelled                      (no ledger touch)
-```
+<StateMachine engine="absence" />
 
 **Expiry** is the platform's date-triggered seam: the manifest declares an
 `absence/expire-stale` schedule (daily), so a request still `requested` past its

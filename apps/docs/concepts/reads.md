@@ -114,6 +114,8 @@ columnar and seconds-scale by construction: it is for **reporting, reconciliatio
 and cross-scope history**. It is not a UI list view, and treating it as one is a category
 error.
 
+<ReadPaths />
+
 ## Finding a row by what someone typed
 
 A picker is not a list. `listCustomers` sorted by number is the right read at forty
