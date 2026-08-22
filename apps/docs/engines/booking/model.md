@@ -18,11 +18,7 @@ you care *which* unit, model separate resources.
 
 ## The state machine
 
-```
-held ──confirm──▶ confirmed ──start──▶ in_service ──complete──▶ completed
-  │
-  └──expire──▶ expired
-```
+<StateMachine engine="booking" />
 
 **Declared**, at the foot of `engines/booking/src/index.ts`, and emitted to
 `engines/booking/model.json` — see [Lifecycles](/concepts/lifecycle). The prose below is

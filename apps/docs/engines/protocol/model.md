@@ -130,12 +130,7 @@ that produces them exists. The engine never imports a vendor SDK. (See
 
 ## The lifecycle
 
-```
-open ──requestSignatures──> pending_signature ──all parties signed──> signed
-  │                                │
-  │                                └── cancelSignatureRequests ──> open  (renegotiate)
-  └──signProtocol (in-app)──────────────────────────────────────> signed
-```
+<StateMachine engine="protocol" />
 
 `pending_signature` is frozen: no fill, no rebind. It is the state that closes the drift
 window — with freeze welded to signing, an instance sitting at a provider for days stayed

@@ -26,8 +26,13 @@ import './styles/vitepress.css';
 import Marketing from './components/Marketing.vue';
 import LayerStack from './components/LayerStack.vue';
 import RuntimeTopology from './components/RuntimeTopology.vue';
+import PermissionPipeline from './components/PermissionPipeline.vue';
+import InstanceResolution from './components/InstanceResolution.vue';
+import TenancyTree from './components/TenancyTree.vue';
+import ReadPaths from './components/ReadPaths.vue';
 import ConnectorLoop from './components/ConnectorLoop.vue';
 import ScopeTopology from './components/ScopeTopology.vue';
+import StateMachine from './components/StateMachine.vue';
 
 export default {
   extends: DefaultTheme,
@@ -35,7 +40,12 @@ export default {
     app.component('Marketing', Marketing);
     app.component('LayerStack', LayerStack);
     app.component('RuntimeTopology', RuntimeTopology);
+    app.component('PermissionPipeline', PermissionPipeline);
+    app.component('InstanceResolution', InstanceResolution);
+    app.component('TenancyTree', TenancyTree);
+    app.component('ReadPaths', ReadPaths);
     app.component('ConnectorLoop', ConnectorLoop);
     app.component('ScopeTopology', ScopeTopology);
+    app.component('StateMachine', StateMachine);
   },
 } satisfies Theme;
