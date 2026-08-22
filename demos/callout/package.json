@@ -90,7 +90,10 @@
         "portFrom": "src/server.ts",
         "env": {
           "ALLOW_DEV_HEADER": "true"
-        }
+        },
+        "requires": [
+          "OIDC_ISSUER"
+        ]
       },
       {
         "name": "web",
@@ -112,8 +115,9 @@
     "pretypecheck": "node scripts/gen-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "test": "vitest run",
-    "server": "tsx src/server.ts",
-    "dev": "concurrently -n api,web -c blue,green \"ALLOW_DEV_HEADER=true tsx src/server.ts\" \"pnpm --dir app dev\"",
+    "preserver": "node ../../tools/env-preflight.mjs server",
+    "server": "node --env-file-if-exists=.dev.vars --import tsx src/server.ts",
+    "dev": "concurrently -n api,web -c blue,green \"ALLOW_DEV_HEADER=true pnpm run server\" \"pnpm --dir app dev\"",
     "demo": "pnpm run dev",
     "cf:dev": "wrangler dev --var ALLOW_DEV_HEADER:true",
     "cf:deploy": "node ../../tools/preflight-migrations.mjs && wrangler deploy",

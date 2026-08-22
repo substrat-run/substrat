@@ -143,6 +143,14 @@ The topology is declared once in the `substrat.devServers` block of each project
 file that binds it; the **number is read out of that file**, so moving a port means editing
 `src/server.ts` or `app/vite.config.ts` and re-running the emitter — never editing the JSON.
 
+The same block carries `requires` — the keys a process cannot start **without** locally,
+checked by `tools/env-preflight.mjs` before the server boots. It is deliberately *not*
+emitted into `launch.json`: a launch file starts a server, and what a server needs in order
+to start is not something a client-specific adapter should hold. Note this is a different
+question from `envSpec`'s `required`, which means required to **deploy** — a hosted install
+receives most of its config through per-scope delivery, so keys that are optional there can
+still be mandatory on your machine, where no such delivery exists.
+
 ### Gotchas
 
 - **Open the session in `demos/<name>`, not the monorepo root.** Preview servers use the
@@ -161,7 +169,11 @@ file that binds it; the **number is read out of that file**, so moving a port me
   moves it.
 - **No secrets in `launch.json`** — it is committed. Desktop also does not inherit your full
   shell environment, and `env` in `~/.claude/settings.json` reaches *sessions* but not dev
-  servers; put secrets in the local environment editor instead.
+  servers. Put values in **`.dev.vars`** in the project directory instead: it is gitignored,
+  `wrangler dev` already reads it, and the `server` script loads it with
+  `--env-file-if-exists`, so one file serves every way of starting the vertical. A shell
+  variable still wins over it — but only in a terminal, which is exactly the gap that makes
+  the file the reliable answer for Desktop.
 - **Claude curling its own API from Bash may fail.** The sandboxed Bash tool still blocks
   outbound TCP to `localhost` ([claude-code#28018](https://github.com/anthropics/claude-code/issues/28018)).
   The Browser-pane path is separate and works; wiring up Bash-side `curl` is a deliberate

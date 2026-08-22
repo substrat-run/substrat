@@ -59,6 +59,13 @@ type DevServer = {
   portEnv: string;
   portFrom: string;
   env?: Record<string, string>;
+  /**
+   * Keys this process cannot run WITHOUT locally — read by tools/env-preflight.mjs, and
+   * deliberately not emitted here. A launch file starts a server; what a server needs in
+   * order to start is the `preserver` hook's business, and duplicating it into the client
+   * adapter would make it substance an adapter is not allowed to hold (agent-surface §3).
+   */
+  requires?: string[];
 };
 
 /** Exit 2: the tool cannot do its job. Always names the remedy. */

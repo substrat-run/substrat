@@ -12,8 +12,10 @@ Keep the filled files in a password manager; only the `.example` templates are c
 | dashboard | `apps/dashboard` | `substrat-dashboard` / `…-test` |
 | router | `apps/router` | `substrat-router` / `…-test` |
 
-`apps/docs` is a static Pages site (no secrets). Demo verticals use Better Auth and their
-own `.dev.vars` — out of scope here.
+`apps/docs` is a static Pages site (no secrets). Demo verticals keep their own `.dev.vars`
+— out of scope here. (Callout, Meridian and Manyfold are OIDC-only and run no credential
+store at all; only the shop, rally, handlebar and the auth-server issuer still use Better
+Auth.)
 
 ## Quick start (prod)
 
