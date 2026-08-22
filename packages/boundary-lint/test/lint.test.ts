@@ -134,6 +134,34 @@ describe('R2 / R3', () => {
 
     expect(rules(lint(root)).sort()).toEqual(['R2', 'R2', 'R3', 'R3']);
   });
+
+  it('flags the ambient env import, and only in module code', () => {
+    // `import { env } from 'cloudflare:workers'` is one line, passes types, and
+    // hands module code every binding the script declares — including its own
+    // SCOPE namespace, which reaches ANOTHER scope's storage. `ctx.sql` cannot.
+    const ambient = `
+      import { env } from 'cloudflare:workers';
+      export function reach(scopeId) { return env.SCOPE.get(env.SCOPE.idFromName(scopeId)); }
+    `;
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      ...engine('engine-workorder', ['workorder_orders']),
+      'src/module.ts': ambient,
+    });
+
+    expect(rules(lint(root))).toEqual(['R2']);
+
+    // Harness code is where DurableObject legitimately comes from — same
+    // exemption `node:*` already has, or every *-do.ts in the repo goes red.
+    const root2 = project({
+      'package.json': VERTICAL_PKG,
+      ...engine('engine-workorder', ['workorder_orders']),
+      'src/worker.ts': ambient,
+      'src/module.ts': 'export const x = 1;',
+    });
+
+    expect(lint(root2)).toEqual([]);
+  });
 });
 
 describe('harness exemption', () => {
