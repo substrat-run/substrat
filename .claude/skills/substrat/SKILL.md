@@ -176,8 +176,11 @@ Substrat internals, no `D-`/`K-` decision refs, no `§` cross-references (those 
 platform docs, not a user's design doc). Someone who has never heard of Substrat must be
 able to read it and recognise their own business.
 
-**Where:** `DESIGN.md` in the project root for a real user's empty directory; inside the
-Substrat monorepo it is `demos/<name>/spec/concept.md` (the existing convention).
+**Where:** `spec/concept.md` — beside `spec/model.ts`, which is the same design one rung
+more concrete. In a standalone project that is `spec/concept.md` from the project root;
+inside the Substrat monorepo it is `demos/<name>/spec/concept.md`. One name in both places:
+this is the file every demo, the builder studio's phase ladder, and the scenario rule
+already key on.
 
 **Top line, verbatim** — this is the house marker for a pre-code design (matching
 `docs/engines/protocol.md`):
@@ -311,7 +314,7 @@ The model is approved — now build it with the **new-vertical** skill
 (`.claude/skills/new-vertical/SKILL.md`), which turns this design document into a working
 vertical (the three module files, the seed world, the server, the API surface, the app
 skin, the scenario test) against the Callout reference. Point it at the approved
-`DESIGN.md` / `spec/concept.md` — it should translate the design, not re-derive the domain.
+`spec/concept.md` — it should translate the design, not re-derive the domain.
 
 Two front-door cautions worth carrying in, because they are silent traps and easy to lose:
 

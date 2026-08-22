@@ -41,8 +41,9 @@ The scaffold is not an empty skeleton: it ships a small working vertical (a bike
 shop on `engine-workorder` + `engine-invoicing`) that is green out of the box. The playbook's
 build step reshapes that into the user's domain rather than starting from nothing.
 
-Scaffolding before the design gate is deliberate. The playbook writes `DESIGN.md` into the
-project at Step 3 and the user approves it at Step 4 — both want a project to live in, and
+Scaffolding before the design gate is deliberate. The playbook writes `spec/concept.md`
+into the project at Step 3 and the user approves it at Step 4 — both want a project to
+live in, and
 neither is made safer by the agent holding the design in its head first.
 
 ## 3. An existing project that is not a Substrat vertical
