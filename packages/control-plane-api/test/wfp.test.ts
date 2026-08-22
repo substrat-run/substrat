@@ -21,7 +21,10 @@ const bundle: VerticalBundle = {
 
 afterEach(() => vi.unstubAllGlobals());
 
-async function metadataOf(injectSecrets: Record<string, string | undefined>): Promise<Record<string, unknown>> {
+async function metadataOf(
+  injectSecrets: Record<string, string | undefined>,
+  extra: { traceSampling?: number } = {},
+): Promise<Record<string, unknown>> {
   let body: FormData | undefined;
   vi.stubGlobal(
     'fetch',
@@ -30,11 +33,44 @@ async function metadataOf(injectSecrets: Record<string, string | undefined>): Pr
       return new Response('{}', { status: 200 });
     }),
   );
-  const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok', injectSecrets });
+  const upload = createWfpUploader({
+    accountId: 'acct',
+    namespace: 'ns',
+    apiToken: 'tok',
+    injectSecrets,
+    ...extra,
+  });
   await upload('callout-01k', bundle);
   const meta = await (body!.get('metadata') as File).text();
   return JSON.parse(meta) as Record<string, unknown>;
 }
+
+describe('createWfpUploader — tracing (#858)', () => {
+  it('declares no traces block by default, so a deploy changes nothing prod emits', async () => {
+    const meta = await metadataOf({});
+    // `enabled: true` must survive — it is what makes builder logs queryable at all.
+    expect(meta['observability']).toEqual({ enabled: true });
+  });
+
+  it('declares traces at the given head sampling rate when the platform sets one', async () => {
+    const meta = await metadataOf({}, { traceSampling: 1 });
+    expect(meta['observability']).toEqual({
+      enabled: true,
+      traces: { enabled: true, head_sampling_rate: 1 },
+    });
+  });
+
+  it('treats 0 as "declared, sampling none" — not as absent', async () => {
+    // The distinction is the whole reason the option is a rate and not a boolean: a
+    // declared-but-unsampled script is configured, an undeclared one never was, and
+    // an experiment that concludes from missing spans has to tell them apart.
+    const meta = await metadataOf({}, { traceSampling: 0 });
+    expect(meta['observability']).toEqual({
+      enabled: true,
+      traces: { enabled: true, head_sampling_rate: 0 },
+    });
+  });
+});
 
 describe('createWfpUploader — secret injection', () => {
   it('injects platform secrets as secret_text bindings, keeping the vertical’s own', async () => {

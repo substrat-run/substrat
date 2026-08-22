@@ -184,7 +184,14 @@
 			"vars": {
 				"PLATFORM_BASE_DOMAINS": "substrat.run",
 				"PLATFORM_CP_URL": "https://console-test.substrat.net",
-				"SCRIVE_BASE_URL": "https://api-testbed.scrive.com"
+				"SCRIVE_BASE_URL": "https://api-testbed.scrive.com",
+				// #858: pushed verticals declare Workers automatic tracing at 100%, on TEST
+				// only. Prod sets nothing, so prod scripts keep emitting logs and no spans.
+				// 100% because the question is whether spans appear AT ALL for a
+				// dispatch-namespace user worker — a sampled absence proves nothing. Turn
+				// this off, or down, once #858 reports; beta pricing ends 2026-10-01 and
+				// every span is an observability event sharing quota with Workers Logs.
+				"VERTICAL_TRACE_SAMPLING": "1"
 			}, // differs
 			"durable_objects": {
 				"bindings": [

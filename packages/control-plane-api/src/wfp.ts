@@ -42,6 +42,26 @@ export interface WfpUploaderOptions {
    * Names with an undefined/empty value are skipped.
    */
   injectSecrets?: Record<string, string | undefined>;
+  /**
+   * Head sampling rate (0–1) for Workers **automatic tracing** on pushed scripts (#858).
+   * Absent ⇒ no `traces` block, which is what every push has sent until now.
+   *
+   * Separate from `observability.enabled` because Cloudflare says it is: *"While automatic
+   * tracing is in early beta, this setting will not enable tracing by default, and will only
+   * enable logs."* So the `enabled: true` below has been buying logs and nothing else, and a
+   * `traces` block is the only thing that turns spans on.
+   *
+   * A **rate rather than a boolean** on purpose. Tracing instruments every I/O operation, each
+   * span is one observability event sharing quota with Workers Logs, and beta pricing ends
+   * 2026-10-01 — so the fleet-wide question was never "on or off" but "how much", and a dial
+   * lets TEST run at 1 while prod stays dark or samples. Undefined and 0 are NOT the same:
+   * undefined omits the block, 0 declares tracing and samples none of it.
+   *
+   * Why this is worth the option at all: the DO-originated subrequests D-46 documents as
+   * unenforceable are also, today, unobservable — and `durable_object_subrequest` spans are
+   * the first mechanism that sees them.
+   */
+  traceSampling?: number;
 }
 
 /** Bytes → base64, web-standard only (chunked so a large file does not blow the
@@ -238,7 +258,16 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       // Builder logs exist to query (design/observability.md §4.4): without this the
       // pushed script's console output and exceptions are simply not recorded, and the
       // builder's only debugging tool is asking staff to redeploy with it on.
-      observability: { enabled: true },
+      //
+      // `traces` is a SEPARATE switch (#858) — `enabled: true` alone yields logs only
+      // while automatic tracing is in beta. Omitted unless the platform sets a sampling
+      // rate, so a deploy of this code changes nothing about what prod emits.
+      observability: {
+        enabled: true,
+        ...(opts.traceSampling !== undefined
+          ? { traces: { enabled: true, head_sampling_rate: opts.traceSampling } }
+          : {}),
+      },
       // The static files uploaded above, plus how the runtime routes paths against them
       // (#340). Assets are versioned WITH the code: an upload carrying this block replaces
       // the script's asset set atomically, and one without it (a version that ships no
