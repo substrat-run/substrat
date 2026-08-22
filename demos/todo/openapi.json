@@ -137,7 +137,7 @@
             "name": "cursor",
             "in": "query",
             "required": false,
-            "description": "The previous page's `nextCursor`. Keyset over `id` — exclusive, so no row is repeated.",
+            "description": "The previous page's `nextCursor`. Keyset over `id` — exclusive, so no row is repeated. Follow the `Link` header rather than assembling this yourself: a cursor is only valid for the sort that issued it.",
             "schema": {
               "type": "string"
             }
@@ -326,13 +326,72 @@
       "get": {
         "operationId": "todo-my-lists",
         "summary": "List the lists you own or have been shared",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. Defaults to 20, capped at 200.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "The previous page's `nextCursor`. Keyset over `created_at` — exclusive, so no row is repeated. Follow the `Link` header rather than assembling this yourself: a cursor is only valid for the sort that issued it.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Walk direction.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "asc"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "description": "Which declared column to walk.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "created_at",
+                "name"
+              ],
+              "default": "created_at"
+            }
+          }
+        ],
         "description": "A proof walk: lists you own or were shared, never a filter.",
         "tags": [
           "Lists"
         ],
         "responses": {
           "200": {
-            "description": "The operation result.",
+            "description": "One page of results. The walk is in the response headers.",
+            "headers": {
+              "Link": {
+                "description": "RFC 8288 link to the next page, e.g. `<https://…/customers?limit=20&cursor=01J8Z…>; rel=\"next\"`. Follow it verbatim — it carries this request's filters and page size. Absent when the walk is over, so a client stops rather than fetching an empty page.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -713,6 +772,41 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. Defaults to 20, capped at 200.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "The previous page's `nextCursor`. Keyset over `created_at` — exclusive, so no row is repeated. Follow the `Link` header rather than assembling this yourself: a cursor is only valid for the sort that issued it.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Walk direction.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "asc"
+            }
           }
         ],
         "tags": [
@@ -720,7 +814,15 @@
         ],
         "responses": {
           "200": {
-            "description": "The operation result.",
+            "description": "One page of results. The walk is in the response headers.",
+            "headers": {
+              "Link": {
+                "description": "RFC 8288 link to the next page, e.g. `<https://…/customers?limit=20&cursor=01J8Z…>; rel=\"next\"`. Follow it verbatim — it carries this request's filters and page size. Absent when the walk is over, so a client stops rather than fetching an empty page.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {

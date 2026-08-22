@@ -83,9 +83,31 @@ import type {
   VerticalChannel,
   VerticalVersion,
   TenantStatus,
+  Page,
+  CountedPage,
 } from '@substrat-run/contracts';
 import type { SealedSecret } from './secret-box.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
+
+/**
+ * What a caller asks a paged read for (#811).
+ *
+ * `filters` is a plain record because the DECLARATION is what constrains it: an
+ * undeclared key is refused by `listQuery` rather than typed away here, so the
+ * refusal names the column and lists the ones that exist — which a structural
+ * type could not do for a hand-written manifest.
+ */
+export interface PageParams {
+  /** Defaulted to `LIST_PAGE_DEFAULT` and capped at `LIST_PAGE_MAX` by `ctx.page`. */
+  readonly limit?: number;
+  /** One of the declared `sortable` columns. Defaults to the first. */
+  readonly sort?: string;
+  readonly order?: 'asc' | 'desc';
+  readonly cursor?: string;
+  readonly filters?: Readonly<Record<string, unknown>>;
+  /** Also count the filtered set — the declaration's `total`, passed through. */
+  readonly total?: boolean;
+}
 
 /**
  * The scope-host contract — the adapter seam (§5.1 of the design doc).
@@ -207,6 +229,38 @@ export interface OperationContext {
    * standing in for a misconfiguration.
    */
   search(entityType: string, term: string, options?: SearchOptions): SearchHit[];
+  /**
+   * Read one PAGE of a declared entity (#811, K-18) — the kernel-composed half of
+   * a paged read.
+   *
+   * Composes the `WHERE` from the operation's declared `filterable` columns, the
+   * `ORDER BY` from the caller's choice among `sortable`, the keyset comparison,
+   * the `LIMIT`, and — when the declaration asks for a total — the `COUNT` over
+   * that same `WHERE`. It reads the indexes it also provisioned, so a declared
+   * filter is an indexed one rather than a table scan waiting for a big tenant.
+   *
+   * Returns **rows**, wrapped in a page. The projection stays the module's: map
+   * with `mapPage` to keep the cursor and total while re-shaping the entries.
+   *
+   * ```ts
+   * const page = ctx.page<OrderRow>('workorder', {
+   *   limit, cursor: input.cursor, sort: input.sort, filters: { status: input.status },
+   * });
+   * return mapPage(page, toWorkOrder);
+   * ```
+   *
+   * **This does not check permission** — nothing on `ctx` does, and a paged read
+   * is not an exception. The operation's own `assertAllowed` still comes first.
+   * A read that filters per ROW after the fact (a portal walk) cannot use this at
+   * all: a page of 20 filtered down to 3 is not a page, and the honest shape is an
+   * over-fetch loop the handler owns.
+   *
+   * Throws `NotListable` for an entity no operation declared `paged.over` on,
+   * `SortNotDeclared` for a `?sort=` outside the vocabulary, and
+   * `FilterNotDeclared` for a filter outside it — never a silently-ignored
+   * parameter, which is how a caller comes to believe a filter is applied.
+   */
+  page<T>(entityType: string, params: PageParams): Page<T> | CountedPage<T>;
   /**
    * Read one of the tenant's currently-held entitlements at request time (#304) — the
    * sanctioned way a hosted vertical gates a feature or enforces its own quota WITHOUT a

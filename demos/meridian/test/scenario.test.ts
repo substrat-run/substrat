@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { Page } from '@substrat-run/contracts';
 import { platformActorId, principalId, type ScopeId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
@@ -220,10 +221,10 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
   it('8. onboarding reuses the protocol engine: the employee fills AND e-signs their own', async () => {
     // Seeded as an open onboarding for Elin; she reaches it via her own-record
     // grant walking protocol → employee.
-    const summaries = await elin.invoke<{ instance: ProtocolInstanceRow }[]>('protocol/list-for-entity', {
-      entityType: 'employee',
-      entityId: w.elinEmpId,
-    });
+    const { entries: summaries } = await elin.invoke<Page<{ instance: ProtocolInstanceRow }>>(
+      'protocol/list-for-entity',
+      { entityType: 'employee', entityId: w.elinEmpId },
+    );
     const inst = summaries[0]!.instance;
     expect(inst.status).toBe('open');
     expect(inst.entity_type).toBe('employee');
@@ -268,9 +269,11 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
     );
     expect(terms.monthly_salary).toBe('52000'); // a decimal string, never a float
 
-    const [summary] = await hedda.invoke<
-      { instance: ProtocolInstanceRow; contentKind: string; pendingSignatures: number }[]
-    >('protocol/list-for-entity', { entityType: 'employee', entityId: w.karinEmpId });
+    const [summary] = (
+      await hedda.invoke<
+        Page<{ instance: ProtocolInstanceRow; contentKind: string; pendingSignatures: number }>
+      >('protocol/list-for-entity', { entityType: 'employee', entityId: w.karinEmpId })
+    ).entries;
 
     // Seeded as issued: frozen at a hash, out for two signatures.
     expect(summary!.contentKind).toBe('document');
@@ -295,10 +298,12 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
   });
 
   it('11. out for signature means FROZEN — the terms cannot move under the signatories', async () => {
-    const [summary] = await hedda.invoke<{ instance: ProtocolInstanceRow }[]>(
-      'protocol/list-for-entity',
-      { entityType: 'employee', entityId: w.karinEmpId },
-    );
+    const [summary] = (
+      await hedda.invoke<Page<{ instance: ProtocolInstanceRow }>>('protocol/list-for-entity', {
+        entityType: 'employee',
+        entityId: w.karinEmpId,
+      })
+    ).entries;
     const instanceId = summary!.instance.id;
 
     // Rebinding is refused while the document sits at the provider. This is the
@@ -338,10 +343,12 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
     // The premise: a new hire has no login on the day they sign.
     expect(karinRow.principal_ref).toBeNull();
 
-    const [summary] = await hedda.invoke<{ instance: ProtocolInstanceRow }[]>(
-      'protocol/list-for-entity',
-      { entityType: 'employee', entityId: w.karinEmpId },
-    );
+    const [summary] = (
+      await hedda.invoke<Page<{ instance: ProtocolInstanceRow }>>('protocol/list-for-entity', {
+        entityType: 'employee',
+        entityId: w.karinEmpId,
+      })
+    ).entries;
     const instanceId = summary!.instance.id;
     const detail = await hedda.invoke<{
       instance: ProtocolInstanceRow;
@@ -444,10 +451,12 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
   });
 
   it('14. HR can send a contract but cannot speak for the signing provider', async () => {
-    const [summary] = await hedda.invoke<{ instance: ProtocolInstanceRow }[]>(
-      'protocol/list-for-entity',
-      { entityType: 'employee', entityId: w.karinEmpId },
-    );
+    const [summary] = (
+      await hedda.invoke<Page<{ instance: ProtocolInstanceRow }>>('protocol/list-for-entity', {
+        entityType: 'employee',
+        entityId: w.karinEmpId,
+      })
+    ).entries;
     // hr-admin holds bind + request-signature — it may freeze and dispatch.
     // It does NOT hold record-signature: asserting that a customer signed with
     // BankID is the provider's word, and no human role in this demo has it.

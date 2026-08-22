@@ -968,6 +968,83 @@ export const contractTestInitialModules: ModuleRegistration[] = [
  * there — written out longhand here rather than pulling the registry into a
  * fixture, which is the one place the enrichment is worth restating.
  */
+export const listModManifest = moduleManifest.parse({
+  id: '@test/list',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'list:use', description: 'page the things' }],
+  events: { emits: [], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'list',
+  lists: [
+    // `number` is unique, `status` deliberately is NOT — the tie-break only has
+    // something to prove against a column with ties in it.
+    {
+      entityType: 'listorder',
+      sortable: ['number', 'status', 'id'],
+      filterable: ['status', 'kind'],
+      table: 'list_orders',
+      idColumn: 'id',
+    },
+  ],
+});
+
+export const listMod: ModuleRegistration = {
+  manifest: listModManifest,
+  migrations: [
+    {
+      version: '0001-init',
+      sql: `CREATE TABLE list_orders (
+              id TEXT PRIMARY KEY, number TEXT NOT NULL,
+              status TEXT NOT NULL, kind TEXT NOT NULL);`,
+    },
+  ],
+  operations: {
+    'list/add': (async (ctx, input) => {
+      const i = input as { id: string; number: string; status: string; kind: string };
+      ctx.sql.exec('INSERT INTO list_orders (id, number, status, kind) VALUES (?, ?, ?, ?)', [
+        i.id,
+        i.number,
+        i.status,
+        i.kind,
+      ]);
+      return { id: i.id };
+    }) as OperationHandler<never, unknown>,
+    // The read under test, passed straight through: the suite asserts on the
+    // entries, the cursor and the total, which is where a naive keyset is wrong.
+    'list/page': (async (ctx, input) => {
+      const i = input as {
+        limit: number;
+        sort?: string;
+        order?: 'asc' | 'desc';
+        cursor?: string;
+        filters?: Record<string, unknown>;
+        total?: boolean;
+      };
+      return ctx.page<Record<string, unknown>>('listorder', i);
+    }) as OperationHandler<never, unknown>,
+    // Takes the entity type from the caller, so the suite can ask for one no
+    // module declared and see `NotListable` rather than a guess.
+    'list/page-of': (async (ctx, input) => {
+      const i = input as { entityType: string; limit: number };
+      return ctx.page<Record<string, unknown>>(i.entityType, { limit: i.limit });
+    }) as OperationHandler<never, unknown>,
+    // Write then page back INSIDE one operation — a page is a plain read of the
+    // content table, so it must see the row the same transaction just wrote.
+    'list/add-then-page': (async (ctx, input) => {
+      const i = input as { id: string; number: string; status: string; kind: string };
+      ctx.sql.exec('INSERT INTO list_orders (id, number, status, kind) VALUES (?, ?, ?, ?)', [
+        i.id,
+        i.number,
+        i.status,
+        i.kind,
+      ]);
+      return ctx.page<Record<string, unknown>>('listorder', { limit: 50 });
+    }) as OperationHandler<never, unknown>,
+  },
+};
+
 export const searchModManifest = moduleManifest.parse({
   id: '@test/search',
   version: '1.0.0',
@@ -1047,6 +1124,7 @@ export const contractTestModules: ModuleRegistration[] = [
   scheduleMod,
   atomicMod,
   searchMod,
+  listMod,
 ];
 
 export const brokenModManifest = moduleManifest.parse({

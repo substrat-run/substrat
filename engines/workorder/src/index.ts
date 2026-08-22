@@ -6,14 +6,18 @@ import {
   dataSubjectId,
   entityRef,
   money,
+  mapPage,
   moduleManifest,
   moneyOf,
   permissionKey,
+  listsDeclaredBy,
   type EntityRef,
+  type Page,
   type EntityRow,
   type Money,
   substratError,
 } from '@substrat-run/contracts';
+import type { PageParams } from '@substrat-run/kernel';
 
 /**
  * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
@@ -43,6 +47,7 @@ import {
   type MaterialLine,
 } from './schemas.js';
 import { workorderEntities } from './entities.js';
+import { workorderOperations } from './operations.js';
 import { workorderLifecycle } from './lifecycle.js';
 
 // The entity registry is PUBLIC: a composing vertical imports it to check
@@ -114,6 +119,10 @@ export const workorderManifest = moduleManifest.parse({
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
   attachmentTargets: [{ entityType: 'workorder', readPermission: 'workorder:read' }],
   entityRelations: [{ entityType: 'workorder', parentType: 'facility' }],
+  // #811: DERIVED from the operations' own `paged.over`, never written twice —
+  // the index the kernel provisions and the vocabulary the operation offers are
+  // one fact. `table` and `idColumn` come from the entity registry.
+  lists: listsDeclaredBy(workorderOperations, workorderEntities),
   entitlementKey: 'workorder',
   ui: {
     routes: [
@@ -316,14 +325,38 @@ export function getReportedLines(
   };
 }
 
-export function listOrders(ctx: OperationContext, status?: string): WorkOrder[] {
-  const rows = status
-    ? ctx.sql.query<OrderRow>(
-        'SELECT * FROM workorder_orders WHERE status = ? ORDER BY number DESC',
-        [status],
-      )
-    : ctx.sql.query<OrderRow>('SELECT * FROM workorder_orders ORDER BY number DESC');
-  return rows.map(toWorkOrder);
+/**
+ * A page of work orders (#811).
+ *
+ * The `WHERE`, the `ORDER BY`, the keyset comparison and the `LIMIT` are the
+ * kernel's, composed from this operation's declared `paged.over` vocabulary and
+ * running over indexes it provisioned. What stays here is the projection — a
+ * stored row is not a `WorkOrder` — which is why `mapPage` exists: it re-shapes
+ * the entries and leaves the walk alone.
+ *
+ * The old positional `status?` is gone rather than kept beside this. It filtered
+ * on one hard-coded column with a hand-written `ORDER BY number DESC` and no
+ * bound at all, which is the shape #811 was filed against; a vertical wanting a
+ * different sort had no path but to fork.
+ */
+export function listOrders(ctx: OperationContext, page: PageParams): Page<WorkOrder> {
+  return mapPage(ctx.page<OrderRow>('workorder', page), toWorkOrder);
+}
+
+/**
+ * One work order, by id (#811).
+ *
+ * Added because paging exposed two verticals doing `listOrders(ctx).find(o => o.id
+ * === …)` — reading every row in the scope to return one, which was wasteful when
+ * the list was unbounded and is WRONG once it is a page: the row you want is
+ * simply not on page one. There was no exported single-order read to reach for,
+ * which is why both reached for the list.
+ *
+ * Throws rather than returning undefined, like every other read here: an id that
+ * names nothing is a caller's mistake, and `getRow` already refuses it.
+ */
+export function getWorkOrder(ctx: OperationContext, orderId: string): WorkOrder {
+  return toWorkOrder(getRow(ctx, orderId));
 }
 
 export function completeWorkOrder(
@@ -392,12 +425,13 @@ const getOp: OperationHandler<
   return { order, ...getReportedLines(ctx, input.orderId) };
 };
 
-const listOp: OperationHandler<{ status?: string } | undefined, WorkOrder[]> = async (
-  ctx,
-  input,
-) => {
+const listOp: OperationHandler<
+  ({ status?: string } & PageParams) | undefined,
+  Page<WorkOrder>
+> = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.read));
-  return listOrders(ctx, input?.status);
+  // `input` is genuinely absent when invoked with no body at all (`inputOptional`).
+  return listOrders(ctx, { ...input, filters: { status: input?.status } });
 };
 
 const assignOp: OperationHandler<{ orderId: string; technician: string }, WorkOrder> = async (

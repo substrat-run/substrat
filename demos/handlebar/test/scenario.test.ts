@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { Page } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { WorkOrder, BillableLine } from '@substrat-run/engine-workorder';
 import { workorderManifest } from '@substrat-run/engine-workorder';
@@ -77,7 +78,7 @@ describe('Handlebar demo scenario (spec §7)', () => {
     expect(repair.facility).toEqual({ entityType: 'bike', entityId: w.crescentId });
     expect(repair.customer.entityId).toBe(w.lisbethId);
 
-    const timeline = await greta.invoke<{ type: string }[]>('bike-shop/timeline', {
+    const { entries: timeline } = await greta.invoke<Page<{ type: string }>>('bike-shop/timeline', {
       entityType: 'workorder',
       entityId: repairId,
     });
@@ -121,7 +122,10 @@ describe('Handlebar demo scenario (spec §7)', () => {
     await expect(rutger.invoke('workorder/list')).rejects.toThrow(/permission denied/);
     await expect(rutger.invoke('bike-shop/list-customers')).rejects.toThrow(/permission denied/);
     await expect(rutger.invoke('invoicing/list')).rejects.toThrow(/permission denied/);
-    await expect(rutger.invoke<unknown[]>('bike-shop/portal-repairs')).resolves.toEqual([]);
+    await expect(rutger.invoke<Page<unknown>>('bike-shop/portal-repairs')).resolves.toEqual({
+      entries: [],
+      nextCursor: null,
+    });
 
     const lisbeth = await host.getScope(w.lisbeth, w.t1, w.s1);
     await expect(
@@ -151,9 +155,9 @@ describe('Handlebar demo scenario (spec §7)', () => {
   });
 
   it('6. star topology observed: the invoicing engine consumed the event', async () => {
-    const underlag = await greta.invoke<{ id: string; status: string; total: string }[]>(
-      'invoicing/list',
-    );
+    const { entries: underlag } = await greta.invoke<
+      Page<{ id: string; status: string; total: string }>
+    >('invoicing/list');
     expect(underlag).toHaveLength(1);
     expect(underlag[0]!.status).toBe('open');
     expect(underlag[0]!.total).toBe('336.5');
@@ -174,23 +178,26 @@ describe('Handlebar demo scenario (spec §7)', () => {
     const lisbeth = await host.getScope(w.lisbeth, w.t1, w.s1);
     const otto = await host.getScope(w.otto, w.t1, w.s1);
 
-    const hers = await lisbeth.invoke<WorkOrder[]>('bike-shop/portal-repairs');
+    const { entries: hers } = await lisbeth.invoke<Page<WorkOrder>>('bike-shop/portal-repairs');
     expect(hers.map((o) => o.id)).toEqual([repairId]);
 
-    await expect(otto.invoke<WorkOrder[]>('bike-shop/portal-repairs')).resolves.toEqual([]);
+    await expect(otto.invoke<Page<WorkOrder>>('bike-shop/portal-repairs')).resolves.toEqual({
+      entries: [],
+      nextCursor: null,
+    });
     await expect(lisbeth.invoke('invoicing/list')).rejects.toThrow(/permission denied/);
 
     // lisbeth can read her repair's timeline through the same entity walk
     // (workorder → bike → customer).
-    const timeline = await lisbeth.invoke<{ type: string }[]>('bike-shop/timeline', {
-      entityType: 'workorder',
-      entityId: repairId,
-    });
+    const { entries: timeline } = await lisbeth.invoke<Page<{ type: string }>>(
+      'bike-shop/timeline',
+      { entityType: 'workorder', entityId: repairId },
+    );
     expect(timeline.length).toBeGreaterThan(3);
   });
 
   it('8. export makes the underlag immutable; the next completion opens a new one', async () => {
-    const [underlag] = await greta.invoke<{ id: string }[]>('invoicing/list');
+    const [underlag] = (await greta.invoke<Page<{ id: string }>>('invoicing/list')).entries;
     await greta.invoke('invoicing/export', { underlagId: underlag!.id });
     await expect(greta.invoke('invoicing/export', { underlagId: underlag!.id })).rejects.toThrow(
       /immutable/,
@@ -210,7 +217,7 @@ describe('Handlebar demo scenario (spec §7)', () => {
     });
     await greta.invoke('bike-shop/complete-repair', { orderId: repair2.id });
 
-    const all = await greta.invoke<{ status: string; total: string }[]>('invoicing/list');
+    const { entries: all } = await greta.invoke<Page<{ status: string; total: string }>>('invoicing/list');
     expect(all).toHaveLength(2);
     expect(all.filter((u) => u.status === 'open')).toHaveLength(1);
     expect(all.filter((u) => u.status === 'exported')).toHaveLength(1);
@@ -378,7 +385,7 @@ describe('Handlebar demo scenario (spec §7)', () => {
     expect(replayed).toBe(signed.signature.content_hash);
 
     // Every mutation hit the spine, counter-signature included.
-    const timeline = await greta.invoke<{ type: string }[]>('bike-shop/timeline', {
+    const { entries: timeline } = await greta.invoke<Page<{ type: string }>>('bike-shop/timeline', {
       entityType: 'protocol',
       entityId: reportId,
     });
@@ -433,10 +440,11 @@ describe('Handlebar demo scenario (spec §7)', () => {
 
     // A blocked guard rolls back exactly like a handler throw: no state change,
     // no event on the spine. The repair is still `completed`, not `closed`.
-    const stillOpen = (await greta.invoke<WorkOrder[]>('workorder/list', { status: 'completed' }))
-      .map((o) => o.id);
+    const stillOpen = (
+      await greta.invoke<Page<WorkOrder>>('workorder/list', { status: 'completed' })
+    ).entries.map((o) => o.id);
     expect(stillOpen).toContain(repair.id);
-    const timeline = await greta.invoke<{ type: string }[]>('bike-shop/timeline', {
+    const { entries: timeline } = await greta.invoke<Page<{ type: string }>>('bike-shop/timeline', {
       entityType: 'workorder',
       entityId: repair.id,
     });

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { Page } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildShopHost, seedShop, type ShopWorld, type OrderRow, type OrderLineRow } from '../src/index.js';
@@ -149,7 +150,9 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
   });
 
   it('6. star topology: invoicing built an invoice basis from the RETAIL event', async () => {
-    const underlag = await astrid.invoke<{ id: string; status: string; total: string }[]>('invoicing/list');
+    const { entries: underlag } = await astrid.invoke<
+      Page<{ id: string; status: string; total: string }>
+    >('invoicing/list');
     expect(underlag).toHaveLength(1);
     expect(underlag[0]!.status).toBe('open');
     expect(underlag[0]!.total).toBe('170.1'); // product line + discount line, net

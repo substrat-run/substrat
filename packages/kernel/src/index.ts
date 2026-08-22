@@ -31,6 +31,7 @@ export type {
   TypedConsumers,
   OpenedAttachment,
   OperationContext,
+  PageParams,
   OperationHandler,
   OpsFailureFilter,
   OpsFailureInput,
@@ -113,6 +114,27 @@ export type {
   SearchTokenizer,
   SearchableDeclaration,
 } from './search-index.js';
+export {
+  FilterNotDeclared,
+  LIST_INDEX_PREFIX,
+  NotListable,
+  SortNotDeclared,
+  cursorOf,
+  isListIndexName,
+  listIndexColumns,
+  listIndexDdl,
+  listIndexMigrations,
+  listIndexPlans,
+  listPlansByEntityType,
+  listQuery,
+  splitCursor,
+} from './list-index.js';
+export type {
+  ComposedListQuery,
+  ListDeclaration,
+  ListIndexPlan,
+  ListQueryParams,
+} from './list-index.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { ulid } from './ulid.js';

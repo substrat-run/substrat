@@ -36,6 +36,7 @@ import {
   type TenantId,
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
+  listLimitOf,
 } from '@substrat-run/contracts';
 import {
   ulid,
@@ -62,6 +63,13 @@ import {
   searchIndexDdl,
   searchIndexMigrations,
   searchIndexPlans,
+  NotListable,
+  listIndexMigrations,
+  listIndexPlans,
+  listQuery,
+  cursorOf,
+  type ListIndexPlan,
+  type PageParams,
   searchLimit,
   searchMatchExpression,
   searchQuery,
@@ -529,6 +537,8 @@ export function defineScopeDO(
     private readonly relations = new Map<string, Set<string>>();
     /** entityType → its derived FTS5 index (#827). One entity type, one index. */
     private readonly searchPlans = new Map<string, SearchIndexPlan>();
+    /** #811: the paged lists modules declare, by entity type. Same one-owner rule. */
+    private readonly listPlans = new Map<string, ListIndexPlan>();
     /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
     private readonly checker: PermissionChecker;
@@ -607,11 +617,23 @@ export function defineScopeDO(
         }
         this.searchPlans.set(plan.entityType, plan);
       }
+      // #811: the list indexes `lists` declares, same placement and same reason.
+      for (const plan of listIndexPlans(manifest.id, manifest.lists)) {
+        const existing = this.listPlans.get(plan.entityType);
+        if (existing) {
+          throw new Error(
+            `list: '${plan.entityType}' declares a paged list in both '${existing.moduleId}' and ` +
+              `'${plan.moduleId}' — one entity type, one walk; rename one`,
+          );
+        }
+        this.listPlans.set(plan.entityType, plan);
+      }
       this.modules.set(manifest.id, {
         id: manifest.id,
         migrations: [
           ...(registration.migrations ?? []),
           ...searchIndexMigrations(manifest.id, manifest.searchables),
+          ...listIndexMigrations(manifest.id, manifest.lists),
         ],
         consumers: Object.entries(registration.consumers ?? {}).map(([eventType, handler]) => ({
           eventType,
@@ -2088,6 +2110,7 @@ export function defineScopeDO(
       const checker = this.checker;
       const relations = this.relations;
       const searchPlans = this.searchPlans;
+      const listPlans = this.listPlans;
       const sql = this.sql;
       /**
        * The operation's instant (#812), read once. The DO reads the wall clock —
@@ -2252,6 +2275,37 @@ export function defineScopeDO(
           return (sql.exec(q.sql, ...q.params).toArray() as unknown as { id: string; rank: number }[]).map(
             (row) => ({ entityType, id: row.id, rank: row.rank }),
           );
+        },
+        /**
+         * #811. Mirror of the pure adapter, and the reason the contract suite runs
+         * on both: the walk is ordinary SQL, but the indexes behind it are created
+         * by DDL that workerd's regulator has to permit — which no amount of local
+         * green would surface.
+         */
+        page: <T>(entityType: string, params: PageParams) => {
+          const plan = listPlans.get(entityType);
+          if (!plan) throw new NotListable(entityType);
+          const limit = listLimitOf(params.limit);
+          const q = listQuery(plan, {
+            limit,
+            sort: params.sort,
+            order: params.order,
+            cursor: params.cursor,
+            filters: params.filters,
+          });
+          const rows = sql.exec(q.sql, ...q.params).toArray() as unknown as Record<
+            string,
+            unknown
+          >[];
+          const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
+          const nextCursor =
+            last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn);
+          const page = { entries: rows as T[], nextCursor };
+          if (!params.total) return page;
+          const counted = sql
+            .exec(q.countSql, ...q.countParams)
+            .toArray() as unknown as { n: number }[];
+          return { ...page, total: counted[0]?.n ?? 0 };
         },
         /**
          * Delegate a permission this caller holds onto one entity — see the

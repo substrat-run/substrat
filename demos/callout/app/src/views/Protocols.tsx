@@ -199,7 +199,7 @@ export function ProtocolPanel({ order }: { order: WorkOrder }) {
 
   const load = useCallback(() => {
     extra.orderProtocols(order.id).then(setProtocols).catch(() => setProtocols([]));
-    api.protocolListTemplates().then(setTemplates).catch(() => setTemplates([]));
+    api.protocolListTemplates().then((page) => setTemplates(page.entries)).catch(() => setTemplates([]));
   }, [order.id]);
   useEffect(load, [load]);
 

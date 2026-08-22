@@ -22,7 +22,7 @@
  */
 import type { CountedPage, Page } from './pagination.js';
 import { z } from 'zod';
-import type { EntityDef } from './model.js';
+import { primaryKeyOf, type EntityDef, type EntityFields } from './model.js';
 
 // ---------------------------------------------------------------------------
 // Reading an operation's own declarations back off itself.
@@ -183,6 +183,154 @@ type OpAuthority<O, Entities, Engines, PermKey extends string> = O extends { nar
     };
 
 /**
+ * The field names of the entity NAMED by `paged.over.entity` — this module's, or
+ * a composed engine's. Resolved through the name rather than matched across all
+ * entities, for the reason `ErasableOf` is: a `status` column on one entity must
+ * not make `status` sortable on another.
+ */
+export type FieldsOfNamed<Entities, Engines, N> = N extends keyof Entities
+  ? EntityFields<Entities[N]>
+  : Engines extends readonly (infer R)[]
+    ? R extends Record<string, EntityDef>
+      ? N extends keyof R
+        ? EntityFields<R[N]>
+        : never
+      : never
+    : never;
+
+/** The entity `paged.over` names, read back off the operation's own declaration. */
+export type PagedEntityOf<O> = O extends { paged: { over: { entity: infer N } } } ? N : never;
+
+/**
+ * The kernel-composed half of a paged read (#811, K-18).
+ *
+ * Present means the KERNEL builds the walk over this entity's table: the `WHERE`
+ * from `filterable`, the `ORDER BY` from the caller's choice among `sortable`,
+ * the keyset comparison, the `LIMIT`, and — when `total` is on — the `COUNT` over
+ * that same `WHERE`. It also emits the INDEXES behind them, which is the reason
+ * this lives in the kernel at all and not in a query helper here: contracts sits
+ * below the migration machinery, and a declared filter with no index is a table
+ * scan that passes every test and degrades when one tenant's table grows.
+ *
+ * The handler still writes its own `SELECT` — it receives a page of ROWS and maps
+ * or hydrates it with `mapPage`. So this is not a CRUD layer: it invents no
+ * routes and no handlers.
+ */
+export type PagedOver<O, Entities, Engines> = {
+  /**
+   * The entity whose table the walk runs over.
+   *
+   * Pointable only, and for a reason particular to paging: a keyset walk over a
+   * non-unique column needs a single-column tie-break to avoid skipping ties, and
+   * a table keyed by `(customer_id, year, month)` has no one column to break on.
+   * Inlined rather than aliased, per `PointableName` in `model.ts`.
+   */
+  readonly entity:
+    | ({
+        readonly [K in keyof Entities]: Entities[K] extends {
+          primaryKey: readonly [unknown, unknown, ...unknown[]];
+        }
+          ? never
+          : K;
+      }[keyof Entities] &
+        string)
+    | (Engines extends readonly (infer R)[]
+        ? R extends Record<string, EntityDef>
+          ? {
+              readonly [K in keyof R]: R[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] }
+                ? never
+                : K;
+            }[keyof R] &
+              string
+          : never
+        : never);
+  /**
+   * Columns a caller may sort by, via `?sort=`. **The first is the default**, so
+   * the order of this array is a fact and not a style — which is why it is not
+   * sorted on emit.
+   *
+   * A vertical wanting a sort the engine did not declare is the signal CLAUDE.md
+   * names: add it here, rather than fork.
+   */
+  readonly sortable: readonly FieldsOfNamed<Entities, Engines, PagedEntityOf<O>>[];
+  /**
+   * Columns a caller may filter by equality on. Each becomes a query parameter in
+   * the emitted document and a `(filter, sort, id)` index in the scope.
+   *
+   * Equality only, deliberately. Ranges, `IN`, `LIKE` and boolean composition are
+   * where a filter vocabulary becomes a query language, and BPMN-in-TypeScript is
+   * the tarpit master-plan.md already named. A read that needs more than equality
+   * is an operation with its own name and its own arguments.
+   */
+  readonly filterable?: readonly FieldsOfNamed<Entities, Engines, PagedEntityOf<O>>[];
+};
+
+/** What every paged read declares, whoever composes the query. */
+export interface PagedCommon {
+  /** Walk direction. Defaults to `asc`; a feed reading newest-first says `desc`. */
+  readonly order?: 'asc' | 'desc';
+  /**
+   * Also return `total` — the count of rows matching this list's filter.
+   *
+   * Opt-in, because a keyset page cannot produce one for free: it is a second
+   * query per request. Say `true` where a screen renders `1–20 of 340`, which in
+   * business software is most tables and in a feed is none of them. The handler
+   * must then return `countedPageOf`, and the compiler holds it to that.
+   */
+  readonly total?: boolean;
+}
+
+/**
+ * This read returns a PAGE, not the whole table (#811, #129).
+ *
+ * A list endpoint that returns everything is a bug with a delay on it: it passes
+ * review, it passes tests, and then one tenant's table gets large. Declaring
+ * `paged` is what lets that be caught mechanically rather than noticed — see the
+ * `lint:model` gate, which refuses a bare `z.array()` output that does not.
+ *
+ * `output` declares the **entry** shape either way, and the platform wraps it: the
+ * emitted document gains its query parameters and the handler returns
+ * `Page<Entry>`. Declaring the entry rather than the envelope is what keeps the
+ * sort checkable and stops twelve operations restating the same wrapper.
+ *
+ * ## Two halves, and which one a read is
+ *
+ * A UNION rather than one shape with optional fields, because the two describe
+ * the same fact from opposite ends and stating both would let them disagree:
+ *
+ * - **`over`** — the kernel composes the query (see `PagedOver`). The cursor is
+ *   the sort COLUMN's value, so there is no entry field to name.
+ * - **`sortKey`** — the handler composes its own SQL and calls `pageOf`. The
+ *   cursor is read off the ENTRY, so it names an output field.
+ *
+ * The second is not a legacy path. Three of the platform's own reads cannot be
+ * kernel-composed and are not defects: `callout/timeline` walks `_substrat_outbox`
+ * (a kernel table, not a declared entity), `protocol/list-templates` selects
+ * through a correlated `MAX(version)` subquery, and `callout/portal-orders`
+ * filters per row by permission. They still page, still carry a cursor, and still
+ * satisfy the gate — they just own their own `WHERE`.
+ *
+ * Which half a read is, is a fact about its declaration; an absent `over` reads as
+ * intent, the same way an engine's composition mode does.
+ */
+export type PagedShape<O, Entities, Engines> =
+  | (PagedCommon & {
+      /**
+       * The OUTPUT field the cursor walks — the same compile-checked join as
+       * `entityIdFrom`, and for the same reason: a cursor over a field the entry
+       * does not have is a page that silently skips or repeats rows, and nothing
+       * downstream would ever flag it. Keyset, never offset: on live data an
+       * offset shifts between requests, so pages drop and duplicate.
+       */
+      readonly sortKey: OutputKeys<O>;
+      readonly over?: never;
+    })
+  | (PagedCommon & {
+      readonly over: PagedOver<O, Entities, Engines>;
+      readonly sortKey?: never;
+    });
+
+/**
  * The per-operation constraint, self-referential in `O`.
  *
  * Each operation is checked against ITS OWN declared input and output rather
@@ -240,20 +388,7 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    * downstream would ever flag it. Keyset, never offset: on live data an offset
    * shifts between requests, so pages drop and duplicate.
    */
-  readonly paged?: {
-    readonly sortKey: OutputKeys<O>;
-    /** Walk direction. Defaults to `asc`; a feed reading newest-first says `desc`. */
-    readonly order?: 'asc' | 'desc';
-    /**
-     * Also return `total` — the count of rows matching this list's filter.
-     *
-     * Opt-in, because a keyset page cannot produce one for free: it is a second
-     * query per request. Say `true` where a screen renders `1–20 of 340`, which in
-     * business software is most tables and in a feed is none of them. The handler
-     * must then return `countedPageOf`, and the compiler holds it to that.
-     */
-    readonly total?: boolean;
-  };
+  readonly paged?: PagedShape<O, Entities, Engines>;
   readonly emits?: {
     /**
      * The entity the event is about — one of THIS module's entities, or one of a
@@ -356,7 +491,55 @@ export function defineOperations<
     },
   >(
     operations: Ops,
-  ): Ops => operations;
+  ): Ops => {
+    assertListsArePaged(operations);
+    return operations;
+  };
+}
+
+/**
+ * A read that answers with a whole table must say it is a page (#811).
+ *
+ * An unbounded list endpoint is a bug with a delay on it: it passes review, it
+ * passes tests, and then one tenant's table gets large. So a bare `z.array(...)`
+ * output with no `paged` beside it is refused — the operation either pages, or it
+ * is not a list.
+ *
+ * ## Why at module load rather than in a lint tool
+ *
+ * #811 asked for this as a `lint:model --check` gate. A tool has to FIND the
+ * declarations, and the ones it would have missed are exactly the ones that
+ * matter: `model-diff` reads entities, not operations, and `api-diff` only sees
+ * verticals that opted into `src/api.ts` — which is none of the four engines whose
+ * list reads this issue was filed about. Checking here reaches every module that
+ * declares operations at all, engine or vertical, with nothing to discover and
+ * nothing to opt into.
+ *
+ * Same reasoning that moved #844's "a state the field cannot hold" check to load
+ * time: it runs where it can actually bite. It fires in every build, every test
+ * and every dev server, so it cannot be true only of the modules a tool knew about.
+ *
+ * **A nested array is untouched.** `output: z.object({ ids: z.array(…) })` is an
+ * object with a list inside it — a shape whose size the operation controls — not a
+ * table read. Only a TOP-LEVEL array output is a list by this rule.
+ */
+function assertListsArePaged(operations: Record<string, unknown>): void {
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as { output?: unknown; paged?: unknown };
+    if (decl.paged !== undefined) continue;
+    if (!(decl.output instanceof z.ZodArray)) continue;
+    throw new Error(
+      `model: '${name}' returns a bare array and does not declare \`paged\` — a list read ` +
+        'that answers with the whole table is unbounded by construction.\n' +
+        '  Remedy: declare the ENTRY as `output` and add `paged`. Either the kernel ' +
+        'composes the walk —\n' +
+        "    paged: { over: { entity: 'thing', sortable: ['created_at'], filterable: ['status'] } }\n" +
+        '  — or, where it cannot (a kernel table, a correlated subquery, a per-row ' +
+        'permission walk),\n' +
+        '  the handler composes its own and names the entry field the cursor walks:\n' +
+        "    paged: { sortKey: 'article' }",
+    );
+  }
 }
 
 /**
@@ -401,6 +584,79 @@ export function eventsEmittedBy(
 }
 
 /**
+ * The paged lists an operation set declares, for the manifest (#811).
+ *
+ * Read off every `paged.over` the way `eventsEmittedBy` reads every `emits`, and
+ * for the identical reason: the index the kernel provisions and the columns the
+ * operation offers are ONE fact, and a manifest restating it by hand is how two
+ * descriptions come to disagree. `table` and `idColumn` are resolved here from
+ * the same registry the columns are compile-checked against, so nothing states
+ * twice where a work order lives.
+ *
+ * **Two operations may page the same entity** — `workorder/list` and a vertical's
+ * portal read over the same table — so their vocabularies are UNIONED rather than
+ * refused. The index has to cover both walks either way, and one of them being
+ * narrower is not a conflict. (Two *modules* claiming one entity type IS refused;
+ * that check belongs to the kernel, which is the only thing that sees them all.)
+ */
+export function listsDeclaredBy(
+  operations: Readonly<Record<string, object>>,
+  entities: Record<string, EntityDef>,
+  engines: readonly Record<string, EntityDef>[] = [],
+): {
+  entityType: string;
+  sortable: string[];
+  filterable?: string[];
+  table: string;
+  idColumn: string;
+}[] {
+  const byEntity = new Map<string, { sortable: string[]; filterable: string[] }>();
+  for (const [name, op] of Object.entries(operations)) {
+    const over = (op as { paged?: { over?: unknown } }).paged?.over as
+      | { entity?: unknown; sortable?: unknown; filterable?: unknown }
+      | undefined;
+    if (!over || typeof over.entity !== 'string') continue;
+    const acc = byEntity.get(over.entity) ?? { sortable: [], filterable: [] };
+    for (const c of (over.sortable ?? []) as unknown[]) {
+      if (typeof c === 'string' && !acc.sortable.includes(c)) acc.sortable.push(c);
+    }
+    for (const c of (over.filterable ?? []) as unknown[]) {
+      if (typeof c === 'string' && !acc.filterable.includes(c)) acc.filterable.push(c);
+    }
+    if (!acc.sortable.length) {
+      throw new Error(`model: '${name}' declares \`paged.over\` with no sortable column`);
+    }
+    byEntity.set(over.entity, acc);
+  }
+  return [...byEntity.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([entityType, acc]) => {
+      const entity = entities[entityType] ?? engines.map((r) => r[entityType]).find(Boolean);
+      if (!entity) {
+        throw new Error(
+          `model: a paged list is declared over '${entityType}', which is not a declared entity`,
+        );
+      }
+      const key = primaryKeyOf(entityType, entity);
+      if (key.length !== 1) {
+        throw new Error(
+          `model: '${entityType}' is keyed by (${key.join(', ')}) and cannot be paged — ` +
+            'a keyset walk needs one column to break ties on, and a composite key has none',
+        );
+      }
+      return {
+        entityType,
+        // NOT sorted: the first sortable column is the DEFAULT sort, so the order
+        // of this array is part of the fact.
+        sortable: acc.sortable,
+        ...(acc.filterable.length ? { filterable: [...acc.filterable].sort() } : {}),
+        table: entity.table,
+        idColumn: key[0] as string,
+      };
+    });
+}
+
+/**
  * The handler map a declared operation set requires — CRM-EFF's `satisfies Impl`
  * seam, which is what makes the declaration BINDING rather than decorative.
  *
@@ -419,19 +675,58 @@ export function eventsEmittedBy(
 export type OperationImpl<Ops, Ctx> = {
   [K in keyof Ops]: Ops[K] extends { output: infer O }
     ? O extends z.ZodType
-      ? (ctx: Ctx, input: ImplInput<Ops[K]>) => z.infer<O> | Promise<z.infer<O>>
+      ? (
+          ctx: Ctx,
+          input: ImplInput<Ops[K]>,
+        ) => HandlerOutput<Ops[K]> | Promise<HandlerOutput<Ops[K]>>
       : never
     : never;
 };
 
-/** No declared `input` means the handler takes `undefined`. */
-type ImplInput<O> = O extends { input: infer I }
-  ? I extends z.ZodType
-    ? O extends { inputOptional: true }
-      ? z.infer<I> | undefined
-      : z.infer<I>
-    : undefined
-  : undefined;
+/**
+ * What the PLATFORM adds to a paged read's input (#811).
+ *
+ * Not declared per operation, and that is the fix: every paged read used to
+ * restate `limit` and `cursor` in its own `input` schema, which made the default
+ * and the `LIST_PAGE_MAX` ceiling true of the reads whose author remembered them
+ * rather than of the surface. `mountOperations` now parses the trio with the one
+ * shared schema and merges it in, so a declaration cannot ship an uncapped page.
+ *
+ * Every field is OPTIONAL, including `limit`, and that is a correction rather
+ * than a convenience: the host defaults the trio for an HTTP call, but an
+ * in-process caller — a test, a seed, another operation, an MCP tool — invokes
+ * with no page at all, and typing `limit` as always-present made a handler's
+ * `input.limit` a lie that only showed up as a crash at runtime. `listLimitOf`
+ * resolves it, and `ctx.page` applies it, so the answer is the same either way.
+ */
+export interface PagedInput {
+  limit?: number;
+  cursor?: string;
+  order?: 'asc' | 'desc';
+  /** One of the declared `sortable` columns; unset means the first. */
+  sort?: string;
+}
+
+/**
+ * No declared `input` means the handler takes `undefined` — unless it is paged,
+ * in which case the platform hands it the page trio whether it declared one or not.
+ */
+type ImplInput<O> = O extends { paged: unknown }
+  ? (O extends { input: infer I }
+      ? I extends z.ZodType
+        ? O extends { inputOptional: true }
+          ? Partial<z.infer<I>>
+          : z.infer<I>
+        : unknown
+      : unknown) &
+      PagedInput
+  : O extends { input: infer I }
+    ? I extends z.ZodType
+      ? O extends { inputOptional: true }
+        ? z.infer<I> | undefined
+        : z.infer<I>
+      : undefined
+    : undefined;
 
 // ---------------------------------------------------------------------------
 // The manifest fragment the operations contribute.
@@ -608,11 +903,7 @@ export function defineEngineRoutes<const Ops extends Record<string, object>>(ope
  * };
  * ```
  */
-export type HandlerInput<O> = O extends { input: infer I }
-  ? I extends z.ZodType
-    ? z.infer<I>
-    : undefined
-  : undefined;
+export type HandlerInput<O> = ImplInput<O>;
 
 export type HandlerOutput<O> = O extends { output: infer R }
   ? R extends z.ZodType

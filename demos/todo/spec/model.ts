@@ -14,7 +14,6 @@ import {
   defineEntities,
   defineOperations,
   emitModel,
-  LIST_PAGE_MAX,
   z,
 } from '@substrat-run/contracts';
 import { MAX_SEARCH_LIMIT } from '@substrat-run/kernel';
@@ -184,7 +183,13 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
       reason: 'Returns only lists the caller owns or has been shared',
       checks: ['list:contribute'],
     },
-    output: z.array(todoEntities.list.fields),
+    output: todoEntities.list.fields,
+    // #811. The underlying walk IS kernel-composed — `created_at` with the id
+    // tie-break is exactly the `ORDER BY created_at, id` this shipped with — but
+    // visibility is decided by a per-row proof walk on top of it, so the handler
+    // over-fetches with `pageVisible`. Pages may come back short; the walk ends at
+    // the absent `Link`.
+    paged: { over: { entity: 'list', sortable: ['created_at', 'name'] } },
     http: { method: 'GET', path: '/lists' },
   },
 
@@ -223,11 +228,11 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   'todo/list-items': {
     summary: 'The items on a list',
     permission: { key: 'list:contribute', entity: 'list', idFrom: 'listId' },
-    input: z.object({
-      listId: z.string(),
-      limit: z.number().int().positive().max(LIST_PAGE_MAX).optional(),
-      cursor: z.string().optional(),
-    }),
+    // `limit` and `cursor` are NOT declared here: since #811 the platform parses
+    // the page trio with the one shared schema and merges it into the input, so
+    // the default and the `LIST_PAGE_MAX` ceiling are true of every paged read
+    // rather than of the ones whose author remembered to restate them.
+    input: z.object({ listId: z.string() }),
     // The ENTRY, not the envelope: `paged` is what wraps it, here and in the document.
     output: todoEntities.item.fields,
     // A list's items are the one table here that grows without bound — one per line of
@@ -384,7 +389,12 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
     summary: 'Who this list is shared with',
     permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string() }),
-    output: z.array(todoEntities.share.fields),
+    output: todoEntities.share.fields,
+    // A share list is short in every plausible app and unbounded all the same —
+    // one row per person a list is shared with, and nothing caps that. `list_id`
+    // is the filter the route already narrows by, declared so the kernel composes
+    // it and indexes `(list_id, created_at, id)` behind it.
+    paged: { over: { entity: 'share', sortable: ['created_at'], filterable: ['list_id'] } },
     http: { method: 'GET', path: '/lists/{listId}/shares' },
   },
 

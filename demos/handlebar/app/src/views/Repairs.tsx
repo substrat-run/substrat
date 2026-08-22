@@ -23,8 +23,8 @@ export function RepairsView() {
   const [title, setTitle] = useState('');
 
   const load = () => {
-    api.workorderList({}).then(setRepairs).catch((e: Error) => setError(e.message));
-    api.listCustomers().then(setCustomers).catch(() => setCustomers([]));
+    api.workorderList({}).then((page) => setRepairs(page.entries)).catch((e: Error) => setError(e.message));
+    api.listCustomers().then((page) => setCustomers(page.entries)).catch(() => setCustomers([]));
   };
   useEffect(load, []);
 

@@ -1,0 +1,42 @@
+---
+id: K-41
+date: 2026-08-22
+layer: kernel
+title: "A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it"
+status: accepted
+aliases: []
+amends: ["K-18"]
+tracking: ["#811", "#129", "#132"]
+---
+
+# K-41 — A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it
+
+**A read that answers with rows from a table declares that it is a page, and declares which columns a caller may sort and filter by; the kernel composes the `WHERE`, the `ORDER BY`, the keyset comparison, the `LIMIT`, the matching `COUNT` — and the indexes behind them.** This delivers K-18's unkept promise verbatim (*"engine list APIs accept registry-declared filter/sort predicates with correct pagination and counts, the kernel composing the join inside the scope DB"*), which had been a paragraph for a year with nothing implementing it. Twelve reads across four engines and four demos returned whole tables; there were ~36 hand-written `ORDER BY` clauses in `engines/*`, none caller-selectable, so a vertical wanting a different sort had no path but to fork the engine — the signal CLAUDE.md names as *"the engine drew its line wrong"*. `paged` becomes a **union of two halves, not one shape with optional fields**: `over` (the kernel composes, from a named entity and its declared `sortable`/`filterable` columns) or `sortKey` (the handler composes its own SQL and names the entry field the cursor walks). The declaration is checked against the entity registry at compile time — a column the entity does not have is a compile error naming the ones it does — and the manifest fragment the kernel indexes from is **derived** from the operations by `listsDeclaredBy`, the way `eventsEmittedBy` derives emitted events, so the index and the vocabulary cannot describe different columns. Filters are **equality only**: ranges, `IN`, `LIKE` and boolean composition are where a filter vocabulary becomes a query language, and BPMN-in-TypeScript is a tarpit the master plan already refused once. A read needing more than equality is an operation with its own name and its own arguments.
+
+## Why
+
+### The kernel, and not a query helper in contracts
+
+A fragment builder in `@substrat-run/contracts` could emit a correct `WHERE status = ?` and a correct keyset comparison. It could not create the **index** behind either — contracts sits below the migration machinery and cannot reach a scope's DDL. A declared filter with no index is a table scan that passes every test, survives review, and degrades when one tenant's table grows: the same delayed bug an unbounded list read already is, moved one level down. That is what K-18 means by filter, sort key and index being *one declared thing* — the third is the reason it has to be kernel-layer. The precedent is `searchables` ([#827](https://github.com/substrat-run/substrat/issues/827)), four weeks old and structurally identical: a module declares, the kernel derives the index and refuses a declaration it cannot index, and `ctx.search` reads it. `ctx.page` is the same shape and shares its rules, including that **it checks no permission** — nothing on `ctx` does.
+
+The line held is *what* the kernel composes. It builds the query over one declared entity's table and returns a page of **rows**; the handler keeps the projection and any hydration — `toWorkOrder`, a per-row total, a second query for children. So this is not the generated-CRUD layer `generated-verticals.md` §4 says does not exist: it invents no routes and no handlers. Adoption also *bounded* three N+1 reads that were previously unbounded, because a hydration that ran once per row in the scope now runs once per row on the page.
+
+### Why the second half is not a legacy path
+
+Three of the platform's own reads cannot be kernel-composed, and stating that honestly is what keeps the format from mis-describing them — the same lesson K-40 learned when `allow` had to join `on`. `callout/timeline` walks `_substrat_outbox`, a **kernel table**: rule 3 permits the projection read, it does not make the spine a registry entity. `protocol/list-templates` selects through a correlated `MAX(version)` subquery, which no filter vocabulary composes. `callout/portal-orders`, `bike-shop/portal-repairs` and `todo/my-lists` decide visibility by a **per-row proof walk**, not by a column. All five still page, still carry a cursor, and still satisfy the gate; they simply own their own `WHERE`. Which half a read is, is a fact about its declaration, and an absent `over` reads as intent.
+
+### The tie-break, and the two things it forced
+
+A keyset walk over a **non-unique** column drops rows: ordering by `status` with a cursor of `'open'` excludes every remaining `open` row, because `status > 'open'` excludes its own ties. So every kernel-composed walk runs over `(sortColumn, idColumn)` and the cursor is composite — the `|`-joined form `pagination.ts` had already pinned without anything producing one. This is why `paged.over.entity` is **pointable-only**: a table keyed by `(customer_id, year, month)` has no single column to break ties on. It is also why the contract suite's fixture has a deliberately non-unique `status` column and walks it at page sizes that straddle ties: the broken version of this produces SQL that reads perfectly, so a string assertion over the emitted `WHERE` would have called it a pass — which is the lesson the FK that shipped behind green string assertions already taught once.
+
+**A cursor is only valid for the sort that issued it**, and nothing in it says which sort that was. Encoding the sort into the cursor was weighed and declined: it would break the "no encoding, survives in a query string, debuggable by eye" property that makes a cursor inspectable. Following the `Link` header is always correct — `nextPageLink` rebuilds it from the request, so the sort and every filter ride along — and hand-assembling `?cursor=…&sort=other` is the documented way to get it wrong.
+
+### The gate, and where it lives
+
+`defineOperations` **refuses at module load** an operation whose `output` is a bare `z.array(...)` with no `paged` beside it. #811 asked for this as a `lint:model --check` gate; a tool has to *find* the declarations, and the ones it would have missed are exactly the ones the issue was filed about — `model-diff` reads entities rather than operations, and `api-diff` only sees verticals that opted into `src/api.ts`, which is none of the four engines. Checking at load reaches every module that declares operations at all, with nothing to discover and nothing to opt into, and it fires in every build, test and dev server. Same reasoning that moved K-40's "a state the field cannot hold" check to load time: it runs where it can bite. It immediately found two unbounded reads a hand survey of the codebase had missed.
+
+The platform also now **supplies the page** rather than each operation restating it: `mountOperations` parses `limit`/`cursor`/`order`/`sort` with the one shared schema and merges them into the input, so `LIST_PAGE_DEFAULT` and the `LIST_PAGE_MAX` ceiling are true of the surface instead of true of the operations whose author remembered them. An over-limit request is **refused, not silently capped** — a caller quietly handed 200 of the 100 000 they asked for cannot tell a capped page from the end of a walk. The in-process path clamps instead (`listLimitOf`), because a test or a seed has no 400 to receive.
+
+### Cost, and what it did not cost
+
+The `Page<T>` return is a **breaking change to every shipped list operation in process** — and a compile error at every call site, which is how all twelve conversions and their callers were found. It is **not** a wire break: [#829](https://github.com/substrat-run/substrat/issues/829) moved the walk to `Link`/`X-Total-Count` headers, so a paged read's HTTP body is still the entries array it always was. #811's own "Cost, stated plainly" section — a `schemaVersion` bump per engine plus a dual-emit window — was written before that landed and is superseded by it. Index cost is real and bounded deliberately: one index per `(filter, sort)` pair plus one per bare sort, never every subset of the filters, because `S × 2^F` indexes is a combinatorial answer to a question nobody asked. A list whose two-filter combination is hot wants a hand-written index, and `listIndexColumns` says so where somebody would look.

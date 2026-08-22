@@ -64,7 +64,8 @@ export type CompletedOrder = Awaited<ReturnType<CalloutClient['completeWorkorder
  * a shape of its own. Indexed off the generated method for the same reason as
  * `ProtocolDetail` — the join is declared, so the alias should follow it.
  */
-export type CustomerWithFacilities = Awaited<ReturnType<CalloutClient['listCustomers']>>[number];
+export type CustomerWithFacilities =
+  Awaited<ReturnType<CalloutClient['listCustomers']>>['entries'][number];
 
 export interface CastMember {
   name: string;

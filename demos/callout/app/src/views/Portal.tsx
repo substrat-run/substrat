@@ -23,7 +23,7 @@ export function PortalView() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    api.portalOrders().then(setOrders).catch((e: Error) => setError(e.message));
+    api.portalOrders().then((page) => setOrders(page.entries)).catch((e: Error) => setError(e.message));
   }, []);
 
   const toggle = async (id: string) => {

@@ -9,6 +9,7 @@ import {
   scheduleContractSuite,
   scopeHostContractSuite,
   searchContractSuite,
+  listContractSuite,
 } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
@@ -86,6 +87,20 @@ atomicContractSuite('adapter-sqlite', async () => {
 // vertical's own `assertAllowed`, exercised by the demo scenario.
 searchContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-search-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #811: the same shape for `ctx.page`. Permission is likewise not this suite's
+// subject — a page is a read, and the operation's own `assertAllowed` gates it.
+listContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-list-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,

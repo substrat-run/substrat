@@ -3,6 +3,7 @@ export type { ScopeHostFixture, ScopeHostSuiteOptions } from './scope-host-suite
 export { permissionContractSuite } from './permission-suite.js';
 export { atomicContractSuite } from './atomic-suite.js';
 export { searchContractSuite } from './search-suite.js';
+export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 export { entityCheckConformanceSuite, planEntityCheckCoverage } from './entity-check-suite.js';
 export type { EntityCheckFixture, EntityCheckSuiteOptions, PlannedCheck } from './entity-check-suite.js';
@@ -18,6 +19,8 @@ export {
   scheduleMod,
   searchMod,
   searchModManifest,
+  listMod,
+  listModManifest,
 } from './modules.js';
 export {
   connectorCalls,

@@ -63,9 +63,16 @@ export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR
   'bike-shop/list-customers': {
     summary: 'List customers with their bikes',
     permission: 'customer:manage',
-    output: z.array(
-      handlebarEntities.customer.fields.extend({ bikes: z.array(handlebarEntities.bike.fields) }),
-    ),
+    // The ENTRY, not the envelope. The bikes are hydrated per entry by the
+    // handler — which the page also BOUNDS: the hydration used to run once per
+    // customer in the scope, and now runs once per customer on the page.
+    output: handlebarEntities.customer.fields.extend({
+      bikes: z.array(handlebarEntities.bike.fields),
+    }),
+    paged: {
+      over: { entity: 'customer', sortable: ['number', 'name', 'created_at'] },
+      total: true,
+    },
     http: { method: 'GET', path: '/customers' },
   },
   'bike-shop/register-bike': {
@@ -93,7 +100,13 @@ export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR
   'bike-shop/price-list': {
     summary: 'The current price list',
     permission: 'customer:manage',
-    output: z.array(priceRow),
+    output: priceRow,
+    // Handler-composed, not `over`: `bike_shop_price_list` is a value-keyed table
+    // and deliberately NOT a declared entity (see `entities.ts`), so there is no
+    // registry entry for the kernel to index or resolve a table from. It still
+    // pages, still carries a cursor, and still satisfies the gate — it just owns
+    // its own one-line `ORDER BY`.
+    paged: { sortKey: 'article' },
     http: { method: 'GET', path: '/prices' },
   },
   'bike-shop/create-repair': {
@@ -140,14 +153,24 @@ export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR
       // Walks on the workorder engine's read key, declared by the engine.
       checks: [],
     },
-    output: z.array(workOrder),
+    output: workOrder,
+    // Handler-composed. A per-row permission walk cannot be a kernel `WHERE` —
+    // visibility is decided by the proof walk, not by a column — so this pages by
+    // over-fetching (`pageVisible`) and the cursor advances by the last row
+    // EXAMINED. Its pages may come back short; the walk ends at the absent Link.
+    paged: { sortKey: 'id' },
     http: { method: 'GET', path: '/portal/repairs' },
   },
   'bike-shop/timeline': {
     summary: 'The event timeline for one entity',
     permission: 'workorder:read',
     input: z.object({ entityType: z.string(), entityId: z.string() }),
-    output: z.array(z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() })),
+    output: z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() }),
+    // Handler-composed: this walks `_substrat_outbox`, a KERNEL table. It is not
+    // a declared entity and never will be — rule 3 permits a projection read of
+    // the spine, not a registry entry over it. Append order is the sort, and
+    // `rowid` is the only honest expression of it.
+    paged: { sortKey: 'occurred_at' },
   },
 });
 

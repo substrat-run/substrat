@@ -45,9 +45,20 @@ export const invoicingOperations = defineOperations(invoicingEntities, INVOICING
     summary: 'Invoice bases, newest first, optionally filtered by status',
     permission: 'invoicing:read',
     input: z.object({ status: z.string().optional() }),
-    // The handler answers with every basis when called with no body at all.
     inputOptional: true,
-    output: z.array(underlagListRow),
+    // The ENTRY, not the envelope (#811).
+    output: underlagListRow,
+    // `number` first, so the default walk stays the one this shipped with:
+    // newest basis at the top. `status` is the filter an office actually uses —
+    // "what is still open" — and is offered as a sort for the same reason.
+    paged: {
+      over: {
+        entity: 'underlag',
+        sortable: ['number', 'status', 'created_at'],
+        filterable: ['status', 'customer_id'],
+      },
+      order: 'desc',
+    },
   },
 
   'invoicing/get': {

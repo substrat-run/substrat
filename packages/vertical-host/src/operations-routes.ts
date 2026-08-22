@@ -27,6 +27,8 @@ import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
   isPage,
+  listPageQuery,
+  LIST_SORT_PARAM,
   nextPageLink,
   PAGE_LINK_HEADER,
   PAGE_TOTAL_HEADER,
@@ -413,7 +415,32 @@ export function mountOperations(
       } else {
         payload = { ...typed(c.req.query()), ...pinned, ...typed(fromPath) };
       }
-      if (!op.input && params.length === 0) payload = undefined;
+      // #811: the page trio and the declared sort come from the PLATFORM, not from
+      // each operation restating them.
+      //
+      // This is what makes `LIST_PAGE_DEFAULT` and the `LIST_PAGE_MAX` cap true of
+      // every paged endpoint rather than of the ones whose author remembered: a
+      // read that declares `paged` and no `limit` is still bounded, and a caller
+      // asking for 100 000 rows still gets 200. Parsed with the shared schema, so
+      // the coercion and the ceiling have exactly one definition.
+      //
+      // Merged AFTER `pinned`/`fromPath` on purpose: `limit` is the caller's to
+      // choose within the cap, and no route pins it.
+      if (op.paged) {
+        const q = c.req.query();
+        const page = listPageQuery.parse({ limit: q['limit'], cursor: q['cursor'], order: q['order'] });
+        payload = {
+          ...(payload ?? {}),
+          limit: page.limit,
+          ...(page.cursor === undefined ? {} : { cursor: page.cursor }),
+          // `order` and `sort` are only forwarded when asked for, so the
+          // DECLARATION's defaults stay the answer when a caller says nothing.
+          ...(page.order === undefined ? {} : { order: page.order }),
+          ...(q[LIST_SORT_PARAM] === undefined ? {} : { sort: q[LIST_SORT_PARAM] }),
+        };
+      } else if (!op.input && params.length === 0) {
+        payload = undefined;
+      }
 
       const result = await stub.invoke(name, payload);
       if (options.respond) return await options.respond(c, result, name);

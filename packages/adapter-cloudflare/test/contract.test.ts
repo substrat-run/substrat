@@ -25,6 +25,7 @@ import {
   scheduleMod,
   scopeHostContractSuite,
   searchContractSuite,
+  listContractSuite,
   permMod,
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -1007,6 +1008,18 @@ describe('what an operation failure carries across the ScopeDO boundary', () => 
 // regulator that decides whether a trigger may fire at all — so "it works in
 // better-sqlite3" is not evidence about this host, and this suite is the evidence.
 searchContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #811: `ctx.page` on the DO host — same suite, and the only place the derived
+// index DDL meets workerd's regulator.
+listContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

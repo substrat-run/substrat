@@ -20,7 +20,7 @@ export function CustomersView() {
   const [bikeFrameNo, setBikeFrameNo] = useState('');
 
   const load = () => {
-    api.listCustomers().then(setCustomers).catch((e: Error) => setError(e.message));
+    api.listCustomers().then((page) => setCustomers(page.entries)).catch((e: Error) => setError(e.message));
   };
   useEffect(load, []);
 

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { Page } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { WorkOrder, BillableLine } from '@substrat-run/engine-workorder';
 import {
@@ -93,7 +94,7 @@ describe('FSM demo scenario (spec §8)', () => {
     expect(order.status).toBe('planned');
     expect(order.customer.entityId).toBe(w.grundenId);
 
-    const timeline = await anna.invoke<{ type: string }[]>('callout/timeline', {
+    const { entries: timeline } = await anna.invoke<Page<{ type: string }>>('callout/timeline', {
       entityType: 'workorder',
       entityId: orderId,
     });
@@ -132,7 +133,10 @@ describe('FSM demo scenario (spec §8)', () => {
     const mallory = await host.getScope(w.mallory, w.t1, w.s1);
     await expect(mallory.invoke('workorder/list')).rejects.toThrow(/permission denied/);
     await expect(mallory.invoke('invoicing/list')).rejects.toThrow(/permission denied/);
-    await expect(mallory.invoke<unknown[]>('callout/portal-orders')).resolves.toEqual([]);
+    await expect(mallory.invoke<Page<unknown>>('callout/portal-orders')).resolves.toEqual({
+      entries: [],
+      nextCursor: null,
+    });
 
     const berit = await host.getScope(w.berit, w.t1, w.s1);
     await expect(berit.invoke('workorder/report-time', { orderId, hours: '1' })).rejects.toThrow(
@@ -159,9 +163,9 @@ describe('FSM demo scenario (spec §8)', () => {
   });
 
   it('6. star topology observed: the invoicing engine consumed the event', async () => {
-    const underlag = await anna.invoke<{ id: string; status: string; total: string }[]>(
-      'invoicing/list',
-    );
+    const { entries: underlag } = await anna.invoke<
+      Page<{ id: string; status: string; total: string }>
+    >('invoicing/list');
     expect(underlag).toHaveLength(1);
     expect(underlag[0]!.status).toBe('open');
     expect(underlag[0]!.total).toBe('2051.25');
@@ -182,14 +186,17 @@ describe('FSM demo scenario (spec §8)', () => {
     const berit = await host.getScope(w.berit, w.t1, w.s1);
     const styrbjorn = await host.getScope(w.styrbjorn, w.t1, w.s1);
 
-    const berits = await berit.invoke<WorkOrder[]>('callout/portal-orders');
+    const { entries: berits } = await berit.invoke<Page<WorkOrder>>('callout/portal-orders');
     expect(berits.map((o) => o.id)).toEqual([orderId]);
 
-    await expect(styrbjorn.invoke<WorkOrder[]>('callout/portal-orders')).resolves.toEqual([]);
+    await expect(styrbjorn.invoke<Page<WorkOrder>>('callout/portal-orders')).resolves.toEqual({
+      entries: [],
+      nextCursor: null,
+    });
     await expect(berit.invoke('invoicing/list')).rejects.toThrow(/permission denied/);
 
     // berit can read her order's timeline through the same entity walk.
-    const timeline = await berit.invoke<{ type: string }[]>('callout/timeline', {
+    const { entries: timeline } = await berit.invoke<Page<{ type: string }>>('callout/timeline', {
       entityType: 'workorder',
       entityId: orderId,
     });
@@ -197,7 +204,7 @@ describe('FSM demo scenario (spec §8)', () => {
   });
 
   it('8. export makes the underlag immutable; the next completion opens a new one', async () => {
-    const [underlag] = await anna.invoke<{ id: string }[]>('invoicing/list');
+    const [underlag] = (await anna.invoke<Page<{ id: string }>>('invoicing/list')).entries;
     await anna.invoke('invoicing/export', { underlagId: underlag!.id });
     await expect(anna.invoke('invoicing/export', { underlagId: underlag!.id })).rejects.toThrow(
       /immutable/,
@@ -212,7 +219,7 @@ describe('FSM demo scenario (spec §8)', () => {
     await anna.invoke('workorder/report-time', { orderId: order2.id, hours: '1' });
     await anna.invoke('callout/complete-workorder', { orderId: order2.id });
 
-    const all = await anna.invoke<{ status: string }[]>('invoicing/list');
+    const { entries: all } = await anna.invoke<Page<{ status: string }>>('invoicing/list');
     expect(all).toHaveLength(2);
     expect(all.filter((u) => u.status === 'open')).toHaveLength(1);
     expect(all.filter((u) => u.status === 'exported')).toHaveLength(1);
@@ -222,7 +229,8 @@ describe('FSM demo scenario (spec §8)', () => {
     const closed = await anna.invoke<WorkOrder>('workorder/close', { orderId });
     expect(closed.status).toBe('closed');
     // planned → closed skip is impossible: close on the OPEN second order fails.
-    const open = (await anna.invoke<WorkOrder[]>('workorder/list', { status: 'completed' }))[0]!;
+    const open = (await anna.invoke<Page<WorkOrder>>('workorder/list', { status: 'completed' }))
+      .entries[0]!;
     await anna.invoke('workorder/close', { orderId: open.id });
     const order3 = await anna.invoke<WorkOrder>('callout/create-workorder', {
       facilityId: w.kontorId,
@@ -368,7 +376,7 @@ describe('FSM demo scenario (spec §8)', () => {
     expect(replayed).toBe(signed.signature.content_hash);
 
     // Every mutation hit the spine.
-    const timeline = await anna.invoke<{ type: string }[]>('callout/timeline', {
+    const { entries: timeline } = await anna.invoke<Page<{ type: string }>>('callout/timeline', {
       entityType: 'protocol',
       entityId: protocolId,
     });
