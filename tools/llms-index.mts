@@ -14,7 +14,11 @@
  *      walked from the sidebar, so a page nobody added there is invisible to
  *      every agent — and invisible in a way no human notices, because the page
  *      itself is fine when you open it.
- *   3. **A page with no usable description.** The index line is derived from the
+ *   3. **A component with no markdown twin.** A theme component's content is
+ *      flattened into the twin by its `*.content.mts` module. One added without a
+ *      registered `alt()` degrades to a pointer at the HTML page — the page still
+ *      looks right, and everything the diagram says leaves llms.txt.
+ *   4. **A page with no usable description.** The index line is derived from the
  *      page's first prose paragraph; a page that opens on a table or a container
  *      derives nothing, and `- [Domain model & invariants](…)` with no
  *      description tells an agent nothing about which of seven engines it is.
@@ -27,6 +31,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArtifacts, describe, kernelVersion } from '../apps/docs/.vitepress/llms.mjs';
+import { COMPONENT_ALT } from '../apps/docs/.vitepress/theme/components/alt.mjs';
 import { tableOfContents } from '../apps/docs/.vitepress/sidebar.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -48,8 +53,23 @@ const NOT_A_PAGE = new Set(['index.md', 'CHANGELOG.md']);
  */
 const MIN_DESCRIPTION = 60;
 
-/** Every markdown file under the docs root that is meant to be a page. */
-function sourcePages(): string[] {
+/**
+ * Components whose pointer fallback is the right answer, not an oversight.
+ *
+ * `Marketing` is the landing page's whole body, and index.md is not in the index
+ * at all (see `NOT_A_PAGE`) — it duplicates prose from the guide pages the index
+ * does walk, so twinning it would say everything twice. Anything else belongs in
+ * `COMPONENT_ALT`.
+ */
+const ALT_NOT_NEEDED = new Set(['Marketing']);
+
+/**
+ * Every markdown file under the docs root that is meant to be a page.
+ *
+ * `all` keeps the ones `NOT_A_PAGE` filters out — the component check below
+ * wants index.md, which renders `<Marketing />` and is not in the index.
+ */
+function sourcePages(all = false): string[] {
   const found: string[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir)) {
@@ -61,7 +81,7 @@ function sourcePages(): string[] {
       }
       if (!entry.endsWith('.md')) continue;
       const rel = relative(DOCS, path);
-      if (!NOT_A_PAGE.has(rel)) found.push(rel);
+      if (all || !NOT_A_PAGE.has(rel)) found.push(rel);
     }
   };
   walk(DOCS);
@@ -85,7 +105,20 @@ for (const file of onDisk) {
   }
 }
 
-// 3 — every page must yield an index line worth reading.
+// 3 — every component a page renders must reach the twin as markdown.
+for (const file of sourcePages(true)) {
+  const body = readFileSync(join(DOCS, file), 'utf8');
+  for (const [, name] of body.matchAll(/^<([A-Z]\w*)\s*\/>\s*$/gm)) {
+    if (name in COMPONENT_ALT || ALT_NOT_NEEDED.has(name)) continue;
+    problems.push(
+      `${file} renders <${name} /> with no markdown twin — it will degrade to a ` +
+        `pointer and everything it says will be missing from llms.txt. Move its ` +
+        `content to ${name}.content.mts and register alt() in theme/components/alt.mts.`,
+    );
+  }
+}
+
+// 4 — every page must yield an index line worth reading.
 for (const section of sections) {
   for (const page of section.pages) {
     if (!onDisk.has(page.file)) continue;

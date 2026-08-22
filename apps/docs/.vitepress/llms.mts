@@ -50,6 +50,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileForLink, START_HERE, tableOfContents, type IndexedPage } from './sidebar.mjs';
+import { altFor } from './theme/components/alt.mjs';
 
 /** Where the docs are published. Links in `llms.txt` must be absolute. */
 export const SITE = 'https://substrat.net';
@@ -157,9 +158,10 @@ function twinUrl(link: string): string {
  * Source markdown → the twin an agent should read.
  *
  * VitePress containers become blockquotes (the closest markdown has to an
- * aside, and it keeps the label that carries the warning). Theme components
- * become a pointer at the rendered page, because a diagram that only exists as
- * Vue cannot be flattened honestly — better to say so than to drop it silently.
+ * aside, and it keeps the label that carries the warning). Theme components are
+ * flattened by `altFor` when they carry prose — which both of ours do, out of
+ * plain arrays — and fall back to a pointer at the rendered page only when there
+ * is genuinely nothing to flatten.
  */
 export function toTwin(raw: string): string {
   const { body } = splitFrontmatter(raw);
@@ -199,10 +201,15 @@ export function toTwin(raw: string): string {
       continue;
     }
 
-    // A bare theme component renders a diagram we cannot express as markdown.
+    // A bare theme component. Its content is markdown when the component keeps
+    // it in a data module; a pointer at the page when it does not.
     const component = /^<([A-Z]\w*)\s*\/>\s*$/.exec(line.trim());
     if (component) {
-      push(`*(Diagram: ${component[1]} — rendered at the HTML page for this document.)*`);
+      const flattened = altFor(component[1]);
+      push(
+        flattened ??
+          `*(Diagram: ${component[1]} — rendered at the HTML page for this document.)*`,
+      );
       continue;
     }
 

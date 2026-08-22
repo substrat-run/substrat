@@ -4,84 +4,102 @@
 // a Durable Object with its own SQLite — the point of the diagram. Sourced from the
 // Cloudflare adapter (host.ts, route-resolver.ts, scope-do.ts, control-plane-do.ts).
 // Colors reuse the --layer-* accents purely to keep the three DBs visually distinct.
-
-const steps = [
-  {
-    n: 1, kind: 'edge',
-    title: 'Browser hits a hostname',
-    body: 'A tenant, a vertical, and a surface — all encoded in the name.',
-    mono: 'acme.callout.substrat.run',
-  },
-  {
-    n: 2, kind: 'router',
-    title: 'The router resolves the door',
-    body: 'One kernel-owned worker in front of every vertical. Its only binding is the control plane — it reads the directory to turn hostname → (tenant, scope, vertical, surface). It finds the door; it cannot open a scope even by mistake.',
-    touches: 'cp',
-  },
-  {
-    n: 3, kind: 'compute',
-    title: 'Header handshake, then dispatch',
-    body: 'Every client x-substrat-* header is stripped; the router asserts the resolved node plus a shared secret, then dispatches to the vertical worker. The vertical has no public route — the router is the only way in.',
-  },
-  {
-    n: 4, kind: 'compute',
-    title: 'Vertical worker resolves who you are',
-    body: 'The vertical worker holds no state between requests. It resolves your session to a principal in the tenant’s own identity database.',
-    touches: 'id',
-  },
-  {
-    n: 5, kind: 'compute',
-    title: 'Open the scope, run the operation',
-    body: 'Gate the scope’s lifecycle & tenancy, then invoke() runs the operation inside the scope’s own SQLite, in one transaction — permission check first, mutation emits an event, the outbox drains to consumers and connectors. Roll back on any throw.',
-    touches: 'sc',
-  },
-  {
-    n: 6, kind: 'edge',
-    title: 'Response travels back up',
-    body: 'Back through the router, the one place that knows the tenant — so it meters the request there, one datapoint per call.',
-  },
-];
-
-const dbs = [
-  {
-    key: 'cp', card: 'Directory', name: 'Control-plane DB', count: 'one per environment',
-    items: ['Tenant registry & scope lifecycle', 'Roles, tenant grants, entitlements', 'Hostnames, verticals & versions', 'Connections (ciphertext only)', 'The admin audit log'],
-    tag: 'Knows which door — never what’s behind it. A single singleton DO.',
-  },
-  {
-    key: 'id', card: 'Application / auth', name: 'Identity DB', count: 'one per tenant',
-    items: ['Users, sessions, credentials', 'Its own auth engine, own SQLite', 'The login → principal map', 'The owner seat, set at provision'],
-    tag: 'Separate DO, separate storage — one tenant’s users can’t leak to another.',
-  },
-  {
-    key: 'sc', card: 'Business data', name: 'Scope DB', count: 'one per scope',
-    items: ['The vertical’s entities & kernel spine', 'Events, outbox, entity links', 'Applied migrations', 'Scope-level grants & permissions'],
-    tag: 'Where ctx.sql runs — one transaction per operation.',
-  },
-];
-
-const touchLabel: Record<string, string> = {
-  cp: 'reads → Control-plane DB',
-  id: 'reads → Identity DB (this tenant)',
-  sc: 'reads + writes → Scope DB (this scope)',
-};
-
-const prov = [
-  ['Write the directory row.', 'The coordinator records the new scope in the control plane — the door now exists, gated by the tenant.'],
-  ['Address the Scope DO.', 'The moment it’s named, its SQLite is born. A lazy migration builds the kernel spine and runs the vertical’s own module migrations in order — a PITR bookmark taken before each pass.'],
-  ['Project permissions in.', 'The tenant’s current roles and grants are copied into the fresh scope so it can decide access from its own storage — then the migration frontier is recorded back to the directory.'],
-  ['Identity DB, likewise.', 'The tenant’s Identity DO is created on first address — tables on construction, the owner seat set at provision, waiting to be claimed by the first login.'],
-];
-
-const kindLabel: Record<string, string> = {
-  edge: 'edge', router: 'kernel worker · 1 per env', compute: 'compute',
-};
+//
+// Every string it renders lives in ./RuntimeTopology.content.mts, because llms.mts
+// flattens that module into the page's markdown twin. A fact typed into this
+// template renders here and vanishes from llms.txt. Put it in the data module.
+import {
+  dbs, diagram, headings, isolation, kindLabel, prov, provKey, residency, steps, touchLabel,
+} from './RuntimeTopology.content.mjs';
 </script>
 
 <template>
   <div class="topo">
     <!-- Request flow -->
-    <p class="subhead">How a request travels</p>
+    <p class="subhead">{{ headings.flow }}</p>
+
+    <!-- The round trip. The numbered steps below carry the detail; this carries
+         the one thing they cannot — that the request comes back. -->
+    <figure class="fig">
+      <svg viewBox="0 0 700 812" role="img" :aria-label="diagram.aria">
+        <defs>
+          <marker id="rt-arw" viewBox="0 0 9 7" refX="8" refY="3.5" markerWidth="7" markerHeight="6" orient="auto">
+            <polygon class="mk" points="0 0, 9 3.5, 0 7" />
+          </marker>
+        </defs>
+
+        <path class="flowline back" d="M40 520 H16 V64 H30" marker-end="url(#rt-arw)" />
+        <text class="t-rot" x="32" y="300" text-anchor="middle" transform="rotate(-90 32 300)">{{ diagram.ret }}</text>
+
+        <rect class="fbox" x="40" y="36" width="250" height="56" rx="10" />
+        <text class="t-title" x="58" y="62">{{ diagram.browser.title }}</text>
+        <text class="t-mono" x="58" y="81">{{ diagram.browser.mono }}</text>
+
+        <path class="flowline" d="M165 98 V142" marker-end="url(#rt-arw)" />
+        <text class="t-arw" x="177" y="124">{{ diagram.toRouter }}</text>
+
+        <rect class="fbox" x="40" y="148" width="250" height="128" rx="10" />
+        <text class="t-tag" x="58" y="170">{{ diagram.router.tag }}</text>
+        <text class="t-title" x="58" y="192">{{ diagram.router.title }}</text>
+        <text v-for="(l, i) in diagram.router.sub" :key="l" class="t-sub" x="58" :y="212 + i * 17">{{ l }}</text>
+        <rect class="fchip fchip--k" x="58" y="240" width="98" height="22" rx="6" />
+        <circle class="ldot ldot--k" cx="70" cy="251" r="3.5" />
+        <text class="t-chip t-chip--k" x="80" y="255">{{ diagram.router.chip }}</text>
+
+        <path class="flowline" d="M296 212 H400" marker-end="url(#rt-arw)" />
+        <text class="t-arw" x="348" y="200" text-anchor="middle">{{ diagram.toControlPlane }}</text>
+
+        <rect class="fbox" x="410" y="148" width="250" height="128" rx="10" />
+        <text class="t-tag" x="428" y="170">{{ diagram.controlPlane.tag }}</text>
+        <text class="t-title" x="428" y="192">{{ diagram.controlPlane.title }}</text>
+        <text v-for="(l, i) in diagram.controlPlane.sub" :key="l" class="t-sub" x="428" :y="212 + i * 17">{{ l }}</text>
+        <rect class="fchip fchip--k" x="428" y="240" width="98" height="22" rx="6" />
+        <circle class="ldot ldot--k" cx="440" cy="251" r="3.5" />
+        <text class="t-chip t-chip--k" x="450" y="255">{{ diagram.controlPlane.chip }}</text>
+
+        <path class="flowline" d="M165 282 V326" marker-end="url(#rt-arw)" />
+        <text class="t-arw" x="177" y="308">{{ diagram.toWorker }}</text>
+
+        <rect class="fbox" x="40" y="332" width="620" height="220" rx="10" />
+        <text class="t-tag" x="58" y="354">{{ diagram.worker.tag }}</text>
+        <text class="t-title" x="58" y="376">{{ diagram.worker.title }}</text>
+        <text class="t-sub" x="58" y="396">{{ diagram.worker.sub }}</text>
+
+        <g v-for="(pane, i) in residency.worker" :key="pane.title">
+          <rect class="fpane" x="58" :y="406 + i * 44" width="584" height="40" rx="8" />
+          <circle class="ldot" :class="'ldot--' + pane.dot" cx="74" :cy="420 + i * 44" r="4.5" />
+          <text class="t-mid" x="88" :y="424 + i * 44">{{ pane.title }}</text>
+          <text class="t-sub" x="88" :y="440 + i * 44">{{ pane.detail }}</text>
+        </g>
+
+        <path class="flowline" d="M160 558 V600" marker-end="url(#rt-arw)" />
+        <text class="t-arw" x="172" y="580">{{ diagram.toIdentity }}</text>
+
+        <path class="flowline" d="M485 558 V600" marker-end="url(#rt-arw)" />
+        <text class="t-arw" x="473" y="580" text-anchor="end">{{ diagram.toScope }}</text>
+
+        <rect class="fbox" x="40" y="606" width="240" height="128" rx="10" />
+        <text class="t-tag" x="58" y="628">{{ diagram.identity.tag }}</text>
+        <text class="t-title" x="58" y="650">{{ diagram.identity.title }}</text>
+        <text v-for="(l, i) in diagram.identity.sub" :key="l" class="t-sub" x="58" :y="670 + i * 17">{{ l }}</text>
+        <rect class="fchip fchip--k" x="58" y="698" width="98" height="22" rx="6" />
+        <circle class="ldot ldot--k" cx="70" cy="709" r="3.5" />
+        <text class="t-chip t-chip--k" x="80" y="713">{{ diagram.identity.chip }}</text>
+
+        <rect class="fbox" x="310" y="606" width="350" height="176" rx="10" />
+        <text class="t-tag" x="328" y="628">{{ diagram.scope.tag }}</text>
+        <text class="t-title" x="328" y="650">{{ diagram.scope.title }}</text>
+        <text class="t-sub" x="328" y="670">{{ diagram.scope.sub }}</text>
+
+        <g v-for="(row, i) in residency.scope" :key="row.text">
+          <rect class="fchip" :class="'fchip--' + row.dot" x="328" :y="680 + i * 28" width="314" height="24" rx="6" />
+          <circle class="ldot" :class="'ldot--' + row.dot" cx="344" :cy="692 + i * 28" r="4" />
+          <text class="t-sub" x="358" :y="696 + i * 28">{{ row.text }}</text>
+        </g>
+      </svg>
+      <figcaption>{{ residency.intro }}</figcaption>
+    </figure>
+
     <div class="flow">
       <div v-for="s in steps" :key="s.n" class="step" :class="{ last: s.n === steps.length }">
         <div class="gutter">
@@ -103,7 +121,7 @@ const kindLabel: Record<string, string> = {
     </div>
 
     <!-- Three databases -->
-    <p class="subhead">The three databases</p>
+    <p class="subhead">{{ headings.dbs }}</p>
     <div class="dbs">
       <div v-for="d in dbs" :key="d.key" class="db" :class="'db--' + d.key">
         <svg class="cyl" viewBox="0 0 30 34" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -122,9 +140,9 @@ const kindLabel: Record<string, string> = {
     </div>
 
     <!-- Provisioning -->
-    <p class="subhead">How the databases get created</p>
+    <p class="subhead">{{ headings.provisioning }}</p>
     <div class="prov">
-      <p class="key">The trick: <b>a Durable Object’s database springs into existence the first time you address it by id.</b> There is no <code>CREATE DATABASE</code> and no migration server — provisioning is just addressing a new DO and letting it build itself.</p>
+      <p class="key" v-html="provKey"></p>
       <div class="psteps">
         <div v-for="([head, body], i) in prov" :key="i" class="pstep">
           <span class="pn">{{ i + 1 }}</span>
@@ -135,9 +153,8 @@ const kindLabel: Record<string, string> = {
 
     <!-- Isolation callout -->
     <div class="iso">
-      <p class="isohead">Why the shared control plane isn’t a shared blast radius</p>
-      <p>A normal vertical runs <b>“CP-less” on the hot path</b>: it decides permissions from the scope’s <em>own</em> storage and trusts the node the router asserted — the shared control plane is <b>off the request path entirely</b>. It still owns provisioning and the audit spine, but a request serving one tenant never touches another tenant’s data, or the shared directory, to answer.</p>
-      <p>The result: the same kernel guarantees, a per-tenant database, and a shared control plane whose failure can’t read or corrupt a running scope. <b>Isolation is the default, not a configuration you can forget.</b></p>
+      <p class="isohead">{{ isolation.head }}</p>
+      <p v-for="(para, i) in isolation.paragraphs" :key="i" v-html="para"></p>
     </div>
   </div>
 </template>
@@ -155,6 +172,48 @@ const kindLabel: Record<string, string> = {
   display: flex; align-items: center; gap: 10px;
 }
 .subhead::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--layer-kernel); flex: none; }
+
+/* The round-trip figure. Every fill comes from a semantic surface token rather
+   than a raw scale value: the raw --brand-50 / --cyan-50 scales are not
+   redefined in dark mode, so a chip painted with one stays near-white on a dark
+   ground. The layer accent rides on the dot and the border instead. */
+.fig { margin: 0 0 26px; overflow-x: auto; }
+.fig svg { display: block; width: 100%; max-width: 700px; height: auto; }
+.fig figcaption {
+  font-size: var(--text-sm); line-height: var(--lh-sm);
+  color: var(--text-tertiary); margin-top: 12px; max-width: 62ch;
+}
+
+.fbox  { fill: var(--surface-card); stroke: var(--border-strong); stroke-width: 1.4; }
+.fpane { fill: var(--surface-inset); stroke: var(--border-subtle); stroke-width: 1; }
+.fchip { fill: var(--surface-inset); stroke: var(--border-default); stroke-width: 1; }
+.fchip--k { stroke: var(--layer-kernel); stroke-opacity: .45; }
+.fchip--e { stroke: var(--layer-engine); stroke-opacity: .45; }
+.fchip--v { stroke: var(--layer-vertical); stroke-opacity: .45; }
+
+.ldot--k { fill: var(--layer-kernel); }
+.ldot--e { fill: var(--layer-engine); }
+.ldot--v { fill: var(--layer-vertical); }
+
+.flowline { fill: none; stroke: var(--border-strong); stroke-width: 1.8; }
+.flowline.back { stroke-width: 1.4; stroke-dasharray: 5 4; }
+.mk { fill: var(--border-strong); }
+
+.t-title { fill: var(--text-primary);   font: var(--weight-semibold) 14px var(--font-sans); }
+.t-mid   { fill: var(--text-primary);   font: var(--weight-semibold) 12.5px var(--font-sans); }
+.t-sub   { fill: var(--text-secondary); font: var(--weight-regular) 11.5px var(--font-sans); }
+.t-arw   { fill: var(--text-secondary); font: var(--weight-regular) 11.5px var(--font-sans); }
+.t-mono  { fill: var(--text-primary);   font: var(--weight-regular) 11.5px var(--font-mono); }
+.t-chip  { font: var(--weight-medium) 10.5px var(--font-sans); }
+.t-chip--k { fill: var(--layer-kernel); }
+.t-tag {
+  fill: var(--text-tertiary); font: var(--weight-medium) 10px var(--font-sans);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase;
+}
+.t-rot {
+  fill: var(--text-tertiary); font: var(--weight-medium) 10px var(--font-sans);
+  letter-spacing: var(--tracking-caps); text-transform: uppercase;
+}
 
 /* Request flow */
 .flow { display: flex; flex-direction: column; }

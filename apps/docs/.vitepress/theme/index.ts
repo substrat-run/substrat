@@ -26,6 +26,8 @@ import './styles/vitepress.css';
 import Marketing from './components/Marketing.vue';
 import LayerStack from './components/LayerStack.vue';
 import RuntimeTopology from './components/RuntimeTopology.vue';
+import ConnectorLoop from './components/ConnectorLoop.vue';
+import ScopeTopology from './components/ScopeTopology.vue';
 
 export default {
   extends: DefaultTheme,
@@ -33,5 +35,7 @@ export default {
     app.component('Marketing', Marketing);
     app.component('LayerStack', LayerStack);
     app.component('RuntimeTopology', RuntimeTopology);
+    app.component('ConnectorLoop', ConnectorLoop);
+    app.component('ScopeTopology', ScopeTopology);
   },
 } satisfies Theme;

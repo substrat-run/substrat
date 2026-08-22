@@ -12,20 +12,8 @@ above it. Every band is a real, shipping package.
 
 ## Topology
 
-```mermaid
-flowchart TB
-    V["Vertical<br/>your code · TypeScript · often AI-built"]
-    H["Scope host<br/>getScope(principal, tenant, scope) → capability stub"]
-    S1["Scope (branch #1)<br/>own SQLite DB + ACL<br/>serialized executor"]
-    S2["Scope (branch #240)<br/>own SQLite DB + ACL<br/>serialized executor"]
-    SPINE["Event spine<br/>audit · reporting · integrations"]
+<ScopeTopology />
 
-    V -->|"@substrat-run/kernel API only"| H
-    H --> S1
-    H --> S2
-    S1 -->|"events (kernel-stamped)"| SPINE
-    S2 -->|"events (kernel-stamped)"| SPINE
-```
 
 The invariants this picture encodes:
 

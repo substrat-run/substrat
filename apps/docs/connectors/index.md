@@ -49,16 +49,7 @@ and a connector is small because they exist:
    construction to that tenant and vertical. Events it causes are stamped `{ connection }` on the
    spine — the audit trail says "Scrive did this" without naming a human who did not.
 
-```
-module emits an event  ──▶  connector runtime  ──▶  the provider
-  (inside a scope)            opens the credential,      (HTTP, over the
-                              hands a bound fetch         connection's fetch)
-                                     │
-  a callback / poll  ◀───────────────┘
-       │
-  getConnectorScope(connection, scope)  ──▶  writes the result back
-       (authority = the connection)            (records the signature, …)
-```
+<ConnectorLoop />
 
 ## What a connector is *not*
 
