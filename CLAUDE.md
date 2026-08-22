@@ -74,8 +74,11 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 
 Module code = everything reachable from a `ModuleRegistration` (operations, consumers).
 
-- Data access is `ctx.sql` **only** — never import `better-sqlite3`, adapters, or
-  `node:*` in module code. Harness code (`seed.ts`, `server.ts`, tests) is exempt.
+- Data access is `ctx.sql` **only** — never import `better-sqlite3`, adapters, `node:*`,
+  or `cloudflare:workers` in module code. Harness code (`seed.ts`, `server.ts`, tests) is
+  exempt. `cloudflare:workers` exports an ambient `env`: one import gives module code every
+  binding and secret the script declares, including its own `SCOPE` DO namespace — which
+  reaches another scope's data, where `ctx.sql` cannot. Capabilities come from `ctx`.
 - No `fetch`/network in module code; connectors handle the outside world.
 - Never write to `_substrat_*` tables (reads for projections like timelines are fine —
   writes forge the spine).

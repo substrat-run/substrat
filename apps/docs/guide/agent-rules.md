@@ -94,8 +94,13 @@ push` reads the JSON, not the TypeScript.
 **Module code** = everything reachable from a `ModuleRegistration` (operations,
 consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
 
-1. **Data access is `ctx.sql` only.** Never import `better-sqlite3`, an adapter, or
-   `node:*` in module code.
+1. **Data access is `ctx.sql` only.** Never import `better-sqlite3`, an adapter,
+   `node:*`, or `cloudflare:workers` in module code. That last one is not a style rule:
+   it exports an ambient `env`, so a single import hands module code every binding and
+   secret your worker declares — including its own `SCOPE` Durable Object namespace,
+   which reaches *another scope's* data. `ctx.sql` is closed over one scope and cannot.
+   Capabilities arrive on `ctx`; `DurableObject` is imported in harness code
+   (`worker.ts`, `*-do.ts`), never here.
 2. **No `fetch` / network in module code.** It would hold the scope's transaction open on
    a third party. The sanctioned path is a **connector**: emit a fat event, register a
    handler that runs outside the transaction. An integration is never impossible because

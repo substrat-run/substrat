@@ -14,7 +14,20 @@
  * Rules:
  *   R1 star topology   an engine never imports another @substrat-run/engine-*
  *   R2 no raw access   module code imports no better-sqlite3, no adapters,
- *                      no node builtins — data access is ctx.sql only
+ *                      no node builtins, no `cloudflare:workers` — data access
+ *                      is ctx.sql only and the host injects every capability.
+ *                      `cloudflare:workers` is the workerd analogue of `node:*`
+ *                      and belongs to the same ban for a sharper reason: it
+ *                      exports an AMBIENT `env` (verified — `export const env:
+ *                      Cloudflare.Env`), so one import hands module code every
+ *                      binding and secret the vertical's script declares,
+ *                      including its own `SCOPE` DO namespace. `ctx.sql` is
+ *                      closed over one scope's storage and cannot reach
+ *                      another; `env.SCOPE.idFromName(…)` can, which makes this
+ *                      the one import that turns the scope boundary from
+ *                      physical into advisory. Harness code (worker.ts,
+ *                      *-do.ts) legitimately imports `DurableObject` from it
+ *                      and is exempt, as it is for `node:*`.
  *   R3 no network      module code never calls fetch() or imports an HTTP client
  *   R4 spine is sacred module code never writes _substrat_* tables (reads are
  *                      fine — timelines are projections)
@@ -317,6 +330,15 @@ function checkModuleFile(
     const bare = spec.startsWith('node:') ? spec.slice(5) : spec;
     if (spec === 'better-sqlite3' || spec.startsWith('@substrat-run/adapter-')) {
       out.push({ file: rel, rule: 'R2', message: `raw data access — module code imports '${spec}' (use ctx.sql)` });
+    } else if (spec === 'cloudflare:workers') {
+      out.push({
+        file: rel,
+        rule: 'R2',
+        message:
+          `ambient env — module code imports '${spec}', which exports the whole environment ` +
+          `(every binding and secret, including the SCOPE DO namespace). Capabilities come from ` +
+          `ctx; harness code (worker.ts, *-do.ts) is where DurableObject is imported`,
+      });
     } else if (spec.startsWith('node:') || NODE_BUILTINS.has(bare)) {
       out.push({ file: rel, rule: 'R2', message: `platform escape — module code imports '${spec}'` });
     } else if (HTTP_CLIENTS.has(bare)) {
