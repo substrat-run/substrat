@@ -36,7 +36,12 @@ export function SideNav({
     <nav
       style={{
         width: 'var(--sidebar-w)',
+        // Never squeezed: as a flex child it would otherwise give up width to a wide
+        // sibling, and a nav rendered at a partial width is broken chrome that also
+        // steals the room the content needed.
+        flexShrink: 0,
         minHeight: '100%',
+        overflowY: 'auto',
         boxSizing: 'border-box',
         background: 'var(--surface-page)',
         borderRight: '1px solid var(--border-default)',

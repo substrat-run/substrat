@@ -187,7 +187,7 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
         title={scope.name}
         description={`Scope detail — ${scopeHandle(scope, tenants)}`}
         actions={
-          <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
             {portalUrl(scope, hostnames) && (
               <a
                 href={portalUrl(scope, hostnames)!}

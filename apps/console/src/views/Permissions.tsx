@@ -150,7 +150,7 @@ export function Permissions({ api, tenants }: PermissionsProps) {
               title={r.action === 'defineRole' ? 'Role redefined' : 'Capability grant'}
               description={`${r.tenantId ? (tenants.get(r.tenantId)?.slug ?? r.tenantId) : 'platform'}${r.scopeId ? ` · scope ${r.scopeId.slice(0, 8)}…` : ' (tenant-wide)'} · ${r.at.slice(0, 19).replace('T', ' ')}`}
               actions={
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
                   <ActorCell actor={r.actor} />
                   <Badge status="info">runtime</Badge>
                 </span>

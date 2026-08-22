@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { EntitlementGrant, HostnameBinding, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
 import { Card, Toast, useAutoRefresh } from './components';
 import { scopeHandle } from './lib/fleet';
+import { navPath, parseNav, type Nav } from './lib/nav';
 import { ConsoleShell } from './ConsoleShell';
 import type { ViewKey } from './ConsoleShell';
 import type { BreadcrumbItem } from './components';
@@ -56,65 +57,12 @@ interface Toast {
   status: 'success' | 'danger';
 }
 
-const VIEWS: ViewKey[] = [
-  'tenants',
-  'scopes',
-  'domains',
-  'verticals',
-  'observability',
-  'meters',
-  'admin-log',
-  'permissions',
-  'members',
-  'failures',
-  'settings',
-];
-
-/**
- * Navigation lives in the URL path — `/scopes`, `/verticals`, and one drilled-in
- * segment (`/scopes/<id>`, `/tenants/<id>`, `/verticals/<slug>`) — so a refresh or
- * a shared link lands where you were, not back on the start page. Clean paths, not
- * `?view=` query params (the control-plane worker serves the SPA with
- * `not_found_handling: single-page-application`, so a deep path resolves on refresh).
- * The `actor` search param is left untouched (useDevActor owns it). Per-view state
- * (a filter tab, a text query) is not encoded, yet.
- *
- * Detail identifier per view: id for tenant and scope, slug for vertical.
- */
-interface Nav {
-  view: ViewKey;
-  tenant?: TenantId;
-  scope?: ScopeId;
-  vertical?: string;
-}
-
 function readNav(): Nav {
-  const segments = window.location.pathname.split('/').filter(Boolean);
-  const first = segments[0];
-  // Back-compat: an old `?view=` link (or a bare `/`) still resolves; writeNav
-  // then normalizes it to the path form on the next reflect.
-  const legacy = new URLSearchParams(window.location.search).get('view');
-  const candidate = first ?? legacy ?? undefined;
-  const view = candidate && (VIEWS as string[]).includes(candidate) ? (candidate as ViewKey) : 'tenants';
-  const detail = segments[1];
-  const nav: Nav = { view };
-  if (detail) {
-    if (view === 'tenants') nav.tenant = detail as TenantId;
-    else if (view === 'scopes') nav.scope = detail as ScopeId;
-    else if (view === 'verticals') nav.vertical = detail;
-  }
-  return nav;
+  return parseNav(window.location.pathname, window.location.search);
 }
 
 function writeNav(view: ViewKey, detail?: string): void {
-  const path = `/${view}${detail ? `/${detail}` : ''}`;
-  // Preserve the search so the dev `?actor=` override survives — but drop a legacy
-  // `?view=` once we've read it into the path, so a back-compat link normalizes fully
-  // to `/scopes` rather than lingering as `/scopes?view=scopes`.
-  const p = new URLSearchParams(window.location.search);
-  p.delete('view');
-  const search = p.toString();
-  const url = `${path}${search ? `?${search}` : ''}`;
+  const { path, url } = navPath(view, detail, window.location.search);
   // Push when the path actually changes so Back returns to the previous view
   // instead of leaving the console. Replace when it doesn't: the initial mount
   // (normalizing a legacy `?view=` link) and the reflect that runs after a

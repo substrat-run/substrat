@@ -40,12 +40,18 @@ export function Card({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            // Wrap rather than overflow: the actions here are the card's primary buttons,
+            // and the card clips (`overflow: hidden`, for the rounded corners), so a row
+            // too wide for a narrow viewport did not just look cramped — the trailing
+            // buttons were cut off with nothing able to scroll to them. Once there is no
+            // room beside the title, the whole action group drops to its own line.
+            flexWrap: 'wrap',
             gap: 12,
             padding: '12px 16px',
             borderBottom: '1px solid var(--border-subtle)',
           }}
         >
-          <div>
+          <div style={{ minWidth: 0, flex: '1 1 auto' }}>
             <div
               style={{
                 fontSize: 'var(--text-md)',
@@ -68,7 +74,12 @@ export function Card({
               </div>
             )}
           </div>
-          {actions && <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>{actions}</div>}
+          {/* No `flexShrink: 0` here: the row above wraps, so the group already gets its own
+              line before it has to give up width — and pinning the width instead made a
+              group wider than the card overflow the clip, which is what put a button
+              off-screen with no way to reach it. Shrinking lets a grouped set of buttons
+              wrap within itself. */}
+          {actions && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, minWidth: 0, maxWidth: '100%' }}>{actions}</div>}
         </div>
       )}
       <div style={{ padding }}>{children}</div>

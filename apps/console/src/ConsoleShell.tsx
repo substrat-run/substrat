@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Breadcrumbs, IconButton, SideNav, SubIcon, SubIcons } from './components';
+import { Breadcrumbs, IconButton, SideNav, SubIcon, SubIcons, useMediaQuery } from './components';
 import type { BreadcrumbItem } from './components';
 
 export type ViewKey =
@@ -52,6 +53,19 @@ export function ConsoleShell({
   onSignOut,
   children,
 }: ConsoleShellProps) {
+  // Below this width the sidebar stops being a column and becomes an overlay. As a
+  // column it kept its full 232px and squeezed the content beside it to ~76px of usable
+  // card — narrow enough that a table's trailing Actions cell (Admit, Vouch, Retire) was
+  // off-screen with nothing able to scroll to it. 900px, not a phone width: the squeeze
+  // starts long before the viewport is a phone.
+  const compact = useMediaQuery('(max-width: 900px)');
+  const [navOpen, setNavOpen] = useState(false);
+  // Never leave the drawer latched open when the layout goes back to a column — it would
+  // render on top of the content it is already beside.
+  useEffect(() => {
+    if (!compact) setNavOpen(false);
+  }, [compact]);
+
   return (
     <div
       style={{
@@ -62,9 +76,38 @@ export function ConsoleShell({
         position: 'relative',
       }}
     >
+      {compact && navOpen && (
+        // Tapping anywhere outside the drawer closes it — the expected way out on a
+        // touch screen, and the reason the drawer needs no visible close button.
+        <div
+          onClick={() => setNavOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 30 }}
+        />
+      )}
       <SideNav
         activeValue={active}
-        onSelect={(v) => onNav(v as ViewKey)}
+        onSelect={(v) => {
+          onNav(v as ViewKey);
+          setNavOpen(false);
+        }}
+        style={
+          compact
+            ? {
+                position: 'fixed',
+                insetBlock: 0,
+                left: 0,
+                zIndex: 31,
+                transform: navOpen ? 'translateX(0)' : 'translateX(-100%)',
+                // `visibility`, not just the transform: an off-canvas nav that is merely
+                // translated is still in the tab order, so a keyboard user would tab into
+                // links they cannot see. Transitioned alongside the transform so it only
+                // takes effect once the drawer has finished sliding out.
+                visibility: navOpen ? 'visible' : 'hidden',
+                transition: 'transform var(--duration-fast) var(--ease-out), visibility var(--duration-fast)',
+                boxShadow: navOpen ? 'var(--shadow-lg)' : 'none',
+              }
+            : undefined
+        }
         header={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px 8px' }}>
             {/* The three strata in the console's rose palette — must match public/strata-glyph.svg,
@@ -176,18 +219,25 @@ export function ConsoleShell({
             flexShrink: 0,
             display: 'flex',
             alignItems: 'center',
-            gap: 16,
-            padding: '0 24px',
+            gap: compact ? 8 : 16,
+            padding: compact ? '0 12px' : '0 24px',
             borderBottom: '1px solid var(--border-default)',
             background: 'color-mix(in srgb, var(--surface-card) 80%, transparent)',
             backdropFilter: 'blur(8px)',
           }}
         >
+          {compact && (
+            <IconButton label="Open navigation" onClick={() => setNavOpen(true)}>
+              <SubIcon d={SubIcons.menu} />
+            </IconButton>
+          )}
           <Breadcrumbs items={crumbs} />
           <div style={{ flex: 1 }} />
+          {/* The search box is chrome for a shortcut that does not exist yet, so it is the
+              first thing to go when there is no room for it. */}
           <div
             style={{
-              display: 'flex',
+              display: compact ? 'none' : 'flex',
               alignItems: 'center',
               gap: 8,
               height: 32,
@@ -219,7 +269,7 @@ export function ConsoleShell({
             <SubIcon d={SubIcons.bell} />
           </IconButton>
         </header>
-        <main style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+        <main style={{ flex: 1, overflow: 'auto', padding: compact ? 12 : 24 }}>
           <div style={{ maxWidth: 'var(--content-max-w)', margin: '0 auto' }}>{children}</div>
         </main>
       </div>
