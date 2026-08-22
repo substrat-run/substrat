@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { moneyOf, type DomainEventInput } from '@substrat-run/contracts';
+import { moneyOf, type DomainEventInput, type Page } from '@substrat-run/contracts';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import { invoicingModule, INVOICING_PERM as PERM, type UnderlagLine, type UnderlagRow } from '../src/index.js';
 
@@ -77,7 +77,12 @@ describe('engine-invoicing', () => {
     await h.close();
   });
 
-  const list = () => reader.invoke<(UnderlagRow & { total: string })[]>('invoicing/list');
+  /**
+   * #811: a page, not a table. The scenario reads `.entries` because that is what
+   * an in-process caller gets — the HTTP body is still the bare array (#829).
+   */
+  const list = async () =>
+    (await reader.invoke<Page<UnderlagRow & { total: string }>>('invoicing/list')).entries;
   const get = (id: string) =>
     reader.invoke<{ underlag: UnderlagRow; lines: UnderlagLine[]; total: string }>('invoicing/get', {
       underlagId: id,

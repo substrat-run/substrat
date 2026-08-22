@@ -47,11 +47,25 @@ export const workorderOperations = defineOperations(workorderEntities, WORKORDER
   },
 
   'workorder/list': {
-    summary: 'Work orders, optionally filtered by status',
+    summary: 'Work orders, newest first, optionally filtered by status',
     permission: 'workorder:read',
     input: z.object({ status: z.string().optional() }),
     inputOptional: true,
-    output: z.array(workOrder),
+    // The ENTRY, not the envelope — `paged` is what wraps it, here and in the
+    // emitted document.
+    output: workOrder,
+    // #811. `number` first, so the default walk is the one this list shipped
+    // with: newest work order at the top. `status` is offered as a sort as well
+    // as a filter — a board grouped by state is the second thing an office asks
+    // for, and the alternative is a vertical forking the engine to get it.
+    paged: {
+      over: {
+        entity: 'workorder',
+        sortable: ['number', 'status', 'created_at'],
+        filterable: ['status', 'assigned_to', 'kind'],
+      },
+      order: 'desc',
+    },
   },
 
   'workorder/assign': {

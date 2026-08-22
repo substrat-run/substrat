@@ -131,6 +131,7 @@ import {
   SCOPE_QUERY_ROW_MAX,
   verticalServingState,
   outboundOfManifestJson,
+  listLimitOf,
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
@@ -203,6 +204,13 @@ import {
   createAtomic,
   type RunSub,
   NotSearchable,
+  NotListable,
+  listIndexMigrations,
+  listIndexPlans,
+  listQuery,
+  cursorOf,
+  type ListIndexPlan,
+  type PageParams,
   isSearchIndexTable,
   searchIndexDdl,
   searchIndexMigrations,
@@ -796,6 +804,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly relations = new Map<string, Set<string>>();
   /** entityType → its derived FTS5 index (#827). One entity type, one index. */
   private readonly searchPlans = new Map<string, SearchIndexPlan>();
+  /** #811: the paged lists modules declare, by entity type. Same one-owner rule as search. */
+  private readonly listPlans = new Map<string, ListIndexPlan>();
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
   /** operation name → its owning module's entitlementKey (§4.3 gate). */
@@ -1523,9 +1533,29 @@ export class SqliteScopeHost implements ScopeHost {
       }
       this.searchPlans.set(plan.entityType, plan);
     }
+    // #811: the list indexes this module's `lists` declare — same placement and
+    // the same reason as the search indexes above: appended AFTER the module's
+    // own migrations, so `CREATE INDEX` names a table that exists.
+    const listMigrations = listIndexMigrations(manifest.id, manifest.lists);
+    for (const m of listMigrations) {
+      if (seen.has(m.version)) {
+        throw new Error(`duplicate migration version in ${manifest.id}: ${m.version}`);
+      }
+      seen.add(m.version);
+    }
+    for (const plan of listIndexPlans(manifest.id, manifest.lists)) {
+      const existing = this.listPlans.get(plan.entityType);
+      if (existing) {
+        throw new Error(
+          `list: '${plan.entityType}' declares a paged list in both '${existing.moduleId}' and ` +
+            `'${plan.moduleId}' — one entity type, one walk; rename one`,
+        );
+      }
+      this.listPlans.set(plan.entityType, plan);
+    }
     this.modules.set(manifest.id, {
       id: manifest.id,
-      migrations: [...migrations, ...searchMigrations],
+      migrations: [...migrations, ...searchMigrations, ...listMigrations],
       consumers,
       schedules: manifest.schedules ?? [],
     });
@@ -6486,6 +6516,7 @@ export class SqliteScopeHost implements ScopeHost {
     const checker = this.checker;
     const relations = this.relations;
     const searchPlans = this.searchPlans;
+    const listPlans = this.listPlans;
     // K-34: the checks that passed in THIS operation. The context is created per invoke
     // (see buildStub), so this accumulates one operation's authorizations; `emit` snapshots
     // whatever has passed up to that point. A system/override actor is unconditionally
@@ -6677,6 +6708,41 @@ export class SqliteScopeHost implements ScopeHost {
         return (rt.db.prepare(q.sql).all(...q.params) as { id: string; rank: number }[]).map(
           (row) => ({ entityType, id: row.id, rank: row.rank }),
         );
+      },
+      /**
+       * #811. The plan is registration state, the indexes are scope state — same
+       * split as search, and the same consequence: an entity nobody declared is
+       * `NotListable` (a wiring mistake), while a declared one whose indexes are
+       * missing in THIS scope cannot happen, because the DDL rides the same
+       * journal as the module's own migrations.
+       */
+      page: <T>(entityType: string, params: PageParams) => {
+        const plan = listPlans.get(entityType);
+        if (!plan) throw new NotListable(entityType);
+        const limit = listLimitOf(params.limit);
+        const q = listQuery(plan, {
+          limit,
+          sort: params.sort,
+          order: params.order,
+          cursor: params.cursor,
+          filters: params.filters,
+        });
+        const rows = rt.db.prepare(q.sql).all(...(q.params as never[])) as Record<
+          string,
+          unknown
+        >[];
+        // A FULL page may have more; a short one is the end of the walk. Same rule
+        // as `pageOf`, applied here because the cursor is a COLUMN's value (plus
+        // the tie-break) rather than a field the caller could name.
+        const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
+        const nextCursor =
+          last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn);
+        const page = { entries: rows as T[], nextCursor };
+        if (!params.total) return page;
+        const counted = rt.db.prepare(q.countSql).all(...(q.countParams as never[])) as {
+          n: number;
+        }[];
+        return { ...page, total: counted[0]?.n ?? 0 };
       },
       /**
        * Narrow a permission this caller already holds onto one entity (#K-sharing).

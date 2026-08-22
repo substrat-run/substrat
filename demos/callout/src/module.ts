@@ -2,13 +2,27 @@ import { z } from 'zod';
 import {
   compareDecimal,
   addDecimal,
+  listLimitOf,
+  mapPage,
   moneyOf,
   mulMoney,
+  pageOf,
+  pageVisible,
+  type CountedPage,
   type EntityRef,
   type EntityRow,
   type Money,
   type OperationImpl,
+  type Page,
 } from '@substrat-run/contracts';
+
+/** One outbox row as the timeline reads it, plus the rowid its cursor walks. */
+interface TimelineRow {
+  type: string;
+  occurred_at: string;
+  actor: string;
+  _cursor: number;
+}
 import { calloutEntities } from './entities.js';
 import { calloutOperations, instantiateProtocolInput } from './operations.js';
 import {
@@ -17,6 +31,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type PageParams,
 } from '@substrat-run/kernel';
 import { SC_PERM, calloutManifest } from './manifest.js';
 import { calloutMigrations } from './migrations.js';
@@ -24,6 +39,7 @@ import {
   completeWorkOrder,
   createWorkOrder,
   getReportedLines,
+  getWorkOrder,
   listOrders,
   PERM as WO,
   type BillableLine,
@@ -76,15 +92,22 @@ const createCustomerOp: OperationHandler<
   return ctx.sql.query<CustomerRow>('SELECT * FROM callout_customers WHERE id = ?', [id])[0]!;
 };
 
+/**
+ * #811. The walk is the kernel's, composed from this operation's declared
+ * vocabulary and running over indexes it provisioned; the hydration stays here.
+ * The page also BOUNDS the hydration — one facilities query per customer on the
+ * page, where it used to be one per customer in the scope.
+ */
 const listCustomersOp: OperationHandler<
-  undefined,
-  (CustomerRow & { facilities: FacilityRow[] })[]
-> = async (ctx) => {
+  PageParams,
+  CountedPage<CustomerRow & { facilities: FacilityRow[] }>
+> = async (ctx, input) => {
   assertAllowed(await ctx.check(SC_PERM.customerManage));
-  const customers = ctx.sql.query<CustomerRow>(
-    'SELECT * FROM callout_customers ORDER BY number',
-  );
-  return customers.map((c) => ({
+  const page = ctx.page<CustomerRow>('customer', {
+    ...input,
+    total: true,
+  }) as CountedPage<CustomerRow>;
+  return mapPage(page, (c) => ({
     ...c,
     facilities: ctx.sql.query<FacilityRow>(
       'SELECT * FROM callout_facilities WHERE customer_id = ? ORDER BY name',
@@ -176,9 +199,18 @@ const upsertPriceOp: OperationHandler<
   ])[0]!;
 };
 
-const priceListOp: OperationHandler<undefined, PriceRow[]> = async (ctx) => {
+const priceListOp: OperationHandler<PageParams, Page<PriceRow>> = async (ctx, input) => {
   assertAllowed(await ctx.check(SC_PERM.customerManage));
-  return ctx.sql.query<PriceRow>('SELECT * FROM callout_price_list ORDER BY article');
+  const limit = listLimitOf(input?.limit);
+  // Handler-composed (see the declaration): a value-keyed table the registry does
+  // not carry. Keyset over `article`, its natural key.
+  const rows = input?.cursor
+    ? ctx.sql.query<PriceRow>(
+        'SELECT * FROM callout_price_list WHERE article > ? ORDER BY article LIMIT ?',
+        [input.cursor, limit],
+      )
+    : ctx.sql.query<PriceRow>('SELECT * FROM callout_price_list ORDER BY article LIMIT ?', [limit]);
+  return pageOf(rows, limit, (row) => row.article);
 };
 
 const createWorkOrderOp: OperationHandler<
@@ -231,8 +263,10 @@ const completeWorkOrderOp: OperationHandler<
   // owe an self-inspection, and `order.kind` is Callout vocabulary the kernel
   // must never learn. Conditional-on-vertical-data policy is composed here;
   // unconditional gates are declared in the manifest.
-  const order = listOrders(ctx).find((o) => o.id === input.orderId);
-  if (!order) throw new Error(`work order not found: ${input.orderId}`);
+  // One read by id (#811). This listed every order in the scope and `.find`-ed
+  // it, which a page would silently break — the order wanted is not necessarily
+  // on page one.
+  const order = getWorkOrder(ctx, input.orderId);
   for (const templateKey of REQUIRED_SIGNED_PROTOCOLS[order.kind] ?? []) {
     requireSigned(ctx, { entityType: 'workorder', entityId: order.id }, templateKey);
   }
@@ -301,8 +335,7 @@ const instantiateProtocolOp: OperationHandler<
 > = async (ctx, rawInput) => {
   assertAllowed(await ctx.check(PROTO.create));
   const input = instantiateProtocolInput.parse(rawInput);
-  const order = listOrders(ctx).find((o) => o.id === input.entityId);
-  if (!order) throw new Error(`work order not found: ${input.entityId}`);
+  const order = getWorkOrder(ctx, input.entityId);
   if (order.status !== 'planned' && order.status !== 'in_progress') {
     throw new Error(`work order ${order.number} is '${order.status}' — protocols attach to open orders`);
   }
@@ -313,31 +346,47 @@ const instantiateProtocolOp: OperationHandler<
 };
 
 /** Portal listing: per-entity proof walks, no node-level permission required. */
-const portalOrdersOp: OperationHandler<undefined, WorkOrder[]> = async (ctx) => {
-  const all = listOrders(ctx);
-  const visible: WorkOrder[] = [];
-  for (const order of all) {
-    const decision = await ctx.check(WO.read, { entityType: 'workorder', entityId: order.id });
-    if (decision.allowed) visible.push(order);
-  }
-  return visible;
-};
+/**
+ * #811. Paged by OVER-FETCHING, which is what a permission-filtered walk needs: a
+ * page of 20 read from the table can leave 3 after the proof walk, so the page
+ * size cannot be the fetch size. The cursor advances by the last row EXAMINED, or
+ * the rows the walk rejected would be examined again forever.
+ */
+const portalOrdersOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ctx, input) =>
+  pageVisible(
+    (p) => listOrders(ctx, { ...input, ...p }),
+    input,
+    async (order) =>
+      (await ctx.check(WO.read, { entityType: 'workorder', entityId: order.id })).allowed,
+  );
 
+/**
+ * #811. Handler-composed: `_substrat_outbox` is the kernel's table, so there is
+ * no registry entity for `paged.over` to name. The cursor is the `rowid` because
+ * append order is authoritative — ids emitted in the same millisecond are not
+ * mutually ordered, so `occurred_at` alone would put a page boundary inside a tie.
+ */
 const timelineOp: OperationHandler<
-  { entityType: string; entityId: string },
-  { type: string; occurred_at: string; actor: string }[]
+  { entityType: string; entityId: string } & PageParams,
+  Page<{ type: string; occurred_at: string; actor: string }>
 > = async (ctx, input) => {
   const entity: EntityRef = z
     .object({ entityType: z.string().min(1), entityId: z.string().min(1) })
     .parse(input);
   assertAllowed(await ctx.check(WO.read, entity));
-  // Append order is authoritative — rowid, not ULID (ids emitted in the same
-  // millisecond are not mutually ordered).
-  return ctx.sql.query(
-    `SELECT type, occurred_at, actor FROM _substrat_outbox
-     WHERE entity_type = ? AND entity_id = ? ORDER BY rowid`,
-    [entity.entityType, entity.entityId],
+  const limit = listLimitOf(input.limit);
+  const rows = ctx.sql.query<TimelineRow>(
+    `SELECT type, occurred_at, actor, rowid AS _cursor FROM _substrat_outbox
+     WHERE entity_type = ? AND entity_id = ?${input.cursor ? ' AND rowid > ?' : ''}
+     ORDER BY rowid LIMIT ?`,
+    input.cursor
+      ? [entity.entityType, entity.entityId, Number(input.cursor), limit]
+      : [entity.entityType, entity.entityId, limit],
   );
+  // The walk is computed over `_cursor`; `mapPage` then drops it, because the
+  // entry shape is published and the rowid is not.
+  const page = pageOf(rows, limit, (row) => String(row._cursor));
+  return mapPage(page, ({ _cursor: _drop, ...entry }) => entry);
 };
 
 /**

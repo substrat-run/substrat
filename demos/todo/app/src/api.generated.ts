@@ -143,21 +143,25 @@ export interface TodoClient {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listItems(input: { listId: string; limit?: number; cursor?: string }): Promise<Paged<Item>>;
+  listItems(input: { listId: string }): Promise<Paged<Item>>;
 
   /**
    * Who this list is shared with
    *
    * `GET /lists/{listId}/shares` — `todo/list-shares`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listShares(input: { listId: string }): Promise<Share[]>;
+  listShares(input: { listId: string }): Promise<Paged<Share>>;
 
   /**
    * List the lists you own or have been shared
    *
    * `GET /lists` — `todo/my-lists`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  myLists(): Promise<List[]>;
+  myLists(): Promise<Paged<List>>;
 
   /**
    * Rename a list
@@ -314,9 +318,9 @@ export function createClient(options: ClientOptions = {}): TodoClient {
     listItems: (input: Args) =>
       page(`/lists/${encodeURIComponent(String(input.listId))}/items`, "GET", undefined, omit(input, ["listId"])),
     listShares: (input: Args) =>
-      send(`/lists/${encodeURIComponent(String(input.listId))}/shares`, "GET", undefined, omit(input, ["listId"])),
+      page(`/lists/${encodeURIComponent(String(input.listId))}/shares`, "GET", undefined, omit(input, ["listId"])),
     myLists: () =>
-      send("/lists", "GET", undefined, undefined),
+      page("/lists", "GET", undefined, undefined),
     renameList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}`, "PATCH", omit(input, ["listId"]), undefined),
     revokeShare: (input: Args) =>

@@ -20,6 +20,21 @@ import { z } from 'zod';
  * its parts with `|` (first part always `|`-free: a ULID or enum).
  */
 
+/**
+ * Resolve a requested page size against the platform's default and ceiling.
+ *
+ * One definition, because there are now three callers that must agree: the HTTP
+ * layer (`listPageQuery`), `ctx.page`, and every handler-composed read that
+ * builds its own `LIMIT`. An in-process caller — a test, a seed, another
+ * operation — legitimately passes nothing, and the answer it gets has to be the
+ * same page an HTTP caller would get, or a scenario proves something the wire
+ * does not do.
+ */
+export function listLimitOf(limit?: number): number {
+  if (limit === undefined || !Number.isFinite(limit) || limit < 1) return LIST_PAGE_DEFAULT;
+  return Math.min(Math.floor(limit), LIST_PAGE_MAX);
+}
+
 /** Default page size on every HTTP list read. */
 export const LIST_PAGE_DEFAULT = 20;
 /** Hard ceiling on a requested page — same order as a table page (§ introspection). */
@@ -191,4 +206,107 @@ export function pageSchema<T extends z.ZodType>(entry: T, withTotal = false) {
         total: z.number().int().nonnegative(),
       })
     : base;
+}
+
+/**
+ * Re-shape a page's entries without touching its walk (#811).
+ *
+ * The kernel-composed half of a paged read (`paged.over`) returns a page of
+ * ROWS, because the kernel knows the table and nothing else: `toWorkOrder`,
+ * `facilities: […]`, a per-row aggregate are all the handler's business. So the
+ * handler maps, and the cursor and total have to survive that untouched.
+ *
+ * Written as a helper rather than left to a spread because the spread is wrong
+ * in a way that type-checks: `{ ...page, entries: page.entries.map(f) }` keeps
+ * `total` only when the source had one, which is exactly right — and
+ * `{ entries: …, nextCursor: page.nextCursor }` silently drops it, which is the
+ * mistake somebody makes once per adopter.
+ */
+/**
+ * Overloaded rather than conditional on a `P extends Page<A>` parameter: that
+ * form cannot infer `A` from the argument, so every call site had to name its
+ * entry type or fall back to `unknown`. The counted overload comes first so a
+ * `CountedPage` keeps its total in the RESULT type, not merely at runtime.
+ */
+export function mapPage<A, B>(
+  page: CountedPage<A>,
+  fn: (entry: A, index: number) => B,
+): CountedPage<B>;
+export function mapPage<A, B>(page: Page<A>, fn: (entry: A, index: number) => B): Page<B>;
+export function mapPage<A, B>(page: Page<A>, fn: (entry: A, index: number) => B): Page<B> {
+  return { ...page, entries: page.entries.map(fn) };
+}
+
+/**
+ * The query parameter naming which declared sort a caller wants (#811).
+ *
+ * `sort` rather than `order_by`/`sortBy`: it is one word, it is what Stripe and
+ * GitHub both spell, and `order` — already taken, already shipped — is the
+ * DIRECTION. Two adjacent parameters whose names could be confused for each
+ * other is worth avoiding at the point where they are named, not documented
+ * around afterwards.
+ */
+export const LIST_SORT_PARAM = 'sort';
+
+/**
+ * A cursor is only valid for the sort that ISSUED it.
+ *
+ * Keyset paging compares against the sort column, so a cursor taken from a walk
+ * ordered by `number` and replayed against one ordered by `created_at` compares
+ * a number to a timestamp: the page is not wrong-looking, it is silently
+ * arbitrary. Nothing in the cursor says which sort produced it — `pagination.ts`
+ * pins it as "the last entry's sort key verbatim … it needs no encoding", and
+ * that stays true.
+ *
+ * **Following the `Link` header is always safe**, which is the whole reason the
+ * walk is handed over as a URL rather than a bare cursor: `nextPageLink` rebuilds
+ * it from the request, so `sort` and every filter ride along unchanged and a
+ * client that follows links cannot construct this mistake.
+ *
+ * A client that hand-assembles `?cursor=…&sort=other` can, and this is the
+ * documented reason not to. Encoding the sort into the cursor would let the
+ * server refuse it outright; that was weighed and declined here, because it
+ * breaks the "no encoding, survives in a query string" property that makes a
+ * cursor debuggable by eye — see K-041.
+ */
+export const CURSOR_BELONGS_TO_ITS_SORT =
+  'a cursor is only valid for the sort it was issued under — follow the Link header';
+
+/**
+ * A page of the entries a caller may actually SEE (#811).
+ *
+ * The shape a portal read needs, and the one a naive page gets wrong. Callout and
+ * Handlebar both list work orders and then check `read` per row, because the
+ * proof walk (workorder → facility → customer) is what decides visibility. Twenty
+ * rows fetched can leave three after that walk, so the fetch size and the page
+ * size are not the same number and cannot be made the same number.
+ *
+ * **This page may come back short, and a short page does NOT end the walk.** That
+ * is a deliberate divergence from `pageOf`, whose whole cursor rule is "full page
+ * ⇒ there may be more, short page ⇒ done". Under a per-row filter that rule is
+ * unavailable: the only honest signal left is the underlying cursor, so the walk
+ * ends where `nextCursor` is null and nowhere else. A client following the `Link`
+ * header does the right thing without knowing any of this; one that stops at the
+ * first short page will truncate its own results, which is why it is stated here
+ * rather than left to be discovered.
+ *
+ * The cursor returned is the underlying walk's — the last row EXAMINED, not the
+ * last row returned. Advancing by the last row returned would re-examine every
+ * row the filter rejected on the next request, and a page whose rows are all
+ * rejected would never advance at all.
+ */
+export async function pageVisible<T>(
+  fetch: (params: { limit: number; cursor?: string }) => Page<T>,
+  params: { limit?: number; cursor?: string } | undefined,
+  allow: (entry: T) => Promise<boolean> | boolean,
+): Promise<Page<T>> {
+  // `params` may be absent entirely: an operation with no declared input, invoked
+  // in process by a test or a seed, is handed `undefined` rather than an empty
+  // object. `listLimitOf` then supplies the same page an HTTP caller would get.
+  const batch = fetch({ limit: listLimitOf(params?.limit), cursor: params?.cursor });
+  const entries: T[] = [];
+  for (const entry of batch.entries) {
+    if (await allow(entry)) entries.push(entry);
+  }
+  return { entries, nextCursor: batch.nextCursor };
 }

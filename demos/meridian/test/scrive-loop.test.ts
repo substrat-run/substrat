@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { Page } from '@substrat-run/contracts';
 import { platformActorId, type ScopeId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid } from '@substrat-run/kernel';
 import { ScriveMock, sweepScriveReconciliations } from '@substrat-run/connector-scrive';
@@ -48,10 +49,10 @@ describe('Meridian — Scrive signature loop (Gate 1)', () => {
   /** Karin's employment contract summary, read as the HR admin. */
   const karinsContract = async (): Promise<ProtocolSummary> => {
     const hedda = await host.getScope(world.hedda, world.t1, world.sSe);
-    const list = await hedda.invoke<ProtocolSummary[]>('protocol/list-for-entity', {
-      entityType: 'employee',
-      entityId: world.karinEmpId,
-    });
+    const { entries: list } = await hedda.invoke<Page<ProtocolSummary>>(
+      'protocol/list-for-entity',
+      { entityType: 'employee', entityId: world.karinEmpId },
+    );
     const contract = list.find((p) => p.contentKind === 'document');
     if (!contract) throw new Error('no document protocol on Karin');
     return contract;

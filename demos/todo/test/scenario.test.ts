@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CountedPage } from '@substrat-run/contracts';
+import type { CountedPage, Page } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { buildHost, seed, type World } from '../src/seed.js';
 
@@ -51,7 +51,7 @@ describe('the happy path', () => {
 
   it('Björn cannot see it before it is shared', async () => {
     const bjorn = await as('bjorn');
-    expect(await bjorn.invoke('todo/my-lists')).toEqual([]);
+    expect(await bjorn.invoke('todo/my-lists')).toEqual({ entries: [], nextCursor: null });
     await expect(bjorn.invoke('todo/list-items', { listId: groceries })).rejects.toThrow(
       /permission denied/i,
     );
@@ -62,7 +62,7 @@ describe('the happy path', () => {
     await ada.invoke('todo/share-list', { listId: groceries, email: 'bjorn@example.com' });
 
     const bjorn = await as('bjorn');
-    const lists = await bjorn.invoke<{ id: string; name: string }[]>('todo/my-lists');
+    const { entries: lists } = await bjorn.invoke<Page<{ id: string; name: string }>>('todo/my-lists');
     expect(lists.map((l) => l.name)).toEqual(['Groceries']);
   });
 
@@ -186,7 +186,7 @@ describe('the happy path', () => {
       const work = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Work' });
 
       const bjorn = await as('bjorn');
-      const lists = await bjorn.invoke<{ name: string }[]>('todo/my-lists');
+      const { entries: lists } = await bjorn.invoke<Page<{ name: string }>>('todo/my-lists');
       expect(lists.map((l) => l.name)).toEqual(['Groceries']);
       await expect(bjorn.invoke('todo/list-items', { listId: work.id })).rejects.toThrow(
         /permission denied/i,
@@ -202,7 +202,7 @@ describe('the happy path', () => {
       await ada.invoke('todo/revoke-share', { shareId: shared.id });
 
       const bjorn = await as('bjorn');
-      expect(await bjorn.invoke('todo/my-lists')).toEqual([]);
+      expect(await bjorn.invoke('todo/my-lists')).toEqual({ entries: [], nextCursor: null });
     });
 
     it('Cleo, in another tenant, reaches nothing at all', async () => {
@@ -210,7 +210,7 @@ describe('the happy path', () => {
       // behind it is shut. Asserting on the handle would have tested the wrong
       // thing and passed for the wrong reason.
       const cleo = await host.getScope(world.cleo.principal, world.tenant, world.scope);
-      await expect(cleo.invoke('todo/my-lists')).resolves.toEqual([]);
+      await expect(cleo.invoke('todo/my-lists')).resolves.toEqual({ entries: [], nextCursor: null });
       await expect(cleo.invoke('todo/list-items', { listId: groceries })).rejects.toThrow(
         /permission denied/i,
       );

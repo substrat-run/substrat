@@ -149,45 +149,100 @@ Omit `input` entirely for an operation that takes no body.
 ### Paged reads
 
 A list operation declares `paged`, and its `output` then carries the **entry** shape — the
-platform supplies the envelope:
+platform supplies the envelope. There are two halves, and which one you write depends on
+whether the kernel can compose your query.
+
+#### The kernel composes it — `over`
+
+The normal case: the walk runs over one declared entity's table. Name the entity and the
+columns a caller may choose from, and the kernel builds the `WHERE`, the `ORDER BY`, the
+keyset comparison, the `LIMIT` and the matching `COUNT` — **and provisions the indexes behind
+them**, which is why this lives in the kernel and not in a query helper.
 
 ```ts
 'acme/list-customers': {
   summary: 'Customers, newest first',
   permission: 'customer:read',
-  input: z.object({ limit: z.number().int().positive().max(200).optional(), cursor: z.string().optional() }),
   output: entities.customer.fields,   // the ENTRY, not an array
-  paged: { sortKey: 'id', order: 'desc', total: true },
+  paged: {
+    over: {
+      entity: 'customer',
+      sortable: ['created_at', 'name'],   // [0] is the default; ?sort= picks
+      filterable: ['status'],             // ?status=… , and an index behind it
+    },
+    order: 'desc',
+    total: true,
+  },
   http: { method: 'GET', path: '/customers' },
 },
 ```
 
-Your handler returns a `Page` of that entry, built with `pageOf`:
+Your handler asks `ctx.page` for the rows and keeps the projection:
 
 ```ts
-const limit = input.limit ?? LIST_PAGE_DEFAULT;
-const rows = input.cursor
-  ? ctx.sql.query<Row>('SELECT * FROM acme_customers WHERE id < ? ORDER BY id DESC LIMIT ?', [input.cursor, limit])
-  : ctx.sql.query<Row>('SELECT * FROM acme_customers ORDER BY id DESC LIMIT ?', [limit]);
-const total = ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM acme_customers')[0]!.n;
-return countedPageOf(rows, limit, (row) => row.id, total);
+const page = ctx.page<CustomerRow>('customer', { ...input, total: true });
+return mapPage(page, (c) => ({ ...c, facilities: facilitiesOf(ctx, c.id) }));
 ```
 
-Three things follow from the declaration, none of which you write twice:
+`mapPage` re-shapes the entries and leaves the walk alone — the cursor and the total survive
+it. Note what the page also bought you: that `facilitiesOf` call now runs once per customer
+**on the page**, where an unbounded list ran it once per customer in the scope.
+
+Add the manifest fragment once, derived rather than written:
+
+```ts
+lists: listsDeclaredBy(acmeOperations, acmeEntities),
+```
+
+#### You compose it — `sortKey`
+
+Some reads cannot be kernel-composed, and saying so is not a failure — it is how the
+declaration stays honest. A read over a **kernel table** (`_substrat_outbox`), one whose
+`WHERE` is a **correlated subquery**, and one whose visibility is a **per-row permission
+walk** all fall here. Declare the entry field your cursor walks and build the query yourself:
+
+```ts
+paged: { sortKey: 'article' },
+```
+
+```ts
+const limit = listLimitOf(input.limit);
+const rows = input.cursor
+  ? ctx.sql.query<Row>('SELECT * FROM acme_prices WHERE article > ? ORDER BY article LIMIT ?', [input.cursor, limit])
+  : ctx.sql.query<Row>('SELECT * FROM acme_prices ORDER BY article LIMIT ?', [limit]);
+return pageOf(rows, limit, (row) => row.article);
+```
+
+For the permission-walk case, `pageVisible` over-fetches and advances the cursor by the last
+row **examined** — so rows the walk rejects still move it forward. Its pages may come back
+short, and a short page does **not** end the walk: only the absence of a `Link` header does.
+
+#### What follows from the declaration
 
 - the **handler's return type** becomes `Page<Entry>` — or `CountedPage<Entry>` with
   `total: true` — so declaring `paged` and returning a bare array does not compile;
-- **`sortKey` must name a field of the entry** — a cursor over a field that is not there is a
-  page that silently skips or repeats rows;
-- the **emitted OpenAPI** grows `limit` / `cursor` / `order` parameters and the
-  `{ entries, nextCursor }` response, with `total` when declared.
+- **`limit` / `cursor` / `order` / `sort` are supplied by the platform**, not declared per
+  operation, so the default page size and the `LIST_PAGE_MAX` ceiling are true of every paged
+  read. A request above the ceiling is refused, not silently capped;
+- the **emitted OpenAPI** grows those parameters, an enum of your `sortable` columns, and one
+  query parameter per `filterable` column;
+- the **HTTP body is still the entries array** — the walk rides in `Link` and `X-Total-Count`
+  headers (#829), so adopting `paged` does not break a client.
+
+Filters are **equality only**. Ranges, `IN`, `LIKE` and boolean composition are where a
+filter vocabulary turns into a query language; a read that needs more than equality is an
+operation with its own name and its own arguments.
+
+A cursor is only valid for the sort that issued it. **Follow the `Link` header** — it carries
+the sort and every filter — rather than assembling `?cursor=…&sort=…` yourself.
 
 `total` is opt-in because a keyset page cannot produce one for free: it costs a second
-query per request, and it must count the **same filter** the page ran under. Say `true`
+query per request, and it counts the **same filter** the page ran under. Say `true`
 where a screen renders `1–20 of 340`.
 
 See [What a good API looks like](/concepts/api-design#lists-are-pages-not-dumps) for why it
-is keyset rather than offset.
+is keyset rather than offset, and [K-41](/reference/decisions) for why the kernel owns the
+composition.
 
 ## What the compiler checks
 
@@ -202,6 +257,11 @@ Every one of these is a compile error, not a lint:
   *child*, the event is usually about the *parent*, so the id field and the entity differ
 - **`paged.sortKey` names a field of that operation's `output`** — same join, same reason: a
   cursor has to name something the entry actually carries
+- **`paged.over.sortable` and `filterable` name columns of the named entity** — a typo is a
+  compile error listing the columns that do exist, and the entity must be *pointable*, since
+  a keyset walk needs one column to break ties on
+- **a bare `z.array()` output with no `paged`** is refused when the module loads: a list read
+  that answers with the whole table is unbounded by construction
 - `piiClass` is required, and anything other than `'none'` requires a `subjectId`, because an
   erasure has to be keyable
 - a `payload` cannot carry a field the entity marks `erasable` — immutable events are the one

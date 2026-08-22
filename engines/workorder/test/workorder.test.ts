@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { moneyOf, type EntityRef } from '@substrat-run/contracts';
+import { moneyOf, type EntityRef, type Page } from '@substrat-run/contracts';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
   PERM,
@@ -71,7 +71,10 @@ describe('engine-workorder', () => {
     await expect(
       h.run((ctx) => createWorkOrder(ctx, { facility: FACILITY, customer: CUSTOMER, kind: '', title: '' })),
     ).rejects.toThrow();
-    await expect(staff.invoke<WorkOrder[]>('workorder/list')).resolves.toHaveLength(0);
+    // #811: a page. `entries`, because an in-process caller gets the kernel-side
+    // shape — the HTTP body is still the bare array (#829).
+    const page = await staff.invoke<Page<WorkOrder>>('workorder/list');
+    expect(page.entries).toHaveLength(0);
   });
 
   // -- the state machine cannot skip ---------------------------------------

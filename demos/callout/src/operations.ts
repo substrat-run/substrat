@@ -72,14 +72,18 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
   'callout/list-customers': {
     summary: 'List customers with their facilities',
     permission: 'customer:manage',
-    // A bare array, not a `{ rows }` wrapper: the handler is shipped behaviour
-    // and the first draft of this declaration described something that is not
-    // true. Downstream may falsify the model; it may not author it.
-    output: z.array(
-      calloutEntities.customer.fields.extend({
-        facilities: z.array(calloutEntities.facility.fields),
-      }),
-    ),
+    // The ENTRY, not the envelope (#811) — `paged` wraps it, here and in the
+    // emitted document, and the HTTP body stays the array it always was (#829).
+    // The facilities are hydrated per entry by the handler, which the page also
+    // BOUNDS: that ran once per customer in the scope and now runs once per
+    // customer on the page.
+    output: calloutEntities.customer.fields.extend({
+      facilities: z.array(calloutEntities.facility.fields),
+    }),
+    paged: {
+      over: { entity: 'customer', sortable: ['number', 'name', 'created_at'] },
+      total: true,
+    },
     http: { method: 'GET', path: '/customers' },
   },
   /**
@@ -125,7 +129,11 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
   'callout/price-list': {
     summary: 'The current price list',
     permission: 'customer:manage',
-    output: z.array(priceRow),
+    output: priceRow,
+    // Handler-composed, not `over`: `callout_price_list` is a value-keyed table
+    // and deliberately not a declared entity, so the registry has no table for
+    // the kernel to index. It still pages and still carries a cursor.
+    paged: { sortKey: 'article' },
     http: { method: 'GET', path: '/prices' },
   },
   'callout/upsert-price': {
@@ -180,14 +188,24 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
       // Walks on `workorder:read` alone — an engine key, declared by the engine.
       checks: [],
     },
-    output: z.array(workOrder),
+    output: workOrder,
+    // Handler-composed. Visibility here is decided by a per-row proof walk, not
+    // by a column, so there is no `WHERE` the kernel could compose. It pages by
+    // over-fetching (`pageVisible`): pages may come back short, and the walk ends
+    // at the absent `Link` rather than at the first short page.
+    paged: { sortKey: 'id' },
     http: { method: 'GET', path: '/portal/orders' },
   },
   'callout/timeline': {
     summary: 'The event timeline for one entity',
     permission: 'customer:manage',
     input: z.object({ entityType: z.string(), entityId: z.string() }),
-    output: z.array(z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() })),
+    output: z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() }),
+    // Handler-composed: `_substrat_outbox` is a KERNEL table. Rule 3 permits the
+    // projection read; it does not make the spine a registry entity, so there is
+    // nothing for `over` to name. The cursor is the rowid — append order is the
+    // authority, and ids minted in one millisecond are not mutually ordered.
+    paged: { sortKey: 'occurred_at' },
   },
 });
 

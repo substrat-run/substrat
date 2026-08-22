@@ -3,15 +3,21 @@ import {
   dataSubjectId,
   entityRef,
   instant,
+  listLimitOf,
+  listsDeclaredBy,
+  mapPage,
   moduleManifest,
+  pageOf,
   permissionKey,
   sealedCell,
   principalId,
   type EntityRef,
   type EntityRow,
+  type Page,
   type SealedCell,
   substratError,
 } from '@substrat-run/contracts';
+import type { PageParams } from '@substrat-run/kernel';
 
 /**
  * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
@@ -110,6 +116,7 @@ export {
  * schemas rather than a restatement the vertical had to write.
  */
 export { protocolOperations, PROTOCOL_PERMISSIONS } from './operations.js';
+import { protocolOperations } from './operations.js';
 import {
   bindDocumentInput,
   cancelSignatureRequestsInput,
@@ -273,6 +280,8 @@ export const protocolManifest = moduleManifest.parse({
   attachmentTargets: [
     { entityType: 'protocol', readPermission: 'protocol:read', writePermission: 'protocol:attach' },
   ],
+  // #811: derived from the operations' own `paged.over`, never written twice.
+  lists: listsDeclaredBy(protocolOperations, protocolEntities),
   entitlementKey: 'protocol',
   ui: {
     entityViews: [{ entityType: 'protocol', view: './ui/ProtocolPanel' }],
@@ -878,12 +887,26 @@ export function defineTemplate(
 }
 
 /** Latest version per key — the instantiation picker's list. */
-export function listTemplates(ctx: OperationContext): ProtocolTemplateRow[] {
-  return ctx.sql.query<ProtocolTemplateRow>(
+/**
+ * The latest version of every template, as a page (#811).
+ *
+ * Handler-composed deliberately: the `WHERE` is a correlated `MAX(version)`
+ * subquery — one row per key, at its newest version — which is not something a
+ * declared filter vocabulary composes, and a template is not a declared entity in
+ * any case. Keyset over `key`, which is what the subquery groups by, so the
+ * cursor is unique and the walk needs no tie-break.
+ */
+export function listTemplates(ctx: OperationContext, page: PageParams): Page<ProtocolTemplateRow> {
+  const limit = listLimitOf(page?.limit);
+  const rows = ctx.sql.query<ProtocolTemplateRow>(
     `SELECT t.* FROM protocol_templates t
-     WHERE t.version = (SELECT MAX(version) FROM protocol_templates WHERE key = t.key)
-     ORDER BY t.key`,
+     WHERE t.version = (SELECT MAX(version) FROM protocol_templates WHERE key = t.key)${
+       page?.cursor ? ' AND t.key > ?' : ''
+     }
+     ORDER BY t.key LIMIT ?`,
+    page?.cursor ? [page.cursor, limit] : [limit],
   );
+  return pageOf(rows, limit, (row) => row.key);
 }
 
 /**
@@ -1809,13 +1832,25 @@ export interface ProtocolSummary {
   pendingSignatures: number;
 }
 
-export function listProtocolsForEntity(ctx: OperationContext, entity: EntityRef): ProtocolSummary[] {
-  const instances = ctx.sql.query<ProtocolInstanceRow>(
-    `SELECT * FROM protocol_instances
-     WHERE entity_type = ? AND entity_id = ? ORDER BY rowid`,
-    [entity.entityType, entity.entityId],
-  );
-  return instances.map((instance) => {
+/**
+ * The protocols on one entity, as a page (#811).
+ *
+ * The walk is the kernel's — `entity_type` and `entity_id` are declared filters,
+ * and the default sort is the ULID id, which is creation-ordered and therefore
+ * the same sequence the old `ORDER BY rowid` produced. The per-row summary stays
+ * here, and the page BOUNDS it: this used to load every response row of every
+ * instance on the entity.
+ */
+export function listProtocolsForEntity(
+  ctx: OperationContext,
+  entity: EntityRef,
+  page: PageParams,
+): Page<ProtocolSummary> {
+  const instances = ctx.page<ProtocolInstanceRow>('protocol', {
+    ...page,
+    filters: { entity_type: entity.entityType, entity_id: entity.entityId },
+  });
+  return mapPage(instances, (instance) => {
     const template = getTemplateRow(ctx, instance.template_key, instance.template_version);
     const content = templateContentOf(template);
     // A document has one thing to settle — its bound content — so it reads as
@@ -1868,9 +1903,12 @@ const defineTemplateOp: OperationHandler<DefineTemplateInput, ProtocolTemplateRo
   return defineTemplate(ctx, input);
 };
 
-const listTemplatesOp: OperationHandler<undefined, ProtocolTemplateRow[]> = async (ctx) => {
+const listTemplatesOp: OperationHandler<PageParams, Page<ProtocolTemplateRow>> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(PROTOCOL_PERM.read));
-  return listTemplates(ctx);
+  return listTemplates(ctx, input);
 };
 
 const instantiateOp: OperationHandler<
@@ -1954,12 +1992,12 @@ const getOp: OperationHandler<{ instanceId: string }, ProtocolDetail> = async (c
 };
 
 const listForEntityOp: OperationHandler<
-  { entityType: string; entityId: string },
-  ProtocolSummary[]
+  { entityType: string; entityId: string } & PageParams,
+  Page<ProtocolSummary>
 > = async (ctx, input) => {
   const entity: EntityRef = entityRef.parse(input);
   assertAllowed(await ctx.check(PROTOCOL_PERM.read, entity));
-  return listProtocolsForEntity(ctx, entity);
+  return listProtocolsForEntity(ctx, entity, input);
 };
 
 export const protocolModule: ModuleRegistration = {

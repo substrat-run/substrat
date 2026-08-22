@@ -24,6 +24,9 @@ import { z } from 'zod';
 import {
   addMoney,
   defineLifecycles,
+  listsDeclaredBy,
+  mapPage,
+  type Page,
   entityRef,
   money,
   moduleManifest,
@@ -34,6 +37,7 @@ import {
   type Money,
   substratError,
 } from '@substrat-run/contracts';
+import type { PageParams } from '@substrat-run/kernel';
 
 /**
  * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
@@ -67,6 +71,7 @@ export { invoicingEntities, underlagLine, underlagRow } from './entities.js';
  */
 export { underlagDetail, underlagListRow } from './schemas.js';
 export { invoicingOperations, INVOICING_PERMISSIONS } from './operations.js';
+import { invoicingOperations } from './operations.js';
 import {
   assertAllowed,
   ulid,
@@ -121,6 +126,8 @@ export const invoicingManifest = moduleManifest.parse({
   },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
   attachmentTargets: [{ entityType: 'underlag', readPermission: 'invoicing:read' }],
+  // #811: derived from the operations' own `paged.over`, never written twice.
+  lists: listsDeclaredBy(invoicingOperations, invoicingEntities),
   entitlementKey: 'invoicing',
   ui: {
     routes: [{ path: 'invoicing', screen: './ui/UnderlagList', permission: 'invoicing:read' }],
@@ -573,18 +580,23 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
   });
 };
 
-const listOp: OperationHandler<{ status?: string } | undefined, UnderlagListRow[]> = async (
-  ctx,
-  input,
-) => {
+/**
+ * #811. The walk is the kernel's, from this operation's declared vocabulary; the
+ * per-row total stays here, and the page BOUNDS it — that `underlagTotal` ran
+ * once per basis in the scope and now runs once per basis on the page.
+ */
+const listOp: OperationHandler<
+  ({ status?: string } & PageParams) | undefined,
+  Page<UnderlagListRow>
+> = async (ctx, input) => {
   assertAllowed(await ctx.check(INVOICING_PERM.read));
-  const rows = input?.status
-    ? ctx.sql.query<UnderlagRow>(
-        'SELECT * FROM invoicing_underlag WHERE status = ? ORDER BY number DESC',
-        [input.status],
-      )
-    : ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag ORDER BY number DESC');
-  return rows.map((r) => ({ ...r, total: underlagTotal(ctx, r.id) }));
+  // `input` is genuinely absent when invoked with no body at all — the
+  // declaration says `inputOptional`, and an in-process caller takes it up.
+  const page = ctx.page<UnderlagRow>('underlag', {
+    ...input,
+    filters: { status: input?.status },
+  });
+  return mapPage(page, (r) => ({ ...r, total: underlagTotal(ctx, r.id) }));
 };
 
 const getOp: OperationHandler<{ underlagId: string }, UnderlagDetail> = async (ctx, input) => {

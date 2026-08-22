@@ -10,6 +10,7 @@ import {
   type RoleDefinition,
   type ScopeId,
   type TenantId,
+  type Page,
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
@@ -160,7 +161,7 @@ export async function seedDemo(host: SqliteScopeHost, dir: string): Promise<Demo
   // data gains it on restart): the electrical-trade self-inspection — 100%
   // vertical content; only the invariants are protocol machinery.
   const stub = await host.getScope(world.anna, world.t1, world.s1);
-  const templates = await stub.invoke<{ key: string }[]>('protocol/list-templates');
+  const { entries: templates } = await stub.invoke<Page<{ key: string }>>('protocol/list-templates');
   if (!templates.some((t) => t.key === 'self-inspection-electrical')) {
     await stub.invoke('protocol/define-template', {
       key: 'self-inspection-electrical',

@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { z } from '@substrat-run/contracts';
+import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
 import { mountOperations } from '../src/operations-routes.js';
 
@@ -580,11 +580,49 @@ describe('a paged operation over HTTP', () => {
     expect(typeof (calls[0]?.input as { limit: unknown }).limit).toBe('number');
   });
 
-  it('omits the page params entirely when the caller sends none', async () => {
+  /**
+   * The platform supplies the page, rather than each handler defaulting its own
+   * (#811). This test asserted the opposite until then — "the handler applies its
+   * own default" — which is precisely how a list read came to be unbounded: the
+   * default and the `LIST_PAGE_MAX` ceiling were true of the operations whose
+   * author remembered them, and of no others.
+   *
+   * `cursor` and `order` stay absent rather than becoming explicit `undefined`
+   * keys: those have no platform default to supply, and an explicit undefined
+   * would defeat a `??` on the other side.
+   */
+  it('supplies the default page when the caller sends none', async () => {
     const { app, calls } = harness(pagedOps);
     await app.request('/api/lists/L1/items');
-    // Absent, not `undefined` keys — the handler applies its own default, and an
-    // explicit undefined would defeat a `??` on the other side.
-    expect(calls[0]?.input).toEqual({ listId: 'L1' });
+    expect(calls[0]?.input).toEqual({ listId: 'L1', limit: LIST_PAGE_DEFAULT });
+  });
+
+  /**
+   * REFUSED, not silently capped. A caller asking for 100 000 rows and quietly
+   * receiving 200 has no way to tell a capped page from the end of the walk, so
+   * it would read the first page and conclude it had everything. The refusal is
+   * `listPageQuery`'s `.max(LIST_PAGE_MAX)`, and it never reaches the handler.
+   *
+   * (`listLimitOf`, which the in-process path uses, CLAMPS instead — a test or a
+   * seed has no 400 to receive. The two differ deliberately, and this is the pair
+   * of tests that says so.)
+   */
+  it('refuses a limit above the ceiling rather than silently capping it', async () => {
+    const { app, calls } = harness(pagedOps);
+    const res = await app.request('/api/lists/L1/items?limit=100000');
+    expect(res.status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+
+  /**
+   * The declared sort reaches the handler under its own name, so a kernel-composed
+   * read can hand it straight to `ctx.page` — and an undeclared one is refused
+   * THERE, naming the columns that do exist, rather than being silently ignored
+   * here. A silently-ignored sort is a caller believing their list is ordered.
+   */
+  it('passes a declared sort through as `sort`', async () => {
+    const { app, calls } = harness(pagedOps);
+    await app.request('/api/lists/L1/items?sort=created_at');
+    expect((calls[0]?.input as { sort: string }).sort).toBe('created_at');
   });
 });

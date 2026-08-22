@@ -18,6 +18,24 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * One page of a paged read, reassembled from the response.
+ *
+ * The BODY is the entries and always was; the walk rides in headers (#829), which is
+ * what let paging be adopted without renaming a live endpoint's response. This puts
+ * the two back together so a caller sees a page rather than a header protocol.
+ *
+ * `next` is an absolute URL to FOLLOW (RFC 8288), not a cursor to reassemble — this
+ * request's filters and page size travel with it. Its absence is how the walk ends.
+ */
+export interface Paged<T> {
+  entries: T[];
+  /** Hand back to `follow()`. `null` when there is no next page. */
+  next: string | null;
+  /** From `X-Total-Count`, and only for a read that declares `total`. */
+  total: number | null;
+}
+
 export interface ClientOptions {
   /** Prefixed to every declared path. Matches `mountOperations`' own default. */
   baseUrl?: string;
@@ -312,22 +330,28 @@ export interface HandlebarClient {
    * List customers with their bikes
    *
    * `GET /customers` — `bike-shop/list-customers`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listCustomers(): Promise<({ id: string; number: string; name: string; phone: string | null; created_at: string; bikes: Bike[] })[]>;
+  listCustomers(): Promise<Paged<({ id: string; number: string; name: string; phone: string | null; created_at: string; bikes: Bike[] })>>;
 
   /**
    * The repairs visible to the caller's portal
    *
    * `GET /portal/repairs` — `bike-shop/portal-repairs`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  portalRepairs(): Promise<WorkOrder[]>;
+  portalRepairs(): Promise<Paged<WorkOrder>>;
 
   /**
    * The current price list
    *
    * `GET /prices` — `bike-shop/price-list`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  priceList(): Promise<Price[]>;
+  priceList(): Promise<Paged<Price>>;
 
   /**
    * Register a bike against its owner
@@ -368,8 +392,10 @@ export interface HandlebarClient {
    * Invoice bases, newest first, optionally filtered by status
    *
    * `GET /invoicing` — `invoicing/list`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  invoicingList(input: { status?: string }): Promise<UnderlagListRow[]>;
+  invoicingList(input: { status?: string }): Promise<Paged<UnderlagListRow>>;
 
   /**
    * Counter-sign an already-signed protocol, on the same frozen content
@@ -396,8 +422,10 @@ export interface HandlebarClient {
    * The latest version of every template — the instantiation picker
    *
    * `GET /protocol-templates` — `protocol/list-templates`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  protocolListTemplates(): Promise<ProtocolTemplateRow[]>;
+  protocolListTemplates(): Promise<Paged<ProtocolTemplateRow>>;
 
   /**
    * Sign a protocol in-app — freezes its content forever
@@ -428,11 +456,13 @@ export interface HandlebarClient {
   workorderGet(input: { orderId: string }): Promise<{ order: WorkOrder; time: ({ id: string; order_id: string; technician: string; hours: string; note: string | null; reported_at: string })[]; material: MaterialLine[] }>;
 
   /**
-   * Work orders, optionally filtered by status
+   * Work orders, newest first, optionally filtered by status
    *
    * `GET /repairs` — `workorder/list`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  workorderList(input: { status?: string }): Promise<WorkOrder[]>;
+  workorderList(input: { status?: string }): Promise<Paged<WorkOrder>>;
 
   /**
    * Report material against the order
@@ -454,6 +484,14 @@ export interface HandlebarClient {
    * `POST /repairs/{orderId}/start` — `workorder/start`
    */
   workorderStart(input: { orderId: string }): Promise<WorkOrder>;
+
+  /**
+   * Fetch the next page of any paged read, given a previous page's `next`.
+   *
+   * One method for every paged read rather than one per read: `next` is a URL that
+   * already carries the filters, so there is nothing left for a caller to restate.
+   */
+  follow<T>(next: string): Promise<Paged<T>>;
 }
 
 /**
@@ -486,6 +524,22 @@ const query = (values: Record<string, unknown> | undefined): string => {
   return s ? `?${s}` : '';
 };
 
+/**
+ * The `rel="next"` URL out of an RFC 8288 `Link` header, or null.
+ *
+ * Only `next` is looked for because only `next` is sent: keyset paging walks one
+ * way and does not know its own offset, so there is no `prev`, `first` or `last`
+ * to honour. A header naming some other relation is not this walk's.
+ */
+const nextFrom = (header: string | null): string | null => {
+  if (!header) return null;
+  for (const part of header.split(',')) {
+    const match = /^\s*<([^>]+)>\s*;\s*(.+)$/.exec(part);
+    if (match && /rel\s*=\s*"?next"?/.test(match[2] as string)) return match[1] as string;
+  }
+  return null;
+};
+
 export function createClient(options: ClientOptions = {}): HandlebarClient {
   const baseUrl = options.baseUrl ?? '/api';
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -514,6 +568,22 @@ export function createClient(options: ClientOptions = {}): HandlebarClient {
   const send = async (path: string, method: string, body: unknown, params: unknown): Promise<unknown> =>
     await parse(await raw(`${baseUrl}${path}${query(params as Record<string, unknown>)}`, method, body));
 
+  /**
+   * A paged read: the entries come from the body, the walk from the headers.
+   *
+   * A cross-origin caller reads neither header without `Access-Control-Expose-Headers`,
+   * and the symptom is not an error — it is a list that looks like it has one page. Under
+   * a same-origin dev proxy (this demo) or a same-origin deployment, both are readable.
+   */
+  const readPage = async (res: Response): Promise<Paged<unknown>> => {
+    const entries = (await parse(res)) as unknown[];
+    const total = res.headers.get('X-Total-Count');
+    return { entries, next: nextFrom(res.headers.get('Link')), total: total === null ? null : Number(total) };
+  };
+
+  const page = async (path: string, method: string, body: unknown, params: unknown): Promise<Paged<unknown>> =>
+    await readPage(await raw(`${baseUrl}${path}${query(params as Record<string, unknown>)}`, method, body));
+
   return {
     closeRepair: (input: Args) =>
       send(`/repairs/${encodeURIComponent(String(input.orderId))}/close`, "POST", omit(input, ["orderId"]), undefined),
@@ -524,11 +594,11 @@ export function createClient(options: ClientOptions = {}): HandlebarClient {
     createRepair: (input: Args) =>
       send("/repairs", "POST", input, undefined),
     listCustomers: () =>
-      send("/customers", "GET", undefined, undefined),
+      page("/customers", "GET", undefined, undefined),
     portalRepairs: () =>
-      send("/portal/repairs", "GET", undefined, undefined),
+      page("/portal/repairs", "GET", undefined, undefined),
     priceList: () =>
-      send("/prices", "GET", undefined, undefined),
+      page("/prices", "GET", undefined, undefined),
     registerBike: (input: Args) =>
       send(`/customers/${encodeURIComponent(String(input.customerId))}/bikes`, "POST", omit(input, ["customerId"]), undefined),
     startConditionReport: (input: Args) =>
@@ -540,7 +610,7 @@ export function createClient(options: ClientOptions = {}): HandlebarClient {
     invoicingGet: (input: Args) =>
       send(`/invoicing/${encodeURIComponent(String(input.underlagId))}`, "GET", undefined, omit(input, ["underlagId"])),
     invoicingList: (input: Args) =>
-      send("/invoicing", "GET", undefined, input),
+      page("/invoicing", "GET", undefined, input),
     protocolCountersign: (input: Args) =>
       send(`/protocols/${encodeURIComponent(String(input.instanceId))}/countersign`, "POST", omit(input, ["instanceId"]), undefined),
     protocolFill: (input: Args) =>
@@ -548,7 +618,7 @@ export function createClient(options: ClientOptions = {}): HandlebarClient {
     protocolGet: (input: Args) =>
       send(`/protocols/${encodeURIComponent(String(input.instanceId))}`, "GET", undefined, omit(input, ["instanceId"])),
     protocolListTemplates: () =>
-      send("/protocol-templates", "GET", undefined, undefined),
+      page("/protocol-templates", "GET", undefined, undefined),
     protocolSign: (input: Args) =>
       send(`/protocols/${encodeURIComponent(String(input.instanceId))}/sign`, "POST", omit(input, ["instanceId"]), undefined),
     protocolVoid: (input: Args) =>
@@ -558,12 +628,23 @@ export function createClient(options: ClientOptions = {}): HandlebarClient {
     workorderGet: (input: Args) =>
       send(`/repairs/${encodeURIComponent(String(input.orderId))}`, "GET", undefined, omit(input, ["orderId"])),
     workorderList: (input: Args) =>
-      send("/repairs", "GET", undefined, input),
+      page("/repairs", "GET", undefined, input),
     workorderReportMaterial: (input: Args) =>
       send(`/repairs/${encodeURIComponent(String(input.orderId))}/material`, "POST", omit(input, ["orderId"]), undefined),
     workorderReportTime: (input: Args) =>
       send(`/repairs/${encodeURIComponent(String(input.orderId))}/time`, "POST", omit(input, ["orderId"]), undefined),
     workorderStart: (input: Args) =>
       send(`/repairs/${encodeURIComponent(String(input.orderId))}/start`, "POST", omit(input, ["orderId"]), undefined),
+    follow: async (next: string) => {
+      // The link names the API's OWN origin, which under a dev proxy is not the origin
+      // this page was served from. So the path is kept and the origin is taken from
+      // whatever this client was configured to talk to: relative for a browser, which
+      // keeps the request same-origin, absolute for a harness that has no page.
+      const link = new URL(next, 'http://substrat.invalid');
+      const target = /^https?:\/\//.test(baseUrl)
+        ? new URL(link.pathname + link.search, baseUrl).href
+        : link.pathname + link.search;
+      return await readPage(await raw(target, 'GET', undefined));
+    },
   } as unknown as HandlebarClient;
 }

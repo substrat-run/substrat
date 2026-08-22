@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { Page } from '@substrat-run/contracts';
 import {
   connectionId,
   platformActorId,
@@ -487,10 +488,11 @@ describe('scrive connector — outbound dispatch', () => {
 
       // Nothing was sent, and nothing froze — the instance is still negotiable.
       expect(scrive.documents.size).toBe(0);
-      const [summary] = await stub.invoke<{ instance: { status: string } }[]>(
+      const { entries } = await stub.invoke<Page<{ instance: { status: string } }>>(
         'protocol/list-for-entity',
         { entityType: EMPLOYEE.entityType, entityId: EMPLOYEE.entityId },
       );
+      const [summary] = entries;
       expect(summary!.instance.status).toBe('open');
     });
   });
@@ -874,10 +876,12 @@ describe('scrive connector — outbound dispatch', () => {
 
     // The operation succeeded — the freeze is committed and the request rows
     // exist. Only the delivery failed, and that is not the caller's problem.
-    const [listed] = await stub.invoke<{ instance: { id: string } }[]>('protocol/list-for-entity', {
-      entityType: EMPLOYEE.entityType,
-      entityId: EMPLOYEE.entityId,
-    });
+    const [listed] = (
+      await stub.invoke<Page<{ instance: { id: string } }>>('protocol/list-for-entity', {
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      })
+    ).entries;
     const instanceId = listed!.instance.id;
     const detail = await stub.invoke<{ instance: { status: string } }>('protocol/get', {
       instanceId,
@@ -937,10 +941,12 @@ describe('scrive connector — outbound dispatch', () => {
     ).rejects.toThrow(/no 'scrive' sealing key is available/);
 
     expect(scrive.documents.size).toBe(0);
-    const [open] = await stub.invoke<{ instance: { status: string } }[]>(
-      'protocol/list-for-entity',
-      { entityType: EMPLOYEE.entityType, entityId: EMPLOYEE.entityId },
-    );
+    const [open] = (
+      await stub.invoke<Page<{ instance: { status: string } }>>('protocol/list-for-entity', {
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      })
+    ).entries;
     expect(open!.instance.status).toBe('open');
   });
 
@@ -959,18 +965,22 @@ describe('scrive connector — outbound dispatch', () => {
     // Nothing was sent, and nothing was recorded as sent — the two together are
     // what distinguish a refused dispatch from a silent no-op.
     expect(scrive.documents.size).toBe(0);
-    const [summ0] = await stub.invoke<{ instance: { id: string } }[]>('protocol/list-for-entity', {
-      entityType: EMPLOYEE.entityType,
-      entityId: EMPLOYEE.entityId,
-    });
+    const [summ0] = (
+      await stub.invoke<Page<{ instance: { id: string } }>>('protocol/list-for-entity', {
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      })
+    ).entries;
     expect(await dispatchState(summ0!.instance.id)).toBeUndefined();
     void summ0;
 
     // The freeze still committed: the operation is not the delivery.
-    const [summary] = await stub.invoke<{ instance: { status: string } }[]>(
-      'protocol/list-for-entity',
-      { entityType: EMPLOYEE.entityType, entityId: EMPLOYEE.entityId },
-    );
+    const [summary] = (
+      await stub.invoke<Page<{ instance: { status: string } }>>('protocol/list-for-entity', {
+        entityType: EMPLOYEE.entityType,
+        entityId: EMPLOYEE.entityId,
+      })
+    ).entries;
     expect(summary!.instance.status).toBe('pending_signature');
 
     // And it keeps retrying rather than dying, because a revoked connection is

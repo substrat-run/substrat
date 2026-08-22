@@ -13,6 +13,7 @@
  */
 import {
   countedPageOf,
+  pageVisible,
   dataSubjectId,
   LIST_PAGE_DEFAULT,
   substratError,
@@ -138,14 +139,16 @@ const operations = {
    * Deliberately NOT a `WHERE owner_id = ?` — that would be a second, hand-kept
    * description of who may see what, and the one that gets forgotten.
    */
-  'todo/my-lists': async (ctx) => {
-    const all = ctx.sql.query<ListRow>('SELECT * FROM todo_lists ORDER BY created_at, id');
-    const mine: ListRow[] = [];
-    for (const list of all) {
-      if ((await ctx.check(TODO_PERM.listContribute, listRef(list.id))).allowed) mine.push(list);
-    }
-    return mine;
-  },
+  // #811. The walk is the kernel's; the per-row proof check is this vertical's,
+  // and `pageVisible` is what keeps the two honest — it filters the batch and
+  // advances the cursor by the last row EXAMINED, so a page of rows the caller
+  // cannot see still moves the walk forward instead of stalling on it.
+  'todo/my-lists': async (ctx, input) =>
+    pageVisible(
+      (p) => ctx.page<ListRow>('list', p),
+      input,
+      async (list) => (await ctx.check(TODO_PERM.listContribute, listRef(list.id))).allowed,
+    ),
 
   'todo/rename-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
@@ -374,10 +377,9 @@ const operations = {
 
   'todo/list-shares': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
-    return ctx.sql.query<ShareRow>(
-      'SELECT * FROM todo_shares WHERE list_id = ? ORDER BY created_at, id',
-      [input.listId],
-    );
+    // The kernel composes it: `ORDER BY created_at, id` is the declared sort plus
+    // its tie-break, which is the ordering this shipped with, written once.
+    return ctx.page<ShareRow>('share', { ...input, filters: { list_id: input.listId } });
   },
 
   'todo/revoke-share': async (ctx, input) => {

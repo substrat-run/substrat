@@ -256,6 +256,26 @@ export const moduleManifest = z.object({
       }),
     )
     .optional(),
+  // #811: what the kernel derives a per-scope list index from, and validates a
+  // `?sort=`/filter against. Same authoring rule as `searchables` — `table` and
+  // `idColumn` come from the entity registry via `manifestLists()`, never by hand
+  // — and the same refusal: the kernel will not provision an index it has to
+  // guess a table name for.
+  //
+  // Derived from the operations, not written beside them: `listsDeclaredBy()`
+  // reads every `paged.over` the way `eventsEmittedBy()` reads every `emits`, so
+  // a paged read and its index cannot describe different columns.
+  lists: z
+    .array(
+      z.object({
+        entityType: z.string().min(1),
+        sortable: z.array(z.string().min(1)).min(1),
+        filterable: z.array(z.string().min(1)).optional(),
+        table: z.string().min(1).optional(),
+        idColumn: z.string().min(1).optional(),
+      }),
+    )
+    .optional(),
   // UI contributions, composed into the vertical's app at BUILD time by the
   // shell (design doc §7.4, K-15). Component values are module-relative import
   // paths. All contributions are permission-keyed; the shell renders them

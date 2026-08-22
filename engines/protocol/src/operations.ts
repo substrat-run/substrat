@@ -87,7 +87,13 @@ export const protocolOperations = defineOperations(protocolEntities, PROTOCOL_PE
   'protocol/list-templates': {
     summary: 'The latest version of every template — the instantiation picker',
     permission: 'protocol:read',
-    output: z.array(protocolTemplateRow),
+    output: protocolTemplateRow,
+    // Handler-composed, not `over` (#811). This read selects through a correlated
+    // `MAX(version)` subquery — the LATEST version of each key — which is not a
+    // `WHERE` the kernel composes from a filter vocabulary. A template is also not
+    // a declared entity: it is a row this engine owns, never the subject of an
+    // `EntityRef`. It still pages, over the key it is grouped by.
+    paged: { sortKey: 'key' },
   },
 
   'protocol/instantiate': {
@@ -202,6 +208,16 @@ export const protocolOperations = defineOperations(protocolEntities, PROTOCOL_PE
       checks: ['protocol:read'],
     },
     input: z.object({ entityType: z.string().min(1), entityId: z.string().min(1) }),
-    output: z.array(protocolSummary),
+    output: protocolSummary,
+    // `id` first: a ULID is creation-ordered, which is the append order this read
+    // shipped with, and it is also the tie-break — so the default walk needs no
+    // index beyond the primary key it already has.
+    paged: {
+      over: {
+        entity: 'protocol',
+        sortable: ['id', 'status', 'created_at'],
+        filterable: ['entity_type', 'entity_id', 'status', 'template_key'],
+      },
+    },
   },
 });

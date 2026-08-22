@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { Page } from '@substrat-run/contracts';
 import { platformActorId, principalId, scopeId, tenantId, type PermissionKey, type Vertical } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
@@ -100,7 +101,7 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
       title: 'Welcome',
       content: { kind: 'document', documentType: 'welcome', hashRecipe: 'sha256 over the terms' },
     });
-    expect(await appScope.invoke('protocol/list-templates', {})).toHaveLength(1);
+    expect((await appScope.invoke<Page<unknown>>('protocol/list-templates', {})).entries).toHaveLength(1);
 
     // ...and it shows in the account's own app list.
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
@@ -928,7 +929,7 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
       title: 'Welcome',
       content: { kind: 'document', documentType: 'welcome', hashRecipe: 'sha256 over the terms' },
     });
-    expect(await appScope.invoke('protocol/list-templates', {})).toHaveLength(1);
+    expect((await appScope.invoke<Page<unknown>>('protocol/list-templates', {})).entries).toHaveLength(1);
   });
 
   it('an owner installs Meridian from the catalog — a live HR scope the owner can set up from empty', async () => {

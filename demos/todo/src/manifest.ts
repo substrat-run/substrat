@@ -11,7 +11,13 @@
  * but the key SET is checked against what the operations actually require, and a
  * key nobody described is an error rather than an undocumented permission.
  */
-import { manifestEntities, manifestOperations, moduleManifest, permissionKey } from '@substrat-run/contracts';
+import {
+  listsDeclaredBy,
+  manifestEntities,
+  manifestOperations,
+  moduleManifest,
+  permissionKey,
+} from '@substrat-run/contracts';
 import { todoEntities, todoOperations } from '../spec/model.js';
 
 export const TODO_PERM = {
@@ -47,5 +53,8 @@ export const todoManifest = moduleManifest.parse({
   ...manifestEntities(todoEntities, {
     searchables: [{ entityType: 'item', fields: ['text'] }],
   }),
+  // #811: derived from the operations' own `paged.over`, never written twice —
+  // the index the kernel builds and the vocabulary the read offers are one fact.
+  lists: listsDeclaredBy(todoOperations, todoEntities),
   entitlementKey: 'todo',
 });

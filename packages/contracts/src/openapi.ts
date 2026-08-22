@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   LIST_PAGE_DEFAULT,
+  LIST_SORT_PARAM,
   LIST_PAGE_MAX,
   PAGE_LINK_HEADER,
   PAGE_TOTAL_HEADER,
@@ -59,7 +60,36 @@ export interface ApiOperationDoc {
    * builder emits the query parameters and the `{ entries, nextCursor }` envelope —
    * so the wrapper is written once here rather than restated by every list operation.
    */
-  paged?: { sortKey: string; order?: 'asc' | 'desc'; total?: boolean };
+  paged?: {
+    /** Present on a handler-composed read: the ENTRY field the cursor walks. */
+    sortKey?: string;
+    order?: 'asc' | 'desc';
+    total?: boolean;
+    /**
+     * Present on a kernel-composed read (#811): the entity and the vocabulary the
+     * caller may choose from. `sortable[0]` is the default sort; each `filterable`
+     * column becomes a documented query parameter.
+     */
+    over?: {
+      entity: string;
+      sortable: readonly string[];
+      filterable?: readonly string[];
+    };
+  };
+}
+
+/** `listId` → `list_id`: path parameters and columns sit either side of this seam. */
+function snakeCase(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+/**
+ * What the cursor walks, whichever half of `paged` a read declared: the entry
+ * field a handler-composed read names, or the default (first) sortable column of
+ * a kernel-composed one.
+ */
+function sortKeyOf(paged: NonNullable<ApiOperationDoc['paged']>): string {
+  return paged.sortKey ?? paged.over?.sortable[0] ?? 'the list\'s sort key';
 }
 
 /** operation name (module-namespaced, e.g. 'hr/create-employee') → its doc. */
@@ -215,7 +245,10 @@ export function buildOpenApiDocument(
           name: 'cursor',
           in: 'query',
           required: false,
-          description: `The previous page's \`nextCursor\`. Keyset over \`${op.paged.sortKey}\` — exclusive, so no row is repeated.`,
+          description:
+            `The previous page's \`nextCursor\`. Keyset over \`${sortKeyOf(op.paged)}\` — ` +
+            'exclusive, so no row is repeated. Follow the `Link` header rather than ' +
+            'assembling this yourself: a cursor is only valid for the sort that issued it.',
           schema: { type: 'string' },
         },
         {
@@ -226,6 +259,38 @@ export function buildOpenApiDocument(
           schema: { type: 'string', enum: ['asc', 'desc'], default: op.paged.order ?? 'asc' },
         },
       );
+      // The declared sort vocabulary (#811). Emitted as an enum, so a generated
+      // client offers the choices rather than inviting a free string the server
+      // will refuse.
+      const sortable = op.paged.over?.sortable;
+      if (sortable && sortable.length > 1) {
+        params.push({
+          name: LIST_SORT_PARAM,
+          in: 'query',
+          required: false,
+          description: 'Which declared column to walk.',
+          schema: { type: 'string', enum: [...sortable], default: sortable[0] },
+        });
+      }
+      // The declared filters. Equality only, deliberately — see `PagedOver`.
+      //
+      // A filter the ROUTE already pins is not documented: `GET /lists/{listId}/shares`
+      // narrows by `list_id` from the path, so also advertising `?list_id=` would be
+      // the same fact stated twice, and would invite a client to send a value the
+      // handler overrides. Same rule the builder already applies to a `const` input
+      // field, matched across the snake_case/camelCase seam the columns and the path
+      // sit on either side of.
+      const pinnedByPath = new Set(params.map((p) => snakeCase(p['name'] as string)));
+      for (const column of op.paged.over?.filterable ?? []) {
+        if (pinnedByPath.has(column)) continue;
+        params.push({
+          name: column,
+          in: 'query',
+          required: false,
+          description: `Only entries whose \`${column}\` equals this.`,
+          schema: { type: 'string' },
+        });
+      }
     }
     // A GET or DELETE carries its input in the QUERY STRING, and the document has to
     // say so (#830). It used to emit every input field as a `requestBody` regardless of
