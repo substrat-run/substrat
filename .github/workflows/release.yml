@@ -14,6 +14,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      # The same signal the prod-deploy steps below gate on, exported so the scaffold
+      # checkpoint can be its own job rather than another `if:` on every step.
+      release: ${{ steps.gate.outputs.release }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -127,4 +131,18 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      
+
+  # The scaffold checkpoint (#797). A release is the first moment the artifact a user
+  # actually receives exists, so this is the first moment it can honestly be tested:
+  # `npm create substrat` at the version just published, `npm install` from the registry,
+  # and the three gates the scaffold ships with. See tools/scaffold-check.mjs for why it
+  # cannot run at PR time.
+  #
+  # Separate job, not appended steps: a red scaffold must never look like a failed
+  # deploy, and it must not be reached only if every deploy above happened to pass.
+  # `needs: release` orders it after the publish; the gate keeps it off the runs that
+  # merely open or update the Version Packages PR.
+  scaffold:
+    needs: release
+    if: needs.release.outputs.release == 'true'
+    uses: ./.github/workflows/scaffold.yml

@@ -30,6 +30,14 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 - `node tools/boundary-lint.mjs` — the layer rules below, enforced mechanically (runs in CI)
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
+- `pnpm lint:scaffold` — the scaffold checkpoint (#797): `npm create substrat` at the
+  published version, `npm install` from the registry with no workspace links, then the
+  three gates a scaffolded project ships with. `packages/create-substrat/template` is
+  **not** a workspace member — deliberately, since its job is to prove an npm install
+  works — so nothing else in the repo ever runs it. Runs post-release and weekly
+  (`.github/workflows/scaffold.yml`), never on a PR: between a merge that adds a surface
+  and the release that publishes it, the template legitimately runs ahead of npm.
+  `--from=local` checks this checkout's template instead of the published one.
 - `pnpm callout-demo dev` — run the Callout demo (API :8871 + web :5271). Demo dev
   ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ` overrides both ends of the proxy.

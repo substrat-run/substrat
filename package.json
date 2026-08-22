@@ -40,7 +40,8 @@
     "lint:pins": "tsx tools/pins-emit.mts",
     "lint:decisions": "node tools/decisions.mjs",
     "lint:plugin": "tsx tools/plugin-emit.mts",
-    "lint:connector-grants": "tsx tools/connector-grants.mts"
+    "lint:connector-grants": "tsx tools/connector-grants.mts",
+    "lint:scaffold": "node tools/scaffold-check.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
