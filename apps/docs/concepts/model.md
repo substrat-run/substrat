@@ -241,8 +241,8 @@ query per request, and it counts the **same filter** the page ran under. Say `tr
 where a screen renders `1–20 of 340`.
 
 See [What a good API looks like](/concepts/api-design#lists-are-pages-not-dumps) for why it
-is keyset rather than offset, and [K-41](/reference/decisions) for why the kernel owns the
-composition.
+is keyset rather than offset. K-41 records why the kernel owns the composition — the index
+behind a declared filter is the part contracts could not have built.
 
 ## What the compiler checks
 
