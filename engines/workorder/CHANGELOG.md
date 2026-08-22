@@ -1,5 +1,168 @@
 # @substrat-run/engine-workorder
 
+## 0.8.0
+
+### Minor Changes
+
+- 716a9df: An entity's state machine is declared in the model (#844).
+
+  Six entities across four engines and two demos carry a `status` enum, and every one of
+  them described its transitions a second time — as hand-written guards in operation bodies,
+  held to the enum by nothing. `engine-workorder` restated the machine at six call sites;
+  `engine-booking` does not even hold the state _set_ in one place, writing its seven values
+  out twice as two independent `z.enum` literals.
+
+  `defineLifecycles(entities, operations)` is that machine, declared once. The compiler
+  checks it against both things it names: a state the column cannot hold, a value the column
+  _can_ hold with no state declared for it, an edge to nowhere, or an operation the module
+  does not declare are all refused. `assertTransition` replaces the hand-written guards and
+  throws the platform's own `conflict` with `reason: 'invalid_transition'`.
+
+  **What it deliberately cannot say.** No actions, no effects, no `context`, no parallel
+  regions, no timers, no expression language. An edge names the operation that performs it
+  and stops; the operation keeps its body. Durable execution stays where it is. Guards stay
+  in the manifest where K-38 put them — every edge names its operation, so the emitters
+  _join_ guards onto edges rather than making anyone declare them twice.
+
+  Two things this unblocks. `extensible` is K-17's `extensibleStates`, which kernel-design
+  §7.5 has specified since July while `substates` appeared in zero `.ts` files — there was no
+  state-machine declaration for the mark to live on. And a widened state machine now lands in
+  a reviewed artifact: `pnpm lint:model` emits the machine into `model.json` (now including
+  `engines/*` that opt in via `src/model.ts`), and CI re-emits with `--check`, so a
+  redirected edge has to appear in a PR diff the way a widened role already does.
+
+  `model-emit` gains `emitXState`, a one-way render to an XState v5 config — for diagrams,
+  and as a test oracle, with `xstate` never leaving devDependencies.
+
+  `engines/workorder` is the adopter, behaviour unchanged. Booking, protocol, invoicing,
+  manyfold and shop are the queue.
+
+  This **reverses a published position** (K-40): `apps/docs/concepts/model.md` listed state
+  machines under _Prose_ and said _"if you find yourself inventing a way to declare a state
+  transition, the boundary has slipped."_ The boundary had not been holding — it was being
+  redrawn at every call site.
+
+- 5b7fbc0: A list read declares its filter and sort vocabulary, and the kernel composes the walk
+  behind it (#811, K-41).
+
+  K-18 promised _"engine list APIs accept registry-declared filter/sort predicates with
+  correct pagination and counts, the kernel composing the join inside the scope DB"_ and
+  nothing implemented it. Twelve reads across four engines and four demos answered with whole
+  tables, and `engines/*` carried ~36 hand-written `ORDER BY` clauses, none of them
+  caller-selectable — so a vertical wanting a different sort had no path but to fork the
+  engine, which is the signal CLAUDE.md names as the engine having drawn its line wrong.
+
+  **`paged` is now a union of two halves, not one shape with optional fields.** Declare `over`
+  and the kernel composes the `WHERE`, the `ORDER BY`, the keyset comparison, the `LIMIT` and
+  the matching `COUNT` from your entity's declared columns — and provisions the indexes behind
+  them, which is the reason this is kernel-layer rather than a query helper in contracts. A
+  declared filter with no index is a table scan that passes every test and degrades when one
+  tenant's table grows. The columns are compile-checked against the entity registry, and the
+  manifest fragment the kernel indexes from is _derived_ from the operations
+  (`listsDeclaredBy`), the way emitted events already are.
+
+  ```ts
+  paged: {
+    over: { entity: 'workorder', sortable: ['number', 'status'], filterable: ['status'] },
+    order: 'desc',
+  }
+  ```
+
+  ```ts
+  return mapPage(
+    ctx.page<OrderRow>("workorder", { ...input, filters }),
+    toWorkOrder
+  );
+  ```
+
+  The kernel returns rows; the projection and any hydration stay yours. This is not a
+  generated-CRUD layer — it invents no routes and no handlers. Adoption also _bounded_ three
+  N+1 reads: a hydration that ran once per row in the scope now runs once per row on the page.
+
+  **The other half is not a legacy path.** Five reads cannot be kernel-composed and say so:
+  `callout/timeline` walks `_substrat_outbox` (a kernel table, not a registry entity),
+  `protocol/list-templates` selects through a correlated `MAX(version)` subquery, and three
+  portal reads decide visibility by a per-row proof walk. They declare `sortKey`, own their
+  `WHERE`, and still page. `pageVisible` is the helper for the permission-filtered case: it
+  over-fetches and advances the cursor by the last row **examined**, so rows the walk rejects
+  still move it forward. Its pages may come back short, and a short page does not end the
+  walk — only the absent `Link` does.
+
+  **Every kernel-composed walk carries a tie-break.** A keyset over a non-unique column drops
+  rows — `status > 'open'` excludes its own ties — so the walk runs over `(sortColumn, id)`
+  and the cursor is the `|`-joined composite `pagination.ts` had already pinned with nothing
+  producing one. That is also why `over.entity` is pointable-only.
+
+  **The gate.** `defineOperations` refuses at module load an operation whose `output` is a bare
+  `z.array(...)` with no `paged`. #811 asked for a `lint:model` gate; a tool has to _find_ the
+  declarations, and the ones it would have missed are exactly the four engines this issue was
+  filed about. At load it reaches every module, and it immediately found two unbounded reads a
+  hand survey had missed.
+
+  **The platform supplies the page.** `mountOperations` parses `limit`/`cursor`/`order`/`sort`
+  with the one shared schema and merges them into the input, so the default page size and the
+  `LIST_PAGE_MAX` ceiling are true of the surface rather than of the operations whose author
+  remembered to restate them. An over-limit request is refused, not silently capped — a caller
+  handed 200 of the 100 000 they asked for cannot tell a capped page from the end of a walk.
+
+  **Breaking, in process only** — `minor` rather than `major` because these engines are 0.x,
+  where semver puts a breaking change, and because `major` would mint 1.0.0 and claim a
+  stability milestone the fleet has not declared. The break is stated here instead.
+
+  `workorder/list`, `invoicing/list`, `protocol/list-templates` and
+  `protocol/list-for-entity` now return `Page<T>` instead of `T[]`, and
+  `listOrders(ctx, status?)` becomes `listOrders(ctx, page)`. Every call site is a compile
+  error, which is how all twelve conversions were found. It is **not** a wire break: #829 moved
+  the walk to `Link`/`X-Total-Count` headers, so a paged read's HTTP body is still the entries
+  array. `getWorkOrder(ctx, orderId)` is new — added because paging exposed two verticals
+  reading every row in the scope to `.find` one.
+
+### Patch Changes
+
+- 892d611: Module code gets a clock, and loses the wall clock (#812).
+
+  `OperationContext` had no way to ask what time it was, so module code reached past the
+  kernel for one: 95 hand-rolled `new Date()` / `Date.now()` calls across `engines/*` and
+  `demos/*`, stamping rows the host could not see. Meanwhile `contracts/ids.ts` described
+  the `instant` brand as "stamped kernel-side, never caller-side" — true of events, false
+  of every domain row in the repo.
+
+  `ctx.now(): Instant` is that clock, and `boundary-lint` **R6** is what keeps it the only
+  one — the same class of ban as R2's `node:*`, and shipped in `@substrat-run/boundary-lint`
+  so it enforces on generated and third-party verticals too.
+
+  **It is stable for the whole invocation.** Every call within one operation returns the
+  same instant, so two rows written in one transaction cannot disagree about when they were
+  written, and an event carries the same instant as the row it describes. That is a promise
+  about the value, not an optimisation: it is what a frozen clock rests on. Both hosts stamp
+  it once when the context is built, and route `emit`'s `occurredAt` and `requestPlatform`'s
+  `requested_at` through the same value.
+
+  **The point is what becomes testable.** The host takes a `clock` (the same seam as
+  `fetch`), and `manualClock` / `frozenClock` ship from the kernel. `demos/shop` has the
+  worked example: its scenario suite already "covered" hold expiry by passing
+  `holdSeconds: 0`, which proves an already-expired hold is swept and nothing about expiry.
+  The new `test/hold-expiry.test.ts` holds a unit for its real fifteen minutes, asserts it is
+  still reserved at fourteen, and gone at sixteen — with no real time elapsed.
+
+  R6 has a reviewable `boundary-lint-allow R6` … `boundary-lint-end R6` block, because
+  unlike R5's one-time handoff there is a recurring legitimate case: a timestamp a _remote_
+  clock judges. The three uses in `apps/dashboard` are a GitHub App JWT's `iat`/`exp` and
+  two `capturedAt` provenance stamps in host-driving code that has no operation to borrow an
+  instant from.
+
+  Timestamps are pinned to ISO 8601 text. The issue expected drift to migrate here; on
+  inspection there was none in module code — every Substrat table already stores ISO text,
+  and the epoch integers are Better Auth's own schema in `demos/auth-server`, which is that
+  library's storage contract rather than ours. Recorded rather than migrated.
+
+- Updated dependencies [716a9df]
+- Updated dependencies [5b7fbc0]
+- Updated dependencies [892d611]
+- Updated dependencies [946dd47]
+  - @substrat-run/contracts@0.84.0
+  - @substrat-run/kernel@0.84.0
+
 ## 0.7.3
 
 ### Patch Changes
@@ -992,7 +1155,7 @@ active`, `unknown tenant/scope/table`). Those are next, and they are the ones th
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

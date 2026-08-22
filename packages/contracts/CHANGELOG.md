@@ -1,5 +1,192 @@
 # @substrat-run/contracts
 
+## 0.84.0
+
+### Minor Changes
+
+- 716a9df: An entity's state machine is declared in the model (#844).
+
+  Six entities across four engines and two demos carry a `status` enum, and every one of
+  them described its transitions a second time — as hand-written guards in operation bodies,
+  held to the enum by nothing. `engine-workorder` restated the machine at six call sites;
+  `engine-booking` does not even hold the state _set_ in one place, writing its seven values
+  out twice as two independent `z.enum` literals.
+
+  `defineLifecycles(entities, operations)` is that machine, declared once. The compiler
+  checks it against both things it names: a state the column cannot hold, a value the column
+  _can_ hold with no state declared for it, an edge to nowhere, or an operation the module
+  does not declare are all refused. `assertTransition` replaces the hand-written guards and
+  throws the platform's own `conflict` with `reason: 'invalid_transition'`.
+
+  **What it deliberately cannot say.** No actions, no effects, no `context`, no parallel
+  regions, no timers, no expression language. An edge names the operation that performs it
+  and stops; the operation keeps its body. Durable execution stays where it is. Guards stay
+  in the manifest where K-38 put them — every edge names its operation, so the emitters
+  _join_ guards onto edges rather than making anyone declare them twice.
+
+  Two things this unblocks. `extensible` is K-17's `extensibleStates`, which kernel-design
+  §7.5 has specified since July while `substates` appeared in zero `.ts` files — there was no
+  state-machine declaration for the mark to live on. And a widened state machine now lands in
+  a reviewed artifact: `pnpm lint:model` emits the machine into `model.json` (now including
+  `engines/*` that opt in via `src/model.ts`), and CI re-emits with `--check`, so a
+  redirected edge has to appear in a PR diff the way a widened role already does.
+
+  `model-emit` gains `emitXState`, a one-way render to an XState v5 config — for diagrams,
+  and as a test oracle, with `xstate` never leaving devDependencies.
+
+  `engines/workorder` is the adopter, behaviour unchanged. Booking, protocol, invoicing,
+  manyfold and shop are the queue.
+
+  This **reverses a published position** (K-40): `apps/docs/concepts/model.md` listed state
+  machines under _Prose_ and said _"if you find yourself inventing a way to declare a state
+  transition, the boundary has slipped."_ The boundary had not been holding — it was being
+  redrawn at every call site.
+
+- 5b7fbc0: A list read declares its filter and sort vocabulary, and the kernel composes the walk
+  behind it (#811, K-41).
+
+  K-18 promised _"engine list APIs accept registry-declared filter/sort predicates with
+  correct pagination and counts, the kernel composing the join inside the scope DB"_ and
+  nothing implemented it. Twelve reads across four engines and four demos answered with whole
+  tables, and `engines/*` carried ~36 hand-written `ORDER BY` clauses, none of them
+  caller-selectable — so a vertical wanting a different sort had no path but to fork the
+  engine, which is the signal CLAUDE.md names as the engine having drawn its line wrong.
+
+  **`paged` is now a union of two halves, not one shape with optional fields.** Declare `over`
+  and the kernel composes the `WHERE`, the `ORDER BY`, the keyset comparison, the `LIMIT` and
+  the matching `COUNT` from your entity's declared columns — and provisions the indexes behind
+  them, which is the reason this is kernel-layer rather than a query helper in contracts. A
+  declared filter with no index is a table scan that passes every test and degrades when one
+  tenant's table grows. The columns are compile-checked against the entity registry, and the
+  manifest fragment the kernel indexes from is _derived_ from the operations
+  (`listsDeclaredBy`), the way emitted events already are.
+
+  ```ts
+  paged: {
+    over: { entity: 'workorder', sortable: ['number', 'status'], filterable: ['status'] },
+    order: 'desc',
+  }
+  ```
+
+  ```ts
+  return mapPage(
+    ctx.page<OrderRow>("workorder", { ...input, filters }),
+    toWorkOrder
+  );
+  ```
+
+  The kernel returns rows; the projection and any hydration stay yours. This is not a
+  generated-CRUD layer — it invents no routes and no handlers. Adoption also _bounded_ three
+  N+1 reads: a hydration that ran once per row in the scope now runs once per row on the page.
+
+  **The other half is not a legacy path.** Five reads cannot be kernel-composed and say so:
+  `callout/timeline` walks `_substrat_outbox` (a kernel table, not a registry entity),
+  `protocol/list-templates` selects through a correlated `MAX(version)` subquery, and three
+  portal reads decide visibility by a per-row proof walk. They declare `sortKey`, own their
+  `WHERE`, and still page. `pageVisible` is the helper for the permission-filtered case: it
+  over-fetches and advances the cursor by the last row **examined**, so rows the walk rejects
+  still move it forward. Its pages may come back short, and a short page does not end the
+  walk — only the absent `Link` does.
+
+  **Every kernel-composed walk carries a tie-break.** A keyset over a non-unique column drops
+  rows — `status > 'open'` excludes its own ties — so the walk runs over `(sortColumn, id)`
+  and the cursor is the `|`-joined composite `pagination.ts` had already pinned with nothing
+  producing one. That is also why `over.entity` is pointable-only.
+
+  **The gate.** `defineOperations` refuses at module load an operation whose `output` is a bare
+  `z.array(...)` with no `paged`. #811 asked for a `lint:model` gate; a tool has to _find_ the
+  declarations, and the ones it would have missed are exactly the four engines this issue was
+  filed about. At load it reaches every module, and it immediately found two unbounded reads a
+  hand survey had missed.
+
+  **The platform supplies the page.** `mountOperations` parses `limit`/`cursor`/`order`/`sort`
+  with the one shared schema and merges them into the input, so the default page size and the
+  `LIST_PAGE_MAX` ceiling are true of the surface rather than of the operations whose author
+  remembered to restate them. An over-limit request is refused, not silently capped — a caller
+  handed 200 of the 100 000 they asked for cannot tell a capped page from the end of a walk.
+
+  **Breaking, in process only** — `minor` rather than `major` because these engines are 0.x,
+  where semver puts a breaking change, and because `major` would mint 1.0.0 and claim a
+  stability milestone the fleet has not declared. The break is stated here instead.
+
+  `workorder/list`, `invoicing/list`, `protocol/list-templates` and
+  `protocol/list-for-entity` now return `Page<T>` instead of `T[]`, and
+  `listOrders(ctx, status?)` becomes `listOrders(ctx, page)`. Every call site is a compile
+  error, which is how all twelve conversions were found. It is **not** a wire break: #829 moved
+  the walk to `Link`/`X-Total-Count` headers, so a paged read's HTTP body is still the entries
+  array. `getWorkOrder(ctx, orderId)` is new — added because paging exposed two verticals
+  reading every row in the scope to `.find` one.
+
+- 946dd47: A delivery refused before egress stops being captioned as the provider's refusal.
+
+  A `connector:<provider>` dispatch crosses two authorities. On the way to the bytes it calls back
+  into the VERTICAL — opening the bound attachment, invoking the return-path operation — and that
+  call is checked against the connection's grants. Only once those pass does anything reach the
+  provider. Both ends refuse by throwing, both landed in the same `lastError` string, and nothing
+  recorded which was which.
+
+  So the drain asked `isTerminalProviderError`, which reads a bare numeric `status` — and every
+  `SubstratError` carries one from the problem catalog. A `permission denied: protocol:read` raised
+  inside the vertical answered `true`, and the delivery was journaled as _"a client error the
+  provider will refuse identically on retry"_. Scrive never received that request. The integration
+  drawer then captioned it _"what Scrive said, in full"_, and directly above it rendered the grant
+  list that did not contain `protocol:read` — both halves of the diagnosis on one screen, inches
+  apart, with nothing saying one was the other's answer. The operator went to audit their Scrive
+  account, pressed **Test connection** (which passes, because the credential is fine), and concluded
+  the platform was broken.
+
+  ## Terminality and attribution are different questions
+
+  `isTerminalDispatchFailure` decides whether to retry and is deliberately blind to who refused: our
+  own `validation_failed` is as final as the provider's 409, and both statuses come from the same
+  structural read. `isTerminalProviderError` now answers only "may this be quoted as the provider's
+  words", and one of ours never may.
+
+  **No delivery changed its retry behaviour.** That part was never wrong, and moving it would have
+  been a silent semantics change smuggled into a bug fix — a permission denial still settles terminal
+  on the first attempt rather than burning a hundred drain passes. What changed is what is _said_
+  about it.
+
+  ## The attribution is a value, not a sentence
+
+  `PlatformRequestFailure` (`origin`, `code`, `permission`) is journaled beside `lastError` in the
+  scope's own spine, so no reader parses prose to learn who refused. `origin: 'unknown'` is a real
+  answer — a socket that never opened is not the provider's refusal either — and NULL is a different
+  fact again: nobody classified this row, rather than somebody classifying it as unattributable. The
+  column is additive and nullable, so an intent settled by an older control plane reads as
+  unrecorded rather than acquiring an origin nobody decided.
+
+  ## A `ControlPlaneError` is always ours
+
+  It is constructed in exactly one place — a call _we_ made to the vertical's `/internal` surface came
+  back non-2xx — so whatever status it carries is the vertical's answer to the platform, never the
+  provider's to us. This is the rule that fixes the reported failure, and it is why the correction
+  lands in the control plane alone: a 403 raised by a deployment that predates this change is still
+  attributed correctly, with no vertical redeploy in the path.
+
+  The permission key is read from the structured field when it survived the hop, and recovered from
+  the kernel-authored `permission denied: <key>` message when it did not — applied ONLY to a failure
+  already attributed to us, so a provider echoing the phrase can never be re-read as our own refusal.
+  Nothing parses prose to decide the origin.
+
+  ## The drawer joins what it was already rendering
+
+  A failed delivery naming a permission absent from the connection's live grants now says so where
+  the failure is. When the key IS held the sentence is deliberately not written — that is a different
+  bug, and guessing at it would rebuild the wall this removes. The panel-level caption no longer
+  claims the provider's voice for deliveries it cannot attribute; it says less instead of guessing.
+
+  **Permission diff:** none. No permission key, role or grant changes.
+
+  **Migration diff:** one nullable spine column (`_substrat_platform_requests.last_failure`), added by
+  the same attempt-and-tolerate `ALTER` both adapters already use for `authorization` and
+  `revoked_at`. No module migration. The pending-intent read in both adapters also adopts
+  `PLATFORM_REQUEST_COLUMNS`, which it had duplicated — that duplication is what the constant exists
+  to prevent, and it drifted the moment a column was added.
+
+  Closes #841 steps 1 and 2. Step 3 was declined with #726 (the repair is a reconcile, not a button)
+  and step 4 shipped there as `lint:connector-grants`.
+
 ## 0.83.0
 
 ### Minor Changes
@@ -3425,7 +3612,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

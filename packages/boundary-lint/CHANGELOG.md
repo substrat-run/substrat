@@ -1,5 +1,82 @@
 # @substrat-run/boundary-lint
 
+## 0.1.0
+
+### Minor Changes
+
+- 77b0c1f: R2 bans `cloudflare:workers` in module code — the ambient env is not a capability (#862).
+
+  Every capability module code holds is meant to arrive on `ctx`, and the scope boundary was
+  described as physical on that basis: `ctx.sql` is closed over one scope's storage, so no SQL
+  string a module composes can reach another scope's database. That half is true. The other
+  half was not enforced.
+
+  `cloudflare:workers` exports an **ambient** `env` — `export const env: Cloudflare.Env` in
+  `@cloudflare/workers-types`, confirmed by probe under the repo's own workerd test pool, which
+  returned the full binding list (`SCOPE`, `CONTROL_PLANE`, …) to a module that was passed
+  nothing. So one import hands module code every binding and secret the vertical's script
+  declares, including its own `SCOPE` namespace:
+
+  ```ts
+  import { env } from "cloudflare:workers";
+  env.SCOPE.get(env.SCOPE.idFromName(someOtherScopeId)); // another tenant's scope
+  ```
+
+  That is the one import that turns the scope boundary from physical into advisory, and it is
+  sharper for engines than for verticals: an installed engine — the layer whose whole job is
+  owning invariants — could reach every scope of the vertical that composed it.
+
+  It belongs to R2 rather than a new rule for the reason `node:*` does: a capability the host
+  owns and injects, imported behind the host's back. Numbering is untouched, so #786's
+  `catch`-outside-`ctx.atomic` rule keeps R7.
+
+  Harness code is exempt exactly as it is for `node:*` — `worker.ts` and `*-do.ts` are where
+  `DurableObject` legitimately comes from, and every such file in this repo stays green
+  (`boundary-lint: all layer rules hold`).
+
+  **This is a lint, and lint is not containment.** It runs in this repo's CI and in a
+  vertical's own, not on the hosted push path, so for third-party code it raises the floor
+  rather than closing the hole. Whether the layer rules should run platform-side at
+  push/admit — over the built bundle, where obfuscation is harder — is the open question this
+  change does not answer.
+
+- 892d611: Module code gets a clock, and loses the wall clock (#812).
+
+  `OperationContext` had no way to ask what time it was, so module code reached past the
+  kernel for one: 95 hand-rolled `new Date()` / `Date.now()` calls across `engines/*` and
+  `demos/*`, stamping rows the host could not see. Meanwhile `contracts/ids.ts` described
+  the `instant` brand as "stamped kernel-side, never caller-side" — true of events, false
+  of every domain row in the repo.
+
+  `ctx.now(): Instant` is that clock, and `boundary-lint` **R6** is what keeps it the only
+  one — the same class of ban as R2's `node:*`, and shipped in `@substrat-run/boundary-lint`
+  so it enforces on generated and third-party verticals too.
+
+  **It is stable for the whole invocation.** Every call within one operation returns the
+  same instant, so two rows written in one transaction cannot disagree about when they were
+  written, and an event carries the same instant as the row it describes. That is a promise
+  about the value, not an optimisation: it is what a frozen clock rests on. Both hosts stamp
+  it once when the context is built, and route `emit`'s `occurredAt` and `requestPlatform`'s
+  `requested_at` through the same value.
+
+  **The point is what becomes testable.** The host takes a `clock` (the same seam as
+  `fetch`), and `manualClock` / `frozenClock` ship from the kernel. `demos/shop` has the
+  worked example: its scenario suite already "covered" hold expiry by passing
+  `holdSeconds: 0`, which proves an already-expired hold is swept and nothing about expiry.
+  The new `test/hold-expiry.test.ts` holds a unit for its real fifteen minutes, asserts it is
+  still reserved at fourteen, and gone at sixteen — with no real time elapsed.
+
+  R6 has a reviewable `boundary-lint-allow R6` … `boundary-lint-end R6` block, because
+  unlike R5's one-time handoff there is a recurring legitimate case: a timestamp a _remote_
+  clock judges. The three uses in `apps/dashboard` are a GitHub App JWT's `iat`/`exp` and
+  two `capturedAt` provenance stamps in host-driving code that has no operation to borrow an
+  instant from.
+
+  Timestamps are pinned to ISO 8601 text. The issue expected drift to migrate here; on
+  inspection there was none in module code — every Substrat table already stores ISO text,
+  and the epoch integers are Better Auth's own schema in `demos/auth-server`, which is that
+  library's storage contract rather than ours. Recorded rather than migrated.
+
 ## 0.0.8
 
 ### Patch Changes

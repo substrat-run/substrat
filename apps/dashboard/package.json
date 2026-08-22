@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/dashboard",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "private": true,
   "substrat": {
     "permissions": "src/provision.ts"
