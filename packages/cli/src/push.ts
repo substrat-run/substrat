@@ -309,6 +309,71 @@ export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
   return raw === undefined ? undefined : runtimeNeeds.parse(raw);
 }
 
+/**
+ * The UI-reachability preflight (#881): a scaffolded `app/` that the manifest never
+ * declares ships a vertical whose front end is real, tested, and answers 404 at its own
+ * hostname.
+ *
+ * Every gate that runs before this one is blind to it by construction. `pnpm test` never
+ * touches `server.ts`, `boundary-lint` has no opinion about static files, and the push
+ * itself must stay legal for a vertical that genuinely has no UI — so this is the only
+ * point where both halves are visible at once: SPA source in the tree, and nothing in the
+ * manifest that would build or serve it.
+ *
+ * It refuses only where the UI is PROVABLY unreachable, so that a refusal is never a
+ * guess:
+ *   - `app/index.html` exists — Vite's own entry marker, and what the playbook scaffolds.
+ *   - no `assets` in EITHER vocabulary (runtimeNeeds or a hand-authored wrangler.jsonc),
+ *     so nothing is uploaded to the runtime's asset store.
+ *   - no inlined-assets module under `src/` — the pre-#340 base64 pattern serves its files
+ *     from the worker and therefore declares nothing, correctly.
+ *
+ * `--allow-unserved-ui` is the deliberate override for the case this cannot see from the
+ * tree alone: an `app/` that is a mock, a fixture, or built and deployed by somebody else.
+ */
+export function assertUiIsServed(
+  dir: string,
+  needs: RuntimeNeeds | undefined,
+  assets: AssetsNeed | undefined,
+  allowUnservedUi = false,
+): void {
+  if (allowUnservedUi || assets) return;
+  if (!existsSync(join(dir, 'app', 'index.html'))) return;
+  // The pre-#340 inline pattern: a generated module holding the built bytes, imported by
+  // the worker. It serves the app without declaring assets, and must keep pushing.
+  const src = join(dir, 'src');
+  if (existsSync(src) && walkFiles(src).some((f) => /assets\.generated\.[cm]?[jt]s$/.test(f))) return;
+  throw new Error(
+    [
+      'this vertical has a UI (app/index.html) that nothing in the push would serve.',
+      '',
+      '  A front end ships as NATIVE assets: `substrat push` runs the declared build,',
+      '  hashes the output and uploads it to the runtime\'s asset store. Undeclared, the',
+      '  directory is never built, never uploaded, and the deployed vertical answers the',
+      '  API on /api/* and 404s on / — a deploy that looks entirely successful.',
+      '',
+      '    "substrat": {',
+      '      "runtimeNeeds": {',
+      '        "build": "npm --prefix app install && npm --prefix app run build",',
+      '        "assets": {',
+      '          "directory": "app/dist",',
+      '          "notFoundHandling": "single-page-application",',
+      '          "runWorkerFirst": ["/api/*", "/internal/*"]',
+      '        }',
+      '      }',
+      '    }',
+      '',
+      '  `runWorkerFirst` must list EVERY worker-owned prefix: with',
+      '  single-page-application handling, a prefix missing from it answers index.html,',
+      '  so the app reports parse errors where it should report denials.',
+      '',
+      '  If the app is deliberately not part of this deploy — a mock, a fixture, or built',
+      '  elsewhere — push with --allow-unserved-ui to say so.',
+      ...(needs ? [] : ['', '  (This vertical authors wrangler.jsonc; the assets block goes there instead.)']),
+    ].join('\n'),
+  );
+}
+
 export interface PushOptions {
   dir: string;
   slug: string;
@@ -355,6 +420,12 @@ export interface PushOptions {
    * separate same-named lineage a deliberate choice.
    */
   allowFork?: boolean;
+  /**
+   * Acknowledge a UI the push will not serve (#881) — the CLI's --allow-unserved-ui.
+   * See `assertUiIsServed`: an `app/` the manifest never declares is normally a mistake
+   * that only shows up as a 404 on the live hostname, so it is refused by default.
+   */
+  allowUnservedUi?: boolean;
   controlPlaneUrl: string;
   /** The auth header to send — a bearer session or an x-service-token (see config.resolveAuth). */
   authHeader: Record<string, string>;
@@ -446,6 +517,11 @@ export async function push(
   // lands next to the vertical (a relative `main` and the build command's cwd both resolve
   // against the config's directory) and is removed after the build.
   const { cfg, needs } = resolveWranglerConfig(opts.dir);
+
+  // Before anything is built: a UI in the tree that this push would not serve (#881).
+  // Refused here rather than after the bundle, so the remedy arrives in a second instead
+  // of at the end of a wrangler build the vertical was going to ship broken anyway.
+  assertUiIsServed(opts.dir, needs, readAssetsNeed(cfg, needs), opts.allowUnservedUi);
 
   // A vertical's OWN stores travel with the bundle: its DO classes, and its D1 databases
   // (e.g. a Better-Auth AUTH_DB). The control plane re-checks these against the §4 sandbox

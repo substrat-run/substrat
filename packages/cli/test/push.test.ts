@@ -12,7 +12,7 @@ import {
   matchesOutboundHost,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta, previewVersion, collectAssets, readAssetsNeed } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -361,6 +361,62 @@ describe('resolveWranglerConfig — the push preflight', () => {
     const { cfg, needs } = resolveWranglerConfig(dir);
     expect(needs?.entry).toBe('src/worker.ts');
     expect(cfg.compatibility_date).toBe(RUNTIME_BASELINE);
+  });
+});
+
+/**
+ * The UI-reachability preflight (#881). The bug it exists to catch is invisible to every
+ * other gate — a vertical whose `app/` is real and tested deploys clean and 404s at its
+ * own hostname — so what matters here is the pair: it fires on the dead UI, and it stays
+ * silent on every shape where the absence of an `assets` block is correct.
+ */
+describe('assertUiIsServed — a UI nothing would serve (#881)', () => {
+  const needs = (extra: Record<string, unknown> = {}) =>
+    runtimeNeeds.parse({ entry: 'src/worker.ts', ...extra });
+
+  /** A vertical with a scaffolded Vite app under app/. */
+  const withUi = (): string => {
+    const dir = scratch({ name: 'x' });
+    mkdirSync(join(dir, 'app'), { recursive: true });
+    writeFileSync(join(dir, 'app', 'index.html'), '<!doctype html><div id="root"></div>');
+    return dir;
+  };
+
+  it('REFUSES an app/ that no assets block declares, with the recipe', () => {
+    const dir = withUi();
+    expect(() => assertUiIsServed(dir, needs(), undefined)).toThrow(/app\/index\.html/);
+    expect(() => assertUiIsServed(dir, needs(), undefined)).toThrow(/"directory": "app\/dist"/);
+    // The second silent failure, stated where the first one is fixed.
+    expect(() => assertUiIsServed(dir, needs(), undefined)).toThrow(/runWorkerFirst/);
+    expect(() => assertUiIsServed(dir, needs(), undefined)).toThrow(/--allow-unserved-ui/);
+  });
+
+  it('a declared build is NOT enough — built output nobody uploads is still a 404', () => {
+    const dir = withUi();
+    expect(() =>
+      assertUiIsServed(dir, needs({ build: 'npm --prefix app run build' }), undefined),
+    ).toThrow(/nothing in the push would serve/);
+  });
+
+  it('passes once assets are declared', () => {
+    const dir = withUi();
+    const declared = needs({ assets: { directory: 'app/dist' } });
+    expect(() => assertUiIsServed(dir, declared, declared.assets)).not.toThrow();
+  });
+
+  it('passes for a vertical with no UI at all — the API-only push stays legal', () => {
+    expect(() => assertUiIsServed(scratch({ name: 'x' }), needs(), undefined)).not.toThrow();
+  });
+
+  it('passes for the pre-#340 inline pattern, which serves its files from the worker', () => {
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'assets.generated.ts'), 'export const ASSETS = {};');
+    expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
+  });
+
+  it('--allow-unserved-ui is the override for an app/ this cannot see the truth about', () => {
+    expect(() => assertUiIsServed(withUi(), needs(), undefined, true)).not.toThrow();
   });
 });
 
