@@ -63,6 +63,46 @@ export interface RecentLogEvent {
   raw: unknown;
 }
 
+/**
+ * One destination a deployed version was OBSERVED reaching (#859, D-46), joined with
+ * whether its manifest DECLARED it.
+ */
+export interface ObservedEgressRow {
+  service: string;
+  host: string;
+  /** `durable-object` egress is the half the egress worker cannot intercept (D-46). */
+  origin: 'worker' | 'durable-object' | 'unknown';
+  calls: number;
+  lastSeen: number | null;
+  sampleUrl: string | null;
+  /** The version's declared surface; null = pushed before the declaration existed. */
+  declared: string[] | null;
+  /** Reached a host the declaration does not cover. Always false when `unenforced`. */
+  undeclared: boolean;
+  /** The version declares nothing, so the egress worker meters but does not enforce. */
+  unenforced: boolean;
+}
+
+export interface EgressReport {
+  rows: ObservedEgressRow[];
+  byService: {
+    service: string;
+    versionId: string;
+    version: string;
+    declared: string[] | null;
+    /** Declared but never seen in the window. Not a fault — a quiet window proves nothing. */
+    unused: string[];
+  }[];
+  /** The read was capped, so the host set is a FLOOR. Must be said out loud (#859). */
+  truncated: boolean;
+  servicesTruncated: boolean;
+  versionsConsidered: number;
+  versionsTotal: number;
+  /** Head sampling rate, or null for "coverage unknown" — not the same as 1. */
+  samplingRate: number | null;
+  hours: number;
+}
+
 /** A staff roster row (CP `staff_actor`) — who may act on the control plane. */
 export interface StaffMember {
   email: string;
@@ -456,6 +496,9 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     serviceMetrics: (hours: number) => call<ServiceMetricsRow[]>(`/observability/metrics${query({ hours })}`),
     recentLogs: (q: { service?: string; level?: string; hours?: number; limit?: number } = {}) =>
       call<RecentLogEvent[]>(`/observability/logs${query({ ...q })}`),
+    /** Observed-vs-declared outbound egress for a vertical's deployed versions (#859). */
+    verticalEgress: (slug: string, q: { hours?: number; limit?: number } = {}) =>
+      call<EgressReport>(`/verticals/${encodeURIComponent(slug)}/egress${query({ ...q })}`),
   };
 }
 

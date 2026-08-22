@@ -4065,7 +4065,7 @@ describe('control-plane API — observability proxy', () => {
 
   // A stub reader that records what the routes hand it — the proxy's job is the Zod
   // boundary + the staff gate, not Cloudflare's answers.
-  const seen: { metrics: unknown[]; logs: unknown[] } = { metrics: [], logs: [] };
+  const seen: { metrics: unknown[]; logs: unknown[]; egress: unknown[] } = { metrics: [], logs: [], egress: [] };
   const reader = {
     serviceMetrics: async (input: unknown) => {
       seen.metrics.push(input);
@@ -4084,6 +4084,23 @@ describe('control-plane API — observability proxy', () => {
     recentLogs: async (input: unknown) => {
       seen.logs.push(input);
       return [];
+    },
+    observedEgress: async (input: { services: string[]; hours: number; limit: number }) => {
+      seen.egress.push(input);
+      return {
+        rows: [
+          // Declared, and reached from worker context — the boring, healthy row.
+          { service: 'egress-vert-v1', host: 'api.declared.example', origin: 'worker' as const,
+            calls: 12, lastSeen: 1_000, sampleUrl: 'https://api.declared.example/v1/x' },
+          // NOT declared, and reached from inside a DO — the row this whole feature exists
+          // for: the egress worker never saw it, so nothing refused it.
+          { service: 'egress-vert-v1', host: 'evil.example', origin: 'durable-object' as const,
+            calls: 3, lastSeen: 2_000, sampleUrl: 'https://evil.example/exfil' },
+        ],
+        truncated: false,
+        samplingRate: null,
+        hours: input.hours,
+      };
     },
   };
 
@@ -4169,6 +4186,102 @@ describe('control-plane API — observability proxy', () => {
     const asBuilder = { [BUILDER_HEADER]: builderTenant, 'content-type': 'application/json' };
     expect((await app.request('/observability/metrics', { headers: asBuilder })).status).toBe(403);
     expect((await app.request('/observability/logs', { headers: asBuilder })).status).toBe(403);
+  });
+
+  // -- observed-vs-declared egress (#859, D-46) ------------------------------
+
+  /** A vertical with one deployed version whose manifest declares one outbound host. */
+  const seedEgressVertical = async (app: ReturnType<typeof appWith>, outbound: string[] | null) => {
+    const t = tenantId.parse(ulid());
+    const slug = `egress-vert-${ulid().slice(-6).toLowerCase()}`;
+    await host.admin.createTenant(staff, { id: t, slug: `t-${slug}`, name: 'Egress Co' });
+    await host.admin.registerVertical(staff, {
+      slug, name: 'Egress Vert', source: 'cli', ownerTenant: t,
+    });
+    await host.admin.publishVersion(staff, {
+      id: ulid(), verticalSlug: slug, version: '1.0.0',
+      manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g',
+      deploymentRef: 'egress-vert-v1',
+      // `outbound` is lifted from the STORED manifest, so that is where it must be set —
+      // null manifest = a pre-#303 push, which must read as unenforced, not as "[]".
+      manifestJson: outbound === null ? null : JSON.stringify({ outbound }),
+    });
+    return slug;
+  };
+
+  it('501s when the reader cannot report egress — an absent capability, never an empty report', async () => {
+    // A reader with metrics + logs but NO observedEgress: an empty list here would read as
+    // "this vertical reached nothing", which is the opposite of "we cannot see".
+    const { observedEgress: _omitted, ...noEgress } = reader;
+    const app = appWith(noEgress as typeof reader);
+    const slug = await seedEgressVertical(app, ['api.declared.example']);
+    const res = await app.request(`/verticals/${slug}/egress`, { headers: asStaff });
+    expect(res.status).toBe(501);
+  });
+
+  it('flags an undeclared host and leaves a declared one alone', async () => {
+    const app = appWith(reader);
+    const slug = await seedEgressVertical(app, ['api.declared.example']);
+    const res = await app.request(`/verticals/${slug}/egress`, { headers: asStaff });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      rows: Array<{ host: string; origin: string; undeclared: boolean; unenforced: boolean }>;
+      byService: Array<{ unused: string[] }>;
+      truncated: boolean;
+      samplingRate: number | null;
+    };
+
+    const declared = body.rows.find((r) => r.host === 'api.declared.example')!;
+    expect(declared.undeclared).toBe(false);
+    expect(declared.unenforced).toBe(false);
+
+    // The row the feature exists for: undeclared AND DO-originated, which is precisely the
+    // traffic apps/vertical-egress cannot intercept (D-46) and so never refused.
+    const undeclared = body.rows.find((r) => r.host === 'evil.example')!;
+    expect(undeclared.undeclared).toBe(true);
+    expect(undeclared.origin).toBe('durable-object');
+
+    // Coverage travels with the answer — never smoothed into a clean-looking result.
+    expect(body.truncated).toBe(false);
+    expect(body.samplingRate).toBeNull();
+  });
+
+  it('reports a pre-#303 version as unenforced, NOT as a wall of violations', async () => {
+    const app = appWith(reader);
+    const slug = await seedEgressVertical(app, null);
+    const res = await app.request(`/verticals/${slug}/egress`, { headers: asStaff });
+    const body = (await res.json()) as {
+      rows: Array<{ host: string; undeclared: boolean; unenforced: boolean; declared: null }>;
+    };
+    // Every observed host is unenforced and NONE is undeclared: the egress worker lets a
+    // null declaration through by design, so blaming the vertical would misattribute the
+    // platform's own documented tail.
+    expect(body.rows.every((r) => r.unenforced)).toBe(true);
+    expect(body.rows.every((r) => !r.undeclared)).toBe(true);
+  });
+
+  it('reports a declared-but-unobserved host as unused, without calling it a fault', async () => {
+    const app = appWith(reader);
+    // `never.example` is declared and the stub reports no call to it.
+    const slug = await seedEgressVertical(app, ['api.declared.example', 'never.example']);
+    const res = await app.request(`/verticals/${slug}/egress`, { headers: asStaff });
+    const body = (await res.json()) as { byService: Array<{ unused: string[] }> };
+    expect(body.byService[0]!.unused).toEqual(['never.example']);
+  });
+
+  it('passes the window through and bounds it like every other input', async () => {
+    const app = appWith(reader);
+    const slug = await seedEgressVertical(app, []);
+    await app.request(`/verticals/${slug}/egress?hours=48&limit=10`, { headers: asStaff });
+    expect(seen.egress.at(-1)).toMatchObject({ services: ['egress-vert-v1'], hours: 48, limit: 10 });
+    expect((await app.request(`/verticals/${slug}/egress?hours=9000`, { headers: asStaff })).status).toBe(400);
+  });
+
+  it('refuses a builder — staff-only, like the other observability reads', async () => {
+    const app = appWith(reader);
+    const slug = await seedEgressVertical(app, []);
+    const asBuilder = { [BUILDER_HEADER]: builderTenant, 'content-type': 'application/json' };
+    expect((await app.request(`/verticals/${slug}/egress`, { headers: asBuilder })).status).toBe(403);
   });
 });
 
