@@ -189,6 +189,35 @@ describe('harness exemption', () => {
     });
     expect(rules(lint(root2)).sort()).toEqual(['R2', 'R2']);
   });
+
+  it('config-do.ts may import the DurableObject base; module code may not', () => {
+    // The per-instance CONFIG store `create-substrat` scaffolds. Its
+    // `cloudflare:workers` import is the DO base class workerd requires, not a reach
+    // for the ambient env — the same class as auth-do.ts. It was missing from the
+    // list, so every scaffolded project failed its own R2 gate on minute one while
+    // the violation message was busy advertising `*-do.ts` as harness.
+    const configDo = `
+      import { DurableObject } from 'cloudflare:workers';
+      export class ConfigDO extends DurableObject {
+        get(scope) { return this.ctx.storage.sql.exec('SELECT 1'); }
+      }
+    `;
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      ...engine('engine-workorder', ['workorder_orders']),
+      'src/config-do.ts': configDo,
+      'src/module.ts': 'export const x = 1;',
+    });
+    expect(lint(root)).toEqual([]);
+
+    // The exemption is the NAME, not the import: the same file as module code is R2.
+    const root2 = project({
+      'package.json': VERTICAL_PKG,
+      ...engine('engine-workorder', ['workorder_orders']),
+      'src/config.ts': configDo,
+    });
+    expect(rules(lint(root2))).toEqual(['R2']);
+  });
 });
 
 describe('R5 escape hatch (decision 27)', () => {
