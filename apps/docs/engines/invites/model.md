@@ -2,12 +2,7 @@
 
 ## The state machine
 
-```
-invited ──accept──▶ accepted
-   │
-   ├───revoke───▶ revoked
-   └───expire───▶ expired
-```
+<StateMachine engine="invites" />
 
 Terminal states are terminal. An accepted invitation cannot be revoked, a revoked one
 cannot be accepted, and an expired one cannot be revived — a new invitation is a new

@@ -99,15 +99,8 @@ registers ([module manifests](/concepts/modules) declare the keys, provisioning 
 roles). That declared surface is not trusted to stay honest by convention; it passes three
 successive gates on its way to a running scope:
 
-```mermaid
-flowchart TD
-  A["<b>Declared in TypeScript</b><br/>module manifests → keys + descriptions<br/>roles → templates · entity grants → shapes"]
-  A --> B["<b>Checkpoint</b> · pnpm lint:permissions<br/>renders PERMISSIONS.md, the review artifact<br/>CI --check fails the build on drift"]
-  A --> C["<b>Push</b> · substrat push<br/>the surface rides the deploy manifest as a registry<br/>content-hashed → digests.permission"]
-  C --> D["<b>Admission</b><br/>a real permission diff between two versions<br/>gates promotion — a widened surface is visible"]
-  D --> E["<b>Provisioning</b><br/>role templates projected into each tenant's<br/>_substrat_roles at write time"]
-  E --> F["<b>Runtime</b> · ctx.check<br/>reads scope-local tables only<br/>absent/empty projection = deny"]
-```
+<PermissionPipeline />
+
 
 Three kinds of honesty, at three altitudes:
 

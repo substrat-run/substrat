@@ -69,6 +69,8 @@ Design decisions worth knowing:
 - **`jurisdiction` is fixed at provisioning, forever.** Data residency is decided when
   the scope is created, not toggled later.
 
+<TenancyTree />
+
 ## One scope = one database = one consistency domain
 
 Each scope is an isolation domain with its own SQLite database and a strictly serialized
