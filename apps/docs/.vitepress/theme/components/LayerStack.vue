@@ -4,42 +4,13 @@
 // real, shipping package; the chip copy is checked against the repo. Colors come
 // from the design tokens' --layer-* accents (kernel indigo, engine cyan, vertical
 // amber) so this reads the same as the rest of the docs and flips with the theme.
-
-const verticals = [
-  ['Callout', 'field service'],
-  ['RallyPoint', 'padel club'],
-  ['Handlebar', 'bike workshop'],
-  ['Kallkälla', 'coffee shop'],
-  ['Meridian', 'HR'],
-  ['Manyfold', 'headless CMS'],
-];
-
-const engines = [
-  ['workorder', 'one state machine · append-only time + material'],
-  ['booking', 'resource × interval × capacity · one allocation, no locks'],
-  ['invoicing', 'consumes billable events · immutable once exported'],
-  ['protocol', 'checklists + signed docs · freeze → immutable, hashed'],
-  ['invites', 'hashed identifier · accept-required · non-enumerable'],
-];
-
-const kernelBits = [
-  'Identity', 'Nested tenancy', 'Permissions + grants', 'Events / audit spine',
-  'Migrations', 'GDPR machinery', 'Notifications', 'Jobs',
-  'Billing entitlements', 'Module system', 'Attachment contracts', 'App shell',
-];
-
-const adapters = [
-  ['adapter-sqlite', 'dev · CI · self-host / escrow'],
-  ['adapter-cloudflare', 'production · Durable-Object per scope'],
-  ['adapter-email', 'notification transport · CF Email + mock'],
-];
-
-const laws = [
-  ['Kernel owns no domain entities.', 'It provides the spine; verticals define what the entities mean.'],
-  ['Star topology.', 'Engines cooperate through fat events and opaque refs — never by importing each other. N contracts, not N².'],
-  ['Enforced at runtime.', 'Guarantees are defaults of the substrate, not config a builder — human or AI — can get wrong.'],
-  ['No forking.', 'If a vertical ever needs to fork an engine, the engine drew its line wrong.'],
-];
+//
+// Every string it renders lives in ./LayerStack.content.mts, because llms.mts
+// flattens that module into the page's markdown twin. A fact typed into this
+// template renders here and vanishes from llms.txt. Put it in the data module.
+import {
+  adapters, connectors, engines, kernel, laws, lawsHead, seams, theLine, verticals,
+} from './LayerStack.content.mjs';
 </script>
 
 <template>
@@ -47,71 +18,71 @@ const laws = [
     <!-- Verticals -->
     <section class="layer layer--vertical">
       <div class="rail">
-        <p class="lname">Verticals</p>
-        <p class="lrole">Everything a user touches — the businesses themselves.</p>
-        <p class="lowner">own vocabulary · screens · pricing · roles</p>
+        <p class="lname">{{ verticals.name }}</p>
+        <p class="lrole" v-html="verticals.role"></p>
+        <p class="lowner">{{ verticals.owner }}</p>
       </div>
       <div class="chips">
-        <span v-for="[name, sub] in verticals" :key="name" class="chip">
+        <span v-for="[name, sub] in verticals.chips" :key="name" class="chip">
           <b>{{ name }}</b><em>{{ sub }}</em>
         </span>
       </div>
     </section>
 
     <!-- The line -->
-    <div class="theline"><span>the line</span></div>
+    <div class="theline"><span>{{ theLine.label }}</span></div>
     <div class="sides">
-      <span class="up"><b>Above ↑</b> AI velocity — mistakes are cosmetic (a wrong screen)</span>
-      <span class="down"><b>↓ Below</b> humans + runtime guarantees — mistakes are catastrophic (a tenant leak)</span>
+      <span class="up"><b>Above &uarr;</b> {{ theLine.above }}</span>
+      <span class="down"><b>&darr; Below</b> {{ theLine.below }}</span>
     </div>
-    <p class="seam">composes engines in-scope, same transaction</p>
+    <p class="seam">{{ seams.verticalToEngine }}</p>
 
     <!-- Engines -->
     <section class="layer layer--engine">
       <div class="rail">
-        <p class="lname">Engines</p>
-        <p class="lrole">Headless domain machinery that owns invariants. Star topology — they talk to the kernel, never to each other.</p>
-        <p class="lowner">own invariants · versioned · never forked</p>
+        <p class="lname">{{ engines.name }}</p>
+        <p class="lrole" v-html="engines.role"></p>
+        <p class="lowner">{{ engines.owner }}</p>
       </div>
       <div class="chips">
-        <span v-for="[name, sub] in engines" :key="name" class="chip">
+        <span v-for="[name, sub] in engines.chips" :key="name" class="chip">
           <b>{{ name }}</b><em>{{ sub }}</em>
         </span>
       </div>
     </section>
 
-    <p class="seam"><b>↓</b> ctx (sql · check · emit · link) &nbsp;·&nbsp; events + audit <b>↑</b></p>
+    <p class="seam" v-html="seams.engineToKernel"></p>
 
     <!-- Kernel -->
     <section class="layer layer--kernel bedrock">
       <div class="rail">
-        <p class="lname">Kernel</p>
-        <p class="lrole">The substrate. Everything true of <em>every</em> B2B SaaS — and nothing true of any one.</p>
-        <p class="lowner">owns no domain entities</p>
+        <p class="lname">{{ kernel.name }}</p>
+        <p class="lrole" v-html="kernel.role"></p>
+        <p class="lowner">{{ kernel.owner }}</p>
       </div>
       <div>
         <div class="chips kbits">
-          <span v-for="b in kernelBits" :key="b" class="kchip">{{ b }}</span>
+          <span v-for="b in kernel.bits" :key="b" class="kchip">{{ b }}</span>
         </div>
         <div class="ctx">
-          <span class="ctxlabel">Every operation runs inside</span>
-          <code>ctx.sql</code><code>ctx.check</code><code>ctx.emit</code><code>ctx.link</code>
+          <span class="ctxlabel">{{ kernel.ctxLabel }}</span>
+          <code v-for="c in kernel.ctx" :key="c">{{ c }}</code>
         </div>
-        <p class="knote">No customer table, no work-order table. It offers attachment contracts that bind to opaque (entityType, entityId) refs the vertical defines.</p>
+        <p class="knote">{{ kernel.note }}</p>
       </div>
     </section>
 
-    <p class="seam">same kernel semantics on any ground — <b>one contract-test suite</b> gates them all</p>
+    <p class="seam">{{ seams.kernelToAdapter }}</p>
 
     <!-- Adapters -->
     <section class="layer layer--adapter">
       <div class="rail">
-        <p class="lname">Adapters</p>
-        <p class="lrole">Scope hosts — the interchangeable ground the kernel is seated on.</p>
-        <p class="lowner">swappable · escrowable · self-hostable</p>
+        <p class="lname">{{ adapters.name }}</p>
+        <p class="lrole" v-html="adapters.role"></p>
+        <p class="lowner">{{ adapters.owner }}</p>
       </div>
       <div class="chips">
-        <span v-for="[name, sub] in adapters" :key="name" class="chip">
+        <span v-for="[name, sub] in adapters.chips" :key="name" class="chip">
           <b>{{ name }}</b><em>{{ sub }}</em>
         </span>
       </div>
@@ -120,19 +91,20 @@ const laws = [
     <!-- Connectors -->
     <section class="layer layer--connector edge">
       <div class="rail">
-        <p class="lname">Connectors</p>
-        <p class="lrole">The outside world, at the edges. React to events on the spine — host code, never module code.</p>
-        <p class="lowner">no fetch inside a module — ever</p>
+        <p class="lname">{{ connectors.name }}</p>
+        <p class="lrole" v-html="connectors.role"></p>
+        <p class="lowner">{{ connectors.owner }}</p>
       </div>
       <div class="chips">
-        <span class="chip"><b>Scrive eSign</b><em>signatures-requested → BankID signing → recorded back</em></span>
-        <span class="chip"><b>…more</b><em>one port per capability</em></span>
+        <span v-for="[name, sub] in connectors.chips" :key="name" class="chip">
+          <b>{{ name }}</b><em>{{ sub }}</em>
+        </span>
       </div>
     </section>
 
     <!-- Laws -->
     <div class="laws">
-      <p class="lawshead">The four rules that hold it together</p>
+      <p class="lawshead">{{ lawsHead }}</p>
       <ol>
         <li v-for="([head, body], i) in laws" :key="i">
           <span class="n">{{ i + 1 }}</span>

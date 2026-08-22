@@ -415,7 +415,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       align: 'right',
       render: (v) =>
         v.admission === 'pending' ? (
-          <span style={{ display: 'inline-flex', gap: 8 }}>
+          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 8 }}>
             <Button
               size="sm"
               onClick={() => run(() => api.admitVersion(vertical.slug, v.id), 'Version admitted', v.version)}
@@ -470,7 +470,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         title={vertical.name}
         description={`Versions and channels — ${vertical.slug}`}
         actions={
-          <span style={{ display: 'inline-flex', gap: 8 }}>
+          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 8 }}>
             {/* List = the staff publish admission (marketplace-publish.md §5), so it gets
                 the primary variant — it widens the audience to every tenant; Unlist is
                 danger because it pulls a live listing. The API refuses listing while prod

@@ -12,6 +12,8 @@ export type SubIconName =
   | 'globe'
   | 'plus'
   | 'moon'
+  | 'menu'
+  | 'close'
   | 'pulse'
   | 'gauge'
   | 'sliders';
@@ -59,6 +61,8 @@ export const SubIcons: Record<SubIconName, string> = {
     '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
+  close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   pulse: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
   // Lucide `gauge` — a dial with a needle. The meters view: a reading, not a stream.
   gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',

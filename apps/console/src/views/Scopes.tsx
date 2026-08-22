@@ -53,7 +53,7 @@ function MigrationProgressCard({ progress, tenants }: { progress: MigrationProgr
         progress.complete ? (
           <Badge status="success">Skew window closed</Badge>
         ) : (
-          <span style={{ display: 'inline-flex', gap: 6 }}>
+          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6 }}>
             {progress.failed > 0 && <Badge status="danger">{progress.failed} failed</Badge>}
             {progress.pending > 0 && <Badge status="warning">{progress.pending} pending</Badge>}
             {flagged.length > 0 && <Badge status="danger">{flagged.length} past threshold</Badge>}
