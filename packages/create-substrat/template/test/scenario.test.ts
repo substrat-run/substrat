@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { addMoney, moneyOf, mulMoney } from '@substrat-run/contracts';
+import { addMoney, moneyOf, mulMoney, type Page } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import type { WorkOrder, BillableLine } from '@substrat-run/engine-workorder';
@@ -105,7 +105,8 @@ describe('bike-shop scenario', () => {
       lisbeth.invoke('workorder/report-time', { orderId: repairId, hours: '1' }),
     ).rejects.toThrow(/permission denied/);
     // …but she CAN see her own repair through the portal walk.
-    await expect(lisbeth.invoke<WorkOrder[]>('shop/portal-repairs')).resolves.toHaveLength(1);
+    const lisbethSees = await lisbeth.invoke<Page<WorkOrder>>('shop/portal-repairs');
+    expect(lisbethSees.entries).toHaveLength(1);
 
     // The cross-tenant attacker: claiming t1's scope under his OWN tenant fails
     // the (tenant, scope) pair check…
@@ -120,7 +121,8 @@ describe('bike-shop scenario', () => {
     await expect(rutger.invoke('invoicing/list')).rejects.toThrow(/permission denied/);
     // …the control: the per-entity portal walk resolves for him too, and returns
     // exactly nothing — an open door onto an empty room, not a denial.
-    await expect(rutger.invoke<WorkOrder[]>('shop/portal-repairs')).resolves.toEqual([]);
+    const rutgerSees = await rutger.invoke<Page<WorkOrder>>('shop/portal-repairs');
+    expect(rutgerSees.entries).toEqual([]);
   });
 
   it('5. priced completion: the half-hour minimum bills, internal dropped, math exact', async () => {
@@ -153,9 +155,9 @@ describe('bike-shop scenario', () => {
   });
 
   it('6. star topology: the invoicing engine consumed workorder.completed', async () => {
-    const underlag = await greta.invoke<{ id: string; status: string; total: string }[]>(
-      'invoicing/list',
-    );
+    const { entries: underlag } = await greta.invoke<
+      Page<{ id: string; status: string; total: string }>
+    >('invoicing/list');
     expect(underlag).toHaveLength(1);
     expect(underlag[0]!.status).toBe('open');
     expect(underlag[0]!.total).toBe('336.5');
@@ -178,9 +180,10 @@ describe('bike-shop scenario', () => {
     const lisbeth = await host.getScope(w.lisbeth, w.t1, w.s1);
     const otto = await host.getScope(w.otto, w.t1, w.s1);
 
-    const hers = await lisbeth.invoke<WorkOrder[]>('shop/portal-repairs');
-    expect(hers.map((o) => o.id)).toEqual([repairId]);
-    await expect(otto.invoke<WorkOrder[]>('shop/portal-repairs')).resolves.toEqual([]);
+    const hers = await lisbeth.invoke<Page<WorkOrder>>('shop/portal-repairs');
+    expect(hers.entries.map((o) => o.id)).toEqual([repairId]);
+    const ottos = await otto.invoke<Page<WorkOrder>>('shop/portal-repairs');
+    expect(ottos.entries).toEqual([]);
 
     // Lisbeth reads her repair's timeline via the same entity walk…
     await expect(
@@ -194,7 +197,9 @@ describe('bike-shop scenario', () => {
   });
 
   it('8. export makes the underlag immutable; the next completion opens a new one', async () => {
-    const [underlag] = await greta.invoke<{ id: string }[]>('invoicing/list');
+    const {
+      entries: [underlag],
+    } = await greta.invoke<Page<{ id: string }>>('invoicing/list');
     await greta.invoke('invoicing/export', { underlagId: underlag!.id });
     await expect(greta.invoke('invoicing/export', { underlagId: underlag!.id })).rejects.toThrow(
       /immutable/,
@@ -214,7 +219,9 @@ describe('bike-shop scenario', () => {
     });
     await greta.invoke('shop/complete-repair', { orderId: repair2.id });
 
-    const all = await greta.invoke<{ status: string; total: string }[]>('invoicing/list');
+    const { entries: all } = await greta.invoke<Page<{ status: string; total: string }>>(
+      'invoicing/list',
+    );
     expect(all).toHaveLength(2);
     expect(all.filter((u) => u.status === 'open')).toHaveLength(1);
     expect(all.filter((u) => u.status === 'exported')).toHaveLength(1);

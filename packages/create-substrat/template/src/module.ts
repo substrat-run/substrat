@@ -3,15 +3,18 @@ import {
   compareDecimal,
   moneyOf,
   mulMoney,
+  pageVisible,
   z,
   type EntityRef,
   type Money,
+  type Page,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
   ulid,
   type ModuleRegistration,
   type OperationHandler,
+  type PageParams,
 } from '@substrat-run/kernel';
 import {
   closeWorkOrder,
@@ -244,15 +247,25 @@ const closeRepairOp: OperationHandler<{ orderId: string }, WorkOrder> = async (c
  * PER-ENTITY check per repair. A portal customer holds an entity-narrowed grant
  * on their own customer record, so the walk workorder → bike → customer lets
  * them through for their own repairs and no one else's.
+ *
+ * Paged by OVER-FETCHING, which is what a permission-filtered walk needs: a page
+ * of 20 rows read from the table can leave 3 standing after the proof walk, so the
+ * fetch size and the page size are not the same number and cannot be made the same
+ * number. `pageVisible` does the over-fetch and advances the cursor by the last row
+ * EXAMINED — advancing by the last row RETURNED would re-examine every rejected row
+ * on the next request, and a page the walk rejects entirely would never advance at
+ * all. So a SHORT page does not end this walk; only a null `nextCursor` does.
  */
-const portalRepairsOp: OperationHandler<undefined, WorkOrder[]> = async (ctx) => {
-  const visible: WorkOrder[] = [];
-  for (const order of listOrders(ctx)) {
-    const decision = await ctx.check(WO.read, { entityType: 'workorder', entityId: order.id });
-    if (decision.allowed) visible.push(order);
-  }
-  return visible;
-};
+const portalRepairsOp: OperationHandler<PageParams | undefined, Page<WorkOrder>> = async (
+  ctx,
+  input,
+) =>
+  pageVisible(
+    (p) => listOrders(ctx, { ...input, ...p }),
+    input,
+    async (order) =>
+      (await ctx.check(WO.read, { entityType: 'workorder', entityId: order.id })).allowed,
+  );
 
 const timelineInput = z.object({
   entityType: z.string().min(1),

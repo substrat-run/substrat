@@ -168,6 +168,13 @@ export const DEFAULT_HARNESS = [
   // R6 has nothing to say about them.
   'auth-schema.ts',
   'do-contract.ts',
+  // The per-instance CONFIG store hosted in a Durable Object — the durable half of
+  // `/internal/configure`. Same class as auth-do.ts: the config a scope runs on is
+  // not domain data, it is reached through a binding rather than `ctx.sql`, and the
+  // `cloudflare:workers` import is the DO base class the runtime requires, not a
+  // reach for the ambient env. `create-substrat` scaffolds one, so until this entry
+  // existed every new project failed its own R2 gate on minute one.
+  'config-do.ts',
   'oidc.ts',
   'worker.ts',
   'routes.ts',
