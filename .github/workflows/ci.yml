@@ -25,6 +25,13 @@ jobs:
       # The layer rules run from packages/boundary-lint (published as
       # @substrat-run/boundary-lint), so they need the build above — the repo
       # lints itself with the same code a from-scratch vertical runs.
+      #
+      # This also lints the create-substrat TEMPLATE (#878), materialized into
+      # packages/template-check and discovered as a standalone vertical — the same
+      # path `substrat-boundary-lint` takes inside a real scaffold. The template is
+      # module code by every rule that matters and nothing here had ever looked at
+      # it, which is how `create-substrat@0.7.1` shipped with `config-do.ts` missing
+      # from DEFAULT_HARNESS and only the post-release job found out.
       - run: node tools/boundary-lint.mjs
       # Every module a package references must be one it DECLARED
       # (docs/architecture/dependency-policy.md). Needs the build above, because the
@@ -118,10 +125,22 @@ jobs:
       # into a field nobody reads, and it surfaced as a legal document not reaching a
       # counterparty (#716, #841). A floor, not an equality: the catalog may carry more.
       - run: pnpm lint:connector-grants
+      # Includes packages/template-check, which compiles create-substrat's template
+      # against THIS checkout (#878). The template is not a workspace member — #797
+      # needs it to install from npm — so it was the one call site the compiler never
+      # saw, and a non-additive engine change could be merged, released, and reach
+      # `npm create substrat` broken with nothing red until after publish. #811 moved
+      # `listOrders` to a paged signature, `lint:pins` advanced the template's pins in
+      # the same Version-packages PR, and the scaffold shipped failing all three of
+      # its own gates. This asks the question a PR CAN answer — does the template's
+      # source still match the surface we are about to ship — while scaffold.yml keeps
+      # asking the post-release one: does a real npm install work.
       - run: pnpm -r typecheck
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM
-      # demo's nine-step scenario.
+      # demo's nine-step scenario — and the TEMPLATE's own nine-step scenario,
+      # via packages/template-check (#878), which is how a surface that still
+      # typechecks but no longer behaves gets caught before it is published.
       - run: pnpm -r test
 
   # Deploy the prod apps to the shared TEST environment on every green push to

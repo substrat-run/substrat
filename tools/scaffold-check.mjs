@@ -34,6 +34,17 @@
  * (release.yml), weekly (a transitive dependency moving under a frozen scaffold), and
  * on demand.
  *
+ * ## What DOES run on a PR, and why it is a different question
+ *
+ * `packages/template-check` (#878) compiles the same template against the WORKSPACE:
+ * `pnpm -r typecheck`, `pnpm -r test` and `node tools/boundary-lint.mjs` all reach it.
+ * Being ahead of npm is fine there — it compiles against the code the PR changes,
+ * which is the point. That check answers "does the template's source still match the
+ * surface we are about to ship?"; this one answers "does a real npm install produce a
+ * working project?" Neither substitutes for the other, and #811 is the case that
+ * needed both: the workspace check would have gone red in the PR, and this one is
+ * still what proves the published pins resolve.
+ *
  * ## What red means
  *
  * A published engine moving is not the scaffolder's fault, so a failure names the
