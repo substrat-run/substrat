@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-98 decisions · 57 plan · 41 kernel
+99 decisions · 58 plan · 41 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -109,4 +109,5 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-38](decisions/K-038-cross-engine-transition-guards-ship-as-both-poles-chosen-per.md) | 2026-08-19 | kernel | Cross-engine transition guards ship as both poles, chosen per case |  |
 | [K-39](decisions/K-039-payload-changes-are-loud-failure-replaces-until-dispatch-rou.md) | 2026-08-19 | kernel | Payload changes are loud-failure replaces; dual-emit is unavailable, not merely awkward | #128 |
 | [K-40](decisions/K-040-an-entity-s-state-machine-is-declared-in-the-model-not-w.md) | 2026-08-21 | kernel | An entity's state machine is declared in the model, not written a second time as guards | #844 |
+| [D-58](decisions/D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md) | 2026-08-22 | plan | D-46's Durable-Object limit is enforcement-only; DO-originated egress is observable | #863, #858 |
 | [K-41](decisions/K-041-a-list-read-declares-its-filter-and-sort-vocabulary-and-t.md) | 2026-08-22 | kernel | A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it | #811, #129, #132 |

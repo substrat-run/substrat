@@ -34,6 +34,14 @@
  * bypasses this policy today — worker-context egress is what is actually policed. The
  * flip side is free: attaching an outbound worker disables raw TCP `connect()` for
  * every dispatched script, so sockets are closed entirely.
+ *
+ * That limit is about ENFORCEMENT only, and the distinction is load-bearing (D-58): a
+ * DO-originated fetch is not refused here, but it IS traced — Workers automatic tracing
+ * emits a `fetch` span with `url.full`/`server.address` from inside the DO — so the
+ * control plane's egress report (#859) surfaces it as undeclared drift after the fact.
+ * Nothing in this worker changes because of that; it is recorded here so the comment is
+ * not read as "DO egress cannot be seen", which is how a true limit acquired a false
+ * corollary in D-46.
  */
 
 import { matchesOutboundHost } from '@substrat-run/contracts';

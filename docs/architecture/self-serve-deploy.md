@@ -334,6 +334,17 @@ guess, and a refusal spike or an exfiltration attempt shows up attributed to a v
   model B this is defense-in-depth plus an audit artifact, not an airtight sandbox. If
   Cloudflare extends interception to DO subrequests, enforcement becomes complete with no
   contract change.
+  - **The limit is enforcement-only — it is not invisible** ([D-58](../decisions/D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md)).
+    Workers automatic tracing instruments workerd itself, so a `fetch` made inside a scope DO
+    emits a `fetch` span with `url.full` and `server.address`, tagged `cloudflare.entrypoint`
+    and `durable_object.id` — verified on TEST against a dispatch-namespace probe, not inferred.
+    The control plane's `GET /verticals/:slug/egress` (#859) joins those observed hosts against the version's
+    declared list, so an undeclared DO-originated host is *reported* even though it was never
+    *refused*. Do not key that detection on `durable_object_subrequest`: it fires for the
+    worker→DO hop and for DO→DO stub calls and carries no url or server.
+    Spans are head-sampled and retained 3–7 days, so this is a drift signal, not a compliance
+    record — the durable record is the disclosure register (#860), and whether to also *refuse*
+    DO-originated egress is the open fork (#861).
 - Attaching an outbound worker **disables raw TCP `connect()`** for every dispatched
   script — sockets are closed entirely, by construction.
 - **The control plane's own dispatch binding** carries no outbound worker (internal
