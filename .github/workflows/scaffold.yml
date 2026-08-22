@@ -1,0 +1,46 @@
+name: Scaffold
+
+# The scaffold checkpoint (#797). `pnpm test` has never run the create-substrat
+# template's scenario suite and `pnpm typecheck` has never seen its tsconfigs — the
+# workspace globs are `packages/*`, so `packages/create-substrat` is a member and
+# `template/` under it is not. This job is the one that runs what a user runs:
+# `npm create substrat`, `npm install` from the registry with no workspace links, then
+# the three gates a scaffolded project ships with.
+#
+# The reasoning — including why there is deliberately no `pull_request` trigger — lives
+# in tools/scaffold-check.mjs. The short form: between a merge that adds a surface and
+# the release that publishes it, the template legitimately runs AHEAD of npm (#812 put
+# `ctx.now()` in the template while the pins still said `^0.83.0`), so a PR-time run is
+# red for reasons no PR can fix. The release is the first moment the artifact under test
+# exists.
+on:
+  # Post-release, called by release.yml on the run that actually landed a release.
+  workflow_call:
+  # A weekly heartbeat. The scaffold is frozen but the world under it is not — a
+  # transitive dependency of hono, tsx, vitest or better-sqlite3 can break a scaffold
+  # that nobody touched, and a user hits it before we do unless something asks.
+  schedule:
+    - cron: '23 7 * * 1' # Mondays, 07:23 UTC
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Scaffold from the published package, or this checkout's index.js"
+        type: choice
+        default: registry
+        options: [registry, local]
+
+jobs:
+  scaffold:
+    runs-on: ubuntu-latest
+    # The publish wait is bounded at three minutes, then an npm install and three gates.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      # No `pnpm install` on purpose: this job must not have the workspace on disk in
+      # any form that could resolve `@substrat-run/*`. It reads two things out of the
+      # checkout — the create-substrat version to pull from npm, and whether unreleased
+      # changesets are pending — and gets everything else from the registry.
+      - run: node tools/scaffold-check.mjs --from=${{ inputs.from || 'registry' }}
