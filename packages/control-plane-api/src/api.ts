@@ -17,6 +17,7 @@ import {
   hostnameStatus,
   identityLink,
   listPageQuery,
+  matchesOutboundHost,
   pageOf,
   platformRequestFilter,
   principalId as principalIdSchema,
@@ -3755,6 +3756,104 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         limit: c.req.query('limit'),
       });
     return c.json(await options.observability.recentLogs(input));
+  });
+
+  /**
+   * Observed-vs-declared outbound egress for a vertical's deployed versions (#859, D-46).
+   *
+   * The declaration (`substrat.outbound`) says what a vertical MAY call; this says what it
+   * DID call, and the interesting part is the difference. Scoped to a vertical rather than
+   * to bare script names because that is the unit the admit checkpoint works in — and
+   * because `VerticalVersion` already carries both halves of the join, `deploymentRef` and
+   * `outbound`, so no second lookup is needed to learn what a script was allowed to reach.
+   *
+   * Two directions, meaning opposite things:
+   *
+   * - **undeclared** — reached a host the declaration does not cover. Either drift, or
+   *   DO-originated egress the egress worker never saw and so never refused (#858 proved
+   *   that traffic is visible here and nowhere else).
+   * - **unused** — declared but never observed. NOT a fault, and deliberately not worded as
+   *   one: a quiet window proves nothing, which is why this is reported and never acted on.
+   *
+   * A version pushed before #303 declares nothing (`outbound: null`). Its hosts are marked
+   * `unenforced` rather than `undeclared` — the egress worker lets them through by design,
+   * and rendering them as violations would blame a vertical for the platform's own tail.
+   *
+   * The comparison uses `matchesOutboundHost`, the same function the egress worker enforces
+   * with, so "allowed" cannot mean one thing here and another at the seam.
+   *
+   * STAFF-ONLY, like the other observability reads (absent from BUILDER_ROUTES).
+   */
+  app.get('/verticals/:slug/egress', async (c) => {
+    if (!options.observability?.observedEgress) {
+      return c.json({ error: 'observed egress is not available on this control plane' }, 501);
+    }
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    const { hours, limit } = z
+      .object({
+        hours: z.coerce.number().int().min(1).max(72).default(24),
+        limit: z.coerce.number().int().min(1).max(1000).default(500),
+      })
+      .parse({ hours: c.req.query('hours'), limit: c.req.query('limit') });
+
+    // Deployed versions only: a version with no `deploymentRef` has never run, so there is
+    // nothing it could have been observed reaching.
+    const versions = (await admin.listVersions(c.get('actor'), slug)).filter(
+      (v) => v.deploymentRef,
+    );
+    // Cap the fan-out — each service is another backend query. Truncating the SERVICE list
+    // is exactly the silent-drop #859 calls a defect, so it is reported, not swallowed.
+    const MAX_SERVICES = 20;
+    const considered = versions.slice(0, MAX_SERVICES);
+    const servicesTruncated = versions.length > MAX_SERVICES;
+
+    const declaredByService = new Map<string, string[] | null>();
+    for (const v of considered) declaredByService.set(v.deploymentRef!, v.outbound ?? null);
+
+    const report = await options.observability.observedEgress({
+      services: considered.map((v) => v.deploymentRef!),
+      hours,
+      limit,
+    });
+
+    const rows = report.rows.map((row) => {
+      const declared = declaredByService.get(row.service) ?? null;
+      return {
+        ...row,
+        declared,
+        // `null` declared ⇒ unenforced, so nothing is "undeclared" in the policy sense.
+        // Keeping the two states apart stops a pre-#303 push from rendering as a breach.
+        undeclared: declared === null ? false : !matchesOutboundHost(row.host, declared),
+        unenforced: declared === null,
+      };
+    });
+
+    const byService = considered.map((v) => {
+      const service = v.deploymentRef!;
+      const declared = declaredByService.get(service) ?? null;
+      const observed = report.rows.filter((r) => r.service === service).map((r) => r.host);
+      return {
+        service,
+        versionId: v.id,
+        version: v.version,
+        declared,
+        unused: declared?.filter((d) => !observed.some((h) => matchesOutboundHost(h, [d]))) ?? [],
+      };
+    });
+
+    return c.json({
+      rows,
+      byService,
+      // Carried through verbatim, never smoothed. A truncated or unknown-coverage read
+      // rendered as a clean result is the failure mode #859 names as a defect, so every
+      // way this answer can be partial travels with it.
+      truncated: report.truncated || servicesTruncated,
+      servicesTruncated,
+      versionsConsidered: considered.length,
+      versionsTotal: versions.length,
+      samplingRate: report.samplingRate,
+      hours,
+    });
   });
 
   // -- push tokens (push-token.ts) -------------------------------------------

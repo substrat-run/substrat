@@ -12,7 +12,7 @@ import type {
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
-import type { Api } from '../lib/api';
+import type { Api, EgressReport } from '../lib/api';
 import {
   admissionLabel,
   admissionTone,
@@ -52,6 +52,10 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // This vertical's recent operational failures (#559): the badge/strip below, and the
   // per-row explanation a stuck-`provisioning` preview joins against by scopeId.
   const [failures, setFailures] = useState<OpsFailureEntry[]>([]);
+  // Observed-vs-declared outbound egress (#859). Null = not read (or not available on
+  // this control plane), which is deliberately NOT the same as an empty report: one
+  // means "we cannot see", the other "it reached nothing".
+  const [egress, setEgress] = useState<EgressReport | null>(null);
   // How much of the walked version list the TABLE shows (the Load-more window).
   const [versionsShown, setVersionsShown] = useState(PAGE);
 
@@ -91,7 +95,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         // computations over the whole version set — a channel pointer whose version fell
         // outside a loaded page would render as "unset", a lie. Only the versions TABLE
         // below windows what it shows.
-        const [vs, ch, sc, fl] = await Promise.all([
+        const [vs, ch, sc, fl, eg] = await Promise.all([
           walkAll((p) => api.listVersions(slug, p)),
           walkAll((p) => api.listChannels(slug, p)),
           walkAll((p) => api.listScopes({ vertical: slug, ...p })),
@@ -106,10 +110,15 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             })
             .then((p) => p.entries)
             .catch(() => [] as OpsFailureEntry[]),
+          // Observed egress (#859). Tolerated to null exactly like the failures strip: a
+          // control plane with no span backend 501s here, and that must not take the whole
+          // detail view down with it.
+          api.verticalEgress(slug).catch(() => null),
         ]);
         setVersions(vs);
         setChannels(ch);
         setFailures(fl);
+        setEgress(eg);
         // Reaped rows are terminal tombstones that never block the delete — the retire
         // panel lists only what still does (live + archived).
         setBoundScopes(sc.filter((s) => s.status !== 'reaped'));
@@ -386,20 +395,55 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       // declaration); `undeclared` = a pre-#303 push the egress worker meters but does not
       // enforce until the next push.
       header: 'Outbound',
-      render: (v) =>
-        v.outbound == null ? (
-          <span style={{ color: 'var(--text-placeholder)' }}>undeclared (unenforced)</span>
-        ) : v.outbound.length === 0 ? (
-          <span style={{ color: 'var(--text-placeholder)' }}>none</span>
-        ) : (
-          <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
-            {v.outbound.map((h) => (
-              <Tag key={h} mono>
-                {h}
-              </Tag>
-            ))}
+      render: (v) => {
+        // What this version was OBSERVED reaching (#859), beside what it DECLARED. The
+        // two belong in one cell: the admit decision is about the difference, and a
+        // reader comparing two columns by eye is how drift gets missed.
+        const observed = egress?.rows.filter((r) => r.service === v.deploymentRef) ?? [];
+        const undeclared = observed.filter((r) => r.undeclared);
+        const unused = egress?.byService.find((b) => b.service === v.deploymentRef)?.unused ?? [];
+        return (
+          <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
+            {v.outbound == null ? (
+              <span style={{ color: 'var(--text-placeholder)' }}>undeclared (unenforced)</span>
+            ) : v.outbound.length === 0 ? (
+              <span style={{ color: 'var(--text-placeholder)' }}>none</span>
+            ) : (
+              <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                {v.outbound.map((h) => (
+                  // A declared host not seen in the window is dimmed, never flagged: a
+                  // quiet window is not evidence of anything, so it must not read as a fault.
+                  <span
+                    key={h}
+                    title={unused.includes(h) ? 'declared — not seen in this window' : undefined}
+                    style={unused.includes(h) ? { opacity: 0.55 } : undefined}
+                  >
+                    <Tag mono>{h}</Tag>
+                  </span>
+                ))}
+              </span>
+            )}
+            {undeclared.length > 0 && (
+              <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+                {undeclared.map((r) => (
+                  <span key={`${r.host}-${r.origin}`} style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                    <Badge status="danger">undeclared</Badge>
+                    <span title={r.sampleUrl ?? undefined}>
+                      <Tag mono>{r.host}</Tag>
+                    </span>
+                    {/* The origin is the point: DO-originated egress is the half the
+                        egress worker never intercepted, so it was never refused. */}
+                    <span style={{ color: 'var(--text-placeholder)', fontSize: 12 }}>
+                      {r.origin === 'durable-object' ? 'from a durable object — not enforced' : `from the ${r.origin}`}
+                      {` · ${r.calls}×`}
+                    </span>
+                  </span>
+                ))}
+              </span>
+            )}
           </span>
-        ),
+        );
+      },
     },
     {
       header: 'Deployment',
@@ -656,6 +700,23 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             );
           })}
         </div>
+
+        {/* What the Outbound column's observed half is worth (#859). An egress read is
+            head-sampled and row-capped, so an absent host is NOT evidence a version never
+            called it — and a reader who takes "no undeclared hosts" as a clean bill of
+            health has been misled by a partial answer. Say the coverage out loud, every
+            time, rather than only when something looks wrong. */}
+        {egress && (
+          <div style={{ padding: '8px 0 0', color: 'var(--text-placeholder)', fontSize: 12 }}>
+            Observed egress: last {egress.hours}h
+            {egress.samplingRate === null
+              ? ', sampling rate unknown — absence of a host is not proof it was never called'
+              : `, sampled at ${Math.round(egress.samplingRate * 100)}%`}
+            {egress.truncated && ' · TRUNCATED: the host list is a floor, not the whole set'}
+            {egress.servicesTruncated &&
+              ` · only ${egress.versionsConsidered} of ${egress.versionsTotal} deployed versions were queried`}
+          </div>
+        )}
 
         {/* Publish order preserved (asc — the walk keeps the route's default); the window
             grows a page at a time over the already-walked set. */}
