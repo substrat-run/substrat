@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { availableActions, type EffectiveStatus } from '../src/lib/fleet';
+import { AUTO_ADMISSION_NOTE } from '@substrat-run/contracts';
+import type { VerticalVersion } from '@substrat-run/contracts';
+import {
+  admissionLabel,
+  admissionTone,
+  availableActions,
+  awaitingStaffVouch,
+  effectiveAdmission,
+  type EffectiveStatus,
+} from '../src/lib/fleet';
 
 /**
  * The lifecycle levers the console offers per scope status. Only *legal* transitions
@@ -60,5 +69,66 @@ describe('availableActions', () => {
   it('offers nothing terminal or mid-flight', () => {
     expect(availableActions('reaped')).toEqual([]);
     expect(availableActions('archiving')).toEqual([]);
+  });
+});
+
+/**
+ * The publish seam's console half (marketplace-publish.md §5). A private vertical's push
+ * self-admits, so `admission` alone reports every such version as `admitted` — while
+ * `setVerticalListed` refuses exactly those, because the note records that no human ever
+ * read the code that listing would expose to every tenant.
+ *
+ * Both halves of that gap are pinned here: the badge must not claim a vouch that does not
+ * exist, and the action that creates one must be offered precisely when it would work.
+ * The live case this was filed for: substrat-9yjbbn/auth-server sat admitted + promoted +
+ * unlistable, and the console rendered a green badge, no button, and — on List — a bare
+ * `internal error`.
+ */
+describe('admission — admitted is not the same as vouched for', () => {
+  const version = (
+    admission: VerticalVersion['admission'],
+    admissionNote: string | null = null,
+  ): Pick<VerticalVersion, 'admission' | 'admissionNote'> => ({ admission, admissionNote });
+
+  it('separates an auto-admission from a staff one', () => {
+    expect(effectiveAdmission(version('admitted', AUTO_ADMISSION_NOTE))).toBe('auto-admitted');
+    // A staff admit CLEARS the note — that cleared note is the whole record of the vouch.
+    expect(effectiveAdmission(version('admitted', null))).toBe('admitted');
+  });
+
+  it('leaves pending and rejected alone, note or no note', () => {
+    // Only `admitted` is ambiguous. A rejected version carries its reason in the same
+    // field, and must never be read as an auto-admission.
+    expect(effectiveAdmission(version('pending'))).toBe('pending');
+    expect(effectiveAdmission(version('rejected', 'digest looked wrong'))).toBe('rejected');
+    expect(effectiveAdmission(version('rejected', AUTO_ADMISSION_NOTE))).toBe('rejected');
+  });
+
+  it('offers the vouch exactly when a staff admit would change something', () => {
+    // The console's rule for rendering the button. `admitVersion` is a no-op on an
+    // already-vouched version and refuses a rejected one, so offering it there would be a
+    // button whose only outcome is nothing or a 409 — the same defect fleet's
+    // `availableActions` suite exists to prevent.
+    expect(awaitingStaffVouch(version('admitted', AUTO_ADMISSION_NOTE))).toBe(true);
+    expect(awaitingStaffVouch(version('admitted', null))).toBe(false);
+    expect(awaitingStaffVouch(version('pending'))).toBe(false);
+    expect(awaitingStaffVouch(version('rejected', 'no'))).toBe(false);
+  });
+
+  it('reads as a state, not a problem', () => {
+    // An auto-admitted version serves its own tenant fine; only publication is withheld.
+    // Warning tone would put it beside `pending`, which IS blocking someone.
+    expect(admissionTone('auto-admitted')).toBe('info');
+    expect(admissionTone('pending')).toBe('warning');
+    expect(admissionTone('admitted')).toBe('success');
+    expect(admissionTone('rejected')).toBe('danger');
+  });
+
+  it('never labels an auto-admission plain "Admitted"', () => {
+    // The regression that started this: the operator read "admitted" and had no reason to
+    // expect List to fail.
+    expect(admissionLabel('auto-admitted')).toBe('Auto-admitted');
+    expect(admissionLabel('admitted')).toBe('Admitted');
+    expect(admissionLabel('pending')).toBe('Pending');
   });
 });

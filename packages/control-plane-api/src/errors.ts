@@ -49,6 +49,14 @@ const STATUS_PATTERNS: readonly [RegExp, ContentfulStatusCode][] = [
   [/is owned by /, 409],
   [/was rejected — publish a new one/, 409],
   [/is already admitted/, 409],
+  // The publish seam's refusal (marketplace-publish.md §5): prod points at a version
+  // carrying only the AUTO admission note, so no human has vouched for code that listing
+  // would expose to every tenant. It names its own way out — a staff admit of that
+  // version — and without this entry it fell through to the generic 500 below, which is
+  // how the console's List button came to answer `internal error` and the operator had
+  // no way to learn that an admit was what it wanted. Pinned by the contract suite
+  // (`/auto-admitted.*staff admit/`) against both adapters, like every pattern here.
+  [/is auto-admitted \(private self-serve\)/, 409],
   [/belongs to '/, 409],
   [/not admitted/, 409],
   [/acknowledge it explicitly to promote/, 409],

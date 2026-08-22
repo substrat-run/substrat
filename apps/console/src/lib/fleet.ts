@@ -1,4 +1,5 @@
-import type { Scope, ScopeStatus, Tenant, TenantId } from '@substrat-run/contracts';
+import { AUTO_ADMISSION_NOTE } from '@substrat-run/contracts';
+import type { Scope, ScopeStatus, Tenant, TenantId, VerticalVersion } from '@substrat-run/contracts';
 
 /**
  * Effective vs stored scope status — the one place the console is allowed to
@@ -62,6 +63,64 @@ export function statusLabel(s: EffectiveStatus): string {
 
 export function tenantTone(status: Tenant['status']): BadgeTone {
   return status === 'active' ? 'success' : status === 'suspended' ? 'warning' : 'danger';
+}
+
+/**
+ * Effective vs stored ADMISSION — the second place the console must disagree with the
+ * directory, and for the same reason `effectiveStatus` above exists.
+ *
+ * A private vertical's push lands `admitted` straight away (builder-plane.md §4-revised)
+ * carrying {@link AUTO_ADMISSION_NOTE}: serving-eligible, but read by nobody except its
+ * author. That distinction is invisible in the `admission` field alone, and it is exactly
+ * what the ONE remaining staff seam turns on — `setVerticalListed` refuses while prod
+ * points at such a version, because listing is the moment other tenants start trusting
+ * the code.
+ *
+ * Rendering the bare `admitted` badge therefore told an operator the version was vouched
+ * for while the platform disagreed: List failed, and nothing on the page said why. Show
+ * what is true, not what is stored.
+ */
+export type EffectiveAdmission = VerticalVersion['admission'] | 'auto-admitted';
+
+export function effectiveAdmission(
+  v: Pick<VerticalVersion, 'admission' | 'admissionNote'>,
+): EffectiveAdmission {
+  return v.admission === 'admitted' && v.admissionNote === AUTO_ADMISSION_NOTE
+    ? 'auto-admitted'
+    : v.admission;
+}
+
+/**
+ * Does this version still need the human vouch that publishing requires? True exactly
+ * when a staff `admitVersion` would do something — it upgrades an auto-admission to a
+ * manual one by clearing the note (audited), which is the only way to make the vertical
+ * listable. The console offers the action on precisely this predicate, so the button is
+ * present when it works and absent when it would be a no-op.
+ */
+export function awaitingStaffVouch(v: Pick<VerticalVersion, 'admission' | 'admissionNote'>): boolean {
+  return effectiveAdmission(v) === 'auto-admitted';
+}
+
+/**
+ * `auto-admitted` is INFO, not warning: unlike `pending` it is not blocking anything the
+ * owner is waiting on — the version deploys and serves its own tenant perfectly well. The
+ * only thing it withholds is publication, so it reads as a state, not a problem.
+ */
+export function admissionTone(a: EffectiveAdmission): BadgeTone {
+  switch (a) {
+    case 'admitted':
+      return 'success';
+    case 'auto-admitted':
+      return 'info';
+    case 'rejected':
+      return 'danger';
+    case 'pending':
+      return 'warning';
+  }
+}
+
+export function admissionLabel(a: EffectiveAdmission): string {
+  return a === 'auto-admitted' ? 'Auto-admitted' : a[0]!.toUpperCase() + a.slice(1);
 }
 
 /** `{tenant.slug}/{scope.slug}` — the console's handle. Scope slugs are unique per tenant, not per fleet. */

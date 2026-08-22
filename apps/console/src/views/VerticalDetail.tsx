@@ -13,15 +13,19 @@ import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table,
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
-import { statusLabel, statusTone } from '../lib/fleet';
+import {
+  admissionLabel,
+  admissionTone,
+  awaitingStaffVouch,
+  effectiveAdmission,
+  statusLabel,
+  statusTone,
+} from '../lib/fleet';
 
 // `prod` is the only channel — dev/staging were retired (#509). A non-prod environment is
 // a preview, not a second pointer at the same code.
 const CHANNELS: readonly ChannelName[] = ['prod'];
 const PAGE = 20;
-
-const admissionTone = (a: VerticalVersion['admission']): 'success' | 'danger' | 'warning' =>
-  a === 'admitted' ? 'success' : a === 'rejected' ? 'danger' : 'warning';
 
 export interface VerticalDetailProps {
   api: Api;
@@ -353,7 +357,28 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   const versionColumns: TableColumn<VerticalVersion>[] = [
     { header: 'Version', render: (v) => v.version, mono: true },
     { header: 'Pushed', render: (v) => v.createdAt.slice(0, 16).replace('T', ' '), mono: true, muted: true, width: 140 },
-    { header: 'Admission', render: (v) => <Badge status={admissionTone(v.admission)}>{v.admission}</Badge> },
+    {
+      header: 'Admission',
+      // `effectiveAdmission`, not `v.admission`: an auto-admitted version is admitted AND
+      // unpublishable, and collapsing the two into one green badge is what left an
+      // operator staring at a List button that failed for no visible reason.
+      render: (v) => {
+        const a = effectiveAdmission(v);
+        return (
+          <span
+            title={a === 'auto-admitted' ? (v.admissionNote ?? undefined) : undefined}
+            style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}
+          >
+            <Badge status={admissionTone(a)}>{admissionLabel(a)}</Badge>
+            {a === 'auto-admitted' && (
+              <span style={{ color: 'var(--text-placeholder)', fontSize: 12 }}>
+                needs a vouch to list
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
     {
       // The declared outbound surface (#303, D-46) — part of what admitting means, so it
       // renders beside the Admit button: which third-party hosts this version's worker may
@@ -407,6 +432,19 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
               Reject
             </Button>
           </span>
+        ) : awaitingStaffVouch(v) ? (
+          // The SAME endpoint as Admit — `admitVersion` upgrades an auto-admission to a
+          // manual one by clearing the note (audited). It was previously unreachable from
+          // here, because this cell only rendered for `pending`, so a private vertical
+          // could never be listed through the console at all: the one action that unblocks
+          // publishing had no button. Labelled "Vouch" because that is what it records —
+          // the version is already admitted; what is missing is a human behind it.
+          <Button
+            size="sm"
+            onClick={() => run(() => api.admitVersion(vertical.slug, v.id), 'Version vouched for', v.version)}
+          >
+            Vouch
+          </Button>
         ) : null,
     },
   ];
@@ -437,7 +475,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 the primary variant — it widens the audience to every tenant; Unlist is
                 danger because it pulls a live listing. The API refuses listing while prod
                 points at an auto-admitted version — that refusal surfaces verbatim via
-                `run`, deliberately not pre-checked here. */}
+                `run` (409, once errors.ts stopped collapsing it into a generic 500), and
+                the Vouch button in the versions table below is the way out. Deliberately
+                not pre-checked here: the server owns the rule. */}
             <Button
               variant={vertical.listed ? 'danger' : 'primary'}
               onClick={() =>
