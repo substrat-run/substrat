@@ -9,18 +9,20 @@
  *
  * What survives here is what genuinely has no declaration behind it:
  *
- *  - **Which identity a request carries.** Two backends share this app — the node
- *    dev server authenticates the `x-principal` persona header, the Worker
- *    authenticates a session cookie — and choosing between them is a fact about
- *    the deployment, not about the model.
- *  - **The four routes that are not operations.** `/cast` is the persona list the
- *    dev harness serves; `/me` is the auth probe; `/api/auth/login` and `/logout`
- *    redirect to the issuer. None is a `ScopeStub` invoke, so none can be declared.
+ *  - **The three routes that are not operations.** `/me` is the session, and
+ *    `/api/auth/login` and `/logout` redirect to the issuer. None is a `ScopeStub`
+ *    invoke, so none can be declared.
  *  - **The three operations deliberately left unbound.** `callout/timeline` and
  *    `protocol/list-for-entity` both take an entity-agnostic `entityType`, and
  *    binding either to a URL would let a caller name any entity at all — the
  *    engine is entity-agnostic and this is exactly where the vertical stops being
  *    (see `calloutProtocolRoutes`). `callout/whoami` has no screen.
+ *
+ * There is no auth mode here any more. Both backends — the node dev server and the
+ * Worker — authenticate the same way: a session cookie from the same relying-party
+ * flow, against whatever issuer each is pointed at. The `x-principal` header and the
+ * persona list it needed are gone; locally the picker lives at the dev issuer, where
+ * it belongs.
  */
 import { createClient, type CalloutClient, type ProtocolInstance } from './api.generated';
 
@@ -67,51 +69,18 @@ export type CompletedOrder = Awaited<ReturnType<CalloutClient['completeWorkorder
 export type CustomerWithFacilities =
   Awaited<ReturnType<CalloutClient['listCustomers']>>['entries'][number];
 
-export interface CastMember {
-  name: string;
-  role: string;
-  principal: string;
-}
-
-export function currentPrincipal(): string | null {
-  return localStorage.getItem('fsm-principal');
-}
-
-export function setPrincipal(principal: string | null): void {
-  if (principal) localStorage.setItem('fsm-principal', principal);
-  else localStorage.removeItem('fsm-principal');
-}
-
-/**
- * Two backends share this app. The node/sqlite dev server authenticates via the
- * `x-principal` header (persona picker); the Cloudflare Worker authenticates via
- * a Better Auth session cookie. In Better-Auth mode we must NOT send x-principal
- * (the cookie is the identity), so App probes `/api/me` on mount and calls
- * `setHeaderAuth` to pick the mode. Defaults to header mode for the node demo.
- */
-let headerAuth = true;
-export function setHeaderAuth(on: boolean): void {
-  headerAuth = on;
-}
-
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const principal = currentPrincipal();
-  const sendHeader = headerAuth && principal;
   const res = await fetch(`/api${path}`, {
     credentials: 'same-origin',
     ...init,
-    headers: {
-      'content-type': 'application/json',
-      ...(sendHeader ? { 'x-principal': principal } : {}),
-      ...init?.headers,
-    },
+    headers: { 'content-type': 'application/json', ...init?.headers },
   });
   const body = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(body.error ?? `${res.status}`);
   return body;
 }
 
-/** The resolved Better-Auth identity behind the current cookie (from `GET /api/me`). */
+/** The resolved identity behind the current session cookie (from `GET /api/me`). */
 export interface Session {
   principal: string;
   display: string;
@@ -120,26 +89,19 @@ export interface Session {
 }
 
 /**
- * Probe which backend/auth mode we're talking to:
- *  - 200 → Better Auth, signed in (`session` set)
- *  - 401 → Better Auth, not signed in (`session` null)
- *  - 404 / network fail → node dev server (no `/api/me` route) → header mode
+ * The session behind the current cookie, or null when nobody is signed in.
+ *
+ * One question with one answer, because there is one auth path now. This used to also
+ * have to work out WHICH backend was answering — a 404 meant the node dev server and
+ * put the whole app into a second, header-authenticated mode that no deployment ever
+ * ran. Anything other than a 200 is simply "not signed in".
  */
-export type MeResult =
-  | { mode: 'better-auth'; session: Session | null }
-  | { mode: 'header' };
-
-export async function me(): Promise<MeResult> {
+export async function me(): Promise<Session | null> {
   try {
     const res = await fetch('/api/me', { credentials: 'same-origin' });
-    if (res.status === 404) return { mode: 'header' };
-    if (res.status === 401) return { mode: 'better-auth', session: null };
-    if (res.ok) return { mode: 'better-auth', session: (await res.json()) as Session };
-    // Route exists (Better Auth) but returned another status → treat as no session.
-    return { mode: 'better-auth', session: null };
+    return res.ok ? ((await res.json()) as Session) : null;
   } catch {
-    // Network failure / no backend reachable → fall back to the node header flow.
-    return { mode: 'header' };
+    return null;
   }
 }
 
@@ -159,14 +121,12 @@ export function signOut(): void {
 
 
 /**
- * The four non-operation routes, and the three operations left unbound.
+ * The non-operation routes, and the three operations left unbound.
  *
  * They share the generated client's transport (`call` above) rather than a second
- * fetch wrapper, so auth-mode selection and error handling stay in one place.
+ * fetch wrapper, so error handling stays in one place.
  */
 export const extra = {
-  /** The dev harness's persona list. Not an operation — the node server owns it. */
-  cast: () => call<Record<string, CastMember>>('/cast'),
   /** `callout/timeline`, unbound: `entityType` is entity-agnostic (see api.ts header). */
   timeline: (id: string) => call<TimelineEntry[]>(`/workorders/${id}/timeline`),
   /** `protocol/list-for-entity`, unbound for the same reason. */
@@ -190,15 +150,12 @@ export interface ProtocolSummary {
 }
 
 /**
- * The generated client, wired to this app's two auth modes.
+ * The generated client. The session cookie is the identity, so there are no auth headers
+ * to add — only `credentials: 'same-origin'`, which is what sends it.
  *
  * `errorMessage` is the default: callout's routes answer `{ error }`, which is the
  * first shape it reads.
  */
 export const api = createClient({
-  headers: (): Record<string, string> => {
-    const principal = currentPrincipal();
-    return headerAuth && principal ? { 'x-principal': principal } : {};
-  },
   fetch: (input, init) => fetch(input, { credentials: 'same-origin', ...init }),
 });

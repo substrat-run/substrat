@@ -27,6 +27,7 @@ import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-inv
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import { calloutModule } from './module.js';
 import { SC_PERM } from './manifest.js';
+import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 export function buildDemoHost(dir: string): SqliteScopeHost {
   const host = new SqliteScopeHost({ dir }); // default checker: the tuple engine
@@ -193,6 +194,37 @@ export async function seedDemo(host: SqliteScopeHost, dir: string): Promise<Demo
           },
         ],
       },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // The login side of the cast: each dev persona's OIDC `sub` bound to its principal
+  // in the identity directory. This is the ordinary production seam, not a dev one —
+  // a hosted instance builds the same rows when someone claims the owner seat or
+  // accepts an invite. All that differs locally is that the subjects are known up
+  // front, so nobody has to click through a first-run claim after every data wipe.
+  //
+  // `scopeId` on the link is what carries a persona to its own node: Mallory resolves
+  // into t2/s2 and everyone else into t1/s1, which is how the cross-tenant beat still
+  // works without a persona table in the server.
+  // ---------------------------------------------------------------------------
+  await host.admin.registerIdentityPool(staff, { provider: DEV_PROVIDER, topology: 'central', tenantId: null });
+  const homes: Record<string, { principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId }> = {
+    'dev|anna': { principal: world.anna, tenantId: world.t1, scopeId: world.s1 },
+    'dev|harald': { principal: world.harald, tenantId: world.t1, scopeId: world.s1 },
+    'dev|berit': { principal: world.berit, tenantId: world.t1, scopeId: world.s1 },
+    'dev|styrbjorn': { principal: world.styrbjorn, tenantId: world.t1, scopeId: world.s1 },
+    'dev|mallory': { principal: world.mallory, tenantId: world.t2, scopeId: world.s2 },
+  };
+  for (const persona of PERSONAS) {
+    const home = homes[persona.sub];
+    if (!home) continue;
+    await host.admin.linkIdentity(staff, {
+      provider: DEV_PROVIDER,
+      externalId: persona.sub,
+      principal: home.principal,
+      tenantId: home.tenantId,
+      scopeId: home.scopeId,
     });
   }
 

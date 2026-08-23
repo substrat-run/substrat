@@ -20,6 +20,7 @@ import {
   type MeridianInstance,
   type ScriveCredential,
 } from './provision.js';
+import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 /**
  * The demo world and the local (SQLite) host that runs it. The portable half —
@@ -341,6 +342,38 @@ export async function seedDemo(
         grantedBy: world.hedda,
       });
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The login side of the cast: each dev persona's OIDC `sub` bound to its principal in
+  // the identity directory. The ordinary production seam, not a dev one — a hosted
+  // instance builds the same rows on owner-claim or invite-accept. All that differs
+  // locally is that the subjects are known up front, so nobody clicks through a first-run
+  // claim after every data wipe.
+  //
+  // `scopeId` on the link carries a persona to their own node: Pablo into the Spanish
+  // scope, Mallory into the other company entirely. That is what keeps the country and
+  // cross-tenant beats working without a persona table in the dev server.
+  // ---------------------------------------------------------------------------
+  await host.admin.registerIdentityPool(staff, { provider: DEV_PROVIDER, topology: 'central', tenantId: null });
+  const homes: Record<string, { principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId }> = {
+    'dev|elin': { principal: world.elin, tenantId: world.t1, scopeId: world.sSe },
+    'dev|pablo': { principal: world.pablo, tenantId: world.t1, scopeId: world.sEs },
+    'dev|mats': { principal: world.mats, tenantId: world.t1, scopeId: world.sSe },
+    'dev|hedda': { principal: world.hedda, tenantId: world.t1, scopeId: world.sSe },
+    'dev|petra': { principal: world.petra, tenantId: world.t1, scopeId: world.sSe },
+    'dev|mallory': { principal: world.mallory, tenantId: world.t2, scopeId: world.s2 },
+  };
+  for (const persona of PERSONAS) {
+    const home = homes[persona.sub];
+    if (!home) continue;
+    await host.admin.linkIdentity(staff, {
+      provider: DEV_PROVIDER,
+      externalId: persona.sub,
+      principal: home.principal,
+      tenantId: home.tenantId,
+      scopeId: home.scopeId,
+    });
   }
 
   return world;

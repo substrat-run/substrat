@@ -5,8 +5,8 @@ import type { ScopeStub } from '@substrat-run/kernel';
 /**
  * The bike shop's HTTP API — ONE route table, adapter- and auth-agnostic.
  *
- * Both entrypoints mount this: `server.ts` (node, pure-SQLite adapter, `x-principal`
- * dev auth) and `worker.ts` (Cloudflare, Durable-Object adapter, the auth seam). Each
+ * Both entrypoints mount this: `server.ts` (node, pure-SQLite adapter, OIDC against the
+ * local dev issuer) and `worker.ts` (Cloudflare, Durable-Object adapter, the auth seam). Each
  * supplies a `resolveStub` that authenticates the caller its own way and returns a
  * capability `ScopeStub`; every route here is a thin wrapper over ONE operation, with
  * no business logic — the rules live in an operation or an engine.

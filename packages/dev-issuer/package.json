@@ -1,0 +1,49 @@
+{
+  "name": "@substrat-run/dev-issuer",
+  "version": "0.1.0",
+  "description": "A local OpenID Connect provider whose only shortcut is that you pick a user instead of typing a password. Dev only \u2014 never deployed, never a dependency of a vertical's runtime.",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "packages/dev-issuer"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "substrat-dev-issuer": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "serve": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/vertical-auth": "workspace:^",
+    "jose": "^6.2.3"
+  },
+  "peerDependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@substrat-run/oidc-rp": "workspace:^",
+    "@types/node": "^22.0.0",
+    "hono": "^4.6.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.0",
+    "vitest": "catalog:"
+  }
+}

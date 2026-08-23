@@ -1,7 +1,11 @@
-// Typed client over the Meridian dev server. The dev persona is carried in the
-// `x-principal` header (localStorage-backed); in production this becomes a real
-// session. Every call goes through /api/invoke — the kernel checks permissions
-// inside each operation, so the generic transport is exactly as safe.
+// Typed client over Meridian. The session cookie is the identity — the same cookie in dev
+// and in production, because both entrypoints run the same relying-party flow against
+// whichever issuer they are pointed at. Every call goes through /api/invoke: the kernel
+// checks permissions inside each operation, so the generic transport is exactly as safe.
+//
+// This used to carry a `x-principal` header out of localStorage. That made the persona a
+// client-side fact — anyone could type another principal into devtools — and meant the
+// browser's auth path in dev was one no deployment ran.
 
 export class ApiError extends Error {
   status: number;
@@ -11,17 +15,35 @@ export class ApiError extends Error {
   }
 }
 
-const PRINCIPAL_KEY = 'meridian.principal';
-export const getPrincipal = (): string => localStorage.getItem(PRINCIPAL_KEY) ?? 'elin';
-export const setPrincipal = (key: string): void => localStorage.setItem(PRINCIPAL_KEY, key);
-
 function headers(): Record<string, string> {
-  return { 'content-type': 'application/json', 'x-principal': getPrincipal() };
+  return { 'content-type': 'application/json' };
+}
+
+/** Send the browser to the issuer to sign in, returning to `returnTo` on this origin. */
+export function loginAt(returnTo = '/'): void {
+  window.location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
+}
+
+/**
+ * Sign in as somebody else. `prompt=select_account` is what makes this work against an
+ * issuer that holds an SSO session — locally the dev issuer keeps none, so its picker
+ * appears either way and switching user is a single click.
+ */
+export function switchUser(returnTo = '/'): void {
+  window.location.assign(
+    `/api/auth/login?prompt=select_account&returnTo=${encodeURIComponent(returnTo)}`,
+  );
+}
+
+/** Sign out (clears the session cookie), then land back on this origin. */
+export function signOut(): void {
+  window.location.assign('/api/auth/logout');
 }
 
 async function invoke<T>(op: string, input?: unknown): Promise<T> {
   const res = await fetch('/api/invoke', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: headers(),
     body: JSON.stringify({ op, input }),
   });
@@ -31,7 +53,7 @@ async function invoke<T>(op: string, input?: unknown): Promise<T> {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path, { headers: headers() });
+  const res = await fetch(path, { credentials: 'same-origin', headers: headers() });
   const body = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new ApiError((body as { error?: string }).error ?? `${res.status}`, res.status);
   return body;
@@ -43,7 +65,7 @@ async function get<T>(path: string): Promise<T> {
 
 /** A POST to one of the worker's own JSON routes (not the /api/invoke op transport). */
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+  const res = await fetch(path, { method: 'POST', credentials: 'same-origin', headers: headers(), body: JSON.stringify(body) });
   const text = await res.text();
   const parsed = (text ? JSON.parse(text) : undefined) as (T & { error?: string }) | undefined;
   if (!res.ok) throw new ApiError(parsed?.error ?? `${res.status}`, res.status);
@@ -66,13 +88,6 @@ export interface InvitesResult {
 // -- shapes (subset the app renders) ----------------------------------------
 
 export interface Me {
-  key: string;
-  display: string;
-  role: string;
-  country: 'SE' | 'ES';
-  employeeId: string | null;
-}
-export interface CastMember {
   key: string;
   display: string;
   role: string;
@@ -179,7 +194,6 @@ export function isNeedsSetup(m: Me | NeedsSetup): m is NeedsSetup {
 
 export const api = {
   me: () => get<Me | NeedsSetup>('/api/me'),
-  cast: () => get<CastMember[]>('/api/cast'),
 
   // Invites (admin-only server-side): the post-setup join path.
   invites: () => get<InvitesResult>('/api/invites'),

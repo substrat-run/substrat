@@ -23,7 +23,15 @@
  * @property {Record<string,string>} [env] Env the `dev` script sets for this process.
  */
 
-/** The template ships one process: the Hono API. There is no web app to scaffold yet. */
+/**
+ * Two processes: the local OIDC issuer, and the Hono API that relies on it. There is no
+ * web app to scaffold yet.
+ *
+ * The issuer is a separate PROCESS rather than a branch inside the API on purpose — that
+ * is what keeps the vertical free of any dev-only auth path, and lets it be swapped for a
+ * real issuer by changing `OIDC_ISSUER` alone.
+ */
 export const DEV_SERVERS = [
+  { name: 'issuer', run: 'issuer', portEnv: 'ISSUER_PORT', portFrom: 'src/server.ts' },
   { name: 'api', run: 'server', portEnv: 'PORT', portFrom: 'src/server.ts' },
 ];

@@ -9,7 +9,9 @@ import Database from 'better-sqlite3';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { PLATFORM_REQUEST_HEADER, ulid } from '@substrat-run/kernel';
 import { platformActorId, principalId, z, type PlatformActorId, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
+import { devLogin, type DevCaller } from '@substrat-run/dev-issuer';
 import { buildDemoHost, seedDemo, type ManyfoldWorld } from './index.js';
+import { DEV_PROVIDER } from './personas.js';
 import { ROLES } from './provision.js';
 import { mountApi } from './routes.js';
 import { API_DOCUMENT } from './api.js';
@@ -19,15 +21,15 @@ import { DOCS_HTML } from './docs.js';
  * Dev API server for Manyfold. Deliberately thin: resolve (principal, site) → getScope →
  * invoke. Every route is a wrapper over an operation; no business logic here.
  *
- * OIDC-only (oidc-only-demos.md): the vertical runs no credential store, so this dev server
- * hosts NO accounts and NO `/api/auth/*`. Local dev authenticates with the `x-principal`
- * persona picker (defaulting to a cast member so the app runs out of the box) — an
- * impersonation bypass that only ever exists on this dev-only Node server, never the worker.
- * A real login is the OIDC round-trip, exercised via the worker against a running
- * `demos/auth-server` issuer.
+ * OIDC-only (oidc-only-demos.md) and, since the dev issuer, with no dev branch: this server
+ * runs the same relying-party flow the worker does, against whichever issuer `OIDC_ISSUER`
+ * names. What stood here was an `x-principal` header that defaulted to the first persona —
+ * so the app came up already signed in as somebody, which is the one thing a hosted instance
+ * never does, and the sign-in screen was consequently unreachable in dev.
  *
- * Multi-scope is the twist: `x-site` selects which of the tenant's sites (scopes) the
- * request runs against — that is site SELECTION, not auth.
+ * Multi-scope is the twist, and it is untouched: `x-site` selects which of the tenant's sites
+ * (scopes) the request runs against. Selection is not authentication — the login says who you
+ * are, the site says where, and the kernel re-checks your authority in that scope either way.
  */
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', '.data');
@@ -45,31 +47,19 @@ const world: ManyfoldWorld = await seedDemo(host, dataDir);
 const staff: PlatformActorId = platformActorId.parse(ulid());
 const siteBySlug = new Map(world.sites.map((s) => [s.slug, s]));
 
-// The demo cast: their seeded principals (roles are held per site — see seed.ts). Dev picks one
-// with the `x-principal` header; with none set the server defaults to the first, so the app runs
-// out of the box. These are principal ids, NOT logins — real accounts live at the OIDC issuer.
-const CAST: Array<{ principal: PrincipalId; name: string }> = [
-  { principal: world.maja, name: 'Maja Lindqvist' },
-  { principal: world.emil, name: 'Emil Berg' },
-  { principal: world.sofia, name: 'Sofia Ruiz' },
-];
-const DEFAULT_PERSONA = CAST[0]!;
-const nameOf = (p: PrincipalId): string => CAST.find((c) => c.principal === p)?.name ?? 'You';
-
-// ── Identity: dev persona (x-principal) + selected site ───────────────────────
+// ── Identity: the relying party + the selected site ──────────────────────────
 
 /**
- * The dev principal: the `x-principal` header if it names one, else the default persona so the
- * app is usable without a picker. Dev-only — this Node server is never deployed; the worker is
- * the production surface and authenticates via OIDC.
+ * The relying party — login, callback, logout, and `sub` → principal through the identity
+ * directory. Identical to the worker's; only the issuer differs, and it differs by config.
  */
-function devPrincipal(headers: Headers): PrincipalId {
-  const raw = headers.get('x-principal');
-  if (raw) {
-    const parsed = principalId.safeParse(raw);
-    if (parsed.success) return parsed.data;
-  }
-  return DEFAULT_PERSONA.principal;
+const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROVIDER });
+
+/** The caller, or 401. Manyfold takes the TENANT from the link and the scope from `x-site`. */
+async function callerFor(c: Context): Promise<DevCaller> {
+  const caller = await login.caller(c.req.raw.headers);
+  if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
+  return caller;
 }
 
 /** Which of the tenant's sites (scopes) this request targets — `x-site` slug, default cafe. */
@@ -81,7 +71,7 @@ function siteScope(headers: Headers): ScopeId {
 }
 
 async function stub(c: Context): Promise<ScopeStub> {
-  const principal = devPrincipal(c.req.raw.headers);
+  const { principal } = await callerFor(c);
   // #458 parity with the worker: flag responses whose operation enqueued a platform
   // intent. No router locally, so the header is inert — but visible when driving the API.
   return host.getScope(principal, world.t1, siteScope(c.req.raw.headers), {
@@ -104,22 +94,25 @@ app.onError((err, c) => {
   return c.json({ error: m }, 400);
 });
 
-// No /api/auth/* here: the vertical runs no credential store (oidc-only-demos.md). Dev auth is
-// the x-principal persona picker; real login is the OIDC round-trip via the worker + issuer.
+// The relying-party endpoints — login, callback, logout. Accounts, passwords and sign-up
+// live at the issuer; the vertical runs no credential store (oidc-only-demos.md).
+app.on(['GET', 'POST'], '/api/auth/*', (c) => login.handle(c.req.raw));
 
 // The tenant's sites — the in-app site switcher's list. Public: it is just the switcher's
 // options; the kernel still checks every op per site. Mirrors the worker's shape.
 app.get('/api/sites', (c) => c.json(world.sites.map((s) => ({ slug: s.slug, name: s.name }))));
 
-// Who am I, in the selected site, and what may I do — the worker's `can` shape. Dev always
-// resolves a persona (default or `x-principal`), so there is no anonymous state here.
+// Who am I, in the selected site, and what may I do — the worker's `can` shape, and its 401
+// too: with a real login there IS an anonymous state here now, and the app's sign-in screen
+// is reachable in dev for the first time.
 app.get('/api/me', async (c) => {
-  const principal = devPrincipal(c.req.raw.headers);
+  const caller = await login.caller(c.req.raw.headers);
+  if (!caller) return c.json({ error: 'unauthorized' }, 401);
   const scope = siteScope(c.req.raw.headers);
-  const who = (await (await host.getScope(principal, world.t1, scope)).invoke('manyfold/whoami', undefined)) as {
+  const who = (await (await host.getScope(caller.principal, world.t1, scope)).invoke('manyfold/whoami', undefined)) as {
     can: Record<string, boolean>;
   };
-  return c.json({ key: principal, display: nameOf(principal), site: scope, can: who.can });
+  return c.json({ key: caller.principal, display: caller.display, site: scope, can: who.can });
 });
 
 // ── Members & invites (the post-setup join path — admin-only) ────────────────
@@ -174,10 +167,11 @@ app.post('/api/invites/:principal/revoke', async (c) => {
 });
 
 app.post('/api/accept-invite', async (c) => {
-  // Dev has no credential store: the `x-principal` persona IS the identity, so there is no login
-  // to bind. The invited principal already holds its role (granted at create), so accepting just
-  // consumes the invite — switch to it with `x-principal` to see the member's view. (In the
-  // worker, this binds the invitee's OIDC subject to the member principal in the IdentityDO.)
+  // Accepting consumes the invite; the invited principal already holds its role (granted at
+  // create). It does NOT rebind your login the way the worker does: the worker's IdentityDO is
+  // keyed per (scope, sub) and can hold several bindings for one subject, while the SQLite
+  // directory behind this server is keyed per (tenant, provider, sub) and holds exactly one.
+  // To see the member's view locally, sign in as the persona that was invited.
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const row = invitesDb
     .prepare('SELECT scope_id as scopeId, principal FROM manyfold_dev_invites WHERE token_hash = ?')
@@ -213,7 +207,7 @@ const lines = [
   '  ' + '─'.repeat(52),
   `    data     ${dataDir}`,
   `    sites    ${world.sites.map((s) => s.slug).join(', ')}`,
-  `    personas ${CAST.map((c) => c.name).join(', ')}  ·  default: ${DEFAULT_PERSONA.name} (set x-principal to switch)`,
+  `    auth     OIDC · ${login.issuer}`,
   '',
 ];
 console.log(lines.join('\n'));

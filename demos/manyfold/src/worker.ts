@@ -11,7 +11,7 @@
  * `x-scope`; the worker opens that site's DO and evaluates permissions from its own storage.
  * Reaching another tenant's scope is impossible — getScope validates the (tenant, scope) pair.
  *
- * Local run:  wrangler dev          (real workerd, no account; ALLOW_DEV_HEADER)
+ * Local run:  wrangler dev          (real workerd, no account; ALLOW_DEV_NODE)
  * Deploy:     substrat push         (into the WfP dispatch namespace)
  */
 import { Hono } from 'hono';
@@ -39,7 +39,10 @@ interface SiteNode {
 }
 
 // A fixed dev node (valid ULIDs) — ONLY the fallback for local `wrangler dev`, where there
-// is no router to assert one, gated on ALLOW_DEV_HEADER (never set in prod).
+// is no router to assert one, gated on ALLOW_DEV_NODE (never set in prod).
+//
+// This is an ADDRESS, not an identity: it says which instance an un-routed local request
+// belongs to and grants nobody anything. The principal still comes from a verified login.
 const DEV_NODE: SiteNode = {
   tenantId: tenantId.parse('01JZ0000000000000000MNY001'),
   scopeId: scopeId.parse('01JZ0000000000000000MNY002'),
@@ -51,7 +54,7 @@ interface Env {
   AUTH_PROVIDER?: string;
   OIDC_ISSUER?: string;
   OIDC_AUDIENCE?: string;
-  ALLOW_DEV_HEADER?: string;
+  ALLOW_DEV_NODE?: string;
   ROUTER_SECRET?: string;
   PLATFORM_SECRET?: string;
 }
@@ -72,7 +75,7 @@ function baseNode(req: Request, env: Env): SiteNode {
   }
   const base: SiteNode | null = routed
     ? { tenantId: routed.tenantId, scopeId: routed.scopeId }
-    : env.ALLOW_DEV_HEADER === 'true'
+    : env.ALLOW_DEV_NODE === 'true'
       ? DEV_NODE
       : null;
   if (!base) throw new HTTPException(503, { message: 'no scope was asserted for this request (missing router assertion)' });
@@ -178,12 +181,12 @@ async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
   });
 }
 
-/** Resolve the caller → a PrincipalId in the selected site (provider-agnostic). Null ⇒ nobody. */
+/**
+ * Resolve the caller → a PrincipalId in the selected site (provider-agnostic). Null ⇒ nobody.
+ * ONE path in every environment: the `x-principal` branch that used to open this function
+ * shipped an impersonation bypass one environment variable from being live.
+ */
 async function principalFor(env: Env, req: Request): Promise<PrincipalId | null> {
-  if (env.ALLOW_DEV_HEADER === 'true') {
-    const parsed = principalId.safeParse(req.headers.get('x-principal') ?? '');
-    if (parsed.success) return parsed.data;
-  }
   const subject = await (await authProviderFor(env, req)).resolve(req.headers);
   if (!subject) return null;
   const node = await nodeFor(req, env);

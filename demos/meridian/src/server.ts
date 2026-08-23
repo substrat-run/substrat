@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { PermissionDenied, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
 import {
   ScriveMock,
@@ -12,11 +13,8 @@ import {
   handleScriveCallback,
   sweepScriveReconciliations,
 } from '@substrat-run/connector-scrive';
-import {
-  devHeaderAdapter,
-  resolvePrincipal,
-  type AuthAdapter,
-} from './auth-adapters.js';
+import { devLogin, type DevCaller } from '@substrat-run/dev-issuer';
+import { DEV_PROVIDER } from './personas.js';
 import { platformActorId, principalId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { buildDemoHost, seedDemo, type DemoWorld, type ScriveConfig } from './index.js';
 import { EMPLOYEE_SELF } from './provision.js';
@@ -24,20 +22,25 @@ import { API, API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
 
 /**
- * Dev API server for the Meridian demo. Deliberately thin: pick the dev
- * principal from the `x-principal` header → getScope → invoke. No business
- * logic here; every route is a wrapper over an operation, and the kernel
- * enforces the permission on every op regardless of how the route reached it.
+ * Dev API server for the Meridian demo. Deliberately thin: resolve the caller →
+ * getScope → invoke. No business logic here; every route is a wrapper over an
+ * operation, and the kernel enforces the permission on every op regardless of how the
+ * route reached it.
  *
- * OIDC-only (oidc-only-demos.md): the vertical runs no credential store, so this dev
- * server hosts NO accounts and NO `/api/auth/*`. Local dev authenticates with the
- * `x-principal` persona picker — an impersonation bypass by design, mounted ONLY when
- * ALLOW_DEV_HEADER=true. A real login is the OIDC round-trip, exercised via the worker
- * (`wrangler dev`) against a running `demos/auth-server` issuer.
+ * OIDC-only (oidc-only-demos.md) and, since the dev issuer, with NO dev branch: this
+ * server authenticates exactly the way the deployed worker does. `/api/auth/*` is the
+ * relying-party flow, a session cookie carries the login, and the identity directory maps
+ * the issuer's `sub` to a principal. What stood here was an `x-principal` header and a
+ * `CAST` table holding each persona's role, country and employee id — an impersonation
+ * bypass, plus a set of facts the hosted app had to derive from `hr/whoami` instead. Both
+ * are gone; `/api/me` now answers from `hr/whoami` in both entrypoints.
  *
- * Secure by default matters more here than it did as a demo: this is a template
- * now (D-33), and a template is COPIED. A default that impersonates is one people
- * carry into production without noticing they opted into anything.
+ * Secure by default matters more here than it did as a demo: this is a template now
+ * (D-33), and a template is COPIED. A default that impersonates is one people carry into
+ * production without noticing they opted into anything.
+ *
+ * The Vite proxy must not set `changeOrigin`: this server derives its OIDC `redirect_uri`
+ * from the forwarded Host header, which is what lands the callback back on the SPA.
  */
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', '.data');
@@ -112,57 +115,21 @@ const scrive = resolveScrive();
 const host = buildDemoHost(dataDir, scrive?.config);
 const world: DemoWorld = await seedDemo(host, dataDir, scrive?.config.secret);
 
-interface Persona {
-  key: string;
-  display: string;
-  role: string;
-  country: 'SE' | 'ES';
-  principal: PrincipalId;
-  tenantId: TenantId;
-  scopeId: ScopeId;
-  employeeId: string | null;
-}
-
-const CAST: Persona[] = [
-  { key: 'elin', display: 'Elin Ek', role: 'employee', country: 'SE', principal: world.elin, tenantId: world.t1, scopeId: world.sSe, employeeId: world.elinEmpId ?? null },
-  { key: 'pablo', display: 'Pablo Ruiz', role: 'employee', country: 'ES', principal: world.pablo, tenantId: world.t1, scopeId: world.sEs, employeeId: world.pabloEmpId ?? null },
-  { key: 'mats', display: 'Mats Lund (team lead)', role: 'manager', country: 'SE', principal: world.mats, tenantId: world.t1, scopeId: world.sSe, employeeId: world.matsEmpId ?? null },
-  { key: 'hedda', display: 'Hedda (HR admin)', role: 'hr-admin', country: 'SE', principal: world.hedda, tenantId: world.t1, scopeId: world.sSe, employeeId: null },
-  { key: 'petra', display: 'Petra (payroll)', role: 'payroll', country: 'SE', principal: world.petra, tenantId: world.t1, scopeId: world.sSe, employeeId: null },
-  { key: 'mallory', display: 'Mallory (other company!)', role: 'attacker', country: 'SE', principal: world.mallory, tenantId: world.t2, scopeId: world.s2, employeeId: null },
-];
-
 /**
- * Real auth first; the dev header only if explicitly opted in.
- *
- * A template teaches by example, so the example is a session — not a header that
- * names whoever it likes. The header stays for local iteration and stays OFF by
- * default, because a copied template inherits its defaults.
- *
- * Meridian's personas each carry their own (tenant, scope) — there is a second
- * company for the cross-tenant beat — so resolution walks the cast to find whose
- * principal a session maps to. A login unknown to every company resolves to
- * nobody, and reads the same as unauthenticated.
+ * The relying party. Personas each carry their own (tenant, scope) — there is a second
+ * company for the cross-tenant beat, and a Spanish scope beside the Swedish one — and both
+ * come out of the identity link the seed wrote, not out of a table here.
  */
-const adapters: AuthAdapter[] = [];
-if (process.env.ALLOW_DEV_HEADER === 'true') adapters.push(devHeaderAdapter());
+const login = devLogin({ directory: host.admin, actor: platformActorId.parse(ulid()), provider: DEV_PROVIDER });
 
-async function persona(c: Context): Promise<Persona> {
-  const headers = c.req.raw.headers;
-  const viaAdapters = await resolvePrincipal(adapters, headers);
-  if (viaAdapters) {
-    const found = CAST.find((p) => p.principal === viaAdapters.principal);
-    if (found) return found;
-  }
-  // The dev header may also name a persona KEY, which is what the app's picker
-  // sends. Kept because it is the ergonomic half of the demo, and gated with the
-  // rest of the header.
-  if (process.env.ALLOW_DEV_HEADER === 'true') {
-    const key = headers.get('x-principal');
-    const byKey = key ? CAST.find((p) => p.key === key) : undefined;
-    if (byKey) return byKey;
-  }
-  throw new PermissionDenied('not authenticated');
+async function persona(c: Context): Promise<DevCaller> {
+  const caller = await login.caller(c.req.raw.headers);
+  // 401, not 403 — and the distinction now matters. Before the dev issuer this server had
+  // no signed-out state at all, so "nobody" could be reported as a refusal without anyone
+  // noticing; the SPA keys its sign-in screen on 401 (app/src/data.ts), and a 403 here left
+  // a signed-out user staring at an error instead of a login button.
+  if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
+  return caller;
 }
 
 async function stub(c: Context): Promise<ScopeStub> {
@@ -173,6 +140,8 @@ async function stub(c: Context): Promise<ScopeStub> {
 const app = new Hono();
 
 app.onError((err, c) => {
+  // An explicit status wins — 401 for "nobody", which is not a refusal.
+  if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
   if (err instanceof PermissionDenied) return c.json({ error: err.message }, 403);
   const m = err instanceof Error ? err.message : String(err);
   if (/permission denied/.test(m)) return c.json({ error: m }, 403);
@@ -180,14 +149,25 @@ app.onError((err, c) => {
   return c.json({ error: m }, 400);
 });
 
-// The dev persona picker + "who am I" — the app switches personas by setting the
-// x-principal header. employeeId is what an employee app centres itself on.
-app.get('/api/cast', (c) =>
-  c.json(CAST.map(({ key, display, role, country, employeeId }) => ({ key, display, role, country, employeeId }))),
-);
+// The relying-party endpoints — login, callback, logout. The same flow the worker runs;
+// accounts, passwords and sign-up live at the issuer.
+app.on(['GET', 'POST'], '/api/auth/*', (c) => login.handle(c.req.raw));
+
+/**
+ * Who am I — `{ key, display, role, country, employeeId }`, byte-identical to the worker's.
+ * The principal comes from the auth seam; role, country and the linked employee record come
+ * from the scope's own data via `hr/whoami`, which is why the employee app centres itself
+ * correctly for a real hosted login and not only for a seeded persona.
+ */
 app.get('/api/me', async (c) => {
   const p = await persona(c);
-  return c.json({ key: p.key, display: p.display, role: p.role, country: p.country, employeeId: p.employeeId });
+  const scope = await host.getScope(p.principal, p.tenantId, p.scopeId);
+  const who = (await scope.invoke('hr/whoami', undefined)) as {
+    role: string;
+    country: 'SE' | 'ES';
+    employeeId: string | null;
+  };
+  return c.json({ key: p.principal, display: p.display, role: who.role, country: who.country, employeeId: who.employeeId });
 });
 
 /**
@@ -196,11 +176,10 @@ app.get('/api/me', async (c) => {
  * narrowed to their own record via the audited `host.admin.grant`. Keeps `pnpm … dev` behaving
  * like the deployed worker — an employee you register can actually report time.
  */
-async function grantEmployeeSelf(p: Persona, result: unknown): Promise<void> {
+async function grantEmployeeSelf(p: DevCaller, result: unknown): Promise<void> {
   const row = result as { id?: string; principal_ref?: string | null } | null;
   if (!row?.id || !row.principal_ref) return;
-  // The dev `/api/me` returns a persona KEY, not a principal id; only a real principal is a
-  // grantable subject, so skip the persona-key case rather than throw on parse.
+  // Only a real principal is a grantable subject, so skip anything else rather than throw.
   const subject = principalId.safeParse(row.principal_ref);
   if (!subject.success) return;
   const staff = platformActorId.parse(ulid());
@@ -226,9 +205,9 @@ app.post('/api/invoke', async (c) => {
 });
 
 // The documented invoke surface + the API reference (design/api-surface.md).
-// Dev posture: the docs are open like every other dev route — the x-principal
-// persona picker is the auth, and Scalar's try-it sends whatever header the
-// caller sets. The Scalar renderer is served from the pinned package, never a CDN.
+// Dev posture: the docs are open like every other dev route, and Scalar's try-it rides
+// the session cookie the browser already holds. The Scalar renderer is served from the
+// pinned package, never a CDN.
 app.post('/api/op/*', async (c) => {
   const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
   if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
@@ -251,8 +230,10 @@ app.get('/assets/scalar-api-reference.js', (c) =>
 // Dev-only: simulate the provider-side signature so the poll loop is observable
 // with the mock (a real testbed signs in the browser instead). Signs every party
 // of every mock document; the next sweep records them and the contract goes
-// `signed`. Gated on the dev header AND mock mode, so it never exists on a real run.
-if (scrive?.mock && process.env.ALLOW_DEV_HEADER === 'true') {
+// `signed`. Mock mode is the gate, and it is gate enough: it replaces the Scrive egress
+// with an in-process fake, so a run that has it cannot be talking to a real provider.
+// (It used to also require ALLOW_DEV_HEADER, which no longer exists here.)
+if (scrive?.mock) {
   const mock = scrive.mock;
   app.post('/api/dev/scrive-sign', (c) => {
     const at = new Date().toISOString();

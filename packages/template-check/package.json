@@ -2,7 +2,7 @@
   "name": "@substrat-run/template-check",
   "version": "0.0.0",
   "private": true,
-  "description": "Compiles create-substrat's template against THIS checkout — the call site the compiler never saw (#878)",
+  "description": "Compiles create-substrat's template against THIS checkout \u2014 the call site the compiler never saw (#878)",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -14,6 +14,7 @@
     "@substrat-run/adapter-cloudflare": "workspace:^",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",
     "@substrat-run/engine-workorder": "workspace:^",
     "@substrat-run/kernel": "workspace:^",

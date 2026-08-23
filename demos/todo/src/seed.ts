@@ -12,6 +12,7 @@
  * can only ever hand out what it finds there.
  */
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { DEV_PROVIDER, PERSONAS } from './personas.js';
 import {
   principalId,
   platformActorId,
@@ -107,4 +108,30 @@ export async function seed(host: ScopeHost): Promise<World> {
   }
 
   return world;
+}
+
+/**
+ * Bind each dev persona's OIDC `sub` to its principal — the ordinary identity-directory
+ * seam, run on every boot rather than only on a fresh seed, because the world is cached in
+ * `cast.json` and `seed()` does not run again once it exists. `linkIdentity` is idempotent
+ * for an unchanged binding, so re-running costs nothing and a wiped `.data` heals itself.
+ */
+export async function linkDevPersonas(host: ScopeHost, world: World): Promise<void> {
+  await host.admin.registerIdentityPool(world.staff, { provider: DEV_PROVIDER, topology: 'central', tenantId: null });
+  const homes: Record<string, { person: Person; tenant: typeof world.tenant; scope: typeof world.scope }> = {
+    'dev|ada': { person: world.ada, tenant: world.tenant, scope: world.scope },
+    'dev|bjorn': { person: world.bjorn, tenant: world.tenant, scope: world.scope },
+    'dev|cleo': { person: world.cleo, tenant: world.otherTenant, scope: world.otherScope },
+  };
+  for (const persona of PERSONAS) {
+    const home = homes[persona.sub];
+    if (!home) continue;
+    await host.admin.linkIdentity(world.staff, {
+      provider: DEV_PROVIDER,
+      externalId: persona.sub,
+      principal: home.person.principal,
+      tenantId: home.tenant,
+      scopeId: home.scope,
+    });
+  }
 }

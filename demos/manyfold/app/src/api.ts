@@ -1,7 +1,8 @@
-// Typed client over the Manyfold dev server. The dev persona rides in `x-principal`
-// and the active site in `x-site` (both localStorage-backed); in production these become
-// a real session + the routed node. Every op goes through /api/op/<name> — the kernel
-// checks permissions inside each operation, so the generic transport is exactly as safe.
+// Typed client over Manyfold. Identity is the session cookie — the same in dev and in
+// production, because both entrypoints run the same relying-party flow. The active site rides
+// in `x-site` (localStorage-backed) and is SELECTION, not auth: it says which of the tenant's
+// scopes to run against, and the kernel re-checks your authority there regardless.
+// Every op goes through /api/op/<name>, so the generic transport is exactly as safe.
 
 export class ApiError extends Error {
   status: number;
@@ -42,6 +43,9 @@ async function get<T>(path: string): Promise<T> {
 // (→ admin) via the worker's provider-agnostic sub→principal binding.
 export const auth = {
   login: (returnTo = '/') => { location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`); },
+  /** Sign in as somebody else. `prompt=select_account` is what makes this work past an SSO
+   *  session; the local dev issuer keeps none, so its picker appears either way. */
+  switchUser: (returnTo = '/') => { location.assign(`/api/auth/login?prompt=select_account&returnTo=${encodeURIComponent(returnTo)}`); },
   logout: () => { location.assign('/api/auth/logout'); },
 };
 
@@ -94,17 +98,17 @@ export const api = {
   /** Archive a site (needs `content:manage-sites`). It leaves the switcher immediately; the platform
    *  retires the scope. */
   archiveSite: (slug: string) => postJson<{ requestId: string }>(`/api/sites/${encodeURIComponent(slug)}/archive`, {}),
-  // Normalizes both the dev server ({principal,name,site,role}) and the worker
-  // ({status:'needs-setup'} | {key,display,site,can} | 401) into one shape.
+  // `{status:'needs-setup'} | {key,display,site,can} | 401` — one shape, because both
+  // entrypoints now answer identically. It used to also accept a `{principal,name,role}`
+  // variant that only the dev server produced.
   me: async (): Promise<Me> => {
     const res = await fetch('/api/me', { headers: headers(), credentials: 'same-origin' });
     if (res.status === 401) return { mode: 'anon' };
     const b = (await res.json().catch(() => ({}))) as {
-      status?: string; can?: Caps; key?: string; display?: string; site?: string; principal?: string; name?: string; role?: string;
+      status?: string; can?: Caps; key?: string; display?: string; site?: string;
     };
     if (b.status === 'needs-setup') return { mode: 'needs-setup' };
     if (b.can) return { mode: 'authed', principal: b.key ?? '', display: b.display ?? 'You', site: b.site ?? null, can: b.can, role: roleLabel(b.can) };
-    if (b.principal) { const can = capsFromRole(b.role ?? null); return { mode: 'authed', principal: b.principal, display: b.name ?? 'You', site: b.site ?? null, can, role: b.role ?? roleLabel(can) }; }
     return { mode: 'anon' };
   },
   /** `me` resolved against a specific site — powers the "roles are per site" rail (K-22):

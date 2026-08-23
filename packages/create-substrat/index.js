@@ -40,6 +40,7 @@ const SUBSTRAT = '^0.85.0';
 const ENGINE_WORKORDER = '^0.8.1';
 const ENGINE_INVOICING = '^0.9.1';
 const BOUNDARY_LINT = '^0.1.1';
+const DEV_ISSUER = '^0.1.0';
 
 const DOCS = 'https://substrat.net';
 
@@ -118,7 +119,9 @@ function packageJson(name) {
         devServers: DEV_SERVERS,
       },
       scripts: {
-        dev: 'tsx watch src/server.ts',
+        // Two processes: the local OIDC issuer you sign in at, and the API.
+        dev: 'concurrently -n issuer,api -c magenta,blue "pnpm run issuer" "tsx watch src/server.ts"',
+        issuer: 'substrat-dev-issuer --personas src/personas.ts',
         server: 'tsx src/server.ts',
         test: 'vitest run',
         typecheck: 'tsc --noEmit && tsc -p tsconfig.worker.json --noEmit',
@@ -138,6 +141,9 @@ function packageJson(name) {
       },
       devDependencies: {
         '@substrat-run/boundary-lint': BOUNDARY_LINT,
+        // The local OIDC issuer `pnpm dev` signs you in at. A devDependency on
+        // purpose: it is never imported by anything the worker bundles.
+        '@substrat-run/dev-issuer': DEV_ISSUER,
         '@cloudflare/workers-types': '^4.20250109.0',
         '@types/better-sqlite3': '^9.6.0',
         '@types/node': '^22.0.0',

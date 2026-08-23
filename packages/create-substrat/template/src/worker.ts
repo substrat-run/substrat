@@ -12,20 +12,26 @@
  * you never author wrangler config.
  *
  * ── THE AUTH SEAM ────────────────────────────────────────────────────────────
- * This starter resolves a caller ONLY through the `x-principal` dev header,
- * gated on ALLOW_DEV_HEADER — an impersonation bypass by design, for local
- * `wrangler dev` and smoke tests. In production the gate is off and every
- * /api/* call is 401 until you wire real auth into `authenticatedPrincipal`
- * below (a session/bearer verifier that maps a login → PrincipalId — see
- * @substrat-run/vertical-auth, the platform's pluggable AuthProvider +
- * per-tenant identity DO, for the intended shape). Deploying with the dev
- * header enabled is a cross-tenant hole with a UI. ──────────────────────────
+ * This starter ships NO auth in the worker: every /api/* call is 401 until you
+ * wire `authenticatedPrincipal` below. That is deliberate and it is honest —
+ * there is nothing here that resolves a caller, in any environment, so there is
+ * nothing to accidentally deploy.
+ *
+ * It used to resolve a caller through an `x-principal` header gated on
+ * ALLOW_DEV_HEADER. That is an impersonation bypass — a cross-tenant hole with a
+ * UI, one environment variable from being live — and it is gone. `src/server.ts`
+ * shows the shape you want instead: @substrat-run/vertical-auth's
+ * `oidcRpAuthProvider` verifies the request against your issuer and hands you a
+ * subject; an identity directory maps that subject to a PrincipalId. The dev
+ * server can use `host.admin` as that directory. A hosted worker needs a durable
+ * one — @substrat-run/vertical-auth's per-tenant `IdentityDO` is the platform's,
+ * and it also gives you the owner-claim and invite flows a new install needs.
+ * ───────────────────────────────────────────────────────────────────────────
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
-  principalId,
   resolveScopedEnvSpec,
   scopeId,
   tenantId,
@@ -84,8 +90,12 @@ interface Node {
 }
 
 // A fixed dev node (valid ULIDs) — ONLY the fallback for local `wrangler dev`,
-// where there is no router to assert one; gated on ALLOW_DEV_HEADER (never set
-// in prod).
+// where there is no router to assert one; gated on ALLOW_DEV_NODE (never set in
+// prod).
+//
+// This is an ADDRESS, not an identity: it says which instance an un-routed local
+// request belongs to, and grants nobody anything. Keeping the two separate is why
+// it survived the removal of the dev header, which named the CALLER.
 const DEV_NODE: Node = {
   tenantId: tenantId.parse('01JZ00000000000000000DEV01'),
   scopeId: scopeId.parse('01JZ00000000000000000DEV02'),
@@ -98,8 +108,9 @@ interface Env {
   SWEEPER: DurableObjectNamespace;
   /** Per-instance config delivered by the platform (`/internal/configure`). */
   CONFIG: DurableObjectNamespace;
-  /** Local dev only: when 'true', trust the `x-principal` header. NEVER set in prod. */
-  ALLOW_DEV_HEADER?: string;
+  /** Local `wrangler dev` only: when 'true', fall back to DEV_NODE if no router
+   *  asserted a node. Addresses an instance; authenticates nobody. */
+  ALLOW_DEV_NODE?: string;
   /** Shared secret the router presents (how this worker knows the asserted node is real). */
   ROUTER_SECRET?: string;
   /** Shared secret the platform presents on /internal/* calls. */
@@ -116,7 +127,7 @@ function nodeFor(req: Request, env: Env): Node {
     throw e;
   }
   if (routed) return { tenantId: routed.tenantId, scopeId: routed.scopeId };
-  if (env.ALLOW_DEV_HEADER === 'true') return DEV_NODE;
+  if (env.ALLOW_DEV_NODE === 'true') return DEV_NODE;
   throw new HTTPException(503, { message: 'no scope was asserted for this request (missing router assertion)' });
 }
 
@@ -170,16 +181,23 @@ async function instanceConfig(env: Env, node: Node) {
 }
 
 /**
- * THE AUTH SEAM (see the header comment): resolve the caller to a PrincipalId,
- * or null for nobody. Replace the body with a real session/bearer verifier
- * before exposing this worker to users — the dev header is dev-only.
+ * THE AUTH SEAM (see the header comment): resolve the caller to a PrincipalId, or
+ * null for nobody. Two steps, and this starter ships neither:
+ *
+ *   1. Verify the request → a subject. `instanceConfig` already reads the issuer
+ *      the dashboard delivered as `substrat:auth`, so this is
+ *      `oidcRpAuthProvider({ issuer, clientId, clientSecret, sessionSecret }).resolve(...)`
+ *      — and you mount the same provider's `handle` on `/api/auth/*` for the login
+ *      round-trip. `src/server.ts` does exactly this against the local dev issuer.
+ *   2. Map that subject → a PrincipalId, per scope. This needs a durable store the
+ *      worker owns; @substrat-run/vertical-auth's `IdentityDO` is one, and carries
+ *      the owner-claim (first sign-in takes the seat) and invite flows with it.
+ *
+ * Returning null unconditionally is the safe default, not an oversight: a starter
+ * that guessed here would be a starter that let the wrong person in.
  */
-async function authenticatedPrincipal(req: Request, env: Env): Promise<PrincipalId | null> {
-  if (env.ALLOW_DEV_HEADER === 'true') {
-    const parsed = principalId.safeParse(req.headers.get('x-principal') ?? '');
-    if (parsed.success) return parsed.data;
-  }
-  return null; // ← wire real auth here
+async function authenticatedPrincipal(_req: Request, _env: Env): Promise<PrincipalId | null> {
+  return null; // ← wire real auth here (see the two steps above)
 }
 
 /** Resolve caller + routed node → a scope stub. 401 if nobody. */
@@ -214,8 +232,8 @@ async function unauthorizedReason(env: Env, node: Node): Promise<string> {
 const app = new Hono<{ Bindings: Env }>();
 
 // Who am I, and what instance am I on — resolves the caller without invoking
-// anything. Auth-shaped and host-specific, so it stays OUT of the shared table:
-// the dev server answers `/api/cast` instead, and a client can tell the two apart.
+// anything. Auth-shaped and host-specific, so it stays OUT of the shared table;
+// `server.ts` answers the same question from its own login.
 app.get('/api/me', async (c) => {
   const node = nodeFor(c.req.raw, c.env);
   const principal = await authenticatedPrincipal(c.req.raw, c.env);

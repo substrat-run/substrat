@@ -2,6 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "issuer",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "run",
+        "issuer"
+      ],
+      "port": 8879,
+      "autoPort": false
+    },
+    {
       "name": "api",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": [
@@ -9,9 +19,6 @@
         "server"
       ],
       "port": 8875,
-      "env": {
-        "ALLOW_DEV_HEADER": "true"
-      },
       "autoPort": false
     },
     {

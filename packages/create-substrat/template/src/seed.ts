@@ -17,6 +17,7 @@ import { ENTITLEMENT_KEYS, MODULES, OWNER_ROLE_KEY, portalPerms, ROLES } from '.
 // provision.ts — node-free so the worker bundles it and `substrat push` reads
 // it. Re-exported here for callers that treat seed.ts as the world's front door.
 export { ENTITY_GRANTS, MODULES, permissions, ROLES } from './provision.js';
+import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 // ============================================================================
 // The seeded world. TWO tenants on purpose: the first is the shop the scenario
@@ -220,4 +221,46 @@ export async function seedBikeShop(host: SqliteScopeHost, dir: string): Promise<
 
   writeFileSync(castPath, JSON.stringify(world, null, 2));
   return world;
+}
+
+/**
+ * Bind each dev persona's OIDC `sub` to its principal in the identity directory.
+ *
+ * This is the ordinary production seam, not a dev one: a deployed instance builds the same
+ * rows when someone claims the owner seat or accepts an invite. All that differs locally is
+ * that the subjects are known up front, so nobody has to click through a first-run claim
+ * after every data wipe.
+ *
+ * Run on EVERY boot rather than only on a fresh seed: `seedBikeShop` returns early once
+ * `cast.json` exists, and `linkIdentity` is idempotent for an unchanged binding, so
+ * re-running costs nothing and a wiped `.data` heals itself.
+ */
+export async function linkDevPersonas(host: SqliteScopeHost, world: BikeShopWorld): Promise<void> {
+  const staff = platformActorId.parse(ulid());
+  await host.admin.registerIdentityPool(staff, {
+    provider: DEV_PROVIDER,
+    topology: 'central',
+    tenantId: null,
+  });
+  // `scopeId` on the link is what carries a persona to their own node — Rutger into the
+  // other shop entirely, which is why the cross-tenant beat still runs with no persona
+  // table anywhere in the server.
+  const homes: Record<string, { principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId }> = {
+    'dev|greta': { principal: world.greta, tenantId: world.t1, scopeId: world.s1 },
+    'dev|mans': { principal: world.mans, tenantId: world.t1, scopeId: world.s1 },
+    'dev|lisbeth': { principal: world.lisbeth, tenantId: world.t1, scopeId: world.s1 },
+    'dev|otto': { principal: world.otto, tenantId: world.t1, scopeId: world.s1 },
+    'dev|rutger': { principal: world.rutger, tenantId: world.t2, scopeId: world.s2 },
+  };
+  for (const persona of PERSONAS) {
+    const home = homes[persona.sub];
+    if (!home) continue;
+    await host.admin.linkIdentity(staff, {
+      provider: DEV_PROVIDER,
+      externalId: persona.sub,
+      principal: home.principal,
+      tenantId: home.tenantId,
+      scopeId: home.scopeId,
+    });
+  }
 }

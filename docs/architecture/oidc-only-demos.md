@@ -68,9 +68,44 @@ this package and are unaffected — this change only rewires the three demos.
 
 ## Local dev
 
-OIDC-only means dev needs an issuer. Each demo's dev script must run `demos/auth-server`
-as the local issuer and deliver a dev `substrat:auth` pointing at it. This is the largest
-DX change; validate by driving each demo end-to-end (`verify` skill).
+OIDC-only means dev needs an issuer. The first pass kept an `x-principal` persona picker in
+each demo's dev server instead — cheaper, and wrong in a way worth recording: it left every
+vertical carrying an impersonation header, a persona table, and an SPA that branched on
+which backend answered, so the login a developer exercised all day was the one no deployment
+ran.
+
+**Callout is now issuer-only** (`packages/dev-issuer`). The dev issuer is a genuine OP —
+discovery, JWKS, Authorization Code + PKCE, signed ID token — whose single shortcut is that
+`/authorize` renders a list of names rather than a password field. It is stateless (the
+authorization code is a short-lived JWT; there is no session store and therefore no SSO
+cookie, which is why the picker appears on every `/authorize` and switching user is one
+click). Its signing key is checked in and public, which is exactly why it must never be
+deployed and why nothing but a loopback relying party may trust it.
+
+What that buys, beyond ergonomics: the vertical holds ONE auth path. `demos/auth-server`
+remains the full Better Auth issuer for exercising real accounts, sign-up and password
+reset; the dev issuer is for the other 95% of local work.
+
+**Meridian, Manyfold and Todo followed**, each the same shape of change: a `personas.ts`,
+identity links in the seed, and `devLogin` in the dev server. The `create-substrat` template
+too — its worker now ships no caller resolution at all rather than a header-gated one, so a
+scaffolded project has nothing to forget to turn off.
+
+**Rally and handlebar did not, and the reason is worth recording.** Their persona cast was
+not only an auth shortcut: it was also the answer to domain questions neither vertical can
+answer yet.
+
+  - Handlebar's mechanic picker and Callout's technician picker were both filled from the
+    cast, so neither works in a hosted install today — and handlebar has no `whoami`
+    operation, so even the staff-vs-portal chrome had nowhere else to come from.
+  - Rally's player app centres on `memberId`, which the cast supplied per venue.
+    `rally_members.party_ref` is a `dataSubjectId`, not a principal, so there is no
+    principal → member seam in the vertical's own data; `rally/list-members` needs
+    `manageMembers`, which a player deliberately does not hold.
+
+Removing the cast from those two therefore means designing a "who am I here" operation
+first — new surface, and a permission-diff checkpoint with it. That is a vertical-design
+change wearing an auth change's clothes, and it belongs in its own PR.
 
 ## What gets deleted
 

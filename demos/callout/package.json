@@ -84,16 +84,16 @@
     ],
     "devServers": [
       {
+        "name": "issuer",
+        "run": "issuer",
+        "portEnv": "ISSUER_PORT",
+        "portFrom": "../../packages/dev-issuer/src/cli.ts"
+      },
+      {
         "name": "api",
         "run": "server",
         "portEnv": "PORT",
-        "portFrom": "src/server.ts",
-        "env": {
-          "ALLOW_DEV_HEADER": "true"
-        },
-        "requires": [
-          "OIDC_ISSUER"
-        ]
+        "portFrom": "src/server.ts"
       },
       {
         "name": "web",
@@ -117,11 +117,12 @@
     "test": "vitest run",
     "preserver": "node ../../tools/env-preflight.mjs server",
     "server": "node --env-file-if-exists=.dev.vars --import tsx src/server.ts",
-    "dev": "concurrently -n api,web -c blue,green \"ALLOW_DEV_HEADER=true pnpm run server\" \"pnpm --dir app dev\"",
+    "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"pnpm run server\" \"pnpm --dir app dev\"",
     "demo": "pnpm run dev",
-    "cf:dev": "wrangler dev --var ALLOW_DEV_HEADER:true",
+    "cf:dev": "wrangler dev --var ALLOW_DEV_NODE:true",
     "cf:deploy": "node ../../tools/preflight-migrations.mjs && wrangler deploy",
-    "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker"
+    "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker",
+    "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
@@ -129,6 +130,7 @@
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
+    "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/engine-workorder": "workspace:^",

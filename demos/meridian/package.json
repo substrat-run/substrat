@@ -67,13 +67,16 @@
     "tenant": "substrat-9yjbbn",
     "devServers": [
       {
+        "name": "issuer",
+        "run": "issuer",
+        "portEnv": "ISSUER_PORT",
+        "portFrom": "../../packages/dev-issuer/src/cli.ts"
+      },
+      {
         "name": "api",
         "run": "server",
         "portEnv": "PORT",
-        "portFrom": "src/server.ts",
-        "env": {
-          "ALLOW_DEV_HEADER": "true"
-        }
+        "portFrom": "src/server.ts"
       },
       {
         "name": "app",
@@ -94,9 +97,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "test": "vitest run",
     "server": "tsx src/server.ts",
-    "dev": "concurrently -n api,app -c blue,green \"ALLOW_DEV_HEADER=true tsx src/server.ts\" \"pnpm --dir app dev\"",
-    "cf:dev": "wrangler dev --var ALLOW_DEV_HEADER:true",
-    "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker"
+    "dev": "concurrently -n issuer,api,app -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\"",
+    "cf:dev": "wrangler dev --var ALLOW_DEV_NODE:true",
+    "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker",
+    "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
@@ -105,6 +109,7 @@
     "@substrat-run/connector-scrive": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
+    "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/engine-absence": "workspace:^",
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/kernel": "workspace:^",

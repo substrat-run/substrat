@@ -521,6 +521,9 @@ importers:
       '@substrat-run/control-plane-api':
         specifier: workspace:^
         version: link:../../packages/control-plane-api
+      '@substrat-run/dev-issuer':
+        specifier: workspace:^
+        version: link:../../packages/dev-issuer
       '@substrat-run/engine-invoicing':
         specifier: workspace:^
         version: link:../../engines/invoicing
@@ -699,6 +702,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
+      '@substrat-run/dev-issuer':
+        specifier: workspace:^
+        version: link:../../packages/dev-issuer
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
@@ -791,6 +797,9 @@ importers:
       '@substrat-run/control-plane-api':
         specifier: workspace:^
         version: link:../../packages/control-plane-api
+      '@substrat-run/dev-issuer':
+        specifier: workspace:^
+        version: link:../../packages/dev-issuer
       '@substrat-run/engine-absence':
         specifier: workspace:^
         version: link:../../engines/absence
@@ -1087,6 +1096,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
+      '@substrat-run/dev-issuer':
+        specifier: workspace:^
+        version: link:../../packages/dev-issuer
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
@@ -1543,6 +1555,40 @@ importers:
 
   packages/create-substrat: {}
 
+  packages/dev-issuer:
+    dependencies:
+      '@hono/node-server':
+        specifier: ^1.13.0
+        version: 1.19.14(hono@4.12.30)
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../contracts
+      '@substrat-run/vertical-auth':
+        specifier: workspace:^
+        version: link:../vertical-auth
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
+    devDependencies:
+      '@substrat-run/oidc-rp':
+        specifier: workspace:^
+        version: link:../oidc-rp
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      hono:
+        specifier: 4.12.30
+        version: 4.12.30
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.1
+      typescript:
+        specifier: ^7.0.0
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(tsx@4.23.1)(yaml@2.9.0)
+
   packages/engine-test-kit:
     dependencies:
       '@substrat-run/adapter-sqlite':
@@ -1642,6 +1688,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts
+      '@substrat-run/dev-issuer':
+        specifier: workspace:^
+        version: link:../dev-issuer
       '@substrat-run/engine-invoicing':
         specifier: workspace:^
         version: link:../../engines/invoicing

@@ -73,6 +73,7 @@ const PINS = [
   { constant: 'ENGINE_WORKORDER', pkg: 'engines/workorder', fixedGroup: false },
   { constant: 'ENGINE_INVOICING', pkg: 'engines/invoicing', fixedGroup: false },
   { constant: 'BOUNDARY_LINT', pkg: 'packages/boundary-lint', fixedGroup: false },
+  { constant: 'DEV_ISSUER', pkg: 'packages/dev-issuer', fixedGroup: false },
 ] as const;
 
 /** Exit 2: the tool cannot do its job. Always names the remedy. */

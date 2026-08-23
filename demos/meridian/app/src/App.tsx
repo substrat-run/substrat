@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, getPrincipal, setPrincipal, type CastMember } from './api';
+import { api, signOut, switchUser } from './api';
 import { useAppData, useManagerData, useAdminData } from './data';
 import { icons } from './ui';
 import { Expenses, Home, Me, TimeOff, TimesheetScreen, type FlowKind } from './screens';
@@ -43,18 +43,19 @@ function useIsDesktop(): boolean {
 }
 
 export default function App() {
-  const [personaKey, setPersonaKey] = useState(getPrincipal());
-  const [cast, setCast] = useState<CastMember[]>([]);
   const [theme, setTheme] = useState<Theme>((localStorage.getItem('meridian.theme') as Theme) ?? 'system');
   const [toast, setToast] = useState<string | null>(null);
 
-  const { data: empData, loading, error, unauthorized, needsSetup, reload: reloadEmp } = useAppData(personaKey);
+  // One session, so one cache key. It used to be the persona the picker had selected; the
+  // picker now lives at the issuer, and a switch comes back through a full page load.
+  const sessionKey = 'session';
+  const { data: empData, loading, error, unauthorized, needsSetup, reload: reloadEmp } = useAppData(sessionKey);
   const me = empData?.me ?? null;
   const hasMyWork = !!me?.employeeId;
   const canManage = me?.role === 'manager' || me?.role === 'hr-admin';
   const isAdmin = me?.role === 'hr-admin';
-  const { data: mgrData, reload: reloadMgr } = useManagerData(personaKey, canManage);
-  const { data: adminData, loading: adminLoading, error: adminError, reload: reloadAdmin } = useAdminData(personaKey, isAdmin);
+  const { data: mgrData, reload: reloadMgr } = useManagerData(sessionKey, canManage);
+  const { data: adminData, loading: adminLoading, error: adminError, reload: reloadAdmin } = useAdminData(sessionKey, isAdmin);
   const isDesktop = useIsDesktop();
 
   const [section, setSection] = useState<Section>('work');
@@ -69,9 +70,6 @@ export default function App() {
     if (me) setSection(hasMyWork ? 'work' : isAdmin ? 'admin' : 'manage');
   }, [me?.key, hasMyWork, isAdmin]);
 
-  useEffect(() => {
-    api.cast().then(setCast).catch(() => setCast([]));
-  }, []);
   useEffect(() => {
     const root = document.documentElement;
     if (theme === 'system') root.removeAttribute('data-theme');
@@ -101,14 +99,6 @@ export default function App() {
     };
   }, [reloadEmp, reloadMgr]);
 
-  function switchPersona(key: string) {
-    setPrincipal(key);
-    setPersonaKey(key);
-    setFlow(null);
-    setWorkTab('home');
-    setManageTab('inbox');
-    setAdminTab('setup');
-  }
   function done(msg: string) {
     setFlow(null);
     setToast(msg);
@@ -140,7 +130,7 @@ export default function App() {
       case 'timeoff': return <TimeOff d={empData} openFlow={setFlow} />;
       case 'timesheet': return <TimesheetScreen d={empData} openFlow={setFlow} />;
       case 'expenses': return <Expenses d={empData} openFlow={setFlow} />;
-      case 'me': return <Me d={empData} theme={theme} onTheme={setTheme} onSwitch={() => switchPersona(nextEmployee(cast, personaKey))} />;
+      case 'me': return <Me d={empData} theme={theme} onTheme={setTheme} onSwitch={() => switchUser(location.pathname)} />;
     }
   }
   function manageView() {
@@ -201,17 +191,10 @@ export default function App() {
   if (me && !hasMyWork && !canManage) {
     return (
       <div className="phone">
-        {cast.length > 0 && (
-          <div className="persona-bar">
-            <span>Signed in as</span>
-            <select value={personaKey} onChange={(e) => switchPersona(e.target.value)}>
-              {cast.map((c) => (<option key={c.key} value={c.key}>{c.display} · {c.role}</option>))}
-            </select>
-          </div>
-        )}
+        <PersonaBar me={me} />
         <Centered>
           <b>{me.display}</b> has no access here.
-          {cast.length > 0 && <><br />Pick an employee (Elin), a team lead (Mats) or HR (Hedda).</>}
+          <br />Sign in as an employee (Elin), a team lead (Mats) or HR (Hedda).
         </Centered>
       </div>
     );
@@ -259,11 +242,9 @@ export default function App() {
 
           <div className="nav-user">
             <button className="btn sm tint" onClick={reloadAll} style={{ height: 30 }}>↻ Refresh</button>
-            {cast.length > 0 && (
-              <select value={personaKey} onChange={(e) => switchPersona(e.target.value)}>
-                {cast.map((c) => (<option key={c.key} value={c.key}>{c.display}</option>))}
-              </select>
-            )}
+            <button className="btn sm tint" onClick={() => switchUser(location.pathname)} style={{ height: 30 }}>
+              Switch user
+            </button>
             <select value={theme} onChange={(e) => setTheme(e.target.value as Theme)}>
               <option value="system">Theme: system</option>
               <option value="light">Theme: light</option>
@@ -303,14 +284,7 @@ export default function App() {
 
   return (
     <div className="phone">
-      {cast.length > 0 && (
-        <div className="persona-bar">
-          <span>Signed in as</span>
-          <select value={personaKey} onChange={(e) => switchPersona(e.target.value)}>
-            {cast.map((c) => (<option key={c.key} value={c.key}>{c.display} · {c.role}</option>))}
-          </select>
-        </div>
-      )}
+      <PersonaBar me={me} />
 
       {flowEl ? (
         flowEl
@@ -351,9 +325,22 @@ function Centered({ children }: { children: React.ReactNode }) {
   );
 }
 
-function nextEmployee(cast: CastMember[], current: string): string {
-  const employees = cast.filter((c) => c.employeeId).map((c) => c.key);
-  if (employees.length === 0) return current;
-  const i = employees.indexOf(current);
-  return employees[(i + 1) % employees.length] ?? current;
+/**
+ * Who is signed in, and the two things you can do about it.
+ *
+ * This replaced a `<select>` over the dev server's persona cast. Switching user is now a
+ * real sign-in at the issuer rather than a header swap — one extra page load locally, and
+ * the same control a hosted user gets, rather than one that existed only in dev.
+ */
+function PersonaBar({ me }: { me: { display: string; role: string } | null }) {
+  if (!me) return null;
+  return (
+    <div className="persona-bar">
+      <span>Signed in as</span>
+      <b>{me.display}</b>
+      <span className="muted">· {me.role}</span>
+      <button className="btn sm tint" onClick={() => switchUser(location.pathname)}>Switch user</button>
+      <button className="btn sm tint" onClick={() => signOut()}>Sign out</button>
+    </div>
+  );
 }

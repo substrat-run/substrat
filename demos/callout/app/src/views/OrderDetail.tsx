@@ -3,7 +3,6 @@ import {
   api,
   extra,
   type BillableLine,
-  type CastMember,
   type Money,
   type TimelineEntry,
   type WorkOrder,
@@ -39,7 +38,7 @@ function money(m: Money | { amount: string; currency?: string }): string {
   return `${m.amount} ${'currency' in m && m.currency ? m.currency : 'SEK'}`;
 }
 
-export function OrderDetailView({ orderId, cast }: { orderId: string; cast: Record<string, CastMember> }) {
+export function OrderDetailView({ orderId }: { orderId: string }) {
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.workorderGet>> | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [error, setError] = useState('');
@@ -68,7 +67,6 @@ export function OrderDetailView({ orderId, cast }: { orderId: string; cast: Reco
   if (error && !detail) return <div className="alert error">{error}</div>;
   if (!detail) return <p className="muted">Laddar…</p>;
   const { order, time, material } = detail;
-  const technicians = Object.values(cast).filter((m) => m.role === 'technician');
 
   return (
     <>
@@ -89,14 +87,21 @@ export function OrderDetailView({ orderId, cast }: { orderId: string; cast: Reco
         <div className="row">
           {order.status === 'planned' && (
             <>
-              <select value={technician} onChange={(e) => setTechnician(e.target.value)}>
-                <option value="">Välj tekniker…</option>
-                {technicians.map((t) => (
-                  <option key={t.principal} value={t.principal}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+              {/*
+                A principal id, typed. This was a `<select>` over the dev server's persona
+                cast — which meant the list only ever existed locally: a HOSTED Callout got
+                `{}` and could not assign at all. Callout has no member roster to read
+                (neither the kernel nor the identity store exposes "who holds this role in
+                this scope"), so rather than keep a picker that works in one environment
+                only, the field says what it is. Giving it a real list is a members API of
+                its own — see the note in the change that removed the cast.
+              */}
+              <input
+                style={{ width: 260 }}
+                placeholder="Tekniker (principal-id)"
+                value={technician}
+                onChange={(e) => setTechnician(e.target.value)}
+              />
               <button className="btn" disabled={!technician} onClick={act(() => api.workorderAssign({ orderId, technician }))}>
                 Tilldela
               </button>
