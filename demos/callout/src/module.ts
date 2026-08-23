@@ -395,8 +395,11 @@ const timelineOp: OperationHandler<
  * only their own role, already theirs). The role is a UI hint derived by probing the
  * caller's own grants — the kernel still enforces the real permission on every operation
  * regardless of what this returns. `portal` (an entity-narrowed customer login) is not
- * detectable here — it holds no node-level permission — so it reads as `none`; a portal
- * user is a dev-cast concern (server.ts), never a hosted OIDC login.
+ * detectable here — it holds no node-level permission to probe — so it reads as `none`.
+ * That is not a gap to close by widening this enum: the app decides portal chrome by
+ * exclusion (neither staff role ⇒ portal), which is true whoever is asking. It used to be
+ * decided by the dev server's persona table instead, which made it true locally and false
+ * everywhere else.
  */
 export interface WhoAmI {
   role: 'office-admin' | 'technician' | 'none';

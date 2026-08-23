@@ -191,9 +191,11 @@ plain language, so nothing there is a surprise:
    cross-tenant attacker gets nothing).
 9. **Open decisions** — each with a **recommended default**, so the user chooses rather
    than specifies:
-   - **Auth.** Local dev uses an `x-principal` header — a dev seam, not a login. Real auth
-     gates *exposing* the app, not *building* it — but if the app will be deployed for real
-     users, wire the OIDC seam from the start: the standard is a **separate OIDC issuer**
+   - **Auth.** Local dev signs in at `@substrat-run/dev-issuer`, a real OIDC provider you
+     authenticate with by picking a name — so the local login is already the production
+     flow, and there is no dev-only auth path to unpick later. Real auth still gates
+     *exposing* the app, not *building* it, and the hosted worker resolves nobody until you
+     wire its seam; if the app will be deployed for real users, do that from the start: the standard is a **separate OIDC issuer**
      (an Auth Server app in the same team, or an external issuer — Supabase/Auth0/AuthHero/
      Keycloak), never per-app credential storage. The vertical is a pure OIDC **relying
      party**: depend on `@substrat-run/vertical-auth`, bind its `IdentityDO` (the
@@ -407,13 +409,16 @@ pnpm dev                         # API on :8871 (PORT=… WEB_PORT=… to move i
 ```
 
 Then **actually exercise it** — don't just report that the server started. A green scenario
-test never touches `server.ts`, its routes, or the principal picker, so it can be green
-while the app is broken. Drive the real flow with curl (create → assign → start → report →
-complete) as two personas, switching `x-principal` to show a denial landing as a denial.
-The moment the attack fails is the demo; make sure the user sees it.
+test never touches `server.ts`, its routes, or the login, so it can be green while the app
+is broken. Drive the real flow with curl (create → assign → start → report → complete) as
+two personas, so a denial lands as a denial. Get a session without a browser by minting a
+token at the issuer — `curl -XPOST localhost:8879/dev/token -d '{"sub":"dev|greta"}'` — and
+sending it as `Authorization: Bearer …`. The moment the attack fails is the demo; make sure
+the user sees it.
 
-If they want a UI, scaffold a minimal Vite + React app under `app/` with a principal picker
-and typed wrappers over the routes. Ask first — it roughly doubles the work.
+If they want a UI, scaffold a minimal Vite + React app under `app/` with typed wrappers over
+the routes and a sign-in button that redirects to `/api/auth/login`. Ask first — it roughly
+doubles the work.
 
 **The same change that creates `app/` declares it** — before a single component is written.
 A UI ships as NATIVE assets: `substrat push` runs the declared build, hashes the output and
@@ -548,8 +553,9 @@ the version you just replaced. Changesets needs a git repo with a commit on the 
 Updates deploy **in place** from one stable script — data carries forward, migrations run
 against prod data, backout is a time-boxed PITR rewind.
 
-Before deploying: the `x-principal` dev header **must** be gone. Shipping it is a
-cross-tenant hole with a UI.
+Before deploying: `worker.ts`'s auth seam **must** be wired — it resolves nobody as it
+ships, so every `/api/*` call is 401 until you do. Never substitute a header that names the
+caller: that is a cross-tenant hole with a UI, which is why the starter no longer has one.
 
 ---
 

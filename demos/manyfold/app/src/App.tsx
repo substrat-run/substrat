@@ -147,6 +147,7 @@ export default function App() {
           refresh();
         }}
         onSignOut={() => auth.logout()}
+        onSwitchUser={() => auth.switchUser(location.pathname)}
         onTheme={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
       />
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
@@ -317,6 +318,7 @@ function TopBar(props: {
   onCreated: (slug: string) => void;
   onArchived: () => void;
   onSignOut: () => void;
+  onSwitchUser: () => void;
   onTheme: () => void;
 }) {
   const activeSite = getSite();
@@ -368,6 +370,7 @@ function TopBar(props: {
 
       <div style={{ flex: 1 }} />
       <Button size="sm" tone={inv ? 'onDark' : 'default'} onClick={props.onTheme}>{props.theme === 'light' ? '☾' : '☀'}</Button>
+      <Button size="sm" tone={inv ? 'onDark' : 'default'} title="Sign in as somebody else" onClick={props.onSwitchUser}>Switch user</Button>
       <Button size="sm" tone={inv ? 'onDark' : 'default'} title={`Signed in as ${props.meName} — sign out`} onClick={props.onSignOut}>Sign out</Button>
       <Avatar name={props.meName} size={28} />
     </header>

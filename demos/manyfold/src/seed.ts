@@ -4,6 +4,7 @@ import { platformActorId, principalId, scopeId, tenantId, type PrincipalId, type
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionManyfold, type ManyfoldInstance } from './provision.js';
+import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 export function buildDemoHost(dir: string): SqliteScopeHost {
   const host = new SqliteScopeHost({ dir });
@@ -74,6 +75,32 @@ export async function seedDemo(host: SqliteScopeHost, dir: string): Promise<Many
   await assign(world.emil, 'author', world.padel);
   await assign(world.emil, 'viewer', world.law);
   await assign(world.sofia, 'author', world.cafe);
+
+  // ---------------------------------------------------------------------------
+  // The login side of the cast: each dev persona's OIDC `sub` bound to its principal in
+  // the identity directory — the ordinary production seam, not a dev one.
+  //
+  // The link names the café as a HOME site, but that is only where a login lands: which
+  // site a request runs against is `x-site`, resolved through the tenant's site registry,
+  // and unchanged by any of this. Selection is not authentication.
+  // ---------------------------------------------------------------------------
+  await host.admin.registerIdentityPool(staff, { provider: DEV_PROVIDER, topology: 'central', tenantId: null });
+  const homes: Record<string, PrincipalId> = {
+    'dev|maja': world.maja,
+    'dev|emil': world.emil,
+    'dev|sofia': world.sofia,
+  };
+  for (const persona of PERSONAS) {
+    const principal = homes[persona.sub];
+    if (!principal) continue;
+    await host.admin.linkIdentity(staff, {
+      provider: DEV_PROVIDER,
+      externalId: persona.sub,
+      principal,
+      tenantId: world.t1,
+      scopeId: world.cafe,
+    });
+  }
 
   if (fresh) {
     // A little starting content on cafe so the dev server / app has something to show.

@@ -26,7 +26,7 @@ import {
   resolveScopedEnvSpec,
   z,
 } from '@substrat-run/contracts';
-import type { PrincipalId } from '@substrat-run/contracts';
+import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import {
   assertPlatformCall,
@@ -43,7 +43,6 @@ import { protocolModule } from '@substrat-run/engine-protocol';
 import { calloutModule } from './module.js';
 import { serveAsset } from './assets.js';
 import { mountApi } from './routes.js';
-import type { DemoNode } from './auth-adapters.js';
 import {
   IdentityDO,
   oidcAuthProvider,
@@ -59,9 +58,20 @@ export const ScopeDO = defineScopeDO(MODULES, {});
 /** The per-tenant identity DO (shared @substrat-run/vertical-auth) — bound as AUTH; wrangler needs the export. */
 export { IdentityDO };
 
+/** The (tenant, scope) a request is addressed to. */
+export interface DemoNode {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+}
+
 // A fixed dev node (valid ULIDs). Behind the router the node comes from the resolved
-// hostname — this is ONLY the fallback for local `wrangler dev`, where there is no
-// router to assert one, and is gated on ALLOW_DEV_HEADER (never set in prod).
+// hostname — this is ONLY the fallback for local `wrangler dev`, where there is no router to
+// assert one, and is gated on ALLOW_DEV_NODE (never set in prod).
+//
+// This is an ADDRESS, not an identity: it says which instance an un-routed local request
+// belongs to, and grants nobody anything. The principal still comes from a verified login,
+// which is the whole difference from the `ALLOW_DEV_HEADER` this replaced — that one named
+// the CALLER, and trusting a header to do that is a cross-tenant hole with a UI.
 const DEV_NODE: DemoNode = {
   tenantId: tenantId.parse('01JZ0000000000000000000001'),
   scopeId: scopeId.parse('01JZ0000000000000000000002'),
@@ -86,8 +96,9 @@ interface Env {
   AUTH_PROVIDER?: string;
   OIDC_ISSUER?: string;
   OIDC_AUDIENCE?: string;
-  /** Local dev only: when 'true', trust the `x-principal` header. NEVER set in prod. */
-  ALLOW_DEV_HEADER?: string;
+  /** Local `wrangler dev` only: when 'true', fall back to DEV_NODE when no router asserted a
+   *  node. Addresses an instance; authenticates nobody. NEVER set in prod. */
+  ALLOW_DEV_NODE?: string;
   /**
    * Shared secret the router presents (K-26). A CP-less vertical trusts the router's
    * asserted node absolutely — it is the tenant it serves — so this secret is how the
@@ -105,8 +116,8 @@ interface Env {
 /**
  * Which tenant/scope this request is for.
  *
- * Behind the router: whatever the hostname resolved to. Local dev (ALLOW_DEV_HEADER):
- * the fixed dev node. Neither: refuse — an unrouted request in a multi-tenant
+ * Behind the router: whatever the hostname resolved to. Local `wrangler dev`
+ * (ALLOW_DEV_NODE): the fixed dev node. Neither: refuse — an unrouted request in a multi-tenant
  * deployment has no defensible default, and picking one would mean serving somebody
  * else's data.
  */
@@ -119,7 +130,7 @@ function nodeFor(req: Request, env: Env): DemoNode {
     throw e;
   }
   if (routed) return { tenantId: routed.tenantId, scopeId: routed.scopeId };
-  if (env.ALLOW_DEV_HEADER === 'true') return DEV_NODE;
+  if (env.ALLOW_DEV_NODE === 'true') return DEV_NODE;
   throw new HTTPException(503, {
     message: 'no scope was asserted for this request (missing router assertion)',
   });
@@ -231,17 +242,19 @@ async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
 }
 
 /**
- * Resolve the caller to a PrincipalId for op invocation, PROVIDER-AGNOSTICALLY: the dev
- * header (local only), else the configured provider verifies the request → a subject, and
- * the tenant's identity DO maps that subject → a principal in this scope (claiming the owner
- * seat on first login). Null ⇒ nobody (fail closed).
+ * Resolve the caller to a PrincipalId for op invocation, PROVIDER-AGNOSTICALLY: the configured
+ * provider verifies the request → a subject, and the tenant's identity DO maps that subject →
+ * a principal in this scope (claiming the owner seat on first login). Null ⇒ nobody (fail
+ * closed).
+ *
+ * There is ONE path, in every environment. This used to begin with an `x-principal` branch for
+ * local dev — a header that named the caller and was believed — which meant the login a
+ * developer exercised was not the login a customer runs, and the deployable carried an
+ * impersonation bypass one environment variable from being live. Locally the issuer is now
+ * `@substrat-run/dev-issuer`; picking a user there is a real OIDC round-trip, and the only
+ * thing that differs from production is which issuer answers.
  */
 async function principalFor(env: Env, req: Request): Promise<PrincipalId | null> {
-  if (env.ALLOW_DEV_HEADER === 'true') {
-    const raw = req.headers.get('x-principal');
-    const parsed = raw ? principalId.safeParse(raw) : null;
-    if (parsed?.success) return parsed.data;
-  }
   const subject = await (await authProviderFor(env, req)).resolve(req.headers);
   if (!subject) return null;
   const node = nodeFor(req, env);
@@ -484,8 +497,8 @@ app.get('/api/me', async (c) => {
   if (!principal) return c.json({ error: 'unauthorized' }, 401);
   const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
   const who = (await scope.invoke('callout/whoami', undefined)) as { role: string };
-  // A display name when the provider carries one (the dev-header path carries none) — the
-  // subject is cheap to re-resolve and keeps the SPA shape total.
+  // The display name the issuer asserted — cheap to re-resolve, and it keeps the SPA's shape
+  // total whether or not the issuer sends `name`.
   const subject = await authProviderFor(c.env, c.req.raw)
     .then((p) => p.resolve(c.req.raw.headers))
     .catch(() => null);
@@ -496,14 +509,6 @@ app.get('/api/me', async (c) => {
     via: 'oidc',
   });
 });
-
-/**
- * The persona switcher is a DEV affordance (the demo's cast). A hosted instance has one
- * signed-in user and no cast, so this is empty — the app hides the picker when it is empty.
- * Kept as an explicit route (rather than a 404 the SPA catch-all would swallow) so the client
- * gets clean JSON. Callout's app expects a keyed record, so an empty object.
- */
-app.get('/api/cast', (c) => c.json({}));
 
 const inviteBody = z.object({
   email: z.string().email().optional(),

@@ -283,9 +283,14 @@ const rosterOp: OperationHandler<undefined, RosterRow[]> = async (ctx) => {
  * from THIS scope. No permission gate: every principal in the scope may ask about
  * themselves (it reveals only their own role + own employee id, both already theirs). The
  * role is a UI hint derived by probing the caller's own grants — the kernel still enforces
- * the real permission on every operation regardless of what this returns. `country` is a
- * per-instance display default (currency + labels) until a scope carries its own; the
- * demo's SE/ES split is a per-scope seed concern, not a field here.
+ * the real permission on every operation regardless of what this returns.
+ *
+ * `country` is a per-instance display DEFAULT (currency + labels) and is hardcoded `SE` —
+ * a known gap, not an oversight: no scope carries its own country yet, and giving it one is
+ * a migration. Until then Pablo reads as Swedish here, and always did in a hosted install.
+ * What changed is that it is now visible: the dev persona cast used to carry the country
+ * beside each name, so the SE/ES split looked like it worked locally while the operation
+ * behind it never answered anything but SE.
  */
 export interface WhoAmI {
   role: 'hr-admin' | 'manager' | 'employee' | 'none';

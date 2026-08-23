@@ -19,7 +19,7 @@ import { PERM as ABSENCE_PERM } from '@substrat-run/engine-absence';
  * worker.ts `authProviderFor`). Read exclusively through `resolveScopedEnvSpec`
  * (delivered > env > default, #398), so a hosted install's Env-tab override actually
  * takes effect — never via bare `env.X` reads, which can only ever see the shared
- * deployment default. Harness secrets (ROUTER_SECRET, PLATFORM_SECRET, ALLOW_DEV_HEADER)
+ * deployment default. Harness secrets (ROUTER_SECRET, PLATFORM_SECRET, ALLOW_DEV_NODE)
  * are deliberately NOT declared: they are deployment trust anchors, and keeping them out
  * of the spec keeps them out of the per-scope overlay (declared keys are the allow-list).
  *

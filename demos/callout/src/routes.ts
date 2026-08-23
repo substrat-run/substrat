@@ -12,8 +12,9 @@ import {
  * The Callout (fsm) HTTP API — derived from the declared operations, plus the two
  * routes that cannot be.
  *
- * Both entrypoints mount this: `server.ts` (node, pure-SQLite adapter, `x-principal`
- * dev auth) and `worker.ts` (Cloudflare, Durable-Object adapter, OIDC). Each supplies
+ * Both entrypoints mount this: `server.ts` (node, pure-SQLite adapter) and `worker.ts`
+ * (Cloudflare, Durable-Object adapter) — both authenticating by OIDC, differing only in
+ * which issuer they are pointed at and where the sub→principal binding lives. Each supplies
  * a `resolveStub` that authenticates the caller and returns a capability `ScopeStub`.
  * Sharing this table is D-14 made concrete — the SAME vertical surface runs on both
  * adapters, so the two entries cannot drift apart.

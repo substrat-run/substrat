@@ -111,10 +111,16 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
 
     if (url.pathname === '/api/auth/login') {
       const screen = url.searchParams.get('screen_hint');
+      // `prompt` is forwarded (allowlisted to the two IdP-recognised values) for the same
+      // reason `mountOidcRoutes` forwards it: without it, "sign in as someone else" cannot
+      // work against an issuer holding a live SSO session — it silently re-authenticates
+      // the user already signed in, and no amount of clicking changes who you are.
+      const prompt = url.searchParams.get('prompt');
       const { location, flow } = await beginLogin(env, origin, {
         returnTo: safePath(url.searchParams.get('returnTo')),
         loginHint: url.searchParams.get('login_hint') || undefined,
         screenHint: screen === 'signup' || screen === 'login' ? screen : undefined,
+        prompt: prompt === 'login' || prompt === 'select_account' ? prompt : undefined,
       });
       return redirectWith(location, [cookie(FLOW_COOKIE, flow, origin, FLOW_MAXAGE)]);
     }

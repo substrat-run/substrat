@@ -14,6 +14,7 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 | `packages/adapter-sqlite` | Pure-SQLite scope host (dev, CI, self-host, escrow) | AGPL + commercial |
 | `packages/contract-tests` | Suites every adapter must pass | AGPL + commercial |
 | `packages/control-plane-api` | HTTP surface over `HostAdmin` — the audited control-plane transport | AGPL + commercial |
+| `packages/dev-issuer` | A real local OIDC provider you sign into by picking a name — so a vertical needs no dev auth branch | unpublished (dev only; its signing key is checked in) |
 | `engines/*` | Domain engines (workorder, invoicing) | AGPL + commercial |
 | `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code | AGPL + commercial; unpublished while incomplete |
 | `demos/*` | Demo verticals (Callout = `demos/callout`) | Apache-2.0, not published to npm |
@@ -48,15 +49,28 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   was merged, released, and reached `npm create substrat` failing all three of the
   gates a scaffold ships with. Registry-vs-workspace is the whole distinction: being
   ahead of npm is a pass here and a legitimate red there.
-- `pnpm callout-demo dev` — run the Callout demo (API :8871 + web :5271). Demo dev
-  ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
-  Wrangler (8787) defaults; `PORT=… WEB_PORT=… ` overrides both ends of the proxy.
-- **Callout, Meridian, and Manyfold are OIDC-only** (`docs/architecture/oidc-only-demos.md`): they run
-  no credential store — login/sign-up/password/reset live at the OIDC issuer (`demos/auth-server`),
-  and the vertical only maps the authenticated `sub` → a scope principal (owner-claim + invites in
-  the per-tenant `IdentityDO`). Local `… dev` authenticates with the `x-principal` persona picker;
-  a real OIDC login is exercised via the worker (`wrangler dev`) against a running issuer. Only
-  `demos/auth-server` (the issuer) and the Node-only demos (shop/rally/handlebar) still run Better Auth.
+- `pnpm callout-demo dev` — run the Callout demo (issuer :8879 + API :8871 + web :5271).
+  Demo dev ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
+  Wrangler (8787) defaults; `PORT=… WEB_PORT=… ISSUER_PORT=…` overrides all three. The Vite
+  proxy must NOT set `changeOrigin`: the API derives its OIDC `redirect_uri` from the
+  forwarded Host header, and rewriting it sends the login callback to the wrong port.
+- **Callout, Meridian, Manyfold and Todo have no dev auth branch.** Their `… dev` scripts
+  start `packages/dev-issuer` — a real OIDC provider whose only shortcut is that
+  `/authorize` lists names instead of asking for a password — so the local login IS the
+  production round-trip and changing issuer is a change of `OIDC_ISSUER`. Each vertical's
+  cast lives in its own `src/personas.ts`, read both by the issuer and by its seed, which
+  links each `sub` to a principal in the identity directory. Impersonation for scripts is
+  `POST {issuer}/dev/token {sub}` — in the issuer, never in the vertical. The Vite proxy in
+  front of a demo must NOT set `changeOrigin`: the API derives its OIDC `redirect_uri` from
+  the forwarded Host header, and rewriting it sends the callback to the wrong port.
+  `ALLOW_DEV_NODE` still exists in the workers and is a different thing — it addresses an
+  un-routed local instance and authenticates nobody.
+- **Callout, Meridian and Manyfold are OIDC-only** (`docs/architecture/oidc-only-demos.md`):
+  they run no credential store — login/sign-up/password/reset live at the OIDC issuer, and
+  the vertical only maps the authenticated `sub` → a scope principal (owner-claim + invites
+  in the per-tenant `IdentityDO`). `demos/auth-server` is the full Better Auth issuer for
+  exercising real accounts; **rally, handlebar and shop still run Better Auth**, and rally
+  and handlebar still carry `ALLOW_DEV_HEADER` (see oidc-only-demos.md for why).
 - `pnpm --filter @substrat-run/demo-shop dev` — the shop demo runs **three** processes:
   API :8873, storefront :5273, back-office :5274 (`ADMIN_PORT=…`). Customer-facing and
   staff-facing surfaces are separate Vite apps against one API — the split is chrome and

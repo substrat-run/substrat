@@ -71,9 +71,10 @@ modules defined anywhere else will run locally and silently not deploy.
 `worker.ts` **mounts** the platform's `/internal/*` management contract via
 `mountPlatformSurface` from `@substrat-run/vertical-host` (one call — the routes
 and the `{ error }` envelope are authored there, not here, so they can't drift or
-ship half-done). What `worker.ts` still owns is **the auth seam** — the dev
-`x-principal` header is the only caller resolution until you wire real auth there;
-deploying with `ALLOW_DEV_HEADER` set is a cross-tenant hole with a UI.
+ship half-done). What `worker.ts` still owns is **the auth seam** — it resolves
+nobody until you wire real auth there, and every `/api/*` call is 401 until you do.
+That is deliberate: there is no dev header to forget to turn off. `src/server.ts`
+shows the shape, signing in against the local OIDC issuer `pnpm dev` starts.
 
 **A UI ships as declared assets.** If `app/` exists, `substrat.runtimeNeeds.assets` must
 point at its build output and `runtimeNeeds.build` must produce it — otherwise the deployed

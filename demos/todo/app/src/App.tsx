@@ -2,19 +2,13 @@
  * Three screens, one per line of spec/concept.md §8: your lists, a list, and who
  * it is shared with. Hash routing, so a refresh keeps the screen.
  *
- * The persona picker is the dev auth seam — it sets `x-principal`, which is what
- * `src/server.ts` authenticates on. Switching persona is how the permission
- * model becomes visible: the same screen, a different answer, and no filtering
- * anywhere in this file.
+ * Switching user is a real sign-in at the issuer, not a header swap, and it is how
+ * the permission model becomes visible: the same screen, a different answer, and no
+ * filtering anywhere in this file. The picker itself lives at the issuer — this app
+ * has no list of who exists, exactly as a deployed one would not.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError, getPrincipal, setPrincipal, type Item, type List, type Paged, type Share } from './api.js';
-
-const PERSONAS = [
-  { key: 'ada', label: 'Ada' },
-  { key: 'bjorn', label: 'Björn' },
-  { key: 'cleo', label: 'Cleo (another tenant)' },
-];
+import { api, ApiError, auth, me, type Item, type List, type Paged, type Session, type Share } from './api.js';
 
 function useHash(): string {
   const [hash, setHash] = useState(() => window.location.hash);
@@ -39,30 +33,40 @@ function Problem({ error }: { error: unknown }) {
 
 export function App() {
   const hash = useHash();
-  const [who, setWho] = useState(getPrincipal());
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
   const match = /^#\/list\/(.+)$/.exec(hash);
 
-  const pick = (key: string) => {
-    setPrincipal(key);
-    setWho(key);
-    window.location.hash = '';
-  };
+  useEffect(() => {
+    void me().then(setSession);
+  }, []);
 
+  if (session === undefined) return <main><p>Loading…</p></main>;
+  if (session === null) {
+    return (
+      <>
+        <header>
+          <h1>Todo</h1>
+          <span className="tag">on Substrat</span>
+        </header>
+        <main>
+          <p>Sign in to see your lists.</p>
+          <button onClick={() => auth.login('/')}>Sign in</button>
+        </main>
+      </>
+    );
+  }
+
+  const who = session.principal;
   return (
     <>
       <header>
         <h1>Todo</h1>
         <span className="tag">on Substrat</span>
-        <label className="who">
-          Signed in as
-          <select value={who} onChange={(e) => pick(e.target.value)}>
-            {PERSONAS.map((p) => (
-              <option key={p.key} value={p.key}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <span className="who">
+          Signed in as <strong>{session.display}</strong>
+          <button onClick={() => auth.switchUser()}>Switch user</button>
+          <button onClick={() => auth.logout()}>Sign out</button>
+        </span>
       </header>
       <main>{match ? <ListView key={`${who}:${match[1]}`} listId={match[1]!} /> : <Lists key={who} />}</main>
     </>

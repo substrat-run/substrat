@@ -18,26 +18,31 @@ import {
   createControlPlaneApi,
   UNSAFE_devPlatformActorAuth,
 } from '@substrat-run/control-plane-api';
-import { buildDemoHost, seedDemo, type DemoWorld } from './index.js';
+import { devLogin } from '@substrat-run/dev-issuer';
+import { buildDemoHost, seedDemo } from './index.js';
 import { mountApi } from './routes.js';
-import {
-  devHeaderAdapter,
-  resolvePrincipal,
-  type AuthAdapter,
-} from './auth-adapters.js';
+import { DEV_PROVIDER } from './personas.js';
+import type { DevCaller } from '@substrat-run/dev-issuer';
 
 /**
- * Dev API server for the FSM demo. Deliberately thin: pick the dev principal from the
- * `x-principal` header → getScope → invoke. No business logic here; every route is a wrapper
- * over an operation, and the kernel enforces the permission on every op regardless of how the
- * route reached it.
+ * Dev API server for the FSM demo. Deliberately thin: resolve the caller → getScope → invoke.
+ * No business logic here; every route is a wrapper over an operation, and the kernel enforces
+ * the permission on every op regardless of how the route reached it.
  *
- * OIDC-only (oidc-only-demos.md): the vertical runs no credential store, so this dev server
- * hosts NO accounts and NO `/api/auth/*`. Local dev authenticates with the `x-principal`
- * persona picker — an impersonation bypass by design, mounted ONLY when ALLOW_DEV_HEADER=true.
- * A real login is the OIDC round-trip, exercised via the worker (`wrangler dev`) against a
- * running issuer. There is deliberately NO `/api/me` here: its absence is how the SPA detects
- * the dev backend and shows the persona picker (app/src/api.ts `me()` → 404 → header mode).
+ * OIDC-only (oidc-only-demos.md), and — since the dev issuer — with NO dev branch at all.
+ * This server authenticates exactly the way the deployed worker does: the relying-party
+ * provider owns `/api/auth/*`, a session cookie carries the login, and the identity directory
+ * maps the issuer's `sub` to a principal. What used to sit here was an `x-principal` header
+ * and a `CAST` table — an impersonation bypass, plus a second auth path the deployed vertical
+ * never runs. Both are gone: locally the issuer is `@substrat-run/dev-issuer` (a real OP whose
+ * only shortcut is that you pick a name instead of typing a password), and switching issuers
+ * is a change of `OIDC_ISSUER`, not a change of code.
+ *
+ * The one thing to know about the proxy: the SPA is served by Vite on WEB_PORT and forwards
+ * `/api` here WITHOUT rewriting the Host header, so the origin this server derives — and
+ * therefore the `redirect_uri` it registers with the issuer — is the browser's origin, not
+ * this port. That is what lands the OIDC callback back on the SPA. Setting `changeOrigin` on
+ * that proxy would break login.
  *
  * The shared control plane rides the SAME SqliteScopeHost on its own port (co-located for
  * local dev): one process, one SQLite dir, so a suspend in the console fails this vertical's
@@ -56,69 +61,48 @@ const webPort = Number(process.env.WEB_PORT ?? 5271);
 const cpPort = Number(process.env.CP_PORT ?? 8788);
 
 const host = buildDemoHost(dataDir);
-const world: DemoWorld = await seedDemo(host, dataDir);
+await seedDemo(host, dataDir);
+
+// The local platform actor (control-plane.md §6). Directory reads below are stamped with it;
+// `resolveIdentity` itself is the unaudited machine path, `listIdentityTenants` is not.
+const staffActor = platformActorId.parse(ulid());
 
 /**
- * The demo cast — each persona carries its OWN (tenant, scope), so switching to Mallory lands
- * in t2/s2 (a different tenant) and proves the isolation. Portal personas (Berit, Styrbjörn)
- * hold entity-narrowed customer grants seeded in `seedDemo`. The role is a UI hint the app
- * uses to pick chrome; the kernel still enforces the real permissions on every op.
+ * The relying party — the same flow the deployed worker runs, pointed at whatever issuer
+ * `OIDC_ISSUER` names. Locally that is the dev issuer `pnpm dev` starts; nothing here knows
+ * or cares which, and that is the point.
  */
-interface Persona {
-  key: string;
-  name: string;
-  role: string;
-  principal: PrincipalId;
-  tenantId: TenantId;
-  scopeId: ScopeId;
-}
-
-const CAST: Persona[] = [
-  { key: 'anna', name: 'Anna (kontor)', role: 'office-admin', principal: world.anna, tenantId: world.t1, scopeId: world.s1 },
-  { key: 'harald', name: 'Harald (tekniker)', role: 'technician', principal: world.harald, tenantId: world.t1, scopeId: world.s1 },
-  { key: 'berit', name: 'Berit (portal, BRF Grunden)', role: 'portal', principal: world.berit, tenantId: world.t1, scopeId: world.s1 },
-  { key: 'styrbjorn', name: 'Styrbjörn (portal, Kontorshotellet)', role: 'portal', principal: world.styrbjorn, tenantId: world.t1, scopeId: world.s1 },
-  { key: 'mallory', name: 'Mallory (annan firma!)', role: 'office-admin', principal: world.mallory, tenantId: world.t2, scopeId: world.s2 },
-];
+const login = devLogin({ directory: host.admin, actor: staffActor, provider: DEV_PROVIDER });
 
 /**
- * The dev header only if explicitly opted in. A template teaches by example, and a copied
- * template inherits its defaults — so the impersonation header stays OFF unless
- * ALLOW_DEV_HEADER=true (which `pnpm dev` sets for local use).
+ * Who is calling — the production two-step, run locally: the issuer asserts a `sub`, the
+ * identity directory says which principal that is and where they live. The persona's node
+ * comes out of the link, so Mallory still resolves into the second company and every
+ * cross-tenant beat still runs — without this file holding a table of who is who.
  */
-const adapters: AuthAdapter[] = [];
-if (process.env.ALLOW_DEV_HEADER === 'true') adapters.push(devHeaderAdapter());
-
-/**
- * Resolve the caller to a persona: the dev-header adapter names a principal (the app's picker
- * sends the persona's principal id), which we map back to its (tenant, scope). The header may
- * also name a persona KEY directly, kept because it is the ergonomic half of the demo and
- * gated with the rest of the header. Nobody resolved → 401.
- */
-function persona(c: Context): Promise<Persona> {
-  return (async () => {
-    const headers = c.req.raw.headers;
-    const via = await resolvePrincipal(adapters, headers);
-    if (via) {
-      const found = CAST.find((p) => p.principal === via.principal);
-      if (found) return found;
-    }
-    if (process.env.ALLOW_DEV_HEADER === 'true') {
-      const key = headers.get('x-principal');
-      const byKey = key ? CAST.find((p) => p.key === key) : undefined;
-      if (byKey) return byKey;
-    }
-    throw new HTTPException(401, { message: 'unauthorized' });
-  })();
+async function callerFor(c: Context): Promise<DevCaller> {
+  const caller = await login.caller(c.req.raw.headers);
+  if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
+  return caller;
 }
 
 const app = new Hono();
 
-// The dev persona picker: the app switches personas by setting the x-principal header. Keyed
-// by persona key, `{ name, role, principal }` per member — the shape app/src/api.ts expects.
-app.get('/api/cast', (c) =>
-  c.json(Object.fromEntries(CAST.map((p) => [p.key, { name: p.name, role: p.role, principal: p.principal }]))),
-);
+// The relying-party endpoints — login, callback, logout. Identical to the worker's, because
+// it is the same provider underneath; accounts, passwords and sign-up live at the issuer.
+app.on(['GET', 'POST'], '/api/auth/*', (c) => login.handle(c.req.raw));
+
+/**
+ * The resolved identity behind the current request — `{ principal, display, role, via }`, the
+ * shape the SPA renders its chrome from. Mirrors the worker's `/api/me` exactly; the SPA now
+ * has one auth path because both backends answer this.
+ */
+app.get('/api/me', async (c) => {
+  const caller = await callerFor(c);
+  const scope = await host.getScope(caller.principal, caller.tenantId, caller.scopeId);
+  const who = await scope.invoke<{ role: string }>('callout/whoami', undefined);
+  return c.json({ principal: caller.principal, display: caller.display, role: who.role, via: 'oidc' });
+});
 
 // The connect seam: with CONTROL_PLANE_URL set, this vertical registers into a separately-run
 // shared control plane and gates every request on its authoritative lifecycle. Without it, the
@@ -126,19 +110,19 @@ app.get('/api/cast', (c) =>
 const cpUrl = process.env.CONTROL_PLANE_URL;
 let cpClient: ControlPlaneClient | undefined;
 
-/** Resolve the caller → the persona's node → a scope stub. Gates on the remote directory when connected. */
+/** Resolve the caller → their linked node → a scope stub. Gates on the remote directory when connected. */
 async function stub(c: Context): Promise<ScopeStub> {
-  const p = await persona(c);
+  const caller = await callerFor(c);
   if (cpClient) {
     // Remote lifecycle gate: the shared control plane is the authority. A suspend there (via
     // the console) fails this request closed, across the boundary.
     try {
-      await cpClient.assertScopeActive(p.tenantId, p.scopeId);
+      await cpClient.assertScopeActive(caller.tenantId, caller.scopeId);
     } catch (e) {
       throw new HTTPException(403, { message: e instanceof ControlPlaneError ? e.message : String(e) });
     }
   }
-  return host.getScope(p.principal, p.tenantId, p.scopeId);
+  return host.getScope(caller.principal, caller.tenantId, caller.scopeId);
 }
 
 // The whole data API — shared with the Cloudflare Worker (src/routes.ts), which also installs
@@ -220,7 +204,7 @@ const lines = [
   cpLine,
   '  ' + '─'.repeat(52),
   `    data   ${dataDir}`,
-  `    auth   ${adapters.length ? adapters.map((a) => a.id).join(', ') : 'none (set ALLOW_DEV_HEADER=true)'}`,
+  `    auth   OIDC · ${login.issuer}`,
   '',
 ];
 console.log(lines.join('\n'));
