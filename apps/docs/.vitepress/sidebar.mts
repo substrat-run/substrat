@@ -49,6 +49,7 @@ export function guideSidebar() {
         { text: 'Deploying a vertical', link: '/guide/deploying' },
         { text: 'Environments & previews', link: '/guide/environments-and-previews' },
         { text: 'Building for AI agents', link: '/guide/ai-agents' },
+        { text: 'Where AI mistakes stop', link: '/guide/ai-guardrails' },
       ],
     },
     {

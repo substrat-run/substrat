@@ -33,6 +33,8 @@ import ReadPaths from './components/ReadPaths.vue';
 import ConnectorLoop from './components/ConnectorLoop.vue';
 import ScopeTopology from './components/ScopeTopology.vue';
 import StateMachine from './components/StateMachine.vue';
+import BlastRadius from './components/BlastRadius.vue';
+import GuardPath from './components/GuardPath.vue';
 
 export default {
   extends: DefaultTheme,
@@ -47,5 +49,7 @@ export default {
     app.component('ConnectorLoop', ConnectorLoop);
     app.component('ScopeTopology', ScopeTopology);
     app.component('StateMachine', StateMachine);
+    app.component('BlastRadius', BlastRadius);
+    app.component('GuardPath', GuardPath);
   },
 } satisfies Theme;

@@ -52,7 +52,7 @@ better than Substrat at what they set out to do, and the third column says so.
 generate: they produce the app and its tests from the same act of generation, so the tests
 inherit the same misunderstanding and pass. Frameworks don't generate your tests at all, which
 is honest but leaves the second opinion to your discipline on a Friday afternoon. Deriving
-code from the model and [tests from the concept](/guide/ai-agents#the-second-opinion-two-descriptions-that-can-disagree)
+code from the model and [tests from the concept](/guide/ai-guardrails#guard-04-two-descriptions-that-are-allowed-to-disagree)
 is cheap, and it catches the exact failure mode — small, confident, inconsistent mistakes —
 that makes generated systems untrustworthy.
 
