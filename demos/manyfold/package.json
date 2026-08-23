@@ -79,6 +79,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@substrat-run/contract-tests": "workspace:^",
     "@cloudflare/workers-types": "catalog:",
     "@scalar/api-reference": "^1.64.0",
     "@substrat-run/model-emit": "workspace:*",
