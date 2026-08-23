@@ -1,5 +1,13 @@
 # @substrat-run/console
 
+## 0.14.1
+
+### Patch Changes
+
+- Updated dependencies [b2dac1e]
+  - @substrat-run/contracts@0.87.0
+  - @substrat-run/kernel@0.87.0
+
 ## 0.14.0
 
 ### Minor Changes

@@ -1,5 +1,39 @@
 # @substrat-run/contract-tests
 
+## 0.87.0
+
+### Minor Changes
+
+- b2dac1e: `nodeOnlySuite` — a module that narrows nowhere says so, and can stop being true loudly
+
+  `entityCheckConformanceSuite` reads an operation's declaration and drives the behavioural
+  pair that proves the handler honours it. Seven packages in this repo have no declared
+  operation surface for it to read, and they carry the failure mode #865 named: **absence
+  reading as coverage**. Zero narrowed declarations is indistinguishable from nobody having
+  looked, and the packages where nobody looked are the ones worth looking at.
+
+  So a module that genuinely checks only at the node states it, wired to something that goes
+  red the day that changes:
+
+  ```ts
+  nodeOnlySuite("engine-metering", {
+    sources: [new URL("../src/index.ts", import.meta.url).pathname],
+  });
+  ```
+
+  Its header is explicit about being a much weaker instrument than the conformance kit: it
+  proves an absence rather than a behaviour, it is lexical (a check assembled indirectly is
+  invisible to it), and it says nothing about whether node-only is _right_ — that judgement is
+  the prose each caller writes above it. What it buys is that narrowing an operation in one of
+  these packages turns the suite red, so the assessment cannot quietly become a comment that
+  was true once.
+
+### Patch Changes
+
+- Updated dependencies [b2dac1e]
+  - @substrat-run/contracts@0.87.0
+  - @substrat-run/kernel@0.87.0
+
 ## 0.86.0
 
 ### Patch Changes
@@ -2544,7 +2578,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
