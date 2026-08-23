@@ -99,7 +99,10 @@ Usage:
                                                with --promote prod). A push that would CREATE
                                                a new lineage next to a same-named one
                                                (another owner) is refused — pass
-                                               --allow-fork to do it deliberately
+                                               --allow-fork to do it deliberately.
+                                               A UI (app/) that nothing in the manifest
+                                               would serve is refused too — declare
+                                               runtimeNeeds.assets, or --allow-unserved-ui
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
@@ -341,6 +344,9 @@ async function cmdPush(): Promise<void> {
     // The control plane refuses a push that would silently fork a same-named lineage
     // (#388); --allow-fork acknowledges a deliberate second lineage.
     allowFork: argv.includes('--allow-fork'),
+    // A UI the push would never serve is refused (#881); this says the app/ in the tree
+    // is deliberately not part of this deploy.
+    allowUnservedUi: argv.includes('--allow-unserved-ui'),
     envSpec: meta.envSpec,
     ownerGrants: meta.ownerGrants,
     entitlements: meta.entitlements,

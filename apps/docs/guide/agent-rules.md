@@ -75,6 +75,12 @@ ship half-done). What `worker.ts` still owns is **the auth seam** — the dev
 `x-principal` header is the only caller resolution until you wire real auth there;
 deploying with `ALLOW_DEV_HEADER` set is a cross-tenant hole with a UI.
 
+**A UI ships as declared assets.** If `app/` exists, `substrat.runtimeNeeds.assets` must
+point at its build output and `runtimeNeeds.build` must produce it — otherwise the deployed
+vertical serves the API and 404s on `/`, with every local gate green. Declare it in the same
+change that creates `app/`, not at deploy time. (`substrat push` refuses an undeclared UI,
+but by then you are already deploying.)
+
 Among the hooks it passes, **`onConfigure` is the one you must not drop.** It is
 how per-instance settings reach the running app: the dashboard's Settings → Env
 and Identity tabs POST to `/internal/configure`, and a vertical that supplies no

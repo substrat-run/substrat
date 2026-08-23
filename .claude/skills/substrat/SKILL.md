@@ -352,6 +352,46 @@ If they want a UI, scaffold a minimal Vite + React app under `app/` with a princ
 picker in the top bar and typed wrappers over the routes. Ask first — it roughly doubles
 the work and plenty of people want the API and their own frontend.
 
+**The same change that creates `app/` declares it** (#881) — before a single component is
+written. A SPA ships as NATIVE assets (#340): `substrat push` runs the declared build,
+hashes the output and uploads it to the runtime's asset store, served from the edge without
+invoking the worker. Undeclared, the directory is never built, never uploaded, and the
+deployed vertical answers `/api/*` and 404s on `/` — silent at every gate that runs before
+deploy, because `pnpm test` never touches `server.ts`, boundary-lint has no opinion about
+static files, and a vertical with no UI must legitimately declare no assets.
+
+```jsonc
+"substrat": {
+  "runtimeNeeds": {
+    "entry": "src/worker.ts",
+    "build": "npm --prefix app install && npm --prefix app run build",
+    "assets": {
+      "directory": "app/dist",
+      "notFoundHandling": "single-page-application",   // deep client routes → index.html
+      "runWorkerFirst": ["/api/*", "/internal/*"]      // only these reach the worker
+    }
+  }
+}
+```
+
+`build` runs before assets are collected, so the directory may be pure build output. The
+old pattern of base64-inlining `app/dist` into a generated worker module (the CRM's
+`gen-assets.mjs`) predates #340 — don't copy it into new verticals; it costs ~+33 % script
+size and a worker invocation per image.
+
+Two more that each fail silently:
+
+- **`runWorkerFirst` must list every worker-owned prefix.** With
+  `notFoundHandling: "single-page-application"`, a missing `/api/*` entry answers every API
+  call with `index.html` — the app reports parse errors where it should report denials.
+- **The app calls its own origin** (`fetch('/api' + path)`), never a baked base URL. Vite's
+  `proxy` block is a dev-only convenience; `VITE_API_URL` or `localhost:8871` works on the
+  author's machine and reaches nothing from a phone.
+
+`substrat push` refuses an `app/` that nothing would serve, so this cannot reach a hostname
+undeclared (`--allow-unserved-ui` overrides deliberately). The refusal is the backstop; the
+declaration belongs here.
+
 ---
 
 ## Step 8 — The two checkpoints. STOP HERE.
@@ -392,28 +432,23 @@ Substrat runs on Cloudflare via `@substrat-run/adapter-cloudflare` (Durable Obje
 block in `package.json` (stores, node-compat, build) instead of hand-authoring wrangler
 config — though the demos still ship an authored `wrangler.jsonc` today.
 
-**A SPA ships as NATIVE assets (#340) — never inline it into the worker.** Declare it in
-`runtimeNeeds` and `substrat push` builds, hashes, and uploads the directory to the
-runtime's own asset store, served from the edge without invoking the worker:
+**A UI's `runtimeNeeds.assets` block was written back in step 7**, when `app/` was created
+— one description, not two that drift. A vertical scaffolded before that rule needs it
+retrofitted before this deploy, or it 404s at its own hostname; `substrat push` refuses
+that push with the recipe (#881).
 
-```jsonc
-"substrat": {
-  "runtimeNeeds": {
-    "entry": "src/worker.ts",
-    "build": "npm --prefix app install && npm --prefix app run build",
-    "assets": {
-      "directory": "app/dist",
-      "notFoundHandling": "single-page-application",   // deep client routes → index.html
-      "runWorkerFirst": ["/api/*", "/internal/*"]      // only these reach the worker
-    }
-  }
-}
+**A deploy is not done until the URL serves the app** — show the user both requests:
+
+```sh
+curl -si https://<hostname>/        | head -3   # expect 200 + content-type: text/html
+curl -si https://<hostname>/api/me  | head -3   # expect the worker, not index.html
 ```
 
-`build` runs before assets are collected, so the directory may be pure build output. The
-old pattern of base64-inlining `app/dist` into a generated worker module (the CRM's
-`gen-assets.mjs`) predates #340 — don't copy it into new verticals; it costs ~+33 % script
-size and a worker invocation per image.
+| What you see | Where it broke |
+|---|---|
+| `404` with a Cloudflare body, `/internal/*` answers `403` | the worker ran; assets undeclared or unbuilt |
+| `404` before any worker header | the hostname is not bound to this surface |
+| `/api/*` returns HTML | `runWorkerFirst` is missing that prefix |
 
 The deploy path is the authenticated CLI, and the author never holds a Cloudflare token:
 
