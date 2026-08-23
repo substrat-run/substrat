@@ -126,6 +126,7 @@ export function guideSidebar() {
         { text: '@substrat-run/contract-tests', link: '/reference/contract-tests' },
         { text: '@substrat-run/boundary-lint', link: '/reference/boundary-lint' },
         { text: '@substrat-run/oidc-rp', link: '/reference/oidc-rp' },
+        { text: '@substrat-run/dev-issuer', link: '/reference/dev-issuer' },
         { text: '@substrat-run/psl', link: '/reference/psl' },
         { text: '@substrat-run/cli', link: '/reference/cli' },
         { text: 'create-substrat', link: '/reference/create-substrat' },
