@@ -143,6 +143,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
+    "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@substrat-run/vertical-host": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",

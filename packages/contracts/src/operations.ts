@@ -772,6 +772,26 @@ export function manifestOperations<const Ops extends Record<string, object>>(
   operations: Ops,
   spec: {
     readonly permissions: Readonly<Record<PermissionsDeclaredBy<Ops>, string>> & Readonly<Record<string, string>>;
+    /**
+     * Keys these operations CHECK but another module DECLARES — each named with
+     * the module that owns it.
+     *
+     * A vertical composing an engine is gated by the engine's keys, not only its
+     * own: `callout/timeline` checks `workorder:read`, and the work order engine
+     * is what declares that key, describes it, and owns its meaning. Without a
+     * way to say so, such an operation had two bad options — restate the engine's
+     * key in this manifest (two modules declaring one key, and the description
+     * free to drift from the owner's) or name a key of its own that it does not
+     * actually check. Callout took the second and declared `customer:manage` on
+     * an operation enforcing `workorder:read`, which is how its permission
+     * snapshot came to tell a technician they could not read a timeline they
+     * could read every time (#865).
+     *
+     * Listed, never inferred. An unlisted key is still an error, so this cannot
+     * swallow a typo; and an entry naming a key no operation checks is an error
+     * too, because a stale exemption reads as coverage that is not there.
+     */
+    readonly checksDeclaredElsewhere?: Readonly<Record<string, string>>;
     /** Event types this module consumes — not derivable from its own operations. */
     readonly consumes?: readonly { readonly type: string; readonly schemaVersion: number }[];
   },
@@ -783,13 +803,34 @@ export function manifestOperations<const Ops extends Record<string, object>>(
   };
 } {
   const described = spec.permissions as Record<string, string>;
+  const elsewhere = spec.checksDeclaredElsewhere ?? {};
   const used = permissionsUsedBy(operations);
 
-  const undescribed = used.filter((key) => !described[key]);
+  const undescribed = used.filter((key) => !described[key] && !elsewhere[key]);
   if (undescribed.length > 0) {
     throw new Error(
       `manifestOperations: no description for permission(s) ${undescribed.join(', ')} — ` +
         'every key an operation checks appears in the permission review, so it needs prose',
+    );
+  }
+
+  // The exemption is only worth having if it stays true. A key listed here that
+  // no operation checks is a note left behind by a change, and it would sit in
+  // the source looking like an accounted-for engine dependency.
+  const stale = Object.keys(elsewhere).filter((key) => !used.includes(key));
+  if (stale.length > 0) {
+    throw new Error(
+      `manifestOperations: checksDeclaredElsewhere names permission(s) no operation checks: ` +
+        `${stale.sort().join(', ')} — a stale exemption reads as a dependency that is still there`,
+    );
+  }
+
+  // A key cannot be both this module's and someone else's.
+  const both = Object.keys(elsewhere).filter((key) => described[key]);
+  if (both.length > 0) {
+    throw new Error(
+      `manifestOperations: permission(s) ${both.sort().join(', ')} are described here AND ` +
+        'declared elsewhere — one module owns a key, and its description belongs with it',
     );
   }
 

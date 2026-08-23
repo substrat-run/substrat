@@ -16,6 +16,12 @@ const derived = manifestOperations(calloutOperations, {
     'customer:manage': 'Manage customers and the price list',
     'facility:manage': 'Manage facilities',
   },
+  // `callout/timeline` enforces the work order engine's key. The engine declares
+  // it and describes it; Callout only checks it, so it stays out of Callout's own
+  // permission list and parity below is unaffected. Before #865 there was no way
+  // to say this, and the operation declared `customer:manage` instead — a key it
+  // does not check, on an operation a technician could always reach.
+  checksDeclaredElsewhere: { 'workorder:read': '@substrat-run/engine-workorder' },
 });
 
 describe('derived manifest fragment vs the hand-written manifest', () => {
@@ -42,7 +48,39 @@ describe('derived manifest fragment vs the hand-written manifest', () => {
       manifestOperations(calloutOperations, {
         // @ts-expect-error deliberately incomplete: 'facility:manage' undescribed
         permissions: { 'customer:manage': 'Manage customers and the price list' },
+        checksDeclaredElsewhere: { 'workorder:read': '@substrat-run/engine-workorder' },
       }),
     ).toThrow(/no description for permission\(s\) facility:manage/);
+  });
+
+  // An engine key is exempted by NAME, so the exemption has to keep being true.
+  it('bites: an exemption for a key no operation checks is an error', () => {
+    expect(() =>
+      manifestOperations(calloutOperations, {
+        permissions: {
+          'customer:manage': 'Manage customers and the price list',
+          'facility:manage': 'Manage facilities',
+        },
+        checksDeclaredElsewhere: {
+          'workorder:read': '@substrat-run/engine-workorder',
+          'workorder:close': '@substrat-run/engine-workorder',
+        },
+      }),
+    ).toThrow(/names permission\(s\) no operation checks: workorder:close/);
+  });
+
+  // And a key cannot be owned twice: describing it here while calling it
+  // someone else's is the drift this parameter exists to prevent.
+  it('bites: a key both described here and declared elsewhere is an error', () => {
+    expect(() =>
+      manifestOperations(calloutOperations, {
+        permissions: {
+          'customer:manage': 'Manage customers and the price list',
+          'facility:manage': 'Manage facilities',
+          'workorder:read': 'Read work orders, time and material',
+        },
+        checksDeclaredElsewhere: { 'workorder:read': '@substrat-run/engine-workorder' },
+      }),
+    ).toThrow(/described here AND declared elsewhere/);
   });
 });
