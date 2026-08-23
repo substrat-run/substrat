@@ -22,6 +22,8 @@ import { alt as stateMachine } from './StateMachine.content.mjs';
 import { alt as layerStack } from './LayerStack.content.mjs';
 import { alt as runtimeTopology } from './RuntimeTopology.content.mjs';
 import { alt as scopeTopology } from './ScopeTopology.content.mjs';
+import { alt as blastRadius } from './BlastRadius.content.mjs';
+import { alt as guardPath } from './GuardPath.content.mjs';
 
 export const COMPONENT_ALT: Record<string, (props: Record<string, string>) => string> = {
   ConnectorLoop: connectorLoop,
@@ -33,6 +35,8 @@ export const COMPONENT_ALT: Record<string, (props: Record<string, string>) => st
   RuntimeTopology: runtimeTopology,
   ScopeTopology: scopeTopology,
   StateMachine: stateMachine,
+  BlastRadius: blastRadius,
+  GuardPath: guardPath,
 };
 
 /** The twin for `<Name … />`, or null when the component has no flattening. */

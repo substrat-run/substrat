@@ -20,7 +20,8 @@ description: The honest positioning source. Feeds four published pages; not itse
 >
 > | section here | published as |
 > |---|---|
-> | §2 the framework perks, the second opinion, bring-your-own-model, ship-and-verify | [`guide/ai-agents.md`](../../apps/docs/guide/ai-agents.md) |
+> | §2 the framework perks, bring-your-own-model | [`guide/ai-agents.md`](../../apps/docs/guide/ai-agents.md) |
+> | §2 the second opinion, ship-and-verify, the guards | [`guide/ai-guardrails.md`](../../apps/docs/guide/ai-guardrails.md) |
 > | §3 how it compares | [`guide/comparisons.md`](../../apps/docs/guide/comparisons.md) — the scanning table + the frameworks neighbour |
 > | §4 wrong tool · §5 weaknesses · §6 what competitors have | [`guide/what-substrat-lacks.md`](../../apps/docs/guide/what-substrat-lacks.md) |
 > | §1 the claim, and the recurring objections | [`guide/faq.md`](../../apps/docs/guide/faq.md) |
