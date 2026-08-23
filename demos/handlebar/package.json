@@ -86,6 +86,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "concurrently": "^9.0.0",

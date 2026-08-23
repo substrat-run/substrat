@@ -1,7 +1,7 @@
 import { defineEngineRoutes, defineOperations, money } from '@substrat-run/contracts';
-import { invoicingOperations } from '@substrat-run/engine-invoicing';
-import { protocolInstanceRow, protocolOperations } from '@substrat-run/engine-protocol';
-import { billableLine, workOrder, workorderOperations } from '@substrat-run/engine-workorder';
+import { invoicingEntities, invoicingOperations } from '@substrat-run/engine-invoicing';
+import { protocolEntities, protocolInstanceRow, protocolOperations } from '@substrat-run/engine-protocol';
+import { billableLine, workOrder, workorderEntities, workorderOperations } from '@substrat-run/engine-workorder';
 import { z } from 'zod';
 import { handlebarEntities } from './entities.js';
 
@@ -52,7 +52,14 @@ export const startConditionReportInput = z.object({
  * `facility_id` as two snake_case columns and publishes one `EntityRef` in
  * camelCase. Only the published type is what an operation returns.
  */
-export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR_PERMISSIONS)({
+/** The engine entity registries this vertical composes — see Callout's note (#865). */
+const HANDLEBAR_ENGINE_ENTITIES = [workorderEntities, protocolEntities, invoicingEntities] as const;
+
+export const handlebarOperations = defineOperations(
+  handlebarEntities,
+  HANDLEBAR_PERMISSIONS,
+  HANDLEBAR_ENGINE_ENTITIES,
+)({
   'bike-shop/create-customer': {
     summary: 'Register a customer',
     permission: 'customer:manage',
@@ -163,7 +170,19 @@ export const handlebarOperations = defineOperations(handlebarEntities, HANDLEBAR
   },
   'bike-shop/timeline': {
     summary: 'The event timeline for one entity',
-    permission: 'workorder:read',
+    /**
+     * Narrowed to the entity named, not checked at the node — the handler has
+     * always called `ctx.check(WO.read, entity)` and the declaration has always
+     * said otherwise. The key was right here (Callout's was not, see #865), so
+     * what this fixes is the shape: read as a node check, it says any holder of
+     * `workorder:read` reads any repair's timeline, which is the whole of the
+     * portal's isolation stated backwards.
+     *
+     * `entityType` stays a free string — the server hand-supplies the constant
+     * (see `app/src/api.ts`), and the declaration cannot yet say "the type comes
+     * from the caller".
+     */
+    permission: { key: 'workorder:read', entity: 'workorder', idFrom: 'entityId' },
     input: z.object({ entityType: z.string(), entityId: z.string() }),
     output: z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() }),
     // Handler-composed: this walks `_substrat_outbox`, a KERNEL table. It is not

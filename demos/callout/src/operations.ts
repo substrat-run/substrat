@@ -1,12 +1,22 @@
 import { defineEngineRoutes, defineOperations, money } from '@substrat-run/contracts';
-import { invoicingOperations } from '@substrat-run/engine-invoicing';
-import { protocolInstanceRow, protocolOperations } from '@substrat-run/engine-protocol';
-import { billableLine, workOrder, workorderOperations } from '@substrat-run/engine-workorder';
+import { invoicingEntities, invoicingOperations } from '@substrat-run/engine-invoicing';
+import { protocolEntities, protocolInstanceRow, protocolOperations } from '@substrat-run/engine-protocol';
+import { billableLine, workOrder, workorderEntities, workorderOperations } from '@substrat-run/engine-workorder';
 import { z } from 'zod';
 import { calloutEntities } from './entities.js';
 
-/** The permission keys operations may require. Mirrors `SC_PERM` in manifest.ts. */
-export const CALLOUT_PERMISSIONS = ['customer:manage', 'facility:manage'] as const;
+/**
+ * The permission keys operations may require.
+ *
+ * `customer:manage` and `facility:manage` mirror `SC_PERM` in manifest.ts — the
+ * keys Callout itself declares. `workorder:read` is an ENGINE key, and it is here
+ * for the same reason Handlebar's list carries five of them: this is the
+ * vocabulary an operation's `permission` may name, not a second declaration of
+ * who owns the key. A vertical operation gated by an engine's key had no way to
+ * say so while the list held only Callout's own, and `callout/timeline` spent
+ * that whole time declaring `customer:manage` while checking `workorder:read`.
+ */
+export const CALLOUT_PERMISSIONS = ['customer:manage', 'facility:manage', 'workorder:read'] as const;
 
 /**
  * Callout policy: protocols live on work orders. Declared here and parsed by the
@@ -48,7 +58,21 @@ export const priceRow = z.object({
  *
  * `ApiOperationDoc.output` already carries the same "adopted incrementally" note.
  */
-export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMISSIONS)({
+/**
+ * The engine entity registries this vertical composes — `defineOperations`'s third
+ * argument, and the reason an operation here may narrow to `workorder`.
+ *
+ * Unused across the repo until #865: the parameter was designed for exactly this
+ * and had no callers, so a vertical operation gated on an engine entity had
+ * nothing to name and settled for a node check on a key of its own.
+ */
+const CALLOUT_ENGINE_ENTITIES = [workorderEntities, protocolEntities, invoicingEntities] as const;
+
+export const calloutOperations = defineOperations(
+  calloutEntities,
+  CALLOUT_PERMISSIONS,
+  CALLOUT_ENGINE_ENTITIES,
+)({
   'callout/whoami': {
     summary: "Report the caller's role in this scope",
     // No permission gates it: answering "what may I do" must work for everyone,
@@ -198,7 +222,24 @@ export const calloutOperations = defineOperations(calloutEntities, CALLOUT_PERMI
   },
   'callout/timeline': {
     summary: 'The event timeline for one entity',
-    permission: 'customer:manage',
+    /**
+     * `workorder:read` on the entity named — NOT `customer:manage` at the node,
+     * which is what this declared until #865 drove the kit over it.
+     *
+     * Both halves were wrong, and in the direction that matters: a `technician`
+     * holds `workorder:read` and not `customer:manage`, so the artifact said the
+     * technician could not read a timeline while the handler let them, every
+     * time. The permission snapshot is a statement about who may do what — one
+     * that misnames the key is worth less than none.
+     *
+     * `entity: 'workorder'` is what every call site passes and the only shape the
+     * app ever builds. `entityType` stays a free string because the handler is
+     * genuinely entity-agnostic — a portal customer granted `workorder:read` on
+     * their `customer` reaches an order's timeline through link resolution — and
+     * the declaration has no way to say "the type is named by the caller". That
+     * gap is filed, not papered over.
+     */
+    permission: { key: 'workorder:read', entity: 'workorder', idFrom: 'entityId' },
     input: z.object({ entityType: z.string(), entityId: z.string() }),
     output: z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() }),
     // Handler-composed: `_substrat_outbox` is a KERNEL table. Rule 3 permits the

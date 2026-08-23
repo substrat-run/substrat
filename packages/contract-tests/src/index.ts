@@ -7,6 +7,8 @@ export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 export { entityCheckConformanceSuite, planEntityCheckCoverage } from './entity-check-suite.js';
 export type { EntityCheckFixture, EntityCheckSuiteOptions, PlannedCheck } from './entity-check-suite.js';
+export { nodeOnlySuite } from './node-only-suite.js';
+export type { NodeOnlyOptions } from './node-only-suite.js';
 export {
   atomicMod,
   billedMod,
