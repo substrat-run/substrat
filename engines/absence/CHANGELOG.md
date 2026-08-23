@@ -1,5 +1,12 @@
 # @substrat-run/engine-absence
 
+## 0.4.6
+
+### Patch Changes
+
+- @substrat-run/contracts@0.86.0
+- @substrat-run/kernel@0.86.0
+
 ## 0.4.5
 
 ### Patch Changes
