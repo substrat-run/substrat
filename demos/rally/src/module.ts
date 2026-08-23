@@ -9,6 +9,13 @@ import {
   permissionKey,
   type EntityRef,
   type Money,
+  LIST_PAGE_DEFAULT,
+  LIST_PAGE_MAX,
+  listsDeclaredBy,
+  mapPage,
+  pageOf,
+  type ListPage,
+  type Page,
 } from '@substrat-run/contracts';
 import { bookingEntities } from '@substrat-run/engine-booking';
 import { rallyEntities } from './entities.js';
@@ -19,6 +26,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type PageParams,
 } from '@substrat-run/kernel';
 import {
   availability as engineAvailability,
@@ -73,6 +81,16 @@ export const RALLY_PERM = {
   manageMembers: permissionKey.parse('rally:manage-members'),
 };
 
+// The inputs and the row shapes are re-exported unchanged: they were declared
+// here until `defineOperations` needed them below `module.ts` (see inputs.ts and
+// schemas.ts for why the direction had to flip).
+import { rallyOperations } from './operations.js';
+import type { TimelineEntry } from './schemas.js';
+
+export * from './inputs.js';
+export * from './schemas.js';
+export { rallyOperations, RALLY_PERMISSIONS } from './operations.js';
+
 export const rallyManifest = moduleManifest.parse({
   id: '@substrat-run/demo-rally',
   version: '0.0.1',
@@ -110,6 +128,10 @@ export const rallyManifest = moduleManifest.parse({
     // has two declared parents, and the proof walk follows the member edge.
     relations: [{ entityType: 'reservation', parentType: 'member' }],
   }),
+  // #811: DERIVED from the operations' own `paged.over`, never written twice —
+  // the index the kernel provisions and the vocabulary the operation offers are
+  // one fact. `table` and `idColumn` come from the entity registry.
+  lists: listsDeclaredBy(rallyOperations, rallyEntities, [bookingEntities]),
   entitlementKey: 'rallypoint',
 });
 
@@ -877,9 +899,38 @@ const createMemberOp: OperationHandler<
   return ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [id])[0]!;
 };
 
-const listMembersOp: OperationHandler<undefined, MemberRow[]> = async (ctx) => {
+/**
+ * Page a list this vertical already has in memory, on one of its own fields.
+ *
+ * Most of rally's reads are FOLDS — a slot grid derived from opening hours and
+ * the engine's free intervals, a partner tally over every reservation, a price
+ * matrix computed per hour. There is no partial computation to push into SQL, so
+ * the fold runs and the page is taken off it. `rally/list-members` is the one
+ * plain table walk and is kernel-composed instead.
+ *
+ * The cursor field must be UNIQUE among the rows, which each call site's
+ * declaration in `operations.ts` states and this cannot check.
+ */
+function pageBy<T>(rows: T[], page: ListPage, key: (row: T) => string): Page<T> {
+  const limit = Math.min(page.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const cursor = page.cursor;
+  const after =
+    cursor === undefined
+      ? 0
+      : (() => {
+          const i = rows.findIndex((r) => key(r) > cursor);
+          return i < 0 ? rows.length : i;
+        })();
+  return pageOf(rows.slice(after, after + limit), limit, key);
+}
+
+const listMembersOp: OperationHandler<PageParams | undefined, Page<MemberRow>> = async (
+  ctx,
+  page,
+) => {
   assertAllowed(await ctx.check(RALLY_PERM.manageMembers));
-  return ctx.sql.query<MemberRow>('SELECT * FROM rally_members ORDER BY name');
+  // Kernel-composed (#811): the only plain table walk in this vertical.
+  return ctx.page<MemberRow>('member', page ?? {});
 };
 
 export interface CourtListing {
@@ -896,14 +947,17 @@ export interface CourtListing {
  * function and joins the vertical's own side table in memory — never a SELECT
  * against the engine's own tables, which are private to it (decision 28).
  */
-const browseCourtsOp: OperationHandler<undefined, CourtListing[]> = async (ctx) => {
+const browseCourtsOp: OperationHandler<ListPage | undefined, Page<CourtListing>> = async (
+  ctx,
+  page,
+) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
   const config = new Map(
     ctx.sql
       .query<CourtRow>('SELECT * FROM rally_courts')
       .map((c) => [c.resource_id, c] as const),
   );
-  return listResources(ctx, 'court')
+  const courts = listResources(ctx, 'court')
     .filter((r) => r.active)
     .map((r) => ({
       id: r.id,
@@ -911,6 +965,7 @@ const browseCourtsOp: OperationHandler<undefined, CourtListing[]> = async (ctx) 
       durations: config.get(r.id)?.durations ?? '60,90,120',
       cover: config.get(r.id)?.cover ?? 'indoor',
     }));
+  return pageBy(courts, page ?? {}, (c) => c.id);
 };
 
 export interface VenueSnapshot {
@@ -953,12 +1008,12 @@ const getVenueOp: OperationHandler<undefined, VenueSnapshot> = async (ctx) => {
  * 03:00 as free.
  */
 const availabilityOp: OperationHandler<
-  { resourceId: string; date: string; now?: string },
-  SlotFit[]
+  { resourceId: string; date: string; now?: string } & ListPage,
+  Page<SlotFit>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
   const window = bookableWindow(ctx, input.resourceId, input.date);
-  if (!window) return [];
+  if (!window) return pageBy<SlotFit>([], input, (f) => f.startsAt);
 
   const court = ctx.sql.query<CourtRow>('SELECT * FROM rally_courts WHERE resource_id = ?', [
     input.resourceId,
@@ -991,7 +1046,7 @@ const availabilityOp: OperationHandler<
       out.push({ startsAt, maxFitMinutes: fits[fits.length - 1]!, fits });
     }
   }
-  return out;
+  return pageBy(out, input, (f) => f.startsAt);
 };
 
 export interface RosterEntry {
@@ -1058,8 +1113,8 @@ function courtPool(ctx: OperationContext, cover?: Cover[]): (CourtListing & { na
  * hours: the engine answers about one court, the vertical answers about a club.
  */
 const venueAvailabilityOp: OperationHandler<
-  { date: string; cover?: Cover[]; now?: string },
-  VenueSlot[]
+  { date: string; cover?: Cover[]; now?: string } & ListPage,
+  Page<VenueSlot>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
   const byStart = new Map<string, VenueSlot>();
@@ -1094,13 +1149,14 @@ const venueAvailabilityOp: OperationHandler<
       byStart.set(startsAt, slot);
     }
   }
-  return [...byStart.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const slots = [...byStart.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  return pageBy(slots, input, (s) => s.startsAt);
 };
 
 /** The people you have shared a court with HERE — see spec §10.2 for what this is not. */
 const playedWithOp: OperationHandler<
-  { memberId: string },
-  { name: string; level: string | null; times: number; lastPlayed: string }[]
+  { memberId: string } & ListPage,
+  Page<{ partyRef: string; name: string; level: string | null; times: number; lastPlayed: string }>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(BK.read, memberRef(input.memberId)));
   const me = ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [
@@ -1108,7 +1164,10 @@ const playedWithOp: OperationHandler<
   ])[0];
   if (!me) throw new Error(`member not found: ${input.memberId}`);
 
-  const tally = new Map<string, { name: string; level: string | null; times: number; lastPlayed: string }>();
+  const tally = new Map<
+    string,
+    { partyRef: string; name: string; level: string | null; times: number; lastPlayed: string }
+  >();
   for (const r of listReservations(ctx, {})) {
     if (r.effectiveState === 'cancelled' || r.effectiveState === 'expired') continue;
     const roster = rosterOf(ctx, r.id);
@@ -1117,6 +1176,9 @@ const playedWithOp: OperationHandler<
       if (other.partyRef === me.party_ref) continue;
       const seen = tally.get(other.partyRef);
       tally.set(other.partyRef, {
+        // Published as of #891: it was always the tally's key, and a page needs a
+        // unique field to walk.
+        partyRef: other.partyRef,
         name: other.name,
         level: other.level,
         times: (seen?.times ?? 0) + 1,
@@ -1124,7 +1186,8 @@ const playedWithOp: OperationHandler<
       });
     }
   }
-  return [...tally.values()].sort((a, b) => b.times - a.times);
+  const partners = [...tally.values()].sort((a, b) => b.times - a.times);
+  return pageBy(partners, input, (p) => p.partyRef);
 };
 
 /**
@@ -1209,8 +1272,8 @@ const quoteOp: OperationHandler<
  * endpoint: this must price slots that are already booked.
  */
 const priceMatrixOp: OperationHandler<
-  { date: string },
-  { time: string; cells: { duration: number; amount: string; label: string }[] }[]
+  { date: string } & ListPage,
+  Page<{ time: string; cells: { duration: number; amount: string; label: string }[] }>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.managePricing));
   const rows: { time: string; cells: { duration: number; amount: string; label: string }[] }[] = [];
@@ -1233,7 +1296,7 @@ const priceMatrixOp: OperationHandler<
     }
     rows.push({ time, cells });
   }
-  return rows;
+  return pageBy(rows, input, (r) => r.time);
 };
 
 const bookInput = z.object({
@@ -1554,10 +1617,10 @@ export interface OpenMatchListing {
  * with names and ratings are a player-tier concern (booking-social.md §4), fed
  * by participant events rather than read out of the club's scope.
  */
-const openMatchesOp: OperationHandler<{ now?: string } | undefined, OpenMatchListing[]> = async (
-  ctx,
-  input,
-) => {
+const openMatchesOp: OperationHandler<
+  ({ now?: string } & ListPage) | undefined,
+  Page<OpenMatchListing>
+> = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
   const now = input?.now ?? ctx.now();
   const courts = new Map(listResources(ctx, 'court').map((r) => [r.id, r.name] as const));
@@ -1595,7 +1658,8 @@ const openMatchesOp: OperationHandler<{ now?: string } | undefined, OpenMatchLis
       players: rosterOf(ctx, r.id),
     });
   }
-  return out.sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  out.sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  return pageBy(out, input ?? {}, (m) => m.reservationId);
 };
 
 export interface MatchLanding {
@@ -1861,32 +1925,40 @@ const openUpOp: OperationHandler<
 };
 
 /** Portal listing: a proof walk per reservation, never a WHERE clause on the caller. */
-const portalBookingsOp: OperationHandler<{ now?: string } | undefined, Reservation[]> = async (
-  ctx,
-  input,
-) => {
+const portalBookingsOp: OperationHandler<
+  ({ now?: string } & ListPage) | undefined,
+  Page<Reservation>
+> = async (ctx, input) => {
   const all = listReservations(ctx, input?.now !== undefined ? { now: input.now } : {});
   const visible: Reservation[] = [];
   for (const r of all) {
     const decision = await ctx.check(BK.read, reservationRef(r.id));
     if (decision.allowed) visible.push(r);
   }
-  return visible;
+  // A per-ROW filtered read cannot use `ctx.page`: a page of 20 filtered down to
+  // 3 is not a page. The honest shape is the over-fetch this already does, paged
+  // after the walk.
+  return pageBy(visible, input ?? {}, (r) => r.id);
 };
 
 const timelineOp: OperationHandler<
-  { entityType: string; entityId: string },
-  { type: string; occurred_at: string; actor: string }[]
+  { entityType: string; entityId: string } & ListPage,
+  Page<TimelineEntry>
 > = async (ctx, input) => {
   const entity: EntityRef = z
     .object({ entityType: z.string().min(1), entityId: z.string().min(1) })
     .parse(input);
   assertAllowed(await ctx.check(BK.read, entity));
-  return ctx.sql.query(
+  const limit = Math.min(input.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const rows = ctx.sql.query<TimelineEntry>(
     `SELECT type, occurred_at, actor FROM _substrat_outbox
-     WHERE entity_type = ? AND entity_id = ? ORDER BY rowid`,
-    [entity.entityType, entity.entityId],
+     WHERE entity_type = ? AND entity_id = ?${input.cursor ? ' AND occurred_at > ?' : ''}
+     ORDER BY occurred_at, rowid LIMIT ?`,
+    input.cursor
+      ? [entity.entityType, entity.entityId, input.cursor, limit]
+      : [entity.entityType, entity.entityId, limit],
   );
+  return pageOf(rows, limit, (r) => r.occurred_at);
 };
 
 /**
@@ -1931,8 +2003,8 @@ const invitePlayerOp: OperationHandler<
  * showing itself what it already knows, not the engine leaking anything.
  */
 const listInvitesOp: OperationHandler<
-  { orgId: string },
-  (Invitation & { name: string | null })[]
+  { orgId: string } & ListPage,
+  Page<Invitation & { name: string | null }>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.manageMembers));
   const invitations = listInvites(ctx, orgIdSchema.parse(input.orgId));
@@ -1943,7 +2015,8 @@ const listInvitesOp: OperationHandler<
       )
       .map((r) => [r.invitation_id, r.name]),
   );
-  return invitations.map((i) => ({ ...i, name: names.get(i.id) ?? null }));
+  const listing = invitations.map((i) => ({ ...i, name: names.get(i.id) ?? null }));
+  return pageBy(listing, input, (i) => i.id);
 };
 
 /**

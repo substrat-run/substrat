@@ -11,6 +11,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type PageParams,
 } from '@substrat-run/kernel';
 import {
   bindDocument,
@@ -33,6 +34,17 @@ import {
   type AbsenceRequest,
   type AbsenceSubject,
 } from '@substrat-run/engine-absence';
+import {
+  LIST_PAGE_DEFAULT,
+  LIST_PAGE_MAX,
+  listsDeclaredBy,
+  mapPage,
+  pageOf,
+  type ListPage,
+  type Page,
+} from '@substrat-run/contracts';
+import { protocolEntities } from '@substrat-run/engine-protocol';
+import { meridianOperations } from './operations.js';
 import { HR_PERM, meridianManifest } from './manifest.js';
 import { meridianMigrations } from './migrations.js';
 
@@ -53,110 +65,66 @@ import { meridianMigrations } from './migrations.js';
 // migration journal in migrations.ts. This file is operations + wiring.
 // ============================================================================
 
+// The inputs and the row shapes are re-exported unchanged: they were declared
+// here until `defineOperations` needed them below `module.ts` (see inputs.ts and
+// schemas.ts for why the direction had to flip).
+import {
+  accrueInput,
+  createEmployeeInput,
+  createProjectInput,
+  decideExpenseInput,
+  decideLeaveInput,
+  defineLeaveTypeInput,
+  employeeFilterInput,
+  employeeIdInput,
+  instanceIdInput,
+  issueContractInput,
+  logTimeInput,
+  payrollExportInput,
+  requestLeaveInput,
+  setTermsInput,
+  startOnboardingInput,
+  statusFilterInput,
+  submitExpenseInput,
+  timelineInput,
+} from './inputs.js';
+import type {
+  TimelineEntry,
+  EmployeeRow,
+  EmploymentTermsRow,
+  ExpenseRow,
+  LeaveRequestRow,
+  LeaveTypeRow,
+  LedgerRow,
+  PayrollExport,
+  ProjectRow,
+  RosterRow,
+  TimeEntryRow,
+  WhoAmI,
+} from './schemas.js';
+
+export * from './inputs.js';
+export * from './schemas.js';
+export { meridianOperations, MERIDIAN_PERMISSIONS } from './operations.js';
+
 // ---------------------------------------------------------------------------
 // Row shapes
 // ---------------------------------------------------------------------------
 
-export interface EmployeeRow {
-  id: string;
-  number: string;
-  name: string;
-  email: string | null;
-  national_id: string | null;
-  principal_ref: string | null;
-  started_at: string | null;
-  created_at: string;
-}
 
-export interface EmploymentTermsRow {
-  id: string;
-  employee_id: string;
-  role_title: string;
-  monthly_salary: string;
-  currency: string;
-  scope_pct: string;
-  start_date: string;
-  notice_months: string;
-  created_by: string;
-  created_at: string;
-}
 
-export interface LeaveTypeRow {
-  key: string;
-  label: string;
-  kind: string;
-  annual_days: string | null;
-  created_at: string;
-}
 
-export interface LedgerRow {
-  id: string;
-  employee_id: string;
-  leave_type_key: string;
-  entry_kind: 'accrual' | 'booking' | 'correction' | 'carryover' | 'reversal';
-  delta: string;
-  effective_date: string;
-  request_id: string | null;
-  note: string | null;
-  created_by: string;
-  created_at: string;
-}
 
-export interface LeaveRequestRow {
-  id: string;
-  employee_id: string;
-  leave_type_key: string;
-  start_date: string;
-  end_date: string;
-  days: string;
-  status: 'requested' | 'approved' | 'rejected' | 'cancelled';
-  decided_by: string | null;
-  decided_at: string | null;
-  note: string | null;
-  created_by: string;
-  created_at: string;
-}
 
-export interface ProjectRow {
-  id: string;
-  code: string;
-  name: string;
-  created_at: string;
-}
 
-export interface TimeEntryRow {
-  id: string;
-  employee_id: string;
-  project_id: string | null;
-  work_date: string;
-  hours: string;
-  note: string | null;
-  created_by: string;
-  created_at: string;
-}
 
-export interface ExpenseRow {
-  id: string;
-  employee_id: string;
-  project_id: string | null;
-  description: string;
-  amount: string;
-  currency: string;
-  category: string;
-  status: 'submitted' | 'approved' | 'rejected' | 'exported';
-  decided_by: string | null;
-  decided_at: string | null;
-  created_by: string;
-  created_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 const employeeRef = (id: string): EntityRef => ({ entityType: 'employee', entityId: id });
-const posDecimal = z.string().regex(/^\d+(\.\d{1,6})?$/, 'must be a non-negative decimal');
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}/, 'must be an ISO date');
+
 /** Negate a signed decimal string ('5' → '-5', '-5' → '5', '0' → '0'). */
 const negate = (d: string): string =>
   compareDecimal(d, '0') === 0 ? '0' : d.startsWith('-') ? d.slice(1) : `-${d}`;
@@ -217,14 +185,6 @@ const requestRowOf = (r: AbsenceRequest): LeaveRequestRow => ({
 // Directory (HR admin)
 // ---------------------------------------------------------------------------
 
-export const createEmployeeInput = z.object({
-  number: z.string().min(1),
-  name: z.string().min(1),
-  email: z.string().optional(),
-  nationalId: z.string().optional(),
-  principalRef: z.string().optional(),
-  startedAt: isoDate.optional(),
-});
 
 const createEmployeeOp: OperationHandler<z.infer<typeof createEmployeeInput>, EmployeeRow> = async (
   ctx,
@@ -259,9 +219,38 @@ const createEmployeeOp: OperationHandler<z.infer<typeof createEmployeeInput>, Em
   return getEmployee(ctx, id);
 }
 
-const listEmployeesOp: OperationHandler<undefined, EmployeeRow[]> = async (ctx) => {
+/**
+ * Page a list this vertical already has in memory, on one of its own fields.
+ *
+ * Used where the rows come from a FOLD rather than a table walk — an engine's
+ * in-scope `listRequests`, for instance, which returns what it returns. There is
+ * no partial computation to push into SQL, so the fold runs and the page is taken
+ * off it. The SQL-backed reads below use a real keyset `LIMIT` instead.
+ *
+ * The cursor field must be UNIQUE among the rows, which each call site's
+ * declaration in `operations.ts` states and this cannot check.
+ */
+function pageBy<T>(rows: T[], page: ListPage, key: (row: T) => string): Page<T> {
+  const limit = Math.min(page.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const cursor = page.cursor;
+  const after =
+    cursor === undefined
+      ? 0
+      : (() => {
+          const i = rows.findIndex((r) => key(r) > cursor);
+          return i < 0 ? rows.length : i;
+        })();
+  return pageOf(rows.slice(after, after + limit), limit, key);
+}
+
+const listEmployeesOp: OperationHandler<PageParams | undefined, Page<EmployeeRow>> = async (
+  ctx,
+  page,
+) => {
   assertAllowed(await ctx.check(HR_PERM.employeeManage));
-  return ctx.sql.query<EmployeeRow>('SELECT * FROM hr_employees ORDER BY number');
+  // Kernel-composed (#811): the `WHERE`, `ORDER BY`, keyset tie-break, `LIMIT`
+  // and the indexes behind them come from this operation's declared `paged.over`.
+  return ctx.page<EmployeeRow>('employee', page ?? {});
 };
 
 /**
@@ -270,12 +259,11 @@ const listEmployeesOp: OperationHandler<undefined, EmployeeRow[]> = async (ctx) 
  * `absence:read` holder passes (managers at scope, HR at tenant); employees,
  * holding it only as an entity grant, cannot enumerate the team.
  */
-export type RosterRow = Omit<EmployeeRow, 'national_id'>;
-const rosterOp: OperationHandler<undefined, RosterRow[]> = async (ctx) => {
+const rosterOp: OperationHandler<PageParams | undefined, Page<RosterRow>> = async (ctx, page) => {
   assertAllowed(await ctx.check(HR_PERM.absenceRead));
-  return ctx.sql.query<RosterRow>(
-    'SELECT id, number, name, email, principal_ref, started_at, created_at FROM hr_employees ORDER BY number',
-  );
+  // The kernel walks `employee`; dropping `national_id` is this operation's job
+  // and stays here, which is what `mapPage` is for.
+  return mapPage(ctx.page<EmployeeRow>('employee', page ?? {}), ({ national_id, ...rest }) => rest);
 };
 
 /**
@@ -292,11 +280,6 @@ const rosterOp: OperationHandler<undefined, RosterRow[]> = async (ctx) => {
  * beside each name, so the SE/ES split looked like it worked locally while the operation
  * behind it never answered anything but SE.
  */
-export interface WhoAmI {
-  role: 'hr-admin' | 'manager' | 'employee' | 'none';
-  country: 'SE' | 'ES';
-  employeeId: string | null;
-}
 const whoamiOp: OperationHandler<undefined, WhoAmI> = async (ctx) => {
   const employeeId =
     ctx.sql.query<{ id: string }>('SELECT id FROM hr_employees WHERE principal_ref = ? LIMIT 1', [ctx.principal])[0]?.id ??
@@ -315,12 +298,6 @@ const whoamiOp: OperationHandler<undefined, WhoAmI> = async (ctx) => {
 // Leave types + accrual (HR admin)
 // ---------------------------------------------------------------------------
 
-export const defineLeaveTypeInput = z.object({
-  key: z.string().min(1),
-  label: z.string().min(1),
-  kind: z.string().min(1),
-  annualDays: posDecimal.optional(),
-});
 
 const defineLeaveTypeOp: OperationHandler<z.infer<typeof defineLeaveTypeInput>, LeaveTypeRow> =
   async (ctx, raw) => {
@@ -340,32 +317,30 @@ const defineLeaveTypeOp: OperationHandler<z.infer<typeof defineLeaveTypeInput>, 
 // The shared read selectors. Named (and exported) so the API catalog documents
 // the SAME objects the handlers parse — schemas an operation shares with
 // another operation are still one object, one contract (design/api-surface.md).
-export const employeeIdInput = z.object({ employeeId: z.string().min(1) });
-export const employeeFilterInput = z.object({ employeeId: z.string().min(1).optional() });
-export const statusFilterInput = z.object({ status: z.string().optional() });
-export const instanceIdInput = z.object({ instanceId: z.string().min(1) });
-export const timelineInput = z.object({ entityType: z.string().min(1), entityId: z.string().min(1) });
 
 // Leave types are scope vocabulary every absence-reader needs (an employee to
 // see their own balances, HR/managers at the node). Optional employee entity:
 // a node holder passes with none; an employee passes with their own record.
-const listLeaveTypesOp: OperationHandler<z.infer<typeof employeeFilterInput> | undefined, LeaveTypeRow[]> = async (
+const listLeaveTypesOp: OperationHandler<
+  (z.infer<typeof employeeFilterInput> & ListPage) | undefined,
+  Page<LeaveTypeRow>
+> = async (
   ctx,
   raw,
 ) => {
   const input = employeeFilterInput.parse(raw ?? {});
   const entity = input.employeeId ? employeeRef(input.employeeId) : undefined;
   assertAllowed(await ctx.check(HR_PERM.absenceRead, entity));
-  return ctx.sql.query<LeaveTypeRow>('SELECT * FROM hr_leave_types ORDER BY key');
+  const limit = Math.min(raw?.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const rows = raw?.cursor
+    ? ctx.sql.query<LeaveTypeRow>(
+        'SELECT * FROM hr_leave_types WHERE key > ? ORDER BY key LIMIT ?',
+        [raw.cursor, limit],
+      )
+    : ctx.sql.query<LeaveTypeRow>('SELECT * FROM hr_leave_types ORDER BY key LIMIT ?', [limit]);
+  return pageOf(rows, limit, (r) => r.key);
 };
 
-export const accrueInput = z.object({
-  employeeId: z.string().min(1),
-  leaveTypeKey: z.string().min(1),
-  days: posDecimal,
-  effectiveDate: isoDate.optional(),
-  note: z.string().optional(),
-});
 
 const accrueOp: OperationHandler<z.infer<typeof accrueInput>, LedgerRow> = async (ctx, raw) => {
   assertAllowed(await ctx.check(HR_PERM.absenceConfigure));
@@ -409,14 +384,6 @@ const balanceOp: OperationHandler<
   };
 };
 
-export const requestLeaveInput = z.object({
-  employeeId: z.string().min(1),
-  leaveTypeKey: z.string().min(1),
-  startDate: isoDate,
-  endDate: isoDate,
-  days: posDecimal,
-  note: z.string().optional(),
-});
 
 const requestLeaveOp: OperationHandler<z.infer<typeof requestLeaveInput>, LeaveRequestRow> = async (
   ctx,
@@ -438,11 +405,6 @@ const requestLeaveOp: OperationHandler<z.infer<typeof requestLeaveInput>, LeaveR
   );
 };
 
-export const decideLeaveInput = z.object({
-  requestId: z.string().min(1),
-  decision: z.enum(['approve', 'reject']),
-  note: z.string().optional(),
-});
 
 const decideLeaveOp: OperationHandler<
   z.infer<typeof decideLeaveInput>,
@@ -463,7 +425,10 @@ const decideLeaveOp: OperationHandler<
 
 const requestStatus = z.enum(['requested', 'approved', 'rejected', 'cancelled']);
 
-const listRequestsOp: OperationHandler<z.infer<typeof statusFilterInput> | undefined, LeaveRequestRow[]> = async (
+const listRequestsOp: OperationHandler<
+  (z.infer<typeof statusFilterInput> & ListPage) | undefined,
+  Page<LeaveRequestRow>
+> = async (
   ctx,
   raw,
 ) => {
@@ -472,21 +437,25 @@ const listRequestsOp: OperationHandler<z.infer<typeof statusFilterInput> | undef
   const rows = listAbsenceRequests(ctx, {
     status: status === undefined ? undefined : requestStatus.parse(status),
   }).map(requestRowOf);
-  return rows.reverse(); // the shipped order: created_at ascending
+  rows.reverse(); // the shipped order: created_at ascending
+  return pageBy(rows, raw ?? {}, (r) => r.id);
 };
 
 /** One employee's own requests — the self-service path (entity-checked). */
-const myRequestsOp: OperationHandler<z.infer<typeof employeeIdInput>, LeaveRequestRow[]> = async (ctx, input) => {
+const myRequestsOp: OperationHandler<
+  z.infer<typeof employeeIdInput> & ListPage,
+  Page<LeaveRequestRow>
+> = async (ctx, input) => {
   const { employeeId } = employeeIdInput.parse(input);
   assertAllowed(await ctx.check(HR_PERM.absenceRead, employeeRef(employeeId)));
-  return listAbsenceRequests(ctx, { subject: employeeRef(employeeId) }).map(requestRowOf);
+  const rows = listAbsenceRequests(ctx, { subject: employeeRef(employeeId) }).map(requestRowOf);
+  return pageBy(rows, input, (r) => r.id);
 };
 
 // ---------------------------------------------------------------------------
 // Projects + time reporting (the second append-only ledger)
 // ---------------------------------------------------------------------------
 
-export const createProjectInput = z.object({ code: z.string().min(1), name: z.string().min(1) });
 
 const createProjectOp: OperationHandler<z.infer<typeof createProjectInput>, ProjectRow> = async (
   ctx,
@@ -509,23 +478,26 @@ const createProjectOp: OperationHandler<z.infer<typeof createProjectInput>, Proj
  * manager) passes with no entity; an employee passes with their own record,
  * whose grant carries `time:read`. Same op, two ways in.
  */
-const listProjectsOp: OperationHandler<z.infer<typeof employeeFilterInput> | undefined, ProjectRow[]> = async (
+const listProjectsOp: OperationHandler<
+  (z.infer<typeof employeeFilterInput> & ListPage) | undefined,
+  Page<ProjectRow>
+> = async (
   ctx,
   raw,
 ) => {
   const input = employeeFilterInput.parse(raw ?? {});
   const entity = input.employeeId ? employeeRef(input.employeeId) : undefined;
   assertAllowed(await ctx.check(HR_PERM.timeRead, entity));
-  return ctx.sql.query<ProjectRow>('SELECT * FROM hr_projects ORDER BY code');
+  const limit = Math.min(raw?.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const rows = raw?.cursor
+    ? ctx.sql.query<ProjectRow>('SELECT * FROM hr_projects WHERE code > ? ORDER BY code LIMIT ?', [
+        raw.cursor,
+        limit,
+      ])
+    : ctx.sql.query<ProjectRow>('SELECT * FROM hr_projects ORDER BY code LIMIT ?', [limit]);
+  return pageOf(rows, limit, (r) => r.code);
 };
 
-export const logTimeInput = z.object({
-  employeeId: z.string().min(1),
-  projectId: z.string().optional(),
-  workDate: isoDate,
-  hours: posDecimal,
-  note: z.string().optional(),
-});
 
 const logTimeOp: OperationHandler<z.infer<typeof logTimeInput>, TimeEntryRow> = async (ctx, raw) => {
   const input = logTimeInput.parse(raw);
@@ -573,14 +545,6 @@ const timesheetOp: OperationHandler<
 // Expenses (submit → approve → export)
 // ---------------------------------------------------------------------------
 
-export const submitExpenseInput = z.object({
-  employeeId: z.string().min(1),
-  description: z.string().min(1),
-  amount: posDecimal,
-  currency: z.string().regex(/^[A-Z]{3}$/).default('SEK'),
-  category: z.string().min(1),
-  projectId: z.string().optional(),
-});
 
 const submitExpenseOp: OperationHandler<z.infer<typeof submitExpenseInput>, ExpenseRow> = async (
   ctx,
@@ -606,10 +570,6 @@ const submitExpenseOp: OperationHandler<z.infer<typeof submitExpenseInput>, Expe
   return ctx.sql.query<ExpenseRow>('SELECT * FROM hr_expenses WHERE id = ?', [id])[0]!;
 };
 
-export const decideExpenseInput = z.object({
-  expenseId: z.string().min(1),
-  decision: z.enum(['approve', 'reject']),
-});
 
 const decideExpenseOp: OperationHandler<z.infer<typeof decideExpenseInput>, ExpenseRow> = async (
   ctx,
@@ -640,25 +600,55 @@ const decideExpenseOp: OperationHandler<z.infer<typeof decideExpenseInput>, Expe
   return ctx.sql.query<ExpenseRow>('SELECT * FROM hr_expenses WHERE id = ?', [exp.id])[0]!;
 };
 
-const listExpensesOp: OperationHandler<z.infer<typeof statusFilterInput> | undefined, ExpenseRow[]> = async (
+const listExpensesOp: OperationHandler<
+  (z.infer<typeof statusFilterInput> & ListPage) | undefined,
+  Page<ExpenseRow>
+> = async (
   ctx,
   raw,
 ) => {
   assertAllowed(await ctx.check(HR_PERM.expenseRead));
   const { status } = statusFilterInput.parse(raw ?? {});
-  return status
-    ? ctx.sql.query<ExpenseRow>('SELECT * FROM hr_expenses WHERE status = ? ORDER BY created_at', [status])
-    : ctx.sql.query<ExpenseRow>('SELECT * FROM hr_expenses ORDER BY created_at');
+  const limit = Math.min(raw?.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (status) {
+    where.push('status = ?');
+    params.push(status);
+  }
+  if (raw?.cursor) {
+    where.push('id > ?');
+    params.push(raw.cursor);
+  }
+  const clause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+  // Ids are ULIDs, so an `id` walk is the `created_at` walk this shipped with,
+  // minus the tie a shared timestamp would bring.
+  const rows = ctx.sql.query<ExpenseRow>(
+    `SELECT * FROM hr_expenses${clause} ORDER BY id LIMIT ?`,
+    [...params, limit],
+  );
+  return pageOf(rows, limit, (r) => r.id);
 };
 
 /** One employee's own expenses — the self-service path (entity-checked). */
-const myExpensesOp: OperationHandler<z.infer<typeof employeeIdInput>, ExpenseRow[]> = async (ctx, input) => {
+const myExpensesOp: OperationHandler<
+  z.infer<typeof employeeIdInput> & ListPage,
+  Page<ExpenseRow>
+> = async (ctx, input) => {
   const { employeeId } = employeeIdInput.parse(input);
   assertAllowed(await ctx.check(HR_PERM.expenseRead, employeeRef(employeeId)));
-  return ctx.sql.query<ExpenseRow>(
-    'SELECT * FROM hr_expenses WHERE employee_id = ? ORDER BY created_at DESC',
-    [employeeId],
-  );
+  const limit = Math.min(input.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  // Descending, as this list shipped — so the cursor walks strictly BEFORE.
+  const rows = input.cursor
+    ? ctx.sql.query<ExpenseRow>(
+        'SELECT * FROM hr_expenses WHERE employee_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
+        [employeeId, input.cursor, limit],
+      )
+    : ctx.sql.query<ExpenseRow>(
+        'SELECT * FROM hr_expenses WHERE employee_id = ? ORDER BY id DESC LIMIT ?',
+        [employeeId, limit],
+      );
+  return pageOf(rows, limit, (r) => r.id);
 };
 
 // ---------------------------------------------------------------------------
@@ -667,14 +657,7 @@ const myExpensesOp: OperationHandler<z.infer<typeof employeeIdInput>, ExpenseRow
 // then the expenses are marked exported so the next run never double-counts.
 // ---------------------------------------------------------------------------
 
-export const payrollExportInput = z.object({ fromDate: isoDate, toDate: isoDate });
 
-interface PayrollExport {
-  fromDate: string;
-  toDate: string;
-  expenses: { employeeId: string; amount: string; currency: string; category: string }[];
-  absence: { employeeId: string; leaveTypeKey: string; days: string }[];
-}
 
 const payrollExportOp: OperationHandler<z.infer<typeof payrollExportInput>, PayrollExport> = async (
   ctx,
@@ -769,15 +752,6 @@ export async function employmentTermsHash(terms: EmploymentTermsRow): Promise<st
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export const setTermsInput = z.object({
-  employeeId: z.string().min(1),
-  roleTitle: z.string().min(1),
-  monthlySalary: posDecimal,
-  currency: z.string().length(3),
-  scopePct: posDecimal,
-  startDate: isoDate,
-  noticeMonths: posDecimal,
-});
 
 const setTermsOp: OperationHandler<z.infer<typeof setTermsInput>, EmploymentTermsRow> = async (
   ctx,
@@ -828,10 +802,6 @@ const termsOp: OperationHandler<z.infer<typeof employeeIdInput>, EmploymentTerms
   return latestTerms(ctx, employeeIdInput.parse(input).employeeId) ?? null;
 };
 
-export const issueContractInput = z.object({
-  templateKey: z.string().min(1),
-  employeeId: z.string().min(1),
-});
 
 /**
  * Issue the contract for signature — instantiate, bind, dispatch, in ONE
@@ -972,10 +942,6 @@ const verifyContractOp: OperationHandler<
 // `protocol/*` bindings directly.
 // ---------------------------------------------------------------------------
 
-export const startOnboardingInput = z.object({
-  templateKey: z.string().min(1),
-  employeeId: z.string().min(1),
-});
 
 const startOnboardingOp: OperationHandler<z.infer<typeof startOnboardingInput>, ProtocolInstanceRow> =
   async (ctx, raw) => {
@@ -993,16 +959,21 @@ const startOnboardingOp: OperationHandler<z.infer<typeof startOnboardingInput>, 
 // ---------------------------------------------------------------------------
 
 const timelineOp: OperationHandler<
-  z.infer<typeof timelineInput>,
-  { type: string; occurred_at: string; actor: string }[]
+  z.infer<typeof timelineInput> & ListPage,
+  Page<TimelineEntry>
 > = async (ctx, input) => {
   const entity: EntityRef = timelineInput.parse(input);
   assertAllowed(await ctx.check(HR_PERM.absenceRead, entity));
-  return ctx.sql.query(
+  const limit = Math.min(input.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const rows = ctx.sql.query<TimelineEntry>(
     `SELECT type, occurred_at, actor FROM _substrat_outbox
-     WHERE entity_type = ? AND entity_id = ? ORDER BY rowid`,
-    [entity.entityType, entity.entityId],
+     WHERE entity_type = ? AND entity_id = ?${input.cursor ? ' AND occurred_at > ?' : ''}
+     ORDER BY occurred_at, rowid LIMIT ?`,
+    input.cursor
+      ? [entity.entityType, entity.entityId, input.cursor, limit]
+      : [entity.entityType, entity.entityId, limit],
   );
+  return pageOf(rows, limit, (r) => r.occurred_at);
 };
 
 export const meridianModule: ModuleRegistration = {

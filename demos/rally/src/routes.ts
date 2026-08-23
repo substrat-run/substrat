@@ -8,7 +8,14 @@ import {
 } from './auth-adapters.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import { principalId, type PrincipalId } from '@substrat-run/contracts';
+import {
+  isPage,
+  nextPageLink,
+  PAGE_LINK_HEADER,
+  principalId,
+  type PrincipalId,
+  type Page,
+} from '@substrat-run/contracts';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import type { RallyWorld } from './seed.js';
@@ -28,6 +35,28 @@ import type { RallyWorld } from './seed.js';
  * that calls operations directly cannot see those; one that goes through this
  * app can.
  */
+/**
+ * A paged operation's result, projected onto the wire (#829).
+ *
+ * The BODY stays what it always was — the entries — and the walk rides in a
+ * `Link` header. That is the whole reason `booking/list` and
+ * `booking/list-resources` could adopt paging without renaming this API's
+ * responses: the admin app still receives an array.
+ *
+ * `packages/vertical-host` does exactly this for a hosted vertical's generated
+ * routes. Rally hand-writes its routes, so it applies the same projection here
+ * rather than serving a shape no other Substrat API serves.
+ *
+ * `isPage` is checked rather than assumed, so a read that has not adopted
+ * `pageOf` reaches the client unchanged instead of being emptied.
+ */
+function jsonPage(c: Context, result: unknown) {
+  if (!isPage(result)) return c.json(result as never);
+  const link = nextPageLink(c.req.url, result.nextCursor);
+  if (link) c.header(PAGE_LINK_HEADER, link);
+  return c.json(result.entries as never);
+}
+
 export function createRallyApp(
   host: SqliteScopeHost,
   world: RallyWorld,
@@ -160,8 +189,8 @@ export function createRallyApp(
   // -- courts -----------------------------------------------------------------
   // Two doors on purpose: staff read the engine's resource list (booking:read),
   // players browse free/busy only (rally:browse).
-  app.get('/api/browse/courts', async (c) => c.json(await (await stub(c)).invoke('rally/courts')));
-  app.get('/api/courts', async (c) => c.json(await (await stub(c)).invoke('booking/list-resources')));
+  app.get('/api/browse/courts', async (c) => jsonPage(c, await (await stub(c)).invoke('rally/courts')));
+  app.get('/api/courts', async (c) => jsonPage(c, await (await stub(c)).invoke('booking/list-resources')));
   app.post('/api/courts', async (c) => {
     const s = await stub(c);
     const input = await body(c);
@@ -186,14 +215,14 @@ export function createRallyApp(
 
   // -- pricing ----------------------------------------------------------------
   app.get('/api/price-matrix', async (c) =>
-    c.json(await (await stub(c)).invoke('rally/price-matrix', { date: c.req.query('date') })),
+    jsonPage(c, await (await stub(c)).invoke('rally/price-matrix', { date: c.req.query('date') })),
   );
   app.post('/api/price-rules', async (c) =>
     c.json(await (await stub(c)).invoke('rally/upsert-price-rule', await body(c))),
   );
 
   // -- members ----------------------------------------------------------------
-  app.get('/api/members', async (c) => c.json(await (await stub(c)).invoke('rally/list-members')));
+  app.get('/api/members', async (c) => jsonPage(c, await (await stub(c)).invoke('rally/list-members')));
   app.post('/api/members', async (c) =>
     c.json(await (await stub(c)).invoke('rally/create-member', await body(c))),
   );
@@ -202,7 +231,7 @@ export function createRallyApp(
   // The org is the venue's, never the body's: which club you are inviting into
   // is decided by where you are standing, not by what the request claims.
   app.get('/api/invites', async (c) =>
-    c.json(await (await stub(c)).invoke('rally/list-invites', { orgId: venueOf(c).orgId })),
+    jsonPage(c, await (await stub(c)).invoke('rally/list-invites', { orgId: venueOf(c).orgId })),
   );
   app.post('/api/invites', async (c) =>
     c.json(
@@ -273,7 +302,8 @@ export function createRallyApp(
 
   // -- the calendar & booking -------------------------------------------------
   app.get('/api/availability', async (c) =>
-    c.json(
+    jsonPage(
+      c,
       await (await stub(c)).invoke('rally/availability', {
         resourceId: c.req.query('resourceId'),
         date: c.req.query('date'),
@@ -281,10 +311,13 @@ export function createRallyApp(
     ),
   );
   app.get('/api/reservations', async (c) =>
-    c.json(
+    jsonPage(
+      c,
       await (await stub(c)).invoke('booking/list', {
         ...(c.req.query('from') ? { from: c.req.query('from') } : {}),
         ...(c.req.query('to') ? { to: c.req.query('to') } : {}),
+        ...(c.req.query('cursor') ? { cursor: c.req.query('cursor') } : {}),
+        ...(c.req.query('limit') ? { limit: Number(c.req.query('limit')) } : {}),
       }),
     ),
   );
@@ -391,15 +424,20 @@ export function createRallyApp(
 
   // `?all=1` searches every club the caller can reach; without it, this one.
   app.get('/api/matches', async (c) => {
-    if (!c.req.query('all')) return c.json(await (await stub(c)).invoke('rally/open-matches'));
-    const all = await fanOut<Record<string, unknown>[]>(c, 'rally/open-matches');
+    if (!c.req.query('all')) return jsonPage(c, await (await stub(c)).invoke('rally/open-matches'));
+    // The fan-out flattens several clubs into one body, so it reads each club's
+    // page and merges the ENTRIES — there is no single walk to hand a cursor for.
+    const all = await fanOut<Page<Record<string, unknown>>>(c, 'rally/open-matches');
     return c.json(
-      all.flatMap((v) => v.rows.map((m) => ({ ...m, venue: v.venue, venueLabel: v.label }))),
+      all.flatMap((v) =>
+        v.rows.entries.map((m) => ({ ...m, venue: v.venue, venueLabel: v.label })),
+      ),
     );
   });
 
   app.get('/api/venue-availability', async (c) =>
-    c.json(
+    jsonPage(
+      c,
       await (await stub(c)).invoke('rally/venue-availability', {
         date: c.req.query('date'),
         ...(c.req.query('cover') ? { cover: c.req.query('cover')!.split(',') } : {}),
@@ -417,7 +455,10 @@ export function createRallyApp(
     ),
   );
   app.get('/api/played-with', async (c) =>
-    c.json(await (await stub(c)).invoke('rally/played-with', { memberId: c.req.query('memberId') })),
+    jsonPage(
+      c,
+      await (await stub(c)).invoke('rally/played-with', { memberId: c.req.query('memberId') }),
+    ),
   );
   app.get('/api/matches/:id', async (c) =>
     c.json(await (await stub(c)).invoke('rally/match', { reservationId: c.req.param('id') })),
@@ -511,10 +552,11 @@ export function createRallyApp(
 
   // -- portal -----------------------------------------------------------------
   app.get('/api/portal/bookings', async (c) =>
-    c.json(await (await stub(c)).invoke('rally/portal-bookings')),
+    jsonPage(c, await (await stub(c)).invoke('rally/portal-bookings')),
   );
   app.get('/api/timeline', async (c) =>
-    c.json(
+    jsonPage(
+      c,
       await (await stub(c)).invoke('rally/timeline', {
         entityType: c.req.query('entityType'),
         entityId: c.req.query('entityId'),

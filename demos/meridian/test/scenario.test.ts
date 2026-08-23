@@ -3,8 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { Page } from '@substrat-run/contracts';
-import { platformActorId, principalId, type ScopeId } from '@substrat-run/contracts';
+import { platformActorId, principalId, type Page, type ScopeId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PROTOCOL_PERM, type ProtocolInstanceRow } from '@substrat-run/engine-protocol';
@@ -64,7 +63,7 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
   });
 
   it('2. the directory and starting balance are seeded', async () => {
-    const employees = await hedda.invoke<EmployeeRow[]>('hr/list-employees');
+    const employees = (await hedda.invoke<Page<EmployeeRow>>('hr/list-employees')).entries;
     // SE-004 is Hedda herself — HR is staff, and since #852 the issuing user needs
     // an employee row to be reachable as the employer signatory.
     expect(employees.map((e) => e.number)).toEqual(['SE-001', 'SE-002', 'SE-003', 'SE-004']);
@@ -338,7 +337,7 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
   });
 
   it('12. two signatories, two KINDS: an employer principal and an employee with no account', async () => {
-    const karin = await hedda.invoke<EmployeeRow[]>('hr/list-employees');
+    const karin = (await hedda.invoke<Page<EmployeeRow>>('hr/list-employees')).entries;
     const karinRow = karin.find((e) => e.id === w.karinEmpId)!;
     // The premise: a new hire has no login on the day they sign.
     expect(karinRow.principal_ref).toBeNull();
@@ -472,7 +471,9 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
 
   it('9. country divergence: Spain runs the same code with different statutory rules', async () => {
     const es = await host.getScope(w.hedda, w.t1, w.sEs);
-    const types = await es.invoke<{ key: string; annual_days: string | null }[]>('hr/list-leave-types');
+    const types = (
+      await es.invoke<Page<{ key: string; annual_days: string | null }>>('hr/list-leave-types')
+    ).entries;
     const vacation = types.find((t) => t.key === 'vacation')!;
     expect(vacation.annual_days).toBe('22'); // Spain, not Sweden's 25
     const bal = await es.invoke<{ balances: { balance: string }[] }>('hr/balance', {
@@ -513,7 +514,7 @@ describe('Meridian (HR) demo scenario (spec §9)', () => {
     expect(report.schedules!.fired).toBeGreaterThanOrEqual(1);
     expect(report.errors).toEqual([]);
 
-    const requests = await hedda.invoke<LeaveRequestRow[]>('hr/list-requests');
+    const requests = (await hedda.invoke<Page<LeaveRequestRow>>('hr/list-requests')).entries;
     expect(requests.find((r) => r.id === stale.id)?.status).toBe('cancelled');
 
     // The audit trail names the SCHEDULE, not a manager who never looked at it —

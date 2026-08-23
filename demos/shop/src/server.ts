@@ -1,3 +1,4 @@
+import { isPage, nextPageLink, PAGE_LINK_HEADER } from '@substrat-run/contracts';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -101,8 +102,27 @@ app.onError((err, c) => {
 // storefront — `?includeUnpublished=1` is how the catalogue admin sees drafts;
 // the operation gates that flag on catalog:manage, so the storefront's own
 // anonymous callers get the published rows and nothing more.
+/**
+ * A paged operation's result, projected onto the wire (#829/#811).
+ *
+ * The BODY stays what it always was — the entries — and the walk rides in a
+ * `Link` header. That is what let shop's four list reads adopt paging without
+ * renaming a response either front-end consumes: the storefront and the back
+ * office both still receive arrays.
+ *
+ * `packages/vertical-host` does exactly this for a hosted vertical's generated
+ * routes; shop hand-writes its own, so it applies the same projection here.
+ */
+function jsonPage(c: Context, result: unknown) {
+  if (!isPage(result)) return c.json(result as never);
+  const link = nextPageLink(c.req.url, result.nextCursor);
+  if (link) c.header(PAGE_LINK_HEADER, link);
+  return c.json(result.entries as never);
+}
+
 app.get('/api/catalog', async (c) =>
-  c.json(
+  jsonPage(
+    c,
     await (await stub(c)).invoke('shop/catalog', {
       includeUnpublished: c.req.query('includeUnpublished') === '1',
     }),
@@ -133,7 +153,9 @@ app.post('/api/carts/:id/checkout', async (c) =>
 );
 
 // portal
-app.get('/api/portal/orders', async (c) => c.json(await (await stub(c)).invoke('shop/portal-orders')));
+app.get('/api/portal/orders', async (c) =>
+  jsonPage(c, await (await stub(c)).invoke('shop/portal-orders')),
+);
 
 // admin — catalogue
 app.post('/api/products', async (c) => c.json(await (await stub(c)).invoke('shop/create-product', await body(c))));
@@ -143,7 +165,7 @@ app.post('/api/products/:id/variants', async (c) =>
 app.post('/api/products/:id/publish', async (c) =>
   c.json(await (await stub(c)).invoke('shop/publish-product', { ...(await body(c)), productId: c.req.param('id') })),
 );
-app.get('/api/stock', async (c) => c.json(await (await stub(c)).invoke('shop/stock-overview')));
+app.get('/api/stock', async (c) => jsonPage(c, await (await stub(c)).invoke('shop/stock-overview')));
 app.post('/api/variants/:id/stock', async (c) =>
   c.json(await (await stub(c)).invoke('shop/set-stock', { ...(await body(c)), variantId: c.req.param('id') })),
 );
@@ -151,7 +173,7 @@ app.post('/api/discounts', async (c) => c.json(await (await stub(c)).invoke('sho
 app.post('/api/customers', async (c) => c.json(await (await stub(c)).invoke('shop/create-customer', await body(c))));
 
 // admin — orders
-app.get('/api/orders', async (c) => c.json(await (await stub(c)).invoke('shop/orders')));
+app.get('/api/orders', async (c) => jsonPage(c, await (await stub(c)).invoke('shop/orders')));
 app.get('/api/orders/:id', async (c) => c.json(await (await stub(c)).invoke('shop/order', { orderId: c.req.param('id') })));
 app.post('/api/orders/:id/fulfil', async (c) => c.json(await (await stub(c)).invoke('shop/fulfil-order', { orderId: c.req.param('id') })));
 app.post('/api/orders/:id/close', async (c) => c.json(await (await stub(c)).invoke('shop/close-order', { orderId: c.req.param('id') })));

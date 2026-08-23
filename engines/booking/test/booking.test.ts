@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { dataSubjectId, moneyOf } from '@substrat-run/contracts';
+import { dataSubjectId, moneyOf, type Page } from '@substrat-run/contracts';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
   PERM,
@@ -659,7 +659,10 @@ describe('engine-booking', () => {
     });
     expect(confirmed.state).toBe('confirmed');
 
-    const list = await staff.invoke<Reservation[]>('booking/list', { resourceId: r.id });
-    expect(list).toHaveLength(1);
+    // `booking/list` pages (#811): the kernel-side shape is `Page<Reservation>`,
+    // and the entries are the list this test always asserted on.
+    const list = await staff.invoke<Page<Reservation>>('booking/list', { resourceId: r.id });
+    expect(list.entries).toHaveLength(1);
+    expect(list.nextCursor).toBeNull();
   });
 });

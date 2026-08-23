@@ -13,6 +13,13 @@ import {
   permissionKey,
   type EntityRef,
   type Money,
+  LIST_PAGE_DEFAULT,
+  LIST_PAGE_MAX,
+  listsDeclaredBy,
+  mapPage,
+  pageOf,
+  type ListPage,
+  type Page,
 } from '@substrat-run/contracts';
 import { shopEntities } from './entities.js';
 import {
@@ -22,6 +29,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type PageParams,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -54,6 +62,13 @@ export const SHOP_PERM = {
 /** Default hold on a reserved unit — released lazily once elapsed (§6). */
 const DEFAULT_HOLD_SECONDS = 900;
 
+// The inputs and the row shapes are re-exported unchanged: they were declared
+// here until `defineOperations` needed them below `module.ts`.
+export * from './inputs.js';
+export * from './schemas.js';
+export { shopOperations, SHOP_PERMISSIONS } from './operations.js';
+import { shopOperations } from './operations.js';
+
 export const shopManifest = moduleManifest.parse({
   id: '@substrat-run/demo-shop',
   version: '0.0.1',
@@ -82,6 +97,8 @@ export const shopManifest = moduleManifest.parse({
       { entityType: 'order', readPermission: 'order:read' },
     ],
   }),
+  // #811: DERIVED from the operations' own `paged.over`, never written twice.
+  lists: listsDeclaredBy(shopOperations, shopEntities),
   entitlementKey: 'shop',
 });
 
@@ -375,7 +392,10 @@ interface CatalogProduct extends ProductRow {
   variants: CatalogVariant[];
 }
 
-const catalogOp: OperationHandler<{ includeUnpublished?: boolean } | undefined, CatalogProduct[]> = async (
+const catalogOp: OperationHandler<
+  ({ includeUnpublished?: boolean } & PageParams) | undefined,
+  Page<CatalogProduct>
+> = async (
   ctx,
   input,
 ) => {
@@ -385,10 +405,14 @@ const catalogOp: OperationHandler<{ includeUnpublished?: boolean } | undefined, 
   // so the flag cannot be widened by a future caller.
   if (input?.includeUnpublished) assertAllowed(await ctx.check(SHOP_PERM.catalogManage));
   const now = ctx.now();
-  const products = input?.includeUnpublished
-    ? ctx.sql.query<ProductRow>('SELECT * FROM shop_products ORDER BY name')
-    : ctx.sql.query<ProductRow>('SELECT * FROM shop_products WHERE published = 1 ORDER BY name');
-  return products.map((p) => ({
+  // Kernel-composed (#811): the walk and its index are the kernel's, and the
+  // published filter rides in the declared `filterable` vocabulary rather than
+  // in two hand-written queries.
+  const products = ctx.page<ProductRow>('product', {
+    ...input,
+    ...(input?.includeUnpublished ? {} : { filters: { published: 1 } }),
+  });
+  return mapPage(products, (p) => ({
     ...p,
     variants: ctx.sql
       .query<VariantRow>('SELECT * FROM shop_variants WHERE product_id = ? ORDER BY size_label', [p.id])
@@ -424,7 +448,41 @@ interface StockRow {
  * reservation ledger. Same numbers `add-to-cart` enforces against, so the gap
  * between on-hand and available *is* the live cart holds.
  */
-const stockOverviewOp: OperationHandler<undefined, StockRow[]> = async (ctx) => {
+/**
+ * Page a list this vertical already has in memory, on one of its own fields.
+ *
+ * Used for the two reads the kernel cannot walk: the stock overview joins
+ * products, variants and live reservations, and the portal list filters per ROW.
+ * A per-row filtered read cannot use `ctx.page` at all — a page of 20 filtered
+ * down to 3 is not a page — so the honest shape is the over-fetch these already
+ * do, paged after the walk.
+ *
+ * `order` matters: a descending walk's cursor is exclusive the other way round.
+ * The cursor field must be UNIQUE among the rows, which each call site's
+ * declaration in `operations.ts` states and this cannot check.
+ */
+function pageBy<T>(
+  rows: T[],
+  page: ListPage,
+  key: (row: T) => string,
+  order: 'asc' | 'desc' = 'asc',
+): Page<T> {
+  const limit = Math.min(page.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const cursor = page.cursor;
+  const after =
+    cursor === undefined
+      ? 0
+      : (() => {
+          const i = rows.findIndex((r) => (order === 'asc' ? key(r) > cursor : key(r) < cursor));
+          return i < 0 ? rows.length : i;
+        })();
+  return pageOf(rows.slice(after, after + limit), limit, key);
+}
+
+const stockOverviewOp: OperationHandler<ListPage | undefined, Page<StockRow>> = async (
+  ctx,
+  page,
+) => {
   assertAllowed(await ctx.check(SHOP_PERM.stockManage));
   const now = ctx.now();
   const products = ctx.sql.query<ProductRow>('SELECT * FROM shop_products ORDER BY name');
@@ -453,7 +511,7 @@ const stockOverviewOp: OperationHandler<undefined, StockRow[]> = async (ctx) => 
       });
     }
   }
-  return rows;
+  return pageBy(rows, page ?? {}, (r) => r.variantId);
 };
 
 // ---------------------------------------------------------------------------
@@ -926,9 +984,10 @@ const checkoutOp: OperationHandler<
 // Orders: admin read/fulfil + the portal proof walk
 // ---------------------------------------------------------------------------
 
-const ordersOp: OperationHandler<undefined, OrderRow[]> = async (ctx) => {
+const ordersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, page) => {
   assertAllowed(await ctx.check(SHOP_PERM.orderRead));
-  return ctx.sql.query<OrderRow>('SELECT * FROM shop_orders ORDER BY number DESC');
+  // Kernel-composed (#811): a plain table walk, newest first as declared.
+  return ctx.page<OrderRow>('order', page ?? {});
 };
 
 const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: OrderLineRow[] }> = async (
@@ -946,14 +1005,17 @@ const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: O
 };
 
 /** Portal listing: per-entity proof walks (order → customer), no node-level grant. */
-const portalOrdersOp: OperationHandler<undefined, OrderRow[]> = async (ctx) => {
+const portalOrdersOp: OperationHandler<ListPage | undefined, Page<OrderRow>> = async (
+  ctx,
+  page,
+) => {
   const all = ctx.sql.query<OrderRow>('SELECT * FROM shop_orders ORDER BY number DESC');
   const visible: OrderRow[] = [];
   for (const order of all) {
     const decision = await ctx.check(SHOP_PERM.orderRead, orderRef(order.id));
     if (decision.allowed) visible.push(order);
   }
-  return visible;
+  return pageBy(visible, page ?? {}, (o) => o.id, 'desc');
 };
 
 /** "My account": the customer the caller is authorized to read — their portal identity. */
