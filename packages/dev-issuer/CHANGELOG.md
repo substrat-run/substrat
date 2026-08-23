@@ -1,5 +1,12 @@
 # @substrat-run/dev-issuer
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [b2dac1e]
+  - @substrat-run/contracts@0.87.0
+
 ## 0.1.0
 
 ### Minor Changes
