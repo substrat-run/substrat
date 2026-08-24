@@ -15,7 +15,11 @@ import {
 } from '@substrat-run/connector-scrive';
 import { devLogin, type DevCaller } from '@substrat-run/dev-issuer';
 import { DEV_PROVIDER } from './personas.js';
-import { platformActorId, principalId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { platformActorId, principalId, type PrincipalId, type ScopeId, type TenantId,
+  isPage,
+  nextPageLink,
+  PAGE_LINK_HEADER,
+} from '@substrat-run/contracts';
 import { buildDemoHost, seedDemo, type DemoWorld, type ScriveConfig } from './index.js';
 import { EMPLOYEE_SELF } from './provision.js';
 import { API, API_DOCUMENT } from './api.js';
@@ -194,6 +198,27 @@ async function grantEmployeeSelf(p: DevCaller, result: unknown): Promise<void> {
   }
 }
 
+/**
+ * A paged operation's result, projected onto the wire (#829/#811).
+ *
+ * The BODY stays what it always was — the entries — and the walk rides in a
+ * `Link` header. That is what let Meridian's nine list reads adopt paging
+ * without renaming a single response the app consumes.
+ *
+ * `packages/vertical-host` does exactly this for a hosted vertical's generated
+ * routes. Meridian serves a generic invoke of its own, so it applies the same
+ * projection here rather than serving a shape no other Substrat API serves.
+ *
+ * `isPage` is checked rather than assumed, so an operation that has not adopted
+ * `pageOf` reaches the client unchanged instead of being emptied.
+ */
+function jsonPage(c: Context, result: unknown) {
+  if (!isPage(result)) return c.json(result as never);
+  const link = nextPageLink(c.req.url, result.nextCursor);
+  if (link) c.header(PAGE_LINK_HEADER, link);
+  return c.json(result.entries as never);
+}
+
 // Generic invoke: the kernel checks permissions inside every operation, so a
 // generic route is exactly as safe as 18 explicit ones — and far less code.
 app.post('/api/invoke', async (c) => {
@@ -201,7 +226,7 @@ app.post('/api/invoke', async (c) => {
   const p = await persona(c);
   const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(op, input)) ?? null;
   if (op === 'hr/create-employee') await grantEmployeeSelf(p, result);
-  return c.json(result);
+  return jsonPage(c, result);
 });
 
 // The documented invoke surface + the API reference (design/api-surface.md).
@@ -215,7 +240,7 @@ app.post('/api/op/*', async (c) => {
   const p = await persona(c);
   const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null;
   if (name === 'hr/create-employee') await grantEmployeeSelf(p, result);
-  return c.json(result);
+  return jsonPage(c, result);
 });
 app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
 app.get('/api/docs', (c) => c.html(DOCS_HTML));

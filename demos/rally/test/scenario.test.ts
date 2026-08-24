@@ -5,7 +5,9 @@ import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ulid, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { principalId, type Money } from '@substrat-run/contracts';
+import { principalId, type Money,
+  type Page,
+} from '@substrat-run/contracts';
 import type { Reservation } from '@substrat-run/engine-booking';
 import {
   RALLY_PLATFORM_ACTOR,
@@ -76,21 +78,21 @@ describe('RallyPoint demo scenario (spec §11)', () => {
   });
 
   it('3. availability reports which durations actually fit each start', async () => {
-    const slots = await ravi.invoke<SlotFit[]>('rally/availability', {
+    const slots = (await ravi.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court1,
       date: DATE,
       now: NOW,
-    });
+    })).entries;
     expect(slots.length).toBeGreaterThan(0);
     // An empty court opens at 07:00 local and every duration fits.
     expect(slots[0]!.startsAt).toBe(zonedToInstant(DATE, '07:00', 'Europe/Stockholm'));
     expect(slots[0]!.fits).toEqual([60, 90, 120]);
     // Bana 2 is configured 90-only-and-under, so 120 never appears.
-    const bana2 = await ravi.invoke<SlotFit[]>('rally/availability', {
+    const bana2 = (await ravi.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court2,
       date: DATE,
       now: NOW,
-    });
+    })).entries;
     expect(bana2[0]!.fits).toEqual([60, 90]);
   });
 
@@ -135,11 +137,11 @@ describe('RallyPoint demo scenario (spec §11)', () => {
   });
 
   it('6. availability now shows the booked window gone', async () => {
-    const slots = await ravi.invoke<SlotFit[]>('rally/availability', {
+    const slots = (await ravi.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court1,
       date: DATE,
       now: NOW,
-    });
+    })).entries;
     const at19 = slots.find((s) => s.startsAt === '2026-07-20T17:00:00.000Z');
     expect(at19).toBeUndefined();
   });
@@ -198,11 +200,11 @@ describe('RallyPoint demo scenario (spec §11)', () => {
       onDate: '2026-07-21',
       reason: 'Klubbmästerskap',
     });
-    const slots = await ravi.invoke<SlotFit[]>('rally/availability', {
+    const slots = (await ravi.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court1,
       date: '2026-07-21',
       now: NOW,
-    });
+    })).entries;
     expect(slots).toEqual([]);
     await expect(
       ravi.invoke('rally/book-court', {
@@ -310,7 +312,11 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     // is not a permission failure — the scope does not exist for him at all.
     await expect(host.getScope(w.rutger, w.t2, w.s1)).rejects.toThrow(/unknown scope/);
     const rutger = await host.getScope(w.rutger, w.t2, w.s2);
-    await expect(rutger.invoke('rally/list-members')).resolves.toEqual([]);
+    // A paged read answers with an envelope; an empty scope is an empty page.
+    await expect(rutger.invoke('rally/list-members')).resolves.toEqual({
+      entries: [],
+      nextCursor: null,
+    });
   });
 
   it('15. the coach read is the WHOLE calendar — deliberate, not an oversight', async () => {
@@ -318,8 +324,8 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     // booking:read, so they see every court and every booking — not only their
     // own lessons. Pinned here so narrowing it later is a visible, tested change
     // rather than a silent one.
-    const coachSees = await nils.invoke<Reservation[]>('rally/portal-bookings', { now: NOW });
-    const staffSees = await astrid.invoke<Reservation[]>('rally/portal-bookings', { now: NOW });
+    const coachSees = (await nils.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
+    const staffSees = (await astrid.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
     expect(coachSees.length).toBe(staffSees.length);
     expect(coachSees.length).toBeGreaterThan(0);
 
@@ -333,13 +339,13 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     const elin = await host.getScope(w.elin, w.t1, w.s1);
 
     // Holds NO role. Browsing is a scope-wide grant: free/busy carries no identities.
-    const courts = await elin.invoke<{ id: string; name: string }[]>('rally/courts');
+    const courts = (await elin.invoke<Page<{ id: string; name: string }>>('rally/courts')).entries;
     expect(courts.length).toBeGreaterThan(0);
-    const slots = await elin.invoke<SlotFit[]>('rally/availability', {
+    const slots = (await elin.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court2,
       date: DATE,
       now: NOW,
-    });
+    })).entries;
     expect(slots.length).toBeGreaterThan(0);
 
     // Taking a free court is public capability; the booking becomes hers.
@@ -361,8 +367,8 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     const elin = await host.getScope(w.elin, w.t1, w.s1);
     const johan = await host.getScope(w.johan, w.t1, w.s1);
 
-    const elinsBookings = await elin.invoke<Reservation[]>('rally/portal-bookings', { now: NOW });
-    const johansBookings = await johan.invoke<Reservation[]>('rally/portal-bookings', { now: NOW });
+    const elinsBookings = (await elin.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
+    const johansBookings = (await johan.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
 
     // Both must be non-empty, or "no overlap" would be vacuously true.
     expect(elinsBookings.length).toBeGreaterThan(0);
@@ -371,7 +377,7 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     for (const r of johansBookings) expect(elinIds.has(r.id)).toBe(false);
 
     // Neither sees the club's full book: staff see strictly more.
-    const all = await astrid.invoke<Reservation[]>('rally/portal-bookings', { now: NOW });
+    const all = (await astrid.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
     expect(all.length).toBeGreaterThan(elinsBookings.length + johansBookings.length - 1);
 
     // And the portal principal cannot reach staff surfaces at all.
@@ -501,7 +507,7 @@ describe('RallyPoint demo scenario (spec §11)', () => {
   });
 
   it('25. members are the vertical’s vocabulary, keyed to a global player ref', async () => {
-    const members = await astrid.invoke<MemberRow[]>('rally/list-members');
+    const members = (await astrid.invoke<Page<MemberRow>>('rally/list-members')).entries;
     expect(members.map((m) => m.name).sort()).toEqual(['Elin Kastberg', 'Johan Ek']);
     expect(members.find((m) => m.name === 'Elin Kastberg')!.party_ref).toBe(w.elinParty);
   });
@@ -556,7 +562,7 @@ describe('RallyPoint: inviting a player', () => {
     expect(members.map((m) => m.principal)).toEqual([newcomer]);
 
     // ...and RallyPoint's OWN record, from its consumer on the same acceptance.
-    const roster = await admin.invoke<MemberRow[]>('rally/list-members');
+    const roster = (await admin.invoke<Page<MemberRow>>('rally/list-members')).entries;
     expect(roster.find((m) => m.party_ref === partyRef)?.name).toBe('Ny Spelare');
 
     // The split trail joins: the admin row names the event that caused it.

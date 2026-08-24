@@ -843,6 +843,9 @@ importers:
       '@scalar/api-reference':
         specifier: ^1.63.0
         version: 1.64.0(tailwindcss@4.3.3)(typescript@7.0.2)(zod@4.4.3)
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -926,6 +929,9 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -1025,6 +1031,9 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -1202,6 +1211,9 @@ importers:
         specifier: workspace:^
         version: link:../../packages/kernel
     devDependencies:
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit

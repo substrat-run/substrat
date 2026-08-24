@@ -1,6 +1,13 @@
-import { manifestEntities, moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
+import {
+  listsDeclaredBy,
+  manifestEntities,
+  moduleManifest,
+  permissionKey,
+  type EnvVarSpec,
+} from '@substrat-run/contracts';
 import { protocolEntities } from '@substrat-run/engine-protocol';
 import { meridianEntities } from './entities.js';
+import { meridianOperations } from './operations.js';
 import { PERM as ABSENCE_PERM } from '@substrat-run/engine-absence';
 
 // ============================================================================
@@ -58,6 +65,7 @@ export const MERIDIAN_ENV: EnvVarSpec[] = [
   },
 ];
 
+
 export const HR_PERM = {
   employeeManage: permissionKey.parse('employee:manage'),
   // The absence:* keys are DECLARED by engine-absence since the §5 extraction
@@ -92,6 +100,10 @@ export const meridianManifest = moduleManifest.parse({
     { key: 'expense:read', description: 'Read expenses' },
     { key: 'payroll:export', description: 'Generate the variable-pay export and mark expenses exported (payroll operator)' },
   ],
+  // #811: DERIVED from the operations' own `paged.over`, never written twice —
+  // the index the kernel provisions and the vocabulary the operation offers are
+  // one fact. `table` and `idColumn` come from the entity registry.
+  lists: listsDeclaredBy(meridianOperations, meridianEntities, [protocolEntities]),
   events: {
     // The absence events (absence.requested/decided/cancelled/expired,
     // absence.entry-recorded) are emitted — and declared — by engine-absence

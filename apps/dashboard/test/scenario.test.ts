@@ -2,8 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { Page } from '@substrat-run/contracts';
-import { platformActorId, principalId, scopeId, tenantId, type PermissionKey, type Vertical } from '@substrat-run/contracts';
+import {
+  platformActorId,
+  principalId,
+  scopeId,
+  tenantId,
+  type Page,
+  type PermissionKey,
+  type Vertical,
+} from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { protocolModule, PROTOCOL_PERM } from '@substrat-run/engine-protocol';
@@ -709,7 +716,8 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     // ...and the fresh scope is LIVE — a real HR op resolves for the owner.
     const appScope = await host.getScope(acme.principal, acme.tenantId, scopeId.parse(retried.app_scope_id));
     await appScope.invoke('hr/define-leave-type', { key: 'vacation', label: 'Vacation', kind: 'vacation', annualDays: '25' });
-    expect(await appScope.invoke('hr/list-leave-types', {})).toHaveLength(1);
+    // `hr/list-leave-types` pages (#811/#891): the kernel-side shape is `Page<T>`.
+    expect((await appScope.invoke<Page<unknown>>('hr/list-leave-types', {})).entries).toHaveLength(1);
   });
 
   it('records the install as durable steps (#424): each stage done, in sequence order', async () => {
@@ -956,10 +964,11 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     // the first-run path a freshly-installed instance offers.
     const appScope = await host.getScope(acme.principal, acme.tenantId, appScopeId);
     await appScope.invoke('hr/define-leave-type', { key: 'vacation', label: 'Vacation', kind: 'vacation', annualDays: '25' });
-    expect(await appScope.invoke('hr/list-leave-types', {})).toHaveLength(1);
+    // `hr/list-leave-types` pages (#811/#891): the kernel-side shape is `Page<T>`.
+    expect((await appScope.invoke<Page<unknown>>('hr/list-leave-types', {})).entries).toHaveLength(1);
     const employee = await appScope.invoke<{ id: string }>('hr/create-employee', { number: 'E-001', name: 'Alex Meridian' });
     expect(employee.id).toBeTruthy();
-    expect(await appScope.invoke('hr/roster', {})).toHaveLength(1);
+    expect((await appScope.invoke<Page<unknown>>('hr/roster', {})).entries).toHaveLength(1);
 
     // The Data tab reads THIS app's own database (§5.4 admin-query RPC). After the
     // writes above, its tables are live: Meridian's own tables carry rows and the

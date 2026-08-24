@@ -16,7 +16,11 @@
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, resolveScopedEnvSpec, z } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, resolveScopedEnvSpec, z,
+  isPage,
+  nextPageLink,
+  PAGE_LINK_HEADER,
+} from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import {

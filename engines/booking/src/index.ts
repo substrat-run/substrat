@@ -2,13 +2,19 @@ import { z } from 'zod';
 import {
   assertTransition,
   dataSubjectId,
-  defineLifecycles,
   INVALID_TRANSITION,
+  LIST_PAGE_DEFAULT,
+  LIST_PAGE_MAX,
+  listsDeclaredBy,
+  mapPage,
   moduleManifest,
   money,
+  pageOf,
   permissionKey,
   type EntityRef,
+  type ListPage,
   type Money,
+  type Page,
   substratError,
 } from '@substrat-run/contracts';
 
@@ -43,6 +49,62 @@ const conflict = (reason: BookingConflictReason, message: string) => substratErr
 // entity-type constants its relation edges name, and the row schema to declare
 // an operation's output against without retyping this engine's shape.
 import { bookingEntities } from './entities.js';
+// The schemas are PUBLIC and re-exported unchanged: they were declared here as
+// interfaces until `defineOperations` needed them as schemas (see schemas.ts).
+export {
+  availabilityInput,
+  cancelReservationInput,
+  createResourceInput,
+  freeInterval,
+  holdReservationInput,
+  instantIn,
+  joinReservationInput,
+  leaveReservationInput,
+  listReservationsInput,
+  listResourcesInput,
+  moveReservationInput,
+  openReservationInput,
+  participant,
+  reservation,
+  reservationAtInput,
+  reservationIdIn,
+  reservationState,
+  resource,
+  setResourceActiveInput,
+  toInstant,
+  type CreateResourceInput,
+  type FreeInterval,
+  type HoldReservationInput,
+  type JoinReservationInput,
+  type MoveReservationInput,
+  type Participant,
+  type Reservation,
+  type ReservationState,
+  type Resource,
+  type SetResourceActiveInput,
+} from './schemas.js';
+export { bookingOperations, BOOKING_PERMISSIONS } from './operations.js';
+import { bookingOperations } from './operations.js';
+export { bookingLifecycles } from './lifecycle.js';
+import { bookingLifecycles } from './lifecycle.js';
+
+import {
+  createResourceInput,
+  holdReservationInput,
+  joinReservationInput,
+  moveReservationInput,
+  toInstant,
+  type CreateResourceInput,
+  type FreeInterval,
+  type HoldReservationInput,
+  type JoinReservationInput,
+  type MoveReservationInput,
+  type Participant,
+  type Reservation,
+  type ReservationState,
+  type Resource,
+} from './schemas.js';
+
 export { bookingEntities, reservationRow, resourceRow } from './entities.js';
 import {
   assertAllowed,
@@ -50,6 +112,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type PageParams,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -107,6 +170,10 @@ export const bookingManifest = moduleManifest.parse({
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
   attachmentTargets: [{ entityType: 'reservation', readPermission: 'booking:read' }],
   entityRelations: [{ entityType: 'reservation', parentType: 'resource' }],
+  // #811: DERIVED from the operations' own `paged.over`, never written twice —
+  // the index the kernel provisions and the vocabulary the operation offers are
+  // one fact. `table` and `idColumn` come from the entity registry.
+  lists: listsDeclaredBy(bookingOperations, bookingEntities),
   entitlementKey: 'booking',
   ui: {
     routes: [
@@ -168,27 +235,6 @@ export const bookingMigrations = [
 // ---------------------------------------------------------------------------
 
 /**
- * Canonicalise to UTC before storing or comparing.
- *
- * This is load-bearing, not hygiene. The overlap check compares instants as
- * **strings** in SQL, and `contracts.instant` permits any offset — so
- * `2026-07-18T19:00:00+02:00` and `2026-07-18T17:00:00Z` are the same moment but
- * sort differently as text. Normalising every instant to `…Z` on the way in makes
- * lexicographic comparison equal chronological comparison, which is the only
- * reason the SQL in `allocatedOver` is correct.
- */
-function toInstant(value: string): string {
-  const ms = Date.parse(value);
-  if (Number.isNaN(ms)) throw substratError('validation_failed', `invalid instant: ${value}`);
-  return new Date(ms).toISOString();
-}
-
-const instantIn = z
-  .string()
-  .refine((s) => !Number.isNaN(Date.parse(s)), { message: 'invalid instant' })
-  .transform(toInstant);
-
-/**
  * `now` is injectable so hold expiry is testable and replayable; absent, it is the
  * operation's instant (#812) rather than a fresh wall-clock reading, so every
  * expiry decision inside one operation is judged against the same moment.
@@ -216,64 +262,8 @@ export class SlotUnavailable extends Error {
 // Schemas & shapes
 // ---------------------------------------------------------------------------
 
-/**
- * The reservation's states — **taken from the entity registry, not restated**.
- *
- * These seven values used to be written out twice: here, and as the `state`
- * column's `z.enum` in `entities.ts`. Two descriptions of one fact, agreeing
- * only by everyone remembering to change both (#844). Reading the column's own
- * schema makes storage and domain unable to disagree, the same way
- * `engine-workorder` takes its published `status` from the registry.
- */
-export const reservationState = bookingEntities.reservation.fields.shape.state;
-export type ReservationState = z.infer<typeof reservationState>;
-
 /** States that consume capacity. `held` additionally requires an unexpired `expires_at`. */
 const LIVE_STATES: ReservationState[] = ['held', 'confirmed', 'in_service'];
-
-export const createResourceInput = z.object({
-  kind: z.string().min(1),
-  name: z.string().min(1),
-  capacity: z.number().int().min(1).optional(),
-});
-export type CreateResourceInput = z.infer<typeof createResourceInput>;
-
-export const holdReservationInput = z.object({
-  resourceId: z.string().min(1),
-  startsAt: instantIn,
-  endsAt: instantIn,
-  expiresAt: instantIn,
-  quantity: z.number().int().min(1).optional(),
-  fillTarget: z.number().int().min(1).optional(),
-  note: z.string().optional(),
-  now: z.string().optional(),
-});
-export type HoldReservationInput = z.infer<typeof holdReservationInput>;
-
-export const joinReservationInput = z.object({
-  reservationId: z.string().min(1),
-  /**
-   * The participant, as an opaque **data-subject** id — never a `PrincipalId`.
-   * A participant is a person, so this must be shreddable: it keys the erasure
-   * of the `participant-joined` / `participant-left` events below.
-   */
-  partyRef: dataSubjectId,
-  share: money.optional(),
-  now: z.string().optional(),
-});
-export type JoinReservationInput = z.infer<typeof joinReservationInput>;
-
-export const moveReservationInput = z.object({
-  reservationId: z.string().min(1),
-  /** Target resource. Omitted = stay on the current one. */
-  resourceId: z.string().min(1).optional(),
-  /** New start. Given alone, the booking is *shifted* — its duration is preserved. */
-  startsAt: instantIn.optional(),
-  /** New end. Given alone, the booking is re-sized from its existing start. */
-  endsAt: instantIn.optional(),
-  now: z.string().optional(),
-});
-export type MoveReservationInput = z.infer<typeof moveReservationInput>;
 
 interface ResourceRow {
   id: string;
@@ -306,53 +296,6 @@ interface ParticipantRow {
   share_currency: string | null;
   joined_at: string;
   left_at: string | null;
-}
-
-export interface Resource {
-  id: string;
-  kind: string;
-  name: string;
-  capacity: number;
-  active: boolean;
-  createdAt: string;
-}
-
-export interface Participant {
-  id: string;
-  partyRef: string;
-  share: Money | null;
-  joinedAt: string;
-  leftAt: string | null;
-}
-
-export interface Reservation {
-  id: string;
-  resourceId: string;
-  startsAt: string;
-  endsAt: string;
-  /** The state as stored. A `held` row keeps saying `held` until someone sweeps it. */
-  state: ReservationState;
-  /**
-   * What the row actually means *now* — `expired` once a hold's deadline has passed,
-   * whether or not anyone has swept it.
-   *
-   * Expiry is lazy, so `state` alone would render a dead hold as a live one: the
-   * console calendar would show a HELD cell counting down past 0:00 forever. Read
-   * paths render this; the transition guards use the stored `state`.
-   */
-  effectiveState: ReservationState;
-  quantity: number;
-  expiresAt: string | null;
-  fillTarget: number | null;
-  note: string | null;
-  createdBy: string;
-  createdAt: string;
-}
-
-export interface FreeInterval {
-  startsAt: string;
-  endsAt: string;
-  available: number;
 }
 
 const toResource = (r: ResourceRow): Resource => ({
@@ -435,7 +378,7 @@ function getRow(ctx: OperationContext, id: string): ReservationRow {
  * `entities.ts`, once as `reservationState` above (now derived from it) — and
  * the EDGES between them a third time, as the states each of these nine call
  * sites happened to pass. The
- * machine now lives in `bookingLifecycles` (bottom of this file), where the
+ * machine now lives in `bookingLifecycles` (`lifecycle.ts`), where the
  * compiler holds it to that enum.
  *
  * **Gated on the STORED state, not the effective one, and that is deliberate.**
@@ -539,6 +482,23 @@ export function setResourceActive(
     row.id,
   ]);
   return toResource(getResourceRow(ctx, row.id));
+}
+
+/**
+ * The same resources, as a PAGE — what `booking/list-resources` answers (#811).
+ *
+ * Kernel-composed: the `WHERE`, the `ORDER BY`, the keyset tie-break, the
+ * `LIMIT` and the indexes behind them are all composed from this operation's
+ * declared `paged.over` vocabulary. What stays here is the projection, which is
+ * why `mapPage` exists — it re-shapes the entries and leaves the walk alone.
+ *
+ * `listResources` below is NOT replaced by it. That one is an in-scope fold a
+ * vertical calls inside its own transaction, where the bound is the vertical's
+ * (a club has eight courts, not eight thousand). The unbounded read #811 was
+ * filed against is the invocable ENDPOINT, and that is this one.
+ */
+export function listResourcesPage(ctx: OperationContext, page: PageParams): Page<Resource> {
+  return mapPage(ctx.page<ResourceRow>('resource', page), toResource);
 }
 
 export function listResources(ctx: OperationContext, kind?: string): Resource[] {
@@ -999,6 +959,57 @@ export function getReservation(
   };
 }
 
+/**
+ * Reservations overlapping a window, as a PAGE — what `booking/list` answers.
+ *
+ * Handler-composed rather than kernel-composed, and the cursor is `id`. The
+ * window is an OVERLAP test (`starts_at < to AND ends_at > from`), which the
+ * kernel's equality-only filter vocabulary cannot express — deliberately, since
+ * a range vocabulary is where a filter becomes a query language. So this read
+ * owns its own `WHERE`.
+ *
+ * The cursor has to be UNIQUE. This list shipped `ORDER BY starts_at, id`, and a
+ * keyset cursor on `starts_at` skips and repeats rows wherever two reservations
+ * share a start — which on a court schedule is every hour. Ids are ULIDs, so
+ * `id` is unique and still roughly chronological by creation; a caller rendering
+ * a calendar sorts the page it got by `startsAt` itself.
+ */
+export function listReservationsPage(
+  ctx: OperationContext,
+  input: { resourceId?: string; from?: string; to?: string; now?: string } & ListPage,
+): Page<Reservation> {
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+  if (input.resourceId) {
+    clauses.push('resource_id = ?');
+    params.push(input.resourceId);
+  }
+  if (input.to) {
+    clauses.push('starts_at < ?');
+    params.push(toInstant(input.to));
+  }
+  if (input.from) {
+    clauses.push('ends_at > ?');
+    params.push(toInstant(input.from));
+  }
+  if (input.cursor) {
+    clauses.push('id > ?');
+    params.push(input.cursor);
+  }
+  const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+  const limit = Math.min(input.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const now = nowOr(ctx, input.now);
+  const rows = ctx.sql.query<ReservationRow>(
+    `SELECT * FROM booking_reservations${where} ORDER BY id LIMIT ?`,
+    [...params, limit],
+  );
+  return pageOf(
+    rows.map((r) => toReservation(r, now)),
+    limit,
+    (e) => e.id,
+  );
+}
+
 export function listReservations(
   ctx: OperationContext,
   input: { resourceId?: string; from?: string; to?: string; now?: string },
@@ -1038,6 +1049,30 @@ export function listReservations(
  * because capacity may exceed 1 (fungible pools), where "free" is a number and not
  * a boolean.
  */
+/**
+ * The same free intervals, as a PAGE — what `booking/availability` answers.
+ *
+ * A computed fold rather than a table walk, so the whole fold runs and the page
+ * is taken off the end of it. That is not the waste it looks like: the segments
+ * are derived by merging every live reservation in the window, so there is no
+ * partial computation to push into SQL.
+ *
+ * The segments are DISJOINT and returned in order, so `startsAt` is unique among
+ * them — which is what makes it a sound cursor here where it would not be over
+ * reservation rows.
+ */
+export function availabilityPage(
+  ctx: OperationContext,
+  input: { resourceId: string; from: string; to: string; now?: string } & ListPage,
+): Page<FreeInterval> {
+  const all = availability(ctx, input);
+  const limit = Math.min(input.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
+  const cursor = input.cursor;
+  const at = cursor === undefined ? 0 : all.findIndex((s) => s.startsAt > cursor);
+  const start = at < 0 ? all.length : at;
+  return pageOf(all.slice(start, start + limit), limit, (e) => e.startsAt);
+}
+
 export function availability(
   ctx: OperationContext,
   input: { resourceId: string; from: string; to: string; now?: string },
@@ -1101,12 +1136,13 @@ const setResourceActiveOp: OperationHandler<
   return setResourceActive(ctx, input);
 };
 
-const listResourcesOp: OperationHandler<{ kind?: string } | undefined, Resource[]> = async (
-  ctx,
-  input,
-) => {
+const listResourcesOp: OperationHandler<
+  ({ kind?: string } & PageParams) | undefined,
+  Page<Resource>
+> = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.read));
-  return listResources(ctx, input?.kind);
+  // `input` is genuinely absent when invoked with no body at all (`inputOptional`).
+  return listResourcesPage(ctx, { ...input, filters: { kind: input?.kind } });
 };
 
 const holdOp: OperationHandler<HoldReservationInput, Reservation> = async (ctx, input) => {
@@ -1192,31 +1228,30 @@ const getOp: OperationHandler<
 };
 
 const listOp: OperationHandler<
-  { resourceId?: string; from?: string; to?: string; now?: string } | undefined,
-  Reservation[]
+  ({ resourceId?: string; from?: string; to?: string; now?: string } & ListPage) | undefined,
+  Page<Reservation>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.read));
-  return listReservations(ctx, input ?? {});
+  return listReservationsPage(ctx, input ?? {});
 };
 
 const availabilityOp: OperationHandler<
-  { resourceId: string; from: string; to: string; now?: string },
-  FreeInterval[]
+  { resourceId: string; from: string; to: string; now?: string } & ListPage,
+  Page<FreeInterval>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.read));
-  return availability(ctx, input);
+  return availabilityPage(ctx, input);
 };
 
 /**
- * The registered handlers, extracted so the lifecycle below can be checked
- * against them.
+ * The registered handlers — the implementation half of `bookingOperations`.
  *
- * This is why booking's lifecycle lives at the bottom of `index.ts` rather than
- * in its own `lifecycle.ts` the way workorder's does: booking has not adopted
- * `defineOperations`, so the only description of its operation surface is this
- * map — and a separate file importing it would close a cycle. Declaring an
- * operation-name list beside it instead would be exactly the second description
- * this change exists to delete.
+ * This map used to be the only description of booking's operation surface, and
+ * the lifecycle had to live at the bottom of this file because of it: a
+ * `lifecycle.ts` importing the map would have closed a cycle. `operations.ts`
+ * ended that — a DECLARATION reaches only `entities.ts` and `schemas.ts`, so the
+ * lifecycle now checks itself against the declared registry from its own file,
+ * the way workorder's always has.
  */
 const OPERATIONS = {
     'booking/create-resource': createResourceOp as OperationHandler<never, unknown>,
@@ -1243,82 +1278,3 @@ export const bookingModule: ModuleRegistration = {
   migrations: bookingMigrations,
   operations: OPERATIONS,
 };
-
-/**
- * The reservation's state machine, declared (#844).
- *
- * ## `on` versus `allow` — the distinction this engine forced
- *
- * Three of the nine guards gate operations that move NOTHING. `booking/move`
- * changes a reservation's times, `booking/open` its fill target, `booking/join`
- * adds a participant — each legal only in `held` or `confirmed`, and none of
- * them a transition. Declaring them as edges would have put three self-loops on
- * the diagram that no code performs.
- *
- * ## Why `booking/join` is `allow` even though joining can confirm
- *
- * A join that fills the last place calls `confirmReservation` — so a join CAN
- * end with a confirmed reservation. It is still not an edge. The move is
- * `booking/confirm`'s, performed by the in-scope function join composes, and it
- * goes through this same check on the way. Declaring `join: 'confirmed'` would
- * claim every join confirms, which is false for all but the last one.
- *
- * That is the composition rule holding: an engine composed BY CALL gets its
- * invariant from the callee, so the machine describes what each verb does
- * itself, not what its callees might do next.
- *
- * ## Lazy expiry is not an edge either
- *
- * `held → expired` IS declared — `booking/expire` performs it. What is not
- * declared is the lapse: a hold past its deadline reads as `expired` through
- * `effectiveStateOf` without any transition occurring, which is a projection for
- * display and allocation. The condition on the edge (`not_yet_expired`) stays in
- * the handler, where a lifecycle deliberately cannot reach.
- *
- * ## No `extensible` states
- *
- * Every state here carries an allocation or capacity consequence, and the four
- * terminal ones release capacity. Refining any of them is not a vertical's to do
- * yet, and the absence says so rather than leaving it to be inferred.
- */
-export const bookingLifecycles = defineLifecycles(
-  bookingEntities,
-  OPERATIONS,
-)({
-  reservation: {
-    field: 'state',
-    initial: 'held',
-    states: {
-      /** A deadline-bearing claim on capacity. */
-      held: {
-        on: {
-          'booking/confirm': 'confirmed',
-          'booking/expire': 'expired',
-          'booking/cancel': 'cancelled',
-        },
-        allow: ['booking/join', 'booking/open', 'booking/move'],
-      },
-      /** Capacity is committed. `complete` may skip `in_service` — starting is optional. */
-      confirmed: {
-        on: {
-          'booking/start': 'in_service',
-          'booking/complete': 'completed',
-          'booking/no-show': 'no_show',
-          'booking/cancel': 'cancelled',
-        },
-        allow: ['booking/join', 'booking/open', 'booking/move'],
-      },
-      /** Under way. No longer cancellable, and no longer re-timeable. */
-      in_service: {
-        on: {
-          'booking/complete': 'completed',
-          'booking/no-show': 'no_show',
-        },
-      },
-      expired: { terminal: true },
-      cancelled: { terminal: true },
-      completed: { terminal: true },
-      no_show: { terminal: true },
-    },
-  },
-});

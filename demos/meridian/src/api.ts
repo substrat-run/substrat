@@ -29,8 +29,18 @@ import {
  * at `/openapi.json`, rendered at `/api/docs`, and written to the checked-in
  * `openapi.json` that `pnpm lint:api --check` holds against drift.
  *
- * Output schemas are adopted incrementally (the handlers' row types are TS
- * interfaces today); a missing `output` documents the 200 generically.
+ * **This catalog now overlaps `operations.ts`, and that is a known seam, not a
+ * design.** `defineOperations` arrived with #891 and declares each operation's
+ * summary, input and output; this file still declares the summary, the input and
+ * the `tag`/`description` the OpenAPI document groups by, which the operation
+ * format has no field for. So two files describe one surface until the API
+ * document is derived from the declaration — the convergence #756 is about.
+ * Until then, an operation added to one and not the other is the drift to watch;
+ * `pnpm lint:api --check` catches it only for the half that reaches `openapi.json`.
+ *
+ * A missing `output` here documents the 200 generically. The row schemas that
+ * would fill them now exist in `schemas.ts` — they were TS interfaces when this
+ * note was written.
  */
 export const API: ApiCatalog = {
   'hr/create-employee': {

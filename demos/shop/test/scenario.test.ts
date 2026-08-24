@@ -72,11 +72,20 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
     ).map((v) => v.version);
     db.close();
     expect(modules).toEqual(['@substrat-run/demo-shop', '@substrat-run/engine-invoicing']);
-    expect(shopVersions).toEqual(['0001-init']);
+    // The hand-written journal, plus the two list indexes the KERNEL provisions
+    // from this module's declared `paged.over` walks (#811). Their version IS the
+    // declaration — add a sortable column and the version changes and re-runs —
+    // so asserting them here is what makes a widened walk visible in a diff
+    // rather than something that silently reshapes the schema.
+    expect(shopVersions).toEqual([
+      '0001-init',
+      'list/order:number+placed_at:customer_id+status',
+      'list/product:name+slug+created_at:published',
+    ]);
   });
 
   it('2. the catalogue shows the micro-lot with genuine scarcity', async () => {
-    const cat = await elin.invoke<CatalogProduct[]>('shop/catalog');
+    const cat = (await elin.invoke<Page<CatalogProduct>>('shop/catalog')).entries;
     expect(availabilityOf(cat, 'GICH-250-HB')).toBe(1); // the micro-lot
     expect(availabilityOf(cat, 'CHEL-250-HB')).toBe(20);
   });
@@ -119,7 +128,10 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
     const rurik = await host.getScope(w.rurik, w.t1, w.s1);
     await expect(rurik.invoke('shop/orders')).rejects.toThrow(/permission denied/);
     await expect(rurik.invoke('shop/catalog')).rejects.toThrow(/permission denied/);
-    await expect(rurik.invoke<unknown[]>('shop/portal-orders')).resolves.toEqual([]);
+    await expect(rurik.invoke('shop/portal-orders')).resolves.toEqual({
+      entries: [],
+      nextCursor: null,
+    });
   });
 
   it('5. priced checkout mot faktura: discount exact to the öre, order frozen', async () => {
@@ -137,7 +149,7 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
     expect(result.lines).toHaveLength(1);
 
     // the last bag is now sold.
-    const cat = await elin.invoke<CatalogProduct[]>('shop/catalog');
+    const cat = (await elin.invoke<Page<CatalogProduct>>('shop/catalog')).entries;
     expect(availabilityOf(cat, 'GICH-250-HB')).toBe(0);
 
     // the cart is placed → immutable; no more writes, no double checkout.
@@ -170,10 +182,13 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
   });
 
   it('7. portal isolation: Elin sees her order, Otto and the guest see nothing', async () => {
-    const elins = await elin.invoke<OrderRow[]>('shop/portal-orders');
+    const elins = (await elin.invoke<Page<OrderRow>>('shop/portal-orders')).entries;
     expect(elins.map((o) => o.id)).toEqual([orderId]);
-    await expect(otto.invoke<OrderRow[]>('shop/portal-orders')).resolves.toEqual([]);
-    await expect(guest.invoke<OrderRow[]>('shop/portal-orders')).resolves.toEqual([]);
+    await expect(otto.invoke('shop/portal-orders')).resolves.toEqual({ entries: [], nextCursor: null });
+    await expect(guest.invoke('shop/portal-orders')).resolves.toEqual({
+      entries: [],
+      nextCursor: null,
+    });
     await expect(elin.invoke('invoicing/list')).rejects.toThrow(/permission denied/);
   });
 
@@ -210,13 +225,13 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
 
   it('10. the warehouse view splits on-hand from reserved; browse never sees either', async () => {
     // Otto's hold from §8 is still live: 1 on the shelf, 1 held, 0 sellable.
-    const rows = await gustav.invoke<StockOverviewRow[]>('shop/stock-overview');
+    const rows = (await gustav.invoke<Page<StockOverviewRow>>('shop/stock-overview')).entries;
     const chelbesa = rows.find((r) => r.sku === 'CHEL-250-HB');
     expect(chelbesa).toMatchObject({ onHand: 1, reserved: 1, available: 0 });
 
     // The storefront's own read exposes availability and nothing behind it — a
     // shopper must never be able to infer the reservation ledger.
-    const cat = await elin.invoke<CatalogProduct[]>('shop/catalog');
+    const cat = (await elin.invoke<Page<CatalogProduct>>('shop/catalog')).entries;
     const browseVariant = cat.flatMap((p) => p.variants).find((v) => v.sku === 'CHEL-250-HB');
     expect(browseVariant).toBeDefined();
     expect(browseVariant).not.toHaveProperty('onHand');
@@ -238,11 +253,13 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
 
     const slugs = (c: CatalogProduct[]) => c.map((p) => p.slug);
     // catalog:manage sees the draft…
-    const asAdmin = await astrid.invoke<CatalogProduct[]>('shop/catalog', { includeUnpublished: true });
+    const asAdmin = (
+      await astrid.invoke<Page<CatalogProduct>>('shop/catalog', { includeUnpublished: true })
+    ).entries;
     expect(slugs(asAdmin)).toContain('kommande-lot');
     // …the published storefront never does…
-    expect(slugs(await astrid.invoke<CatalogProduct[]>('shop/catalog'))).not.toContain('kommande-lot');
-    expect(slugs(await guest.invoke<CatalogProduct[]>('shop/catalog'))).not.toContain('kommande-lot');
+    expect(slugs((await astrid.invoke<Page<CatalogProduct>>('shop/catalog')).entries)).not.toContain('kommande-lot');
+    expect(slugs((await guest.invoke<Page<CatalogProduct>>('shop/catalog')).entries)).not.toContain('kommande-lot');
 
     // …and asking for it without catalog:manage is denied, not silently ignored.
     // Gustav holds stock:manage + shop:browse, which is the near-miss that matters.
