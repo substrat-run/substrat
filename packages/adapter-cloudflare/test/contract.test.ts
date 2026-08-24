@@ -25,6 +25,7 @@ import {
   scheduleMod,
   scopeHostContractSuite,
   searchContractSuite,
+  entityVersionContractSuite,
   listContractSuite,
   permMod,
   inputParseContractSuite,
@@ -1009,6 +1010,19 @@ describe('what an operation failure carries across the ScopeDO boundary', () => 
 // regulator that decides whether a trigger may fire at all — so "it works in
 // better-sqlite3" is not evidence about this host, and this suite is the evidence.
 searchContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #901: the entity-version read on the DO host. The query is ordinary SQL, but
+// the index behind it is spine DDL that workerd's regulator has to permit — the
+// same reason every other derived-DDL suite runs on both hosts.
+entityVersionContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

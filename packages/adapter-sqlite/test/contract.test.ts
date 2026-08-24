@@ -9,6 +9,7 @@ import {
   scheduleContractSuite,
   scopeHostContractSuite,
   searchContractSuite,
+  entityVersionContractSuite,
   listContractSuite,
   inputParseContractSuite,
 } from '@substrat-run/contract-tests';
@@ -88,6 +89,21 @@ atomicContractSuite('adapter-sqlite', async () => {
 // vertical's own `assertAllowed`, exercised by the demo scenario.
 searchContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-search-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #901: an entity's version is the last event's ULID. Allow-all checker for the
+// same reason as search — the subject is what the spine answers, not the gate
+// over the operation asking.
+entityVersionContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-version-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,

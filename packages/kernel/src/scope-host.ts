@@ -88,6 +88,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { SealedSecret } from './secret-box.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
+import type { EntityVersion } from './entity-version.js';
 
 /**
  * What a caller asks a paged read for (#811).
@@ -197,6 +198,39 @@ export interface OperationContext {
    * code writing `_substrat_*`), so an intent's status is only ever the platform's answer.
    */
   platformRequests(filter?: PlatformRequestFilter): PlatformRequest[];
+  /**
+   * This entity's version (#901) — the ULID of the last event about it, or
+   * `null` if nothing has ever been emitted about it.
+   *
+   * There is no version column anywhere, and there is deliberately not going to
+   * be one: `_substrat_outbox` has recorded `entity_type` and `entity_id`
+   * against a monotonic ULID since it was written, so every mutation that
+   * followed the fat-event rule already versioned the thing it touched. See
+   * `entity-version.ts` for why the alternative — a `_version` column bumped by
+   * an emitted trigger — was rejected despite working.
+   *
+   * ```ts
+   * const before = ctx.versionOf({ entityType: 'customer', entityId: id });
+   * // …mutate, emit…
+   * ctx.versionOf({ entityType: 'customer', entityId: id }) !== before  // true
+   * ```
+   *
+   * **Conservative, by construction.** ANY event about the entity moves this,
+   * including one that changed nothing the caller read. A precondition built on
+   * it can refuse a write that would have been safe; it cannot admit one that
+   * would not. That is the correct direction to fail, and it is a real
+   * difference from a per-row counter.
+   *
+   * Rule 3 permits a projection read of `_substrat_*`, so a vertical *could*
+   * hand-roll this `SELECT`. It should not: the spine's schema is private and a
+   * vertical pinned to it is pinned to a table the kernel may re-shape. Same
+   * reasoning as `platformRequests`.
+   *
+   * **Checks no permission** — nothing on `ctx` does. A version is not a read of
+   * the entity, but it is evidence the entity exists, so an operation that hands
+   * one to an untrusted caller does its own `assertAllowed` first.
+   */
+  versionOf(entity: EntityRef): EntityVersion | null;
   /** Node-level check; pass `entity` for per-entity checks (portal access, §4.2 rule 3). */
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
   /**

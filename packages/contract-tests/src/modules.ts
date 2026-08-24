@@ -315,6 +315,49 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
     never,
     unknown
   >,
+  // -- #901: an entity's version is the last event's ULID ---------------------
+  // The read under test. Takes the ref rather than fixing one, so the suite can
+  // ask about an entity nothing has ever emitted about and get the absence.
+  'test/version-of': ((ctx, input: { entityType: string; entityId: string }) =>
+    ctx.versionOf({ entityType: input.entityType, entityId: input.entityId })) as OperationHandler<
+    never,
+    unknown
+  >,
+  // Emit about a NAMED entity. `test/emit-event` is fixed to `x1`, and the suite
+  // needs two entities moving independently to prove the version is per-entity
+  // and not just "the newest event in the scope".
+  'test/emit-about': ((ctx, input: { entityId: string; subject?: string }) => {
+    ctx.emit({
+      type: 'test.happened',
+      schemaVersion: 1,
+      entity: { entityType: 'test-thing', entityId: input.entityId },
+      piiClass: input.subject ? 'pseudonymous' : 'none',
+      ...(input.subject ? { subjectId: dataSubjectId.parse(input.subject) } : {}),
+      payload: { about: input.entityId },
+    });
+  }) as OperationHandler<never, unknown>,
+  // Emit, then read the version back INSIDE the same operation — the
+  // read-after-write half, and the reason `emit` writing the outbox row inline
+  // rather than buffering to commit is load-bearing rather than incidental.
+  'test/emit-then-version': ((ctx, input: { entityId: string }) => {
+    const before = ctx.versionOf({ entityType: 'test-thing', entityId: input.entityId });
+    ctx.emit({
+      type: 'test.happened',
+      schemaVersion: 1,
+      entity: { entityType: 'test-thing', entityId: input.entityId },
+      piiClass: 'none',
+      payload: {},
+    });
+    return { before, after: ctx.versionOf({ entityType: 'test-thing', entityId: input.entityId }) };
+  }) as OperationHandler<never, unknown>,
+  // A mutation that emits NOTHING. The version must not move — this is the
+  // documented hole, pinned deliberately so it is a known property rather than a
+  // surprise. The fix is a compile-checked `concurrency` against `emits` (#129),
+  // not a change here.
+  'test/mutate-silently': ((ctx) => {
+    ctx.sql.exec('CREATE TABLE IF NOT EXISTS quiet (n INTEGER NOT NULL)');
+    ctx.sql.exec('INSERT INTO quiet (n) VALUES (1)');
+  }) as OperationHandler<never, unknown>,
   // platform-intents.md: enqueue a platform intent and return its id.
   'platform/request': ((ctx, input: { kind: string; payload?: unknown }) =>
     ctx.requestPlatform({ kind: input.kind, payload: input.payload })) as OperationHandler<never, unknown>,
