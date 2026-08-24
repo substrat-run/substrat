@@ -131,7 +131,10 @@ export interface EntityCheckSuiteOptions {
 
 interface DeclaredCheck {
   readonly key: string;
-  readonly entity: string;
+  /** One fixed type… */
+  readonly entity?: string;
+  /** …or the input field naming it, whose schema bounds the set (#890). */
+  readonly entityFrom?: string;
   readonly idFrom?: string;
   readonly resolved?: string;
 }
@@ -145,7 +148,49 @@ interface DeclaredOp {
 function entityCheckOf(op: DeclaredOp): DeclaredCheck | undefined {
   const permission = op.permission;
   if (!permission || typeof permission === 'string') return undefined;
-  return permission.entity ? permission : undefined;
+  return permission.entity || permission.entityFrom ? permission : undefined;
+}
+
+/**
+ * The values a schema admits, when it admits a knowable few.
+ *
+ * `z.literal('workorder')` and `z.literal(['workorder', 'protocol'])` publish a
+ * `values` Set; `z.enum([…])` publishes `options`. An open `z.string()` publishes
+ * neither, and that is the answer the caller needs — not a guess.
+ */
+function admissibleValues(schema: unknown): unknown[] | undefined {
+  const values = (schema as { values?: unknown }).values;
+  if (values instanceof Set) return [...values];
+  const options = (schema as { options?: unknown }).options;
+  if (Array.isArray(options)) return options;
+  return undefined;
+}
+
+/**
+ * The fields whose value the SCHEMA already fixes — one admissible value each.
+ *
+ * #890. A timeline operation declares `entity: 'workorder'` and takes
+ * `entityType: z.literal('workorder')`, so the fixture used to be handed
+ * `{ entityType: 'workorder' }` by hand: the same constant written twice, in two
+ * files, with nothing holding them together. Written as `'customer'` by mistake
+ * and case 1 fails claiming the handler checks the node — a false accusation
+ * against correct code, which is the kind of red that gets a suite disabled.
+ *
+ * So the kit reads the constant instead of being told it. A literal with more
+ * than one admissible value is deliberately NOT read: driving it means driving
+ * once per value, which is a different feature, and `.value` throws there rather
+ * than picking one.
+ */
+function fixedFields(op: DeclaredOp, idField: string): Record<string, unknown> {
+  const shape = op.input?.shape;
+  if (!shape) return {};
+  const fixed: Record<string, unknown> = {};
+  for (const [field, schema] of Object.entries(shape)) {
+    if (field === idField) continue;
+    const values = admissibleValues(schema);
+    if (values?.length === 1) fixed[field] = values[0];
+  }
+  return fixed;
 }
 
 /**
@@ -154,12 +199,17 @@ function entityCheckOf(op: DeclaredOp): DeclaredCheck | undefined {
  * Read off the schema rather than asked for: an operation taking only an id
  * needs no fixture entry, and one that needs more says so precisely instead of
  * failing later as a validation error the reader has to decode.
+ *
+ * A field the schema fixes to one value is not one of them, nor is the type field
+ * an `entityFrom` check names — the kit supplies both, so demanding a sample
+ * input for either would report a gap that is not there.
  */
-function requiredExtras(op: DeclaredOp, idField: string): string[] {
+function requiredExtras(op: DeclaredOp, idField: string, supplied: string[] = []): string[] {
   const shape = op.input?.shape;
   if (!shape) return [];
+  const kitSupplies = new Set([idField, ...supplied, ...Object.keys(fixedFields(op, idField))]);
   return Object.entries(shape)
-    .filter(([field]) => field !== idField)
+    .filter(([field]) => !kitSupplies.has(field))
     .filter(([, schema]) => {
       const parse = (schema as { safeParse?: (v: unknown) => { success: boolean } }).safeParse;
       // No `safeParse` means we cannot tell — treat it as required, because
@@ -175,6 +225,8 @@ export interface PlannedCheck {
   readonly key: string;
   readonly entity: string;
   readonly idFrom: string;
+  /** Input fields the schema fixes to one value, supplied by the kit (#890). */
+  readonly fixed: Record<string, unknown>;
 }
 
 /**
@@ -188,6 +240,12 @@ export interface PlannedCheck {
  * Out of scope entirely (neither covered nor uncovered): an operation with a
  * bare-key node check, or one declaring `narrows`. Neither claims an entity
  * check, so neither has one to honour.
+ *
+ * An `entityFrom` operation appears ONCE PER ADMISSIBLE TYPE (#890) — the pair is
+ * what tells a correct check from a node check, and it is worth no less for the
+ * second type than for the first. So `callout/timeline` is driven twice, over a
+ * work order and over a protocol, and a handler that honoured the check for one
+ * and not the other has nowhere left to hide.
  */
 export function planEntityCheckCoverage(
   operations: Readonly<Record<string, object>>,
@@ -206,12 +264,48 @@ export function planEntityCheckCoverage(
         'in the input, so the harness cannot reach the entity';
       continue;
     }
-    const missing = requiredExtras(op, check.idFrom).filter((f) => inputs[name]?.[f] === undefined);
+
+    // One fixed type, or the several the type field's schema admits (#890). An
+    // `entityFrom` pointing at a field that enumerates nothing is a gap with a
+    // name: the kit will not invent a type, because driving one arm of an
+    // operation and reporting the operation covered is the overclaim this whole
+    // suite exists to avoid.
+    let types: unknown[];
+    if (check.entity) {
+      types = [check.entity];
+    } else {
+      const field = check.entityFrom as string;
+      const values = admissibleValues(op.input?.shape?.[field]);
+      if (!values || values.length === 0) {
+        uncovered[name] =
+          `declares 'entityFrom: ${field}', whose schema does not enumerate the types it ` +
+          'admits — the kit cannot know which entity to create, and will not guess one';
+        continue;
+      }
+      types = values;
+    }
+
+    const typeField = check.entityFrom ? [check.entityFrom] : [];
+    const missing = requiredExtras(op, check.idFrom, typeField).filter(
+      (f) => inputs[name]?.[f] === undefined,
+    );
     if (missing.length > 0) {
       uncovered[name] = `no sample input for required field(s): ${missing.join(', ')}`;
       continue;
     }
-    covered.push({ name, key: check.key, entity: check.entity, idFrom: check.idFrom });
+
+    for (const type of types) {
+      covered.push({
+        name,
+        key: check.key,
+        entity: String(type),
+        idFrom: check.idFrom,
+        fixed: {
+          ...fixedFields(op, check.idFrom),
+          ...(check.entityFrom ? { [check.entityFrom]: type } : {}),
+        },
+      });
+    }
   }
 
   return { covered, uncovered };
@@ -261,9 +355,11 @@ export function entityCheckConformanceSuite(
       expect(covered.length).toBeGreaterThan(0);
     });
 
-    for (const { name, key, entity, idFrom } of covered) {
+    for (const { name, key, entity, idFrom, fixed } of covered) {
       describe(`${name} — ${key} on ${entity}, id from '${idFrom}'`, () => {
-        const extras = supplied[name] ?? {};
+        // Schema-fixed constants first, so an explicit fixture entry still wins —
+        // it is the reviewable way to say "this one needs something else".
+        const extras = { ...fixed, ...(supplied[name] ?? {}) };
         const extraKeys = options.alsoGrant?.[name]?.permissions ?? [];
 
         /**

@@ -17,11 +17,14 @@
  *  - **Who the caller is.** `x-principal` is the dev persona seam the node server
  *    authenticates on — a fact about this harness, not about the model.
  *  - **`/cast`**, the persona list the dev server serves. Not an operation.
- *  - **Two operations deliberately left unbound.** `bike-shop/timeline` and
- *    `protocol/list-for-entity` both take an entity-agnostic `entityType`; binding
- *    either to a URL would let a caller name any entity at all. The server supplies
- *    that constant by hand, which is exactly where the vertical stops being
- *    entity-agnostic (see `handlebarProtocolRoutes`).
+ *  - **Two operations deliberately left unbound.** `protocol/list-for-entity` takes
+ *    an entity-agnostic `entityType`; binding it to a URL would let a caller list
+ *    the protocols on any entity at all. The server supplies that constant by hand,
+ *    which is exactly where the vertical stops being entity-agnostic (see
+ *    `handlebarProtocolRoutes`). `bike-shop/timeline` shared that reason until #890
+ *    bounded its type field to `['workorder', 'protocol']`; it stays hand-mounted
+ *    for the ordinary reason instead — the screen reads a repair's entries
+ *    unpaginated, and binding it means adopting the generated paged client.
  */
 import { createClient, type HandlebarClient, type ProtocolInstance } from './api.generated';
 
@@ -125,7 +128,7 @@ const raw = async <T>(path: string): Promise<T> => {
 export const extra = {
   /** The dev harness's persona list. Not an operation — the node server owns it. */
   cast: () => raw<Record<string, CastMember>>('/cast'),
-  /** `bike-shop/timeline`, unbound: `entityType` is entity-agnostic (see the header). */
+  /** `bike-shop/timeline`, unbound: the route pins `entityType` (see the header). */
   timeline: (id: string) => raw<TimelineEntry[]>(`/repairs/${id}/timeline`),
   /** `protocol/list-for-entity`, unbound for the same reason. */
   repairProtocols: (repairId: string) => raw<ProtocolSummary[]>(`/repairs/${repairId}/protocols`),

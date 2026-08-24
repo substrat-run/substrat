@@ -68,15 +68,19 @@ export function mountApi(
   });
 
   // ---------------------------------------------------------------------------
-  // The two routes that supply a CONSTANT the caller must not choose.
+  // The two routes that supply a CONSTANT the caller does not choose.
   //
-  // Both invoke an operation whose `entityType` is an ordinary `z.string()`, because
-  // both belong to entity-agnostic surfaces — `callout/timeline` reads the event
-  // spine, `protocol/list-for-entity` belongs to an engine that knows nothing about
-  // work orders. Binding either to a URL would put `entityType` in the query string
-  // and let a caller list the timeline, or the protocols, of anything at all. This is
-  // exactly where the vertical is supposed to stop being entity-agnostic, so it says
-  // 'workorder' here and the operations stay unbound.
+  // `protocol/list-for-entity` takes an ordinary `z.string()`: it belongs to an
+  // engine that knows nothing about work orders, so binding it would put
+  // `entityType` in the query string and let a caller list the protocols on
+  // anything at all. That is exactly where the vertical is supposed to stop being
+  // entity-agnostic, so it says 'workorder' here and the operation stays unbound.
+  //
+  // `callout/timeline` is no longer that shape (#890): its `entityType` is
+  // `z.enum(['workorder', 'protocol'])`, the two types the operation actually
+  // serves. This route still supplies 'workorder' — the screen it feeds is an
+  // order's — but it is now a route CHOOSING one of two declared types, not a
+  // comment standing in for a missing bound.
   //
   // Registered BEFORE the derived table. Neither can actually be shadowed by it — no
   // declared route dispatches at their shape — but "the hand-written exception wins"

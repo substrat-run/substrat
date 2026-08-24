@@ -119,10 +119,6 @@ entityCheckConformanceSuite(
         currency: 'SEK',
         category: 'travel',
       },
-      // The handler is entity-agnostic and the declaration cannot yet say so
-      // (#890), so the type it is driven with is supplied here — the same
-      // constant every call site in the app and the scenario passes.
-      'hr/timeline': { entityType: 'employee' },
     },
   },
 );

@@ -49,14 +49,25 @@ entityCheckConformanceSuite(
   calloutOperations,
   async () => ({
     async createEntity(entityType: string) {
-      if (entityType !== 'workorder') throw new Error(`no factory for '${entityType}'`);
       const anna = await host.getScope(w.anna, w.t1, w.s1);
       const order = await anna.invoke<{ id: string }>('callout/create-workorder', {
         facilityId: w.forskolanId,
         kind: 'akut',
         title: 'Conformance',
       });
-      return order.id;
+      if (entityType === 'workorder') return order.id;
+      if (entityType === 'protocol') {
+        // `callout/timeline` reads the spine of a protocol as well as of an order
+        // (#890), so the kit asks for one — on an order of its own, since the
+        // engine allows a single open instance per (template, entity).
+        const instance = await anna.invoke<{ id: string }>('callout/instantiate-protocol', {
+          templateKey: 'self-inspection-electrical',
+          entityType: 'workorder',
+          entityId: order.id,
+        });
+        return instance.id;
+      }
+      throw new Error(`no factory for '${entityType}'`);
     },
 
     async grantOnEntity(permission: string, entity: EntityRef) {
@@ -78,12 +89,12 @@ entityCheckConformanceSuite(
     },
   }),
   {
-    inputs: {
-      // The handler is entity-agnostic and the declaration cannot yet say so, so
-      // the type it is driven with is supplied here — the same constant every
-      // call site in the app and the scenario passes.
-      'callout/timeline': { entityType: 'workorder' },
-    },
+    // No `inputs` at all. `callout/timeline` needed `{ entityType: 'workorder' }`
+    // until #890, and that entry was doing two jobs badly: supplying a constant the
+    // schema could state, and silently choosing WHICH of the operation's types got
+    // driven. It declares `entityFrom` now, so the kit reads both admissible types
+    // off the schema and drives the pair over each — a work order and a protocol.
+    //
     // `callout/portal-orders` is absent rather than uncovered: it declares
     // `narrows`, so it claims no single entity check for this suite to honour.
     // Its per-row proof walk is what the scenario's portal-isolation beat proves.

@@ -29,7 +29,7 @@ interface TimelineRow {
 }
 import { workorderEntities } from '@substrat-run/engine-workorder';
 import { handlebarEntities } from './entities.js';
-import { handlebarOperations, startConditionReportInput } from './operations.js';
+import { handlebarOperations, startConditionReportInput, timelineInput } from './operations.js';
 import {
   assertAllowed,
   ulid,
@@ -438,12 +438,12 @@ const portalRepairsOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ct
  * dropped from the entry, since the row shape is published and the rowid is not.
  */
 const timelineOp: OperationHandler<
-  { entityType: string; entityId: string } & PageParams,
+  z.infer<typeof timelineInput> & PageParams,
   Page<{ type: string; occurred_at: string; actor: string }>
 > = async (ctx, input) => {
-  const entity: EntityRef = z
-    .object({ entityType: z.string().min(1), entityId: z.string().min(1) })
-    .parse(input);
+  // The DECLARED schema (#890), so the literal is enforced here rather than
+  // trusted from the mount that happens to supply it.
+  const entity: EntityRef = timelineInput.parse(input);
   assertAllowed(await ctx.check(WO.read, entity));
   const limit = listLimitOf(input.limit);
   const rows = ctx.sql.query<TimelineRow>(

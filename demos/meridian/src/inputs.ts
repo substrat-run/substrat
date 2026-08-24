@@ -37,7 +37,24 @@ export const statusFilterInput = z.object({ status: z.string().optional() });
 
 export const instanceIdInput = z.object({ instanceId: z.string().min(1) });
 
-export const timelineInput = z.object({ entityType: z.string().min(1), entityId: z.string().min(1) });
+/**
+ * Meridian's policy: the spine is read per employee (#890).
+ *
+ * `entityType` was `z.string().min(1)`, which made `hr/timeline`'s declared
+ * `entity: 'employee'` narrower than the input it described — the declaration
+ * names one type, the schema accepted any. Every caller passes `'employee'`, so
+ * the literal is what was always true, and the conformance kit reads it off this
+ * schema rather than being handed it by the fixture.
+ *
+ * Callout's and Handlebar's timelines went the other way in the same change: they
+ * genuinely serve two types, so they declare `entityFrom` and enumerate the pair.
+ * One type is a literal; several are an enum; an open string is neither, and is
+ * the shape #890 refused to keep.
+ */
+export const timelineInput = z.object({
+  entityType: z.literal('employee'),
+  entityId: z.string().min(1),
+});
 
 export const accrueInput = z.object({
   employeeId: z.string().min(1),
