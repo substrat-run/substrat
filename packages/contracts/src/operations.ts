@@ -120,6 +120,9 @@ type PiiShape<O, OutKeys extends string> = O extends { emits: { piiClass: 'none'
  * still records the thing that matters (this is not a node check) while being
  * honest that the handler has to find the entity itself.
  *
+ * An engine narrowing to a ref the caller owns says `refFrom` and names the field
+ * carrying it whole (#896) — see `PermissionRefCheck` below.
+ *
  * An operation that narrows to more than one type says `entityFrom` in place of
  * `entity`, naming the input field that carries the type (#890). The admissible
  * types come from that field's own schema — `z.enum(['workorder', 'protocol'])` —
@@ -195,6 +198,53 @@ type PermissionCheck<O, Entities, Engines, PermKey extends string> = {
   | { readonly resolved: string; readonly idFrom?: never }
 );
 
+/**
+ * A check narrowed to a ref the caller supplies WHOLE — type and id together
+ * (#896).
+ *
+ * This is the engine case, and it is not the same shape as `entityFrom`.
+ * `entityFrom` still ends at a type someone declared: the field names it, the
+ * schema bounds it, and the kit creates one. An engine composed by a vertical
+ * narrows to a noun that is in NO registry it can see — `engines/absence` checks
+ * `absence:read` against `input.subject`, and the subject is Meridian's
+ * `employee`, which absence cannot name and by design does not know:
+ *
+ * > It knows NOTHING about who a subject is (the vertical owns the directory).
+ *
+ * So the declaration stops trying to name the type and names the FIELD carrying
+ * the ref instead. One field, both halves: an `EntityRef` is `{ entityType,
+ * entityId }`, so there is nothing left for `entity` or `idFrom` to add, and
+ * declaring either alongside is a compile error rather than a second opinion.
+ *
+ * What is still stated — and it is the thing that matters — is *this is not a
+ * node check*. That is the whole distinction #736 was filed about, and the one an
+ * engine most needs to make: a handler that checked `absence:read` at the node
+ * would let anyone holding the key anywhere in the scope read anyone's ledger,
+ * with every test green.
+ *
+ * The conformance kit drives these: it creates an entity of a type its own
+ * FIXTURE names, grants the key narrowed to that ref, and requires the handler to
+ * honour it — which is exactly the check, since the engine is supposed to accept
+ * whatever noun it is handed.
+ */
+type PermissionRefCheck<O, PermKey extends string> = {
+  readonly key: PermKey;
+  /**
+   * The input field holding the whole `EntityRef`.
+   *
+   * A dotted path reaches one level in, for a ref that arrives inside a larger
+   * object — absence's `request` takes `subject: { ref, dataSubjectId }`, where
+   * the erasure key travels beside the ref and only the ref is checked. The first
+   * segment is held to the input's own fields; the second cannot be, and a path
+   * that does not resolve is reported by the kit rather than driven.
+   */
+  readonly refFrom: InputKeys<O> | `${InputKeys<O> & string}.${string}`;
+  readonly entity?: never;
+  readonly entityFrom?: never;
+  readonly idFrom?: never;
+  readonly resolved?: never;
+};
+
 type OpAuthority<O, Entities, Engines, PermKey extends string> = O extends { narrows: unknown }
   ? {
       readonly narrows: {
@@ -219,7 +269,10 @@ type OpAuthority<O, Entities, Engines, PermKey extends string> = O extends { nar
       readonly permission?: never;
     }
   : {
-      readonly permission: PermKey | PermissionCheck<O, Entities, Engines, PermKey>;
+      readonly permission:
+        | PermKey
+        | PermissionCheck<O, Entities, Engines, PermKey>
+        | PermissionRefCheck<O, PermKey>;
       readonly narrows?: never;
     };
 

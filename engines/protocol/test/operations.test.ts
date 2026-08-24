@@ -47,17 +47,23 @@ describe('the declared permissions agree with the manifest', () => {
     expect([...PROTOCOL_PERMISSIONS].sort()).toEqual(Object.values(PROTOCOL_PERM).sort());
   });
 
-  it('names the key the proof walk evaluates', () => {
-    // `protocol/list-for-entity` declares `narrows`, not a leading permission,
-    // so `checks` is the ONLY thing putting its key into the permission surface.
-    // Asserted against this operation rather than against the whole derived set:
-    // `protocol:read` also arrives via `protocol/get` and `protocol/list-
-    // templates`, so a set-level `toContain` passes with `checks` emptied and
-    // proves nothing. Verified by deleting the key and watching this go red.
-    const walked = protocolOperations['protocol/list-for-entity'] as {
-      narrows: { checks: readonly string[] };
+  it('narrows the parent read to the type its caller names', () => {
+    // `protocol/list-for-entity` declared `narrows` until #896 — a per-row proof
+    // walk, which it is not: it checks ONE parent and then queries. It now says
+    // so, with `entityFrom` naming the field the type arrives in.
+    //
+    // Asserted against this operation rather than the derived set: `protocol:read`
+    // also arrives via `protocol/get` and `protocol/list-templates`, so a
+    // set-level `toContain` passes with this operation's key removed entirely and
+    // proves nothing.
+    const parentRead = protocolOperations['protocol/list-for-entity'] as {
+      permission: { key: string; entityFrom: string; idFrom: string };
     };
-    expect(walked.narrows.checks).toEqual(['protocol:read']);
+    expect(parentRead.permission).toEqual({
+      key: 'protocol:read',
+      entityFrom: 'entityType',
+      idFrom: 'entityId',
+    });
   });
 });
 

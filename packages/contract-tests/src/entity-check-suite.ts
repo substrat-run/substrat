@@ -127,6 +127,19 @@ export interface EntityCheckSuiteOptions {
    * coverage gap made reviewable rather than invisible.
    */
   readonly uncovered?: Readonly<Record<string, string>>;
+  /**
+   * The entity type to drive a `refFrom` check with (#896).
+   *
+   * An engine narrowing to a ref the caller supplies whole has no type of its own
+   * to name — that is the shape, not a gap in it. So the HARNESS names one and
+   * `createEntity` makes it. Which type is deliberately not the engine's
+   * business: an engine promising to honour whatever noun it is handed should not
+   * care which one a test picked, and if it does care, that is the finding.
+   *
+   * Needed only where the operation set holds a `refFrom` check. Without it those
+   * operations are reported as uncovered — never silently skipped.
+   */
+  readonly refEntityType?: string;
 }
 
 interface DeclaredCheck {
@@ -135,6 +148,8 @@ interface DeclaredCheck {
   readonly entity?: string;
   /** …or the input field naming it, whose schema bounds the set (#890). */
   readonly entityFrom?: string;
+  /** …or the field carrying the whole ref, type included (#896). */
+  readonly refFrom?: string;
   readonly idFrom?: string;
   readonly resolved?: string;
 }
@@ -148,7 +163,7 @@ interface DeclaredOp {
 function entityCheckOf(op: DeclaredOp): DeclaredCheck | undefined {
   const permission = op.permission;
   if (!permission || typeof permission === 'string') return undefined;
-  return permission.entity || permission.entityFrom ? permission : undefined;
+  return permission.entity || permission.entityFrom || permission.refFrom ? permission : undefined;
 }
 
 /**
@@ -224,7 +239,15 @@ export interface PlannedCheck {
   readonly name: string;
   readonly key: string;
   readonly entity: string;
-  readonly idFrom: string;
+  /**
+   * Where the kit writes the target into the input.
+   *
+   * `{ kind: 'id' }` writes the bare id at `path` — the `idFrom` case. `{ kind:
+   * 'ref' }` writes the whole `{ entityType, entityId }` there instead, which is
+   * the `refFrom` case (#896); `path` may then be two segments, for a ref that
+   * travels inside a larger object.
+   */
+  readonly target: { readonly kind: 'id' | 'ref'; readonly path: readonly string[] };
   /** Input fields the schema fixes to one value, supplied by the kit (#890). */
   readonly fixed: Record<string, unknown>;
 }
@@ -250,6 +273,7 @@ export interface PlannedCheck {
 export function planEntityCheckCoverage(
   operations: Readonly<Record<string, object>>,
   inputs: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {},
+  refEntityType?: string,
 ): { covered: PlannedCheck[]; uncovered: Record<string, string> } {
   const covered: PlannedCheck[] = [];
   const uncovered: Record<string, string> = {};
@@ -258,6 +282,39 @@ export function planEntityCheckCoverage(
     const op = raw as DeclaredOp;
     const check = entityCheckOf(op);
     if (!check) continue;
+
+    // The ref case first: it names neither a type nor an id field, because the
+    // field it names carries both (#896).
+    if (check.refFrom) {
+      const path = check.refFrom.split('.');
+      if (!refEntityType) {
+        uncovered[name] =
+          `declares 'refFrom: ${check.refFrom}' and the suite named no 'refEntityType' — the ` +
+          'check narrows to a type this module cannot know, so the harness has to say which ' +
+          'one it can create';
+        continue;
+      }
+      if (!(path[0]! in (op.input?.shape ?? {}))) {
+        uncovered[name] = `declares 'refFrom: ${check.refFrom}', which names no input field`;
+        continue;
+      }
+      const missing = requiredExtras(op, '', [path[0]!]).filter(
+        (f) => inputs[name]?.[f] === undefined,
+      );
+      if (missing.length > 0) {
+        uncovered[name] = `no sample input for required field(s): ${missing.join(', ')}`;
+        continue;
+      }
+      covered.push({
+        name,
+        key: check.key,
+        entity: refEntityType,
+        target: { kind: 'ref', path },
+        fixed: fixedFields(op, path[0]!),
+      });
+      continue;
+    }
+
     if (!check.idFrom) {
       uncovered[name] =
         `declares 'resolved' (${check.resolved ?? 'no reason given'}) — the entity id is not ` +
@@ -299,7 +356,7 @@ export function planEntityCheckCoverage(
         name,
         key: check.key,
         entity: String(type),
-        idFrom: check.idFrom,
+        target: { kind: 'id', path: [check.idFrom] },
         fixed: {
           ...fixedFields(op, check.idFrom),
           ...(check.entityFrom ? { [check.entityFrom]: type } : {}),
@@ -331,7 +388,11 @@ export function entityCheckConformanceSuite(
   const supplied = options.inputs ?? {};
 
   // Partitioned at collection time so the generated tests can be named.
-  const { covered, uncovered } = planEntityCheckCoverage(operations, supplied);
+  const { covered, uncovered } = planEntityCheckCoverage(
+    operations,
+    supplied,
+    options.refEntityType,
+  );
 
   describe(`declared entity checks are honoured: ${subjectName}`, () => {
     it('covers every entity check it can, and names every one it cannot', () => {
@@ -355,8 +416,31 @@ export function entityCheckConformanceSuite(
       expect(covered.length).toBeGreaterThan(0);
     });
 
-    for (const { name, key, entity, idFrom, fixed } of covered) {
-      describe(`${name} — ${key} on ${entity}, id from '${idFrom}'`, () => {
+    for (const { name, key, entity, target, fixed } of covered) {
+      const where =
+        target.kind === 'ref'
+          ? `ref from '${target.path.join('.')}'`
+          : `id from '${target.path[0]}'`;
+
+      /**
+       * The input the pair is driven with. A `refFrom` check is handed the whole
+       * ref — which is the assertion, since an engine declaring this shape claims
+       * to honour whatever noun arrives.
+       */
+      const inputFor = (
+        entityId: string,
+        extras: Record<string, unknown>,
+      ): Record<string, unknown> => {
+        const value = target.kind === 'ref' ? { entityType: entity, entityId } : entityId;
+        const [head, ...rest] = target.path;
+        if (rest.length === 0) return { ...extras, [head!]: value };
+        // One level in: the ref travels beside other fields the caller supplied,
+        // so the sibling keys the fixture gave for that object are preserved.
+        const outer = (extras[head!] ?? {}) as Record<string, unknown>;
+        return { ...extras, [head!]: { ...outer, [rest.join('.')]: value } };
+      };
+
+      describe(`${name} — ${key} on ${entity}, ${where}`, () => {
         // Schema-fixed constants first, so an explicit fixture entry still wins —
         // it is the reviewable way to say "this one needs something else".
         const extras = { ...fixed, ...(supplied[name] ?? {}) };
@@ -391,10 +475,10 @@ export function entityCheckConformanceSuite(
 
         it('allows a principal granted on THAT entity (the node-check catcher)', async () => {
           const fixture = await makeFixture();
-          const target = await fixture.createEntity(entity);
-          await grantAllOn(fixture, target);
+          const targetId = await fixture.createEntity(entity);
+          await grantAllOn(fixture, targetId);
 
-          const outcome = await denialFrom(fixture, { ...extras, [idFrom]: target });
+          const outcome = await denialFrom(fixture, inputFor(targetId, extras));
           const denied = outcome !== undefined && !(outcome as { notADenial?: unknown }).notADenial;
           expect(
             denied,
@@ -411,7 +495,7 @@ export function entityCheckConformanceSuite(
           await grantAllOn(fixture, granted);
           const other = await fixture.createEntity(entity);
 
-          const outcome = await denialFrom(fixture, { ...extras, [idFrom]: other });
+          const outcome = await denialFrom(fixture, inputFor(other, extras));
           const notADenial = (outcome as { notADenial?: unknown } | undefined)?.notADenial;
           expect(
             outcome,

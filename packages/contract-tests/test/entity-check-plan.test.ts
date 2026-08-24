@@ -42,6 +42,23 @@ const ops = {
     permission: { key: 'thing:read', entity: 'thing', idFrom: 'entityId' },
     input: z.object({ entityType: z.literal(['thing', 'other']), entityId: z.string() }),
   },
+  'x/by-ref': {
+    permission: { key: 'thing:read', refFrom: 'subject' },
+    input: z.object({ subject: z.object({ entityType: z.string(), entityId: z.string() }) }),
+  },
+  'x/by-nested-ref': {
+    permission: { key: 'thing:read', refFrom: 'subject.ref' },
+    input: z.object({
+      subject: z.object({
+        ref: z.object({ entityType: z.string(), entityId: z.string() }),
+        dataSubjectId: z.string(),
+      }),
+    }),
+  },
+  'x/by-ref-nowhere': {
+    permission: { key: 'thing:read', refFrom: 'absent' },
+    input: z.object({ subject: z.object({ entityType: z.string(), entityId: z.string() }) }),
+  },
 };
 
 describe('what the kit will drive', () => {
@@ -51,7 +68,7 @@ describe('what the kit will drive', () => {
     expect(covered.find((c) => c.name === 'x/by-id')).toMatchObject({
       key: 'thing:manage',
       entity: 'thing',
-      idFrom: 'thingId',
+      target: { kind: 'id', path: ['thingId'] },
     });
   });
 
@@ -95,6 +112,40 @@ describe('what the kit will drive', () => {
   });
 });
 
+describe('a ref the caller supplies whole (#896)', () => {
+  it('drives it against a type the HARNESS names, since the module names none', () => {
+    const { covered } = planEntityCheckCoverage(ops, {}, 'thing');
+    expect(covered.find((c) => c.name === 'x/by-ref')).toMatchObject({
+      key: 'thing:read',
+      entity: 'thing',
+      target: { kind: 'ref', path: ['subject'] },
+    });
+  });
+
+  it('reaches one level in, for a ref that travels inside a larger object', () => {
+    // absence's `request` takes `subject: { ref, dataSubjectId }` — the erasure
+    // key rides beside the ref, and only the ref is checked.
+    const { covered } = planEntityCheckCoverage(ops, {}, 'thing');
+    expect(covered.find((c) => c.name === 'x/by-nested-ref')?.target).toEqual({
+      kind: 'ref',
+      path: ['subject', 'ref'],
+    });
+  });
+
+  it('reports the whole shape as uncovered when the harness names no type', () => {
+    // Not skipped: a fixture that cannot make an entity is a gap, and a gap with a
+    // name is the only kind this kit permits.
+    const { covered, uncovered } = planEntityCheckCoverage(ops);
+    expect(covered.map((c) => c.name)).not.toContain('x/by-ref');
+    expect(uncovered['x/by-ref']).toMatch(/refEntityType/);
+  });
+
+  it('reports a refFrom naming no input field rather than writing one', () => {
+    const { uncovered } = planEntityCheckCoverage(ops, {}, 'thing');
+    expect(uncovered['x/by-ref-nowhere']).toMatch(/names no input field/);
+  });
+});
+
 describe('what the kit reports rather than hides', () => {
   it('reports a resolved check as uncovered, carrying the declared reason', () => {
     const { uncovered } = planEntityCheckCoverage(ops);
@@ -104,6 +155,9 @@ describe('what the kit reports rather than hides', () => {
   it('names every uncovered operation and nothing else', () => {
     expect(Object.keys(planEntityCheckCoverage(ops).uncovered).sort()).toEqual([
       'x/by-id-needs-input',
+      'x/by-nested-ref',
+      'x/by-ref',
+      'x/by-ref-nowhere',
       'x/resolved',
       'x/two-admissible-types',
     ]);
