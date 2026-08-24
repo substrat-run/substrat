@@ -38,6 +38,21 @@ OIDC as relying parties (`@substrat-run/oidc-rp`), and this server can be their 
    server-side by the Better Auth `admin` role. A first-run bootstrap creates the first admin
    (the only account creation that needs no existing admin).
 
+That SPA is **two surfaces behind one origin**, and the second is easy to miss: besides the
+dashboard it serves the issuer's own user-facing OIDC pages, `/login` and `/consent`. Those
+paths are named in `src/auth.ts` (`loginPage`, `consentPage`) and Better Auth redirects people
+to them mid-`/authorize`, so they are part of the OIDC contract rather than client routes the
+app happens to own. Anyone reached through them may be an ordinary user of some other
+application — **not an administrator**, and not someone who came here on purpose. `/consent`
+names the relying party and the scopes it asked for, and answers back at the RP's own callback
+whether the person allows or denies.
+
+The distinction that matters for testing: a client in `trustedClients` with `skipConsent` takes
+neither redirect, and the seeded demo RP is exactly that. So the paths every external relying
+party depends on are the ones the built-in round-trip never exercises — which is how they came
+to not exist at all (#898). `test/untrusted-client.test.ts` drives a client that registers
+itself, and is the reason to keep one.
+
 ## Storage
 
 One **Durable Object** (`AuthServerDO`) is the whole store — a single global issuer addressed
