@@ -468,9 +468,24 @@ this, nothing recorded it — a refused call left no row in any log, because bot
 attacker-influenceable volume (a probing client mints unlimited rows), which is exactly
 the retention argument above: operational history, not permanent evidence, so it belongs
 beside reads — rate-bucketed per actor/key/window if volume demands — and never in the
-admin log. Denials raised inside scope operations are deferred (they need a path to this
-directory-side log, or a scope-local twin that drains); the control-plane surface, where
-the log already lives, goes first.
+admin log.
+
+A denial raised inside a scope operation could not reach this directory-side log at all:
+it happens in the scope's serialization domain, and the rollback it is evidence of would
+erase it. K-35 settled that with the **scope-local twin** — `_substrat_denials` in the
+scope's own database, written as a fresh autocommit after the rollback — and #867 gave it
+the reader this section promised: `HostAdmin.listDenials` and `HostAdmin.summarizeDenials`,
+`GET /tenants/:t/scopes/:s/denials[/summary]`, and a per-scope card in the console. Both
+reads are actor-stamped and recorded here, like every other `HostAdmin` read, so *reading
+the denial log is itself logged* — the rule stated above holds for it too.
+
+The bucketed read is the default surface rather than a refinement, and for the reason this
+section already gives: because the volume is attacker-influenceable, a newest-first page of
+rows lets whoever wrote the last hundred hide everyone else. Buckets are ordered by count,
+so the quiet actor survives the loud one. The window's floor is reported **unfiltered**
+beside them for the same honesty `drained_at` buys below — until a Tier 2 sink exists the
+window simply *is* the retention, and absence before the floor means "no longer held",
+not "never happened".
 
 #### Hot storage is not retention
 

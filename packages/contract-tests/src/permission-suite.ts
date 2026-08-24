@@ -252,6 +252,149 @@ export function permissionContractSuite(
       expect(mine!.scope_id).toBe(s1);
     });
 
+    // -- the denial log's READ path (K-35's stated tail, #867) ----------------
+    //
+    // The write side above proves a refusal survives the rollback it is evidence of.
+    // This is what an operator can then ASK of those rows, and the properties worth
+    // pinning are the ones K-35 named as the reasons denials are not admin-log entries:
+    //
+    //  - the volume is attacker-influenceable, so the bucketed view must order by COUNT.
+    //    A newest-first ordering would let whoever wrote the last hundred rows push
+    //    every other actor off the page — the exact failure bucketing exists to prevent.
+    //  - rows drain rather than expire, so the window's floor is reported unfiltered.
+    //    Absence before it is "we no longer hold that far back", not "never happened".
+    //
+    // On its OWN scope: the suites carry state across `it` blocks, and a count assertion
+    // sharing a log with every other test's denials would be a coin flip.
+
+    describe('the denial log read path (K-35, #867)', () => {
+      const s3 = scopeId.parse(ulid());
+      // Some OTHER tenant. K-3's cross-check is that the pair must resolve, so a
+      // tenant that owns nothing here is the cheapest way to name a mismatched one.
+      const other = tenantId.parse(ulid());
+      // Two principals with no role and no grant anywhere: every enforced check they
+      // make is refused, which is precisely what makes them readable here.
+      const mallory: PrincipalId = principalId.parse(ulid());
+      const trudy: PrincipalId = principalId.parse(ulid());
+      let firstAt: string;
+
+      const refuse = async (who: PrincipalId, op: string, permission: PermissionKey) => {
+        const stub = await host.getScope(who, t1, s3);
+        await expect(stub.invoke(op, { permission })).rejects.toThrow(/permission denied/);
+      };
+
+      beforeAll(async () => {
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s3, vertical: 'perm-vertical' });
+        await host.admin.activateScope(staff, t1, s3);
+        firstAt = new Date().toISOString();
+        // mallory: 3 × perm:use across TWO operations, then 1 × perm:read.
+        await refuse(mallory, 'perm/authorized-emit', PERM_USE);
+        await refuse(mallory, 'perm/authorized-emit', PERM_USE);
+        await refuse(mallory, 'perm/authorized-read', PERM_USE);
+        await refuse(mallory, 'perm/authorized-read', PERM_READ);
+        // trudy: 1 × perm:admin. The quietest actor, and so the one a count-ordered
+        // page must still carry.
+        await refuse(trudy, 'perm/authorized-read', PERM_ADMIN);
+      });
+
+      it('reads back the refusals, newest first, fully attributed', async () => {
+        const rows = await host.admin.listDenials(staff, t1, s3);
+        expect(rows).toHaveLength(5);
+        // ULIDs are monotonic, so id order IS creation order: newest first.
+        expect(rows.map((r) => r.id)).toEqual([...rows.map((r) => r.id)].sort().reverse());
+        const newest = rows[0]!;
+        expect(newest.actor).toBe(trudy);
+        expect(newest.permission).toBe(PERM_ADMIN);
+        expect(newest.operation).toBe('perm/authorized-read');
+        expect(newest.tenantId).toBe(t1);
+        expect(newest.scopeId).toBe(s3);
+        expect(newest.at >= firstAt).toBe(true);
+        // Nothing has been shipped to a Tier-2 sink, so nothing is drained.
+        expect(newest.drainedAt).toBeNull();
+      });
+
+      it('narrows by actor, taking the LOGICAL id rather than its stored encoding', async () => {
+        // The writer persists JSON.stringify(actor), so a principal is stored WITH its
+        // quotes. A caller holds the bare ULID and should not have to know that.
+        const rows = await host.admin.listDenials(staff, t1, s3, { actor: mallory });
+        expect(rows).toHaveLength(4);
+        expect(rows.every((r) => r.actor === mallory)).toBe(true);
+      });
+
+      it('narrows by permission and by operation', async () => {
+        expect(await host.admin.listDenials(staff, t1, s3, { permission: PERM_USE })).toHaveLength(3);
+        expect(
+          await host.admin.listDenials(staff, t1, s3, { operation: 'perm/authorized-emit' }),
+        ).toHaveLength(2);
+        // A key nobody was refused is empty, not an error.
+        expect(await host.admin.listDenials(staff, t1, s3, { permission: 'no:such' })).toEqual([]);
+      });
+
+      it('bounds the window: `since` includes, `until` excludes', async () => {
+        const all = await host.admin.listDenials(staff, t1, s3);
+        const oldest = all[all.length - 1]!;
+        expect(await host.admin.listDenials(staff, t1, s3, { since: oldest.at })).not.toHaveLength(0);
+        // Exclusive upper bound: bounded at the oldest row's own instant, that row is
+        // out — which is what lets adjacent windows tile without double-counting.
+        expect(await host.admin.listDenials(staff, t1, s3, { until: oldest.at })).toEqual([]);
+      });
+
+      it('caps the page at `limit`', async () => {
+        expect(await host.admin.listDenials(staff, t1, s3, { limit: 2 })).toHaveLength(2);
+      });
+
+      it('buckets per (actor, permission) with first occurrence and count (K-35)', async () => {
+        const summary = await host.admin.summarizeDenials(staff, t1, s3);
+        const use = summary.buckets.find(
+          (b) => b.actor === mallory && b.permission === PERM_USE,
+        )!;
+        expect(use.count).toBe(3);
+        // Refused the same key on two different operations — the discriminator that
+        // separates a broken screen from someone walking the surface.
+        expect(use.operations).toBe(2);
+        expect(use.firstAt <= use.lastAt).toBe(true);
+        expect(summary.total).toBe(5);
+        expect(summary.actors).toBe(2);
+      });
+
+      it('orders buckets by COUNT, so a flood cannot hide the quiet actor', async () => {
+        const summary = await host.admin.summarizeDenials(staff, t1, s3);
+        const counts = summary.buckets.map((b) => b.count);
+        expect(counts).toEqual([...counts].sort((a, b) => b - a));
+        // trudy wrote one row and mallory four; a recency- or volume-blind page could
+        // drop trudy. The count-ordered one carries every distinct pair.
+        expect(summary.buckets.some((b) => b.actor === trudy)).toBe(true);
+      });
+
+      it('reports the window unfiltered — a bound narrows `total`, never the window', async () => {
+        const all = await host.admin.summarizeDenials(staff, t1, s3);
+        const narrowed = await host.admin.summarizeDenials(staff, t1, s3, { permission: PERM_USE });
+        expect(narrowed.total).toBe(3);
+        // The window is a fact about the LOG, not about the query: it is what stops an
+        // empty filtered result being read as "this never happened" when the truth is
+        // that the rows drained. Same floor and ceiling under either filter.
+        expect(narrowed.windowOldestAt).toBe(all.windowOldestAt);
+        expect(narrowed.windowNewestAt).toBe(all.windowNewestAt);
+        expect(all.windowOldestAt).not.toBeNull();
+        expect(all.drained).toBe(0);
+      });
+
+      it('a bare ctx.check a module branches on is NOT a denial (K-35)', async () => {
+        const before = await host.admin.summarizeDenials(staff, t1, s3);
+        const stub = await host.getScope(mallory, t1, s3);
+        // `perm/probe` returns the decision rather than asserting it — list filtering,
+        // not a refusal. Nothing enforced anything, so the log must stay silent.
+        const d = await stub.invoke<{ allowed: boolean }>('perm/probe', { permission: PERM_USE });
+        expect(d.allowed).toBe(false);
+        expect((await host.admin.summarizeDenials(staff, t1, s3)).total).toBe(before.total);
+      });
+
+      it('fails closed on a mismatched (tenantId, scopeId) pair (K-3)', async () => {
+        await expect(host.admin.listDenials(staff, other, s3)).rejects.toThrow();
+        await expect(host.admin.summarizeDenials(staff, other, s3)).rejects.toThrow();
+      });
+    });
+
     it('org membership reaches org grants (rule 4), membership tuple in the proof', async () => {
       const d = await probe(erin, s1, PERM_READ);
       expect(d.allowed).toBe(true);

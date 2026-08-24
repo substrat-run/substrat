@@ -451,6 +451,18 @@ const authorizedEmitOp: OperationHandler<
   });
 };
 
+// A SECOND enforced check, so a denial log can be asked how many DISTINCT operations
+// an actor was refused one key on (#867) — one operation refused four hundred times is
+// a broken screen, the same count across several is someone walking the surface. With
+// only one guarded operation in the module that column could never be anything but 1.
+const authorizedReadOp: OperationHandler<{ permission: PermissionKey }, number> = async (
+  ctx,
+  input,
+) => {
+  assertAllowed(await ctx.check(input.permission));
+  return ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM testmod_items')[0]!.n;
+};
+
 const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query('SELECT id, type, authorization FROM _substrat_outbox ORDER BY id');
 
@@ -835,6 +847,7 @@ export const permMod: ModuleRegistration = {
     'perm/link': linkOp as OperationHandler<never, unknown>,
     'perm/probe': probeOp as OperationHandler<never, unknown>,
     'perm/authorized-emit': authorizedEmitOp as OperationHandler<never, unknown>,
+    'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
     'perm/read-denials': readDenialsOp as OperationHandler<never, unknown>,
     // #304: read the request-time entitlement view — used by the scope-local (projected)

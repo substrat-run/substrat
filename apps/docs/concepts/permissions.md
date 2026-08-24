@@ -221,6 +221,28 @@ control-plane *reads* against the directory; `_substrat_denials` records refused
 a scope. Two different tables for two different facts. Both *drain* rather than expire —
 `drained_at` marks a row shipped onward, and only a drained row may be pruned.
 
+### Reading them back
+
+Two staff reads on `HostAdmin`, served by the control plane as
+`GET /tenants/:t/scopes/:s/denials` and `…/denials/summary`, and rendered per scope in the
+console:
+
+- **`summarizeDenials`** buckets the log per (actor, permission) with a count, the number of
+  distinct operations, and first/last occurrence. This is the view to open first, and the
+  ordering is **by count** on purpose: the volume of this log is attacker-influenceable — a
+  probing client mints unlimited rows — so a newest-first page would let whoever wrote the
+  last hundred rows push every other actor off the screen.
+- **`listDenials`** returns the raw rows behind a bucket, newest first, narrowed by `actor`,
+  `permission`, `operation`, and a `since`/`until` window.
+
+The summary also carries the log's own **window** — its oldest and newest held rows, computed
+*ignoring* the filter. That is what keeps an empty result honest: because rows drain rather
+than expire, absence before the window's floor means "no longer held", not "never happened".
+
+Both reads are actor-stamped and recorded to the K-24 access log, so reading the denial log is
+itself logged, and both cross-check the `(tenantId, scopeId)` pair and fail closed on a
+mismatch — a confused-deputy scope id resolves to nothing, never another tenant's refusals.
+
 ## In operations
 
 The standard first line of every operation:

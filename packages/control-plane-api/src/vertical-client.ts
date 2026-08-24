@@ -19,6 +19,9 @@ import type {
   ScopeDumpTable,
   ScopeId,
   ScopeQueryResult,
+  DenialFilter,
+  DenialSummary,
+  PermissionDenial,
   ScopeTable,
   ScopeTablePage,
   TenantId,
@@ -29,6 +32,21 @@ import { attachmentRecord } from '@substrat-run/contracts';
 import type { OpenedAttachment } from '@substrat-run/kernel';
 import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
 import { ControlPlaneError } from './client.js';
+
+/**
+ * The shared query string for both denial reads — same fields, same spelling, so the
+ * two routes cannot drift on what a filter means.
+ */
+function denialParams(scopeId: ScopeId, filter?: DenialFilter): URLSearchParams {
+  const q = new URLSearchParams({ scopeId });
+  if (filter?.actor) q.set('actor', filter.actor);
+  if (filter?.permission) q.set('permission', filter.permission);
+  if (filter?.operation) q.set('operation', filter.operation);
+  if (filter?.since) q.set('since', filter.since);
+  if (filter?.until) q.set('until', filter.until);
+  if (filter?.limit) q.set('limit', String(filter.limit));
+  return q;
+}
 
 /**
  * The platform's client for calling a VERTICAL (K-31).
@@ -351,6 +369,24 @@ export class VerticalClient {
    */
   async queryScope(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
     return this.postInternal<ScopeQueryResult>('/internal/query', { scopeId, sql: input.sql }, 'query');
+  }
+
+  /**
+   * The scope's K-35 denial log (#867) — pulled for the same reason the tables are: a
+   * denial is written in the scope's own DO, which lives in the vertical's deployment
+   * (K-31), not the control plane's. The K-3 cross-check and the K-24 access-log entry
+   * are made on the platform side before this call; what crosses is a scope id and a
+   * filter, never SQL.
+   */
+  async listDenials(scopeId: ScopeId, filter?: DenialFilter): Promise<PermissionDenial[]> {
+    return this.getInternal<PermissionDenial[]>(`/internal/denials?${denialParams(scopeId, filter)}`);
+  }
+
+  /** The bucketed view of the same log (K-35's rate-buckets), with the window's facts. */
+  async summarizeDenials(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary> {
+    return this.getInternal<DenialSummary>(
+      `/internal/denials/summary?${denialParams(scopeId, filter)}`,
+    );
   }
 
   /**

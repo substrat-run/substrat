@@ -153,6 +153,19 @@ export {
   platformRequestHistoryQuery,
 } from './platform-request-query.js';
 export {
+  DENIAL_COLUMNS,
+  DENIAL_WINDOW_QUERY,
+  denialListQuery,
+  denialSummaryQuery,
+  denialTotalsQuery,
+  mapDenialRow,
+  mapDenialBucketRow,
+  storedActor,
+  type DenialRow,
+  type DenialBucketRow,
+  type DenialWindowRow,
+} from './denial-query.js';
+export {
   entityVersionQuery,
   entityVersionOf,
   OUTBOX_ENTITY_INDEX,

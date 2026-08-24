@@ -119,6 +119,9 @@ import {
   type ScopeQueryResult,
   type ScopeStatus,
   type ScopeTable,
+  type DenialFilter,
+  type DenialSummary,
+  type PermissionDenial,
   type ScopeTablePage,
   type Tenant,
   type TenantId,
@@ -164,6 +167,15 @@ import {
   backoffAt,
   platformRequestHistoryQuery,
   PLATFORM_REQUEST_COLUMNS,
+  denialListQuery,
+  denialSummaryQuery,
+  denialTotalsQuery,
+  DENIAL_WINDOW_QUERY,
+  mapDenialRow,
+  mapDenialBucketRow,
+  type DenialRow,
+  type DenialBucketRow,
+  type DenialWindowRow,
   resolveRetryPolicy,
   isSecretBoxConfigured,
   unconfiguredSecretBox,
@@ -5187,6 +5199,54 @@ export class SqliteScopeHost implements ScopeHost {
         // evidence trail for what staff read, and here the read IS the SQL.
         this.recordAccess(actor, 'queryScope', { tenantId, scopeId }, { sql }, rows.length);
         return { columns, rows, truncated };
+      },
+      // -- the denial log (K-35, #867) -------------------------------------
+      // Same shape as the introspection reads above: `scopeDbFor` is the K-3
+      // cross-check (a pair that does not resolve never opens a database), and every
+      // read records to the K-24 access log. What differs is that these two answer a
+      // question about the permission model rather than about the data.
+      listDenials: async (
+        actor,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        filter?: DenialFilter,
+      ): Promise<PermissionDenial[]> => {
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const q = denialListQuery(filter);
+        const rows = (db.prepare(q.sql).all(...q.params) as DenialRow[]).map(mapDenialRow);
+        this.recordAccess(actor, 'listDenials', { tenantId, scopeId }, filter ?? null, rows.length);
+        return rows;
+      },
+      summarizeDenials: async (
+        actor,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        filter?: DenialFilter,
+      ): Promise<DenialSummary> => {
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const b = denialSummaryQuery(filter);
+        const buckets = (db.prepare(b.sql).all(...b.params) as DenialBucketRow[]).map(
+          mapDenialBucketRow,
+        );
+        const t = denialTotalsQuery(filter);
+        const totals = db.prepare(t.sql).get(...t.params) as { total: number; actors: number };
+        // Unfiltered on purpose — these describe the log, not the query (denial-query.ts).
+        const w = db.prepare(DENIAL_WINDOW_QUERY).get() as DenialWindowRow;
+        this.recordAccess(
+          actor,
+          'summarizeDenials',
+          { tenantId, scopeId },
+          filter ?? null,
+          buckets.length,
+        );
+        return {
+          buckets,
+          total: Number(totals.total),
+          actors: Number(totals.actors),
+          windowOldestAt: w.oldest_at ?? null,
+          windowNewestAt: w.newest_at ?? null,
+          drained: Number(w.drained ?? 0),
+        };
       },
       exportScope: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeDump> => {
         // K-3: cross-check the pair before opening anything (same as the introspection reads).

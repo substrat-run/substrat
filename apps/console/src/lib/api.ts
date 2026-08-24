@@ -4,6 +4,9 @@ import type {
   AdminLogEntry,
   ChannelName,
   DirectoryBackup,
+  DenialFilter,
+  DenialSummary,
+  PermissionDenial,
   EntitlementGrant,
   EntitlementGrantInput,
   HostnameBinding,
@@ -27,6 +30,19 @@ import type {
   VerticalVersion,
 } from '@substrat-run/contracts';
 import type { DoNamespace, PlatformRuntime, TenantStores } from './cf-links';
+
+/** One spelling of the denial filter, so the two reads cannot drift on what it means. */
+function denialQuery(filter?: DenialFilter): string {
+  const q = new URLSearchParams();
+  if (filter?.actor) q.set('actor', filter.actor);
+  if (filter?.permission) q.set('permission', filter.permission);
+  if (filter?.operation) q.set('operation', filter.operation);
+  if (filter?.since) q.set('since', filter.since);
+  if (filter?.until) q.set('until', filter.until);
+  if (filter?.limit) q.set('limit', String(filter.limit));
+  const qs = q.toString();
+  return qs ? `?${qs}` : '';
+}
 
 /**
  * Client for the control-plane API (packages/control-plane-api).
@@ -297,6 +313,15 @@ export function createApi(actor: string | null, baseUrl = '/api') {
         roleProjectionEmpty: boolean;
         missingStores?: { binding: string; kind: 'relational' | 'blob' }[];
       }>(`/tenants/${tenantId}/scopes/${scopeId}/health`),
+    // The K-35 denial log (#867) — the scope's own record of every ENFORCED permission
+    // refusal. Summary first: the raw log's volume is attacker-influenceable (a probing
+    // client mints rows), so bucketing is what keeps a quiet actor visible next to a loud
+    // one. The rows are the drill-down behind a bucket.
+    denialSummary: (t: TenantId, s: ScopeId, filter?: DenialFilter) =>
+      call<DenialSummary>(`/tenants/${t}/scopes/${s}/denials/summary${denialQuery(filter)}`),
+    listDenials: (t: TenantId, s: ScopeId, filter?: DenialFilter) =>
+      call<PermissionDenial[]>(`/tenants/${t}/scopes/${s}/denials${denialQuery(filter)}`),
+
     provisionScope: (input: {
       tenantId: TenantId;
       scopeId: ScopeId;

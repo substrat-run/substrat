@@ -6,11 +6,26 @@ import type {
   Scope,
   ScopeId,
   ScopeQueryResult,
+  DenialFilter,
+  DenialSummary,
+  PermissionDenial,
   ScopeTable,
   ScopeTablePage,
   Tenant,
   TenantId,
 } from '@substrat-run/contracts';
+
+/** Both denial reads take the same filter; one spelling of it, so they cannot drift. */
+function denialQuery(filter?: DenialFilter): URLSearchParams {
+  const q = new URLSearchParams();
+  if (filter?.actor) q.set('actor', filter.actor);
+  if (filter?.permission) q.set('permission', filter.permission);
+  if (filter?.operation) q.set('operation', filter.operation);
+  if (filter?.since) q.set('since', filter.since);
+  if (filter?.until) q.set('until', filter.until);
+  if (filter?.limit) q.set('limit', String(filter.limit));
+  return q;
+}
 import { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER } from './auth.js';
 
 /**
@@ -187,6 +202,30 @@ export class ControlPlaneClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  }
+
+  // -- the denial log (K-35, #867) --------------------------------------------
+
+  /**
+   * The scope's recorded permission refusals, bucketed per (actor, permission) with the
+   * window's own facts beside them — the view to open first, because the raw log's
+   * volume is attacker-influenceable and a prober can flood a newest-first page.
+   */
+  summarizeDenials(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: DenialFilter,
+  ): Promise<DenialSummary> {
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/denials/summary?${denialQuery(filter)}`);
+  }
+
+  /** The raw rows behind a bucket, newest first. */
+  listDenials(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: DenialFilter,
+  ): Promise<PermissionDenial[]> {
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/denials?${denialQuery(filter)}`);
   }
 
   /**

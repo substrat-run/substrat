@@ -63,6 +63,12 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
 - **Roles**, **admin-log**, **ops-failures**, **meters**, and **observability**
   (`/observability/logs`, `/observability/metrics`) — the permission surface, the
   append-only audit history, operational failures, billable readings, and fleet telemetry.
+- **Denials** — `/tenants/:t/scopes/:s/denials` and `…/denials/summary`: the refusals a
+  scope recorded (K-35). The third log beside the two above — the admin log holds staff
+  *mutations*, the K-24 access log staff *reads*, and this one the operations that were
+  refused. Scope-local rather than directory-side, because a denial rolls its own operation
+  back and so must be written where that operation ran; the summary is bucketed per
+  (actor, permission) so a prober's volume cannot hide a quiet actor.
 - **`/push-tokens`** — mints the scoped builder tokens a `substrat push` authenticates with.
 
 Routes are the shape only; enumerate the [OpenAPI](/reference/contracts) document for the

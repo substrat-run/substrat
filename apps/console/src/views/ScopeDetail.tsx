@@ -16,6 +16,7 @@ import {
   type TenantStores,
 } from '../lib/cf-links';
 import { walkAll, type Api } from '../lib/api';
+import { DenialLog } from '../patterns/DenialLog';
 
 export interface ScopeDetailProps {
   api: Api;
@@ -409,6 +410,12 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
           </p>
         </Card>
       )}
+
+      {/* The scope's own refusal log (K-35, #867). Placed here rather than in a fleet-wide
+          view because a denial is scope-local by construction — it is written in the
+          database of the scope whose operation was rolled back. Renders nothing when the
+          log cannot be read (a scope with no reachable deployment has no log to show). */}
+      <DenialLog api={api} scope={scope} />
 
       {/* Reap confirmation — the type-to-arm gate (TenantDetail suspend precedent). Reap
           is the one scope action with no restore: it wipes the DO storage for good. The
