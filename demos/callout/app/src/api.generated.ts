@@ -333,6 +333,17 @@ export interface CalloutClient {
   createWorkorder(input: { facilityId: string; kind: string; title: string; description?: string }): Promise<WorkOrder>;
 
   /**
+   * One facility, with the version tag its next update must quote
+   *
+   * `GET /facilities/{facilityId}` — `callout/get-facility`
+   *
+   * Concurrency-checked over `facility`. The tag this answers with is
+   * remembered and sent as `If-Match` on the next write to the same entity, so a
+   * write that would overwrite someone else's change fails with 412 instead.
+   */
+  getFacility(input: { facilityId: string }): Promise<Facility>;
+
+  /**
    * Instantiate a protocol against an entity
    *
    * `POST /workorders/{entityId}/protocols` — `callout/instantiate-protocol`
@@ -372,6 +383,17 @@ export interface CalloutClient {
    * `GET /customers/search` — `callout/search-customers`
    */
   searchCustomers(input: { q: string; limit?: number }): Promise<{ results: Customer[]; limit: number; capped: boolean }>;
+
+  /**
+   * Update a facility's details
+   *
+   * `PATCH /facilities/{facilityId}` — `callout/update-facility`
+   *
+   * Concurrency-checked over `facility`. The tag this answers with is
+   * remembered and sent as `If-Match` on the next write to the same entity, so a
+   * write that would overwrite someone else's change fails with 412 instead.
+   */
+  updateFacility(input: { facilityId: string; name?: string; address?: string; accessNote?: string }): Promise<Facility>;
 
   /**
    * Create or update a price-list article
@@ -499,6 +521,17 @@ export interface CalloutClient {
   workorderStart(input: { orderId: string }): Promise<WorkOrder>;
 
   /**
+   * The entity tags this client is holding, keyed `entityType:id` (#129).
+   *
+   * Populated from every concurrency-checked response and sent back as
+   * `If-Match` on the next write to that entity — an app writes no header code.
+   * Exposed rather than hidden so it can be inspected in a devtools session and
+   * cleared when a screen is abandoned; a stale tag causes a 412, never a silent
+   * overwrite, so clearing it is safe and keeping it is safe.
+   */
+  readonly versions: Map<string, string>;
+
+  /**
    * Fetch the next page of any paged read, given a previous page's `next`.
    *
    * One method for every paged read rather than one per read: `next` is a URL that
@@ -557,15 +590,18 @@ export function createClient(options: ClientOptions = {}): CalloutClient {
   const baseUrl = options.baseUrl ?? '/api';
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   const readMessage = options.errorMessage ?? defaultErrorMessage;
+  /** #129: entity tags seen on this client, keyed `entityType:id`. */
+  const versions = new Map<string, string>();
 
   /** One request, against a path that is ALREADY prefixed and query-stringed. */
-  const raw = async (fullPath: string, method: string, body: unknown): Promise<Response> => {
+  const raw = async (fullPath: string, method: string, body: unknown, extra?: Record<string, string>): Promise<Response> => {
     const hasBody = body !== undefined && method !== 'GET' && method !== 'DELETE';
     return await doFetch(fullPath, {
       method,
       headers: {
         ...(hasBody ? { 'content-type': 'application/json' } : {}),
         ...(options.headers?.() ?? {}),
+        ...(extra ?? {}),
       },
       ...(hasBody ? { body: JSON.stringify(body) } : {}),
     });
@@ -580,6 +616,51 @@ export function createClient(options: ClientOptions = {}): CalloutClient {
 
   const send = async (path: string, method: string, body: unknown, params: unknown): Promise<unknown> =>
     await parse(await raw(`${baseUrl}${path}${query(params as Record<string, unknown>)}`, method, body));
+
+  /**
+   * A concurrency-checked call (#129): remember the tag a read hands back, send it
+   * as `If-Match` on the next write to that same entity.
+   *
+   * This is what makes the guarantee reachable without the app writing header code.
+   * The tag is per (entity type, id) rather than global — two facilities being
+   * edited in two tabs do not share one — and it lives on the CLIENT INSTANCE, so a
+   * page reload starts empty and the first write after it simply goes unconditional
+   * until something has been read.
+   *
+   * **A 412 evicts the tag rather than replacing it with the current one.** The
+   * tempting behaviour is to re-read and retry automatically; that would overwrite
+   * whatever change caused the refusal, which is the lost update this exists to
+   * prevent. Evicting means the app's own re-read is what re-arms the guard, and
+   * until it happens the next write is unconditional — visibly wrong rather than
+   * quietly wrong.
+   *
+   * `versions` is exposed on the client so an app can inspect or clear it. Nothing
+   * here is hidden state a caller cannot reach.
+   */
+  const guarded = async (
+    entityType: string,
+    entityId: unknown,
+    path: string,
+    method: string,
+    body: unknown,
+    params: unknown,
+  ): Promise<unknown> => {
+    const key = `${entityType}:${String(entityId)}`;
+    const held = versions.get(key);
+    const res = await raw(
+      `${baseUrl}${path}${query(params as Record<string, unknown>)}`,
+      method,
+      body,
+      held !== undefined && method !== 'GET' ? { 'If-Match': held } : undefined,
+    );
+    if (res.status === 412) versions.delete(key);
+    const parsed = await parse(res);
+    // Read AFTER `parse`, which throws on a failure — a tag from an error response
+    // describes nothing the caller now holds.
+    const tag = res.headers.get('ETag');
+    if (tag) versions.set(key, tag);
+    return parsed;
+  };
 
   /**
    * A paged read: the entries come from the body, the walk from the headers.
@@ -606,6 +687,8 @@ export function createClient(options: ClientOptions = {}): CalloutClient {
       send(`/customers/${encodeURIComponent(String(input.customerId))}/facilities`, "POST", omit(input, ["customerId"]), undefined),
     createWorkorder: (input: Args) =>
       send("/workorders", "POST", input, undefined),
+    getFacility: (input: Args) =>
+      guarded("facility", input.facilityId, `/facilities/${encodeURIComponent(String(input.facilityId))}`, "GET", undefined, omit(input, ["facilityId"])),
     instantiateProtocol: (input: Args) =>
       send(`/workorders/${encodeURIComponent(String(input.entityId))}/protocols`, "POST", omit(input, ["entityId"]), undefined),
     listCustomers: () =>
@@ -616,6 +699,8 @@ export function createClient(options: ClientOptions = {}): CalloutClient {
       page("/prices", "GET", undefined, undefined),
     searchCustomers: (input: Args) =>
       send("/customers/search", "GET", undefined, input),
+    updateFacility: (input: Args) =>
+      guarded("facility", input.facilityId, `/facilities/${encodeURIComponent(String(input.facilityId))}`, "PATCH", omit(input, ["facilityId"]), undefined),
     upsertPrice: (input: Args) =>
       send("/prices", "POST", input, undefined),
     invoicingExport: (input: Args) =>
@@ -650,6 +735,7 @@ export function createClient(options: ClientOptions = {}): CalloutClient {
       send(`/workorders/${encodeURIComponent(String(input.orderId))}/time`, "POST", omit(input, ["orderId"]), undefined),
     workorderStart: (input: Args) =>
       send(`/workorders/${encodeURIComponent(String(input.orderId))}/start`, "POST", omit(input, ["orderId"]), undefined),
+    versions,
     follow: async (next: string) => {
       // The link names the API's OWN origin, which under a dev proxy is not the origin
       // this page was served from. So the path is kept and the origin is taken from

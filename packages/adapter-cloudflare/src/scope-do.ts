@@ -90,6 +90,8 @@ import {
   type SearchOptions,
   entityVersionQuery,
   entityVersionOf,
+  assertIfMatch,
+  type InvokeOptions,
   OUTBOX_ENTITY_INDEX,
   type EntityVersion,
   type EntityVersionRow,
@@ -402,6 +404,34 @@ function toRpcError(err: unknown): Error {
 
 /** The check subject for an attachment gate (#476): the connection when the connector door
  *  set one, else the principal — mirrors the invoke path's subject selection. */
+/**
+ * The entity a guarded operation's precondition is about (#129).
+ *
+ * `idFrom` is compile-checked to name an input field and the host has already
+ * parsed that input, so the field exists with its declared type. What remains
+ * possible is a field the schema lets the caller OMIT — and a precondition with no
+ * row to read is not a weaker check but an absent one, indistinguishable from one
+ * that passed. Refused rather than skipped.
+ *
+ * A module-level function rather than a method, so the pure adapter and this one
+ * are demonstrably answering with the same rule.
+ */
+function concurrencyRefOf(
+  operation: string,
+  guarded: { entity: string; idFrom: string },
+  parsed: unknown,
+): EntityRef {
+  const id = (parsed as Record<string, unknown> | undefined)?.[guarded.idFrom];
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new Error(
+      `${operation} declares concurrency over '${guarded.entity}' keyed by ` +
+        `'${guarded.idFrom}', but the parsed input carries no such id — there is no ` +
+        'row whose version could be compared',
+    );
+  }
+  return { entityType: guarded.entity, entityId: id };
+}
+
 function attachSubject(principal: PrincipalId, connectionId?: string): CheckSubject {
   return connectionId ? { kind: 'connection', id: connectionId } : { kind: 'principal', id: principal };
 }
@@ -557,6 +587,8 @@ export function defineScopeDO(
      * declaration behind them stay unparsed, as they stay ungated.
      */
     private readonly operationInput = new Map<string, { parse(value: unknown): unknown }>();
+    /** #129: name → the entity whose version an `If-Match` is compared against. */
+    private readonly operationConcurrency = new Map<string, { entity: string; idFrom: string }>();
     private readonly modules = new Map<string, RegisteredModule>();
     private readonly guards = new Map<string, DeclaredGuard[]>();
     private readonly predicates = new Map<string, { module: string; handler: GuardPredicate }>();
@@ -713,12 +745,24 @@ export function defineScopeDO(
             `${unbound.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
         );
       }
+      // Same rule for a declared precondition, and it matters more: a
+      // `concurrency` on an unbound name is a guarantee nothing enforces.
+      const declaredConcurrency = registration.operationConcurrency ?? {};
+      const unguarded = Object.keys(declaredConcurrency).filter((name) => !ownOps.has(name));
+      if (unguarded.length > 0) {
+        throw new Error(
+          `${manifest.id} declares operationConcurrency for unbound operation(s): ` +
+            `${unguarded.sort().join(', ')} — a precondition on nothing reads as a guard that is not there`,
+        );
+      }
       for (const [name, handler] of Object.entries(registration.operations ?? {})) {
         this.defineOperation(name, handler);
         // The schema follows the HANDLER, not the name: a withdrawn operation
         // never binds, and has nothing to parse for.
         const schema = declaredInputs[name];
         if (schema && this.operations.has(name)) this.operationInput.set(name, schema);
+        const guarded = declaredConcurrency[name];
+        if (guarded && this.operations.has(name)) this.operationConcurrency.set(name, guarded);
       }
     }
 
@@ -1018,7 +1062,22 @@ export function defineScopeDO(
        * window where a failure reads as a success.
        */
       failureEnvelope?: boolean,
-    ): Promise<{ result: unknown; platformRequests: number; failure?: WireFailure }> {
+      /**
+       * #129: request preconditions, evaluated inside the operation's transaction.
+       *
+       * Unlike every other argument added to this RPC, silently ignoring this one
+       * would fail OPEN — the write commits with nothing compared. The reply
+       * therefore carries `concurrency.ifMatchChecked`, and a coordinator that
+       * sent an `If-Match` and does not see it refuses the success. An old DO
+       * cannot set the acknowledgement, which is exactly how the skew is caught.
+       */
+      invokeOptions?: InvokeOptions,
+    ): Promise<{
+      result: unknown;
+      platformRequests: number;
+      failure?: WireFailure;
+      concurrency?: { version: string | null; ifMatchChecked: boolean };
+    }> {
       if (!failureEnvelope) {
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
         // ZodError, whose `message` is a getter) still arrives with its message.
@@ -1032,6 +1091,7 @@ export function defineScopeDO(
             connectionId,
             requiredEntitlement,
             systemModuleId,
+            invokeOptions,
           );
         } catch (err) {
           throw toRpcError(err);
@@ -1047,6 +1107,7 @@ export function defineScopeDO(
           connectionId,
           requiredEntitlement,
           systemModuleId,
+          invokeOptions,
         );
       } catch (err) {
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
@@ -1066,7 +1127,12 @@ export function defineScopeDO(
       connectionId?: string,
       requiredEntitlement?: string,
       systemModuleId?: string,
-    ): Promise<{ result: unknown; platformRequests: number }> {
+      invokeOptions?: InvokeOptions,
+    ): Promise<{
+      result: unknown;
+      platformRequests: number;
+      concurrency?: { version: string | null; ifMatchChecked: boolean };
+    }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
       if (!handler) throw new Error(`unknown operation: ${operation}`);
@@ -1113,8 +1179,20 @@ export function defineScopeDO(
       // so a K-17 pre-condition sees what the handler will.
       const declaredInput = this.operationInput.get(operation);
       const parsed = declaredInput ? declaredInput.parse(input) : input;
+      // #129. Refused rather than ignored, for the reason the coordinator refuses an
+      // unacknowledged one: a caller sending `If-Match` believes its write is
+      // conditional, and a 200 that compared nothing leaves that belief in place.
+      const guarded = this.operationConcurrency.get(operation);
+      if (invokeOptions?.ifMatch !== undefined && !guarded) {
+        throw new Error(
+          `${operation} was called with If-Match but declares no \`concurrency\` — ` +
+            'nothing would have been compared. Declare it, or drop the header',
+        );
+      }
+      const guardedRef = guarded ? concurrencyRefOf(operation, guarded, parsed) : undefined;
       return this.queue.enqueue(async () => {
         let result: unknown;
+        let committedVersion: string | null = null;
         // #458: how many platform intents THIS invoke enqueued. Counted inside the
         // transaction, reported only after commit — a rolled-back intent is no signal.
         // The envelope return (below) is the DO↔coordinator wire for it; both sides
@@ -1134,8 +1212,24 @@ export function defineScopeDO(
               systemModuleId,
               signals,
             );
+            // #129: snapshot the version BEFORE the handler, compare AFTER it.
+            // Before, because the handler's own `emit` moves it; after, because the
+            // permission check lives inside the handler and must answer first — a
+            // precondition evaluated ahead of it turns the operation into a version
+            // oracle for a principal who may not read the entity at all. The full
+            // reasoning is on the pure adapter, which does the identical thing.
+            const seen =
+              guardedRef && invokeOptions?.ifMatch !== undefined
+                ? this.versionAt(guardedRef)
+                : undefined;
             await this.runGuards(operation, ctx, parsed);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);
+            if (guardedRef && invokeOptions?.ifMatch !== undefined) {
+              assertIfMatch(guardedRef, invokeOptions.ifMatch, seen ?? null);
+            }
+            // The tag describes the row as THIS write left it, so it is read after
+            // the handler and still inside the transaction.
+            if (guardedRef) committedVersion = this.versionAt(guardedRef);
           });
         } catch (err) {
           // K-35: the transaction has rolled back; record a refused check now, as its own
@@ -1159,7 +1253,20 @@ export function defineScopeDO(
         }
         // Post-commit: drain the outbox to consumers, each delivery its own txn.
         await this.dispatch(tenantId, scopeId);
-        return { result, platformRequests: signals.platformRequests };
+        return {
+          result,
+          platformRequests: signals.platformRequests,
+          // The acknowledgement the coordinator's skew check reads. Present only
+          // for a guarded operation, so an unguarded one costs nothing.
+          ...(guardedRef
+            ? {
+                concurrency: {
+                  version: committedVersion,
+                  ifMatchChecked: invokeOptions?.ifMatch !== undefined,
+                },
+              }
+            : {}),
+        };
       });
     }
 
@@ -1426,6 +1533,12 @@ export function defineScopeDO(
     }
 
     // -- guards (K-17) --------------------------------------------------------
+
+    /** This scope's spine, read under whatever transaction the caller already opened. */
+    private versionAt(ref: EntityRef): EntityVersion | null {
+      const q = entityVersionQuery(ref);
+      return entityVersionOf(this.sql.exec(q.sql, ...q.params).toArray() as unknown as EntityVersionRow[]);
+    }
 
     private async runGuards(
       operation: string,

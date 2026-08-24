@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-callout
 
-12 operations · 1 narrowed check · 2 conformance pairs driven
+14 operations · 3 narrowed checks · 4 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,11 +37,13 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**2 pairs driven** across 1 of this package's 1 narrowed check.
+**4 pairs driven** across 3 of this package's 3 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
+| `callout/get-facility` | `facility:manage` | `facility`, id from `facilityId` | `facility` |
 | `callout/timeline` | `workorder:read` | type from `entityType`, id from `entityId` | `workorder`, `protocol` |
+| `callout/update-facility` | `facility:manage` | `facility`, id from `facilityId` | `facility` |
 
 ## 3. Not driven, by name
 

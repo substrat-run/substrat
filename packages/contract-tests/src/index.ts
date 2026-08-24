@@ -4,6 +4,7 @@ export { permissionContractSuite } from './permission-suite.js';
 export { atomicContractSuite } from './atomic-suite.js';
 export { searchContractSuite } from './search-suite.js';
 export { entityVersionContractSuite } from './entity-version-suite.js';
+export { concurrencyContractSuite } from './concurrency-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 export { inputParseContractSuite } from './input-parse-suite.js';

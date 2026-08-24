@@ -26,6 +26,9 @@
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
+  etagOf,
+  ETAG_HEADER,
+  IF_MATCH_HEADER,
   isPage,
   listPageQuery,
   LIST_SORT_PARAM,
@@ -51,6 +54,8 @@ interface HttpDecl {
   readonly input?: { readonly shape?: Record<string, unknown> };
   /** Declared by a paged read (#811). Its presence is what turns on the projection below. */
   readonly paged?: { readonly sortKey?: string; readonly total?: boolean };
+  /** Declared by an operation participating in optimistic concurrency (#129). */
+  readonly concurrency?: { readonly over: string; readonly idFrom: string };
 }
 
 /** Zod's internal definition, across the layouts this reads structurally. */
@@ -331,6 +336,7 @@ function assertNoUnreachable(declared: readonly (readonly [string, { http: { met
  * |---|---|
  * | `PermissionDenied` (or a message saying so) | 403 |
  * | a `ZodError` — the input failed to parse | 400 |
+ * | a stale `If-Match` — `precondition_failed` (#129) | 412 |
  * | a body that is not JSON | 400 |
  * | an `HTTPException` — e.g. `resolveStub` refusing an anonymous call | its own |
  * | a Durable Object / runtime fault (#559) | 502 |
@@ -393,6 +399,12 @@ export function mountOperations(
       return out;
     };
 
+    // #129. Read once per mounted route rather than per request: whether an
+    // operation is guarded is a fact about the declaration, and whether the
+    // method is unsafe is a fact about the route.
+    const guarded = op.concurrency !== undefined;
+    const unsafe = method !== 'GET';
+
     const invoke = async (c: Context) => {
       const stub = await resolveStub(c);
       const fromPath: Record<string, string | undefined> = {};
@@ -442,7 +454,37 @@ export function mountOperations(
         payload = undefined;
       }
 
-      const result = await stub.invoke(name, payload);
+      // #129: the precondition in, the tag out — the mount's whole share of this.
+      // The COMPARISON is the scope host's, inside the operation's transaction,
+      // because a version read out here and a write committed in there is a
+      // time-of-check/time-of-use bug rather than a guarantee.
+      //
+      // `If-Match` is forwarded only on an UNSAFE method. On a `GET` the header
+      // means something else entirely in HTTP (a conditional read), and passing
+      // it through would have the host refuse a read for being stale — a 412
+      // where the caller expected a body.
+      const ifMatch = unsafe ? c.req.header(IF_MATCH_HEADER) : undefined;
+      let version: string | null | undefined;
+      const result = await stub.invoke(
+        name,
+        payload,
+        guarded
+          ? {
+              ...(ifMatch === undefined ? {} : { ifMatch }),
+              onEntityVersion: (v) => {
+                version = v;
+              },
+            }
+          : undefined,
+      );
+      // Set BEFORE `respond`, so a vertical that owns its envelope still gets the
+      // validator on its response without writing header code — and can still
+      // override it, since it holds the `Context` too.
+      //
+      // A null version is left absent rather than sent as an empty tag: the entity
+      // has no history, and `ETag: ""` would be a validator a client could echo
+      // back at a write that must refuse it.
+      if (version != null) c.header(ETAG_HEADER, etagOf(version));
       if (options.respond) return await options.respond(c, result, name);
       // A paged read's BODY is the entries; the walk rides in headers (#829).
       //

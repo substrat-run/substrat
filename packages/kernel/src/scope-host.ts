@@ -416,11 +416,66 @@ export type OperationHandler<I = unknown, O = unknown> = (
   input: I,
 ) => O | Promise<O>;
 
+/**
+ * The per-invocation transport channel: what the caller requires to be true
+ * before the operation runs, and the transport facts it needs back (#129, and
+ * #116 when it lands).
+ *
+ * A separate parameter rather than fields on the input, because these are facts
+ * about the REQUEST and not about the domain. A handler's declared input is what
+ * the operation MEANS, and threading a retry token or an entity tag through it
+ * would make every in-process caller state something it does not have.
+ * `mountOperations` reads them off headers; a test, a seed or a schedule omits
+ * them entirely.
+ *
+ * Per INVOCATION rather than on `ScopeStubOptions`, where `onPlatformRequests`
+ * lives, and the difference is not stylistic. A stub is minted by the vertical's
+ * own `resolveStub`, so anything hung off it requires that vertical to cooperate;
+ * `If-Match` and the `ETag` are wholly the mount's business and must work with no
+ * change to a vertical at all. They are also genuinely per-call — one stub serves
+ * one request, but nothing in the contract says so.
+ *
+ * Deliberately one bag rather than a parameter per concern. `If-Match` and
+ * `Idempotency-Key` are ONE precondition pass at one point in the invoke — before
+ * the guards, inside the transaction — and #116's note asks that whichever lands
+ * first build that seam rather than leave the second to be bolted on beside it.
+ */
+export interface InvokeOptions {
+  /**
+   * The version the caller believes it is writing over, verbatim from `If-Match`
+   * (quoted, and possibly a list — `ifMatchAdmits` owns the parsing).
+   *
+   * Honoured only by an operation that DECLARES `concurrency`. Sending it to one
+   * that does not is an error rather than a no-op: a caller who believes it is
+   * protected and is not is the failure this whole mechanism exists to prevent,
+   * and silence is exactly how that belief survives.
+   */
+  readonly ifMatch?: string;
+  /**
+   * Called after a guarded operation COMMITS, with the entity's version as it
+   * stands at commit — the `ETag` the transport hands back.
+   *
+   * Read after the handler and inside the same transaction, so the tag describes
+   * the row as the caller's own write left it rather than as the caller found it.
+   * A client that echoed back what it sent would loop on its own stale value.
+   *
+   * Never called for a rolled-back operation, and never for an operation that
+   * declares no `concurrency`: a version that did not survive its transaction is
+   * not a tag anyone may hold, and an operation that opted out must not pay for a
+   * spine read on every invocation.
+   */
+  readonly onEntityVersion?: (version: string | null) => void;
+}
+
 /** The capability stub — the ONLY way code outside the scope reaches it. */
 export interface ScopeStub {
   readonly tenantId: TenantId;
   readonly scopeId: ScopeId;
-  invoke<O = unknown, I = unknown>(operation: string, input?: I): Promise<O>;
+  invoke<O = unknown, I = unknown>(
+    operation: string,
+    input?: I,
+    options?: InvokeOptions,
+  ): Promise<O>;
 }
 
 /**
@@ -1018,6 +1073,29 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * to accept.
    */
   operationInputs?: Record<string, { parse(value: unknown): unknown }>;
+  /**
+   * name → the entity whose version this operation's `If-Match` is compared
+   * against, and the input field carrying its id (#129).
+   *
+   * Derived from the declared operation surface — `operationConcurrencyOf(ops)` —
+   * and never written a second time, exactly as `operationInputs` is:
+   *
+   * ```ts
+   * operations: { 'callout/update-customer': updateCustomerOp, … },
+   * operationInputs: operationInputsOf(calloutOperations),
+   * operationConcurrency: operationConcurrencyOf(calloutOperations),
+   * ```
+   *
+   * **The host compares, not the handler.** A precondition a handler evaluates is
+   * a precondition a handler can forget, and the one that is forgotten is
+   * indistinguishable from one that passed. Here the comparison happens between
+   * `BEGIN` and the guards for every caller and every transport, or the operation
+   * does not claim to have it.
+   *
+   * A name here that no operation binds is an error, for the same reason it is on
+   * `operationInputs`: it reads as coverage while enforcing nothing.
+   */
+  operationConcurrency?: Record<string, { entity: string; idFrom: string }>;
   /**
    * eventType → handler; the types must appear in manifest.events.consumes.
    *

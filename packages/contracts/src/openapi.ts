@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ETAG_HEADER, IF_MATCH_HEADER } from './concurrency.js';
 import {
   LIST_PAGE_DEFAULT,
   LIST_SORT_PARAM,
@@ -60,6 +61,17 @@ export interface ApiOperationDoc {
    * builder emits the query parameters and the `{ entries, nextCursor }` envelope —
    * so the wrapper is written once here rather than restated by every list operation.
    */
+  /**
+   * Declared by an operation participating in optimistic concurrency (#129).
+   *
+   * Emits the `ETag` response header on every such operation, and on an UNSAFE
+   * method additionally the `If-Match` request header plus a 412 response. Per
+   * operation rather than document-wide, deliberately: `DOCUMENTED_ERROR_CODES`
+   * excludes `precondition_failed` because *"documenting a failure that cannot
+   * occur is worse than documenting none"*, and that stays true of every
+   * operation which did not declare this.
+   */
+  concurrency?: { over: string; idFrom: string };
   paged?: {
     /** Present on a handler-composed read: the ENTRY field the cursor walks. */
     sortKey?: string;
@@ -209,6 +221,26 @@ function pageResponseHeaders(withTotal: boolean): Record<string, unknown> {
 }
 
 /**
+ * The `ETag` a guarded operation answers with (#129) — documented, because a tag a
+ * client cannot discover is a precondition it will never send.
+ *
+ * Worth stating on the READ as loudly as on the write: the read is where a client
+ * acquires the tag, so an undocumented one there makes the whole mechanism
+ * unreachable however well the write is described.
+ */
+function etagResponseHeader(): Record<string, unknown> {
+  return {
+    [ETAG_HEADER]: {
+      description:
+        "The entity's current version. Send it back as `If-Match` on the next write to " +
+        'that entity and the write is refused with 412 if anything changed in between. ' +
+        'Opaque — compare it, never parse it.',
+      schema: { type: 'string' },
+    },
+  };
+}
+
+/**
  * Render a catalog as an OpenAPI 3.1 document (a plain JSON-able object).
  * Pure and deterministic: same catalog in, byte-identical document out — that
  * is what lets the checked-in artifact double as a drift check.
@@ -292,6 +324,23 @@ export function buildOpenApiDocument(
         });
       }
     }
+    // #129: the precondition header, on an UNSAFE method only. On a `GET`,
+    // `If-Match` means a conditional READ in HTTP and the mount deliberately does
+    // not forward it — documenting it there would advertise a behaviour the server
+    // does not implement.
+    if (op.concurrency && op.http && op.http.method !== 'GET') {
+      params.push({
+        name: IF_MATCH_HEADER,
+        in: 'header',
+        required: false,
+        description:
+          'The `ETag` you received when you read this entity. The write is refused with ' +
+          '412 if the entity changed since — re-read and re-apply rather than retrying ' +
+          'with the new tag, which would overwrite whatever caused the refusal. `*` ' +
+          'means "it must already exist".',
+        schema: { type: 'string' },
+      });
+    }
     // A GET or DELETE carries its input in the QUERY STRING, and the document has to
     // say so (#830). It used to emit every input field as a `requestBody` regardless of
     // verb, so a paged read documented `limit`/`cursor` twice — once as the parameters
@@ -361,7 +410,14 @@ export function buildOpenApiDocument(
             // adopting paging a breaking change for consumers a vertical cannot see —
             // and could not be done at all for the list reads whose published shape
             // was a bare array. In headers the body is what it always was.
-            ...(op.paged ? { headers: pageResponseHeaders(op.paged.total === true) } : {}),
+            ...(op.paged || op.concurrency
+              ? {
+                  headers: {
+                    ...(op.paged ? pageResponseHeaders(op.paged.total === true) : {}),
+                    ...(op.concurrency ? etagResponseHeader() : {}),
+                  },
+                }
+              : {}),
             ...(op.output
               ? {
                   content: {
@@ -376,6 +432,19 @@ export function buildOpenApiDocument(
               : {}),
           },
           ...ERROR_RESPONSES,
+          // #129: the 412 joins the documented set for THIS operation only —
+          // `precondition_failed` is excluded from `DOCUMENTED_ERROR_CODES`
+          // precisely so it appears where it can occur and nowhere else.
+          ...(op.concurrency && op.http && op.http.method !== 'GET'
+            ? {
+                '412': {
+                  description:
+                    'The entity changed since the `ETag` you sent as `If-Match`. Carries ' +
+                    '`code`: `precondition_failed`.',
+                  content: { 'application/problem+json': { schema: { $ref: PROBLEM_SCHEMA_REF } } },
+                },
+              }
+            : {}),
         },
       },
     };
@@ -456,6 +525,12 @@ export function apiCatalogFrom(
         : {}),
       ...((op as { paged?: ApiOperationDoc['paged'] }).paged
         ? { paged: (op as { paged: NonNullable<ApiOperationDoc['paged']> }).paged }
+        : {}),
+      ...((op as { concurrency?: ApiOperationDoc['concurrency'] }).concurrency
+        ? {
+            concurrency: (op as { concurrency: NonNullable<ApiOperationDoc['concurrency']> })
+              .concurrency,
+          }
         : {}),
     };
   }

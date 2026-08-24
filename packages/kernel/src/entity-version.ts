@@ -1,4 +1,4 @@
-import type { EntityRef } from '@substrat-run/contracts';
+import { ifMatchAdmits, substratError, type EntityRef } from '@substrat-run/contracts';
 
 /**
  * An entity's version — the ULID of the last event about it (#901).
@@ -100,4 +100,40 @@ export interface EntityVersionRow {
 /** Normalise the single row into the contract's answer. */
 export function entityVersionOf(rows: readonly EntityVersionRow[]): EntityVersion | null {
   return rows[0]?.version ?? null;
+}
+
+/**
+ * Refuse a write whose caller is holding a stale version (#129).
+ *
+ * Both adapters call this rather than comparing twice, for the reason
+ * `entityVersionQuery` exists one screen up: two surfaces answering one question
+ * must not drift on what the answer means. Here the answer decides whether a
+ * write lands, so drifting would mean one host silently admitting what the other
+ * refuses.
+ *
+ * ## This must be called INSIDE the operation's transaction
+ *
+ * A precondition read outside the write's transaction is a time-of-check /
+ * time-of-use bug wearing a safety mechanism's clothes: the version is read, a
+ * concurrent writer commits, and then the guarded write commits over it having
+ * "passed". Serialising the read with the write is the entire guarantee, so this
+ * takes a version the CALLER has already read under `BEGIN`, and cannot do the
+ * read itself without inviting the mistake.
+ *
+ * ## The refusal deliberately carries no version
+ *
+ * See `PROBLEM_EXTENSIONS.precondition_failed`. Handing the current tag back
+ * turns the obvious client fix into a blind retry that overwrites the change
+ * which caused the refusal.
+ */
+export function assertIfMatch(ref: EntityRef, ifMatch: string, version: EntityVersion | null): void {
+  if (ifMatchAdmits(ifMatch, version)) return;
+  throw substratError(
+    'precondition_failed',
+    version === null
+      ? `${ref.entityType} ${ref.entityId} has no recorded version — it may never have existed, ` +
+        'or the write you are holding a tag for was rolled back'
+      : `${ref.entityType} ${ref.entityId} changed since you read it`,
+    { entity: ref },
+  );
 }

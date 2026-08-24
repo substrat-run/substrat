@@ -10,6 +10,7 @@ import {
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
+  concurrencyContractSuite,
   listContractSuite,
   inputParseContractSuite,
 } from '@substrat-run/contract-tests';
@@ -134,6 +135,22 @@ listContractSuite('adapter-sqlite', async () => {
 // the subject, which is a structured actor.
 inputParseContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-parse-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #129: optimistic concurrency, on the DEFAULT checker. The suite grants a real
+// role, because a precondition that only ever runs behind an allow-all has not
+// been shown to run in the order the contract claims — before the guards, and
+// after the permission check that would otherwise have refused the caller first.
+concurrencyContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-conc-'));
   const host = new SqliteScopeHost({ dir });
   return {
     host,

@@ -297,6 +297,68 @@ idempotency — the event spine's consumer-side idempotency already exists and i
 the contract suite.
 :::
 
+### 7b. A read-modify-write says what it is writing over
+
+Two people open the same record, both save, and the second write silently destroys the
+first. There is no error, no log line, and nobody notices until the data is gone. This is
+the oldest bug in multi-user software and the one hardest to see afterwards — the row looks
+fine, it is just wrong.
+
+An operation that is read-modify-write declares `concurrency`:
+
+```ts
+'callout/update-facility': {
+  permission: { key: 'facility:manage', entity: 'facility', idFrom: 'facilityId' },
+  input: z.object({
+    facilityId: z.string(),
+    name: z.string().optional(),
+    address: z.string().optional(),
+    accessNote: z.string().optional(),
+  }),
+  concurrency: { over: 'facility', idFrom: 'facilityId' },
+  emits: { entity: 'facility', entityIdFrom: 'id', type: 'callout.facility-updated', … },
+  http: { method: 'PATCH', path: '/facilities/{facilityId}' },
+}
+```
+
+Declared once, it does three things. Every response carries the entity's version as an
+`ETag`. An unsafe method compares the caller's `If-Match` against that version **inside the
+operation's transaction** and refuses a stale one with `412 precondition_failed`. And the
+generated browser client remembers the tag from a read and sends it on the next write to
+the same entity, so an app writes no header code.
+
+**Opt-in, not blanket.** Most declared operations are command-shaped — `todo/rename-list`
+takes a name, not a whole entity it read and echoed back — and two concurrent renames do
+not lose an update. A mandatory precondition there is a forced round-trip guarding nothing.
+
+**But not left to memory.** The shape that *does* lose updates is visible in the model: one
+required field naming the row, every other field optional over that entity's own columns.
+An operation of that shape with no `concurrency` is refused at module load, the same way a
+bare-array list output with no `paged` is.
+
+::: tip Why the guarded operation must emit
+An entity's version is the ULID of the last event about it — there is no version column
+([#901](https://github.com/substrat-run/substrat/issues/901)). So a guarded write that
+announces nothing is *worse* than an unguarded one: both writers pass their `If-Match`,
+neither moves the version, both commit, and both get a 200 with an `ETag` asserting the
+write was serialised. `concurrency.over` is therefore compile-checked against the
+operation's declared `emits`.
+
+Adopting this in Callout is what revealed that `create-facility` had never emitted at all —
+so every facility it created had no version, and no conditional update against one could
+ever have succeeded.
+:::
+
+Two smaller rules follow from the same reasoning:
+
+- **The 412 does not carry the current version.** Handing it back turns the obvious client
+  fix into a blind retry that overwrites whatever caused the refusal. Re-reading is what
+  gives a user something to merge.
+- **`ETag` must be in `Access-Control-Expose-Headers`** for a cross-origin browser client —
+  `CONCURRENCY_EXPOSED_HEADERS` names it. Unexposed, the tag reads as `null`, no `If-Match`
+  is ever sent, and the protection switches itself off silently in exactly the deployment
+  shape where two editors are most likely.
+
 ### 8. Surfaces only grow
 
 Once shipped, an operation's surface evolves **additively**:
@@ -348,7 +410,8 @@ Two things follow that are worth stating, because they cut against instinct:
 | Boundary parsing | Zod at the edge | Shipped |
 | Money | decimal string + currency | Shipped |
 | Identifiers | ULID | Shipped |
-| Pagination | keyset cursor, declared with `paged`; entries in the body, the walk in `Link` / `X-Total-Count` | Declaration shipped; [#129](https://github.com/substrat-run/substrat/issues/129) / [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
+| Pagination | keyset cursor, declared with `paged`; entries in the body, the walk in `Link` / `X-Total-Count` | Declaration shipped; [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
+| Lost-update safety | `concurrency` + `If-Match` / `ETag`, 412 on a stale tag | Shipped; compile error to omit on a field-bag update |
 | Errors | RFC 9457 problem+json, closed codes | [#113](https://github.com/substrat-run/substrat/issues/113) |
 | Clock | `ctx.now()` | [#812](https://github.com/substrat-run/substrat/issues/812) |
 | Idempotent writes | `Idempotency-Key` | [#116](https://github.com/substrat-run/substrat/issues/116) |

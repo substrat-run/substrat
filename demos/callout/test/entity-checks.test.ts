@@ -67,6 +67,17 @@ entityCheckConformanceSuite(
         });
         return instance.id;
       }
+      if (entityType === 'facility') {
+        // #129: `callout/update-facility` narrows to a facility. A fresh one per
+        // case, not the seeded `forskolan` — the kit grants on what this returns
+        // and case 2 needs a SECOND entity the probe was never granted on, which
+        // a shared fixture row could not provide.
+        const facility = await anna.invoke<{ id: string }>('callout/create-facility', {
+          customerId: w.grundenId,
+          name: 'Conformance site',
+        });
+        return facility.id;
+      }
       throw new Error(`no factory for '${entityType}'`);
     },
 
