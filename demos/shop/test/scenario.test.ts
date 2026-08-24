@@ -7,6 +7,7 @@ import type { Page } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildShopHost, seedShop, type ShopWorld, type OrderRow, type OrderLineRow } from '../src/index.js';
+import { manualClock } from '@substrat-run/kernel';
 
 /**
  * The scenario from spec/concept.md §9 — headless end-to-end:
@@ -20,6 +21,14 @@ import { buildShopHost, seedShop, type ShopWorld, type OrderRow, type OrderLineR
 describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
   let dir: string;
   let host: SqliteScopeHost;
+  /**
+   * A clock §8 can move (#812). The scenario used to reach an elapsed hold by
+   * asking for a zero-second one, which the operation's declared input has
+   * always forbidden (`holdSeconds` is `.positive()`) — nothing parsed it, so
+   * nothing said so until the host began to (#893). Shrinking the window to
+   * zero is also the thing the house rule names instead of `manualClock`.
+   */
+  const clock = manualClock('2026-03-02T09:00:00.000Z');
   let w: ShopWorld;
   let astrid: ScopeStub;
   let gustav: ScopeStub;
@@ -44,7 +53,7 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-shop-'));
-    host = buildShopHost(dir);
+    host = buildShopHost(dir, { clock: clock.read });
     w = await seedShop(host, dir);
     astrid = await host.getScope(w.astrid, w.t1, w.s1);
     gustav = await host.getScope(w.gustav, w.t1, w.s1);
@@ -196,13 +205,15 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
     await astrid.invoke('shop/set-stock', { variantId: w.chelbesaVariantId, onHand: 1 });
 
     const guestCart = await guest.invoke<{ id: string }>('shop/create-cart');
-    // hold 0 s → the reservation is elapsed the instant it is read again.
+    // A one-minute hold, then a clock that walks past it: the reservation is
+    // elapsed by the time Otto reads, without a zero-length window or a sleep.
     await guest.invoke('shop/add-to-cart', {
       cartId: guestCart.id,
       variantId: w.chelbesaVariantId,
       qty: 1,
-      holdSeconds: 0,
+      holdSeconds: 60,
     });
+    clock.advance(120_000);
 
     const ottoCart = await otto.invoke<{ id: string }>('shop/create-cart');
     const reserved = await otto.invoke<{ availableAfter: number }>('shop/add-to-cart', {

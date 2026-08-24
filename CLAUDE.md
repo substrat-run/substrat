@@ -163,7 +163,11 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   `globalThis.crypto` (Web Crypto — same API in Node, Workers, browsers), encoding is
   `TextEncoder`/`TextDecoder`, URLs are `URL`. Never hand-roll a hash to dodge an
   import ban. (Harness code may use `node:fs` etc. for genuinely node-only needs.)
-- Parse, don't trust: operation inputs go through Zod schemas at the boundary.
+- Parse, don't trust: operation inputs go through Zod schemas at the boundary — and the
+  **host** is what applies them. A module passes `operationInputs: operationInputsOf(ops)`
+  beside its `operations`, and every invocation is parsed before the guards and the handler,
+  on every path in (HTTP, test, seed, schedule). Handlers do not hand-parse; a declared
+  input that nobody parses is no longer possible rather than merely discouraged.
 
 ## Two human checkpoints (agents never self-approve)
 

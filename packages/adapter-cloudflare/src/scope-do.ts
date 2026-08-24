@@ -530,6 +530,12 @@ export function defineScopeDO(
     private readonly sql: SqlStorage;
     private readonly queue = new OperationQueue();
     private readonly operations = new Map<string, OperationHandler<never, unknown>>();
+    /**
+     * #893: name → the declared input schema, parsed before guards and handler.
+     * Port of the pure adapter's map; `defineOperation` bindings with no
+     * declaration behind them stay unparsed, as they stay ungated.
+     */
+    private readonly operationInput = new Map<string, { parse(value: unknown): unknown }>();
     private readonly modules = new Map<string, RegisteredModule>();
     private readonly guards = new Map<string, DeclaredGuard[]>();
     private readonly predicates = new Map<string, { module: string; handler: GuardPredicate }>();
@@ -675,8 +681,23 @@ export function defineScopeDO(
         this.withdrawn.set(name, manifest.id);
         this.operations.delete(name);
       }
+      // #893: a schema declared for an operation this module does not bind
+      // enforces nothing while reading as coverage — refused, as in the pure adapter.
+      const declaredInputs = registration.operationInputs ?? {};
+      const ownOps = new Set(Object.keys(registration.operations ?? {}));
+      const unbound = Object.keys(declaredInputs).filter((name) => !ownOps.has(name));
+      if (unbound.length > 0) {
+        throw new Error(
+          `${manifest.id} declares operationInputs for unbound operation(s): ` +
+            `${unbound.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
+        );
+      }
       for (const [name, handler] of Object.entries(registration.operations ?? {})) {
         this.defineOperation(name, handler);
+        // The schema follows the HANDLER, not the name: a withdrawn operation
+        // never binds, and has nothing to parse for.
+        const schema = declaredInputs[name];
+        if (schema && this.operations.has(name)) this.operationInput.set(name, schema);
       }
     }
 
@@ -1065,6 +1086,12 @@ export function defineScopeDO(
           );
         }
       }
+      // #893: parse, don't trust — at the scope door, from the operation's own
+      // declaration. Outside the queue and outside the transaction: a malformed
+      // call takes no turn and opens nothing. Guards read the parsed input too,
+      // so a K-17 pre-condition sees what the handler will.
+      const declaredInput = this.operationInput.get(operation);
+      const parsed = declaredInput ? declaredInput.parse(input) : input;
       return this.queue.enqueue(async () => {
         let result: unknown;
         // #458: how many platform intents THIS invoke enqueued. Counted inside the
@@ -1086,8 +1113,8 @@ export function defineScopeDO(
               systemModuleId,
               signals,
             );
-            await this.runGuards(operation, ctx, input);
-            result = await (handler as OperationHandler<unknown, unknown>)(ctx, input);
+            await this.runGuards(operation, ctx, parsed);
+            result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);
           });
         } catch (err) {
           // K-35: the transaction has rolled back; record a refused check now, as its own

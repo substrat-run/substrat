@@ -1541,6 +1541,18 @@ export class CloudflareScopeHost implements ScopeHost {
       this.operations.delete(name);
       this.operationEntitlement.delete(name);
     }
+    // #893: the facade validates what the DO will enforce. A schema declared for
+    // an operation this module does not bind enforces nothing while reading as
+    // coverage — refused here so it is caught at registration rather than never.
+    const unboundInputs = Object.keys(registration.operationInputs ?? {}).filter(
+      (name) => !ownOperations.has(name),
+    );
+    if (unboundInputs.length > 0) {
+      throw new Error(
+        `${manifest.id} declares operationInputs for unbound operation(s): ` +
+          `${unboundInputs.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
+      );
+    }
     for (const name of Object.keys(registration.operations ?? {})) {
       this.bindOperation(name);
       this.operationEntitlement.set(name, manifest.entitlementKey);

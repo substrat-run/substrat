@@ -5,6 +5,7 @@ export { atomicContractSuite } from './atomic-suite.js';
 export { searchContractSuite } from './search-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
+export { inputParseContractSuite } from './input-parse-suite.js';
 export { entityCheckConformanceSuite, planEntityCheckCoverage } from './entity-check-suite.js';
 export type { EntityCheckFixture, EntityCheckSuiteOptions, PlannedCheck } from './entity-check-suite.js';
 export { nodeOnlySuite, declaredNodeOnlySuite } from './node-only-suite.js';
@@ -30,6 +31,8 @@ export {
   searchModManifest,
   listMod,
   listModManifest,
+  parseMod,
+  parseModManifest,
 } from './modules.js';
 export {
   connectorCalls,

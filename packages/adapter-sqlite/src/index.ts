@@ -810,6 +810,13 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
   /** operation name → its owning module's entitlementKey (§4.3 gate). */
   private readonly operationEntitlement = new Map<string, string>();
+  /**
+   * #893: name → the declared input schema, parsed before guards and handler.
+   * Populated only by `registerModule` — a bare `defineOperation` (tests, glue)
+   * carries no declaration and stays unparsed, exactly as it carries no manifest
+   * and stays ungated.
+   */
+  private readonly operationInput = new Map<string, { parse(value: unknown): unknown }>();
   private readonly roles = new Map<string, RoleDefinition>(); // 'tenantId/roleKey'
   /** Executor id → {eventType, handler} (K-22 §4.2). Host code, not module code. */
   private readonly executors = new Map<string, RegisteredEffector>();
@@ -1600,11 +1607,26 @@ export class SqliteScopeHost implements ScopeHost {
       this.withdrawn.set(name, manifest.id);
       this.operations.delete(name);
     }
+    // A declared input schema for an operation this module does not bind is a
+    // schema that enforces nothing while reading as coverage — the same reason
+    // `checksDeclaredElsewhere` refuses a stale exemption.
+    const declaredInputs = registration.operationInputs ?? {};
+    const unbound = Object.keys(declaredInputs).filter((name) => !ownOperations.has(name));
+    if (unbound.length > 0) {
+      throw new Error(
+        `${manifest.id} declares operationInputs for unbound operation(s): ` +
+          `${unbound.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
+      );
+    }
     for (const [name, handler] of Object.entries(registration.operations ?? {})) {
       this.defineOperation(name, handler);
       // Record which SKU flag gates this operation (§4.3). Bare defineOperation
       // bindings (tests, glue) carry no manifest and stay ungated.
       this.operationEntitlement.set(name, manifest.entitlementKey);
+      // #893: withdrawal removes the binding, so the schema follows the handler
+      // rather than the name — a withdrawn operation has nothing to parse for.
+      const schema = declaredInputs[name];
+      if (schema && this.operations.has(name)) this.operationInput.set(name, schema);
     }
   }
 
@@ -2657,14 +2679,26 @@ export class SqliteScopeHost implements ScopeHost {
           // which must not leak across operations (invokes are serialized per scope).
           const ctx = this.operationContext(rt, subject, undefined, signals);
           const clonedInput = structuredClone(input);
+          // #893: parse, don't trust — at the scope door, from the operation's own
+          // declaration. BEFORE `BEGIN`, so a malformed call never opens a
+          // transaction, and before the guards, so a K-17 pre-condition reads the
+          // same typed input the handler will.
+          //
+          // Every caller passes here: the HTTP mount, a scenario test, a seed, a
+          // schedule. That is the point — parsing at the mount alone would leave
+          // the demos' own suites exercising an unparsed path, and the wire is
+          // where the untrusted input actually arrives.
+          const parsed = this.operationInput.has(operation)
+            ? (this.operationInput.get(operation) as { parse(v: unknown): unknown }).parse(clonedInput)
+            : clonedInput;
           rt.db.exec('BEGIN IMMEDIATE');
           let result: O;
           try {
             // Manifest guards (K-17): pre-conditions, inside the operation's own
             // transaction, before the handler. A throw here blocks the operation
             // and rolls back exactly like a handler throw — fail closed.
-            await this.runGuards(operation, ctx, clonedInput);
-            result = await (handler as OperationHandler<I | undefined, O>)(ctx, clonedInput);
+            await this.runGuards(operation, ctx, parsed as I | undefined);
+            result = await (handler as OperationHandler<I | undefined, O>)(ctx, parsed as I | undefined);
             rt.db.exec('COMMIT');
           } catch (err) {
             rt.db.exec('ROLLBACK');
