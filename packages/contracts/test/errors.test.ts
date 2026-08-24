@@ -120,6 +120,23 @@ describe('toProblem', () => {
     expect(paths).toContain('lines.0.qty');
   });
 
+  /**
+   * #831. `validation_failed` is thrown two ways, and only one of them has fields.
+   * Engines raise it SEMANTICALLY — `engines/absence:418`, `engines/booking:529`,
+   * `engines/protocol:1192` — where the sentence is the whole information. Handing
+   * those the parse failure's canonical detail would delete it and put nothing in its
+   * place, since there is no issue list to offer instead.
+   */
+  it('keeps a semantic validation_failed message, which has no field list to replace it', () => {
+    const body = toProblem(
+      substratError('validation_failed', 'endDate 2026-01-01 precedes startDate 2026-02-01'),
+    );
+    expect(body.status).toBe(400);
+    expect(body.code).toBe('validation_failed');
+    expect(body.detail).toBe('endDate 2026-01-01 precedes startDate 2026-02-01');
+    expect(body.errors).toBeUndefined();
+  });
+
   // The security posture that predates this module and survives it verbatim.
   it('discloses NOTHING from an unrecognised throw', () => {
     const body = toProblem(new Error('SELECT * FROM tenant_secrets failed: bad token abc123'));
@@ -307,6 +324,26 @@ describe('the wire failure', () => {
     const rebuilt = roundTrip(denied);
     expect(rebuilt.name).toBe('PermissionDenied');
     expect(errorCodeOf(rebuilt)).toBe('permission_denied');
+  });
+
+  /**
+   * #831. The host parses a declared operation input at the scope door (#893), so on
+   * the hosted path the refusal is raised INSIDE the ScopeDO and has to cross the hop.
+   * Field issues are the whole value of a parse failure — "which field, what was
+   * wrong" is what a client or a build agent recovers from without reading a log.
+   */
+  it('keeps a parse failure\'s field issues across the hop', () => {
+    const schema = z.object({
+      email: z.string().email(),
+      lines: z.array(z.object({ qty: z.number() })),
+    });
+    const parsed = schema.safeParse({ email: 'nope', lines: [{ qty: 'x' }] });
+    const rebuilt = roundTrip(parsed.error!);
+
+    expect(errorCodeOf(rebuilt)).toBe('validation_failed');
+    const paths = toProblem(rebuilt).errors?.map((issue) => issue.path);
+    expect(paths).toContain('email');
+    expect(paths).toContain('lines.0.qty');
   });
 
   it('leaves a foreign throw foreign rather than inventing a code for it', () => {
