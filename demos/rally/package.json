@@ -4,6 +4,7 @@
   "private": true,
   "substrat": {
     "permissions": "src/seed.ts",
+    "conformance": "test/conformance.ts",
     "devServers": [
       {
         "name": "api",

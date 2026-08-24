@@ -12,6 +12,7 @@
       "scrive"
     ],
     "permissions": "src/provision.ts",
+    "conformance": "test/conformance.ts",
     "entitlements": [
       "meridian",
       "protocol"

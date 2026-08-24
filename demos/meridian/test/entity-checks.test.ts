@@ -35,7 +35,7 @@ import { entityCheckConformanceSuite } from '@substrat-run/contract-tests';
 import { ulid } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildDemoHost, seedDemo, type DemoWorld } from '../src/index.js';
-import { meridianOperations } from '../src/operations.js';
+import { conformance } from './conformance.js';
 
 let dir: string;
 let host: SqliteScopeHost;
@@ -59,8 +59,8 @@ afterAll(async () => {
 });
 
 entityCheckConformanceSuite(
-  'meridian',
-  meridianOperations,
+  conformance.subject,
+  conformance.operations,
   async () => ({
     async createEntity(entityType: string) {
       // Everything is created by HR admin in the Swedish scope, which is where
@@ -101,24 +101,5 @@ entityCheckConformanceSuite(
       return stub.invoke(operation, input);
     },
   }),
-  {
-    // Only what each schema REQUIRES beyond the id the kit supplies. These need
-    // to be plausible, not domain-valid: case 1 asserts "was not denied", and a
-    // business refusal on a fresh employee is not a permission answer.
-    inputs: {
-      'hr/request-leave': {
-        leaveTypeKey: 'vacation',
-        startDate: '2031-06-01',
-        endDate: '2031-06-05',
-        days: '5',
-      },
-      'hr/log-time': { workDate: '2031-06-01', hours: '8' },
-      'hr/submit-expense': {
-        description: 'Conformance',
-        amount: '100',
-        currency: 'SEK',
-        category: 'travel',
-      },
-    },
-  },
+  conformance,
 );

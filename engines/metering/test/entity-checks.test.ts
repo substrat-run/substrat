@@ -13,7 +13,6 @@
  * separately.
  */
 import { nodeOnlySuite } from '@substrat-run/contract-tests';
+import { conformance } from './conformance.js';
 
-nodeOnlySuite('engine-metering', {
-  sources: [new URL('../src/index.ts', import.meta.url).pathname],
-});
+nodeOnlySuite(conformance.subject, conformance);

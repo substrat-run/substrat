@@ -38,6 +38,7 @@
     "slug": "todo",
     "name": "Todo",
     "permissions": "src/provision.ts",
+    "conformance": "test/conformance.ts",
     "client": {
       "model": "spec/model.ts",
       "entities": "todoEntities",

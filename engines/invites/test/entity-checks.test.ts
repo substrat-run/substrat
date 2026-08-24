@@ -17,7 +17,6 @@
  * surface for the kit to read, and building one is filed separately.
  */
 import { nodeOnlySuite } from '@substrat-run/contract-tests';
+import { conformance } from './conformance.js';
 
-nodeOnlySuite('engine-invites', {
-  sources: [new URL('../src/index.ts', import.meta.url).pathname],
-});
+nodeOnlySuite(conformance.subject, conformance);

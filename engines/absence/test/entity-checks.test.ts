@@ -44,6 +44,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { entityCheckConformanceSuite } from '@substrat-run/contract-tests';
+import { conformance } from './conformance.js';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import { ulid, type ScopeStub } from '@substrat-run/kernel';
 import { PERM, absenceModule, absenceOperations, type AbsenceEntry } from '../src/index.js';
@@ -67,8 +68,8 @@ afterAll(async () => {
 });
 
 entityCheckConformanceSuite(
-  'engine-absence',
-  absenceOperations,
+  conformance.subject,
+  conformance.operations,
   async () => ({
     // The vertical's noun, minted rather than stored — see the header.
     async createEntity(entityType: string) {
@@ -84,26 +85,7 @@ entityCheckConformanceSuite(
       return probe.stub.invoke(operation, input);
     },
   }),
-  {
-    refEntityType: 'employee',
-    // Only what each schema REQUIRES beyond the subject ref. Plausible, not
-    // domain-valid: case 1 asserts "was not denied", and a business refusal is
-    // not a permission answer.
-    inputs: {
-      'absence/request': {
-        // The erasure key rides beside the ref inside `subject`; the kit writes
-        // the ref at `subject.ref` and keeps this sibling.
-        subject: { dataSubjectId: dataSubjectId.parse(ulid()) },
-        leaveTypeKey: 'vacation',
-        startDate: '2031-05-04',
-        endDate: '2031-05-08',
-        days: '5',
-      },
-      'absence/balance': { leaveTypeKey: 'vacation' },
-      'absence/availability': { from: '2031-05-01', to: '2031-05-31' },
-    },
-    uncovered: {},
-  },
+  conformance,
 );
 
 /**

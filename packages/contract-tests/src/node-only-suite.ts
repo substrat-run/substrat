@@ -35,6 +35,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { planEntityCheckCoverage } from './entity-check-plan.js';
 
 /** A two-argument `ctx.check(...)` — the narrowed form, spelled the usual way. */
 const NARROWED_CHECK = /\bctx\.check\(\s*[^()]*\([^()]*\)[^()]*,|\bctx\.check\(\s*[^(),]+\s*,/g;
@@ -42,6 +43,15 @@ const NARROWED_CHECK = /\bctx\.check\(\s*[^()]*\([^()]*\)[^()]*,|\bctx\.check\(\
 export interface NodeOnlyOptions {
   /** Absolute paths to the module source this claim covers. */
   readonly sources: readonly string[];
+  /**
+   * Why node-only is the right answer here (#866).
+   *
+   * Optional to the suite — the assertion below works without it — and required
+   * by `assertNodeOnly`, which is what the trust page renders from. It appears
+   * in the test name so a reader of a CI log sees the claim, not just its
+   * subject.
+   */
+  readonly because?: string;
 }
 
 /**
@@ -54,7 +64,8 @@ export interface NodeOnlyOptions {
  * ```
  */
 export function nodeOnlySuite(subjectName: string, options: NodeOnlyOptions): void {
-  describe(`checks at the node only: ${subjectName}`, () => {
+  const claim = options.because ? `${subjectName} — ${options.because}` : subjectName;
+  describe(`checks at the node only: ${claim}`, () => {
     it('reads the source it claims to cover', () => {
       // The zero guard, same one the conformance kit has: a suite that read
       // nothing would pass every assertion below it.
@@ -79,6 +90,53 @@ export function nodeOnlySuite(subjectName: string, options: NodeOnlyOptions): vo
           'assessment is stale, or the new check needs a declaration and the conformance ' +
           'kit rather than this tripwire.',
       ).toEqual([]);
+    });
+  });
+}
+
+/**
+ * "This module's DECLARATION narrows nowhere" — the stronger node-only claim (#866).
+ *
+ * `nodeOnlySuite` above is a tripwire over source text, for a module with no
+ * declared operation set to read. A module that HAS one needs no tripwire: the
+ * declaration is the statement, and `planEntityCheckCoverage` reads it the same
+ * way the conformance kit does. So the claim becomes "the plan is empty", which
+ * is exact rather than lexical, and goes red the moment an operation declares a
+ * narrowed check.
+ *
+ * Generalised out of `engines/invoicing`, which wrote this by hand and was the
+ * only package doing it — so the fleet census read it as unassessed twice, once
+ * in #865's table and once while building the report that renders it.
+ *
+ * The second assertion is the one that is easy to leave out. An operation with
+ * NO check at all also produces an empty plan, so emptiness alone cannot tell
+ * "checks at the node" from "checks nothing".
+ */
+export function declaredNodeOnlySuite(
+  subjectName: string,
+  operations: Readonly<Record<string, object>>,
+  because?: string,
+): void {
+  const claim = because ? `${subjectName} — ${because}` : subjectName;
+  describe(`entity checks: ${claim} declares none, deliberately`, () => {
+    it('declares at least one operation, so the empty plan below means something', () => {
+      // The zero guard: an empty registry satisfies every assertion under it.
+      expect(Object.keys(operations).length).toBeGreaterThan(0);
+    });
+
+    it('has no operation narrowing to an entity, so there is no pair to generate', () => {
+      const { covered, uncovered } = planEntityCheckCoverage(operations);
+      expect({ covered: covered.map((c) => c.name), uncovered }).toEqual({
+        covered: [],
+        uncovered: {},
+      });
+    });
+
+    it('still checks a permission on every operation — node-only is not un-gated', () => {
+      const ungated = Object.entries(operations)
+        .filter(([, op]) => !('permission' in op) && !('narrows' in op))
+        .map(([name]) => name);
+      expect(ungated).toEqual([]);
     });
   });
 }

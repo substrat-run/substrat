@@ -44,5 +44,8 @@
   },
   "peerDependencies": {
     "zod": "^4.4.0"
+  },
+  "substrat": {
+    "conformance": "test/conformance.ts"
   }
 }

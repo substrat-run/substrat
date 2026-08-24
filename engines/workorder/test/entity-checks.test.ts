@@ -19,7 +19,7 @@ import { entityCheckConformanceSuite } from '@substrat-run/contract-tests';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { createWorkOrder, workorderModule } from '../src/index.js';
-import { workorderOperations } from '../src/operations.js';
+import { conformance } from './conformance.js';
 
 const FACILITY: EntityRef = { entityType: 'facility', entityId: '01JFACILITY0000000000000000' };
 const CUSTOMER: EntityRef = { entityType: 'customer', entityId: '01JCUSTOMER0000000000000000' };
@@ -39,8 +39,8 @@ afterAll(async () => {
 });
 
 entityCheckConformanceSuite(
-  'engine-workorder',
-  workorderOperations,
+  conformance.subject,
+  conformance.operations,
   async () => ({
     async createEntity(entityType: string) {
       if (entityType !== 'workorder') throw new Error(`no factory for '${entityType}'`);
@@ -63,4 +63,5 @@ entityCheckConformanceSuite(
       return probe.stub.invoke(operation, input);
     },
   }),
+  conformance,
 );
