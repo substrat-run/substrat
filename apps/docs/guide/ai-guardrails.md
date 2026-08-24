@@ -91,7 +91,8 @@ it. So a generated file carries all three of:
 
 `src/migrations.generated.ts` carried the comment for a year with no gate, and a hand-edit
 to shipped SQL passed every check in the repo. The gates that exist today: `lint:model`,
-`lint:permissions`, `lint:migrations`, `lint:api`, `lint:client`, `lint:tests`,
+`lint:permissions`, `lint:migrations`, `lint:api`, `lint:client`, `lint:conformance`,
+`lint:tests`,
 `lint:boundaries`, `lint:decisions`, `lint:playbook`, `lint:docs`, `lint:llms`,
 `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`, `lint:connector-grants`,
 `lint:deps` and `lint:scaffold`.
@@ -170,6 +171,35 @@ to pass, so the safety net is on precisely when it matters and absent on a code-
 dies.* This is the machinery that makes it survivable. See
 [Environments & previews](/guide/environments-and-previews).
 
+## The receipt the guards leave behind
+
+The six guards above are a commit's problem. This one is a reader's: every guard above is
+invisible from the outside, and none of them leaves anything a person who does not have the
+repo can look at. A scope *is* a Durable Object with its own SQLite, so another tenant's row
+is not absent-by-predicate but absent-by-construction — the strongest claim here, and the
+hardest one to show anybody. A buyer cannot see an absence, and an auditor cannot file one.
+
+`pnpm lint:conformance` renders a `CONFORMANCE.md` beside each package's `PERMISSIONS.md`.
+Where the permission snapshot is a statement of intent, this is what is asserted against it,
+and the two halves are deliberately not mixed:
+
+1. **Kernel-enforced properties**, cited **once** — cross-tenant addressing failing closed,
+   the envelope stamped kernel-side, a narrowed grant that does not widen — each naming the
+   contract-suite test that verifies it against *both* adapters.
+2. **That app's own entity checks**, covered and uncovered **by name**. An operation that
+   should check per-entity but checks at the node passes for anyone holding the key anywhere
+   in the scope, with every test green; only a behavioural pair separates the two, and the
+   pair is generated from the declaration rather than written by hand.
+
+The count discipline is the design. The tempting version multiplies every endpoint by every
+tenant and reports a four-figure assertion count — but cross-tenant isolation is one kernel
+fact, and restating it per endpoint measures the same thing repeatedly. An auditor who
+notices that discounts the whole document, which leaves it worth less than the absence it
+replaced. So the kernel section carries no per-app number at all.
+
+It is a statement of what is asserted, not a record that it passed. CI going red is what
+makes it true — the same standing `PERMISSIONS.md` has.
+
 ## Where this is honest about itself
 
 - **An agent can still write a bug.** The guards make one class unreachable and give a
@@ -180,8 +210,12 @@ dies.* This is the machinery that makes it survivable. See
 - **A red build is not an approval.** Both checkpoints are still a human reading a diff.
   CI going red is what makes that reading unskippable — it is not itself the sign-off.
 - **Enforcement is a slow argument.** It asks a buyer to follow a claim about runtime
-  architecture before they can price it. An inherited certification is the version a
-  procurement officer prices in one sentence, and it isn't there yet.
+  architecture before they can price it. Guard 07 makes the claim legible and citable; it
+  does not make it fast. An inherited certification is the version a procurement officer
+  prices in one sentence, and it isn't there yet.
+- **A receipt is not an audit.** `CONFORMANCE.md` is generated from the repo's own
+  declarations and verified by the repo's own tests. That is exactly as much independence as
+  a self-signed statement has — which is more than nothing, and less than a third party.
 
 The rest of what is missing is on
 [What Substrat doesn't have (yet)](/guide/what-substrat-lacks).

@@ -22,7 +22,7 @@ import { entityCheckConformanceSuite } from '@substrat-run/contract-tests';
 import { ulid } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildDemoHost, seedDemo, type DemoWorld } from '../src/index.js';
-import { calloutOperations } from '../src/operations.js';
+import { conformance } from './conformance.js';
 
 let dir: string;
 let host: SqliteScopeHost;
@@ -45,8 +45,8 @@ afterAll(async () => {
 });
 
 entityCheckConformanceSuite(
-  'callout',
-  calloutOperations,
+  conformance.subject,
+  conformance.operations,
   async () => ({
     async createEntity(entityType: string) {
       const anna = await host.getScope(w.anna, w.t1, w.s1);
@@ -88,16 +88,5 @@ entityCheckConformanceSuite(
       return stub.invoke(operation, input);
     },
   }),
-  {
-    // No `inputs` at all. `callout/timeline` needed `{ entityType: 'workorder' }`
-    // until #890, and that entry was doing two jobs badly: supplying a constant the
-    // schema could state, and silently choosing WHICH of the operation's types got
-    // driven. It declares `entityFrom` now, so the kit reads both admissible types
-    // off the schema and drives the pair over each — a work order and a protocol.
-    //
-    // `callout/portal-orders` is absent rather than uncovered: it declares
-    // `narrows`, so it claims no single entity check for this suite to honour.
-    // Its per-row proof walk is what the scenario's portal-isolation beat proves.
-    uncovered: {},
-  },
+  conformance,
 );

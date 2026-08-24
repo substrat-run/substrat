@@ -26,7 +26,7 @@ import { entityCheckConformanceSuite } from '@substrat-run/contract-tests';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { PERM, bookingModule, type Reservation } from '../src/index.js';
-import { bookingOperations } from '../src/operations.js';
+import { conformance } from './conformance.js';
 
 let h: EngineHarness;
 let staff: ScopeStub;
@@ -56,8 +56,8 @@ afterAll(async () => {
 });
 
 entityCheckConformanceSuite(
-  'engine-booking',
-  bookingOperations,
+  conformance.subject,
+  conformance.operations,
   async () => ({
     async createEntity(entityType: string) {
       if (entityType !== 'reservation') throw new Error(`no factory for '${entityType}'`);
@@ -83,14 +83,5 @@ entityCheckConformanceSuite(
       return probe.stub.invoke(operation, input);
     },
   }),
-  {
-    // Only what each schema REQUIRES beyond `reservationId`. These need to be
-    // plausible, not domain-valid: case 1 asserts "was not denied", and a
-    // business refusal on a fresh hold is not a permission answer.
-    inputs: {
-      'booking/join': { partyRef: '01JPARTY0000000000000000000' },
-      'booking/leave': { participantId: '01JPARTICIPANT00000000000000' },
-      'booking/open': { fillTarget: 4 },
-    },
-  },
+  conformance,
 );

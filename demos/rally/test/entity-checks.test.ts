@@ -36,20 +36,11 @@ import { entityCheckConformanceSuite } from '@substrat-run/contract-tests';
 import { ulid } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildRallyHost, seedRally, type RallyWorld } from '../src/index.js';
-import { rallyOperations } from '../src/operations.js';
+import { conformance, spareMember } from './conformance.js';
 
 let dir: string;
 let host: SqliteScopeHost;
 let w: RallyWorld;
-/**
- * A member the reservation-facing cases can add to a booking.
- *
- * Held in the object the kit is handed rather than passed by value: `inputs` is
- * read when the suite is COLLECTED, which is before `beforeAll` has run, so a
- * plain string would still be empty. The kit spreads this object per case, at
- * run time, by which point the id is in it.
- */
-const spareMember: Record<string, unknown> = { memberId: '' };
 let n = 0;
 
 /** No role, no grant, not in the cast — see the header. */
@@ -77,8 +68,8 @@ afterAll(async () => {
 });
 
 entityCheckConformanceSuite(
-  'rally',
-  rallyOperations,
+  conformance.subject,
+  conformance.operations,
   async () => ({
     async createEntity(entityType: string) {
       const astrid = await host.getScope(w.astrid, w.t1, w.s1);
@@ -123,21 +114,5 @@ entityCheckConformanceSuite(
       return stub.invoke(operation, input);
     },
   }),
-  {
-    // Only what each schema REQUIRES beyond the id the kit supplies. These need
-    // to be plausible, not domain-valid: case 1 asserts "was not denied", and a
-    // business refusal on a fresh hold is not a permission answer.
-    inputs: {
-      'rally/add-player': spareMember,
-      'rally/open-up': { spots: 2, levelMin: 'C', levelMax: 'B' },
-      // The handler is entity-agnostic and the declaration cannot yet say so
-      // (#890), so the type it is driven with is supplied here — the same
-      // constant every call site passes.
-      'rally/timeline': { entityType: 'member' },
-    },
-    uncovered: {
-      'rally/cancel-subscription':
-        "declares 'resolved' (the member is read off the subscription row) — the entity id is not in the input, so the harness cannot reach the entity",
-    },
-  },
+  conformance,
 );

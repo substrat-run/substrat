@@ -22,25 +22,7 @@
  * goes red, and whoever made the change wires the real suite instead. That is
  * the whole job of the assertion below.
  */
-import { describe, expect, it } from 'vitest';
-import { planEntityCheckCoverage } from '@substrat-run/contract-tests';
-import { invoicingOperations } from '../src/operations.js';
+import { declaredNodeOnlySuite } from '@substrat-run/contract-tests';
+import { conformance } from './conformance.js';
 
-describe('entity checks: engine-invoicing declares none, deliberately', () => {
-  it('has no operation narrowing to an entity, so there is no pair to generate', () => {
-    const { covered, uncovered } = planEntityCheckCoverage(invoicingOperations);
-    expect({ covered: covered.map((c) => c.name), uncovered }).toEqual({
-      covered: [],
-      uncovered: {},
-    });
-  });
-
-  it('still checks a permission on every operation — node-only is not un-gated', () => {
-    // The other way this could read as coverage: an operation with no check at
-    // all would also produce an empty plan above.
-    const ungated = Object.entries(invoicingOperations)
-      .filter(([, op]) => !('permission' in op) && !('narrows' in op))
-      .map(([name]) => name);
-    expect(ungated).toEqual([]);
-  });
-});
+declaredNodeOnlySuite(conformance.subject, conformance.operations, conformance.because);

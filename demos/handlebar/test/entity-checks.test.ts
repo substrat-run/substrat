@@ -19,7 +19,7 @@ import { entityCheckConformanceSuite } from '@substrat-run/contract-tests';
 import { ulid } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildBikeShopHost, seedBikeShop, type BikeShopWorld } from '../src/index.js';
-import { handlebarOperations } from '../src/operations.js';
+import { conformance } from './conformance.js';
 
 let dir: string;
 let host: SqliteScopeHost;
@@ -40,8 +40,8 @@ afterAll(async () => {
 });
 
 entityCheckConformanceSuite(
-  'handlebar',
-  handlebarOperations,
+  conformance.subject,
+  conformance.operations,
   async () => ({
     async createEntity(entityType: string) {
       const greta = await host.getScope(w.greta, w.t1, w.s1);
@@ -81,11 +81,5 @@ entityCheckConformanceSuite(
       return stub.invoke(operation, input);
     },
   }),
-  {
-    // `bike-shop/timeline` needed `{ entityType: 'workorder' }` here until #890.
-    // With `entityFrom` the kit reads the admissible types off the schema, so the
-    // pair is driven over a repair AND over a condition report — the second of
-    // which this fixture's hand-written entry had quietly excluded.
-    uncovered: {},
-  },
+  conformance,
 );

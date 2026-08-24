@@ -41,6 +41,7 @@
     "lint:decisions": "node tools/decisions.mjs",
     "lint:plugin": "tsx tools/plugin-emit.mts",
     "lint:connector-grants": "tsx tools/connector-grants.mts",
+    "lint:conformance": "tsx tools/conformance-emit.mts",
     "lint:scaffold": "node tools/scaffold-check.mjs"
   },
   "devDependencies": {

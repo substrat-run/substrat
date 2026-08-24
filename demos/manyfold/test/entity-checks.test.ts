@@ -23,10 +23,9 @@
 import { describe, expect, it } from 'vitest';
 import { nodeOnlySuite } from '@substrat-run/contract-tests';
 import { ENTITY_GRANTS } from '../src/provision.js';
+import { conformance } from './conformance.js';
 
-nodeOnlySuite('manyfold', {
-  sources: [new URL('../src/module.ts', import.meta.url).pathname],
-});
+nodeOnlySuite(conformance.subject, conformance);
 
 describe('checks at the node only: manyfold, the grant half', () => {
   it('mints no entity-narrowed grant, so a narrowed check would resolve against nothing', () => {

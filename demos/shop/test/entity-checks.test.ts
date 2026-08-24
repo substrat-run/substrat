@@ -38,7 +38,7 @@ import { entityCheckConformanceSuite } from '@substrat-run/contract-tests';
 import { ulid } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildShopHost, seedShop, type ShopWorld } from '../src/index.js';
-import { shopOperations } from '../src/operations.js';
+import { conformance } from './conformance.js';
 
 let dir: string;
 let host: SqliteScopeHost;
@@ -62,8 +62,8 @@ afterAll(async () => {
 });
 
 entityCheckConformanceSuite(
-  'shop',
-  shopOperations,
+  conformance.subject,
+  conformance.operations,
   async () => {
     const astrid = await host.getScope(w.astrid, w.t1, w.s1);
     return {
@@ -117,5 +117,5 @@ entityCheckConformanceSuite(
       },
     };
   },
-  {},
+  conformance,
 );
