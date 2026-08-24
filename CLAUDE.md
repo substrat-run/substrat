@@ -200,8 +200,9 @@ generated while nothing re-emits it. So a generated file has all three of:
    in the repo.
 
 The gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:client`,
-`lint:migrations`, plus `lint:decisions`, `lint:playbook`, `lint:docs`, `lint:llms`,
-`lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`, `lint:connector-grants`.
+`lint:conformance`, `lint:migrations`, plus `lint:decisions`, `lint:playbook`, `lint:docs`,
+`lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
+`lint:connector-grants`.
 
 **The one exception, stated rather than hidden:** a file generated from a *remote* source
 cannot be re-emitted hermetically in CI, so it gets marks 1 and 2 plus a `GENERATED_AT`

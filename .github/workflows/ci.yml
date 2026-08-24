@@ -55,6 +55,13 @@ jobs:
       # if no vertical declares entities, so the checkpoint can never pass by
       # scanning nothing.
       - run: pnpm lint:model --check
+      # The conformance receipt (#866, kernel-design §11.2): re-emit each package's
+      # CONFORMANCE.md from its declared `substrat.conformance` module and fail on
+      # drift. Also the only gate on §1's kernel citations — it verifies each named
+      # test exists in the suite it is attributed to, and exits 2 on a package that
+      # carries an entity-check assessment nobody declared, so an unassessed surface
+      # cannot pass by being silent.
+      - run: pnpm lint:conformance --check
       # The browser-client checkpoint (tools/client-emit.mts): re-emit each opted-in
       # vertical's typed fetch client from its model and fail on drift. This is the
       # gate that did not exist when demos/todo's hand-written client silently fell
