@@ -38,12 +38,14 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  errorCodeOf,
   moduleId,
   permissionKey,
   platformActorId,
   principalId,
   scopeId,
   tenantId,
+  toProblem,
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
@@ -102,6 +104,33 @@ export function inputParseContractSuite(
 
     it('refuses an invocation missing a required declared field', async () => {
       await expect(stub.invoke('parse/echo', { tag: 'x' })).rejects.toThrow();
+    });
+
+    /**
+     * #831. Refusing is half a contract; saying WHICH field was wrong is the half a
+     * client — or a build agent — recovers from without a person reading a log.
+     *
+     * This belongs beside the refusals above rather than in `contracts` alone, because
+     * the two substrates lose the answer differently. Under `adapter-sqlite` the parse
+     * throws in-process and the `ZodError` arrives with `issues` intact. Under
+     * `adapter-cloudflare` it is raised INSIDE the ScopeDO and crosses the hop, where a
+     * throw carries only its message — so the field list used to survive nowhere but as
+     * JSON inside that message, and every vertical re-parsed the string to get it back.
+     *
+     * A suite that ran on one adapter would have called that fixed.
+     */
+    it('names the field that was wrong, whichever substrate refused it', async () => {
+      const err = await stub.invoke('parse/echo', { name: 42 }).then(
+        () => {
+          throw new Error('the invoke should have been refused');
+        },
+        (e: unknown) => e,
+      );
+
+      expect(errorCodeOf(err)).toBe('validation_failed');
+      const body = toProblem(err);
+      expect(body.status).toBe(400);
+      expect(body.errors?.map((issue) => issue.path)).toContain('name');
     });
 
     it('strips a field the declaration does not name', async () => {

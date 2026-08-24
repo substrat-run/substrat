@@ -184,6 +184,16 @@ mechanical, lower traffic.
 3. **The wire.** Failures cross the ScopeDO boundary as a value (§3), so a code and its
    extensions reach the coordinator intact. `vertical-host`'s classifier reads the code
    before its message patterns.
+   - **3b — parse failures carry their fields (#831).** A `ZodError` holds no
+     `extensions`; it holds `issues`, and `toWireFailure` dropped them, so
+     `validation_failed` crossed the hop as a code with no fields and the list survived
+     only as JSON inside `message`. That became load-bearing with #893, which moved the
+     declared-input parse to the scope door: on `adapter-cloudflare` the refusal is now
+     raised *inside* the DO, while the same operation under `adapter-sqlite` throws
+     in-process with `issues` intact. Structured in a scenario test and bare in
+     production is the worst of the two available failures, so `toWireFailure` maps them
+     onto the declared `errors` extension and `inputParseContractSuite` asserts it on
+     both adapters.
 4. **Transports.** `mapError` and every vertical `onError` read `code` first and **keep the
    regex table as a fallback**, deleting patterns as each throw site is typed. Bodies gain
    the problem shape while retaining `error` (§1), so no client breaks.

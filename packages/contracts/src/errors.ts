@@ -178,9 +178,11 @@ export const ERROR_NAME_PREFIX = 'Substrat.';
  * Keeping `PermissionDenied` named `PermissionDenied` rather than renaming it to the
  * generic form is deliberate: `vertical-host`'s classifier and several verticals match
  * on that exact string today, and a rename would be a silent behaviour change bundled
- * into a refactor. `ZodError` earns its row because a parse failure crossing the hop
- * loses its `issues` array — the code is all that is left, and `validation_failed`
- * without fields still beats `internal`.
+ * into a refactor. `ZodError` earns its row because a parse failure can arrive with its
+ * prototype gone and only its `name` left — a duplicate copy of zod, a structured clone,
+ * the legacy pre-envelope RPC path. `validation_failed` without fields still beats
+ * `internal`. On the envelope path the fields are no longer lost: `toWireFailure` carries
+ * them as `extensions.errors` (#831).
  */
 const CODE_BY_ERROR_NAME: Readonly<Record<string, ErrorCode>> = {
   PermissionDenied: 'permission_denied',
@@ -260,10 +262,36 @@ export function isSubstratError(err: unknown): err is SubstratError {
 
 /** Zod's issue list, flattened to the wire shape. */
 export function validationIssuesFrom(error: z.ZodError): ValidationIssue[] {
-  return error.issues.map((issue) => ({
-    path: issue.path.map(String).join('.'),
-    message: issue.message,
+  return flattenIssues(error.issues);
+}
+
+/** One shape of issue, whichever copy of zod produced it. */
+interface RawIssue {
+  readonly path?: readonly PropertyKey[];
+  readonly message?: unknown;
+}
+
+function flattenIssues(issues: readonly RawIssue[]): ValidationIssue[] {
+  return issues.map((issue) => ({
+    path: (issue.path ?? []).map(String).join('.'),
+    message: typeof issue.message === 'string' ? issue.message : String(issue.message),
   }));
+}
+
+/**
+ * A parse failure's field issues, read BY SHAPE rather than by `instanceof`.
+ *
+ * Same doctrine as `errorCodeOf` one screen up, for the same two reasons: two copies
+ * of zod in one build make `instanceof` a coin toss, and `vertical-host`'s classifier
+ * already reads a parse failure this way (`isParseFailure`). `issues` is zod's own
+ * array and nothing else on these paths carries one.
+ *
+ * Returns `undefined` — not `[]` — for a throw that is not a parse failure, so a
+ * caller can tell "no issues to report" from "not that kind of error at all".
+ */
+function parseIssuesOf(err: unknown): ValidationIssue[] | undefined {
+  const issues = (err as { issues?: unknown } | null)?.issues;
+  return Array.isArray(issues) ? flattenIssues(issues as readonly RawIssue[]) : undefined;
 }
 
 /**
@@ -276,12 +304,28 @@ export function validationIssuesFrom(error: z.ZodError): ValidationIssue[] {
  * quietly widening it in the name of better errors.
  */
 export function toProblem(err: unknown, instance?: string): Problem {
-  if (err instanceof z.ZodError) {
-    return build('validation_failed', 'the input did not parse', instance, {
-      errors: validationIssuesFrom(err),
-    });
-  }
   const code = errorCodeOf(err);
+  if (code === 'validation_failed') {
+    // #831. The issues are the whole value of a parse failure, and they reach here two
+    // ways: live on the throw (in-process), or in `extensions.errors` once
+    // `toWireFailure` carried them across the ScopeDO hop.
+    //
+    // Only a PARSE failure takes this branch, and the `errors` list is what identifies
+    // one. `validation_failed` is also thrown SEMANTICALLY — `endDate precedes
+    // startDate`, `invalid interval`, `at most one party may sign as primary` — where
+    // the sentence IS the information and no field list exists. Those fall through to
+    // the general branch below and keep their own message, exactly as before.
+    const carried = (err as SubstratError | null)?.extensions?.errors;
+    const errors =
+      parseIssuesOf(err) ?? (Array.isArray(carried) ? (carried as ValidationIssue[]) : undefined);
+    if (errors !== undefined) {
+      // The detail is the canonical sentence rather than the throw's message: a raw
+      // `ZodError` stringifies its whole issue list into `message` as JSON, and echoing
+      // that beside the parsed `errors` array publishes the same thing twice — in the
+      // shape this change exists to stop clients re-parsing.
+      return build('validation_failed', 'the input did not parse', instance, { errors });
+    }
+  }
   if (code !== undefined && err instanceof Error) {
     // `internal` is still generic even when a throw asked for it by name: the rule is
     // about what reaches a client, not about who chose the code.
@@ -361,8 +405,30 @@ export function toWireFailure(err: unknown): WireFailure {
     name: err.name,
     message: err.message,
     code,
-    extensions: { ...((err as SubstratError).extensions ?? {}) },
+    extensions: extensionsFor(code, err),
   };
+}
+
+/**
+ * The extensions a throw carries onto the wire.
+ *
+ * A `SubstratError` already holds its own, declared and parsed at the throw site. A
+ * `ZodError` holds none — it holds `issues`, which is the same information in zod's
+ * shape rather than ours, and #831's whole complaint was that this function dropped it:
+ * the field list survived only as JSON inside `message`, leaving every vertical to
+ * re-parse a string for what `validationIssue` already models.
+ *
+ * That mattered more after #893 than before it. The host now parses a declared
+ * operation input at the scope door, so on the hosted path the refusal is raised
+ * INSIDE the ScopeDO and this is the only seam it crosses — while the same operation
+ * under `adapter-sqlite` throws in-process with `issues` intact. Structured in a
+ * scenario test, bare in production, is the worst of the two available failures.
+ */
+function extensionsFor(code: ErrorCode, err: Error): Record<string, unknown> {
+  const declared = { ...((err as SubstratError).extensions ?? {}) };
+  if (code !== 'validation_failed' || declared.errors !== undefined) return declared;
+  const issues = parseIssuesOf(err);
+  return issues === undefined ? declared : { ...declared, errors: issues };
 }
 
 /**
