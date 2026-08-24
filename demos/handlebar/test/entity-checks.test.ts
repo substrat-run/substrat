@@ -44,14 +44,23 @@ entityCheckConformanceSuite(
   handlebarOperations,
   async () => ({
     async createEntity(entityType: string) {
-      if (entityType !== 'workorder') throw new Error(`no factory for '${entityType}'`);
       const greta = await host.getScope(w.greta, w.t1, w.s1);
       const repair = await greta.invoke<{ id: string }>('bike-shop/create-repair', {
         bikeId: w.crescentId,
         kind: 'service',
         title: 'Conformance',
       });
-      return repair.id;
+      if (entityType === 'workorder') return repair.id;
+      if (entityType === 'protocol') {
+        // `bike-shop/timeline` reads a condition report's spine as well as a
+        // repair's (#890), so the kit asks for one — on a repair of its own,
+        // since only one instance per (template, entity) may be open.
+        const report = await greta.invoke<{ id: string }>('bike-shop/start-condition-report', {
+          orderId: repair.id,
+        });
+        return report.id;
+      }
+      throw new Error(`no factory for '${entityType}'`);
     },
 
     async grantOnEntity(permission: string, entity: EntityRef) {
@@ -73,9 +82,10 @@ entityCheckConformanceSuite(
     },
   }),
   {
-    // The constant the server supplies by hand on the mounted route — the point
-    // at which this vertical stops being entity-agnostic (`app/src/api.ts`).
-    inputs: { 'bike-shop/timeline': { entityType: 'workorder' } },
+    // `bike-shop/timeline` needed `{ entityType: 'workorder' }` here until #890.
+    // With `entityFrom` the kit reads the admissible types off the schema, so the
+    // pair is driven over a repair AND over a condition report — the second of
+    // which this fixture's hand-written entry had quietly excluded.
     uncovered: {},
   },
 );

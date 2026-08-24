@@ -119,37 +119,78 @@ type PiiShape<O, OutKeys extends string> = O extends { emits: { piiClass: 'none'
  * checks the LIST it sits on — say `resolved` instead with the reason. That
  * still records the thing that matters (this is not a node check) while being
  * honest that the handler has to find the entity itself.
+ *
+ * An operation that narrows to more than one type says `entityFrom` in place of
+ * `entity`, naming the input field that carries the type (#890). The admissible
+ * types come from that field's own schema — `z.enum(['workorder', 'protocol'])` —
+ * so the set is stated once and cannot drift from a second list. `entity` remains
+ * the right answer wherever there is one type, and an open `z.string()` behind
+ * `entityFrom` remains undrivable by the conformance kit, which reports it rather
+ * than picking a type.
  */
 type PermissionCheck<O, Entities, Engines, PermKey extends string> = {
   readonly key: PermKey;
-  /**
-   * The entity type the check narrows to — this module's, or a composed engine's.
-   *
-   * Pointable only. A narrowed check is a grant against ONE entity id, and
-   * `idFrom` names the single input field carrying it, so a composite-keyed
-   * table has nothing to narrow to. Inlined rather than aliased, per
-   * `PointableName` in `model.ts`.
-   */
-  readonly entity:
-    | ({
-        readonly [K in keyof Entities]: Entities[K] extends {
-          primaryKey: readonly [unknown, unknown, ...unknown[]];
-        }
-          ? never
-          : K;
-      }[keyof Entities] &
-        string)
-    | (Engines extends readonly (infer R)[]
-        ? R extends Record<string, EntityDef>
-          ? {
-              readonly [K in keyof R]: R[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] }
-                ? never
-                : K;
-            }[keyof R] &
-              string
-          : never
-        : never);
 } & (
+  | {
+      /**
+       * The entity type the check narrows to — this module's, or a composed
+       * engine's.
+       *
+       * Pointable only. A narrowed check is a grant against ONE entity id, and
+       * `idFrom` names the single input field carrying it, so a composite-keyed
+       * table has nothing to narrow to. Inlined rather than aliased, per
+       * `PointableName` in `model.ts`.
+       */
+      readonly entity:
+        | ({
+            readonly [K in keyof Entities]: Entities[K] extends {
+              primaryKey: readonly [unknown, unknown, ...unknown[]];
+            }
+              ? never
+              : K;
+          }[keyof Entities] &
+            string)
+        | (Engines extends readonly (infer R)[]
+            ? R extends Record<string, EntityDef>
+              ? {
+                  readonly [K in keyof R]: R[K] extends {
+                    primaryKey: readonly [unknown, unknown, ...unknown[]];
+                  }
+                    ? never
+                    : K;
+                }[keyof R] &
+                  string
+              : never
+            : never);
+      readonly entityFrom?: never;
+    }
+  | {
+      /**
+       * The input field carrying the entity TYPE, when one operation narrows to
+       * more than one (#890).
+       *
+       * Both timelines are this shape: `callout/timeline` reads the spine of a
+       * work order for the app and of a protocol for the signing beat, checking
+       * `workorder:read` on whichever the caller names. Declaring `entity:
+       * 'workorder'` was true of most callers and narrower than the operation,
+       * and the artifact being narrower than the code is still the artifact
+       * being wrong.
+       *
+       * The admissible types are NOT listed here. They are read off the schema at
+       * this field, so the model states them once — `z.enum(['workorder',
+       * 'protocol'])` — and a list that could go stale never exists. Leave that
+       * field an open `z.string()` and the conformance kit reports the operation
+       * as uncovered rather than guessing a type to drive.
+       *
+       * This is the bounded answer, not "any entity at all": an unbounded type
+       * field is what makes an operation unsafe to bind to a URL, and it stays
+       * unsafe. What changed is that the declaration can now say which few types
+       * it means.
+       */
+      readonly entityFrom: InputKeys<O>;
+      readonly entity?: never;
+    }
+) & (
   | { readonly idFrom: InputKeys<O>; readonly resolved?: never }
   | { readonly resolved: string; readonly idFrom?: never }
 );

@@ -34,6 +34,14 @@ const ops = {
     permission: { key: 'thing:manage', entity: 'thing', resolved: 'the thing the part is on' },
     input: z.object({ partId: z.string() }),
   },
+  'x/fixed-type': {
+    permission: { key: 'thing:read', entity: 'thing', idFrom: 'entityId' },
+    input: z.object({ entityType: z.literal('thing'), entityId: z.string() }),
+  },
+  'x/two-admissible-types': {
+    permission: { key: 'thing:read', entity: 'thing', idFrom: 'entityId' },
+    input: z.object({ entityType: z.literal(['thing', 'other']), entityId: z.string() }),
+  },
 };
 
 describe('what the kit will drive', () => {
@@ -54,6 +62,26 @@ describe('what the kit will drive', () => {
     expect(planEntityCheckCoverage(ops).covered.map((c) => c.name)).toContain(
       'x/by-id-with-optional',
     );
+  });
+
+  it('reads a field the schema fixes to one value instead of being told it', () => {
+    // #890. The constant lives in the declaration; a fixture that restated it was
+    // a second copy that could disagree, and disagreeing makes case 1 accuse a
+    // correct handler of checking the node.
+    const { covered, uncovered } = planEntityCheckCoverage(ops);
+    expect(uncovered['x/fixed-type']).toBeUndefined();
+    expect(covered.find((c) => c.name === 'x/fixed-type')?.fixed).toEqual({
+      entityType: 'thing',
+    });
+  });
+
+  it('refuses to pick a value for a literal that admits more than one', () => {
+    // Driving that means driving once per admissible value — a different feature.
+    // Guessing one would test a single arm and report the whole operation covered,
+    // so it stays an uncovered gap with a name.
+    const { covered, uncovered } = planEntityCheckCoverage(ops);
+    expect(covered.map((c) => c.name)).not.toContain('x/two-admissible-types');
+    expect(uncovered['x/two-admissible-types']).toMatch(/no sample input.*entityType/);
   });
 
   it('drives an operation once its required field is supplied', () => {
@@ -77,6 +105,7 @@ describe('what the kit reports rather than hides', () => {
     expect(Object.keys(planEntityCheckCoverage(ops).uncovered).sort()).toEqual([
       'x/by-id-needs-input',
       'x/resolved',
+      'x/two-admissible-types',
     ]);
   });
 });

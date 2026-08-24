@@ -1563,7 +1563,7 @@
                 "properties": {
                   "entityType": {
                     "type": "string",
-                    "minLength": 1
+                    "const": "employee"
                   },
                   "entityId": {
                     "type": "string",

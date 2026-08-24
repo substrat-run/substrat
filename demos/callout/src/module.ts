@@ -24,7 +24,7 @@ interface TimelineRow {
   _cursor: number;
 }
 import { calloutEntities } from './entities.js';
-import { calloutOperations, instantiateProtocolInput } from './operations.js';
+import { calloutOperations, instantiateProtocolInput, timelineInput } from './operations.js';
 import {
   assertAllowed,
   ulid,
@@ -367,12 +367,13 @@ const portalOrdersOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ctx
  * mutually ordered, so `occurred_at` alone would put a page boundary inside a tie.
  */
 const timelineOp: OperationHandler<
-  { entityType: string; entityId: string } & PageParams,
+  z.infer<typeof timelineInput> & PageParams,
   Page<{ type: string; occurred_at: string; actor: string }>
 > = async (ctx, input) => {
-  const entity: EntityRef = z
-    .object({ entityType: z.string().min(1), entityId: z.string().min(1) })
-    .parse(input);
+  // The DECLARED schema, not a second copy of it (#890): `entityType` is a
+  // literal there, so a caller naming another entity is refused here rather than
+  // reaching `ctx.check` with a ref the declaration never claimed.
+  const entity: EntityRef = timelineInput.parse(input);
   assertAllowed(await ctx.check(WO.read, entity));
   const limit = listLimitOf(input.limit);
   const rows = ctx.sql.query<TimelineRow>(

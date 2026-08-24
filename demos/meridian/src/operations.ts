@@ -32,12 +32,15 @@
  * `resolved` — their entity id is minted inside the handler and is not in the
  * input, so the kit could not reach them even if the format could hold them.
  *
- * **3. The caller-named entity type.** `hr/timeline` takes `{ entityType,
- * entityId }` and narrows to whatever the caller names. It declares
- * `entity: 'employee'` — the constant every call site in the app, the scenario
- * and the mounted route passes — which is accurate to every caller and narrower
- * than the truth. That is #890, and this is its third instance after Callout's
- * and Handlebar's timelines.
+ * **3. The caller-named entity type — settled (#890).** `hr/timeline` took
+ * `{ entityType, entityId }` with `entityType` a free string, so its declared
+ * `entity: 'employee'` was accurate to every caller and narrower than the input.
+ * The answer was not a format that can say "the caller names the type": the set
+ * of types was never wider than one, so `timelineInput` pins the literal and the
+ * declaration is now exact. Callout's and Handlebar's timelines went the same
+ * way. What remains open is the ENGINE case, where the type genuinely is the
+ * caller's — `engines/absence` narrows to a subject whose noun only the vertical
+ * knows — and no `entity` name in absence's own registry can describe it.
  */
 import { defineOperations, z } from '@substrat-run/contracts';
 import { protocolEntities } from '@substrat-run/engine-protocol';
@@ -338,8 +341,8 @@ export const meridianOperations = defineOperations(
 
   'hr/timeline': {
     summary: 'The spine, for one entity',
-    // Caller-named entity type, declared as the constant every call site passes
-    // — see the header, and #890.
+    // The constant every call site passes, and since #890 the only thing the
+    // input accepts — see the header, and `timelineInput`.
     permission: { key: 'absence:read', entity: 'employee', idFrom: 'entityId' },
     input: timelineInput,
     output: timelineEntry,

@@ -41,6 +41,24 @@ export const startConditionReportInput = z.object({
 });
 
 /**
+ * Handlebar's policy: the spine is read per repair, and per condition report (#890).
+ *
+ * `entityType` was a free `z.string()`, with the note that the server supplies
+ * the constant by hand. It does — for the route the app calls. The scenario's
+ * counter-signature beat reads a PROTOCOL's spine rows, so the operation has
+ * always had two admissible types while its declaration could name one.
+ *
+ * `customer` is deliberately absent: lisbeth reads her repair's timeline as
+ * `entityType: 'workorder'` and her grant on the CUSTOMER reaches it through the
+ * parent walk (`workorder → bike → customer`). Bounding the type field takes
+ * nothing from the portal.
+ */
+export const timelineInput = z.object({
+  entityType: z.enum(['workorder', 'protocol']),
+  entityId: z.string().min(1),
+});
+
+/**
  * Handlebar's declared operation surface (#707). All eleven.
  *
  * Every engine type this vertical returns already has an exported schema —
@@ -178,12 +196,13 @@ export const handlebarOperations = defineOperations(
      * `workorder:read` reads any repair's timeline, which is the whole of the
      * portal's isolation stated backwards.
      *
-     * `entityType` stays a free string — the server hand-supplies the constant
-     * (see `app/src/api.ts`), and the declaration cannot yet say "the type comes
-     * from the caller".
+     * `entityFrom` (#890): two admissible types, enumerated once in
+     * `timelineInput` and read from there, so the kit drives the pair over a
+     * repair AND over a condition report instead of over whichever one a fixture
+     * happened to name.
      */
-    permission: { key: 'workorder:read', entity: 'workorder', idFrom: 'entityId' },
-    input: z.object({ entityType: z.string(), entityId: z.string() }),
+    permission: { key: 'workorder:read', entityFrom: 'entityType', idFrom: 'entityId' },
+    input: timelineInput,
     output: z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() }),
     // Handler-composed: this walks `_substrat_outbox`, a KERNEL table. It is not
     // a declared entity and never will be — rule 3 permits a projection read of

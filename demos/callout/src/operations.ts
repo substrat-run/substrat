@@ -28,6 +28,28 @@ export const instantiateProtocolInput = z.object({
   entityId: z.string().min(1),
 });
 
+/**
+ * The read side of the same policy, bounded (#890).
+ *
+ * This was `entityType: z.string()`, on the reasoning that the handler is
+ * genuinely entity-agnostic. It is — `ctx.check` is handed whatever ref the
+ * caller names — but "any entity at all" was never what the vertical meant, and
+ * it cost the declaration below its accuracy: `{ key, entity, idFrom }` names ONE
+ * type, so `entity: 'workorder'` described the app's calls and not §12's, which
+ * reads a signed protocol's spine rows.
+ *
+ * Two types, then, written down rather than left open. Note what is NOT in this
+ * list: `customer`. A portal caller reads her order's timeline as
+ * `entityType: 'workorder'`, and her `workorder:read` grant on the CUSTOMER
+ * reaches it through the parent walk (`workorder → facility → customer`) — the
+ * walk is what makes the portal work, not the open string, which is why closing
+ * the string costs the portal nothing.
+ */
+export const timelineInput = z.object({
+  entityType: z.enum(['workorder', 'protocol']),
+  entityId: z.string().min(1),
+});
+
 /** A price-list row. A table, not an entity — so its shape lives here, not in the registry. */
 export const priceRow = z.object({
   article: z.string(),
@@ -232,15 +254,13 @@ export const calloutOperations = defineOperations(
      * time. The permission snapshot is a statement about who may do what — one
      * that misnames the key is worth less than none.
      *
-     * `entity: 'workorder'` is what every call site passes and the only shape the
-     * app ever builds. `entityType` stays a free string because the handler is
-     * genuinely entity-agnostic — a portal customer granted `workorder:read` on
-     * their `customer` reaches an order's timeline through link resolution — and
-     * the declaration has no way to say "the type is named by the caller". That
-     * gap is filed, not papered over.
+     * `entityFrom` (#890), because this operation narrows to two types and
+     * `entity` holds one. The admissible pair is read off `timelineInput` rather
+     * than restated here, so there is one list and the conformance kit drives the
+     * pair over BOTH — a work order and a protocol.
      */
-    permission: { key: 'workorder:read', entity: 'workorder', idFrom: 'entityId' },
-    input: z.object({ entityType: z.string(), entityId: z.string() }),
+    permission: { key: 'workorder:read', entityFrom: 'entityType', idFrom: 'entityId' },
+    input: timelineInput,
     output: z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() }),
     // Handler-composed: `_substrat_outbox` is a KERNEL table. Rule 3 permits the
     // projection read; it does not make the spine a registry entity, so there is

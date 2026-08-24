@@ -95,15 +95,18 @@ app.onError((err, c) => {
 app.get('/api/cast', (c) => c.json(CAST));
 
 // ---------------------------------------------------------------------------
-// The two routes that supply a CONSTANT the caller must not choose.
+// The two routes that supply a CONSTANT the caller does not choose.
 //
-// Both invoke an operation whose `entityType` is an ordinary `z.string()`, because
-// both belong to entity-agnostic surfaces — `bike-shop/timeline` reads the event
-// spine, `protocol/list-for-entity` belongs to an engine that knows nothing about
-// repairs. Binding either to a URL would put `entityType` in the query string and
-// let a caller read the timeline, or the protocols, of anything in the scope. This
-// is where the vertical stops being entity-agnostic, so it says 'workorder' here
-// and both operations stay unbound.
+// `protocol/list-for-entity` takes an ordinary `z.string()`: it belongs to an engine
+// that knows nothing about repairs, so binding it would put `entityType` in the query
+// string and let a caller list the protocols on anything in the scope. This is where
+// the vertical stops being entity-agnostic, so it says 'workorder' here and the
+// operation stays unbound.
+//
+// `bike-shop/timeline` is no longer that shape (#890): its `entityType` is
+// `z.enum(['workorder', 'protocol'])` — a repair's spine and a condition report's,
+// which are the two this vertical reads. The route picks the first because that is
+// the screen it feeds.
 //
 // Registered before the derived table: neither can be shadowed by it today, but
 // "the hand-written exception wins" is the ordering that stays safe as the

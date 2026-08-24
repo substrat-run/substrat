@@ -12,11 +12,17 @@
  *  - **The three routes that are not operations.** `/me` is the session, and
  *    `/api/auth/login` and `/logout` redirect to the issuer. None is a `ScopeStub`
  *    invoke, so none can be declared.
- *  - **The three operations deliberately left unbound.** `callout/timeline` and
- *    `protocol/list-for-entity` both take an entity-agnostic `entityType`, and
- *    binding either to a URL would let a caller name any entity at all — the
- *    engine is entity-agnostic and this is exactly where the vertical stops being
- *    (see `calloutProtocolRoutes`). `callout/whoami` has no screen.
+ *  - **The three operations deliberately left unbound.** `protocol/list-for-entity`
+ *    takes an entity-agnostic `entityType` — the engine is entity-agnostic and
+ *    binding it would let a caller list the protocols on anything at all, which is
+ *    exactly where the vertical stops being (see `calloutProtocolRoutes`).
+ *    `callout/timeline` used to be unbound for the same reason and is no longer:
+ *    #890 bounded its `entityType` to `['workorder', 'protocol']`, so a caller
+ *    could choose between two declared types rather than name any entity. What
+ *    keeps it unbound now is smaller and worth stating as the smaller thing it is
+ *    — the screen wants an order's entries, and binding it means the app taking
+ *    the generated paged client for a read it makes unpaginated.
+ *    `callout/whoami` has no screen.
  *
  * There is no auth mode here any more. Both backends — the node dev server and the
  * Worker — authenticate the same way: a session cookie from the same relying-party
@@ -127,7 +133,7 @@ export function signOut(): void {
  * fetch wrapper, so error handling stays in one place.
  */
 export const extra = {
-  /** `callout/timeline`, unbound: `entityType` is entity-agnostic (see api.ts header). */
+  /** `callout/timeline`, unbound: the route pins `entityType` (see api.ts header). */
   timeline: (id: string) => call<TimelineEntry[]>(`/workorders/${id}/timeline`),
   /** `protocol/list-for-entity`, unbound for the same reason. */
   orderProtocols: (orderId: string) => call<ProtocolSummary[]>(`/workorders/${orderId}/protocols`),
