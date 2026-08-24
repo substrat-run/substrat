@@ -11,6 +11,7 @@ import {
   dataSubjectId,
   moduleManifest,
   operationInputsOf,
+  operationConcurrencyOf,
   permissionKey,
   principalId,
   z,
@@ -1241,6 +1242,133 @@ export const parseMod: ModuleRegistration = {
   operationInputs: operationInputsOf(parseDeclaration),
 };
 
+// -- #129: the precondition the HOST compares ---------------------------------
+
+export const concurrencyModManifest = moduleManifest.parse({
+  id: '@test/concurrency',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [
+    { key: 'conc:use', description: 'the concurrency fixture permission' },
+    { key: 'conc:never', description: 'granted to nobody — the ordering probe' },
+  ],
+  events: { emits: [{ type: 'conc.changed', schemaVersion: 1 }], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'conc',
+});
+
+const CONC_USE = permissionKey.parse('conc:use');
+
+/**
+ * A guarded write: it announces what it did, so the version it is guarded on
+ * moves. This is the shape `assertConcurrencyMovesVersion` requires, and the one
+ * the suite drives both halves of — the refusal and the fresh tag.
+ */
+const concUpdate: OperationHandler<{ thingId: string; label?: string }, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(CONC_USE));
+  ctx.sql.exec('CREATE TABLE IF NOT EXISTS conc_things (id TEXT PRIMARY KEY, label TEXT)');
+  ctx.sql.exec(
+    'INSERT INTO conc_things (id, label) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET label = excluded.label',
+    [input.thingId, input.label ?? null],
+  );
+  ctx.emit({
+    type: 'conc.changed',
+    schemaVersion: 1,
+    entity: { entityType: 'conc-thing', entityId: input.thingId },
+    piiClass: 'none',
+    payload: { label: input.label ?? null },
+  });
+  return { id: input.thingId, label: input.label ?? null };
+};
+
+/**
+ * A guarded READ. No `emits`, and that is legal here: on a read the declaration
+ * means "answer with the current tag", which is how a caller comes to hold one at
+ * all. Nothing is serialised and nothing can be refused.
+ */
+const concRead: OperationHandler<{ thingId: string }, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(CONC_USE));
+  return { id: input.thingId };
+};
+
+/**
+ * Guarded, and announces NOTHING — the inversion `assertConcurrencyMovesVersion`
+ * refuses at declaration time.
+ *
+ * Declared here anyway, because the compile-time check and the host are separate
+ * guarantees and this suite tests the host. What it pins is that the host does
+ * not invent a version for a write that emitted none: the tag does not move, two
+ * callers holding the same one both pass, and the lost update happens. That is
+ * the behaviour the model-layer refusal exists to make undeclarable, and pinning
+ * it is what stops someone "fixing" it here — where the fix would be to fabricate
+ * a version the spine never recorded.
+ */
+const concSilent: OperationHandler<{ thingId: string; label?: string }, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(CONC_USE));
+  ctx.sql.exec('CREATE TABLE IF NOT EXISTS conc_things (id TEXT PRIMARY KEY, label TEXT)');
+  ctx.sql.exec(
+    'INSERT INTO conc_things (id, label) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET label = excluded.label',
+    [input.thingId, input.label ?? null],
+  );
+  return { id: input.thingId };
+};
+
+/**
+ * Guarded, and refuses EVERY caller. The precondition must never answer ahead of
+ * it — see the suite case, and the ordering note in both adapters.
+ */
+const concForbidden: OperationHandler<{ thingId: string }, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('conc:never')));
+  return { id: input.thingId };
+};
+
+/** Declares no `concurrency` at all — an `If-Match` here must be refused, not ignored. */
+const concUnguarded: OperationHandler<{ thingId: string }, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(CONC_USE));
+  return { id: input.thingId };
+};
+
+const concurrencyDeclaration = {
+  'conc/update': {
+    input: z.object({ thingId: z.string(), label: z.string().optional() }),
+    concurrency: { over: 'conc-thing', idFrom: 'thingId' },
+  },
+  'conc/read': {
+    input: z.object({ thingId: z.string() }),
+    concurrency: { over: 'conc-thing', idFrom: 'thingId' },
+  },
+  'conc/silent': {
+    input: z.object({ thingId: z.string(), label: z.string().optional() }),
+    concurrency: { over: 'conc-thing', idFrom: 'thingId' },
+  },
+  // Guarded over a field the caller may omit — the case `concurrencyRef` refuses
+  // rather than skips, since a precondition with no row reads as one that passed.
+  'conc/keyless': {
+    input: z.object({ thingId: z.string().optional() }),
+    concurrency: { over: 'conc-thing', idFrom: 'thingId' },
+  },
+  'conc/forbidden': {
+    input: z.object({ thingId: z.string() }),
+    concurrency: { over: 'conc-thing', idFrom: 'thingId' },
+  },
+  'conc/unguarded': { input: z.object({ thingId: z.string() }) },
+};
+
+export const concurrencyMod: ModuleRegistration = {
+  manifest: concurrencyModManifest,
+  operations: {
+    'conc/update': concUpdate as OperationHandler<never, unknown>,
+    'conc/read': concRead as OperationHandler<never, unknown>,
+    'conc/silent': concSilent as OperationHandler<never, unknown>,
+    'conc/keyless': concRead as OperationHandler<never, unknown>,
+    'conc/forbidden': concForbidden as OperationHandler<never, unknown>,
+    'conc/unguarded': concUnguarded as OperationHandler<never, unknown>,
+  },
+  operationInputs: operationInputsOf(concurrencyDeclaration),
+  operationConcurrency: operationConcurrencyOf(concurrencyDeclaration),
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -1252,6 +1380,7 @@ export const contractTestModules: ModuleRegistration[] = [
   searchMod,
   listMod,
   parseMod,
+  concurrencyMod,
 ];
 
 export const brokenModManifest = moduleManifest.parse({

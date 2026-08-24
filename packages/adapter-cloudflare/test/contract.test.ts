@@ -26,6 +26,7 @@ import {
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
+  concurrencyContractSuite,
   listContractSuite,
   permMod,
   inputParseContractSuite,
@@ -1049,6 +1050,19 @@ listContractSuite('adapter-cloudflare', async () => {
 // `ctx.check`, which an allow-all cannot answer. `parseMod` is in
 // `contractTestModules`, so the ScopeDO carries it at code time.
 inputParseContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #129: optimistic concurrency on the DO host, and the DEFAULT checker. This is
+// the only place the precondition is proven to cross the coordinator↔ScopeDO hop:
+// the comparison happens inside the DO's transaction, and the acknowledgement has
+// to come back or the coordinator refuses the success.
+concurrencyContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

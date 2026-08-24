@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX } from '@substrat-run/contracts';
+import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, substratError, toProblem } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
 import { mountOperations } from '../src/operations-routes.js';
 
@@ -624,5 +624,146 @@ describe('a paged operation over HTTP', () => {
     const { app, calls } = harness(pagedOps);
     await app.request('/api/lists/L1/items?sort=created_at');
     expect((calls[0]?.input as { sort: string }).sort).toBe('created_at');
+  });
+});
+
+/**
+ * A guarded operation, and a stub that records what preconditions it was handed
+ * and answers with whatever version the case wants (#129).
+ *
+ * Separate harness because the shared one takes two arguments and drops the
+ * third — which is the very thing under test here.
+ */
+function guardedHarness(version: string | null, ops?: Record<string, object>) {
+  const seen: { ifMatch?: string; sink: boolean }[] = [];
+  const app = new Hono();
+  mountOperations(
+    app,
+    ops ?? {
+      'acme/read-thing': {
+        input: z.object({ thingId: z.string() }),
+        concurrency: { over: 'thing', idFrom: 'thingId' },
+        http: { method: 'GET', path: '/things/{thingId}' },
+      },
+      'acme/update-thing': {
+        input: z.object({ thingId: z.string(), name: z.string().optional() }),
+        concurrency: { over: 'thing', idFrom: 'thingId' },
+        http: { method: 'PATCH', path: '/things/{thingId}' },
+      },
+      'acme/unguarded': {
+        input: z.object({ thingId: z.string() }),
+        http: { method: 'PATCH', path: '/other/{thingId}' },
+      },
+    },
+    async () =>
+      ({
+        invoke: async (
+          _name: string,
+          _input: unknown,
+          options?: { ifMatch?: string; onEntityVersion?: (v: string | null) => void },
+        ) => {
+          seen.push({
+            ...(options?.ifMatch === undefined ? {} : { ifMatch: options.ifMatch }),
+            sink: typeof options?.onEntityVersion === 'function',
+          });
+          options?.onEntityVersion?.(version);
+          return { ok: true };
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any,
+  );
+  return { app, seen };
+}
+
+describe('a concurrency-checked operation on the wire (#129)', () => {
+  it('answers a guarded read with an ETag, quoted', async () => {
+    const { app } = guardedHarness('01J8Z000000000000000000000');
+    const res = await app.request('/api/things/t1');
+    // Quoted per RFC 9110 §8.8.3 — a bare token is malformed, and the kind of
+    // thing that works against a dev server and is stripped by a proxy.
+    expect(res.headers.get('ETag')).toBe('"01J8Z000000000000000000000"');
+  });
+
+  it('sets no ETag when the entity has no version yet', async () => {
+    const { app } = guardedHarness(null);
+    const res = await app.request('/api/things/t1');
+    // Not `ETag: ""`. An empty validator is one a client could echo back at a
+    // write that must refuse it.
+    expect(res.headers.get('ETag')).toBeNull();
+  });
+
+  it('sets no ETag on an operation that declares no concurrency', async () => {
+    const { app, seen } = guardedHarness('01J8Z000000000000000000000');
+    const res = await app.request('/api/other/t1', { method: 'PATCH', body: '{}' });
+    expect(res.headers.get('ETag')).toBeNull();
+    // And no sink was passed at all — an operation that opted out must not make
+    // the host read a version on every invocation.
+    expect(seen.at(-1)?.sink).toBe(false);
+  });
+
+  it('forwards If-Match on an unsafe method', async () => {
+    const { app, seen } = guardedHarness('01J8Z000000000000000000001');
+    await app.request('/api/things/t1', {
+      method: 'PATCH',
+      headers: { 'If-Match': '"01J8Z000000000000000000000"' },
+      body: '{}',
+    });
+    expect(seen.at(-1)?.ifMatch).toBe('"01J8Z000000000000000000000"');
+  });
+
+  it('does NOT forward If-Match on a GET', async () => {
+    const { app, seen } = guardedHarness('01J8Z000000000000000000000');
+    await app.request('/api/things/t1', { headers: { 'If-Match': '"whatever"' } });
+    // On a GET the header means a conditional READ in HTTP. Forwarding it would
+    // have the host refuse a read for being stale — a 412 where the caller asked
+    // for a body.
+    expect(seen.at(-1)?.ifMatch).toBeUndefined();
+  });
+
+  it('answers a stale write with 412', async () => {
+    const app = new Hono();
+    mountOperations(
+      app,
+      {
+        'acme/update-thing': {
+          input: z.object({ thingId: z.string() }),
+          concurrency: { over: 'thing', idFrom: 'thingId' },
+          http: { method: 'PATCH', path: '/things/{thingId}' },
+        },
+      },
+      async () =>
+        ({
+          invoke: async () => {
+            throw substratError('precondition_failed', 'thing t1 changed since you read it', {
+              entity: { entityType: 'thing', entityId: 't1' },
+            });
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any,
+    );
+    // The vertical owns the BODY and the mount owns the STATUS — the same split
+    // every other mapped failure goes through, which is why landing this needed no
+    // new branch here. `classifyError` reads the code off the taxonomy, where the
+    // 412 slot was reserved for exactly this.
+    app.onError((err, c) =>
+      err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({}, 500),
+    );
+    const res = await app.request('/api/things/t1', { method: 'PATCH', body: '{}' });
+    expect(res.status).toBe(412);
+    expect(await res.json()).toEqual({ error: 'thing t1 changed since you read it' });
+  });
+
+  it('carries the refused entity, and no version, in the problem body', async () => {
+    const problem = toProblem(
+      substratError('precondition_failed', 'thing t1 changed since you read it', {
+        entity: { entityType: 'thing', entityId: 't1' },
+      }),
+    );
+    expect(problem.status).toBe(412);
+    expect(problem.code).toBe('precondition_failed');
+    expect(problem.entity).toEqual({ entityType: 'thing', entityId: 't1' });
+    // The current tag is deliberately absent: handing it back turns the obvious
+    // client fix into a blind retry that overwrites whatever caused the refusal.
+    expect(JSON.stringify(problem)).not.toMatch(/version|etag/i);
   });
 });

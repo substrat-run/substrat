@@ -72,7 +72,16 @@ export const calloutManifest = moduleManifest.parse({
   ],
   // protocol:* permissions and protocol.* events moved to
   // @substrat-run/engine-protocol at milestone B (engine-protocol.md §2).
-  events: { emits: [], consumes: [] },
+  // #129: Callout's first event, and it exists because a guarded write must
+  // announce itself — an entity's version IS the last event about it, so an
+  // update that emitted nothing could never move the tag it is guarded on.
+  events: {
+    emits: [
+      { type: 'callout.facility-created', schemaVersion: 1 },
+      { type: 'callout.facility-updated', schemaVersion: 1 },
+    ],
+    consumes: [],
+  },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
   // Entity names checked against `calloutEntities` (#697), and
   // `entityRelations` DERIVED from the entities' `parent` declarations rather

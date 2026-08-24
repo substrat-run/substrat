@@ -166,6 +166,7 @@ import {
   type ScopeHost,
   type ScopeStub,
   type ScopeStubOptions,
+  type InvokeOptions,
   type SqlValue,
   type TenantRelationalStore,
   type TenantStoreProvisionInput,
@@ -698,12 +699,36 @@ interface ScopeStubRpc {
      * so this is safe to deploy in either direction (see `scope-do.ts`).
      */
     failureEnvelope?: boolean,
+    /**
+     * #129: the request preconditions to evaluate INSIDE the operation's
+     * transaction. A ScopeDO running older code ignores the argument — which is
+     * why the reply must say whether it honoured one; see `concurrency` below.
+     */
+    options?: InvokeOptions,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
     platformRequests: number;
     /** Present iff the operation failed and the DO understood `failureEnvelope`. */
     failure?: WireFailure;
+    /**
+     * Present iff the DO understood `preconditions` and the operation declares
+     * `concurrency` (#129).
+     *
+     * **Its absence is what makes version skew safe.** Every other argument added
+     * to this RPC has been safe to ignore: an old DO that drops `failureEnvelope`
+     * throws instead of returning a value, and the coordinator handles a throw. An
+     * old DO that drops `ifMatch` would COMMIT THE WRITE and return 200 — the
+     * caller's precondition silently unenforced, which is the exact lost update
+     * the header was sent to prevent, now with a success telling the client it
+     * did not happen.
+     *
+     * So the DO acknowledges rather than the coordinator assuming, and a
+     * coordinator that sent `ifMatch` and got no acknowledgement refuses instead
+     * of returning. Fail closed, in the one direction that would otherwise fail
+     * open silently.
+     */
+    concurrency?: { version: string | null; ifMatchChecked: boolean };
   }>;
   /** Whether this scope holds a live `system:<moduleId>` grant (#383) — the schedule switch. */
   hasSystemGrant(moduleId: string): Promise<boolean>;
@@ -2285,7 +2310,11 @@ export class CloudflareScopeHost implements ScopeHost {
     return {
       tenantId,
       scopeId,
-      invoke: async <O, I>(operation: string, input?: I): Promise<O> => {
+      invoke: async <O, I>(
+        operation: string,
+        input?: I,
+        invokeOptions?: InvokeOptions,
+      ): Promise<O> => {
         // Entitlement gate (§4.3): a module loads for a tenant only if the tenant holds its
         // SKU flag. The COORDINATOR gates the console-managed path against the shared CP
         // (`cp.tenantHoldsEntitlement`); for a hosted/CP-less scope that call is a trusting
@@ -2319,12 +2348,29 @@ export class CloudflareScopeHost implements ScopeHost {
           requiredKey,
           systemModuleId,
           true,
+          invokeOptions,
         );
         // The operation failed and the DO handed the error back as DATA — so it still
         // has its code and extensions, which a throw across this boundary would have
         // stripped down to a message (#113 §3). Rethrown here, where the caller expects
         // a throw: the envelope is the wire's shape, never the API's.
         if (envelope.failure) throw fromWireFailure(envelope.failure);
+        // #129, and the order matters: the failure envelope is unwrapped FIRST, so a
+        // legitimate `precondition_failed` reaches the caller as itself rather than
+        // as the skew refusal below.
+        //
+        // Reaching here with an `ifMatch` and no acknowledgement means the DO did not
+        // evaluate it — an instance still running code from before this landed. The
+        // write has already committed; nothing here can undo it. What this refuses is
+        // the SUCCESS: a caller told its conditional write succeeded, when in fact the
+        // condition was never checked, will not retry and will not warn anyone.
+        if (invokeOptions?.ifMatch !== undefined && envelope.concurrency?.ifMatchChecked !== true) {
+          throw substratError(
+            'unavailable',
+            `${operation} ran on a scope host that did not evaluate If-Match — the write ` +
+              'may have committed unconditionally. Retry once the scope has been migrated',
+          );
+        }
         const drained = await this.drainExecutors(tenantId, scopeId);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).
@@ -2333,6 +2379,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // kick is what collapses its dispatch latency from sweep-cadence to seconds.
         const enqueued = envelope.platformRequests + (drained.routedToPlatform ?? 0);
         if (enqueued > 0) options?.onPlatformRequests?.(enqueued);
+        if (envelope.concurrency) invokeOptions?.onEntityVersion?.(envelope.concurrency.version);
         return envelope.result as O;
       },
     };

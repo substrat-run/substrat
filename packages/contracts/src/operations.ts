@@ -429,6 +429,85 @@ export type PagedShape<O, Entities, Engines> =
     });
 
 /**
+ * Optimistic concurrency over one entity (#129).
+ *
+ * Present means the caller's `If-Match` is compared against the entity's version
+ * INSIDE the operation's transaction, before the guards and before any engine
+ * call, and a mismatch raises `precondition_failed` (412). The response carries
+ * the entity's version as an `ETag` either way, so a read hands the client the
+ * token its next write will send.
+ *
+ * ```ts
+ * 'acme/update-customer': {
+ *   input: z.object({ customerId: z.string(), name: z.string().optional() }),
+ *   concurrency: { over: 'customer', idFrom: 'customerId' },
+ *   emits: { entity: 'customer', entityIdFrom: 'id', … },
+ * }
+ * ```
+ *
+ * ## Why this is declared rather than blanket
+ *
+ * #129 originally asked that every write require `If-Match`. That was reasoned
+ * from a premise the model has since falsified — *"routes are hand-written thin
+ * over engine in-scope functions"* — and the operations the model actually
+ * produced are command-shaped, not resource-shaped. Two concurrent
+ * `todo/rename-list` calls do not lose an update: the second caller sent a name,
+ * not a whole entity it read and echoed back. A mandatory precondition there is a
+ * forced GET round-trip guarding nothing, on every write in the fleet.
+ *
+ * The shape that DOES lose updates is the field-bag PATCH, and it is not left to
+ * an author's memory: `assertFieldBagsDeclareConcurrency` refuses one that omits
+ * this.
+ *
+ * ## `over` is the entity the operation EMITS about, and that is checked
+ *
+ * A version is the ULID of the last event about the entity, so an operation that
+ * guards an entity it does not announce a change to is not merely unprotected —
+ * it is WORSE than unprotected. Both writers pass their `If-Match`, neither moves
+ * the version, both commit, and the 200s carry an `ETag` asserting the write was
+ * serialised. `assertConcurrencyMovesVersion` refuses that at module load; see
+ * `entity-version.ts`, which asks for this check by name.
+ */
+export type ConcurrencyShape<O, Entities, Engines> = {
+  /**
+   * The entity whose version the precondition compares — this module's, or a
+   * composed engine's.
+   *
+   * Pointable only, for the reason every other narrowed position is: a version is
+   * read for ONE entity id, and `idFrom` names the single input field carrying it,
+   * so a composite-keyed table has nothing to point at. Inlined rather than
+   * aliased, per `PointableName` in `model.ts`.
+   */
+  readonly over:
+    | ({
+        readonly [K in keyof Entities]: Entities[K] extends {
+          primaryKey: readonly [unknown, unknown, ...unknown[]];
+        }
+          ? never
+          : K;
+      }[keyof Entities] &
+        string)
+    | (Engines extends readonly (infer R)[]
+        ? R extends Record<string, EntityDef>
+          ? {
+              readonly [K in keyof R]: R[K] extends {
+                primaryKey: readonly [unknown, unknown, ...unknown[]];
+              }
+                ? never
+                : K;
+            }[keyof R] &
+              string
+          : never
+        : never);
+  /**
+   * The input field carrying that entity's id — the same compile-checked join as
+   * `permission.idFrom`, and load-bearing for the same reason: a precondition read
+   * against the wrong row admits every stale write while looking like it works.
+   */
+  readonly idFrom: InputKeys<O>;
+};
+
+/**
  * The per-operation constraint, self-referential in `O`.
  *
  * Each operation is checked against ITS OWN declared input and output rather
@@ -502,6 +581,19 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    * shifts between requests, so pages drop and duplicate.
    */
   readonly paged?: PagedShape<O, Entities, Engines>;
+  /**
+   * This operation participates in optimistic concurrency (#129).
+   *
+   * One declaration, two consequences that follow from HTTP's own method
+   * semantics rather than from a second flag: the response always carries an
+   * `ETag`, and an UNSAFE method (POST/PUT/PATCH/DELETE) additionally honours
+   * `If-Match` and refuses a stale one with 412. So the same line on a read hands
+   * out the token, and on a write requires it back.
+   *
+   * See `ConcurrencyShape` for why `over` must be the entity the operation emits
+   * about, and why this is opt-in rather than blanket.
+   */
+  readonly concurrency?: ConcurrencyShape<O, Entities, Engines>;
   readonly emits?: {
     /**
      * The entity the event is about — one of THIS module's entities, or one of a
@@ -597,7 +689,7 @@ export function defineOperations<
   const Entities extends Record<string, EntityDef>,
   const Perms extends readonly string[],
   const Engines extends readonly Record<string, EntityDef>[] = [],
->(_entities: Entities, _permissions: Perms, _engines?: Engines) {
+>(entities: Entities, _permissions: Perms, engines?: Engines) {
   return <
     const Ops extends {
       readonly [K in keyof Ops]: OperationShape<Ops[K], Entities, Engines, Perms[number]>;
@@ -606,6 +698,8 @@ export function defineOperations<
     operations: Ops,
   ): Ops => {
     assertListsArePaged(operations);
+    assertConcurrencyMovesVersion(operations);
+    assertFieldBagsDeclareConcurrency(operations, entities, engines ?? []);
     return operations;
   };
 }
@@ -653,6 +747,204 @@ function assertListsArePaged(operations: Record<string, unknown>): void {
         "    paged: { sortKey: 'article' }",
     );
   }
+}
+
+/**
+ * A guarded operation must ANNOUNCE the change it guards (#129).
+ *
+ * An entity's version is the ULID of the last event about it, so a `concurrency`
+ * declaration over an entity the operation does not emit about is not a weaker
+ * protection — it is an inverted one:
+ *
+ * 1. A and B both read the customer at version V and both send `If-Match: V`.
+ * 2. A's write commits. It emits nothing about `customer`, so the version is still V.
+ * 3. B's precondition compares V against V, passes, and overwrites A.
+ * 4. Both callers received 200 and an `ETag`, which is the wire's way of saying
+ *    the write was serialised against a known version.
+ *
+ * That is the original lost update, now with a mechanism asserting it did not
+ * happen — strictly worse than no precondition, because it is believed. So the
+ * join is checked rather than trusted, which is what `entity-version.ts` asks for
+ * where it names the one hole in deriving a version from the spine:
+ *
+ * > a mutation that emits no event does not move the version … the answer is
+ * > that a declared `concurrency` must be compile-checked against the operation's
+ * > declared `emits` (#129), which is strictly more than a trigger would have
+ * > given: a trigger guarantees the column moved, never that the operation
+ * > announced what it did.
+ *
+ * ## Why a read is exempt
+ *
+ * An operation with no `emits` at all is a READ, and on a read this declaration
+ * means "answer with an `ETag`" — there is nothing to serialise and nothing to
+ * refuse. The rule therefore bites only where the operation emits and names a
+ * DIFFERENT entity, plus the one case that cannot be read as a read: an unsafe
+ * HTTP method with no event, which is a mutation that does not announce itself
+ * and is already a rule violation without this.
+ */
+function assertConcurrencyMovesVersion(operations: Record<string, unknown>): void {
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as {
+      concurrency?: { over?: unknown };
+      emits?: { entity?: unknown };
+      http?: { method?: unknown };
+    };
+    const over = decl.concurrency?.over;
+    if (typeof over !== 'string') continue;
+    const emitted = decl.emits?.entity;
+    if (emitted === over) continue;
+    const method = decl.http?.method;
+    const unsafe = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+    if (emitted === undefined && !unsafe) continue; // a read: the ETag half only
+    throw new Error(
+      `model: '${name}' declares \`concurrency.over: '${over}'\` but ` +
+        (emitted === undefined
+          ? `emits no event, and it is served as ${String(method)} — a mutation that ` +
+            'announces nothing does not move a version'
+          : `emits about '${String(emitted)}'`) +
+        '.\n' +
+        `  An entity's version IS the last event about it, so nothing this operation ` +
+        `does moves '${over}'. Two callers holding the same tag would both pass the ` +
+        'precondition and both commit — the lost update this declaration exists to ' +
+        'refuse, with a 200 and an `ETag` asserting it did not happen.\n' +
+        `  Remedy: emit about '${over}' (\`emits: { entity: '${over}', … }\`), or guard ` +
+        'the entity this operation actually announces.',
+    );
+  }
+}
+
+/**
+ * A read-modify-write shape must say how it serialises (#129).
+ *
+ * `concurrency` is opt-in because most declared operations are command-shaped and
+ * genuinely do not need it (see `ConcurrencyShape`). But "remember to opt in on
+ * the dangerous ones" is not a guarantee, and the dangerous ones have a shape the
+ * model can already see: a single required field naming the row, and every other
+ * field OPTIONAL over that entity's own columns. That is read-modify-write by
+ * construction — the caller GET the entity, changed a field, and sent the bag
+ * back — and it is the one shape where a concurrent writer's change is silently
+ * destroyed rather than merely re-ordered.
+ *
+ * This is the `paged`-vs-bare-array refusal applied to a second defect class, and
+ * it is deliberately being added while it matches NOTHING in the fleet: zero
+ * operations means zero migration, which makes now the cheapest moment it will
+ * ever be. Waiting until the shape appears means waiting until it appears
+ * unguarded.
+ *
+ * ## Why the test is this narrow
+ *
+ * A rule that refuses correct code trains people to route around it, so every
+ * clause here exists to exclude something legitimate:
+ *
+ * - **Two or more optional fields.** One optional field is a nullable
+ *   command (`{ orderId, note? }`), not a bag.
+ * - **Exactly one required field.** `shop/set-stock` takes `{ productId,
+ *   quantity }` — two required fields, a command that states its whole intent.
+ * - **Every optional field is a column of that entity.** A filter, a flag, or a
+ *   reason code alongside the update is not the entity being echoed back.
+ *
+ * Column names are snake_case and input fields are camelCase, so the comparison
+ * crosses that seam explicitly rather than accidentally matching nothing.
+ */
+function assertFieldBagsDeclareConcurrency(
+  operations: Record<string, unknown>,
+  entities: Record<string, EntityDef>,
+  engines: readonly Record<string, EntityDef>[],
+): void {
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as {
+      concurrency?: unknown;
+      emits?: { entity?: unknown };
+      permission?: { entity?: unknown };
+      input?: z.ZodObject<z.ZodRawShape>;
+    };
+    if (decl.concurrency !== undefined) continue;
+    // The entity the operation is ABOUT. `emits` is the reliable statement; a
+    // narrowed permission is the fallback, and it is what catches the write that
+    // does not emit — which would otherwise escape by breaking a second rule.
+    const about = decl.emits?.entity ?? decl.permission?.entity;
+    if (typeof about !== 'string') continue;
+    const entity = entities[about] ?? engines.map((r) => r[about]).find(Boolean);
+    if (!entity) continue;
+    const shape = decl.input?.shape;
+    if (!shape) continue;
+
+    const required: string[] = [];
+    const optional: string[] = [];
+    for (const [field, schema] of Object.entries(shape)) {
+      (isOptionalSchema(schema) ? optional : required).push(field);
+    }
+    if (required.length !== 1 || optional.length < 2) continue;
+
+    const columns = new Set(Object.keys(entity.fields.shape));
+    if (!optional.every((field) => columns.has(snakeCaseField(field)))) continue;
+
+    const emits = typeof decl.emits?.entity === 'string';
+    throw new Error(
+      `model: '${name}' takes a partial field-bag over '${about}' — ` +
+        `\`${required[0]}\` names the row and ${optional.map((f) => `\`${f}\``).join(', ')} ` +
+        'are its own columns, every one optional — and declares no `concurrency`.\n' +
+        '  That is read-modify-write: two callers who both read the row, each change ' +
+        'one field and each save, do not conflict. The second write silently destroys ' +
+        'the first, and nothing surfaces it.\n' +
+        `  Remedy: \`concurrency: { over: '${about}', idFrom: '${required[0]}' }\`` +
+        (emits
+          ? '.'
+          : `, and emit about '${about}' — a version is the last event about an entity, ` +
+            'so a write that announces nothing cannot be guarded.'),
+    );
+  }
+}
+
+/** `customerId` → `customer_id`: input fields and columns sit either side of this seam. */
+function snakeCaseField(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+/**
+ * Is this declared field one the caller may omit?
+ *
+ * Read structurally, for the reason every other Zod read in the repo is: two
+ * copies of the library in one build make `instanceof` a coin toss. Looks through
+ * the wrappers that do not change optionality's answer, and treats a `default` as
+ * optional — a field the caller can leave out is a field the caller can leave out,
+ * however the gap is filled.
+ */
+function isOptionalSchema(schema: unknown, depth = 0): boolean {
+  if (depth > 8) return false;
+  const def = (schema as { _zod?: { def?: unknown } })?._zod?.def as { type?: string; innerType?: unknown } | undefined;
+  switch (def?.type) {
+    case 'optional':
+    case 'nullish':
+    case 'default':
+    case 'prefault':
+      return true;
+    case 'readonly':
+    case 'nullable':
+      return isOptionalSchema(def.innerType, depth + 1);
+    default:
+      return false;
+  }
+}
+
+/**
+ * The concurrency each operation declares, for the host (#129).
+ *
+ * Handed over beside `operationInputs` and read the same way — the adapter
+ * compares versions from this map rather than each handler being trusted to. Same
+ * argument as the parse: one place that cannot be forgotten beats a rule every
+ * new operation has to remember.
+ */
+export function operationConcurrencyOf(
+  operations: Readonly<Record<string, object>>,
+): Record<string, { entity: string; idFrom: string }> {
+  const out: Record<string, { entity: string; idFrom: string }> = {};
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = (op as { concurrency?: { over?: unknown; idFrom?: unknown } }).concurrency;
+    if (typeof decl?.over !== 'string' || typeof decl.idFrom !== 'string') continue;
+    out[name] = { entity: decl.over, idFrom: decl.idFrom };
+  }
+  return out;
 }
 
 /**

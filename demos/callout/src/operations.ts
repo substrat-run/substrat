@@ -170,7 +170,101 @@ export const calloutOperations = defineOperations(
       accessNote: z.string().optional(),
     }),
     output: calloutEntities.facility.fields,
+    /**
+     * The create emits too, and #129 is what made that necessary rather than
+     * merely correct.
+     *
+     * An entity's version IS the last event about it, so a facility created by a
+     * silent write has no version at all — and `callout/update-facility` then
+     * refuses every conditional save against it, forever, with a caller holding a
+     * tag it was never given. The guard did not cause that; it revealed it. "Every
+     * mutation emits a fat event" is a rule review enforces and `boundary-lint`
+     * does not, and Callout had been quietly failing it since it was written.
+     *
+     * `address` is omitted from the payload for the reason it is on the update:
+     * the entity marks it erasable, and an immutable event is the one place in a
+     * scope an erasure cannot reach.
+     */
+    emits: {
+      entity: 'facility',
+      entityIdFrom: 'id',
+      type: 'callout.facility-created',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'customer_id', 'name', 'access_note'],
+    },
     http: { method: 'POST', path: '/customers/{customerId}/facilities' },
+  },
+  /**
+   * The read half of the guarded pair (#129) — and it has to exist, or the guard is
+   * unreachable.
+   *
+   * A client can only send `If-Match` if something handed it a tag, and until this
+   * operation existed the only way to get one was to perform a write. Declaring
+   * `concurrency` on a read means exactly "answer with the `ETag`": there is nothing
+   * to serialise and nothing to refuse, which is why it emits nothing and why
+   * `assertConcurrencyMovesVersion` exempts a read from the emits join.
+   */
+  'callout/get-facility': {
+    summary: 'One facility, with the version tag its next update must quote',
+    permission: { key: 'facility:manage', entity: 'facility', idFrom: 'facilityId' },
+    input: z.object({ facilityId: z.string() }),
+    output: calloutEntities.facility.fields,
+    concurrency: { over: 'facility', idFrom: 'facilityId' },
+    http: { method: 'GET', path: '/facilities/{facilityId}' },
+  },
+  /**
+   * The first operation in the fleet to declare `concurrency` (#129), and it is
+   * the shape that needs it: a facility's details are read, edited on a screen,
+   * and sent back as a bag of optional fields. Two dispatchers with the same site
+   * open — one correcting the address, one adding a gate code — is not a
+   * hypothetical in a field-service tool, and without a precondition the second
+   * save silently discards the first with no error anywhere.
+   *
+   * Contrast `callout/create-facility` directly above, which takes the same three
+   * fields and is deliberately NOT guarded: a create has nothing to be stale
+   * against. And contrast the command-shaped writes elsewhere in this file —
+   * `callout/upsert-price` states a whole article every time, so a second writer
+   * overwrites intentionally rather than by accident.
+   *
+   * `assertFieldBagsDeclareConcurrency` would refuse this operation if the
+   * declaration below were removed — one required field naming the row, the rest
+   * optional over the entity's own columns, which is read-modify-write by
+   * construction.
+   */
+  'callout/update-facility': {
+    summary: "Update a facility's details",
+    // Narrowed, not node-level: `facility:manage` at the node would let anyone
+    // holding it edit any site in the scope.
+    permission: { key: 'facility:manage', entity: 'facility', idFrom: 'facilityId' },
+    input: z.object({
+      facilityId: z.string(),
+      name: z.string().optional(),
+      address: z.string().optional(),
+      accessNote: z.string().optional(),
+    }),
+    output: calloutEntities.facility.fields,
+    concurrency: { over: 'facility', idFrom: 'facilityId' },
+    /**
+     * Callout's first event, and it is not incidental to the above: a version IS
+     * the last event about an entity, so a guarded write that announced nothing
+     * would leave the tag still and admit every stale save while reporting that it
+     * had not. `assertConcurrencyMovesVersion` refuses that pairing outright.
+     *
+     * `address` is absent from the payload because the entity marks it erasable —
+     * a site address for a private customer is their home address, and an
+     * immutable event is the one place in a scope an erasure cannot reach. The
+     * compiler enforces the omission rather than a reviewer noticing it.
+     */
+    emits: {
+      entity: 'facility',
+      entityIdFrom: 'id',
+      type: 'callout.facility-updated',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'customer_id', 'name', 'access_note'],
+    },
+    http: { method: 'PATCH', path: '/facilities/{facilityId}' },
   },
   'callout/price-list': {
     summary: 'The current price list',

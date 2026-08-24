@@ -8,6 +8,7 @@ import {
   mulMoney,
   pageOf,
   pageVisible,
+  operationConcurrencyOf,
   type CountedPage,
   type EntityRef,
   type EntityRow,
@@ -164,7 +165,91 @@ const createFacilityOp: OperationHandler<
     [id, customer.id, input.name, input.address ?? null, input.accessNote ?? null, ctx.now()],
   );
   ctx.link({ entityType: 'facility', entityId: id }, { entityType: 'customer', entityId: customer.id });
-  return ctx.sql.query<FacilityRow>('SELECT * FROM callout_facilities WHERE id = ?', [id])[0]!;
+  const row = ctx.sql.query<FacilityRow>('SELECT * FROM callout_facilities WHERE id = ?', [id])[0]!;
+  // #129: without this the row has no version, and every conditional update
+  // against it would be refused forever — see the declaration.
+  ctx.emit({
+    type: 'callout.facility-created',
+    schemaVersion: 1,
+    entity: { entityType: 'facility', entityId: row.id },
+    piiClass: 'none',
+    payload: {
+      id: row.id,
+      customer_id: row.customer_id,
+      name: row.name,
+      access_note: row.access_note,
+    },
+  });
+  return row;
+};
+
+/** The read that hands out the tag (#129) — see the declaration for why it exists. */
+const getFacilityOp: OperationHandler<{ facilityId: string }, FacilityRow> = async (ctx, input) => {
+  assertAllowed(
+    await ctx.check(SC_PERM.facilityManage, { entityType: 'facility', entityId: input.facilityId }),
+  );
+  const row = ctx.sql.query<FacilityRow>('SELECT * FROM callout_facilities WHERE id = ?', [
+    input.facilityId,
+  ])[0];
+  if (!row) throw new Error(`facility not found: ${input.facilityId}`);
+  return row;
+};
+
+/**
+ * The guarded update (#129). The precondition is NOT here — by the time this runs
+ * the host has already compared the caller's `If-Match` against the facility's
+ * version, inside this same transaction, and thrown `precondition_failed` if it
+ * had moved. A handler that re-checked would be checking a value it cannot read
+ * atomically with its own write, which is the mistake the declaration exists to
+ * make unnecessary.
+ *
+ * What IS here is the rule that makes the guard mean anything: the write emits.
+ * A version is the last event about an entity, so an update that announced
+ * nothing would never move the tag it is guarded on.
+ */
+const updateFacilityOp: OperationHandler<
+  { facilityId: string; name?: string; address?: string; accessNote?: string },
+  FacilityRow
+> = async (ctx, input) => {
+  assertAllowed(
+    await ctx.check(SC_PERM.facilityManage, { entityType: 'facility', entityId: input.facilityId }),
+  );
+  const current = ctx.sql.query<FacilityRow>('SELECT * FROM callout_facilities WHERE id = ?', [
+    input.facilityId,
+  ])[0];
+  if (!current) throw new Error(`facility not found: ${input.facilityId}`);
+  // COALESCE semantics stated in TypeScript rather than SQL: an omitted field
+  // preserves what the row carries. That is what makes this read-modify-write and
+  // therefore what makes the precondition load-bearing.
+  const next = {
+    name: input.name ?? current.name,
+    address: input.address ?? current.address,
+    access_note: input.accessNote ?? current.access_note,
+  };
+  ctx.sql.exec('UPDATE callout_facilities SET name = ?, address = ?, access_note = ? WHERE id = ?', [
+    next.name,
+    next.address,
+    next.access_note,
+    input.facilityId,
+  ]);
+  const row = ctx.sql.query<FacilityRow>('SELECT * FROM callout_facilities WHERE id = ?', [
+    input.facilityId,
+  ])[0]!;
+  ctx.emit({
+    type: 'callout.facility-updated',
+    schemaVersion: 1,
+    entity: { entityType: 'facility', entityId: row.id },
+    piiClass: 'none',
+    // Fat, minus the erasable address — the declaration in `operations.ts` is
+    // what the compiler holds this list to.
+    payload: {
+      id: row.id,
+      customer_id: row.customer_id,
+      name: row.name,
+      access_note: row.access_note,
+    },
+  });
+  return row;
 };
 
 const upsertPriceOp: OperationHandler<
@@ -426,6 +511,8 @@ const declaredOperations = {
   'callout/list-customers': listCustomersOp,
   'callout/search-customers': searchCustomersOp,
   'callout/create-facility': createFacilityOp,
+  'callout/get-facility': getFacilityOp,
+  'callout/update-facility': updateFacilityOp,
   'callout/upsert-price': upsertPriceOp,
   'callout/price-list': priceListOp,
   'callout/create-workorder': createWorkOrderOp,
@@ -438,6 +525,9 @@ const declaredOperations = {
 export const calloutModule: ModuleRegistration = {
   manifest: calloutManifest,
   migrations: calloutMigrations,
+  // #129: the entity whose version an `If-Match` is compared against, derived
+  // from the same declaration the routes and the document come from.
+  operationConcurrency: operationConcurrencyOf(calloutOperations),
   operations: {
     // ALL of them bound to the declaration (#707): input and return are checked
     // against `calloutOperations` at the exact method. The `as never` casts these

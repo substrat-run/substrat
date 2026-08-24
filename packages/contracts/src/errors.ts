@@ -111,7 +111,19 @@ export const PROBLEM_EXTENSIONS = {
   not_found: z.strictObject({}),
   conflict: z.object({ reason: z.string().min(1).optional() }),
   validation_failed: z.object({ errors: z.array(validationIssue).optional() }),
-  precondition_failed: z.strictObject({}),
+  precondition_failed: z.object({
+    /**
+     * The entity whose version moved under the caller (#129).
+     *
+     * **The current version is deliberately NOT carried.** Handing it back turns
+     * the obvious client fix into a blind retry with the new tag, which writes
+     * over the change that caused the refusal — the exact lost update the
+     * precondition exists to prevent, now with a 412 in the log claiming it was
+     * prevented. A client that wants to proceed re-reads, and re-reading is what
+     * gives its user something to merge.
+     */
+    entity: entityRef.optional(),
+  }),
   rate_limited: z.object({ retryAfter: z.number().int().nonnegative().optional() }),
   unavailable: z.strictObject({}),
   internal: z.strictObject({}),

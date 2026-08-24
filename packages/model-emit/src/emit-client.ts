@@ -340,6 +340,8 @@ interface HttpOp {
   readonly output?: unknown;
   readonly http?: { readonly method: string; readonly path: string };
   readonly paged?: { readonly sortKey?: string; readonly total?: boolean };
+  /** #129: this operation participates in optimistic concurrency. */
+  readonly concurrency?: { readonly over: string; readonly idFrom: string };
 }
 
 const pathParams = (path: string) => [...path.matchAll(/\{(\w+)\}/g)].map((m) => m[1] as string);
@@ -525,6 +527,7 @@ export function renderClient(
   const methods: string[] = [];
   const impls: string[] = [];
   let anyPaged = false;
+  let anyGuarded = false;
 
   for (const [operation, op] of declared) {
     const method = methodName(operation, ownPrefix);
@@ -553,6 +556,7 @@ export function renderClient(
     const entryType = tsType(op.output, { ...ctx, where: `${where}.output` });
     const returnType = op.paged ? `Paged<${maybeParen(entryType, ctx)}>` : entryType;
     if (op.paged) anyPaged = true;
+    if (op.concurrency) anyGuarded = true;
 
     const signature = hasInput ? `input: ${inputType}` : '';
     const doc = [
@@ -561,6 +565,14 @@ export function renderClient(
       '   *',
       `   * \`${op.http.method} ${op.http.path}\` — \`${operation}\``,
       ...(op.paged ? ['   *', '   * Paged: walk it with `follow(page.next)` until `next` is `null`.'] : []),
+      ...(op.concurrency
+        ? [
+            '   *',
+            `   * Concurrency-checked over \`${op.concurrency.over}\`. The tag this answers with is`,
+            '   * remembered and sent as `If-Match` on the next write to the same entity, so a',
+            '   * write that would overwrite someone else\'s change fails with 412 instead.',
+          ]
+        : []),
       '   */',
     ].join('\n');
 
@@ -574,10 +586,16 @@ export function renderClient(
       ? '`' + op.http.path.replace(/\{(\w+)\}/g, (_, p: string) => `\${encodeURIComponent(String(input.${p}))}`) + '`'
       : JSON.stringify(op.http.path);
     const rest = params.length ? `omit(input, ${JSON.stringify(params)})` : hasInput ? 'input' : 'undefined';
-    const call = op.paged ? 'page' : 'send';
+    const call = op.paged ? 'page' : op.concurrency ? 'guarded' : 'send';
+    // A guarded call carries the entity it is about, so the runtime can key the tag
+    // it caches. Read off the declaration rather than guessed from the path: the id
+    // field and the path parameter are usually the same and are not required to be.
+    const guardArgs = op.concurrency
+      ? `${JSON.stringify(op.concurrency.over)}, input.${op.concurrency.idFrom}, `
+      : '';
     impls.push(
       `    ${method}: (${hasInput ? 'input: Args' : ''}) =>\n` +
-        `      ${call}(${pathExpr}, ${JSON.stringify(op.http.method)}, ${takesBody ? `${rest}, undefined` : `undefined, ${rest}`}),`,
+        `      ${call}(${guardArgs}${pathExpr}, ${JSON.stringify(op.http.method)}, ${takesBody ? `${rest}, undefined` : `undefined, ${rest}`}),`,
     );
   }
 
@@ -635,16 +653,23 @@ const nextFrom = (header: string | null): string | null => {
 export function createClient(options: ClientOptions = {}): ${config.name}Client {
   const baseUrl = options.baseUrl ?? '/api';
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
-  const readMessage = options.errorMessage ?? defaultErrorMessage;
+  const readMessage = options.errorMessage ?? defaultErrorMessage;${
+    anyGuarded ? `
+  /** #129: entity tags seen on this client, keyed \`entityType:id\`. */
+  const versions = new Map<string, string>();` : ''
+  }
 
   /** One request, against a path that is ALREADY prefixed and query-stringed. */
-  const raw = async (fullPath: string, method: string, body: unknown): Promise<Response> => {
+  const raw = async (fullPath: string, method: string, body: unknown${
+    anyGuarded ? ', extra?: Record<string, string>' : ''
+  }): Promise<Response> => {
     const hasBody = body !== undefined && method !== 'GET' && method !== 'DELETE';
     return await doFetch(fullPath, {
       method,
       headers: {
         ...(hasBody ? { 'content-type': 'application/json' } : {}),
-        ...(options.headers?.() ?? {}),
+        ...(options.headers?.() ?? {}),${anyGuarded ? `
+        ...(extra ?? {}),` : ''}
       },
       ...(hasBody ? { body: JSON.stringify(body) } : {}),
     });
@@ -660,6 +685,55 @@ export function createClient(options: ClientOptions = {}): ${config.name}Client 
   const send = async (path: string, method: string, body: unknown, params: unknown): Promise<unknown> =>
     await parse(await raw(\`\${baseUrl}\${path}\${query(params as Record<string, unknown>)}\`, method, body));
 ${
+  anyGuarded
+    ? `
+  /**
+   * A concurrency-checked call (#129): remember the tag a read hands back, send it
+   * as \`If-Match\` on the next write to that same entity.
+   *
+   * This is what makes the guarantee reachable without the app writing header code.
+   * The tag is per (entity type, id) rather than global — two facilities being
+   * edited in two tabs do not share one — and it lives on the CLIENT INSTANCE, so a
+   * page reload starts empty and the first write after it simply goes unconditional
+   * until something has been read.
+   *
+   * **A 412 evicts the tag rather than replacing it with the current one.** The
+   * tempting behaviour is to re-read and retry automatically; that would overwrite
+   * whatever change caused the refusal, which is the lost update this exists to
+   * prevent. Evicting means the app's own re-read is what re-arms the guard, and
+   * until it happens the next write is unconditional — visibly wrong rather than
+   * quietly wrong.
+   *
+   * \`versions\` is exposed on the client so an app can inspect or clear it. Nothing
+   * here is hidden state a caller cannot reach.
+   */
+  const guarded = async (
+    entityType: string,
+    entityId: unknown,
+    path: string,
+    method: string,
+    body: unknown,
+    params: unknown,
+  ): Promise<unknown> => {
+    const key = \`\${entityType}:\${String(entityId)}\`;
+    const held = versions.get(key);
+    const res = await raw(
+      \`\${baseUrl}\${path}\${query(params as Record<string, unknown>)}\`,
+      method,
+      body,
+      held !== undefined && method !== 'GET' ? { 'If-Match': held } : undefined,
+    );
+    if (res.status === 412) versions.delete(key);
+    const parsed = await parse(res);
+    // Read AFTER \`parse\`, which throws on a failure — a tag from an error response
+    // describes nothing the caller now holds.
+    const tag = res.headers.get('ETag');
+    if (tag) versions.set(key, tag);
+    return parsed;
+  };
+`
+    : ''
+}${
   anyPaged
     ? `
   /**
@@ -681,7 +755,7 @@ ${
     : ''
 }
   return {
-${impls.join('\n')}${
+${impls.join('\n')}${anyGuarded ? '\n    versions,' : ''}${
     anyPaged
       ? `
     follow: async (next: string) => {
@@ -700,6 +774,21 @@ ${impls.join('\n')}${
   } as unknown as ${config.name}Client;
 }
 `;
+
+  const versionsSignature = anyGuarded
+    ? `
+  /**
+   * The entity tags this client is holding, keyed \`entityType:id\` (#129).
+   *
+   * Populated from every concurrency-checked response and sent back as
+   * \`If-Match\` on the next write to that entity — an app writes no header code.
+   * Exposed rather than hidden so it can be inspected in a devtools session and
+   * cleared when a screen is abandoned; a stale tag causes a 412, never a silent
+   * overwrite, so clearing it is safe and keeping it is safe.
+   */
+  readonly versions: Map<string, string>;
+`
+    : '';
 
   const followSignature = anyPaged
     ? `
@@ -730,7 +819,7 @@ ${impls.join('\n')}${
       [...used].sort().map((k) => `${k.slice(vertical.length + 1)} → ${overrides.get(k)}`),
     ),
     entityBlocks.join('\n\n'),
-    `/** Every operation this vertical binds to HTTP, one method each. */\nexport interface ${config.name}Client {\n${methods.join('\n\n')}\n${followSignature}}`,
+    `/** Every operation this vertical binds to HTTP, one method each. */\nexport interface ${config.name}Client {\n${methods.join('\n\n')}\n${versionsSignature}${followSignature}}`,
     runtime.trimStart(),
   ].join('\n\n');
 }

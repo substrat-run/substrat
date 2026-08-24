@@ -45,6 +45,7 @@ export type {
   ScopeHost,
   ScopeStub,
   ScopeStubOptions,
+  InvokeOptions,
   SqlMigration,
   SqlValue,
   TenantBlobStore,
@@ -168,6 +169,7 @@ export {
 export {
   entityVersionQuery,
   entityVersionOf,
+  assertIfMatch,
   OUTBOX_ENTITY_INDEX,
   type EntityVersion,
   type EntityVersionRow,

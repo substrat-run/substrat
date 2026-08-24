@@ -235,9 +235,11 @@ import {
   type SearchOptions,
   entityVersionQuery,
   entityVersionOf,
+  assertIfMatch,
   OUTBOX_ENTITY_INDEX,
   type EntityVersion,
   type EntityVersionRow,
+  type InvokeOptions,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -838,6 +840,12 @@ export class SqliteScopeHost implements ScopeHost {
    * and stays ungated.
    */
   private readonly operationInput = new Map<string, { parse(value: unknown): unknown }>();
+  /**
+   * #129: name → the entity whose version an `If-Match` is compared against.
+   * Populated only by `registerModule`, for the same reason `operationInput` is:
+   * a bare `defineOperation` carries no declaration to read one off.
+   */
+  private readonly operationConcurrency = new Map<string, { entity: string; idFrom: string }>();
   private readonly roles = new Map<string, RoleDefinition>(); // 'tenantId/roleKey'
   /** Executor id → {eventType, handler} (K-22 §4.2). Host code, not module code. */
   private readonly executors = new Map<string, RegisteredEffector>();
@@ -1639,6 +1647,17 @@ export class SqliteScopeHost implements ScopeHost {
           `${unbound.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
       );
     }
+    // Same rule for a declared precondition, and it matters more: a `concurrency`
+    // on an unbound name is a guarantee nothing enforces, which is exactly the
+    // belief #129 exists to stop anyone holding.
+    const declaredConcurrency = registration.operationConcurrency ?? {};
+    const unguarded = Object.keys(declaredConcurrency).filter((name) => !ownOperations.has(name));
+    if (unguarded.length > 0) {
+      throw new Error(
+        `${manifest.id} declares operationConcurrency for unbound operation(s): ` +
+          `${unguarded.sort().join(', ')} — a precondition on nothing reads as a guard that is not there`,
+      );
+    }
     for (const [name, handler] of Object.entries(registration.operations ?? {})) {
       this.defineOperation(name, handler);
       // Record which SKU flag gates this operation (§4.3). Bare defineOperation
@@ -1648,6 +1667,8 @@ export class SqliteScopeHost implements ScopeHost {
       // rather than the name — a withdrawn operation has nothing to parse for.
       const schema = declaredInputs[name];
       if (schema && this.operations.has(name)) this.operationInput.set(name, schema);
+      const guarded = declaredConcurrency[name];
+      if (guarded && this.operations.has(name)) this.operationConcurrency.set(name, guarded);
     }
   }
 
@@ -2676,9 +2697,27 @@ export class SqliteScopeHost implements ScopeHost {
     return {
       tenantId,
       scopeId,
-      invoke: async <O, I>(operation: string, input?: I): Promise<O> => {
+      invoke: async <O, I>(
+        operation: string,
+        input?: I,
+        invokeOptions?: InvokeOptions,
+      ): Promise<O> => {
         const handler = operations.get(operation);
         if (!handler) return Promise.reject(new Error(`unknown operation: ${operation}`));
+        // #129. A precondition the operation never declared is REFUSED, not
+        // ignored. A caller sending `If-Match` believes its write is serialised,
+        // and quietly dropping the header leaves that belief intact while the
+        // protection is absent — the one failure mode this mechanism exists to
+        // prevent, arrived at through the mechanism itself.
+        const guarded = this.operationConcurrency.get(operation);
+        if (invokeOptions?.ifMatch !== undefined && !guarded) {
+          return Promise.reject(
+            new Error(
+              `${operation} was called with If-Match but declares no \`concurrency\` — ` +
+                'nothing would have been compared. Declare it, or drop the header',
+            ),
+          );
+        }
         // Entitlement gate (control-plane.md §4.3): a module loads for a tenant
         // only if the tenant holds its SKU flag. Checked per invoke — the simple,
         // uncached path (K-OQ5); a DO-cached variant is a later benchmark call.
@@ -2695,6 +2734,9 @@ export class SqliteScopeHost implements ScopeHost {
         // harness only after the enqueue task resolves — i.e. after COMMIT — so a
         // rolled-back intent never signals.
         const signals = { platformRequests: 0 };
+        // #129: read inside the transaction, reported after it commits — a tag
+        // handed out for writes that were rolled back is a tag nobody may hold.
+        let committedVersion: EntityVersion | null | undefined;
         const invoked = await rt.actor.enqueue(async () => {
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
@@ -2715,11 +2757,42 @@ export class SqliteScopeHost implements ScopeHost {
           rt.db.exec('BEGIN IMMEDIATE');
           let result: O;
           try {
+            // #129, and the SPLIT here is the whole subtlety: the version is
+            // snapshotted before the handler, and compared after it.
+            //
+            // **Read before**, because the handler's own `emit` moves the version —
+            // comparing afterwards against a value the operation itself just
+            // changed would refuse every write. Inside the transaction, because a
+            // version read outside the write's own transaction is
+            // time-of-check/time-of-use: the value can move between the comparison
+            // and the commit, and the write lands anyway.
+            //
+            // **Compare after**, because the permission check lives INSIDE the
+            // handler (`assertAllowed(await ctx.check(…))`) and must be what
+            // answers first. Refusing on the version before the handler runs makes
+            // this operation a version oracle: a principal with no permission on
+            // the entity sends `If-Match: *` and learns whether it exists, or sends
+            // a tag and learns whether it has changed. Found by driving Callout's
+            // two-dispatcher scenario over HTTP with the wrong principal, which
+            // answered 412 where it owed 403.
+            //
+            // The cost is a refused write having done the handler's work first. It
+            // is discarded with everything else — same transaction, same rollback —
+            // so the only loss is effort on a path that was already failing.
+            const ref = guarded ? this.concurrencyRef(operation, guarded, parsed) : undefined;
+            const seen =
+              ref && invokeOptions?.ifMatch !== undefined ? this.versionAt(rt, ref) : undefined;
             // Manifest guards (K-17): pre-conditions, inside the operation's own
             // transaction, before the handler. A throw here blocks the operation
             // and rolls back exactly like a handler throw — fail closed.
             await this.runGuards(operation, ctx, parsed as I | undefined);
             result = await (handler as OperationHandler<I | undefined, O>)(ctx, parsed as I | undefined);
+            if (ref && invokeOptions?.ifMatch !== undefined) {
+              assertIfMatch(ref, invokeOptions.ifMatch, seen ?? null);
+            }
+            // The tag the caller gets back describes the row as THIS write left
+            // it, so it is read after the handler and still under `BEGIN`.
+            if (ref) committedVersion = this.versionAt(rt, ref);
             rt.db.exec('COMMIT');
           } catch (err) {
             rt.db.exec('ROLLBACK');
@@ -2737,6 +2810,7 @@ export class SqliteScopeHost implements ScopeHost {
           return structuredClone(result);
         });
         if (signals.platformRequests > 0) options?.onPlatformRequests?.(signals.platformRequests);
+        if (committedVersion !== undefined) invokeOptions?.onEntityVersion?.(committedVersion);
         return invoked;
       },
     };
@@ -2749,6 +2823,38 @@ export class SqliteScopeHost implements ScopeHost {
   // internals. They are UNCONDITIONAL gates — policy that depends on vertical
   // data stays vertical-composed glue inside the operation handler.
   // -------------------------------------------------------------------------
+
+  /**
+   * The entity a guarded operation's precondition is about (#129).
+   *
+   * `idFrom` is compile-checked to name an input field, and the host has already
+   * parsed that input — so the field exists and has its declared type. What is
+   * still possible is a field the schema lets the caller OMIT, and a precondition
+   * with no row to read is not a weaker check but an absent one. Refused rather
+   * than skipped: the caller sent `If-Match` and must not receive a 200 that
+   * compared nothing.
+   */
+  private concurrencyRef(
+    operation: string,
+    guarded: { entity: string; idFrom: string },
+    parsed: unknown,
+  ): EntityRef {
+    const id = (parsed as Record<string, unknown> | undefined)?.[guarded.idFrom];
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new Error(
+        `${operation} declares concurrency over '${guarded.entity}' keyed by ` +
+          `'${guarded.idFrom}', but the parsed input carries no such id — there is no ` +
+          'row whose version could be compared',
+      );
+    }
+    return { entityType: guarded.entity, entityId: id };
+  }
+
+  /** This scope's spine, read under whatever transaction the caller already opened. */
+  private versionAt(rt: ScopeRuntime, ref: EntityRef): EntityVersion | null {
+    const q = entityVersionQuery(ref);
+    return entityVersionOf(rt.db.prepare(q.sql).all(...q.params) as EntityVersionRow[]);
+  }
 
   private async runGuards(
     operation: string,
