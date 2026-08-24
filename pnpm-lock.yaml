@@ -1186,6 +1186,9 @@ importers:
         specifier: workspace:^
         version: link:../../packages/kernel
     devDependencies:
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit

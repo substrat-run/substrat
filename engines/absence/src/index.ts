@@ -4,9 +4,13 @@ import {
   compareDecimal,
   dataSubjectId,
   entityRef,
+  listLimitOf,
   moduleManifest,
+  pageOf,
   permissionKey,
   type EntityRef,
+  type ListPage,
+  type Page,
   substratError,
 } from '@substrat-run/contracts';
 
@@ -34,6 +38,29 @@ const conflict = (reason: AbsenceConflictReason, message: string) => substratErr
 // entity-type constants its relation edges name, and the row schema to declare
 // an operation's output against without retyping this engine's shape.
 export { absenceEntities, leaveTypeRow } from './entities.js';
+// The declared surface, and the shapes it names (#896). Re-exported from here so
+// a composing vertical imports one module, as it did when these lived inline.
+export { ABSENCE_PERMISSIONS, absenceOperations } from './operations.js';
+export * from './schemas.js';
+import {
+  absenceSubject,
+  isoDate,
+  cancelAbsenceInput,
+  configureLeaveTypeInput,
+  decideAbsenceInput,
+  recordEntryInput,
+  requestAbsenceInput,
+  type AbsenceDay,
+  type AbsenceEntry,
+  type AbsenceRequest,
+  type AbsenceSubject,
+  type CancelAbsenceInput,
+  type ConfigureLeaveTypeInput,
+  type DecideAbsenceInput,
+  type LeaveType,
+  type RecordEntryInput,
+  type RequestAbsenceInput,
+} from './schemas.js';
 import {
   assertAllowed,
   ulid,
@@ -150,24 +177,6 @@ export const absenceMigrations = [
 // Schemas & shapes
 // ---------------------------------------------------------------------------
 
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
-const posDecimal = z.string().regex(/^\d+(\.\d{1,6})?$/, 'must be a non-negative decimal');
-const signedDecimal = z.string().regex(/^-?\d+(\.\d{1,6})?$/, 'must be a decimal');
-
-/** Every write names its subject: the vertical's opaque noun + the erasure key. */
-export const absenceSubject = z.object({
-  ref: entityRef,
-  dataSubjectId,
-});
-export type AbsenceSubject = z.infer<typeof absenceSubject>;
-
-export interface LeaveType {
-  key: string;
-  floor: string;
-  active: boolean;
-  createdAt: string;
-}
-
 interface LeaveTypeRow {
   key: string;
   floor: string;
@@ -190,19 +199,6 @@ interface EntryRow {
   created_at: string;
 }
 
-export interface AbsenceEntry {
-  id: string;
-  subject: EntityRef;
-  leaveTypeKey: string;
-  entryKind: EntryRow['entry_kind'];
-  delta: string;
-  effectiveDate: string;
-  requestId: string | null;
-  note: string | null;
-  createdBy: string;
-  createdAt: string;
-}
-
 interface RequestRow {
   id: string;
   subject_type: string;
@@ -220,20 +216,6 @@ interface RequestRow {
   created_at: string;
 }
 
-export interface AbsenceRequest {
-  id: string;
-  subject: EntityRef;
-  leaveTypeKey: string;
-  startDate: string;
-  endDate: string;
-  days: string;
-  status: RequestRow['status'];
-  note: string | null;
-  decidedBy: string | null;
-  decidedAt: string | null;
-  createdBy: string;
-  createdAt: string;
-}
 
 const toEntry = (r: EntryRow): AbsenceEntry => ({
   id: r.id,
@@ -358,13 +340,6 @@ function insertEntry(
 // The CALLER is responsible for the permission check.
 // ---------------------------------------------------------------------------
 
-export const configureLeaveTypeInput = z.object({
-  key: z.string().min(1),
-  floor: signedDecimal.optional(),
-  active: z.boolean().optional(),
-});
-export type ConfigureLeaveTypeInput = z.infer<typeof configureLeaveTypeInput>;
-
 export function configureLeaveType(
   ctx: OperationContext,
   rawInput: ConfigureLeaveTypeInput,
@@ -411,16 +386,6 @@ export function listLeaveTypes(ctx: OperationContext): LeaveType[] {
  * No floor check here: a correction is the administrator's escape hatch, and
  * accrual/carryover only ever add. The floor guards bookings (D-D).
  */
-export const recordEntryInput = z.object({
-  subject: absenceSubject,
-  leaveTypeKey: z.string().min(1),
-  entryKind: z.enum(['accrual', 'correction', 'carryover']),
-  delta: signedDecimal,
-  effectiveDate: isoDate,
-  note: z.string().optional(),
-});
-export type RecordEntryInput = z.infer<typeof recordEntryInput>;
-
 export function recordEntry(ctx: OperationContext, rawInput: RecordEntryInput): AbsenceEntry {
   const input = recordEntryInput.parse(rawInput);
   getLeaveTypeRow(ctx, input.leaveTypeKey);
@@ -446,16 +411,6 @@ export function balanceAsOf(
       );
   return rows.reduce((sum, r) => addDecimal(sum, r.delta), '0');
 }
-
-export const requestAbsenceInput = z.object({
-  subject: absenceSubject,
-  leaveTypeKey: z.string().min(1),
-  startDate: isoDate,
-  endDate: isoDate,
-  days: posDecimal.refine((d) => compareDecimal(d, '0') > 0, 'days must be positive'),
-  note: z.string().optional(),
-});
-export type RequestAbsenceInput = z.infer<typeof requestAbsenceInput>;
 
 export function requestAbsence(ctx: OperationContext, rawInput: RequestAbsenceInput): AbsenceRequest {
   const input = requestAbsenceInput.parse(rawInput);
@@ -503,13 +458,6 @@ export function requestAbsence(ctx: OperationContext, rawInput: RequestAbsenceIn
   });
   return toRequest(getRequestRow(ctx, id));
 }
-
-export const decideAbsenceInput = z.object({
-  requestId: z.string().min(1),
-  decision: z.enum(['approve', 'reject']),
-  note: z.string().optional(),
-});
-export type DecideAbsenceInput = z.infer<typeof decideAbsenceInput>;
 
 export function decideAbsence(
   ctx: OperationContext,
@@ -597,12 +545,6 @@ export function decideAbsence(
  * with a COMPENSATING reversal entry — "Hugo came back" is a new entry, never
  * an edit (D-E). Rejected/cancelled rows are terminal.
  */
-export const cancelAbsenceInput = z.object({
-  requestId: z.string().min(1),
-  reason: z.string().optional(),
-});
-export type CancelAbsenceInput = z.infer<typeof cancelAbsenceInput>;
-
 export function cancelAbsence(
   ctx: OperationContext,
   rawInput: CancelAbsenceInput,
@@ -761,12 +703,6 @@ export function entriesInWindow(
   return rows.map(toEntry);
 }
 
-export interface AbsenceDay {
-  date: string;
-  leaveTypeKey: string;
-  requestId: string;
-}
-
 /** Walk YYYY-MM-DD dates inclusively without timezone drift (UTC arithmetic). */
 function* eachDate(from: string, to: string): Generator<string> {
   const end = Date.UTC(
@@ -820,6 +756,39 @@ export function availability(
 // Default operation bindings — each starts with the permission check.
 // ---------------------------------------------------------------------------
 
+/**
+ * Take a page off a fold (#811).
+ *
+ * None of this engine's three list reads is kernel-composed, and the reason is
+ * structural rather than a shortcut: `absenceEntities` declares exactly one
+ * entity, `leave-type`. The ledger and the request book are ROWS this engine
+ * owns — an accrual is not something a grant narrows to — so `paged.over` has
+ * nothing to name for them, and the leave-type read answers the PROJECTION
+ * (`active` as a boolean) rather than the stored row. So the read runs and the
+ * page is taken off it, exactly as rally's folds do.
+ *
+ * `key` must be UNIQUE among the rows and must move in the direction they are
+ * sorted; each declaration in `operations.ts` says which field that is.
+ */
+function pageOverFold<T>(
+  rows: T[],
+  page: ListPage,
+  key: (row: T) => string,
+  direction: 'asc' | 'desc' = 'asc',
+): Page<T> {
+  const limit = listLimitOf(page.limit);
+  const cursor = page.cursor;
+  const past = (row: T) => (direction === 'asc' ? key(row) > cursor! : key(row) < cursor!);
+  const after =
+    cursor === undefined
+      ? 0
+      : (() => {
+          const i = rows.findIndex(past);
+          return i < 0 ? rows.length : i;
+        })();
+  return pageOf(rows.slice(after, after + limit), limit, key);
+}
+
 const configureLeaveTypeOp: OperationHandler<ConfigureLeaveTypeInput, LeaveType> = async (
   ctx,
   input,
@@ -828,9 +797,13 @@ const configureLeaveTypeOp: OperationHandler<ConfigureLeaveTypeInput, LeaveType>
   return configureLeaveType(ctx, input);
 };
 
-const listLeaveTypesOp: OperationHandler<undefined, LeaveType[]> = async (ctx) => {
+const listLeaveTypesOp: OperationHandler<ListPage | undefined, Page<LeaveType>> = async (
+  ctx,
+  page,
+) => {
   assertAllowed(await ctx.check(PERM.read));
-  return listLeaveTypes(ctx);
+  // `key` is the primary key, so it is both the declared order and a unique cursor.
+  return pageOverFold(listLeaveTypes(ctx), page ?? {}, (t) => t.key);
 };
 
 const recordEntryOp: OperationHandler<RecordEntryInput, AbsenceEntry> = async (ctx, input) => {
@@ -893,23 +866,36 @@ const availabilityOp: OperationHandler<
 };
 
 const listRequestsOp: OperationHandler<
-  { subject?: EntityRef; status?: RequestRow['status'] } | undefined,
-  AbsenceRequest[]
+  ({ subject?: EntityRef; status?: RequestRow['status'] } & ListPage) | undefined,
+  Page<AbsenceRequest>
 > = async (ctx, input) => {
+  // The conditional narrow. Declared as a node check (see `operations.ts`),
+  // because `refFrom` on an optional field would claim a narrowing that a caller
+  // omitting `subject` never gets.
   if (input?.subject) {
     assertAllowed(await ctx.check(PERM.read, entityRef.parse(input.subject)));
   } else {
     assertAllowed(await ctx.check(PERM.read));
   }
-  return listRequests(ctx, input);
+  // Newest first, so the walk descends. The id is a ULID: unique, and ordered the
+  // same way `created_at` is.
+  return pageOverFold(listRequests(ctx, input), input ?? {}, (r) => r.id, 'desc');
 };
 
 const listEntriesOp: OperationHandler<
-  { subject: EntityRef; leaveTypeKey?: string },
-  AbsenceEntry[]
+  { subject: EntityRef; leaveTypeKey?: string } & ListPage,
+  Page<AbsenceEntry>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.read, entityRef.parse(input.subject)));
-  return listEntries(ctx, input);
+  // `effectiveDate` is the order and is NOT unique — it is caller-supplied, so an
+  // accrual dated last year may be written today. The cursor is the
+  // (effectiveDate, id) pair the SQL already orders by; `\u0000` separates them
+  // because it cannot occur in either half.
+  return pageOverFold(
+    listEntries(ctx, input),
+    input,
+    (e) => `${e.effectiveDate}\u0000${e.id}`,
+  );
 };
 
 export const absenceModule: ModuleRegistration = {

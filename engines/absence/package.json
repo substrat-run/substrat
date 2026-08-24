@@ -34,6 +34,7 @@
     "@substrat-run/kernel": "workspace:^"
   },
   "devDependencies": {
+    "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/engine-test-kit": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "typescript": "^7.0.0",

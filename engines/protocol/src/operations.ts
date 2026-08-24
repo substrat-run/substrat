@@ -187,26 +187,29 @@ export const protocolOperations = defineOperations(protocolEntities, PROTOCOL_PE
   },
 
   /**
-   * The one operation here whose authority cannot be stated as a leading
-   * `permission`, and the reason is this engine's defining property.
-   *
    * The check is `protocol:read` against the entity the protocols hang on — a
    * work order in Callout, a bike in Handlebar — so the entity's TYPE arrives as
-   * data. `PermissionCheck.entity` must name a type known at declaration time,
-   * and there is no honest value to put there: `'protocol'` would be false,
-   * because what is checked is the PARENT, not any protocol.
+   * data, and `entity` must name a type known at declaration time.
    *
-   * So it declares `narrows` instead, which records the fact that actually
-   * protects anything — this is not a node check — and names the key the walk
-   * evaluates, so `protocol:read` still reaches the permission review. What is
-   * lost is the entity type, which was never available to lose.
+   * This declared `narrows` until #896, for want of anywhere else to put it, and
+   * the note here said what was lost was "the entity type, which was never
+   * available to lose". That was true and it was not the whole cost: `narrows`
+   * describes a per-row PROOF WALK, and this is one check against one parent
+   * before a single query. An operation set is read to find out what is checked
+   * where, so a shape that says "asks per row" about an operation that asks once
+   * is the artifact being wrong in a quieter way than being incomplete.
+   *
+   * `entityFrom` (#890) says what actually happens: narrowed to the entity named
+   * by these two fields. The conformance kit cannot drive it — the types come
+   * from an open `z.string()`, because an engine cannot enumerate its callers'
+   * nouns — so it is reported as UNCOVERED with that reason, which is the correct
+   * outcome and a louder one than being out of scope. Contrast
+   * `engines/absence`, whose subject arrives as a whole `EntityRef` in one field
+   * and is therefore drivable through `refFrom`.
    */
   'protocol/list-for-entity': {
     summary: 'Every protocol on one entity, with its progress and signatures',
-    narrows: {
-      reason: 'checked against the entity the protocols hang on, whose type is the caller’s',
-      checks: ['protocol:read'],
-    },
+    permission: { key: 'protocol:read', entityFrom: 'entityType', idFrom: 'entityId' },
     input: z.object({ entityType: z.string().min(1), entityId: z.string().min(1) }),
     output: protocolSummary,
     // `id` first: a ULID is creation-ordered, which is the append order this read
