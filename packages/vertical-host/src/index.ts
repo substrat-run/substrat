@@ -46,6 +46,10 @@ import {
   projectedConnectionKey,
   projectedIdentityLink,
   platformRequestFilter,
+  denialFilter,
+  type DenialFilter,
+  type DenialSummary,
+  type PermissionDenial,
   platformRequestId,
   platformRequestStatus,
   platformRequestFailure,
@@ -110,6 +114,8 @@ export interface VerticalScopeHost {
     input: z.infer<typeof readScopeTableInput>,
   ): Promise<unknown>;
   introspectScopeQuery(scopeId: ScopeId, input: { sql: string }): Promise<ScopeQueryResult>;
+  listDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<PermissionDenial[]>;
+  summarizeDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary>;
   listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]>;
   listPlatformRequestHistory(
     tenantId: TenantId,
@@ -168,6 +174,21 @@ export interface VerticalScopeHost {
     expiresAt?: string,
   ): Promise<void>;
 }
+
+/**
+ * The denial-log filter, off the query string (#867). Both denial routes take the same
+ * one, and it is PARSED here rather than forwarded: what arrives is text, and what it
+ * narrows is a SQL read of the scope's own log.
+ */
+const denialQuery = (c: { req: { query: (k: string) => string | undefined } }): DenialFilter =>
+  denialFilter.parse({
+    actor: c.req.query('actor'),
+    permission: c.req.query('permission'),
+    operation: c.req.query('operation'),
+    since: c.req.query('since'),
+    until: c.req.query('until'),
+    limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+  });
 
 /** `/internal/provision` body. `slug`/`name` ride along so `onProvision` can register a site (M2). */
 const provisionBody = z.object({
@@ -411,6 +432,23 @@ export function mountPlatformSurface<Env extends object>(
       }
       throw e;
     }
+  });
+
+  // The K-35 denial log (#867). The rows live in THIS deployment — a denial is written
+  // in the scope's own DO, where the refused operation ran — so the control plane has
+  // to ask for them, exactly as it does for the tables and the intent journal. The K-3
+  // check and the K-24 access-log entry are made on the platform side before this is
+  // reached; the gate here is the platform secret, like the rest of the surface.
+  app.get('/internal/denials', async (c) => {
+    const s = scopeIdOf.parse(c.req.query('scopeId'));
+    return c.json(await deps.hostFor(c.env).listDenialsLocal(s, denialQuery(c)));
+  });
+
+  // The bucketed view (K-35's rate-buckets). Its own route rather than a flag on the
+  // one above: it returns a different shape, and it is the read a console opens first.
+  app.get('/internal/denials/summary', async (c) => {
+    const s = scopeIdOf.parse(c.req.query('scopeId'));
+    return c.json(await deps.hostFor(c.env).summarizeDenialsLocal(s, denialQuery(c)));
   });
 
   // Platform-intent drain surface (platform-intents.md): the control plane PULLS this

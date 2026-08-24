@@ -32,6 +32,9 @@ import {
   type ScopeDumpTable,
   type ScopeQueryResult,
   type ScopeTable,
+  type DenialFilter,
+  type DenialSummary,
+  type PermissionDenial,
   type ScopeTablePage,
   type TenantId,
   SCOPE_TABLE_PAGE_MAX,
@@ -48,6 +51,15 @@ import {
   entitlementDenial,
   platformRequestHistoryQuery,
   PLATFORM_REQUEST_COLUMNS,
+  denialListQuery,
+  denialSummaryQuery,
+  denialTotalsQuery,
+  DENIAL_WINDOW_QUERY,
+  mapDenialRow,
+  mapDenialBucketRow,
+  type DenialRow,
+  type DenialBucketRow,
+  type DenialWindowRow,
   PermissionDenied,
   type ConsumerHandler,
   type GuardPredicate,
@@ -1825,6 +1837,42 @@ export function defineScopeDO(
         if (e !== rollback) throw toRpcError(e);
       }
       return result!;
+    }
+
+    // -- the denial log (K-35, #867) ------------------------------------------
+    // The refusals recorded in THIS scope's own database, read back. Authorization and
+    // the (tenantId, scopeId) K-3 cross-check happen on the coordinator before these
+    // RPCs are reached, exactly as for the introspection reads above.
+
+    /** A bounded page of raw denial rows, newest first. */
+    listDenials(filter?: DenialFilter): PermissionDenial[] {
+      const q = denialListQuery(filter);
+      return (
+        this.sql.exec(q.sql, ...q.params).toArray() as unknown as DenialRow[]
+      ).map(mapDenialRow);
+    }
+
+    /** The same log bucketed per (actor, permission), with the window's own facts. */
+    summarizeDenials(filter?: DenialFilter): DenialSummary {
+      const b = denialSummaryQuery(filter);
+      const buckets = (
+        this.sql.exec(b.sql, ...b.params).toArray() as unknown as DenialBucketRow[]
+      ).map(mapDenialBucketRow);
+      const t = denialTotalsQuery(filter);
+      const totals = this.sql.exec(t.sql, ...t.params).toArray()[0] as unknown as {
+        total: number;
+        actors: number;
+      };
+      // Unfiltered on purpose — these describe the log, not the query (denial-query.ts).
+      const w = this.sql.exec(DENIAL_WINDOW_QUERY).toArray()[0] as unknown as DenialWindowRow;
+      return {
+        buckets,
+        total: Number(totals.total),
+        actors: Number(totals.actors),
+        windowOldestAt: w.oldest_at ?? null,
+        windowNewestAt: w.newest_at ?? null,
+        drained: Number(w.drained ?? 0),
+      };
     }
 
     /**

@@ -70,6 +70,9 @@ import type {
   ScopeId,
   ScopeStatus,
   ScopeTable,
+  DenialFilter,
+  DenialSummary,
+  PermissionDenial,
   ScopeTablePage,
   StorageShape,
   Tenant,
@@ -1708,6 +1711,48 @@ export interface HostAdmin {
    * the spine is kept because a fork must carry the event/migration state to be faithful.
    */
   exportScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeDump>;
+
+  // -- the denial log (K-35, #867) -------------------------------------------
+  // The third of the platform's three logs, and the last to get a reader. The admin
+  // log holds staff MUTATIONS and the K-24 access log staff READS; these are the
+  // refusals — every enforced `assertAllowed` that threw, recorded in the scope's own
+  // database because a denial rolls its operation back and so cannot be written inside
+  // the transaction it is evidence of.
+  //
+  // Read like any other `HostAdmin` surface: a `PlatformActorId`, a K-24 access-log
+  // entry, and the (tenantId, scopeId) K-3 cross-check that fails closed on a mismatch.
+  // The §7 bound holds unchanged — directory metadata and denial rows, never tenant
+  // business data.
+  //
+  // Two reads rather than one, because K-35 named the reason up front: the volume is
+  // attacker-influenceable, so the raw list alone is a surface a prober can flood off
+  // the screen. `summarizeDenials` is the view that survives that, and it is also where
+  // the window's own floor is reported — these rows drain rather than expire, so what
+  // is held is a storage bound and not a retention promise.
+
+  /**
+   * A bounded page of raw denial rows, newest first. Narrow with `actor` (who was
+   * refused), `permission` (which key), `operation`, and a `since`/`until` window.
+   */
+  listDenials(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: DenialFilter,
+  ): Promise<PermissionDenial[]>;
+
+  /**
+   * The same log bucketed per (actor, permission) — K-35's "first occurrence + count
+   * per actor/key/window" — busiest first, with the filtered totals and the unfiltered
+   * window facts beside them. This is the view an operator opens first: "who has been
+   * probing for access they don't hold" is a question about counts, not about rows.
+   */
+  summarizeDenials(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: DenialFilter,
+  ): Promise<DenialSummary>;
 
   // -- directory disaster recovery (control-plane.md §4.9, #40) ---------------
   // Every method above reads or writes ONE tenant's world. These two are the only

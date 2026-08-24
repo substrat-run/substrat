@@ -104,6 +104,9 @@ import {
   type PlatformRequestFailure,
   type ScopeStatus,
   type ScopeTable,
+  type DenialFilter,
+  type DenialSummary,
+  type PermissionDenial,
   type ScopeQueryResult,
   type ScopeTablePage,
   type Tenant,
@@ -781,6 +784,9 @@ interface ScopeStubRpc {
   introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage>;
   /** One read-only SQL statement, gated + rolled back inside the DO (#219). */
   introspectQuery(sql: string): Promise<ScopeQueryResult>;
+  /** The K-35 denial log, read back (#867) — raw rows and the bucketed view. */
+  listDenials(filter?: DenialFilter): Promise<PermissionDenial[]>;
+  summarizeDenials(filter?: DenialFilter): Promise<DenialSummary>;
   /** Complete logical dump of this scope's DB (preview-and-snapshots.md §3). */
   exportDump(): Promise<ScopeDumpTable[]>;
   /**
@@ -1398,6 +1404,21 @@ export class CloudflareScopeHost implements ScopeHost {
   /** The SQL console's CP-less path (#219) — same trust line as the pair above. */
   async introspectScopeQuery(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
     return this.scopeStub(scopeId).introspectQuery(input.sql);
+  }
+
+  /**
+   * The K-35 denial log's CP-less path (#867) — same trust line as the reads above.
+   * The rows live in the scope's own DO, in the vertical's deployment, so a hosted
+   * scope's denials are reachable only through the vertical's platform-gated
+   * `/internal/denials` routes; the K-3 check and the K-24 audit entry are the control
+   * plane's, made before it calls.
+   */
+  async listDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<PermissionDenial[]> {
+    return this.scopeStub(scopeId).listDenials(filter);
+  }
+
+  async summarizeDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary> {
+    return this.scopeStub(scopeId).summarizeDenials(filter);
   }
 
   /**
@@ -3467,6 +3488,39 @@ export class CloudflareScopeHost implements ScopeHost {
           page.rows.length,
         );
         return page;
+      },
+      listDenials: async (
+        actor,
+        tenantId,
+        scopeId,
+        filter?: DenialFilter,
+      ): Promise<PermissionDenial[]> => {
+        // K-3 cross-check on the shared directory BEFORE reaching the scope DO, as
+        // every read here does: an unresolved pair is unreachable, never another
+        // tenant's log.
+        const row = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        const rows = await this.scopeStub(scopeId).listDenials(filter);
+        await this.recordAccess(actor, 'listDenials', { tenantId, scopeId }, filter ?? null, rows.length);
+        return rows;
+      },
+      summarizeDenials: async (
+        actor,
+        tenantId,
+        scopeId,
+        filter?: DenialFilter,
+      ): Promise<DenialSummary> => {
+        const row = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        const summary = await this.scopeStub(scopeId).summarizeDenials(filter);
+        await this.recordAccess(
+          actor,
+          'summarizeDenials',
+          { tenantId, scopeId },
+          filter ?? null,
+          summary.buckets.length,
+        );
+        return summary;
       },
       queryScope: async (
         actor,

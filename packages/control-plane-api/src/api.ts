@@ -26,6 +26,8 @@ import {
   publishVersionInput,
   queryScopeInput,
   readScopeTableInput,
+  DEFAULT_DENIAL_LIMIT,
+  DENIAL_LIMIT_MAX,
   registerVerticalInput,
   scopeDump,
   dataSubjectId as dataSubjectIdSchema,
@@ -584,6 +586,20 @@ const auditLogQuery = z.object({
   // deliberately unbounded (an in-process caller that wants everything asks for
   // everything) — only the HTTP egress vectors are bounded by default.
   ...listPageQuery.shape,
+});
+
+/**
+ * The K-35 denial-log filter (#867). Bounded by default like every other HTTP read
+ * here: the log's volume is attacker-influenceable by design (a probing client mints
+ * rows), so an unbounded `GET` is exactly the wrong default.
+ */
+const denialLogQuery = z.object({
+  actor: z.string().optional(),
+  permission: z.string().optional(),
+  operation: z.string().optional(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(DENIAL_LIMIT_MAX).default(DEFAULT_DENIAL_LIMIT),
 });
 
 const opsFailuresQuery = z.object({
@@ -1850,6 +1866,53 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       vertical
         ? await vertical.queryScope(scopeId, input)
         : await admin.queryScope(c.get('actor'), tenantId, scopeId, input),
+    );
+  });
+
+  // The K-35 denial log (#867) — the third of the platform's three logs and the last to
+  // get a reader. `/admin-log` holds staff mutations and the K-24 access log staff
+  // reads; these are the refusals, and they live in the SCOPE's database rather than the
+  // directory because a denial rolls its own operation back. Same delegation ladder as
+  // the table reads: a hosted scope is asked through its vertical, a co-located one
+  // locally. Builders read only their own tenant — a foreign one is hidden as 404 (K-3),
+  // matching every other scope-addressed read here.
+  //
+  // Two routes, not one with a flag. The bucketed view returns a different shape, and it
+  // is the one an operator opens first — "who has been probing for access they don't
+  // hold" is a question about counts.
+  app.get('/tenants/:tenantId/scopes/:scopeId/denials', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const principal = c.get('principal');
+    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    const filter = denialLogQuery.parse(c.req.query());
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.listDenials(scopeId, filter)
+        : await admin.listDenials(c.get('actor'), tenantId, scopeId, filter),
+    );
+  });
+
+  app.get('/tenants/:tenantId/scopes/:scopeId/denials/summary', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const principal = c.get('principal');
+    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    const filter = denialLogQuery.parse(c.req.query());
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.summarizeDenials(scopeId, filter)
+        : await admin.summarizeDenials(c.get('actor'), tenantId, scopeId, filter),
     );
   });
 

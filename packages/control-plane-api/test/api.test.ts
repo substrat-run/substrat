@@ -360,6 +360,44 @@ describe('control-plane API', () => {
     expect((await req(`/tenants/${t2}/scopes/${s1}/tables`)).status).toBe(404);
   });
 
+  it('serves the denial log, and reports an empty window as empty (K-35, #867)', async () => {
+    // The SEMANTICS of these two reads — attribution, bucketing, count-ordering, the
+    // window bounds — are pinned by the contract suite, which runs them against both
+    // adapters including the Durable Object path. What this pins is the TRANSPORT: the
+    // routes exist, the filter survives the query string, and the K-3 cross-check
+    // refuses a foreign tenant here as it does everywhere else on this surface.
+    const rowsRes = await req(`/tenants/${t1}/scopes/${s1}/denials`);
+    expect(rowsRes.status).toBe(200);
+    expect(await rowsRes.json()).toEqual([]);
+
+    const sumRes = await req(`/tenants/${t1}/scopes/${s1}/denials/summary`);
+    expect(sumRes.status).toBe(200);
+    const summary = (await sumRes.json()) as {
+      buckets: unknown[];
+      total: number;
+      actors: number;
+      windowOldestAt: string | null;
+      drained: number;
+    };
+    expect(summary.buckets).toEqual([]);
+    expect(summary.total).toBe(0);
+    expect(summary.actors).toBe(0);
+    // An empty log reports a NULL window rather than a fabricated instant. The
+    // distinction is the whole point of carrying the window at all: "nothing was
+    // refused" and "we no longer hold rows from then" must not read the same.
+    expect(summary.windowOldestAt).toBeNull();
+    expect(summary.drained).toBe(0);
+
+    // The filter rides the query string and is parsed, not forwarded.
+    expect((await req(`/tenants/${t1}/scopes/${s1}/denials?permission=perm:use&limit=5`)).status).toBe(200);
+    // Out of the contract's range — refused at the boundary, never clamped silently.
+    expect((await req(`/tenants/${t1}/scopes/${s1}/denials?limit=5000`)).status).toBe(400);
+
+    // Cross-tenant fails closed (K-3): another tenant's pair reads as absent.
+    expect((await req(`/tenants/${t2}/scopes/${s1}/denials`)).status).toBe(404);
+    expect((await req(`/tenants/${t2}/scopes/${s1}/denials/summary`)).status).toBe(404);
+  });
+
   it('runs a read-only console query and maps the gate refusal to 400 (#219)', async () => {
     const queryRes = await json(`/tenants/${t1}/scopes/${s1}/query`, 'POST', {
       sql: 'SELECT version FROM _substrat_migrations ORDER BY version',

@@ -88,7 +88,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-41](decisions/D-041-a-hosted-vertical-reads-its-entitlements-at-request-time-fro.md) | 2026-07-28 | plan | A hosted vertical reads its entitlements at request time from a scope-local projection —… | #304, #302, #33 |
 | [D-42](decisions/D-042-the-platform-delivers-a-tenant-s-entitlements-with-provision.md) | 2026-07-28 | plan | The platform delivers a tenant's entitlements WITH provisioning, and grant/revoke… | #310 |
 | [K-34](decisions/K-034-the-event-envelope-records-what-authorized-it.md) | 2026-07-28 | kernel | The event envelope records what authorized it |  |
-| [K-35](decisions/K-035-permission-denials-are-recorded-in-a-scope-local-denial-log-.md) | 2026-07-28 | kernel | Permission denials are recorded in a scope-local denial log, never the admin log |  |
+| [K-35](decisions/K-035-permission-denials-are-recorded-in-a-scope-local-denial-log-.md) | 2026-07-28 | kernel | Permission denials are recorded in a scope-local denial log, never the admin log | #867 |
 | [D-43](decisions/D-043-per-pr-preview-instances-a-private-vertical-s-pr-forks-prod-.md) | 2026-07-30 | plan | Per-PR preview instances: a private vertical's PR forks prod, runs the PR's code against… |  |
 | [D-47](decisions/D-047-permission-registry-is-a-required-typescript-derived-manifes.md) | 2026-07-30 | plan | Permission registry is a required, TypeScript-derived manifest field |  |
 | [K-36](decisions/K-036-kv-s-disqualifier-is-missing-data-residency-not-a-regional-s.md) | 2026-07-31 | kernel | KV's disqualifier is missing data-residency, not a Regional-Services binding ban — and… |  |

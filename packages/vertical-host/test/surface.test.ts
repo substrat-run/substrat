@@ -7,6 +7,8 @@ const SECRET = 'sekret';
 // Valid 26-char ULIDs (Crockford base32 — no I/L/O/U).
 const SCOPE = '01JZ0000000000000000SCP001';
 const TENANT = '01JZ0000000000000000TEN001';
+// Any principal — the denial filter takes the LOGICAL actor, not its stored JSON spelling.
+const ACTOR_ULID = '01JZ0000000000000000PRN001';
 const OWNER = '01JZ0000000000000000PRN001';
 
 type Env = { PLATFORM_SECRET: string };
@@ -31,6 +33,9 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
     introspectScopeQuery: async () => note('introspectScopeQuery', { columns: [], rows: [] }) as never,
+    listDenialsLocal: async (_s: unknown, filter?: unknown) => note('listDenialsLocal', [filter]) as never,
+    summarizeDenialsLocal: async (_s: unknown, filter?: unknown) =>
+      note('summarizeDenialsLocal', { buckets: [filter] }) as never,
     listPlatformRequests: async () => note('listPlatformRequests', []),
     listPlatformRequestHistory: async (_t: unknown, _s: unknown, filter?: unknown) =>
       note('listPlatformRequestHistory', [filter]) as never,
@@ -195,6 +200,8 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     ['/internal/tables/some_table?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/platform-requests?tenantId=' + TENANT + '&scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/platform-requests/history?tenantId=' + TENANT + '&scopeId=' + SCOPE, { headers: authed() }],
+    ['/internal/denials?scopeId=' + SCOPE, { headers: authed() }],
+    ['/internal/denials/summary?scopeId=' + SCOPE, { headers: authed() }],
   ];
   it.each(cases)('GET %s is served (not 404)', async (path, init) => {
     const res = await appWith(fakeHost()).request(path, init, ENV);
@@ -219,6 +226,34 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
   it('refuses a malformed history filter rather than widening it', async () => {
     const res = await appWith(fakeHost()).request(
       `/internal/platform-requests/history?tenantId=${TENANT}&scopeId=${SCOPE}&status=nonsense`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  // #867: the denial log lives in THIS deployment's DO, so the platform pulls it the same
+  // way it pulls the intent journal — and the query string is the filter, parsed here
+  // rather than forwarded, because what it narrows is a SQL read of the scope's own log.
+  it('passes the denial filter through to the host, on both reads', async () => {
+    const host = fakeHost();
+    const q = `scopeId=${SCOPE}&actor=${ACTOR_ULID}&permission=perm:use&limit=5`;
+    const rows = await appWith(host).request(`/internal/denials?${q}`, { headers: authed() }, ENV);
+    expect(rows.status).toBe(200);
+    expect(await rows.json()).toEqual([{ actor: ACTOR_ULID, permission: 'perm:use', limit: 5 }]);
+    // The same filter reaches the bucketed read — one spelling, two routes.
+    const sum = await appWith(host).request(`/internal/denials/summary?${q}`, { headers: authed() }, ENV);
+    expect(sum.status).toBe(200);
+    expect(await sum.json()).toEqual({
+      buckets: [{ actor: ACTOR_ULID, permission: 'perm:use', limit: 5 }],
+    });
+  });
+
+  it('refuses a malformed denial filter rather than widening it', async () => {
+    // Over the contract ceiling. Refused at the boundary, never silently clamped — the
+    // log's volume is attacker-influenceable, so an unbounded read is the wrong default.
+    const res = await appWith(fakeHost()).request(
+      `/internal/denials?scopeId=${SCOPE}&limit=5000`,
       { headers: authed() },
       ENV,
     );
