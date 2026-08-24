@@ -15,12 +15,16 @@
  *
  * ## `input`, and the transcription that is not here
  *
- * `input` is the Zod object the handler already parses — the same object, not a
- * description of it. That is the whole reason the model is TypeScript (#680): a
- * schema language would need the shape written twice, and transcription is what
- * produced 40 wrong argument names in the one app where this was measured.
+ * `input` is a real Zod object, not a description of one. That is the whole
+ * reason the model is TypeScript (#680): a schema language would need the shape
+ * written twice, and transcription is what produced 40 wrong argument names in
+ * the one app where this was measured.
+ *
+ * Being real is also what lets the HOST parse with it (#893) — the declaration
+ * is the thing that refuses a malformed call, rather than a description of a
+ * refusal each handler was trusted to implement.
  */
-import type { CountedPage, Page } from './pagination.js';
+import { LIST_PAGE_MAX, type CountedPage, type Page } from './pagination.js';
 import { z } from 'zod';
 import { primaryKeyOf, type EntityDef, type EntityFields } from './model.js';
 
@@ -436,12 +440,27 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
   /** One line, imperative — what invoking this does. Feeds the API document. */
   readonly summary: string;
   /**
-   * The request body — the SAME Zod object the handler parses.
+   * The request body — the schema the HOST parses this operation's input with.
+   *
+   * **The handler does not have to parse it, and should not need to.** A module
+   * hands its derived schemas over as `operationInputs` (see
+   * `operationInputsOf`), and the scope host parses every invocation against
+   * them before the guards and the handler run — over HTTP, from a test, from a
+   * seed, from a schedule. So a handler's declared input type is a fact about
+   * what it receives rather than a claim about what it was sent.
+   *
+   * This used to read *"the SAME Zod object the handler parses"*, and across the
+   * fleet it mostly was not: of ~85 declared inputs, 40 were parsed, and
+   * `demos/rally` declared 32 and parsed 2 (#893). The declaration was true
+   * about the shape and false about the parsing.
    *
    * **Omitted means no body at all**, and the handler then takes `undefined`.
    * Found by the first adopter: three of Callout's six operations take no input,
    * and a required `z.object({})` cannot say so — a handler accepting only
-   * `undefined` is not assignable to one accepting `{}`.
+   * `undefined` is not assignable to one accepting `{}`. A paged operation is
+   * the exception in both directions: the platform supplies its page whether one
+   * was declared or not, and materialises an empty one for an in-process caller
+   * that passes nothing.
    *
    * This mirrors `ApiOperationDoc.input` ("Omit = no body") rather than
    * inventing a second vocabulary for the same fact.
@@ -937,6 +956,105 @@ export function manifestOperations<const Ops extends Record<string, object>>(
       consumes: [...(spec.consumes ?? [])].sort((a, b) => a.type.localeCompare(b.type)),
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// The schemas the HOST parses an invocation against.
+// ---------------------------------------------------------------------------
+
+/**
+ * What the PLATFORM merges into a paged read's input, as a schema (#811/#893).
+ *
+ * The mirror of `PagedInput` on the value side. `mountOperations` merges the
+ * page trio into the payload AFTER the declaration has had its say, so a strict
+ * parse against `input` alone would strip `limit`/`cursor`/`order`/`sort` back
+ * out and hand every paged handler an unpaged request. Declared here once so
+ * the two descriptions of the same four fields cannot drift.
+ *
+ * Every field is optional and none is defaulted: `listPageQuery` already
+ * resolved the default and the ceiling at the wire, and an in-process caller
+ * legitimately passes no page at all (`listLimitOf` is what answers then).
+ * Re-defaulting here would make `limit` present for a caller who never sent it —
+ * the exact lie `PagedInput` was corrected to stop telling.
+ */
+const pagedInputFields = {
+  limit: z.number().int().positive().max(LIST_PAGE_MAX).optional(),
+  cursor: z.string().min(1).optional(),
+  order: z.enum(['asc', 'desc']).optional(),
+  sort: z.string().min(1).optional(),
+} as const;
+
+/**
+ * name → the schema the host parses an invocation's input against (#893).
+ *
+ * ## Why this is derived rather than parsed in the handler
+ *
+ * `input` documents itself as *"the SAME Zod object the handler parses"*, and
+ * across the fleet it mostly was not: of ~85 declared inputs, 40 were parsed.
+ * Rally declared 32 and parsed 2. The declaration was true about the shape —
+ * `idFrom` and `entityIdFrom` are held to it by the compiler — and false about
+ * the parsing, which is the half that actually refuses a malformed call.
+ *
+ * A lint rule was the other candidate and is strictly weaker. It can only ask
+ * whether *some* `.parse` appears in a handler body, not whether it is the
+ * declared schema, at the boundary, before the first read of a field. And it is
+ * unfulfillable where the schema is declared inline (`input: z.object({…})`) —
+ * callout, handlebar and todo declare 25 inputs with no identifier a handler
+ * could name, and the reference implementation is one of them.
+ *
+ * So the host parses instead, from the same declaration that already produces
+ * the manifest, the routes and the OpenAPI document. `mountOperations` already
+ * does exactly this for the page trio, and for the same stated reason: it is
+ * what makes the ceiling *"true of every paged endpoint rather than of the ones
+ * whose author remembered"*.
+ *
+ * ## What it means for a handler
+ *
+ * The input a handler receives is parsed, so unknown keys are gone and every
+ * declared field has its declared type. A handler that parsed for itself may
+ * keep doing so — the second parse is a no-op on an already-parsed value — but
+ * it no longer has to, and a new operation cannot forget.
+ *
+ * An operation with no declared `input` is absent from the map: it takes
+ * `undefined`, and `z.object({})` cannot say that (see `input` above). A paged
+ * operation is always present even with no `input`, because the platform hands
+ * it a page whether it declared one or not.
+ */
+export function operationInputsOf<const Ops extends Record<string, object>>(
+  operations: Ops,
+): Record<string, z.ZodType> {
+  const inputs: Record<string, z.ZodType> = {};
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as {
+      input?: z.ZodObject<z.ZodRawShape>;
+      inputOptional?: boolean;
+      paged?: unknown;
+    };
+    if (decl.paged) {
+      // `inputOptional` on a paged read means the FILTERS are optional, not the
+      // body — the platform always supplies a page. `.partial()` is what
+      // `ImplInput` says (`Partial<z.infer<I>> & PagedInput`), and saying it
+      // twice is how the two would come to disagree.
+      const filters = decl.input ?? z.object({});
+      const shape = (decl.inputOptional ? filters.partial() : filters).extend(pagedInputFields);
+      // A paged handler is never handed `undefined` — `ImplInput` types its
+      // input as `… & PagedInput` with no undefined arm, because the PLATFORM
+      // supplies the page "whether it declared one or not". Over HTTP that is
+      // already true: `mountOperations` merges the trio into a payload that
+      // therefore exists. In process it was not — `invoke('booking/list')` with
+      // no argument is the ordinary way a test, a seed or another operation
+      // reads a list, and the declaration promises that answers the same way.
+      //
+      // So the empty page is materialised here rather than each paged handler
+      // learning to survive `undefined`. A required FILTER still fails, just
+      // against `{}` and with a message naming the field.
+      inputs[name] = z.preprocess((value) => value ?? {}, shape);
+      continue;
+    }
+    if (!decl.input) continue;
+    inputs[name] = decl.inputOptional ? decl.input.optional() : decl.input;
+  }
+  return inputs;
 }
 
 // ---------------------------------------------------------------------------

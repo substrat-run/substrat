@@ -10,8 +10,10 @@
 import {
   dataSubjectId,
   moduleManifest,
+  operationInputsOf,
   permissionKey,
   principalId,
+  z,
   type EntityRef,
   type PermissionKey,
 } from '@substrat-run/contracts';
@@ -1115,6 +1117,74 @@ export const searchMod: ModuleRegistration = {
   },
 };
 
+// -- #893: the declared input the HOST parses ---------------------------------
+
+export const parseModManifest = moduleManifest.parse({
+  id: '@test/parse',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'parse:use', description: 'the parse fixture permission' }],
+  events: { emits: [], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'parse',
+});
+
+const PARSE_USE = permissionKey.parse('parse:use');
+
+/**
+ * Every handler here ECHOES what it was handed, and asserts nothing itself.
+ *
+ * That is deliberate: the contract under test is what the host does to an
+ * invocation's input *before* module code runs, so the fixture's job is to make
+ * that observable rather than to judge it. A handler that validated would prove
+ * only that it agrees with itself — the same note `entityCheckConformanceSuite`
+ * makes about minting grants through the vertical's own sharing operation.
+ */
+const echo: OperationHandler<unknown, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(PARSE_USE));
+  return { received: input ?? null };
+};
+
+/**
+ * The declaration the fixture's schemas are derived from.
+ *
+ * A literal rather than a `defineOperations` call: `operationInputsOf` reads
+ * `input`, `inputOptional` and `paged` and nothing else, and contracts' own
+ * tests are where the declaration DSL is exercised. What this suite is for is
+ * the HOST end — that the schema reaches the door and is applied there.
+ */
+const parseDeclaration = {
+  // A required field, an optional one, and a default — the default is the case a
+  // handler cannot fake: it must arrive SET without the caller sending it.
+  'parse/echo': {
+    input: z.object({
+      name: z.string().min(1),
+      tag: z.string().optional(),
+      size: z.number().int().default(7),
+    }),
+  },
+  // Declared `paged`: the platform's page trio must survive a strict parse, or a
+  // paged read is handed an unpaged request (#811).
+  'parse/paged': {
+    input: z.object({ q: z.string().optional() }),
+    paged: {},
+  },
+  // Declares nothing. The handler takes `undefined`, and the host must not
+  // invent a `{}` for it.
+  'parse/bare': {},
+};
+
+export const parseMod: ModuleRegistration = {
+  manifest: parseModManifest,
+  operations: {
+    'parse/echo': echo as OperationHandler<never, unknown>,
+    'parse/paged': echo as OperationHandler<never, unknown>,
+    'parse/bare': echo as OperationHandler<never, unknown>,
+  },
+  operationInputs: operationInputsOf(parseDeclaration),
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -1125,6 +1195,7 @@ export const contractTestModules: ModuleRegistration[] = [
   atomicMod,
   searchMod,
   listMod,
+  parseMod,
 ];
 
 export const brokenModManifest = moduleManifest.parse({

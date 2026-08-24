@@ -4,6 +4,7 @@ import {
   compareDecimal,
   dataSubjectId,
   type EntityRef,
+  operationInputsOf,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -1008,4 +1009,16 @@ export const meridianModule: ModuleRegistration = {
     'hr/start-onboarding': startOnboardingOp as never,
     'hr/timeline': timelineOp as never,
   },
+  /**
+   * #893: the host parses each operation's declared `input` before the guards
+   * and the handler see it. Derived from the same declaration that produces the
+   * manifest and the routes — the schema is written once, in `operations.ts`.
+   *
+   * Meridian is the one of the four that already parsed all 18 by hand, and its
+   * suite stayed green through the change — which is the confirmation #893 asked
+   * for. The handler-side calls are left where they are: a second parse of an
+   * already-parsed value is a no-op, and removing eighteen of them is churn that
+   * would bury the part of this diff worth reading.
+   */
+  operationInputs: operationInputsOf(meridianOperations),
 };

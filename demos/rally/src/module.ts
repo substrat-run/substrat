@@ -16,6 +16,7 @@ import {
   pageOf,
   type ListPage,
   type Page,
+  operationInputsOf,
 } from '@substrat-run/contracts';
 import { bookingEntities } from '@substrat-run/engine-booking';
 import { rallyEntities } from './entities.js';
@@ -2108,4 +2109,10 @@ export const rallyModule: ModuleRegistration = {
     'rally/portal-bookings': portalBookingsOp as never,
     'rally/timeline': timelineOp as never,
   },
+  /**
+   * #893: the host parses each operation's declared `input` before the guards
+   * and the handler see it. Derived from the same declaration that produces the
+   * manifest and the routes — the schema is written once, in `operations.ts`.
+   */
+  operationInputs: operationInputsOf(rallyOperations),
 };

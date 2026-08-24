@@ -10,6 +10,7 @@ import {
   scopeHostContractSuite,
   searchContractSuite,
   listContractSuite,
+  inputParseContractSuite,
 } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
@@ -102,6 +103,22 @@ searchContractSuite('adapter-sqlite', async () => {
 listContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-list-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #893: the declared `input` is parsed by the HOST, before guards and handler.
+// The DEFAULT checker: the fixture's handlers run a real `ctx.check`, and
+// allow-all cannot answer one — it builds its synthetic proof by interpolating
+// the subject, which is a structured actor.
+inputParseContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-parse-'));
+  const host = new SqliteScopeHost({ dir });
   return {
     host,
     cleanup: async () => {

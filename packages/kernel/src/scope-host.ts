@@ -952,6 +952,36 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
   migrations?: SqlMigration[];
   operations?: Record<string, OperationHandler<never, unknown>>;
   /**
+   * name → the schema the host parses an invocation's input against, BEFORE the
+   * guards and the handler see it (#893).
+   *
+   * Derived from the declared operation surface — `operationInputsOf(ops)` — and
+   * never written a second time. A module that declares its operations gets the
+   * parse by handing the same object over:
+   *
+   * ```ts
+   * operations: { 'rally/book': bookOp, … },
+   * operationInputs: operationInputsOf(rallyOperations),
+   * ```
+   *
+   * **This is where "parse, don't trust" is kept, rather than in 85 handlers.**
+   * `OperationShape.input` calls itself *"the SAME Zod object the handler
+   * parses"* and across the fleet it mostly was not — rally declared 32 inputs
+   * and parsed 2. One place that cannot be forgotten beats a rule every new
+   * operation has to remember, which is the same argument `mountOperations`
+   * already makes for the page trio.
+   *
+   * A name here that no operation binds is an error: it is a schema enforcing
+   * nothing, and it reads as coverage. A bound operation with no entry is
+   * allowed and means what it always meant — nothing was declared to parse.
+   *
+   * Typed structurally rather than as `z.ZodType` so the kernel keeps its single
+   * dependency and no zod version is pinned by the scope-host contract. The
+   * shape is the whole surface the host uses: throw to refuse, return the value
+   * to accept.
+   */
+  operationInputs?: Record<string, { parse(value: unknown): unknown }>;
+  /**
    * eventType → handler; the types must appear in manifest.events.consumes.
    *
    * Untyped by default. A vertical that declares the engines it composes —

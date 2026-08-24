@@ -139,9 +139,21 @@ export function entityCheckConformanceSuite(
       };
 
       describe(`${name} — ${key} on ${entity}, ${where}`, () => {
-        // Schema-fixed constants first, so an explicit fixture entry still wins —
-        // it is the reviewable way to say "this one needs something else".
-        const extras = { ...fixed, ...(supplied[name] ?? {}) };
+        /**
+         * Schema-fixed constants first, so an explicit fixture entry still wins —
+         * it is the reviewable way to say "this one needs something else".
+         *
+         * Read per CASE, not once per describe. A fixture entry legitimately
+         * holds a value that does not exist yet at collect time: rally's spare
+         * member is created in `beforeAll` and written into the object the kit
+         * was handed, which is the documented way to supply an id the harness
+         * must make first. Spreading in the describe body captured the empty
+         * placeholder instead, and nothing said so — case 1 only asserts "was
+         * not denied", and case 2's permission answer arrived before anything
+         * looked at the field. Once the host parses a declared input (#893) the
+         * same fixture fails the parse, which is what surfaced this.
+         */
+        const extrasNow = () => ({ ...fixed, ...(supplied[name] ?? {}) });
         const extraKeys = options.alsoGrant?.[name]?.permissions ?? [];
 
         /**
@@ -176,7 +188,7 @@ export function entityCheckConformanceSuite(
           const targetId = await fixture.createEntity(entity);
           await grantAllOn(fixture, targetId);
 
-          const outcome = await denialFrom(fixture, inputFor(targetId, extras));
+          const outcome = await denialFrom(fixture, inputFor(targetId, extrasNow()));
           const denied = outcome !== undefined && !(outcome as { notADenial?: unknown }).notADenial;
           expect(
             denied,
@@ -193,7 +205,7 @@ export function entityCheckConformanceSuite(
           await grantAllOn(fixture, granted);
           const other = await fixture.createEntity(entity);
 
-          const outcome = await denialFrom(fixture, inputFor(other, extras));
+          const outcome = await denialFrom(fixture, inputFor(other, extrasNow()));
           const notADenial = (outcome as { notADenial?: unknown } | undefined)?.notADenial;
           expect(
             outcome,

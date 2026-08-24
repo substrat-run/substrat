@@ -27,6 +27,7 @@ import {
   searchContractSuite,
   listContractSuite,
   permMod,
+  inputParseContractSuite,
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
 
@@ -1025,6 +1026,19 @@ listContractSuite('adapter-cloudflare', async () => {
     controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #893: the declared `input` parsed at the door, on the adapter that is actually
+// deployed. The DEFAULT tuple checker — the fixture's handlers run a real
+// `ctx.check`, which an allow-all cannot answer. `parseMod` is in
+// `contractTestModules`, so the ScopeDO carries it at code time.
+inputParseContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
 });

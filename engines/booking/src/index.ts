@@ -16,6 +16,7 @@ import {
   type Money,
   type Page,
   substratError,
+  operationInputsOf,
 } from '@substrat-run/contracts';
 
 /**
@@ -1277,4 +1278,10 @@ export const bookingModule: ModuleRegistration = {
   manifest: bookingManifest,
   migrations: bookingMigrations,
   operations: OPERATIONS,
+  /**
+   * #893: the host parses each operation's declared `input` before the guards
+   * and the handler see it. Derived from the same declaration that produces the
+   * manifest and the routes — the schema is written once, in `operations.ts`.
+   */
+  operationInputs: operationInputsOf(bookingOperations),
 };

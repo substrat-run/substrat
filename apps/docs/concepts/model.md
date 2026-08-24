@@ -140,9 +140,25 @@ export const operations = defineOperations(entities, PERMISSIONS)({
 });
 ```
 
-`input` is the **same Zod object your handler parses** — not a description of it. That is the
-whole reason the model is TypeScript: a schema language would need the shape written twice,
-and transcription is where argument names go wrong.
+`input` is a **real Zod object**, not a description of one. That is the whole reason the model
+is TypeScript: a schema language would need the shape written twice, and transcription is where
+argument names go wrong.
+
+Being real is also what lets the **host** parse with it. Hand your derived schemas to the
+registration and every invocation is parsed before your handler runs — over HTTP, from a test,
+from a seed, from a schedule:
+
+```ts
+export const shopModule: ModuleRegistration = {
+  manifest: shopManifest,
+  operations: { 'shop/checkout': checkoutOp, … },
+  operationInputs: operationInputsOf(shopOperations),
+};
+```
+
+So a handler receives input that has already been parsed: unknown keys are gone, declared
+defaults are applied, and a malformed call never reached it. You do not write `.parse()` in the
+handler, and a new operation cannot forget to.
 
 Omit `input` entirely for an operation that takes no body.
 
