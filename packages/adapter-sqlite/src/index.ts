@@ -221,6 +221,11 @@ import {
   type SearchHit,
   type SearchIndexPlan,
   type SearchOptions,
+  entityVersionQuery,
+  entityVersionOf,
+  OUTBOX_ENTITY_INDEX,
+  type EntityVersion,
+  type EntityVersionRow,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -400,6 +405,10 @@ const KERNEL_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_attachments_entity
     ON _substrat_attachments (entity_type, entity_id);
+  -- #901: an entity's version is the ULID of the last event about it, so
+  -- MAX(id) per (entity_type, entity_id) is the read. The id column sits last so
+  -- SQLite walks to the end of the matched range instead of aggregating over it.
+  ${OUTBOX_ENTITY_INDEX}
 `;
 
 /** An executor or a connector — same journal and retry, different argument. */
@@ -6722,6 +6731,16 @@ export class SqliteScopeHost implements ScopeHost {
         const q = platformRequestHistoryQuery(filter);
         return (rt.db.prepare(q.sql).all(...q.params) as PlatformRequestRawRow[]).map(
           rowToPlatformRequest,
+        );
+      },
+      // #901. This scope's own spine, so no tenancy predicate is needed or
+      // possible — the runtime IS the scope. The version is the last event's
+      // ULID; `null` means nothing has ever been emitted about the entity,
+      // which is distinct from the entity not existing (nothing here knows).
+      versionOf: (entity: EntityRef): EntityVersion | null => {
+        const q = entityVersionQuery(entity);
+        return entityVersionOf(
+          rt.db.prepare(q.sql).all(...q.params) as EntityVersionRow[],
         );
       },
       check: runCheck,

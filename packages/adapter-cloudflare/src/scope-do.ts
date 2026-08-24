@@ -76,6 +76,11 @@ import {
   type SearchHit,
   type SearchIndexPlan,
   type SearchOptions,
+  entityVersionQuery,
+  entityVersionOf,
+  OUTBOX_ENTITY_INDEX,
+  type EntityVersion,
+  type EntityVersionRow,
 } from '@substrat-run/kernel';
 import type { CheckSubject, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
@@ -349,6 +354,10 @@ const KERNEL_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_attachments_entity
     ON _substrat_attachments (entity_type, entity_id);
+  -- #901: an entity's version is the ULID of the last event about it, so
+  -- MAX(id) per (entity_type, entity_id) is the read. The id column sits last so
+  -- SQLite walks to the end of the matched range instead of aggregating over it.
+  ${OUTBOX_ENTITY_INDEX}
 `;
 
 /**
@@ -2284,6 +2293,16 @@ export function defineScopeDO(
           const q = platformRequestHistoryQuery(filter);
           return (sql.exec(q.sql, ...q.params).toArray() as unknown as PlatformRequestRawRow[]).map(
             rowToPlatformRequest,
+          );
+        },
+        // #901. Mirror of the pure adapter, and the reason the contract suite
+        // runs on both: the query is ordinary SQL, but it is only a seek rather
+        // than a scan because of an index in spine DDL that workerd's regulator
+        // has to permit — which no amount of local green would surface.
+        versionOf: (entity: EntityRef): EntityVersion | null => {
+          const q = entityVersionQuery(entity);
+          return entityVersionOf(
+            sql.exec(q.sql, ...q.params).toArray() as unknown as EntityVersionRow[],
           );
         },
         check: runCheck,

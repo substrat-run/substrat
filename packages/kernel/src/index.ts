@@ -153,6 +153,13 @@ export {
   platformRequestHistoryQuery,
 } from './platform-request-query.js';
 export {
+  entityVersionQuery,
+  entityVersionOf,
+  OUTBOX_ENTITY_INDEX,
+  type EntityVersion,
+  type EntityVersionRow,
+} from './entity-version.js';
+export {
   isTerminalDispatchFailure,
   isTerminalProviderError,
   providerErrorStatus,
