@@ -51,9 +51,21 @@ export async function currentSession(): Promise<Session | null> {
   return res.json();
 }
 
-export async function signIn(email: string, password: string): Promise<void> {
-  const { error } = await authClient.signIn.email({ email, password });
+/**
+ * Sign in — and report whether an OIDC authorize request was RESUMED by doing so.
+ *
+ * When a relying party sent the visitor here, Better Auth stashed the authorize request in
+ * the signed `oidc_login_prompt` cookie. Its after-hook notices the new session, re-runs
+ * `authorize`, and answers THIS request with `{ redirect: true, url }` instead of a session.
+ * The client's default `redirectPlugin` navigates there on its own, so there is nothing for
+ * us to do but stay out of the way: `resumed` exists so the caller does not also re-render
+ * the dashboard over a page that is already leaving.
+ */
+export async function signIn(email: string, password: string): Promise<{ resumed: boolean }> {
+  const { data, error } = await authClient.signIn.email({ email, password });
   if (error) throw new Error(error.message ?? 'sign-in failed');
+  const resume = data as unknown as { redirect?: boolean; url?: string } | null;
+  return { resumed: Boolean(resume?.redirect && resume.url) };
 }
 
 export async function signOut(): Promise<void> {
@@ -95,6 +107,63 @@ export async function unbanUser(userId: string): Promise<void> {
 export async function removeUser(userId: string): Promise<void> {
   const { error } = await authClient.admin.removeUser({ userId });
   if (error) throw new Error(error.message ?? 'could not remove user');
+}
+
+/* ---- the OIDC consent screen ---- */
+
+/**
+ * An authorize request waiting on an answer, as `/consent?…` carries it. Better Auth puts
+ * these three in the query when it redirects to `consentPage`; `test/untrusted-client.test.ts`
+ * pins the names, because they are the library's choice rather than ours.
+ */
+export interface ConsentRequest {
+  consentCode: string;
+  clientId: string;
+  scopes: string[];
+}
+
+/** The relying party as the issuer knows it — what the consent screen names. */
+export interface OAuthClient {
+  clientId: string;
+  name: string;
+  icon: string | null;
+}
+
+/** Read the pending consent request off the current URL, or null if there is none. */
+export function pendingConsent(url: URL): ConsentRequest | null {
+  const consentCode = url.searchParams.get('consent_code');
+  const clientId = url.searchParams.get('client_id');
+  if (!consentCode || !clientId) return null;
+  return {
+    consentCode,
+    clientId,
+    scopes: (url.searchParams.get('scope') ?? '').split(' ').filter(Boolean),
+  };
+}
+
+/** Who is asking. Session-gated by the issuer, so a stranger cannot enumerate the registry. */
+export async function oauthClient(clientId: string): Promise<OAuthClient | null> {
+  const res = await fetch(`/api/auth/oauth2/client/${encodeURIComponent(clientId)}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+/**
+ * Answer the consent request. Either way the issuer replies with the URI to send the browser
+ * to — the RP's own callback, carrying an authorization code on accept and `access_denied` on
+ * refuse. A denial is an answer the relying party receives, not a dead end.
+ */
+export async function answerConsent(input: { accept: boolean; consentCode: string }): Promise<string> {
+  const res = await fetch('/api/auth/oauth2/consent', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ accept: input.accept, consent_code: input.consentCode }),
+  });
+  const body = (await res.json().catch(() => ({}))) as { redirectURI?: string; error_description?: string; message?: string };
+  if (!res.ok || !body.redirectURI) {
+    throw new Error(body.error_description ?? body.message ?? 'could not record your answer');
+  }
+  return body.redirectURI;
 }
 
 export interface Discovery {

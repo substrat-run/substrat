@@ -83,3 +83,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 14px; margin: 0 0 12px; }
 .kv dt { color: var(--muted); font-size: 12.5px; }
 .kv dd { margin: 0; overflow-wrap: anywhere; }
+
+/* consent screen */
+.scopes { margin: 0 0 14px; padding-left: 18px; color: var(--text); font-size: 13.5px; }
+.scopes li { margin: 4px 0; }
+.consent-actions { display: flex; gap: 8px; margin-top: 4px; }
+.consent-actions .btn { width: 100%; margin-top: 0; }
