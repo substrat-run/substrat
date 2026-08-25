@@ -3,9 +3,9 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { MockEmailTransport } from '@substrat-run/adapter-email';
-import { schema } from '../src/auth-schema.js';
-import { SCHEMA_STATEMENTS } from '../db/ddl.js';
-import { buildAuth, DEMO_CLIENT, type Auth } from '../src/auth.js';
+import { schema } from '../src/auth-schema.generated.js';
+import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
+import { buildAuth, DEMO_CLIENT, seedDemoClient, type Auth } from '../src/auth.js';
 
 /**
  * End-to-end scenario for the standalone OIDC provider, exercised in-process over an
@@ -38,6 +38,9 @@ beforeAll(async () => {
     trustedOrigins: [ORIGIN],
     transport: mock,
     sender: { email: 'no-reply@send.substrat.test', name: 'Substrat Auth' },
+    // Seeding this suite's admin goes through `signUpEmail`, which is the bootstrap path —
+    // the issuer itself defaults to sign-up closed (see `test/signup.test.ts`).
+    allowSignup: true,
   });
   // Bootstrap the first admin, the way setup does.
   const created = await auth.api.signUpEmail({ body: ADMIN });
@@ -46,14 +49,18 @@ beforeAll(async () => {
 
 describe('OIDC provider surface', () => {
   it('publishes discovery with asymmetric signing and the standard endpoints', async () => {
-    const res = await call('/api/auth/.well-known/openid-configuration');
+    // The ROOT path — where `oauthProvider` serves it, and where an RP configured with
+    // `OIDC_ISSUER = {origin}` looks. The 1.6 plugin served it under `/api/auth/…` and
+    // `routes.ts` aliased the root onto it; the alias is gone with the plugin.
+    const res = await call('/.well-known/openid-configuration');
     expect(res.status).toBe(200);
     const meta = (await res.json()) as Record<string, unknown>;
     expect(meta.issuer).toBe(ORIGIN);
     expect(meta.authorization_endpoint).toContain('/oauth2/authorize');
     expect(meta.token_endpoint).toContain('/oauth2/token');
     expect(meta.jwks_uri).toContain('/jwks');
-    // useJWTPlugin: true → RS256/EdDSA advertised, never a shared-secret HS256.
+    // Asymmetric signing advertised, never a shared-secret HS256 — the property that makes
+    // the issuer verifiable by any relying party from the public JWKS alone.
     const algs = meta.id_token_signing_alg_values_supported as string[];
     expect(algs.some((a) => a === 'EdDSA' || a === 'RS256')).toBe(true);
     expect(algs).not.toContain('HS256');
@@ -137,8 +144,30 @@ describe('admin user management behind the admin role', () => {
 });
 
 describe('the demo relying party is registered', () => {
-  it('is a trusted client (present in config)', () => {
-    expect(DEMO_CLIENT.clientId).toBe('substrat-demo-rp');
-    expect(DEMO_CLIENT.redirectUrls.join(',')).toContain('/callback');
+  it('is seeded as a real client row, with credentials the plugin minted', async () => {
+    // It used to be a `trustedClients` entry in source, carrying a published secret that
+    // every deployment resolved. `oauthProvider` has no such option — a client is a row —
+    // and secrets are hashed at rest, so the only knowable secret is the one handed back
+    // here, once.
+    const signIn = await call('/api/auth/sign-in/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: ADMIN.email, password: ADMIN.password }),
+    });
+    const headers = new Headers();
+    for (const cookie of signIn.headers.getSetCookie()) headers.append('cookie', cookie.split(';')[0] ?? '');
+
+    const demo = await seedDemoClient(auth, headers);
+    expect(demo.clientId).toBeTruthy();
+    expect(demo.clientSecret).toBeTruthy();
+
+    const row = sqlite
+      .prepare('SELECT name, redirect_uris, skip_consent, client_secret FROM oauth_client WHERE client_id = ?')
+      .get(demo.clientId) as { name: string; redirect_uris: string; skip_consent: number; client_secret: string };
+    expect(row.name).toBe(DEMO_CLIENT.name);
+    expect(JSON.parse(row.redirect_uris)).toEqual([...DEMO_CLIENT.redirectUris]);
+    expect(Boolean(row.skip_consent)).toBe(true);
+    // Stored hashed: what is in the row is not what the relying party sends.
+    expect(row.client_secret).not.toBe(demo.clientSecret);
   });
 });

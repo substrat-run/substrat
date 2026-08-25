@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
+import { Hono } from 'hono';
 import {
   resolveScopedEnvSpec,
   type ScopeDumpTable,
@@ -9,13 +10,16 @@ import {
 } from '@substrat-run/contracts';
 import { introspectTables, introspectTable } from './introspect.js';
 import { exportDump } from './dump.js';
-import { schema } from './auth-schema.js';
-import { SCHEMA_STATEMENTS } from '../db/ddl.js';
+import { schema } from './auth-schema.generated.js';
+import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
+import { upgradeLegacySchema } from '../db/upgrade.js';
 import { buildAuth } from './auth.js';
+import { createAdminApi } from './admin-api.js';
+import { ALLOW_SIGNUP, deliveredConfig, isTruthy, putDeliveredConfig } from './settings.js';
 import { PlatformRelayEmailTransport } from '@substrat-run/adapter-email';
 import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
-import type { ConfigEntry, InstanceMeta } from './do-contract.js';
+import type { ConfigEntry, InstanceMeta, IssuerState, SessionSubject } from './do-contract.js';
 
 /**
  * One issuer, as one Durable Object. STANDALONE (own worker, own hostname): a single
@@ -60,6 +64,12 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   constructor(ctx: DurableObjectState, env: AuthServerDoEnv) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
+      // BEFORE the DDL: `CREATE TABLE IF NOT EXISTS` cannot fix a table whose shape changed,
+      // and `oauthProvider` reuses two of the old plugin's table names with new columns.
+      const upgrade = upgradeLegacySchema(ctx.storage.sql);
+      if (upgrade.renamed.length || upgrade.added.length) {
+        console.log('auth-server: schema upgraded', JSON.stringify(upgrade));
+      }
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);
       const row = [...ctx.storage.sql.exec("SELECT value FROM config WHERE key = 'auth_secret'")][0] as
         | { value: string }
@@ -96,7 +106,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     }
     try {
       // Password hashing is origin-independent, so the boot-time baseURL fallback is fine.
-      const auth = this.auth(cfg.PUBLIC_ORIGIN ?? 'http://localhost');
+      // Sign-up forced on: seeding the FIRST administrator is not self-service registration,
+      // and an issuer with `ALLOW_SIGNUP` off would otherwise have no way to create anybody.
+      const auth = this.auth(cfg.PUBLIC_ORIGIN ?? 'http://localhost', { allowSignup: true });
       const created = await auth.api.signUpEmail({ body: { email, password, name: 'Administrator' } });
       this.ctx.storage.sql.exec("UPDATE user SET role = 'admin', email_verified = 1 WHERE id = ?", created.user.id);
     } catch (e) {
@@ -108,7 +120,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    *  request's own origin unless PUBLIC_ORIGIN pins it — per-hostname derivation keeps
    *  discovery self-consistent on every hostname bound to this scope (OIDC requires the
    *  advertised `issuer` to match the URL discovery was fetched from). */
-  private auth(origin: string) {
+  private auth(origin: string, overrides?: { allowSignup?: boolean }) {
     const cfg = this.effectiveCfg();
     const baseURL = cfg.PUBLIC_ORIGIN ?? origin;
     const db = drizzle(this.ctx.storage, { schema });
@@ -123,6 +135,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // env directly; the sender address is the manifest-declared EMAIL_FROM.
       transport: this.transport(),
       sender: senderFor(cfg.EMAIL_FROM),
+      // Re-read per request (this whole method is), so the dashboard's sign-up toggle takes
+      // effect on the next request rather than the next deploy.
+      allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
     });
   }
 
@@ -187,9 +202,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * deterministic first admin (the seed itself stays guarded on a zero-user store).
    */
   async setInstanceConfig(entries: ConfigEntry[]): Promise<void> {
-    for (const { key, value } of entries) {
-      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", `cfg:${key}`, value);
-    }
+    putDeliveredConfig(this.ctx.storage.sql, entries);
     await this.seedEnvAdmin();
   }
 
@@ -201,13 +214,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * delivered map from THIS DO's own `cfg:` storage.
    */
   private effectiveCfg(): Record<string, string | undefined> {
-    const delivered: Record<string, string> = {};
-    for (const spec of AUTH_SERVER_ENV) {
-      const row = [...this.ctx.storage.sql.exec('SELECT value FROM config WHERE key = ?', `cfg:${spec.key}`)][0] as
-        | { value: string }
-        | undefined;
-      if (row) delivered[spec.key] = row.value;
-    }
+    const delivered = deliveredConfig(this.ctx.storage.sql, AUTH_SERVER_ENV);
     return resolveScopedEnvSpec(AUTH_SERVER_ENV, this.env as Record<string, unknown>, delivered).values;
   }
 
@@ -248,9 +255,22 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   }
 
   /** Is the issuer un-bootstrapped (no users yet)? The worker shows "create the first admin". */
-  async needsSetup(): Promise<boolean> {
+  private needsSetup(): boolean {
     const row = [...this.ctx.storage.sql.exec('SELECT count(*) AS n FROM user')][0] as { n: number };
     return row.n === 0;
+  }
+
+  /**
+   * What the SPA needs BEFORE anyone is signed in: whether to show "create the first admin",
+   * and whether to offer a sign-up link. Both are pre-auth by nature — the sign-up screen has
+   * to be reachable by someone who has no account — so this is the one unauthenticated read,
+   * and it says nothing a visitor could not learn by posting to the endpoints themselves.
+   */
+  async issuerState(): Promise<IssuerState> {
+    return {
+      needsSetup: this.needsSetup(),
+      signupEnabled: isTruthy(this.effectiveCfg()[ALLOW_SIGNUP]),
+    };
   }
 
   /**
@@ -261,8 +281,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * dashboard. Returns the new user id.
    */
   async setupFirstAdmin(origin: string, creds: { email: string; password: string; name: string }): Promise<{ id: string }> {
-    if (!(await this.needsSetup())) throw new Error('the auth server is already set up');
-    const auth = this.auth(origin);
+    if (!this.needsSetup()) throw new Error('the auth server is already set up');
+    // Same reason as `seedEnvAdmin`: bootstrapping an administrator is not sign-up.
+    const auth = this.auth(origin, { allowSignup: true });
     const created = await auth.api.signUpEmail({
       body: { email: creds.email, password: creds.password, name: creds.name },
     });
@@ -272,19 +293,32 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   }
 
   /**
-   * The DO's HTTP surface. `/__session` resolves the request to `{ sub, email, name, role }`
-   * (or null); everything else is a Better Auth request — sign-in, the whole OIDC surface
-   * (discovery, authorize, token, jwks, userinfo), and the admin API.
+   * The DO's HTTP surface. Two `/__*` control paths — `/__session` resolves the request to
+   * `{ sub, email, name, role }` (or null), and `/__admin/*` is the issuer's own admin API
+   * (the relying-party registry + settings, `admin`-gated inside). Everything else is a
+   * Better Auth request — sign-in, sign-up, the whole OIDC surface (discovery, authorize,
+   * token, jwks, userinfo), and Better Auth's own admin API.
    */
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const auth = this.auth(url.origin);
-    if (url.pathname === '/__session') {
-      const session = await auth.api.getSession({ headers: request.headers });
-      const u = session?.user as { id: string; email?: string; name?: string; role?: string } | undefined;
-      return Response.json(
-        u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null,
+    const session = (headers: Headers): Promise<SessionSubject | null> =>
+      auth.api.getSession({ headers }).then((s) => {
+        const u = s?.user as { id: string; email?: string; name?: string; role?: string } | undefined;
+        return u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null;
+      });
+    if (url.pathname === '/__session') return Response.json(await session(request.headers));
+    if (url.pathname.startsWith('/__admin')) {
+      const api = new Hono().route(
+        '/__admin',
+        createAdminApi({
+          sql: this.ctx.storage.sql,
+          session,
+          effectiveCfg: () => this.effectiveCfg(),
+          auth: () => auth.api as never,
+        }),
       );
+      return api.fetch(request);
     }
     return auth.handler(request);
   }

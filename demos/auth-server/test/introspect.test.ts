@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
-import { SCHEMA_STATEMENTS } from '../db/ddl.js';
+import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { introspectTables, introspectTable, REDACTED, REDACTED_COLUMNS, type SqlExec } from '../src/introspect.js';
 
 /**
- * The §5.4 introspection reads over the issuer's REAL schema (`db/ddl.ts`), driven
+ * The §5.4 introspection reads over the issuer's REAL schema (`db/ddl.generated.ts`), driven
  * against better-sqlite3 — the same store `server.ts` runs on. What these pin:
  *
  *   - The table list covers the whole Better Auth schema, with row counts.
@@ -38,14 +38,14 @@ beforeEach(() => {
     "INSERT INTO user (id, name, email, updated_at) VALUES ('u1', 'Ada', 'ada@acme.test', 0)",
   ).run();
   db.prepare(
-    `INSERT INTO account (id, account_id, provider_id, user_id, password, access_token, updated_at)
-     VALUES ('a1', 'ada@acme.test', 'credential', 'u1', 'scrypt$super-secret-hash', 'tok-123', 0)`,
+    `INSERT INTO account (id, issuer, account_id, provider_id, user_id, password, access_token, updated_at)
+     VALUES ('a1', 'local:credential', 'ada@acme.test', 'credential', 'u1', 'scrypt$super-secret-hash', 'tok-123', 0)`,
   ).run();
   db.prepare(
     "INSERT INTO session (id, expires_at, token, updated_at, user_id) VALUES ('s1', 9999999999, 'sess-token-abc', 0, 'u1')",
   ).run();
   db.prepare(
-    "INSERT INTO jwks (id, public_key, private_key) VALUES ('k1', 'pub-pem', 'priv-pem')",
+    "INSERT INTO jwks (id, public_key, private_key, created_at) VALUES ('k1', 'pub-pem', 'priv-pem', 0)",
   ).run();
   db.prepare("INSERT INTO config (key, value) VALUES ('auth_secret', 'the-signing-secret')").run();
   db.prepare("INSERT INTO config (key, value) VALUES ('cfg:ADMIN_PASSWORD', 'delivered-secret')").run();
@@ -59,7 +59,11 @@ describe('introspectTables', () => {
     expect(byName['user']).toEqual({ name: 'user', rowCount: 1, system: false });
     expect(byName['session']?.rowCount).toBe(1);
     expect(byName['config']?.rowCount).toBe(2);
+    // Every table the redaction map names must exist — a renamed column or table would
+    // otherwise silently stop redacting. `legacy_*` is exempt: those exist only on a store
+    // upgraded from the 1.6 plugin (`db/upgrade.ts`), and `test/upgrade.test.ts` covers them.
     for (const name of Object.keys(REDACTED_COLUMNS)) {
+      if (name.startsWith('legacy_')) continue;
       expect(byName[name], `schema drift: redaction map names unknown table '${name}'`).toBeDefined();
     }
   });

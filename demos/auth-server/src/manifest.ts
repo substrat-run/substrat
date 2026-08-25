@@ -41,6 +41,15 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
     group: 'Bootstrap',
   },
   {
+    key: 'ALLOW_SIGNUP',
+    label: 'Allow sign-up',
+    description: 'Let visitors create their own account (`true`/`false`). Off by default: an issuer that accepts strangers is a decision, not a default. Administrators can always create accounts from the dashboard, and this key is also togglable there — the dashboard writes this same value.',
+    placeholder: 'false',
+    required: false,
+    secret: false,
+    group: 'Accounts',
+  },
+  {
     key: 'EMAIL_FROM',
     label: 'Sender address',
     description: 'The From address for password-reset and verification mail. Its domain must be onboarded for sending. Absent ⇒ a safe default; without an EMAIL binding, mail is dropped.',

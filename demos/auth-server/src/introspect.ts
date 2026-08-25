@@ -37,8 +37,17 @@ export const REDACTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   account: ['password', 'access_token', 'refresh_token', 'id_token'],
   verification: ['value'],
   jwks: ['private_key'],
-  oauth_application: ['client_secret'],
-  oauth_access_token: ['access_token', 'refresh_token'],
+  // `oauthProvider` stores client secrets hashed and opaque tokens hashed by default, so
+  // these are already not the credential itself — redacted anyway, because a hash of a live
+  // bearer token is still the thing an offline attacker wants, and the Data tab is a
+  // convenience read rather than a reason to hand one out.
+  oauth_client: ['client_secret'],
+  oauth_access_token: ['token'],
+  oauth_refresh_token: ['token', 'rotation_replay_response'],
+  // Moved aside by `db/upgrade.ts` on an upgraded install; still full of 1.6 credentials,
+  // which were NOT hashed.
+  legacy_oauth_application: ['client_secret'],
+  legacy_oauth_access_token: ['access_token', 'refresh_token'],
   config: ['value'],
 };
 

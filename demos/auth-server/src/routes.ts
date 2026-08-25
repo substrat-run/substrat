@@ -108,12 +108,12 @@ const configureInstanceBody = z.object({
 const app = new Hono<{ Bindings: Env }>();
 
 /**
- * Bootstrap state: is the issuer awaiting its first administrator? The SPA shows a
- * "create the first admin" screen instead of a sign-in when this is true.
+ * Pre-auth state: is the issuer awaiting its first administrator, and is self-service
+ * sign-up open? The SPA picks between "create the first admin", "sign in" and "sign up"
+ * from this one read — all three screens are reachable by someone with no session, so it
+ * is the one route here that authenticates nobody.
  */
-app.get('/api/setup-state', async (c) =>
-  c.json({ needsSetup: await issuerFor(c.env, c.req.raw).needsSetup() }),
-);
+app.get('/api/setup-state', async (c) => c.json(await issuerFor(c.env, c.req.raw).issuerState()));
 
 /**
  * Create the first administrator — allowed only while the issuer has zero users (the DO
@@ -138,6 +138,18 @@ app.post('/api/setup', async (c) => {
   }
 });
 
+/**
+ * The issuer's OWN admin API — the relying-party registry and the sign-up setting, which
+ * Better Auth has no endpoints for. Forwarded whole to the issuer DO (`/__admin/*`), where
+ * the `admin` gate and the SQLite both live; the worker adds no gate of its own, exactly as
+ * it adds none in front of Better Auth's admin API below. MUST precede the SPA catch-all.
+ */
+app.all('/api/admin/*', (c) => {
+  const url = new URL(c.req.url);
+  url.pathname = url.pathname.replace('/api/admin', '/__admin');
+  return issuerFor(c.env, c.req.raw).fetch(new Request(url, c.req.raw));
+});
+
 /** The verified subject + role behind the current session, or null (the SPA's session probe). */
 app.get('/api/session', async (c) => {
   const res = await issuerFor(c.env, c.req.raw).fetch(
@@ -147,20 +159,18 @@ app.get('/api/session', async (c) => {
 });
 
 /**
- * OIDC discovery at the ROOT — the metadata's `issuer` is the clean origin, but Better Auth
- * serves the document under its base path (`/api/auth/.well-known/openid-configuration`). A
- * standard RP derives the discovery URL as `{issuer}/.well-known/openid-configuration`, so we
- * alias the root path to the Better-Auth one. The endpoints inside the doc all live under
- * `/api/auth/*`, which the catch-all below forwards. So an RP configured with
- * `OIDC_ISSUER = {origin}` (e.g. @substrat-run/oidc-rp) works with no rewriting.
+ * OIDC discovery and the RFC 8414 authorization-server metadata, at the ROOT — where a
+ * standard relying party looks, deriving `{issuer}/.well-known/openid-configuration` from the
+ * issuer it was configured with.
+ *
+ * This used to REWRITE the path: the 1.6 plugin served the document under the Better Auth
+ * base path, so the root was an alias onto `/api/auth/.well-known/…`. `oauthProvider` answers
+ * the root itself, and that alias now points at a 404 — so this forwards the request
+ * unchanged and the rewriting is gone rather than kept "just in case".
  */
-app.get('/.well-known/openid-configuration', async (c) => {
-  const origin = new URL(c.req.url).origin;
-  const res = await issuerFor(c.env, c.req.raw).fetch(
-    new Request(`${origin}/api/auth/.well-known/openid-configuration`, { headers: c.req.raw.headers }),
-  );
-  return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
-});
+app.get('/.well-known/:document{(openid-configuration|oauth-authorization-server)}', (c) =>
+  issuerFor(c.env, c.req.raw).fetch(c.req.raw),
+);
 
 // The whole Better Auth surface — sign-in/up, password reset, the OIDC endpoints
 // (authorize, token, userinfo, jwks, register, endsession), and the admin API — lives in the
