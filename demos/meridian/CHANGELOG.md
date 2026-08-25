@@ -1,5 +1,186 @@
 # @substrat-run/demo-hr
 
+## 0.7.0
+
+### Minor Changes
+
+- 537ad93: Meridian declares its operation surface, and its nine list reads page
+
+  Thirteen of Meridian's checks narrow to an entity. Undeclared, they were not merely untested
+  but **undeclarable**: `entityCheckConformanceSuite` derives its behavioural pair from an
+  operation's `permission`, and twenty-seven handlers registered as `'hr/log-time': logTimeOp as
+never` described nothing. To a compiler `ctx.check(HR_PERM.timeRead, employeeRef(id))` and
+  `ctx.check(HR_PERM.timeRead)` are the same, and the second lets anyone holding `time:read`
+  read every employee's timesheet. Meridian mints nine keys narrowed per employee (§4 of its
+  `PERMISSIONS.md`), so that is the difference between an employee seeing their own record and
+  seeing everyone's (#865/#891).
+
+  `src/operations.ts` declares all twenty-seven, `src/inputs.ts` and `src/schemas.ts` carry the
+  shapes they accept and answer, and `test/entity-checks.test.ts` drives the kit over the nine
+  checks it can reach. All nine were already honoured; they are now guarded rather than merely
+  correct today.
+
+  **Three shapes the declaration format cannot state**, named in `operations.ts` rather than
+  left to be inferred:
+
+  - **The conditional narrow.** `hr/list-leave-types` and `hr/list-projects` narrow when the
+    caller supplies the optional `employeeId` and check the NODE otherwise. `idFrom` on an
+    optional field would claim narrowing a caller omitting it does not get — the unsafe
+    direction for a review artifact. They declare the bare key, which is true of the unscoped
+    call and an understatement for a narrowed-grant holder. The kit does not drive them.
+  - **The second authority.** `hr/issue-employment-contract` opens with `employee:manage`, then
+    checks `protocol:bind` and `protocol:request-signature` on the instance it mints.
+    `permission` names one key; the other two are `resolved` and out of the kit's reach.
+  - **The caller-named entity type.** `hr/timeline` declares `entity: 'employee'` — the constant
+    every call site passes, accurate to all of them and narrower than the truth. That is #890,
+    and Meridian is its third instance after Callout's and Handlebar's timelines.
+
+  **Breaking at the operation seam:** declaring an operation means declaring its `output`, and a
+  bare-array output with no `paged` beside it is refused (#811). Nine reads now return `Page<T>`
+  — `hr/list-employees` and `hr/roster` kernel-composed over `employee`, the rest handler-composed
+  on a cursor each declaration names and the schema makes unique (`hr_leave_types.key` is the
+  primary key, `hr_projects.code` is `UNIQUE`, expense and request ids are ULIDs). `hr/my-expenses`
+  declares `order: 'desc'` to keep the newest-first order it shipped with. `hr/timeline` walks
+  `occurred_at`, matching Callout's timeline exactly.
+
+  Over HTTP nothing renames: a page's body is still the entries and the walk rides in a `Link`
+  header (#829), so the app's API client is untouched — both generic invoke routes in
+  `server.ts` and `worker.ts` now apply that projection.
+
+  Known seam, flagged rather than fixed: `src/api.ts` still declares each operation's summary and
+  input alongside `operations.ts`, because the OpenAPI catalog carries `tag`/`description` that the
+  operation format has no field for. Deriving the document from the declaration is #756.
+
+### Patch Changes
+
+- e401927: A narrowed check may name several entity types, and the schema says which
+
+  Three timeline operations took `entityType: z.string()` and narrowed to whatever the caller
+  named, while `{ key, entity, idFrom }` holds one fixed type. #889 declared `entity: 'workorder'`
+  on two of them — accurate to the app, narrower than the operation — and filed #890 asking whether
+  the answer was a new `entityFrom` field or simply a bounded input.
+
+  **It is both, and the reason is a caller the issue did not know about.** Every call site in the
+  app, the routes and the portal beats passes one constant, so the cheap answer looked complete:
+  pin `z.literal('workorder')` and the declaration becomes exact. It isn't complete — Callout's
+  §12 and Handlebar's counter-signature beat read a **protocol's** spine rows through the same
+  operation. Two admissible types, then, not one, and the literal turned both scenarios red on
+  first run, which is how the second type was found at all.
+
+  - `entityFrom: 'entityType'` names the input field carrying the type, beside `idFrom` naming the
+    one carrying the id. It is an alternative to `entity`, not an addition — one type or a field
+    that names several.
+  - **The admissible types are not listed in the declaration.** They are read off that field's own
+    schema (`z.enum(['workorder', 'protocol'])`), so the set exists once. #890's own worry about
+    `entityFrom` was that the kit would need a caller-written list, and a list a caller writes goes
+    stale; reading the schema is what avoids it.
+  - An open `z.string()` behind `entityFrom` is reported **uncovered with a reason**, never guessed
+    at. `protocol/list-for-entity` is that shape and stays as it is — an engine cannot know its
+    callers' nouns, which is the separate half of #890 (see the follow-up issue).
+
+  **What the kit does with it.** An `entityFrom` operation is driven **once per admissible type**,
+  so Callout's timeline now runs its pair over a work order _and_ over a protocol — 2 new generated
+  tests per vertical, all passing, so the handlers were honouring both all along. The kit also reads
+  a single-valued literal off the schema rather than being handed it: the three fixtures each
+  restated their constant in `inputs`, a second copy that could disagree with the declaration, and
+  Handlebar's was quietly deciding that only repairs got tested.
+
+  Meridian's `hr/timeline` is the one-type case and keeps `entity: 'employee'`, with
+  `z.literal('employee')` where the open string was.
+
+  **Surface note, stated because it is a narrowing:** the three timelines now refuse an entity type
+  they used to accept and answer with a validation error rather than a permission denial. No caller
+  in the repo passes anything else, and the portal is unaffected — a portal customer reads her
+  order's timeline as `entityType: 'workorder'` and her grant on the CUSTOMER reaches it through the
+  parent walk (`workorder → facility → customer`), which is what makes the portal work. Meridian's
+  `openapi.json` records the narrowing as `"const": "employee"`.
+
+- 6d71731: The host parses a declared operation input, so no handler has to
+
+  `OperationShape.input` described itself as _"the SAME Zod object the handler parses"_. Across the
+  fleet it mostly was not. Of ~85 declared inputs, 40 were parsed; `demos/rally` declared 32 and
+  parsed 2; `demos/shop` declared 14 and parsed none. The declaration was true about the _shape_ —
+  the compiler holds `idFrom` and `entityIdFrom` to it — and false about the parsing, which is the
+  half that refuses a malformed call (#893).
+
+  **A lint rule was the other candidate and is strictly weaker.** It can ask only whether _some_
+  `.parse` appears in a handler body, never whether it is the declared schema, at the boundary,
+  before the first read of a field. And it cannot be satisfied at all where the schema is declared
+  inline — `demos/callout`, `demos/handlebar` and `demos/todo` declare 25 inputs as
+  `input: z.object({…})` with no identifier a handler could name, and the reference implementation
+  is one of them.
+
+  So the host parses instead, from the declaration that already produces the manifest, the routes
+  and the OpenAPI document:
+
+  ```ts
+  export const bookingModule: ModuleRegistration = {
+    manifest: bookingManifest,
+    operations: OPERATIONS,
+    operationInputs: operationInputsOf(bookingOperations),
+  };
+  ```
+
+  `operationInputsOf` derives name → schema; `ModuleRegistration.operationInputs` carries it; both
+  adapters parse before the guards and the handler, outside the transaction. Every path in is
+  covered — HTTP, a scenario test, a seed, a schedule — which is why this is not at the HTTP mount:
+  parsing there alone would have left the demos' own suites exercising the one route the fix did not
+  cover. `mountOperations` already made this argument for the page trio, in those words, and it is
+  the argument here.
+
+  A schema declared for an operation the module does not bind is refused at registration: a schema
+  on nothing enforces nothing while reading as coverage.
+
+  **Adopted by the four packages #893 named** — `engines/booking`, `demos/rally`, `demos/shop`,
+  `demos/meridian`. The rest of the fleet is unchanged and still hand-parses or does not;
+  `inputParseContractSuite` is what makes the guarantee portable once they adopt.
+
+  ## Three things the change turned up, none of them predicted
+
+  **1. A paged read invoked in process was handed `undefined`.** `ImplInput` types a paged
+  handler's input as `… & PagedInput` with no undefined arm, because the platform supplies the page
+  _"whether it declared one or not"_ — and over HTTP that was already true. In process it was not:
+  `invoke('booking/list')` with no argument is the ordinary way a test or another operation reads a
+  list. The empty page is now materialised in the derived schema rather than each paged handler
+  learning to survive `undefined`. A required filter still fails, against `{}` and with a message
+  naming the field.
+
+  **2. `entityCheckConformanceSuite` read its fixture at collect time.** The extras a case is driven
+  with were spread in the `describe` body, before `beforeAll`. A fixture entry holding a value that
+  does not exist yet — rally's spare member, created in `beforeAll` and written into the object the
+  kit was handed, which is the documented way to supply an id the harness must make first —
+  captured the empty placeholder instead. Nothing said so: case 1 only asserts "was not denied",
+  and case 2's permission answer arrived before anything looked at the field. Read per case now.
+
+  **3. Two fixtures had never been valid.** `booking/join`'s conformance `partyRef` was 27
+  characters where the declared `dataSubjectId` wants a 26-character ULID, and `demos/shop`'s
+  scenario §8 reached an elapsed hold by asking for `holdSeconds: 0` — which the declared input has
+  always forbidden (`.positive()`), and which is the exact thing the house rule names instead of
+  `manualClock`. §8 now runs on a clock it advances, the way its own sibling `hold-expiry.test.ts`
+  already did while criticising it.
+
+  All three are the same finding in different clothes: a value nobody parsed was free to be wrong.
+
+- Updated dependencies [e401927]
+- Updated dependencies [04c61c1]
+- Updated dependencies [d4c66ac]
+- Updated dependencies [cabd449]
+- Updated dependencies [6d71731]
+- Updated dependencies [7cce6cd]
+- Updated dependencies [1c1f23c]
+- Updated dependencies [b3c362d]
+  - @substrat-run/contracts@0.88.0
+  - @substrat-run/kernel@0.88.0
+  - @substrat-run/adapter-sqlite@0.88.0
+  - @substrat-run/adapter-cloudflare@0.88.0
+  - @substrat-run/vertical-host@0.88.0
+  - @substrat-run/control-plane-api@0.88.0
+  - @substrat-run/engine-absence@0.5.0
+  - @substrat-run/engine-protocol@0.11.4
+  - @substrat-run/vertical-auth@0.8.1
+  - @substrat-run/connector-scrive@0.13.4
+  - @substrat-run/dev-issuer@0.1.2
+
 ## 0.6.3
 
 ### Patch Changes
