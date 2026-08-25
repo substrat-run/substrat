@@ -40,6 +40,7 @@ import {
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
   listLimitOf,
+  requestFingerprint,
 } from '@substrat-run/contracts';
 import {
   ulid,
@@ -88,6 +89,14 @@ import {
   type SearchHit,
   type SearchIndexPlan,
   type SearchOptions,
+  IDEMPOTENCY_DDL,
+  assertIdempotencyKey,
+  idempotencyLookupQuery,
+  idempotencyPruneStatement,
+  idempotencyRecordStatement,
+  idempotencyOptedOutMessage,
+  replayFor,
+  type IdempotencyRow,
   entityVersionQuery,
   entityVersionOf,
   assertIfMatch,
@@ -372,6 +381,8 @@ const KERNEL_DDL = `
   -- MAX(id) per (entity_type, entity_id) is the read. The id column sits last so
   -- SQLite walks to the end of the matched range instead of aggregating over it.
   ${OUTBOX_ENTITY_INDEX}
+  -- #116: the request-dedupe table, kernel-owned so no vertical migrates for it.
+  ${IDEMPOTENCY_DDL}
 `;
 
 /**
@@ -589,6 +600,8 @@ export function defineScopeDO(
     private readonly operationInput = new Map<string, { parse(value: unknown): unknown }>();
     /** #129: name → the entity whose version an `If-Match` is compared against. */
     private readonly operationConcurrency = new Map<string, { entity: string; idFrom: string }>();
+    /** #116: the operations that declared `idempotency: false` — refusals, not participants. */
+    private readonly operationIdempotencyOptOut = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
     private readonly guards = new Map<string, DeclaredGuard[]>();
     private readonly predicates = new Map<string, { module: string; handler: GuardPredicate }>();
@@ -755,6 +768,17 @@ export function defineScopeDO(
             `${unguarded.sort().join(', ')} — a precondition on nothing reads as a guard that is not there`,
         );
       }
+      // #116: same rule again for an opt-out — one on an unbound name reads as a
+      // deliberate exclusion of an operation that is not there.
+      const declaredOptOuts = registration.operationIdempotencyOptOuts ?? [];
+      const unboundOptOuts = declaredOptOuts.filter((name) => !ownOps.has(name));
+      if (unboundOptOuts.length > 0) {
+        throw new Error(
+          `${manifest.id} declares idempotency: false for unbound operation(s): ` +
+            `${[...unboundOptOuts].sort().join(', ')} — an opt-out on nothing reads as an ` +
+            'exclusion someone decided, of an operation that does not exist',
+        );
+      }
       for (const [name, handler] of Object.entries(registration.operations ?? {})) {
         this.defineOperation(name, handler);
         // The schema follows the HANDLER, not the name: a withdrawn operation
@@ -763,6 +787,9 @@ export function defineScopeDO(
         if (schema && this.operations.has(name)) this.operationInput.set(name, schema);
         const guarded = declaredConcurrency[name];
         if (guarded && this.operations.has(name)) this.operationConcurrency.set(name, guarded);
+        if (declaredOptOuts.includes(name) && this.operations.has(name)) {
+          this.operationIdempotencyOptOut.add(name);
+        }
       }
     }
 
@@ -1132,6 +1159,7 @@ export function defineScopeDO(
       result: unknown;
       platformRequests: number;
       concurrency?: { version: string | null; ifMatchChecked: boolean };
+      idempotency?: { keyHonoured: boolean; replayed: boolean };
     }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
@@ -1190,9 +1218,35 @@ export function defineScopeDO(
         );
       }
       const guardedRef = guarded ? concurrencyRefOf(operation, guarded, parsed) : undefined;
+      // #116. Refused rather than ignored, for the reason two paragraphs up: an
+      // operation that opted out never records its response, so a caller who sent
+      // a key and got a 200 believes a retry is safe when it would execute again.
+      const idempotencyKey = invokeOptions?.idempotencyKey;
+      if (idempotencyKey !== undefined) {
+        if (this.operationIdempotencyOptOut.has(operation)) {
+          throw new Error(idempotencyOptedOutMessage(operation));
+        }
+        assertIdempotencyKey(idempotencyKey);
+      }
+      // The subject a key is scoped to — the same three-way read `recordDenial`
+      // makes below, hoisted because both need it. A key belongs to whoever sent
+      // it: two principals choosing `1` must not reach each other's response.
+      const idempotencySubjectRef: CheckSubject = systemModuleId
+        ? { kind: 'system', id: systemModuleId as ModuleId }
+        : connectionId
+          ? { kind: 'connection', id: connectionId }
+          : { kind: 'principal', id: principal };
+      // Fingerprinted from the PARSED input (defaults applied), before the queue:
+      // a pure hash of what the caller sent has no business inside a transaction.
+      const fingerprint =
+        idempotencyKey === undefined ? undefined : await requestFingerprint(operation, parsed);
       return this.queue.enqueue(async () => {
         let result: unknown;
         let committedVersion: string | null = null;
+        // #116: set when this invocation was answered from a recording rather
+        // than run. Read after the transaction, where it decides both the
+        // envelope's acknowledgement and whether there is anything to dispatch.
+        let replayed = false;
         // #458: how many platform intents THIS invoke enqueued. Counted inside the
         // transaction, reported only after commit — a rolled-back intent is no signal.
         // The envelope return (below) is the DO↔coordinator wire for it; both sides
@@ -1212,6 +1266,24 @@ export function defineScopeDO(
               systemModuleId,
               signals,
             );
+            // #116: a retry is answered from the recording, and nothing else runs
+            // — not the guards, not the handler, not the permission check inside
+            // it. Keyed by SUBJECT, so a caller only ever reaches its own
+            // responses; `idempotency.ts` states what that does not promise.
+            if (idempotencyKey !== undefined && fingerprint !== undefined) {
+              const lookup = idempotencyLookupQuery(idempotencySubjectRef, idempotencyKey);
+              const prior = this.sql.exec(lookup.sql, ...lookup.params).toArray()[0] as
+                | IdempotencyRow
+                | undefined;
+              if (prior) {
+                const replay = replayFor(idempotencyKey, fingerprint, prior);
+                result = replay.result;
+                // Only a guarded operation may report a tag (#129).
+                if (guardedRef) committedVersion = replay.entityVersion;
+                replayed = true;
+                return;
+              }
+            }
             // #129: snapshot the version BEFORE the handler, compare AFTER it.
             // Before, because the handler's own `emit` moves it; after, because the
             // permission check lives inside the handler and must answer first — a
@@ -1230,6 +1302,24 @@ export function defineScopeDO(
             // The tag describes the row as THIS write left it, so it is read after
             // the handler and still inside the transaction.
             if (guardedRef) committedVersion = this.versionAt(guardedRef);
+            // #116: recorded INSIDE the transaction, which is what makes a failed
+            // request retried rather than replayed — it rolls back with the writes
+            // it describes. The prune rides along, on the only path that adds a row.
+            if (idempotencyKey !== undefined && fingerprint !== undefined) {
+              const at = new Date().toISOString();
+              const record = idempotencyRecordStatement(
+                idempotencySubjectRef,
+                idempotencyKey,
+                operation,
+                fingerprint,
+                result,
+                committedVersion,
+                at,
+              );
+              this.sql.exec(record.sql, ...record.params);
+              const prune = idempotencyPruneStatement(at);
+              this.sql.exec(prune.sql, ...prune.params);
+            }
           });
         } catch (err) {
           // K-35: the transaction has rolled back; record a refused check now, as its own
@@ -1252,10 +1342,20 @@ export function defineScopeDO(
           throw err;
         }
         // Post-commit: drain the outbox to consumers, each delivery its own txn.
-        await this.dispatch(tenantId, scopeId);
+        // Skipped on a replay: nothing was written, so there is nothing this
+        // invocation added to drain. Anything the ORIGINAL left undrained is the
+        // outbox's own retry backstop, which is what that backstop is for.
+        if (!replayed) await this.dispatch(tenantId, scopeId);
         return {
           result,
           platformRequests: signals.platformRequests,
+          // The acknowledgement the coordinator's skew check reads (#116), on the
+          // same reasoning as `ifMatchChecked` below and with a sharper failure: a
+          // DO too old to know about keys would EXECUTE THE OPERATION AGAIN and
+          // return 200, which is the duplicate the header was sent to prevent.
+          ...(idempotencyKey !== undefined
+            ? { idempotency: { keyHonoured: true, replayed } }
+            : {}),
           // The acknowledgement the coordinator's skew check reads. Present only
           // for a guarded operation, so an unguarded one costs nothing.
           ...(guardedRef

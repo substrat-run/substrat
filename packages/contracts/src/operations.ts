@@ -594,6 +594,36 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    * about, and why this is opt-in rather than blanket.
    */
   readonly concurrency?: ConcurrencyShape<O, Entities, Engines>;
+  /**
+   * Opt OUT of request idempotency (#116). Only `false` is a legal value.
+   *
+   * Every operation on an unsafe method honours `Idempotency-Key` by default,
+   * because a retried write creating a second entity is a hazard on all of them —
+   * unlike a lost update, which is a hazard on the field-bag shape alone and is
+   * why `concurrency` above is opt-IN. The client opts in by sending the header;
+   * the server never requires one.
+   *
+   * What honouring it costs, and therefore what this field is for: the response
+   * is recorded in the scope database for `IDEMPOTENCY_RETENTION_MS` so that the
+   * retry can be answered with it. An operation whose result must not be stored —
+   * a freshly minted secret, a one-time token, a body carrying personal data the
+   * erasure sweep would never find — says so here, and the host then REFUSES the
+   * header rather than quietly storing the response or quietly executing twice.
+   *
+   * ```ts
+   * 'acme/mint-token': {
+   *   idempotency: false,   // the response is a credential; do not record it
+   *   …
+   * }
+   * ```
+   *
+   * Opt-out rather than opt-in because the two read differently in a diff. A
+   * missing opt-in is invisible — nobody reviews an absence — while `idempotency:
+   * false` is a line someone wrote, and a reviewer can ask why. It is the same
+   * reasoning `narrows` applies to a permission that is deliberately not
+   * node-level: state the exception, never the rule.
+   */
+  readonly idempotency?: false;
   readonly emits?: {
     /**
      * The entity the event is about — one of THIS module's entities, or one of a
@@ -945,6 +975,24 @@ export function operationConcurrencyOf(
     out[name] = { entity: decl.over, idFrom: decl.idFrom };
   }
   return out;
+}
+
+/**
+ * The operations that opted OUT of request idempotency (#116).
+ *
+ * A set of names rather than a map, because there is nothing to configure: the
+ * declaration is a refusal, and its only content is which operations made it.
+ *
+ * Read structurally, like every other extractor here — a module hands the host
+ * its plain operations object and the host never sees the declaration's types.
+ */
+export function operationIdempotencyOptOutsOf(
+  operations: Readonly<Record<string, object>>,
+): string[] {
+  return Object.entries(operations)
+    .filter(([, op]) => (op as { idempotency?: unknown }).idempotency === false)
+    .map(([name]) => name)
+    .sort();
 }
 
 /**

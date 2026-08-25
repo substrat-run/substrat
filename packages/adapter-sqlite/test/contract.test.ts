@@ -11,6 +11,7 @@ import {
   searchContractSuite,
   entityVersionContractSuite,
   concurrencyContractSuite,
+  idempotencyContractSuite,
   listContractSuite,
   inputParseContractSuite,
 } from '@substrat-run/contract-tests';
@@ -151,6 +152,21 @@ inputParseContractSuite('adapter-sqlite', async () => {
 // after the permission check that would otherwise have refused the caller first.
 concurrencyContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-conc-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #116: request idempotency, on the DEFAULT checker for the same reason the
+// suite above uses one — a recording written behind an allow-all has not been
+// shown to be written after the permission check that guards it.
+idempotencyContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-idem-'));
   const host = new SqliteScopeHost({ dir });
   return {
     host,

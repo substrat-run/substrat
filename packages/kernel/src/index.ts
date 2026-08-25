@@ -175,6 +175,18 @@ export {
   type EntityVersionRow,
 } from './entity-version.js';
 export {
+  IDEMPOTENCY_DDL,
+  assertIdempotencyKey,
+  idempotencyLookupQuery,
+  idempotencyPruneStatement,
+  idempotencyRecordStatement,
+  idempotencySubject,
+  idempotencyOptedOutMessage,
+  replayFor,
+  type IdempotencyRow,
+  type IdempotentReplay,
+} from './idempotency.js';
+export {
   isTerminalDispatchFailure,
   isTerminalProviderError,
   providerErrorStatus,

@@ -29,6 +29,8 @@ import {
   etagOf,
   ETAG_HEADER,
   IF_MATCH_HEADER,
+  IDEMPOTENCY_KEY_HEADER,
+  IDEMPOTENCY_REPLAYED_HEADER,
   isPage,
   listPageQuery,
   LIST_SORT_PARAM,
@@ -337,6 +339,7 @@ function assertNoUnreachable(declared: readonly (readonly [string, { http: { met
  * | `PermissionDenied` (or a message saying so) | 403 |
  * | a `ZodError` — the input failed to parse | 400 |
  * | a stale `If-Match` — `precondition_failed` (#129) | 412 |
+ * | a reused `Idempotency-Key` — `conflict` (#116) | 409 |
  * | a body that is not JSON | 400 |
  * | an `HTTPException` — e.g. `resolveStub` refusing an anonymous call | its own |
  * | a Durable Object / runtime fault (#559) | 502 |
@@ -464,19 +467,34 @@ export function mountOperations(
       // it through would have the host refuse a read for being stale — a 412
       // where the caller expected a body.
       const ifMatch = unsafe ? c.req.header(IF_MATCH_HEADER) : undefined;
+      // #116: the retry token, on an UNSAFE method only. A GET is already
+      // idempotent, so honouring the header there would mean serving a recorded
+      // BODY for a read — a cache with none of a cache's rules about freshness,
+      // and one a client never asked for.
+      const idempotencyKey = unsafe ? c.req.header(IDEMPOTENCY_KEY_HEADER) : undefined;
       let version: string | null | undefined;
-      const result = await stub.invoke(
-        name,
-        payload,
-        guarded
+      let replayed = false;
+      // Options are supplied when EITHER concern applies: `concurrency` is an
+      // operation's declaration, a key is the caller's choice, and the two are
+      // independent. One bag, one pass — the seam #129 built and this declared into.
+      const invokeOptions =
+        guarded || idempotencyKey !== undefined
           ? {
               ...(ifMatch === undefined ? {} : { ifMatch }),
-              onEntityVersion: (v) => {
-                version = v;
+              ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+              ...(guarded
+                ? {
+                    onEntityVersion: (v: string | null) => {
+                      version = v;
+                    },
+                  }
+                : {}),
+              onIdempotentReplay: () => {
+                replayed = true;
               },
             }
-          : undefined,
-      );
+          : undefined;
+      const result = await stub.invoke(name, payload, invokeOptions);
       // Set BEFORE `respond`, so a vertical that owns its envelope still gets the
       // validator on its response without writing header code — and can still
       // override it, since it holds the `Context` too.
@@ -485,6 +503,10 @@ export function mountOperations(
       // has no history, and `ETag: ""` would be a validator a client could echo
       // back at a write that must refuse it.
       if (version != null) c.header(ETAG_HEADER, etagOf(version));
+      // Advisory, and set before `respond` for the same reason the `ETag` is: a
+      // vertical that owns its envelope should not have to write header code to
+      // let a client tell a replay from a first request.
+      if (replayed) c.header(IDEMPOTENCY_REPLAYED_HEADER, 'true');
       if (options.respond) return await options.respond(c, result, name);
       // A paged read's BODY is the entries; the walk rides in headers (#829).
       //

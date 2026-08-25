@@ -27,6 +27,7 @@ import {
   searchContractSuite,
   entityVersionContractSuite,
   concurrencyContractSuite,
+  idempotencyContractSuite,
   listContractSuite,
   permMod,
   inputParseContractSuite,
@@ -1063,6 +1064,19 @@ inputParseContractSuite('adapter-cloudflare', async () => {
 // the comparison happens inside the DO's transaction, and the acknowledgement has
 // to come back or the coordinator refuses the success.
 concurrencyContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #116: request idempotency on the DO host. The only place the recording is
+// proven to live inside the DO's own transaction and the acknowledgement to
+// cross the coordinator↔ScopeDO hop — a DO that dropped the key would EXECUTE
+// the operation again, which is the failure the header was sent to prevent.
+idempotencyContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
