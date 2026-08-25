@@ -13,12 +13,17 @@ import {
   type EmailTransport,
   type SendResult,
 } from '@substrat-run/adapter-email';
-import { resolveEnvSpec } from '@substrat-run/contracts';
-import { schema } from './auth-schema.js';
-import { SCHEMA_STATEMENTS } from '../db/ddl.js';
-import { buildAuth, DEMO_CLIENT } from './auth.js';
+import { resolveScopedEnvSpec } from '@substrat-run/contracts';
+import { schema } from './auth-schema.generated.js';
+import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
+import { upgradeLegacySchema } from '../db/upgrade.js';
+import { buildAuth, DEMO_CLIENT, seedDemoClient, type Auth } from './auth.js';
 import { senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
+import { createAdminApi } from './admin-api.js';
+import type { SqlExec } from './introspect.js';
+import type { SessionSubject } from './do-contract.js';
+import { ALLOW_SIGNUP, deliveredConfig, isTruthy } from './settings.js';
 
 /**
  * Dev API server for the auth-server demo — Better Auth over a local better-sqlite3 file,
@@ -51,23 +56,63 @@ class LoggingMockTransport extends MockEmailTransport {
 
 const transport: EmailTransport = new LoggingMockTransport();
 
-// Resolve the declared config through the manifest env-spec — the same keys the worker DO
-// reads, so the manifest is the single source of what the issuer consumes.
-const cfg = resolveEnvSpec(AUTH_SERVER_ENV, process.env).values;
-
 const sqlite = new Database(join(dataDir, 'auth.sqlite'));
 sqlite.pragma('journal_mode = WAL');
-for (const stmt of SCHEMA_STATEMENTS) sqlite.exec(stmt);
 const db = drizzle(sqlite, { schema });
 
-const auth = buildAuth({
-  database: drizzleAdapter(db, { provider: 'sqlite', schema }),
-  secret: process.env.AUTH_SECRET ?? 'dev-secret-not-for-production-000000000000',
-  baseURL: ORIGIN,
-  trustedOrigins: [ORIGIN, `http://localhost:${WEB_PORT}`],
-  transport,
-  sender: senderFor(cfg.EMAIL_FROM),
-});
+/** better-sqlite3 in the DO-cursor shape the shared helpers consume (see `introspect.ts`). */
+const sql: SqlExec = {
+  exec(query: string, ...bindings: unknown[]) {
+    const stmt = sqlite.prepare(query);
+    if (!stmt.reader) {
+      stmt.run(...(bindings as []));
+      return { columnNames: [], toArray: () => [], raw: () => [][Symbol.iterator]() };
+    }
+    const objects = stmt.all(...(bindings as [])) as Record<string, unknown>[];
+    return {
+      columnNames: stmt.columns().map((c) => c.name),
+      toArray: () => objects,
+      raw: () => (stmt.raw(true).all(...(bindings as [])) as unknown[][]).values(),
+    };
+  },
+};
+
+// Same order as the Durable Object's constructor: upgrade a pre-1.7 store BEFORE the DDL,
+// because `CREATE TABLE IF NOT EXISTS` cannot fix a table whose shape changed.
+const upgraded = upgradeLegacySchema(sql);
+for (const stmt of SCHEMA_STATEMENTS) sqlite.exec(stmt);
+
+/**
+ * The declared config, resolved the same way the DO resolves it: manifest env-spec over
+ * process.env, overlaid with the per-instance `cfg:` rows the dashboard writes. Read fresh
+ * per request so a settings toggle lands on the next request, not the next restart.
+ */
+const config = (): Record<string, string | undefined> =>
+  resolveScopedEnvSpec(AUTH_SERVER_ENV, process.env as Record<string, unknown>, deliveredConfig(sql, AUTH_SERVER_ENV))
+    .values;
+
+/**
+ * Better Auth over the dev database. Rebuilt per request, as the DO does, for the same
+ * reason: the sign-up setting is read from config, so a toggle has to be able to change it.
+ * `allowSignup` is overridable for the bootstrap paths — creating the FIRST administrator is
+ * not self-service registration, and must work on an issuer with sign-up closed.
+ */
+const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
+  const cfg = config();
+  return buildAuth({
+    database: drizzleAdapter(db, { provider: 'sqlite', schema }),
+    secret: process.env.AUTH_SECRET ?? 'dev-secret-not-for-production-000000000000',
+    baseURL: ORIGIN,
+    trustedOrigins: [ORIGIN, `http://localhost:${WEB_PORT}`],
+    transport,
+    sender: senderFor(cfg.EMAIL_FROM),
+    allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
+  });
+};
+
+/** The bootstrap instance: sign-up forced on, used ONLY to create the first administrator. */
+const bootstrapAuth = authFor({ allowSignup: true });
+const cfg = config();
 
 const needsSetup = (): boolean => (sqlite.prepare('SELECT count(*) AS n FROM user').get() as { n: number }).n === 0;
 
@@ -80,41 +125,75 @@ const ADMIN_PASSWORD = cfg.ADMIN_PASSWORD ?? 'admin-demo-pass';
 async function seedAdmin(): Promise<void> {
   const existing = sqlite.prepare('SELECT id FROM user WHERE email = ?').get(ADMIN_EMAIL) as { id: string } | undefined;
   if (existing) return;
-  const created = await auth.api.signUpEmail({ body: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD, name: 'Administrator' } });
+  const created = await bootstrapAuth.api.signUpEmail({ body: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD, name: 'Administrator' } });
   sqlite.prepare("UPDATE user SET role = 'admin', email_verified = 1 WHERE id = ?").run(created.user.id);
 }
 await seedAdmin();
 
+/**
+ * Register the demo relying party — every boot, because its secret is HASHED at rest and so
+ * cannot be recovered to print. A fresh one each start is the honest version of a banner
+ * that tells you the credentials; the previous demo registration (if any) is removed first so
+ * restarts do not pile up rows. Nothing outside this demo holds the old id.
+ */
+async function seedDemo(): Promise<{ clientId: string; clientSecret: string }> {
+  const headers = new Headers();
+  const signIn = await authFor().api.signInEmail({
+    body: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
+    asResponse: true,
+  });
+  for (const cookie of signIn.headers.getSetCookie()) headers.append('cookie', cookie.split(';')[0] ?? '');
+  for (const stale of sqlite.prepare('SELECT client_id FROM oauth_client WHERE name = ?').all(DEMO_CLIENT.name) as {
+    client_id: string;
+  }[]) {
+    sqlite.prepare('DELETE FROM oauth_client WHERE client_id = ?').run(stale.client_id);
+  }
+  return seedDemoClient(authFor(), headers);
+}
+const demo = await seedDemo();
+
 const app = new Hono();
 
-app.get('/api/setup-state', (c) => c.json({ needsSetup: needsSetup() }));
+app.get('/api/setup-state', (c) =>
+  c.json({ needsSetup: needsSetup(), signupEnabled: isTruthy(config()[ALLOW_SIGNUP]) }),
+);
 
 app.post('/api/setup', async (c) => {
   const body = await c.req.json<{ email?: string; password?: string; name?: string }>();
   if (!body.email || !body.password || !body.name) throw new HTTPException(400, { message: 'email, password and name are required' });
   if (!needsSetup()) throw new HTTPException(409, { message: 'the auth server is already set up' });
-  const created = await auth.api.signUpEmail({ body: { email: body.email, password: body.password, name: body.name } });
+  // Bootstrapping the first admin is not sign-up, so it goes through Better Auth's internal
+  // API on an instance with sign-up ON — otherwise `ALLOW_SIGNUP=false` would leave a fresh
+  // issuer with no way to create anybody, including its own first administrator.
+  const created = await bootstrapAuth.api.signUpEmail({ body: { email: body.email, password: body.password, name: body.name } });
   sqlite.prepare("UPDATE user SET role = 'admin', email_verified = 1 WHERE id = ?").run(created.user.id);
   return c.json({ ok: true, id: created.user.id }, 201);
 });
 
-app.get('/api/session', async (c) => {
-  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+/** The verified subject behind a request's cookies, or null. */
+const sessionOf = async (headers: Headers): Promise<SessionSubject | null> => {
+  const session = await authFor().api.getSession({ headers });
   const u = session?.user as { id: string; email?: string; name?: string; role?: string } | undefined;
-  return c.json(u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null);
-});
+  return u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null;
+};
 
-// Root-level OIDC discovery alias → Better Auth serves it under the base path. (The cast
-// steps past the node/undici vs Better-Auth `Request` lib mismatch; the shape is identical.)
-app.get('/.well-known/openid-configuration', async (c) => {
-  const res = await auth.handler(
-    new Request(`${ORIGIN}/api/auth/.well-known/openid-configuration`, { headers: c.req.raw.headers }) as never,
-  );
-  return c.body(await res.text(), 200, { 'content-type': 'application/json' });
-});
+app.get('/api/session', async (c) => c.json(await sessionOf(c.req.raw.headers)));
+
+// The issuer's own admin API — the relying-party registry and settings. The SAME factory the
+// worker's DO mounts, over this dev database, so the dashboard is exercised identically here.
+app.route(
+  '/api/admin',
+  createAdminApi({ sql, session: sessionOf, effectiveCfg: config, auth: () => authFor().api as never }),
+);
+
+// Root-level OIDC discovery + RFC 8414 metadata — `oauthProvider` serves these paths itself
+// (the 1.6 plugin served them under the base path, which is why this used to rewrite).
+app.get('/.well-known/:document{(openid-configuration|oauth-authorization-server)}', (c) =>
+  authFor().handler(c.req.raw),
+);
 
 // The whole Better Auth surface (sign-in, reset, OIDC, admin API).
-app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => auth.handler(c.req.raw));
+app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => authFor().handler(c.req.raw));
 
 app.onError((err, c) => {
   const status = err instanceof HTTPException ? err.status : 400;
@@ -126,5 +205,10 @@ console.log(`\n  Auth Server demo (OIDC provider)  ${ORIGIN}`);
 console.log(`  admin dashboard                   http://localhost:${WEB_PORT}`);
 console.log(`  discovery                         ${ORIGIN}/.well-known/openid-configuration`);
 console.log(`  seeded admin                      ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}`);
-console.log(`  demo relying party                client_id=${DEMO_CLIENT.clientId}  (redirect ${DEMO_CLIENT.redirectUrls[0]})`);
+console.log(`  demo relying party                client_id=${demo.clientId}`);
+console.log(`                                    client_secret=${demo.clientSecret}  (fresh each boot — stored hashed)`);
+console.log(`                                    redirect ${DEMO_CLIENT.redirectUris[0]}`);
+if (upgraded.renamed.length || upgraded.added.length) {
+  console.log(`  schema upgraded                   ${JSON.stringify(upgraded)}`);
+}
 console.log(`  data                              ${dataDir}\n`);

@@ -81,7 +81,7 @@
     "@substrat-run/engine-workorder": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "better-auth": "^1.6.23",
+    "better-auth": "^1.7.1",
     "better-sqlite3": "^13.0.3",
     "hono": "^4.6.0",
     "zod": "catalog:"

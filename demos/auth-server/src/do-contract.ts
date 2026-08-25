@@ -19,10 +19,21 @@ export interface ConfigEntry {
   value: string;
 }
 
+/**
+ * What the SPA reads before anyone is signed in — which of the three pre-auth screens to
+ * show. Deliberately the ONLY unauthenticated read: it reveals whether the issuer has an
+ * administrator yet and whether sign-up is open, both of which a visitor could establish by
+ * posting to `/api/setup` or `/api/auth/sign-up/email` anyway.
+ */
+export interface IssuerState {
+  needsSetup: boolean;
+  signupEnabled: boolean;
+}
+
 /** The DO's callable surface (avoids leaking the full class type through the binding). */
 export type AuthServerStub = {
   fetch(request: Request): Promise<Response>;
-  needsSetup(): Promise<boolean>;
+  issuerState(): Promise<IssuerState>;
   setupFirstAdmin(origin: string, creds: { email: string; password: string; name: string }): Promise<{ id: string }>;
   provisionInstance(meta: InstanceMeta, config?: ConfigEntry[]): Promise<void>;
   setInstanceConfig(entries: ConfigEntry[]): Promise<void>;

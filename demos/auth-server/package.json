@@ -42,6 +42,15 @@
         "group": "Bootstrap"
       },
       {
+        "key": "ALLOW_SIGNUP",
+        "label": "Allow sign-up",
+        "description": "Let visitors create their own account (`true`/`false`). Off by default: an issuer that accepts strangers is a decision, not a default. Administrators can always create accounts from the dashboard, and this key is also togglable there — the dashboard writes this same value.",
+        "placeholder": "false",
+        "required": false,
+        "secret": false,
+        "group": "Accounts"
+      },
+      {
         "key": "EMAIL_FROM",
         "label": "Sender address",
         "description": "The From address for password-reset and verification mail. Its domain must be onboarded for sending. Absent ⇒ a safe default; without an EMAIL binding, mail is dropped.",
@@ -73,20 +82,22 @@
   },
   "scripts": {
     "gen:assets": "node scripts/gen-assets.mjs",
-    "pretypecheck": "node scripts/gen-assets.mjs",
+    "pretypecheck": "node scripts/gen-assets.mjs && tsx scripts/gen-schema.mts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "test": "vitest run",
     "server": "tsx src/server.ts",
     "dev": "concurrently -n api,app -c blue,green \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "cf:dev": "wrangler dev",
-    "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker"
+    "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker",
+    "gen:schema": "tsx scripts/gen-schema.mts"
   },
   "dependencies": {
+    "@better-auth/oauth-provider": "^1.7.1",
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-email": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
-    "better-auth": "^1.6.23",
+    "better-auth": "^1.7.1",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",

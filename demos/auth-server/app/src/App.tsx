@@ -3,24 +3,38 @@ import {
   answerConsent,
   authClient,
   banUser,
+  APPLICATION_TYPES,
   createFirstAdmin,
+  createOAuthClient,
   createUser,
   currentSession,
+  deleteOAuthClient,
   discovery,
+  issuerSettings,
+  listOAuthClients,
   listUsers,
   oauthClient,
   pendingConsent,
+  pendingOAuthQuery,
   removeUser,
   requestPasswordReset,
+  rotateOAuthClientSecret,
+  setIssuerSettings,
   setRole,
   setupState,
   signIn,
   signOut,
+  signUp,
   unbanUser,
+  updateOAuthClient,
   type AdminUser,
+  type ApplicationType,
+  type ClientDraft,
   type ConsentRequest,
   type Discovery,
+  type IssuerSettings,
   type OAuthClient,
+  type RegisteredClient,
   type Session,
 } from './api';
 
@@ -28,7 +42,8 @@ type Phase =
   | { t: 'loading' }
   | { t: 'reset'; token: string }
   | { t: 'setup' }
-  | { t: 'signin' }
+  | { t: 'signin'; signupEnabled: boolean; oauthQuery: string | null }
+  | { t: 'signup'; forOidc: boolean; oauthQuery: string | null }
   | { t: 'consent'; request: ConsentRequest }
   | { t: 'not-admin'; session: Session }
   | { t: 'dashboard'; session: Session };
@@ -54,23 +69,35 @@ export default function App() {
       const token = url.searchParams.get('token');
       if (token) return setPhase({ t: 'reset', token });
     }
-    const { needsSetup } = await setupState();
+    const { needsSetup, signupEnabled } = await setupState();
     if (needsSetup) return setPhase({ t: 'setup' });
     const session = await currentSession();
+    // The pending authorize request, if one sent this person here. The server does NOT
+    // remember it — it is carried in this signed query and must be handed back with whatever
+    // the person does next, or the relying party never hears the answer.
+    const oauthQuery = pendingOAuthQuery(url);
+    const forOidc = oauthQuery !== null;
 
     // An authorize request is waiting on an answer. Without a session the consent code cannot
     // be honoured, so fall back to sign-in — Better Auth resumes from its own prompt cookie.
     if (url.pathname === '/consent') {
       const request = pendingConsent(url);
       if (session && request) return setPhase({ t: 'consent', request });
-      return setPhase({ t: 'signin' });
+      return setPhase({ t: 'signin', signupEnabled, oauthQuery });
+    }
+    // Sign-up is a pre-auth screen like the other two, and reachable mid-authorize: the
+    // pending request lives in a cookie, so creating an account resumes it the same way
+    // signing in does. A closed issuer sends this path back to sign-in rather than showing
+    // a form the endpoint would refuse.
+    if (url.pathname === '/signup') {
+      return setPhase(signupEnabled ? { t: 'signup', forOidc, oauthQuery } : { t: 'signin', signupEnabled, oauthQuery });
     }
     // `/login` means an RP asked for a sign-in, and that stays true when a session already
     // exists: `prompt=login` (and an expired `max_age`) is a re-authentication request, and
     // answering it with the dashboard strands the flow exactly as `/consent` did.
-    if (url.pathname === '/login') return setPhase({ t: 'signin' });
+    if (url.pathname === '/login') return setPhase({ t: 'signin', signupEnabled, oauthQuery });
 
-    if (!session) return setPhase({ t: 'signin' });
+    if (!session) return setPhase({ t: 'signin', signupEnabled, oauthQuery });
     setPhase(session.role === 'admin' ? { t: 'dashboard', session } : { t: 'not-admin', session });
   }, []);
 
@@ -92,7 +119,25 @@ export default function App() {
     case 'setup':
       return <Setup onDone={doneSigningIn} />;
     case 'signin':
-      return <SignIn onDone={doneSigningIn} />;
+      return (
+        <SignIn
+          onDone={doneSigningIn}
+          signupEnabled={phase.signupEnabled}
+          oauthQuery={phase.oauthQuery}
+          onSignUp={() => setPhase({ t: 'signup', forOidc: phase.oauthQuery !== null, oauthQuery: phase.oauthQuery })}
+        />
+      );
+    case 'signup':
+      // The URL is left alone on purpose: a pending authorize request is carried in a cookie,
+      // and staying on `/login` keeps the browser's back button on the flow it came from.
+      return (
+        <SignUp
+          forOidc={phase.forOidc}
+          oauthQuery={phase.oauthQuery}
+          onDone={doneSigningIn}
+          onSignIn={() => void refresh()}
+        />
+      );
     case 'consent':
       return <Consent request={phase.request} />;
     case 'not-admin':
@@ -132,8 +177,9 @@ function Setup({ onDone }: { onDone: () => void }) {
             try {
               await createFirstAdmin({ name, email, password });
               // Bootstrapping can itself be the answer to an RP's authorize request, so the
-              // resume applies here too — see `signIn`.
-              const { resumed } = await signIn(email, password);
+              // resume applies here too — see `signIn`. Read off the URL rather than passed
+              // in: an un-bootstrapped issuer shows this screen wherever the person landed.
+              const { resumed } = await signIn(email, password, pendingOAuthQuery(new URL(window.location.href)));
               if (!resumed) onDone();
             } catch (e) {
               setErr(e instanceof Error ? e.message : String(e));
@@ -147,15 +193,17 @@ function Setup({ onDone }: { onDone: () => void }) {
   );
 }
 
-function SignIn({ onDone }: { onDone: () => void }) {
+function SignIn({
+  onDone, signupEnabled, oauthQuery, onSignUp,
+}: { onDone: () => void; signupEnabled: boolean; oauthQuery: string | null; onSignUp: () => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  // Reached at `/login` ⇒ a relying party sent this person here, not an operator opening the
-  // console. `/consent` reaches it too, when the session expired under a pending request.
-  // Same form either way, but promising the dashboard would be a lie about where they end up.
-  const forOidc = window.location.pathname === '/login' || window.location.pathname === '/consent';
+  // A signed authorize query ⇒ a relying party sent this person here, not an operator opening
+  // the console. Same form either way, but promising the dashboard would be a lie about where
+  // they end up.
+  const forOidc = oauthQuery !== null;
   return (
     <Centered>
       <Card title="Substrat Auth">
@@ -173,7 +221,7 @@ function SignIn({ onDone }: { onDone: () => void }) {
             try {
               // `resumed` ⇒ an authorize request took over and the browser is already on its
               // way back to the relying party; re-rendering here would flash the dashboard.
-              const { resumed } = await signIn(email, password);
+              const { resumed } = await signIn(email, password, oauthQuery);
               if (!resumed) onDone();
             } catch (e) {
               setErr(e instanceof Error ? e.message : String(e));
@@ -197,6 +245,65 @@ function SignIn({ onDone }: { onDone: () => void }) {
           }}
         >
           Forgot password?
+        </button>
+        {signupEnabled && (
+          <button className="btn link" onClick={onSignUp}>
+            Create an account
+          </button>
+        )}
+      </Card>
+    </Centered>
+  );
+}
+
+/**
+ * Self-service registration. Shown only while an administrator has sign-up turned on — and
+ * the issuer refuses `/sign-up/email` outright when it is off, so this screen being hidden is
+ * the courtesy rather than the control.
+ *
+ * `onDone` handles the ordinary case; when a relying party sent this person here, creating
+ * the account resumes that authorize request and the browser leaves for the app's callback
+ * before this component would have re-rendered — the same `resumed` dance as sign-in.
+ */
+function SignUp({
+  forOidc, oauthQuery, onDone, onSignIn,
+}: { forOidc: boolean; oauthQuery: string | null; onDone: () => void; onSignIn: () => void }) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <Centered>
+      <Card title="Create your account">
+        <p className="muted">
+          {forOidc
+            ? 'Create an account to continue to the application that sent you here.'
+            : 'Create an account on this issuer.'}
+        </p>
+        <Field label="Name" value={name} onChange={setName} />
+        <Field label="Email" value={email} onChange={setEmail} type="email" />
+        <Field label="Password" value={password} onChange={setPassword} type="password" hint="At least 8 characters" />
+        {err && <p className="error">{err}</p>}
+        <button
+          className="btn primary"
+          disabled={busy}
+          onClick={async () => {
+            setErr(null);
+            setBusy(true);
+            try {
+              const { resumed } = await signUp({ name, email, password }, oauthQuery);
+              if (!resumed) onDone();
+            } catch (e) {
+              setErr(e instanceof Error ? e.message : String(e));
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'Creating…' : 'Create account'}
+        </button>
+        <button className="btn link" onClick={onSignIn}>
+          I already have an account
         </button>
       </Card>
     </Centered>
@@ -249,11 +356,12 @@ const SCOPE_TEXT: Record<string, string> = {
 };
 
 /**
- * The consent screen — the answer to an authorize request that Better Auth parked at
- * `/consent?consent_code=…`. Approving mints the authorization code and sends the browser to
- * the relying party's own callback; denying sends it there too, carrying `access_denied`.
- * Either way the RP hears back, which is the whole point: before this existed, both answers
- * were "you are now looking at an admin dashboard" (#898).
+ * The consent screen — the answer to an authorize request the plugin parked at `/consent?…`.
+ * The request itself is the signed query in that URL (there is no server-side consent code
+ * any more), and it must be handed back with the answer. Approving mints the authorization
+ * code and sends the browser to the relying party's own callback; denying sends it there too,
+ * carrying `access_denied`. Either way the RP hears back, which is the whole point: before
+ * this screen existed, both answers were "you are now looking at an admin dashboard" (#898).
  */
 function Consent({ request }: { request: ConsentRequest }) {
   const [client, setClient] = useState<OAuthClient | null>(null);
@@ -261,15 +369,17 @@ function Consent({ request }: { request: ConsentRequest }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    void oauthClient(request.clientId).then(setClient).catch(() => setClient(null));
-  }, [request.clientId]);
+    void oauthClient(request.clientId, request.oauthQuery)
+      .then(setClient)
+      .catch(() => setClient(null));
+  }, [request.clientId, request.oauthQuery]);
 
   const answer = async (accept: boolean) => {
     setErr(null);
     setBusy(true);
     try {
       // A full navigation, not a fetch — this URL belongs to the relying party.
-      window.location.href = await answerConsent({ accept, consentCode: request.consentCode });
+      window.location.href = await answerConsent({ accept, oauthQuery: request.oauthQuery });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setBusy(false);
@@ -347,6 +457,8 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
           </div>
           <UserTable users={users} me={session.sub} onChanged={reload} />
         </section>
+        <AccessPanel />
+        <ClientsPanel />
         <IssuerPanel disc={disc} />
       </main>
     </div>
@@ -432,6 +544,356 @@ function NewUser({ onCreated }: { onCreated: () => void }) {
           Create
         </button>
         <button className="btn" onClick={() => setOpen(false)}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Who may get in. One setting today — self-service sign-up — written to the SAME declared
+ * config key (`ALLOW_SIGNUP`) the platform's Env tab and a `wrangler` var write, so there is
+ * one answer to "is sign-up open" no matter which of the three set it. The issuer rebuilds
+ * Better Auth per request, so the toggle applies to the very next sign-up attempt.
+ */
+function AccessPanel() {
+  const [settings, setSettings] = useState<IssuerSettings | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void issuerSettings()
+      .then(setSettings)
+      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  const toggle = async (allowSignup: boolean) => {
+    setErr(null);
+    setBusy(true);
+    try {
+      setSettings(await setIssuerSettings({ allowSignup }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2>Access</h2></div>
+      {err && <p className="error">{err}</p>}
+      {!settings ? (
+        <p className="muted">Loading…</p>
+      ) : (
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={settings.allowSignup}
+            disabled={busy}
+            onChange={(e) => void toggle(e.target.checked)}
+          />
+          <span>
+            <strong>Allow sign-up</strong>
+            <em className="hint">
+              {settings.allowSignup
+                ? 'Anyone who reaches this issuer can create an account — including someone a relying party sent to sign in.'
+                : 'Only administrators can create accounts. The sign-up screen is hidden and the endpoint refuses.'}
+            </em>
+          </span>
+        </label>
+      )}
+    </section>
+  );
+}
+
+/* ---- the relying-party registry ---- */
+
+const EMPTY_DRAFT: ClientDraft = {
+  client_name: '',
+  application_type: 'web',
+  redirect_uris: [],
+  logo_uri: '',
+  metadata: {},
+  skip_consent: false,
+  disabled: false,
+};
+
+/**
+ * The applications this issuer will answer for. Better Auth registers clients (dynamically,
+ * or from `trustedClients` in code) but offers no way to see or change them afterwards — so
+ * before this panel, the only record of a registered app was a row in the platform's
+ * read-only Data tab.
+ */
+function ClientsPanel() {
+  const [clients, setClients] = useState<RegisteredClient[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [editing, setEditing] = useState<RegisteredClient | 'new' | null>(null);
+  /** A freshly minted secret, held until dismissed — the only moment it is knowable. */
+  const [secret, setSecret] = useState<{ clientId: string; clientSecret: string } | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      setClients(await listOAuthClients());
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const act = async (fn: () => Promise<void>) => {
+    setErr(null);
+    try {
+      await fn();
+      await reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2>Applications</h2>
+        {!editing && <button className="btn" onClick={() => setEditing('new')}>+ New client</button>}
+      </div>
+      {err && <p className="error">{err}</p>}
+      {secret && <SecretOnce {...secret} onDismiss={() => setSecret(null)} />}
+      {editing && (
+        <ClientEditor
+          client={editing === 'new' ? null : editing}
+          onCancel={() => setEditing(null)}
+          onSaved={async (result) => {
+            setEditing(null);
+            if (result) setSecret(result);
+            await reload();
+          }}
+        />
+      )}
+      {!clients ? (
+        <p className="muted">Loading applications…</p>
+      ) : clients.length === 0 ? (
+        <p className="muted">
+          No applications yet. Register one here, or let it register itself at the issuer’s
+          registration endpoint.
+        </p>
+      ) : (
+        <table className="grid">
+          <thead>
+            <tr><th>Application</th><th>Redirect URIs</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody>
+            {clients.map((client) => (
+              <tr key={client.client_id}>
+                <td>
+                  <div>
+                    {client.client_name ?? 'Unnamed application'}
+                    <span className="tag">{client.application_type ?? 'web'}</span>
+                    {client.skip_consent && <span className="tag">no consent screen</span>}
+                    {!client.user_id && <span className="tag">self-registered</span>}
+                  </div>
+                  <code className="client-id">{client.client_id}</code>
+                </td>
+                <td className="uris">
+                  {client.redirect_uris.map((uri) => <div key={uri}><code>{uri}</code></div>)}
+                </td>
+                <td>
+                  {client.disabled ? <span className="tag warn">disabled</span> : 'active'}
+                  {!client.client_secret_set && <span className="tag">public</span>}
+                </td>
+                <td className="actions">
+                  <button className="btn tiny" onClick={() => setEditing(client)}>Edit</button>
+                  <button
+                    className="btn tiny"
+                    onClick={() =>
+                      void act(async () => {
+                        await updateOAuthClient(client.client_id, { disabled: !client.disabled });
+                      })
+                    }
+                  >
+                    {client.disabled ? 'Enable' : 'Disable'}
+                  </button>
+                  {client.client_secret_set && (
+                    <button
+                      className="btn tiny"
+                      onClick={() =>
+                        void act(async () => {
+                          if (!confirm(`Rotate the secret for “${client.client_name ?? client.client_id}”? The current one stops working immediately.`)) return;
+                          setSecret(
+                            await rotateOAuthClientSecret(client.client_id).then((r) => ({
+                              clientId: r.client.client_id,
+                              clientSecret: r.clientSecret,
+                            })),
+                          );
+                        })
+                      }
+                    >
+                      Rotate secret
+                    </button>
+                  )}
+                  <button
+                    className="btn tiny danger"
+                    onClick={() =>
+                      void act(async () => {
+                        if (!confirm(`Remove “${client.client_name ?? client.client_id}”? Its tokens and consents go with it.`)) return;
+                        await deleteOAuthClient(client.client_id);
+                      })
+                    }
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="muted small">
+        Each application connects with its own client ID, so the login and consent screens can
+        tell them apart — the name and icon here are what a person sees when that application
+        asks them to sign in.
+      </p>
+    </section>
+  );
+}
+
+/** A minted secret, shown once. There is no route that can show it again — that is deliberate. */
+function SecretOnce({
+  clientId, clientSecret, onDismiss,
+}: { clientId: string; clientSecret: string; onDismiss: () => void }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="secret-once">
+      <p><strong>Copy this secret now.</strong> It is not stored anywhere you can read it again.</p>
+      <dl className="kv">
+        <dt>Client ID</dt><dd><code>{clientId}</code></dd>
+        <dt>Client secret</dt><dd><code>{clientSecret}</code></dd>
+      </dl>
+      <div className="row">
+        <button
+          className="btn"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(clientSecret);
+              setCopied(true);
+            } catch {
+              // Clipboard access can be refused; the value is on screen to select either way.
+              setCopied(false);
+            }
+          }}
+        >
+          {copied ? 'Copied' : 'Copy secret'}
+        </button>
+        <button className="btn" onClick={onDismiss}>Done</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The new/edit form. Redirect URIs are one per line and must match the application's callback
+ * EXACTLY — the issuer compares them as strings, so a trailing slash is a different URI.
+ * Metadata is free-form JSON the issuer stores and never interprets; it is there for the
+ * login and consent screens to read per client.
+ */
+function ClientEditor({
+  client, onCancel, onSaved,
+}: {
+  client: RegisteredClient | null;
+  onCancel: () => void;
+  onSaved: (secret: { clientId: string; clientSecret: string } | null) => void | Promise<void>;
+}) {
+  const [name, setName] = useState(client?.client_name ?? '');
+  const [type, setType] = useState<ApplicationType>(
+    (client?.application_type as ApplicationType | undefined) ?? EMPTY_DRAFT.application_type,
+  );
+  const [icon, setIcon] = useState(client?.logo_uri ?? '');
+  const [uris, setUris] = useState((client?.redirect_uris ?? []).join('\n'));
+  const [skipConsent, setSkipConsent] = useState(Boolean(client?.skip_consent));
+  const [meta, setMeta] = useState(
+    client?.metadata && Object.keys(client.metadata).length ? JSON.stringify(client.metadata, null, 2) : '',
+  );
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setErr(null);
+    let metadata: Record<string, unknown> = {};
+    if (meta.trim()) {
+      try {
+        const value: unknown = JSON.parse(meta);
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('must be a JSON object');
+        metadata = value as Record<string, unknown>;
+      } catch (e) {
+        return setErr(`Metadata: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    const draft: ClientDraft = {
+      client_name: name.trim(),
+      application_type: type,
+      redirect_uris: uris.split('\n').map((u) => u.trim()).filter(Boolean),
+      metadata,
+      skip_consent: skipConsent,
+      disabled: client?.disabled ?? false,
+      ...(icon.trim() ? { logo_uri: icon.trim() } : {}),
+    };
+    setBusy(true);
+    try {
+      if (client) {
+        await updateOAuthClient(client.client_id, draft);
+        await onSaved(null);
+      } else {
+        const created = await createOAuthClient(draft);
+        await onSaved({ clientId: created.client.client_id, clientSecret: created.clientSecret });
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="editor">
+      <h3>{client ? `Edit ${client.client_name ?? client.client_id}` : 'Register an application'}</h3>
+      <Field label="Name" value={name} onChange={setName} hint="Shown on the consent screen — this is what people read." />
+      <label className="field">
+        <span>Application type</span>
+        <select value={type} onChange={(e) => setType(e.target.value as ApplicationType)}>
+          {APPLICATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <em className="hint">
+          A <code>web</code> client keeps its secret on a server. A <code>native</code> one is public — PKCE, and
+          loopback or private-scheme redirect URIs are allowed.
+        </em>
+      </label>
+      <label className="field">
+        <span>Redirect URIs</span>
+        <textarea rows={3} value={uris} onChange={(e) => setUris(e.target.value)} />
+        <em className="hint">One per line, matched exactly. A `web` client needs HTTPS unless it is on loopback.</em>
+      </label>
+      <Field label="Logo URL" value={icon} onChange={setIcon} hint="Optional. Shown beside the name on the consent screen." />
+      <label className="toggle">
+        <input type="checkbox" checked={skipConsent} onChange={(e) => setSkipConsent(e.target.checked)} />
+        <span>
+          <strong>Skip the consent screen</strong>
+          <em className="hint">
+            For a first-party application you already trust. Nobody will be asked to approve the scopes it requests.
+          </em>
+        </span>
+      </label>
+      <label className="field">
+        <span>Metadata (JSON)</span>
+        <textarea rows={4} value={meta} onChange={(e) => setMeta(e.target.value)} placeholder={'{\n  "theme": "dark"\n}'} />
+        <em className="hint">Stored as-is and handed to your login/consent pages. The issuer never reads it.</em>
+      </label>
+      {err && <p className="error">{err}</p>}
+      <div className="row">
+        <button className="btn primary" disabled={busy} onClick={() => void save()}>
+          {busy ? 'Saving…' : client ? 'Save changes' : 'Register'}
+        </button>
+        <button className="btn" onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );

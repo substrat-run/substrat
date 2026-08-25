@@ -29,14 +29,19 @@ function fakeAuth() {
   const exported: string[] = [];
   const destroyed: string[] = [];
   const touched: string[] = [];
+  /** The paths the worker forwarded to the DO's `fetch` (the `/__*` control surface). */
+  const forwarded: string[] = [];
   const namespace = {
     idFromName: (name: string) => name,
     get(id: unknown): AuthServerStub {
       const doName = id as string;
       touched.push(doName);
       return {
-        fetch: async () => Response.json({ ok: true, doName }),
-        needsSetup: async () => true,
+        fetch: async (request: Request) => {
+          forwarded.push(new URL(request.url).pathname);
+          return Response.json({ ok: true, doName });
+        },
+        issuerState: async () => ({ needsSetup: true, signupEnabled: false }),
         setupFirstAdmin: async () => ({ id: 'user-1' }),
         provisionInstance: async (meta, config) => {
           provisioned.push({ doName, meta, ...(config ? { config } : {}) });
@@ -63,7 +68,7 @@ function fakeAuth() {
       };
     },
   };
-  return { namespace, provisioned, configured, introspected, exported, destroyed, touched };
+  return { namespace, provisioned, configured, introspected, exported, destroyed, touched, forwarded };
 }
 
 let auth: ReturnType<typeof fakeAuth>;
@@ -295,6 +300,39 @@ describe('the /internal/* surface never reaches the SPA', () => {
     expect(res.headers.get('content-type')).toContain('application/json');
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain('auth-server does not implement');
+  });
+});
+
+describe('the issuer’s own admin API (/api/admin)', () => {
+  it('forwards to the issuer DO under /__admin, never the SPA catch-all', async () => {
+    const res = await app.request('/api/admin/clients', {}, env);
+    expect(res.status).toBe(200);
+    // The DO fake echoes what it was asked for. A fall-through to the inlined SPA would be
+    // 200 text/html — the 2026-07-25 shape, where a JSON caller got a rendered page.
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toMatchObject({ ok: true });
+    expect(auth.forwarded).toEqual(['/__admin/clients']);
+  });
+
+  it('reaches the routed scope’s issuer, not the standalone one', async () => {
+    const scope = ulid();
+    const res = await app.request(
+      '/api/admin/settings',
+      {
+        method: 'PATCH',
+        headers: {
+          'x-substrat-tenant': ulid(),
+          'x-substrat-scope': scope,
+          'x-substrat-router': ROUTER_SECRET,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ allowSignup: true }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(auth.touched).toEqual([scope]);
+    expect(auth.forwarded).toEqual(['/__admin/settings']);
   });
 });
 

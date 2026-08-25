@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
-import { SCHEMA_STATEMENTS } from '../db/ddl.js';
+import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { exportDump } from '../src/dump.js';
 import { REDACTED, type SqlExec } from '../src/introspect.js';
 
 /**
- * The #590 full dump over the issuer's REAL schema (`db/ddl.ts`), driven against
+ * The #590 full dump over the issuer's REAL schema (`db/ddl.generated.ts`), driven against
  * better-sqlite3 — the same store `server.ts` runs on. What these pin:
  *
  *   - The dump is FULL FIDELITY: the signing secret, password hashes, session tokens and
@@ -41,11 +41,11 @@ beforeEach(() => {
     "INSERT INTO user (id, name, email, updated_at) VALUES ('u1', 'Ada', 'ada@acme.test', 0)",
   ).run();
   db.prepare(
-    `INSERT INTO account (id, account_id, provider_id, user_id, password, updated_at)
-     VALUES ('a1', 'ada@acme.test', 'credential', 'u1', 'scrypt$super-secret-hash', 0)`,
+    `INSERT INTO account (id, issuer, account_id, provider_id, user_id, password, updated_at)
+     VALUES ('a1', 'local:credential', 'ada@acme.test', 'credential', 'u1', 'scrypt$super-secret-hash', 0)`,
   ).run();
   db.prepare(
-    "INSERT INTO jwks (id, public_key, private_key) VALUES ('k1', 'pub-pem', 'priv-pem')",
+    "INSERT INTO jwks (id, public_key, private_key, created_at) VALUES ('k1', 'pub-pem', 'priv-pem', 0)",
   ).run();
   db.prepare("INSERT INTO config (key, value) VALUES ('auth_secret', 'the-signing-secret')").run();
   sql = sqlExecOf(db);
@@ -68,7 +68,7 @@ describe('exportDump', () => {
   it('covers every real table with DDL, and skips sqlite_* internals', () => {
     const tables = exportDump(sql);
     const names = tables.map((t) => t.name);
-    for (const expected of ['user', 'account', 'session', 'jwks', 'oauth_application', 'config']) {
+    for (const expected of ['user', 'account', 'session', 'jwks', 'oauth_client', 'config']) {
       expect(names).toContain(expected);
     }
     expect(names.some((n) => n.startsWith('sqlite_'))).toBe(false);
