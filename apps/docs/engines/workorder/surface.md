@@ -60,6 +60,15 @@ None of these check permissions — that is the caller's job, by design. Calling
 own operation without `assertAllowed(await ctx.check(…))` first is a bug the linter won't
 catch for you.
 
+**What they return is parsed, not asserted.** Every value crossing back out of this engine
+goes through the schema the engine publishes — `workOrder`, `timeEntry`, `materialLine` —
+the same schema you point your own operation's `output` at. Engine surfaces evolve
+additively (D-28), but that rule is held by review; the parse is what makes the failure it
+prevents *loud*. A vertical compiled against 0.3 and running against 0.4, whose row shape
+moved, used to read a field that had become `null` and render it — now the read throws at
+the seam. Reads name their columns for the same reason: `SELECT *` would publish whatever
+the physical table happens to hold.
+
 ::: warning Not every operation has an in-scope function yet
 `assign`, `start`, `report-time`, and `report-material` carry their logic **inline in the
 operation handler**, so there is no composable export behind them. A vertical that wants to
