@@ -11,6 +11,7 @@ import {
   pageOf,
   pageVisible,
   permissionKey,
+  substratError,
   type CountedPage,
   type EntityRef,
   type Page,
@@ -18,6 +19,14 @@ import {
   type OperationImpl,
   type Money,
 } from '@substrat-run/contracts';
+
+/**
+ * Handlebar's own conflicts — the platform owns `conflict`, this vertical owns the
+ * reason (§2 of the error model: a module never invents a code).
+ */
+type HandlebarConflictReason = 'no_price' | 'not_open';
+const conflict = (reason: HandlebarConflictReason, message: string) =>
+  substratError('conflict', message, { reason });
 import { protocolEntities } from '@substrat-run/engine-protocol';
 
 /** One outbox row as the timeline reads it, plus the rowid the cursor walks. */
@@ -230,7 +239,7 @@ const registerBikeOp: OperationHandler<
   const customer = ctx.sql.query<CustomerRow>('SELECT * FROM bike_shop_customers WHERE id = ?', [
     input.customerId,
   ])[0];
-  if (!customer) throw new Error(`customer not found: ${input.customerId}`);
+  if (!customer) throw substratError('not_found', `customer not found: ${input.customerId}`);
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO bike_shop_bikes (id, customer_id, label, frame_no, created_at)
@@ -293,7 +302,7 @@ const createRepairOp: OperationHandler<
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(WO.create));
   const bike = ctx.sql.query<BikeRow>('SELECT * FROM bike_shop_bikes WHERE id = ?', [input.bikeId])[0];
-  if (!bike) throw new Error(`bike not found: ${input.bikeId}`);
+  if (!bike) throw substratError('not_found', `bike not found: ${input.bikeId}`);
   return createWorkOrder(ctx, {
     facility: { entityType: 'bike', entityId: bike.id },
     customer: { entityType: 'customer', entityId: bike.customer_id },
@@ -344,7 +353,9 @@ const completeRepairOp: OperationHandler<
   // Parts: one billable line per reported line; internal articles dropped.
   for (const m of reported.material) {
     const price = prices.get(m.article);
-    if (!price) throw new Error(`no price for article: ${m.article}`);
+    // `conflict`, not `not_found`: the repair the caller addressed exists, and a 404
+    // would say otherwise. The gap is a row in this workshop's own price list.
+    if (!price) throw conflict('no_price', `no price for article: ${m.article}`);
     if (price.internal) continue;
     const unitPrice = moneyOf(price.price_amount, price.currency);
     billable.push({
@@ -382,7 +393,8 @@ const startConditionReportOp: OperationHandler<
   // a page would silently break: the order you want is not necessarily on page one.
   const repair = getWorkOrder(ctx, input.orderId);
   if (repair.status !== 'planned' && repair.status !== 'in_progress') {
-    throw new Error(
+    throw conflict(
+      'not_open',
       `repair ${repair.number} is '${repair.status}' — condition reports attach at intake or during the repair`,
     );
   }

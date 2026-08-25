@@ -136,6 +136,7 @@ import {
   verticalServingState,
   outboundOfManifestJson,
   listLimitOf,
+  substratError,
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
@@ -2735,7 +2736,10 @@ export class SqliteScopeHost implements ScopeHost {
         invokeOptions?: InvokeOptions,
       ): Promise<O> => {
         const handler = operations.get(operation);
-        if (!handler) return Promise.reject(new Error(`unknown operation: ${operation}`));
+        // `not_found`, not a bare throw (#113) — the same code `adapter-cloudflare`
+        // gives it, so a demo and a hosted vertical answer 404 for the same reason.
+        if (!handler)
+          return Promise.reject(substratError('not_found', `unknown operation: ${operation}`));
         // #129. A precondition the operation never declared is REFUSED, not
         // ignored. A caller sending `If-Match` believes its write is serialised,
         // and quietly dropping the header leaves that belief intact while the
@@ -2771,7 +2775,8 @@ export class SqliteScopeHost implements ScopeHost {
         const requiredKey = this.operationEntitlement.get(operation);
         if (requiredKey && !this.tenantHoldsEntitlement(tenantId, requiredKey)) {
           return Promise.reject(
-            new Error(
+            substratError(
+              'not_found',
               entitlementDenial(operation, requiredKey, this.heldEntitlements(tenantId)),
             ),
           );

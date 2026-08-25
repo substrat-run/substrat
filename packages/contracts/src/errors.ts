@@ -37,6 +37,20 @@ import { entityRef } from './events.js';
  */
 export const PROBLEM_TYPE_BASE = 'https://substrat.net/errors';
 
+/** What a problem body is served as. Never `application/json` — RFC 9457 §3. */
+export const PROBLEM_CONTENT_TYPE = 'application/problem+json';
+
+/**
+ * The `type` of a failure that has a status and nothing else.
+ *
+ * RFC 9457 §4.2.1: `about:blank` means "no semantics beyond the status code", and the
+ * title is then the status phrase. That is the honest shape for the two cases a
+ * transport cannot type — an untyped throw it refuses to call the platform's fault,
+ * and a downstream status it is relaying — and it is what keeps the closed taxonomy
+ * closed while every body still parses as a problem.
+ */
+export const PROBLEM_TYPE_BLANK = 'about:blank';
+
 /**
  * The taxonomy. CLOSED — an open one is a suggestion.
  *
@@ -159,7 +173,22 @@ export const problem = z.object({
    * non-event. Removed once the clients are moved, not "eventually".
    */
   error: z.string().optional(),
-  code: errorCode,
+  /**
+   * The taxonomy entry this failure is an instance of.
+   *
+   * OPTIONAL, and its absence is information rather than an omission: it is present
+   * exactly when `type` names a registry entry, and absent exactly on the
+   * `about:blank` form below — the body a transport builds when a status is genuinely
+   * all it has (a throw nobody typed, a downstream's status relayed verbatim). RFC 9457
+   * §4.2.1 reserves `about:blank` for precisely that, and a client switching on `code`
+   * then falls through to its unknown branch instead of matching a fabricated one.
+   *
+   * The alternative was to invent a code per relayed status. That reads better in a
+   * schema and worse in production: `validation_failed` on a domain error nobody
+   * declared is a lie a client would act on, and the taxonomy is closed (§2) precisely
+   * so this is not where it grows.
+   */
+  code: errorCode.optional(),
   // -- declared extensions (see PROBLEM_EXTENSIONS) ---------------------------
   permission: z.string().min(1).optional(),
   entity: entityRef.optional(),
@@ -363,6 +392,62 @@ function build(
     ...(instance === undefined ? {} : { instance }),
     code,
     ...extensions,
+  });
+}
+
+/**
+ * The title a degraded body wears — the HTTP status phrase, per RFC 9457 §4.2.1.
+ *
+ * Only the statuses this platform actually answers with. An unlisted one is not a gap
+ * to fill defensively: it gets the class-wide phrase below, which is exactly as much as
+ * `about:blank` claims to know.
+ */
+const STATUS_TITLES: Readonly<Record<number, string>> = {
+  400: 'Bad request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not found',
+  405: 'Method not allowed',
+  409: 'Conflict',
+  412: 'Precondition failed',
+  415: 'Unsupported media type',
+  422: 'Unprocessable content',
+  429: 'Too many requests',
+  500: 'Internal error',
+  501: 'Not implemented',
+  502: 'Bad gateway',
+  503: 'Service unavailable',
+  504: 'Gateway timeout',
+};
+
+/**
+ * A problem body for a status and nothing else — the `about:blank` form.
+ *
+ * Two callers, both transports, both relaying rather than raising:
+ *
+ * - **A throw the taxonomy does not recognise.** Every vertical answers one with the
+ *   caller's 400 and relays the message, deliberately (#559: an unrecognised throw must
+ *   not claim to be the platform's fault, because the control plane retries 5xx). That
+ *   status is a decision about blame, not a claim about what went wrong, and this is the
+ *   body that says so.
+ * - **A status raised somewhere else.** A downstream vertical's own refusal, a Durable
+ *   Object fault the runtime named (502). Inventing a code for those would put our
+ *   vocabulary on someone else's failure.
+ *
+ * `detail` is carried as the caller passes it. That is safe here and not in `toProblem`
+ * because a caller of THIS function has a status it chose or received, which means it
+ * has already looked at what it is relaying; `toProblem`'s `internal` branch is the one
+ * holding an unreviewed message, and it still refuses to disclose it.
+ */
+export function problemForStatus(status: number, detail?: string, instance?: string): Problem {
+  const title =
+    STATUS_TITLES[status] ?? (status >= 500 ? 'Server error' : 'Request failed');
+  return problem.parse({
+    type: PROBLEM_TYPE_BLANK,
+    title,
+    status,
+    ...(detail === undefined ? {} : { detail, error: detail }),
+    ...(instance === undefined ? {} : { instance }),
   });
 }
 

@@ -14,7 +14,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { protocolModule } from '@substrat-run/engine-protocol';
@@ -3198,25 +3198,46 @@ app.get('/api/github/workflow-preview', async (c) => {
   });
 });
 
+/**
+ * The dashboard's error envelope — RFC 9457 since #113 phase 4.
+ *
+ * Every status decision below is the one this handler already made; what changed is the
+ * body. `problemForStatus` is the `about:blank` form (§1a of the error-model RFC): a
+ * status this app is RELAYING rather than raising gets no taxonomy code, because putting
+ * ours on the plane's refusal — or on a message pattern — would be a claim we cannot make.
+ */
+const problem = (c: Context, status: number, detail?: string): Response =>
+  c.body(JSON.stringify(problemForStatus(status, detail)), status as ContentfulStatusCode, {
+    'content-type': PROBLEM_CONTENT_TYPE,
+  });
+
 app.onError((err, c) => {
   const m = err instanceof Error ? err.message : String(err);
   // This deployment cannot seal a credential (#603) — the local (no control-plane) store
   // path; the plane's own refusal arrives as a ControlPlaneError 503 below. Either way it
   // is a deployment fact, not the caller's mistake, so it must not land in the `: 400`
   // default: 400 would tell the operator to look at what they typed.
-  if (err instanceof SecretBoxUnconfiguredError) return c.json({ error: m }, 503);
+  if (err instanceof SecretBoxUnconfiguredError) return problem(c, 503, m);
   // A ControlPlaneError carries the plane's OWN status. Honor it rather than letting the
   // `: 400` default below flatten an upstream 5xx to a 400 — that mislabels a server/upstream
   // fault (e.g. the CF observability token 403 that the plane surfaces as a 500 `internal error`)
   // as the caller's mistake. status 0 = plane unreachable → 502.
   if (err instanceof ControlPlaneError) {
-    return c.json({ error: m }, (err.status >= 400 ? err.status : 502) as ContentfulStatusCode);
+    return problem(c, err.status >= 400 ? err.status : 502, m);
+  }
+  // A throw that declared what it is renders from its own declaration, extensions and all.
+  const declared = errorCodeOf(err);
+  if (declared !== undefined && err instanceof Error) {
+    const body = toProblem(err, c.req.path);
+    return c.body(JSON.stringify(body), body.status as ContentfulStatusCode, {
+      'content-type': PROBLEM_CONTENT_TYPE,
+    });
   }
   const status = err instanceof HTTPException ? err.status : 400;
-  if (status === 400 && /permission denied/.test(m)) return c.json({ error: m }, 403);
+  if (status === 400 && /permission denied/.test(m)) return problem(c, 403, m);
   // A slug that isn't the caller's own deployment reads as not-found, not a leak.
-  if (status === 400 && /not one of your deployments/.test(m)) return c.json({ error: m }, 404);
-  return c.json({ error: m }, status);
+  if (status === 400 && /not one of your deployments/.test(m)) return problem(c, 404, m);
+  return problem(c, status, m);
 });
 
 export default app;

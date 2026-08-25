@@ -39,6 +39,8 @@ import {
   tenantStatus,
   versionOrigin,
   z,
+  PROBLEM_CONTENT_TYPE,
+  toProblem,
 } from '@substrat-run/contracts';
 import type {
   Connection,
@@ -65,7 +67,7 @@ import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.
 import { ControlPlaneError } from './client.js';
 import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { mapError } from './errors.js';
+import { mapError, type ApiError } from './errors.js';
 import { maskDump, maskRecords } from './mask.js';
 import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
@@ -84,6 +86,20 @@ import type {
   FetchVerticalModulesFn,
 } from './deploy.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
+
+/**
+ * Answer with a problem document (#113 phase 4).
+ *
+ * `c.body` rather than `c.json`, because the media type is the contract: a response
+ * labelled `application/json` is not an RFC 9457 problem however well-shaped its body is,
+ * and `/openapi.json` has documented `application/problem+json` on every error response
+ * since phase 1 — this is the half that makes the document true.
+ */
+function problem(c: Context, answer: ApiError): Response {
+  return c.body(JSON.stringify(answer.body), answer.status, {
+    'content-type': PROBLEM_CONTENT_TYPE,
+  });
+}
 import {
   backfillDeclaredStores,
   blobStoreBindings,
@@ -790,8 +806,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // one is a fail-closed refusal that must reach the caller as a status, not a
   // stack trace.
   app.onError((err, c) => {
+    // A parse failure goes through the same builder as everything else (#113 phase 4):
+    // `toProblem` maps zod's `issues` onto the declared `errors: [{ path, message }]`
+    // extension, which is the shape the model documents and a client can act on. The raw
+    // `issues` array it used to echo was zod's own, undocumented, and read by nobody.
     if (err instanceof z.ZodError) {
-      return c.json({ error: 'invalid request', issues: err.issues }, 400);
+      return problem(c, { status: 400, body: toProblem(err, c.req.path) });
     }
     const { status, body } = mapError(err);
     // A 5xx is the PLATFORM failing — an unmapped throw, or a downstream vertical's
@@ -829,7 +849,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         stack: err instanceof Error ? err.stack : undefined,
       });
     }
-    return c.json(body, status);
+    return problem(c, { status, body });
   });
 
   // -- tenant registry (§4.1) ------------------------------------------------

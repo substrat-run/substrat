@@ -1,5 +1,5 @@
 import type { Context, Hono } from 'hono';
-import { classifyError } from '@substrat-run/vertical-host';
+import { problemResponse } from '@substrat-run/vertical-host';
 import type { ScopeStub } from '@substrat-run/kernel';
 
 /**
@@ -28,21 +28,24 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
   const body = (c: Context) => c.req.json<Record<string, unknown>>();
 
   /**
-   * One error vocabulary, shared with the platform surface: `classifyError`
-   * (@substrat-run/vertical-host) is the same function `mountPlatformSurface` uses, so a
-   * permission denial is 403, a missing thing 404, a broken invariant 409, a runtime
-   * fault 502 — identically on both hosts. "No opinion" becomes the caller's 400.
+   * One error vocabulary, shared with the platform surface: `problemResponse`
+   * (@substrat-run/vertical-host) is built on the same `classifyError` that
+   * `mountPlatformSurface` uses, so a permission denial is 403, a missing thing 404, a
+   * broken invariant 409, a runtime fault 502 — identically on both hosts. "No opinion"
+   * becomes the caller's 400.
+   *
+   * The body is RFC 9457 `application/problem+json`: a `code` from the closed taxonomy
+   * when your throw declared one (`substratError('conflict', …)`), `about:blank` when it
+   * did not. `{ error }` rides along for one deprecation window, so a client reading it
+   * keeps working while you move to `code`.
    *
    * In `worker.ts` this handler is REPLACED: Hono keeps only the last-registered
    * `onError`, and `mountPlatformSurface` installs its own. That is harmless precisely
-   * because both are built on `classifyError` — same input, same answer. Registering it
-   * here is what gives `server.ts`, which mounts no platform surface, the same behaviour.
+   * because both are built on the same vocabulary — same input, same answer. Registering
+   * it here is what gives `server.ts`, which mounts no platform surface, the same
+   * behaviour.
    */
-  app.onError((err, c) => {
-    const seen = classifyError(err);
-    if (seen) return c.json({ error: seen.message }, seen.status);
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
-  });
+  app.onError((err, c) => problemResponse(c, err));
 
   // -- generic invoke ---------------------------------------------------------
   // The kernel checks a permission inside EVERY operation, so a generic route is

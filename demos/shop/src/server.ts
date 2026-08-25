@@ -6,6 +6,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
+import { problemResponse } from '@substrat-run/vertical-host';
 import { buildShopHost, seedShop, type ShopWorld } from './index.js';
 import { buildAuth, migrateAuth } from './auth.js';
 import {
@@ -90,13 +91,10 @@ app.get('/api/me', async (c) => {
   return c.json({ authenticated, principal: r.principal, display: r.display, via: r.via, role: r.role, customerId });
 });
 
-app.onError((err, c) => {
-  if (err instanceof PermissionDenied) return c.json({ error: err.message }, 403);
-  if (/permission denied/.test(err.message)) return c.json({ error: err.message }, 403);
-  if (/not found|unknown scope/.test(err.message)) return c.json({ error: err.message }, 404);
-  if (/out of stock/.test(err.message)) return c.json({ error: err.message }, 409);
-  return c.json({ error: err.message }, 400);
-});
+// The shared vocabulary, rather than this app's own five lines of it (#113 phase 4).
+// `/out of stock/` was the tell: a status read out of a sentence the code saying it did
+// not know it was on. Every refusal in `module.ts` names its code now.
+app.onError((err, c) => problemResponse(c, err));
 
 
 // storefront — `?includeUnpublished=1` is how the catalogue admin sees drafts;

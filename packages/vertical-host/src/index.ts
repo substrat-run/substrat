@@ -25,7 +25,7 @@
 import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { classifyError, messageOf } from './errors.js';
+import { classifyError, messageOf, problemOf } from './errors.js';
 import {
   assertPlatformCall,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
@@ -33,6 +33,7 @@ import {
 } from '@substrat-run/kernel';
 import {
   z,
+  PROBLEM_CONTENT_TYPE,
   scopeId as scopeIdOf,
   tenantId as tenantIdOf,
   principalId as principalIdOf,
@@ -644,16 +645,19 @@ export function mountPlatformSurface<Env extends object>(
   //    plane relays that with no diagnosis. Here every failure becomes { error: <message> },
   //    which vertical-client.refusal() passes through intact. Registered LAST so it wins. ──
   app.onError((err, c) => {
-    const mapped = deps.mapError?.(err);
-    if (mapped) return c.json({ error: mapped.message }, mapped.status as ContentfulStatusCode);
     // The shared vocabulary (`./errors.ts`) decides the status. It also answers "no
     // opinion", which THIS surface turns into the caller's 400 — the control plane
     // relays the status verbatim and retries 5xx, so an unrecognised throw must not
     // claim to be the platform's fault. `mountOperations` answers no-opinion differently.
-    const seen = classifyError(err) ?? {
-      status: 400 as ContentfulStatusCode,
-      message: messageOf(err),
-    };
+    // A vertical's own `mapError` outranks it and is rendered the same way, so its
+    // answer is a problem document too rather than the last `{ error }` on the surface.
+    const mapped = deps.mapError?.(err);
+    const seen = mapped
+      ? { status: mapped.status as ContentfulStatusCode, message: mapped.message }
+      : (classifyError(err) ?? {
+          status: 400 as ContentfulStatusCode,
+          message: messageOf(err),
+        });
     // An infrastructure fault is the PLATFORM failing, not the request (#559). Defaulting
     // it to 400 taught every layer above to treat a Cloudflare outage as the caller's
     // fault — the control plane relays the status verbatim, and its retry convention
@@ -668,10 +672,20 @@ export function mountPlatformSurface<Env extends object>(
         stack: err instanceof Error ? err.stack : undefined,
       });
     }
-    return c.json({ error: seen.message }, seen.status);
+    const { body } = problemOf(seen, err, c.req.path);
+    return c.body(JSON.stringify(body), seen.status, {
+      'content-type': PROBLEM_CONTENT_TYPE,
+    });
   });
 }
 
 export * from './operations-routes.js';
-export { classifyError, isPlatformFault, messageOf } from './errors.js';
-export type { ErrorClassification } from './errors.js';
+export {
+  classifyError,
+  isPlatformFault,
+  messageOf,
+  problemFor,
+  problemOf,
+  problemResponse,
+} from './errors.js';
+export type { ClassifiedProblem, ErrorClassification } from './errors.js';

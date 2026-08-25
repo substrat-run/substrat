@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { PLATFORM_REQUEST_HEADER, ulid } from '@substrat-run/kernel';
 import { platformActorId, principalId, z, type PlatformActorId, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
+import { problemResponse } from '@substrat-run/vertical-host';
 import { devLogin, type DevCaller } from '@substrat-run/dev-issuer';
 import { buildDemoHost, seedDemo, type ManyfoldWorld } from './index.js';
 import { DEV_PROVIDER } from './personas.js';
@@ -86,13 +87,7 @@ async function sha256Hex(s: string): Promise<string> {
 
 const app = new Hono();
 
-app.onError((err, c) => {
-  if (err instanceof HTTPException) return err.getResponse();
-  const m = err instanceof Error ? err.message : String(err);
-  if (/permission denied/i.test(m)) return c.json({ error: m }, 403);
-  if (/not found|unknown scope/.test(m)) return c.json({ error: m }, 404);
-  return c.json({ error: m }, 400);
-});
+app.onError((err, c) => problemResponse(c, err));
 
 // The relying-party endpoints — login, callback, logout. Accounts, passwords and sign-up
 // live at the issuer; the vertical runs no credential store (oidc-only-demos.md).

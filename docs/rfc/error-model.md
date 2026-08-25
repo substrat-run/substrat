@@ -6,7 +6,7 @@ description: One error model — RFC 9457 problem+json, a closed code taxonomy, 
 
 # The error model — problem+json, a closed taxonomy, and errors that survive the hop
 
-Status: **proposed** (v0.3 — §3 rewritten after measurement, then built as the envelope)
+Status: **proposed** (v0.4 — phases 1–4 built; §1 gains the `about:blank` form phase 4 needed)
 
 > Answers issue [#113](https://github.com/substrat-run/substrat/issues/113), the first item
 > of the [#132](https://github.com/substrat-run/substrat/issues/132) tracking list — and the
@@ -81,6 +81,36 @@ Errors serialize as `application/problem+json` ([RFC 9457](https://www.rfc-edito
 
 Per-code extensions (`permission`, `field`, `errors[]`, `entity`, `retryAfter`) are declared
 per entry, not free-form.
+
+### 1a. `about:blank` — the body for a status and nothing else
+
+**Added in v0.4, because phase 4 could not be written without it.** Two shapes of failure
+reach a transport that the taxonomy cannot name:
+
+- **A throw nobody typed.** Every vertical answers one with the caller's 400 and relays
+  the message, deliberately (#559: an unrecognised throw must not claim to be the
+  platform's fault, because the control plane relays the status and retries 5xx). That
+  status is a decision about *blame*; it is not a claim about what went wrong.
+- **A status raised somewhere else.** A downstream vertical's own refusal relayed by the
+  control plane, a Durable Object fault the runtime named (502 — a status the catalog does
+  not have and should not grow).
+
+RFC 9457 §4.2.1 already answers this: `type: "about:blank"` means "no semantics beyond the
+status code", and the title is then the status phrase. So those bodies are
+
+```json
+{ "type": "about:blank", "title": "Bad request", "status": 400,
+  "detail": "the club is closed on 2026-08-25", "error": "the club is closed on 2026-08-25" }
+```
+
+and **`code` is absent**, which is why `problem.code` is optional in the schema. It is
+present exactly when `type` names a registry entry.
+
+The alternative was a status→code map, and it is worse in the only place it matters: a
+generic 400 rendered as `validation_failed` is a lie a client would act on, and the
+taxonomy is closed (§2) precisely so this is not where it grows. The absence also does
+useful work — **a body with no `code` is a throw site nobody has typed yet**, visible from
+the outside, which is the phase-5 to-do list writing itself.
 
 ## 2. The taxonomy is closed — and small
 
@@ -194,17 +224,36 @@ mechanical, lower traffic.
      production is the worst of the two available failures, so `toWireFailure` maps them
      onto the declared `errors` extension and `inputParseContractSuite` asserts it on
      both adapters.
-4. **Transports.** `mapError` and every vertical `onError` read `code` first and **keep the
-   regex table as a fallback**, deleting patterns as each throw site is typed. Bodies gain
-   the problem shape while retaining `error` (§1), so no client breaks.
+4. **Transports — built.** `mapError` and every vertical `onError` read `code` first, and
+   the bodies are problem documents served as `application/problem+json`, still carrying
+   `error` (§1) so no client broke. Three things this phase turned out to be, none of them
+   in the sentence it started as:
+   - **The patterns did not survive as a fallback so much as get deleted.** A regex table
+     kept beside typed throws is a table nobody maintains, so the throw sites were typed
+     instead: 73 raw `new Error(...)` across the six verticals became `substratError`, and
+     the two platform refusals every vertical had independently hand-matched — `unknown
+     operation`, `operation not entitled` — were typed in the adapters and the kernel
+     where they are raised. Seven hand-rolled `onError` handlers are now one line each.
+     What is left of the control plane's table is 23 patterns over untyped `HostAdmin`
+     throws, and it names a **code** per row now rather than a status, so the entry says
+     what the failure IS and the status follows from the catalog.
+   - **`about:blank` had to exist first** (§1a) — otherwise the phase's own fallback would
+     have had to fabricate a code.
+   - **One refusal is deliberately still hand-answered.** `engine-booking` publishes
+     `SlotUnavailable` with its own `code = 'SLOT_UNAVAILABLE'`, which both RallyPoint
+     clients switch on. An engine surface evolves additively only, so retyping it is a
+     dual-emit through a deprecation window, not a line in a transport change;
+     `demos/rally/src/routes.ts` answers it by hand and says why.
 5. **Cleanup.** Contract-suite assertions migrate from message text to `code`; the regex
-   fallback and the `error` duplicate are deleted.
+   fallback and the `error` duplicate are deleted. `SlotUnavailable` gets its dual-emit
+   here.
 
-**The constraint phase 4 exists to respect:** the contract suite asserts on roughly thirty
-message patterns (`/already taken/`, `/illegal scope transition/`, `/not active/`, …)
+**The constraint phase 4 had to respect, and did:** the contract suite asserts on roughly
+thirty message patterns (`/already taken/`, `/illegal scope transition/`, `/not active/`, …)
 against both adapters. That is a feature — it is why `errors.ts`'s regex table is less
 brittle than it looks — and this RFC must not turn it red on wording. Keeping `detail`
-verbatim through phases 1–3 is what buys that; phase 4 then migrates the assertions to the
+verbatim is what buys that, and typing a throw site preserves its message by construction,
+so the whole sweep landed with those assertions untouched. Phase 5 migrates them to the
 stronger check deliberately, as its own reviewable diff.
 
 ## 6. Open questions

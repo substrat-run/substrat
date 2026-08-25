@@ -121,7 +121,19 @@ describe('control-plane API', () => {
   it('rejects a malformed body at the Zod boundary with 400', async () => {
     const res = await json('/tenants', 'POST', { id: 'nope', slug: 'x', name: '' });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe('invalid request');
+    // #113 phase 4: a problem document, and the field list is IN it. This used to answer
+    // `{ error: 'invalid request', issues: <zod's own array> }` — a sentence that named
+    // no field beside a shape nothing documented.
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    const body = (await res.json()) as {
+      code?: string;
+      errors?: { path: string; message: string }[];
+      error?: string;
+    };
+    expect(body.code).toBe('validation_failed');
+    expect(body.errors?.map((e) => e.path)).toContain('id');
+    // The deprecated duplicate still rides along, so a client reading `{ error }` works.
+    expect(body.error).toBe('the input did not parse');
   });
 
   it('transitions tenant status', async () => {

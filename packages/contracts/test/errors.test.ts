@@ -9,6 +9,9 @@ import {
   errorCode,
   isSubstratError,
   PROBLEM_CATALOG,
+  PROBLEM_CONTENT_TYPE,
+  PROBLEM_TYPE_BLANK,
+  problemForStatus,
   PROBLEM_EXTENSIONS,
   problem,
   problemTypeFor,
@@ -362,5 +365,43 @@ describe('the wire failure', () => {
   it('is JSON — no prototypes, no getters, nothing that needs a class to read', () => {
     const wire = toWireFailure(substratError('not_found', 'gone'));
     expect(JSON.parse(JSON.stringify(wire))).toEqual(wire);
+  });
+});
+
+describe('problemForStatus — the about:blank form', () => {
+  it('names no taxonomy entry, because it has none to name', () => {
+    const body = problemForStatus(400, 'the club is closed on 2026-08-25');
+    expect(body.type).toBe(PROBLEM_TYPE_BLANK);
+    expect(body.code).toBeUndefined();
+    expect(body.status).toBe(400);
+    expect(body.title).toBe('Bad request');
+    expect(body.detail).toBe('the club is closed on 2026-08-25');
+  });
+
+  // The deprecation window (§1): every SPA in the repo reads `{ error }` today, and a
+  // degraded body is still a body they have to render.
+  it('carries the deprecated `error` duplicate like every other problem', () => {
+    expect(problemForStatus(404, 'member not found: 01J').error).toBe('member not found: 01J');
+  });
+
+  it('is a valid problem document — an absent `code` is legal, not a parse failure', () => {
+    expect(() => problem.parse(problemForStatus(502, 'durable object reset'))).not.toThrow();
+  });
+
+  // A status we never answer with is not a gap to fill defensively: `about:blank`
+  // claims the status and nothing else, so a class-wide phrase is the whole truth.
+  it('falls back to a class-wide phrase for a status it has no name for', () => {
+    expect(problemForStatus(418).title).toBe('Request failed');
+    expect(problemForStatus(507).title).toBe('Server error');
+  });
+
+  it('omits `detail` when there is nothing to relay', () => {
+    const body = problemForStatus(503);
+    expect(body.detail).toBeUndefined();
+    expect(body.error).toBeUndefined();
+  });
+
+  it('serves under the RFC media type, never application/json', () => {
+    expect(PROBLEM_CONTENT_TYPE).toBe('application/problem+json');
   });
 });

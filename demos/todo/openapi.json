@@ -1580,8 +1580,7 @@
         "required": [
           "type",
           "title",
-          "status",
-          "code"
+          "status"
         ],
         "additionalProperties": false
       }
