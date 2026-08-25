@@ -71,7 +71,8 @@ but leave the order where it is. Only `start`, `complete` and `close` advance it
 
 ```ts
 createWorkOrder(ctx, input): WorkOrder
-listOrders(ctx, status?): WorkOrder[]
+listOrders(ctx, page): Page<WorkOrder>
+getWorkOrder(ctx, orderId): WorkOrder
 getReportedLines(ctx, orderId): { time: TimeEntry[]; material: MaterialLine[] }
 completeWorkOrder(ctx, { orderId, billable }): { order: WorkOrder; total: Money }
 closeWorkOrder(ctx, { orderId }): WorkOrder
@@ -88,6 +89,25 @@ manager's ROT split, a shop's article prices — so the engine sums what it is g
 (`addMoney` over `Money`, never floats — K-14) and emits the total. `getReportedLines` is
 the read the vertical prices *from*. Callout's completion operation is the reference: read
 the lines, price them in vertical code, pass them back, all in one transaction.
+
+**Everything returned here is parsed, not asserted** ([#771](https://github.com/substrat-run/substrat/issues/771)).
+D-28's additive-only rule is enforced by review; the failure it exists to prevent — a
+vertical compiled against 0.3 running against 0.4, whose row shape moved — used to surface
+as *wrong data on a screen* rather than a throw, because a return value crossed the seam
+typed only by TypeScript, which is not there at runtime. `src/seam.ts` is the runtime half:
+
+- `returns(schema, surface, value)` parses every published value with the same schema a
+  composing vertical declares its `output` with. The refusal is `internal`, not
+  `validation_failed`: the caller's input was already parsed, and the fault is on this side.
+- `columnsOf(schema)` derives each `SELECT` list from that schema, so a read asks for
+  exactly what the seam promises. `SELECT *` pinned the published shape to the physical
+  table — a column added upstream crossed the seam, a column renamed arrived `undefined`.
+
+Parsing is **always on**, bulk reads included: every read here is one row or one page
+(#811), and dev-only validation would be absent exactly where the version skew lives.
+`test/seam.test.ts` moves the tables under a running engine — drops a column, makes
+`technician` nullable, retypes `number` — and asserts each one throws at the seam. The
+other six engines have not been converted; this one is the reference.
 
 ## 5. Permissions
 

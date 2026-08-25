@@ -46,9 +46,10 @@ import {
   type TimeEntry,
   type MaterialLine,
 } from './schemas.js';
-import { workorderEntities } from './entities.js';
+import { workorderEntities, workorderRow } from './entities.js';
 import { workorderOperations } from './operations.js';
 import { workorderLifecycle } from './lifecycle.js';
+import { columnsOf, returns } from './seam.js';
 
 // The entity registry is PUBLIC: a composing vertical imports it to check
 // relation edges naming this engine's entities, and to declare an operation's
@@ -214,27 +215,54 @@ type OrderRow = EntityRow<typeof workorderEntities, 'workorder'>;
 
 
 
-const toWorkOrder = (r: OrderRow): WorkOrder => ({
-  id: r.id,
-  number: r.number,
-  facility: { entityType: r.facility_type, entityId: r.facility_id },
-  customer: { entityType: r.customer_type, entityId: r.customer_id },
-  kind: r.kind,
-  title: r.title,
-  description: r.description,
-  status: r.status,
-  assignedTo: r.assigned_to,
-  createdBy: r.created_by,
-  createdAt: r.created_at,
-  completedAt: r.completed_at,
-});
+/**
+ * The SELECT lists, derived from the schemas that describe what is read (#771).
+ *
+ * Never `SELECT *`: that pins the shape a read returns to whatever the physical
+ * table currently holds, which is the same trust-TypeScript hole `returns` closes
+ * from the other side. The order row comes from the entity registry (it is the
+ * STORED shape); time entries and material lines come from the schemas this
+ * engine publishes, since for those two the stored and published shapes are one.
+ */
+const ORDER_COLUMNS = columnsOf(workorderRow);
+const TIME_ENTRY_COLUMNS = columnsOf(timeEntry);
+const MATERIAL_LINE_COLUMNS = columnsOf(materialLine);
+
+const timeEntries = z.array(timeEntry);
+const materialLines = z.array(materialLine);
+
+/**
+ * A stored row, published (#771).
+ *
+ * The projection AND the parse, in one place, because every path out of this
+ * engine that returns a work order goes through here — the in-scope reads, the
+ * page walk, and each operation binding. `returns` refuses a row that no longer
+ * matches `workOrder`, which is the shape a composing vertical declared its
+ * `output` with when it compiled against some earlier version of this engine.
+ */
+const toWorkOrder = (r: OrderRow): WorkOrder =>
+  returns(workOrder, `work order ${r.id}`, {
+    id: r.id,
+    number: r.number,
+    facility: { entityType: r.facility_type, entityId: r.facility_id },
+    customer: { entityType: r.customer_type, entityId: r.customer_id },
+    kind: r.kind,
+    title: r.title,
+    description: r.description,
+    status: r.status,
+    assignedTo: r.assigned_to,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+    completedAt: r.completed_at,
+  });
 
 const orderRef = (id: string): EntityRef => ({ entityType: 'workorder', entityId: id });
 
 function getRow(ctx: OperationContext, orderId: string): OrderRow {
-  const row = ctx.sql.query<OrderRow>('SELECT * FROM workorder_orders WHERE id = ?', [
-    orderId,
-  ])[0];
+  const row = ctx.sql.query<OrderRow>(
+    `SELECT ${ORDER_COLUMNS} FROM workorder_orders WHERE id = ?`,
+    [orderId],
+  )[0];
   if (!row) throw substratError('not_found', `work order not found: ${orderId}`);
   return row;
 }
@@ -309,18 +337,35 @@ export function createWorkOrder(ctx: OperationContext, rawInput: CreateWorkOrder
   return toWorkOrder(getRow(ctx, id));
 }
 
+/**
+ * Everything reported against one order — the read a vertical prices FROM (§4).
+ *
+ * Both halves name their columns and parse their rows (#771). This function was
+ * the sharpest case of the seam being typed by assertion alone: `SELECT *` typed
+ * `<TimeEntry>` returned whatever the table held, so a column added upstream
+ * crossed the seam and a column renamed arrived as `undefined` — in a shape a
+ * vertical had already declared an operation `output` with.
+ */
 export function getReportedLines(
   ctx: OperationContext,
   orderId: string,
 ): { time: TimeEntry[]; material: MaterialLine[] } {
   return {
-    time: ctx.sql.query<TimeEntry>(
-      'SELECT * FROM workorder_time_entries WHERE order_id = ? ORDER BY id',
-      [orderId],
+    time: returns(
+      timeEntries,
+      `time entries of ${orderId}`,
+      ctx.sql.query<TimeEntry>(
+        `SELECT ${TIME_ENTRY_COLUMNS} FROM workorder_time_entries WHERE order_id = ? ORDER BY id`,
+        [orderId],
+      ),
     ),
-    material: ctx.sql.query<MaterialLine>(
-      'SELECT * FROM workorder_material_lines WHERE order_id = ? ORDER BY id',
-      [orderId],
+    material: returns(
+      materialLines,
+      `material lines of ${orderId}`,
+      ctx.sql.query<MaterialLine>(
+        `SELECT ${MATERIAL_LINE_COLUMNS} FROM workorder_material_lines WHERE order_id = ? ORDER BY id`,
+        [orderId],
+      ),
     ),
   };
 }
@@ -389,7 +434,10 @@ export function completeWorkOrder(
       total,
     },
   });
-  return { order: toWorkOrder(getRow(ctx, row.id)), total };
+  // Both halves parsed: the order by `toWorkOrder`, the total here. `billable`
+  // was parsed on the way in, one screen up — the seam is checked in both
+  // directions or it is only checked in the easy one (#771).
+  return { order: toWorkOrder(getRow(ctx, row.id)), total: returns(money, 'completion total', total) };
 }
 
 /**
@@ -493,7 +541,14 @@ const reportTimeOp: OperationHandler<
     subjectId: dataSubjectId.parse(ctx.principal),
     payload: { orderId: row.id, entryId: id, hours },
   });
-  return ctx.sql.query<TimeEntry>('SELECT * FROM workorder_time_entries WHERE id = ?', [id])[0]!;
+  return returns(
+    timeEntry,
+    `time entry ${id}`,
+    ctx.sql.query<TimeEntry>(
+      `SELECT ${TIME_ENTRY_COLUMNS} FROM workorder_time_entries WHERE id = ?`,
+      [id],
+    )[0],
+  );
 };
 
 const reportMaterialOp: OperationHandler<
@@ -517,9 +572,14 @@ const reportMaterialOp: OperationHandler<
     piiClass: 'none',
     payload: { orderId: row.id, lineId: id, article: input.article, qty },
   });
-  return ctx.sql.query<MaterialLine>('SELECT * FROM workorder_material_lines WHERE id = ?', [
-    id,
-  ])[0]!;
+  return returns(
+    materialLine,
+    `material line ${id}`,
+    ctx.sql.query<MaterialLine>(
+      `SELECT ${MATERIAL_LINE_COLUMNS} FROM workorder_material_lines WHERE id = ?`,
+      [id],
+    )[0],
+  );
 };
 
 const completeOp: OperationHandler<
