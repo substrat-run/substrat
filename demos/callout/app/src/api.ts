@@ -20,8 +20,9 @@
  *    #890 bounded its `entityType` to `['workorder', 'protocol']`, so a caller
  *    could choose between two declared types rather than name any entity. What
  *    keeps it unbound now is smaller and worth stating as the smaller thing it is
- *    — the screen wants an order's entries, and binding it means the app taking
- *    the generated paged client for a read it makes unpaginated.
+ *    — the route supplies `entityType` so the screen does not have to. It is still
+ *    a PAGED read on the wire and is walked as one (see `walk` below); what the
+ *    route saves the app is a constant, not the pagination.
  *    `callout/whoami` has no screen.
  *
  * There is no auth mode here any more. Both backends — the node dev server and the
@@ -30,7 +31,26 @@
  * persona list it needed are gone; locally the picker lives at the dev issuer, where
  * it belongs.
  */
-import { createClient, type CalloutClient, type ProtocolInstance } from './api.generated';
+import type { TimelineEntry } from '@substrat-run/contracts';
+import {
+  createClient,
+  type CalloutClient,
+  type Paged,
+  type ProtocolInstance,
+} from './api.generated';
+
+/**
+ * The kernel's shape, not a copy of it (#800).
+ *
+ * `readTimeline` decides what an entry is — `actor` in particular is the spine's
+ * union rather than the raw JSON the outbox column holds — so the route being
+ * hand-mounted is a fact about request binding and says nothing about the
+ * response type. A local interface here would be a second description of a
+ * contract the kernel already owns, free to drift from it silently, which is the
+ * failure #800 exists to end. The import is type-only: nothing of
+ * `@substrat-run/contracts` reaches the bundle.
+ */
+export type { TimelineEntry };
 
 export { ApiError } from './api.generated';
 export type {
@@ -132,26 +152,38 @@ export function signOut(): void {
  * They share the generated client's transport (`call` above) rather than a second
  * fetch wrapper, so error handling stays in one place.
  */
+/**
+ * A hand-mounted paged read, walked to the end.
+ *
+ * The route answers ONE page and names the next in a `Link` header (#829). Reading
+ * only the body is how a strip silently stops at `LIST_PAGE_DEFAULT` — twenty
+ * events, which a work order passes without anything looking wrong: the list
+ * renders, it is just missing its own history from the twenty-first event on. That
+ * is the same class of quiet loss as meridian's `occurred_at` cursor, one layer up.
+ *
+ * `api.follow` is the generated client's own walk, so the Link parsing, the
+ * credentials and the error envelope stay in one place rather than being written a
+ * second time here. It collects rather than exposing page controls because the
+ * caller asked for the timeline, not for a page of it — a history strip shows a
+ * whole history.
+ */
+async function walk<T>(path: string): Promise<T[]> {
+  const entries: T[] = [];
+  let next: string | null = `/api${path}`;
+  while (next !== null) {
+    const page: Paged<T> = await api.follow<T>(next);
+    entries.push(...page.entries);
+    next = page.next;
+  }
+  return entries;
+}
+
 export const extra = {
   /** `callout/timeline`, unbound: the route pins `entityType` (see api.ts header). */
-  timeline: (id: string) => call<TimelineEntry[]>(`/workorders/${id}/timeline`),
+  timeline: (id: string) => walk<TimelineEntry>(`/workorders/${id}/timeline`),
   /** `protocol/list-for-entity`, unbound for the same reason. */
   orderProtocols: (orderId: string) => call<ProtocolSummary[]>(`/workorders/${orderId}/protocols`),
 };
-
-/**
- * The kernel's `timelineEntry` (#800) on the wire. Hand-written here because the
- * ROUTE is hand-mounted (it pins `entityType`), not because the shape is this
- * app's — `readTimeline` decides it, and `actor` is the spine's union rather than
- * the raw JSON the outbox column holds.
- */
-export interface TimelineEntry {
-  /** The event's ULID — and the work order's version at that point (#901). */
-  id: string;
-  type: string;
-  occurredAt: string;
-  actor: string | { system: string } | { connection: string };
-}
 
 /** What `GET /workorders/{id}/protocols` answers — a hand-mounted route's own shape. */
 export interface ProtocolSummary {

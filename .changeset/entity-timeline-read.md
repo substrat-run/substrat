@@ -65,6 +65,9 @@ Also fixed on the way: Callout's and Handlebar's hand-mounted timeline routes ne
 the page projection `mountOperations` does for declared routes, so since these operations
 became paged (#811) they answered `{ entries, nextCursor }` to an app that typed the body
 as an array and called `.map` on it. The scenarios invoke the operation and never the
-route, so nothing saw it.
+route, so nothing saw it. Both now emit the `Link` continuation and both apps WALK it —
+reading only the body is how a history strip silently stops at twenty events, which an
+order reaches in a working week — and a route-level test drives more events than one page
+fits over real HTTP, since that is the only layer where the truncation exists.
 
 Both adapters are held to all of it by a new contract suite.

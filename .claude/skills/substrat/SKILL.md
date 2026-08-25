@@ -530,7 +530,9 @@ consumers). `seed.ts` / `server.ts` are harness and exempt.
    ```
 
    `{ id, type, occurredAt, actor }` per entry, `readHistory` for the payload,
-   authorization and PII class as well. Two traps it exists to close: `actor` is stored
+   authorization, `piiClass` and `subjectId` as well — the last two are what let a
+   renderer decide whether an entry is safe to show before it shows it. `subjectId` is
+   null when `piiClass` is `none`, and `payload` is null after that subject's erasure. Two traps it exists to close: `actor` is stored
    as JSON over a union (a principal is `"01J…"` *with quotes*, so a raw `SELECT actor`
    is a string that resolves against nothing), and the cursor must be `id` — never
    `occurred_at`, which is identical across every event one operation emits and so drops
