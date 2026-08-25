@@ -10,12 +10,12 @@ defaults, not what a careful team remembers to do.** Where a convention is enfor
 mechanically, that is said plainly. Where it is still a convention, that is said too.
 
 ::: info Status
-Shipping today: the operation spine, boundary parsing, value types, additive evolution, and
-the generated OpenAPI document. The **pagination** convention ships in `contracts` and is
-adopted across the platform's own surfaces, but not yet by engines and verticals. The
-**error model**, **context clock** and **request idempotency** are designed and unbuilt —
-each is marked below and links to its issue. Nothing on this page is aspirational without
-saying so.
+Shipping today: the operation spine, boundary parsing, value types, the context clock,
+lost-update safety, request idempotency, additive evolution, and the generated OpenAPI
+document. The **pagination** convention ships in `contracts` and is adopted across the
+platform's own surfaces, but not yet by every engine and vertical. The **error model** is
+designed and unbuilt — it is marked below and links to its issue. Nothing on this page is
+aspirational without saying so.
 :::
 
 ## The shape of one operation
@@ -272,29 +272,104 @@ An operation should not read the wall clock. It should ask its context what time
 that tests can freeze it and replay means something:
 
 ```ts
-const now = ctx.now();   // designed, unbuilt — see #812
+const now = ctx.now();
 ```
 
 This looks like a nicety until you try to test anything with a window in it — leave
 balances, metering periods, booking availability — and find that the only way to assert the
-interesting case is to wait for it.
+interesting case is to wait for it. A host takes a `clock`, so a scenario hands in
+`frozenClock` or `manualClock` and asserts the elapsed case exactly, instead of sleeping.
 
-::: warning Designed, unbuilt
-`OperationContext` has no clock today, so module code calls `new Date()` directly.
-[#812](https://github.com/substrat-run/substrat/issues/812).
-:::
+It is a mechanism rather than a convention: `new Date()` and `Date.now()` in module code are
+`boundary-lint` **R6** violations, the same class of ban as a `node:*` import. Code that must
+read the real wall clock — a JWT whose `exp` a remote server judges — opts out in a
+reviewable `boundary-lint-allow R6` block.
 
-### 7. Writes should be safe to retry
+The value is also stable for the whole invocation, which is a second thing worth having: the
+rows a write leaves and the events announcing them agree about when they happened.
 
-A client that times out will retry, and a retried `POST` must not create a second work
-order. The convention is an `Idempotency-Key` header, deduplicated by the platform, with the
-original response replayed. Agents make this acute rather than novel: they retry more
-aggressively than people, and they do it faster.
+### 7. Writes are safe to retry
 
-::: warning Designed, unbuilt
-[#116](https://github.com/substrat-run/substrat/issues/116). Note this is *request*
-idempotency — the event spine's consumer-side idempotency already exists and is checked by
-the contract suite.
+A client that times out does not know whether the work happened. It retries, and there is a
+second work order. Agents make this acute rather than novel: they retry more aggressively
+than people, and they do it faster.
+
+The client sends a token it chose. The same token on the retry returns the first response
+instead of doing the work again:
+
+```http
+POST /api/workorders
+Idempotency-Key: dispatch-4471
+```
+
+```http
+200 OK
+Idempotency-Replayed: true
+
+{ "id": "01J8Z…", … }
+```
+
+**Nothing is declared, and that is the difference from §7b.** Every operation on an unsafe
+method honours the header, because a retried write creating a second entity is a hazard on
+all of them — where a lost update is a hazard on the field-bag shape alone, which is why
+`concurrency` is opt-in and this is not. The client opts in by sending a key; the server
+never requires one. A `GET` is already idempotent, so the header is not honoured there:
+doing so would mean serving a recorded *body* for a read, which is a cache with none of a
+cache's rules.
+
+**The recording is written inside the operation's own transaction**, and three properties
+fall out of that one placement rather than from mechanisms of their own:
+
+- **A failed request is retried, not replayed.** The operation threw, the transaction rolled
+  back, and the recording went with it. There is nothing to find, so the retry executes —
+  correctly, because nothing happened the first time. Recording failures would have meant
+  deciding which of them are permanent, and a retry after a 500 is the most ordinary thing a
+  client does.
+- **A replayed response describes work that actually committed.** There is no window in
+  which the recording exists and the rows it describes do not.
+- **A concurrent retry cannot slip past.** Invocations serialise per scope, so the second
+  request takes its turn after the first has committed. Every other implementation of this
+  needs an in-flight state and a "still processing" 409; this one does not.
+
+**A key names one request.** Send the same key with a different body and it is refused with
+`409 conflict`, never served the earlier response — a client that received an answer to a
+question it did not ask will act on it. Two deliberate identical writes are two writes, and
+a client that wanted one sends one key. A key is also scoped to the caller who sent it: two
+clients will both choose `1`, and a lookup that crossed that boundary would replay one
+principal's response to another.
+
+Two limits, stated rather than discovered:
+
+- **A replay is not a fresh authorization.** The recorded response is returned without
+  running the handler, and the permission check lives inside the handler. What bounds it is
+  that a caller can only ever reach responses it received itself, and that a key is
+  remembered for **24 hours**. The alternative — re-running the operation so the permission
+  can be re-checked — is the duplicate execution the key exists to prevent.
+- **A response too large to record (over 128 KiB) refuses its replay** with `409` rather
+  than executing again. Fail closed: an error the caller can act on beats doing the work
+  twice, and the original did complete.
+
+**Opting out is a line someone wrote.** An operation whose response must not be recorded —
+a freshly minted secret, a one-time token — says so, and the platform then refuses the
+header rather than silently storing the response or silently executing twice:
+
+```ts
+'acme/mint-token': {
+  idempotency: false,   // the response is a credential; do not record it
+  …
+}
+```
+
+Opt-out rather than opt-in because the two read differently in a diff: a missing opt-in is
+invisible, while `idempotency: false` is something a reviewer can ask about. It is the same
+reasoning `narrows` applies to a permission that is deliberately not node-level — state the
+exception, never the rule.
+
+::: tip Not the event spine's idempotency
+Consumers have been required-idempotent since the beginning, and the contract suite checks
+it: a consumer may see an event more than once and must settle to the same state. That is
+the spine re-delivering. This is a client re-sending. Different boundary, different actor,
+no relationship beyond the word.
 :::
 
 ### 7b. A read-modify-write says what it is writing over
@@ -413,7 +488,7 @@ Two things follow that are worth stating, because they cut against instinct:
 | Pagination | keyset cursor, declared with `paged`; entries in the body, the walk in `Link` / `X-Total-Count` | Declaration shipped; [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
 | Lost-update safety | `concurrency` + `If-Match` / `ETag`, 412 on a stale tag | Shipped; compile error to omit on a field-bag update |
 | Errors | RFC 9457 problem+json, closed codes | [#113](https://github.com/substrat-run/substrat/issues/113) |
-| Clock | `ctx.now()` | [#812](https://github.com/substrat-run/substrat/issues/812) |
-| Idempotent writes | `Idempotency-Key` | [#116](https://github.com/substrat-run/substrat/issues/116) |
+| Clock | `ctx.now()` | Shipped; `new Date()` in module code is a lint error |
+| Idempotent writes | `Idempotency-Key`, response replayed for 24h | Shipped; honoured on every write, `idempotency: false` to opt out |
 | Evolution | additive only | Convention + review |
 | API document | generated, CI-diffed | Shipped |

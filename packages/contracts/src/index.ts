@@ -25,6 +25,7 @@ export * from './tenancy.js';
 export * from './introspection.js';
 export * from './pagination.js';
 export * from './concurrency.js';
+export * from './idempotency.js';
 export * from './connections.js';
 export * from './control-plane.js';
 export * from './permission.js';

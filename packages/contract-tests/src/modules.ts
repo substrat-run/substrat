@@ -12,6 +12,8 @@ import {
   moduleManifest,
   operationInputsOf,
   operationConcurrencyOf,
+  operationIdempotencyOptOutsOf,
+  IDEMPOTENCY_RESULT_LIMIT,
   permissionKey,
   principalId,
   z,
@@ -20,6 +22,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
+  ulid,
   type ConsumerHandler,
   type ModuleRegistration,
   type OperationContext,
@@ -1369,6 +1372,120 @@ export const concurrencyMod: ModuleRegistration = {
   operationConcurrency: operationConcurrencyOf(concurrencyDeclaration),
 };
 
+// -- #116: request idempotency ------------------------------------------------
+
+export const idempotencyModManifest = moduleManifest.parse({
+  id: '@test/idempotency',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'idem:use', description: 'the idempotency fixture permission' }],
+  events: { emits: [{ type: 'idem.created', schemaVersion: 1 }], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'idem',
+});
+
+const IDEM_USE = permissionKey.parse('idem:use');
+
+/**
+ * The fixture that makes a duplicate VISIBLE.
+ *
+ * Every call appends a row, so "was this replayed?" is not answered by trusting
+ * a flag the host set — it is answered by counting what the handler did. A suite
+ * that asserted only on the returned value would pass just as happily against a
+ * host that re-ran the operation and happened to produce the same answer, which
+ * is precisely the bug (a second work order looks a lot like the first).
+ */
+const idemCreate: OperationHandler<{ thingId: string; label?: string }, unknown> = async (
+  ctx,
+  input,
+) => {
+  assertAllowed(await ctx.check(IDEM_USE));
+  ctx.sql.exec('CREATE TABLE IF NOT EXISTS idem_runs (run TEXT PRIMARY KEY, thing TEXT)');
+  const run = ulid();
+  ctx.sql.exec('INSERT INTO idem_runs (run, thing) VALUES (?, ?)', [run, input.thingId]);
+  ctx.emit({
+    type: 'idem.created',
+    schemaVersion: 1,
+    entity: { entityType: 'idem-thing', entityId: input.thingId },
+    piiClass: 'none',
+    payload: { label: input.label ?? null },
+  });
+  return { id: input.thingId, run, label: input.label ?? null };
+};
+
+/** Counts what actually ran — the suite's ground truth. */
+const idemRuns: OperationHandler<Record<string, never>, unknown> = async (ctx) => {
+  assertAllowed(await ctx.check(IDEM_USE));
+  ctx.sql.exec('CREATE TABLE IF NOT EXISTS idem_runs (run TEXT PRIMARY KEY, thing TEXT)');
+  const rows = ctx.sql.query('SELECT run FROM idem_runs') as { run: string }[];
+  return { count: rows.length };
+};
+
+/**
+ * Fails after writing, every time.
+ *
+ * The write matters: it proves the recording rolls back with the work rather
+ * than merely never being reached. A retry must execute, because nothing
+ * happened the first time.
+ */
+const idemFails: OperationHandler<{ thingId: string }, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(IDEM_USE));
+  ctx.sql.exec('CREATE TABLE IF NOT EXISTS idem_runs (run TEXT PRIMARY KEY, thing TEXT)');
+  ctx.sql.exec('INSERT INTO idem_runs (run, thing) VALUES (?, ?)', [ulid(), input.thingId]);
+  throw new Error('idem/fails always fails');
+};
+
+/** Returns more than `IDEMPOTENCY_RESULT_LIMIT` — the recording that cannot be kept. */
+const idemBig: OperationHandler<{ thingId: string }, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(IDEM_USE));
+  ctx.sql.exec('CREATE TABLE IF NOT EXISTS idem_runs (run TEXT PRIMARY KEY, thing TEXT)');
+  ctx.sql.exec('INSERT INTO idem_runs (run, thing) VALUES (?, ?)', [ulid(), input.thingId]);
+  return { id: input.thingId, blob: 'x'.repeat(IDEMPOTENCY_RESULT_LIMIT + 1) };
+};
+
+/**
+ * Declares `idempotency: false` — its response is a credential in the story this
+ * fixture tells, and must not be recorded. A key here is REFUSED.
+ */
+const idemSecret: OperationHandler<{ thingId: string }, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(IDEM_USE));
+  ctx.sql.exec('CREATE TABLE IF NOT EXISTS idem_runs (run TEXT PRIMARY KEY, thing TEXT)');
+  ctx.sql.exec('INSERT INTO idem_runs (run, thing) VALUES (?, ?)', [ulid(), input.thingId]);
+  return { id: input.thingId, secret: 'never-recorded' };
+};
+
+const idempotencyDeclaration = {
+  'idem/create': {
+    input: z.object({ thingId: z.string(), label: z.string().optional() }),
+  },
+  // Guarded AND idempotent — the two seams on one operation, which is the case
+  // that proves a replay hands back the original's tag rather than no tag.
+  'idem/create-guarded': {
+    input: z.object({ thingId: z.string(), label: z.string().optional() }),
+    concurrency: { over: 'idem-thing', idFrom: 'thingId' },
+  },
+  'idem/runs': { input: z.object({}) },
+  'idem/fails': { input: z.object({ thingId: z.string() }) },
+  'idem/big': { input: z.object({ thingId: z.string() }) },
+  'idem/secret': { input: z.object({ thingId: z.string() }), idempotency: false as const },
+};
+
+export const idempotencyMod: ModuleRegistration = {
+  manifest: idempotencyModManifest,
+  operations: {
+    'idem/create': idemCreate as OperationHandler<never, unknown>,
+    'idem/create-guarded': idemCreate as OperationHandler<never, unknown>,
+    'idem/runs': idemRuns as OperationHandler<never, unknown>,
+    'idem/fails': idemFails as OperationHandler<never, unknown>,
+    'idem/big': idemBig as OperationHandler<never, unknown>,
+    'idem/secret': idemSecret as OperationHandler<never, unknown>,
+  },
+  operationInputs: operationInputsOf(idempotencyDeclaration),
+  operationConcurrency: operationConcurrencyOf(idempotencyDeclaration),
+  operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(idempotencyDeclaration),
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -1381,6 +1498,7 @@ export const contractTestModules: ModuleRegistration[] = [
   listMod,
   parseMod,
   concurrencyMod,
+  idempotencyMod,
 ];
 
 export const brokenModManifest = moduleManifest.parse({

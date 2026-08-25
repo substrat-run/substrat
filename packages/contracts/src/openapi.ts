@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ETAG_HEADER, IF_MATCH_HEADER } from './concurrency.js';
+import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_MAX_LENGTH } from './idempotency.js';
 import {
   LIST_PAGE_DEFAULT,
   LIST_SORT_PARAM,
@@ -72,6 +73,16 @@ export interface ApiOperationDoc {
    * operation which did not declare this.
    */
   concurrency?: { over: string; idFrom: string };
+  /**
+   * `false` when the operation declared out of request idempotency (#116).
+   *
+   * Present only as a refusal, matching the declaration: every other unsafe
+   * operation honours `Idempotency-Key`, so the header is documented on all of
+   * them and this is what removes it from the one that would refuse it. A header
+   * documented where it is refused is worse than one documented nowhere — a
+   * client reads it and builds a retry it does not have.
+   */
+  idempotency?: false;
   paged?: {
     /** Present on a handler-composed read: the ENTRY field the cursor walks. */
     sortKey?: string;
@@ -341,6 +352,23 @@ export function buildOpenApiDocument(
         schema: { type: 'string' },
       });
     }
+    // #116: the retry token, on an UNSAFE method and unless the operation declared
+    // out. Documented on every such operation rather than per declaration, because
+    // that IS the surface — there is nothing to opt into, and a client that has to
+    // discover which writes are retryable will assume none of them are.
+    if (op.http && op.http.method !== 'GET' && op.idempotency !== false) {
+      params.push({
+        name: IDEMPOTENCY_KEY_HEADER,
+        in: 'header',
+        required: false,
+        description:
+          'A token of your choosing identifying this request. Send the SAME token when ' +
+          'retrying and the original response is replayed instead of the work being done ' +
+          'again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a ' +
+          'token for a different request is refused with 409. Remembered for 24 hours.',
+        schema: { type: 'string', maxLength: IDEMPOTENCY_KEY_MAX_LENGTH },
+      });
+    }
     // A GET or DELETE carries its input in the QUERY STRING, and the document has to
     // say so (#830). It used to emit every input field as a `requestBody` regardless of
     // verb, so a paged read documented `limit`/`cursor` twice — once as the parameters
@@ -531,6 +559,9 @@ export function apiCatalogFrom(
             concurrency: (op as { concurrency: NonNullable<ApiOperationDoc['concurrency']> })
               .concurrency,
           }
+        : {}),
+      ...((op as { idempotency?: unknown }).idempotency === false
+        ? { idempotency: false as const }
         : {}),
     };
   }

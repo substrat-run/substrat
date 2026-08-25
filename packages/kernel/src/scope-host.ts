@@ -418,8 +418,7 @@ export type OperationHandler<I = unknown, O = unknown> = (
 
 /**
  * The per-invocation transport channel: what the caller requires to be true
- * before the operation runs, and the transport facts it needs back (#129, and
- * #116 when it lands).
+ * before the operation runs, and the transport facts it needs back (#129, #116).
  *
  * A separate parameter rather than fields on the input, because these are facts
  * about the REQUEST and not about the domain. A handler's declared input is what
@@ -437,8 +436,9 @@ export type OperationHandler<I = unknown, O = unknown> = (
  *
  * Deliberately one bag rather than a parameter per concern. `If-Match` and
  * `Idempotency-Key` are ONE precondition pass at one point in the invoke — before
- * the guards, inside the transaction — and #116's note asks that whichever lands
- * first build that seam rather than leave the second to be bolted on beside it.
+ * the guards, inside the transaction — which is what #116's note asked of
+ * whichever landed first. #129 built the bag; #116 declared into it and added no
+ * second interception point.
  */
 export interface InvokeOptions {
   /**
@@ -465,6 +465,30 @@ export interface InvokeOptions {
    * spine read on every invocation.
    */
   readonly onEntityVersion?: (version: string | null) => void;
+  /**
+   * The client's retry token, verbatim from `Idempotency-Key` (#116).
+   *
+   * Honoured by every operation on an unsafe method — there is no declaration to
+   * make, because a retried write creating a second entity is a hazard on all of
+   * them. The exception is an operation that declared `idempotency: false`, whose
+   * response must not be recorded; sending a key to one is an error rather than a
+   * no-op, for the same reason an unhonoured `If-Match` is.
+   *
+   * A first request under a key runs, and its return value is recorded inside the
+   * operation's own transaction. A second request under the same key returns that
+   * recording without running the handler. A second request under the same key
+   * with a DIFFERENT input is refused — a key names one request, and serving the
+   * first one's response to a second one would be a lie a client acts on.
+   */
+  readonly idempotencyKey?: string;
+  /**
+   * Called when this invocation was answered from a recording rather than run.
+   *
+   * The transport sets `Idempotency-Replayed` from it. Advisory: a caller that
+   * ignores this is not wrong about anything, it simply cannot tell a retry from
+   * a first request — which is enough of a debugging cost to be worth a callback.
+   */
+  readonly onIdempotentReplay?: () => void;
 }
 
 /** The capability stub — the ONLY way code outside the scope reaches it. */
@@ -1096,6 +1120,22 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * `operationInputs`: it reads as coverage while enforcing nothing.
    */
   operationConcurrency?: Record<string, { entity: string; idFrom: string }>;
+  /**
+   * The operations that declared `idempotency: false` (#116) — the ones whose
+   * response must not be recorded, and which therefore refuse an
+   * `Idempotency-Key` instead of honouring it.
+   *
+   * Derived like the two above, and never written a second time:
+   *
+   * ```ts
+   * operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(calloutOperations),
+   * ```
+   *
+   * A list of refusals rather than a list of participants, because that is what
+   * the declaration is. Absent means every operation honours a key, which is the
+   * default and the reason there is nothing to remember.
+   */
+  operationIdempotencyOptOuts?: readonly string[];
   /**
    * eventType → handler; the types must appear in manifest.events.consumes.
    *

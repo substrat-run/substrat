@@ -30,6 +30,7 @@ import {
   connectionSecret,
   systemGrant,
   subjectRef,
+  requestFingerprint,
   createConnectionInput,
   projectedConnectionGrant,
   projectedConnectionKey,
@@ -240,6 +241,14 @@ import {
   type EntityVersion,
   type EntityVersionRow,
   type InvokeOptions,
+  IDEMPOTENCY_DDL,
+  assertIdempotencyKey,
+  idempotencyLookupQuery,
+  idempotencyPruneStatement,
+  idempotencyRecordStatement,
+  idempotencyOptedOutMessage,
+  replayFor,
+  type IdempotencyRow,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -367,6 +376,7 @@ const KERNEL_DDL = `
     at TEXT NOT NULL,
     drained_at TEXT
   );
+  ${IDEMPOTENCY_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -846,6 +856,13 @@ export class SqliteScopeHost implements ScopeHost {
    * a bare `defineOperation` carries no declaration to read one off.
    */
   private readonly operationConcurrency = new Map<string, { entity: string; idFrom: string }>();
+  /**
+   * #116: the operations that declared `idempotency: false` — a set of refusals,
+   * because that is what the declaration is. Every name NOT in here honours an
+   * `Idempotency-Key`, which is the default and the reason it is a set of
+   * exceptions rather than a map of participants.
+   */
+  private readonly operationIdempotencyOptOut = new Set<string>();
   private readonly roles = new Map<string, RoleDefinition>(); // 'tenantId/roleKey'
   /** Executor id → {eventType, handler} (K-22 §4.2). Host code, not module code. */
   private readonly executors = new Map<string, RegisteredEffector>();
@@ -1658,6 +1675,18 @@ export class SqliteScopeHost implements ScopeHost {
           `${unguarded.sort().join(', ')} — a precondition on nothing reads as a guard that is not there`,
       );
     }
+    // #116: an opt-out on an unbound name is the same defect one paragraph up,
+    // and reads worse — it looks like a deliberate exclusion of something that is
+    // not there, so nobody goes looking for what actually honours the header.
+    const declaredOptOuts = registration.operationIdempotencyOptOuts ?? [];
+    const unboundOptOuts = declaredOptOuts.filter((name) => !ownOperations.has(name));
+    if (unboundOptOuts.length > 0) {
+      throw new Error(
+        `${manifest.id} declares idempotency: false for unbound operation(s): ` +
+          `${[...unboundOptOuts].sort().join(', ')} — an opt-out on nothing reads as an ` +
+          'exclusion someone decided, of an operation that does not exist',
+      );
+    }
     for (const [name, handler] of Object.entries(registration.operations ?? {})) {
       this.defineOperation(name, handler);
       // Record which SKU flag gates this operation (§4.3). Bare defineOperation
@@ -1669,6 +1698,9 @@ export class SqliteScopeHost implements ScopeHost {
       if (schema && this.operations.has(name)) this.operationInput.set(name, schema);
       const guarded = declaredConcurrency[name];
       if (guarded && this.operations.has(name)) this.operationConcurrency.set(name, guarded);
+      if (declaredOptOuts.includes(name) && this.operations.has(name)) {
+        this.operationIdempotencyOptOut.add(name);
+      }
     }
   }
 
@@ -2718,6 +2750,20 @@ export class SqliteScopeHost implements ScopeHost {
             ),
           );
         }
+        // #116. An operation that declared `idempotency: false` REFUSES a key
+        // rather than ignoring one, and the reason is the reason every branch of
+        // this feature is written the way it is: a caller who sent a key and got a
+        // 200 believes the retry is safe, and here it is not — the response was
+        // never recorded, so the second request would execute the operation again.
+        const idempotencyKey = invokeOptions?.idempotencyKey;
+        if (idempotencyKey !== undefined) {
+          if (this.operationIdempotencyOptOut.has(operation)) {
+            return Promise.reject(new Error(idempotencyOptedOutMessage(operation)));
+          }
+          // Refused BEFORE the queue: a key we cannot store must not take a turn
+          // ahead of work that can.
+          assertIdempotencyKey(idempotencyKey);
+        }
         // Entitlement gate (control-plane.md §4.3): a module loads for a tenant
         // only if the tenant holds its SKU flag. Checked per invoke — the simple,
         // uncached path (K-OQ5); a DO-cached variant is a later benchmark call.
@@ -2737,6 +2783,9 @@ export class SqliteScopeHost implements ScopeHost {
         // #129: read inside the transaction, reported after it commits — a tag
         // handed out for writes that were rolled back is a tag nobody may hold.
         let committedVersion: EntityVersion | null | undefined;
+        // #116: reported after the task, like the version — a replay is a fact
+        // about the response, and the response is not one until it is returned.
+        let replayed = false;
         const invoked = await rt.actor.enqueue(async () => {
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
@@ -2754,9 +2803,37 @@ export class SqliteScopeHost implements ScopeHost {
           const parsed = this.operationInput.has(operation)
             ? (this.operationInput.get(operation) as { parse(v: unknown): unknown }).parse(clonedInput)
             : clonedInput;
+          // #116: fingerprinted from the PARSED input, so a retry that omits an
+          // optional field the original sent at its default value is still the
+          // same request. Computed before `BEGIN` — it is a pure hash of what the
+          // caller sent and has no business inside a transaction.
+          const fingerprint =
+            idempotencyKey === undefined
+              ? undefined
+              : await requestFingerprint(operation, parsed);
           rt.db.exec('BEGIN IMMEDIATE');
           let result: O;
           try {
+            // #116: a retry is answered from the recording, and nothing else runs
+            // — not the guards, not the handler, not the permission check inside
+            // it. The row is keyed by SUBJECT, so a caller can only ever reach a
+            // response it received itself; `idempotency.ts` states what that does
+            // and does not promise about authorization.
+            if (idempotencyKey !== undefined && fingerprint !== undefined) {
+              const lookup = idempotencyLookupQuery(subject, idempotencyKey);
+              const prior = (
+                rt.db.prepare(lookup.sql).all(...lookup.params) as IdempotencyRow[]
+              )[0];
+              if (prior) {
+                const replay = replayFor(idempotencyKey, fingerprint, prior);
+                rt.db.exec('COMMIT');
+                // Only a guarded operation may report a tag (#129); an unguarded
+                // one recorded null and must stay silent rather than announce it.
+                if (guarded) committedVersion = replay.entityVersion;
+                replayed = true;
+                return replay.result as O;
+              }
+            }
             // #129, and the SPLIT here is the whole subtlety: the version is
             // snapshotted before the handler, and compared after it.
             //
@@ -2793,6 +2870,26 @@ export class SqliteScopeHost implements ScopeHost {
             // The tag the caller gets back describes the row as THIS write left
             // it, so it is read after the handler and still under `BEGIN`.
             if (ref) committedVersion = this.versionAt(rt, ref);
+            // #116: recorded INSIDE the transaction, which is what makes a failed
+            // request retried rather than replayed — the operation threw, this row
+            // rolls back with the writes it describes, and there is nothing for the
+            // retry to find. The prune rides along: bounded work, on the only path
+            // that adds a row.
+            if (idempotencyKey !== undefined && fingerprint !== undefined) {
+              const at = this.clock();
+              const record = idempotencyRecordStatement(
+                subject,
+                idempotencyKey,
+                operation,
+                fingerprint,
+                result,
+                committedVersion ?? null,
+                at,
+              );
+              rt.db.prepare(record.sql).run(...record.params);
+              const prune = idempotencyPruneStatement(at);
+              rt.db.prepare(prune.sql).run(...prune.params);
+            }
             rt.db.exec('COMMIT');
           } catch (err) {
             rt.db.exec('ROLLBACK');
@@ -2811,6 +2908,7 @@ export class SqliteScopeHost implements ScopeHost {
         });
         if (signals.platformRequests > 0) options?.onPlatformRequests?.(signals.platformRequests);
         if (committedVersion !== undefined) invokeOptions?.onEntityVersion?.(committedVersion);
+        if (replayed) invokeOptions?.onIdempotentReplay?.();
         return invoked;
       },
     };

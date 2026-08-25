@@ -700,9 +700,10 @@ interface ScopeStubRpc {
      */
     failureEnvelope?: boolean,
     /**
-     * #129: the request preconditions to evaluate INSIDE the operation's
+     * #129, #116: the request preconditions to evaluate INSIDE the operation's
      * transaction. A ScopeDO running older code ignores the argument — which is
-     * why the reply must say whether it honoured one; see `concurrency` below.
+     * why the reply must say whether it honoured one; see `concurrency` and
+     * `idempotency` below.
      */
     options?: InvokeOptions,
   ): Promise<{
@@ -729,6 +730,16 @@ interface ScopeStubRpc {
      * open silently.
      */
     concurrency?: { version: string | null; ifMatchChecked: boolean };
+    /**
+     * Present iff the DO understood `idempotencyKey` (#116).
+     *
+     * Absent for the same reason and with a sharper consequence than
+     * `concurrency` above: an old DO that drops the key does not skip a
+     * comparison, it RUNS THE OPERATION — a second work order, on the retry the
+     * header was sent to make free. So the acknowledgement is what the
+     * coordinator refuses on, not something it infers.
+     */
+    idempotency?: { keyHonoured: boolean; replayed: boolean };
   }>;
   /** Whether this scope holds a live `system:<moduleId>` grant (#383) — the schedule switch. */
   hasSystemGrant(moduleId: string): Promise<boolean>;
@@ -2371,6 +2382,20 @@ export class CloudflareScopeHost implements ScopeHost {
               'may have committed unconditionally. Retry once the scope has been migrated',
           );
         }
+        // #116, the same shape and the sharper failure: an unacknowledged key means
+        // the DO EXECUTED the operation rather than replaying a recording of it. The
+        // write has committed and nothing here can undo it; what this refuses is the
+        // success, because a caller told its retry was deduplicated will retry again.
+        if (
+          invokeOptions?.idempotencyKey !== undefined &&
+          envelope.idempotency?.keyHonoured !== true
+        ) {
+          throw substratError(
+            'unavailable',
+            `${operation} ran on a scope host that did not honour Idempotency-Key — the ` +
+              'operation may have executed a second time. Retry once the scope has been migrated',
+          );
+        }
         const drained = await this.drainExecutors(tenantId, scopeId);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).
@@ -2380,6 +2405,7 @@ export class CloudflareScopeHost implements ScopeHost {
         const enqueued = envelope.platformRequests + (drained.routedToPlatform ?? 0);
         if (enqueued > 0) options?.onPlatformRequests?.(enqueued);
         if (envelope.concurrency) invokeOptions?.onEntityVersion?.(envelope.concurrency.version);
+        if (envelope.idempotency?.replayed) invokeOptions?.onIdempotentReplay?.();
         return envelope.result as O;
       },
     };

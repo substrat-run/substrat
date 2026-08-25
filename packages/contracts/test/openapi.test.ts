@@ -61,6 +61,13 @@ const doc = buildOpenApiDocument({ title: 'Test', version: '1.0.0' }, {
     input: z.object({ entityType: z.literal('customer'), entityId: z.string() }),
     http: { method: 'GET', path: '/pinned' },
   },
+  // #116: opted OUT of request idempotency — its response is a credential.
+  'customer/mint-token': {
+    summary: 'Mint a token',
+    input: z.object({ customerId: z.string() }),
+    idempotency: false,
+    http: { method: 'POST', path: '/customers/{customerId}/token' },
+  },
   // No `http`: the platform's own invoke convention, which IS a POST with a body.
   'customer/invoke-only': {
     summary: 'Invoke convention',
@@ -193,7 +200,34 @@ describe('a write is untouched', () => {
     expect(Object.keys(post.requestBody.content['application/json'].schema.properties)).toEqual([
       'name',
     ]);
-    expect(post.parameters).toBeUndefined();
+    // The paging vocabulary is a READ's, and a write gains none of it. What a
+    // write does carry is the retry token (#116) — a header, never a query
+    // parameter, so this assertion says which kind rather than "none".
+    const params = (post.parameters ?? []) as { in: string; name: string }[];
+    expect(params.filter((p) => p.in === 'query')).toEqual([]);
+    expect(params.map((p) => p.name)).toEqual(['Idempotency-Key']);
+  });
+
+  it('documents the retry token on every write, and not on a read (#116)', () => {
+    const names = (path: string, verb: string) =>
+      ((op(path, verb).parameters ?? []) as { name: string }[]).map((p) => p.name);
+    // Every unsafe method, including the one whose input is all path parameters:
+    // a client that has to work out WHICH writes are retryable assumes none are.
+    expect(names('/api/customers', 'post')).toContain('Idempotency-Key');
+    expect(names('/api/customers/{customerId}', 'delete')).toContain('Idempotency-Key');
+    // Never on a read. A GET is already idempotent, and honouring the header
+    // there would mean serving a recorded BODY for a read.
+    expect(names('/api/customers/{customerId}', 'get')).not.toContain('Idempotency-Key');
+    expect(names('/api/customers', 'get')).not.toContain('Idempotency-Key');
+  });
+
+  it('omits the retry token from an operation that declared out (#116)', () => {
+    const names = ((op('/api/customers/{customerId}/token', 'post').parameters ?? []) as {
+      name: string;
+    }[]).map((p) => p.name);
+    // A header documented where it is refused is worse than one documented
+    // nowhere: a client reads it and builds a retry it does not have.
+    expect(names).not.toContain('Idempotency-Key');
   });
 
   it('keeps the invoke convention a POST with a body', () => {

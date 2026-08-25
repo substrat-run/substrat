@@ -675,6 +675,120 @@ function guardedHarness(version: string | null, ops?: Record<string, object>) {
   return { app, seen };
 }
 
+/**
+ * A stub that records the retry token it was handed and can answer as a replay
+ * (#116).
+ *
+ * Separate from `guardedHarness` on purpose: the case that matters most here is
+ * an operation with NO `concurrency`, where the old mount passed no options at
+ * all — so a harness built around a guarded operation would not see the bug.
+ */
+function idempotentHarness(replay = false) {
+  const seen: { key?: string; hasReplaySink: boolean }[] = [];
+  const app = new Hono();
+  mountOperations(
+    app,
+    {
+      'acme/read-thing': {
+        input: z.object({ thingId: z.string() }),
+        http: { method: 'GET', path: '/things/{thingId}' },
+      },
+      'acme/create-thing': {
+        input: z.object({ name: z.string().optional() }),
+        http: { method: 'POST', path: '/things' },
+      },
+    },
+    async () =>
+      ({
+        invoke: async (
+          _name: string,
+          _input: unknown,
+          options?: { idempotencyKey?: string; onIdempotentReplay?: () => void },
+        ) => {
+          seen.push({
+            ...(options?.idempotencyKey === undefined ? {} : { key: options.idempotencyKey }),
+            hasReplaySink: typeof options?.onIdempotentReplay === 'function',
+          });
+          if (replay) options?.onIdempotentReplay?.();
+          return { ok: true };
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any,
+  );
+  return { app, seen };
+}
+
+describe('a retried write on the wire (#116)', () => {
+  it('forwards Idempotency-Key on an unsafe method, with no declaration needed', async () => {
+    const { app, seen } = idempotentHarness();
+    await app.request('/api/things', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': 'order-4471' },
+      body: '{}',
+    });
+    // The operation declares nothing — there is nothing to declare. A retried
+    // write creating a second entity is a hazard on every write, so the client
+    // opts in by sending the header and the server never requires one.
+    expect(seen.at(-1)?.key).toBe('order-4471');
+  });
+
+  it('does NOT forward it on a GET', async () => {
+    const { app, seen } = idempotentHarness();
+    await app.request('/api/things/t1', { headers: { 'Idempotency-Key': 'order-4471' } });
+    // A GET is already idempotent. Honouring the header there would mean serving
+    // a recorded BODY for a read — a cache with none of a cache's rules.
+    expect(seen.at(-1)?.key).toBeUndefined();
+  });
+
+  it('flags a replayed response, and only a replayed one', async () => {
+    const fresh = idempotentHarness(false);
+    const first = await fresh.app.request('/api/things', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': 'k1' },
+      body: '{}',
+    });
+    expect(first.headers.get('Idempotency-Replayed')).toBeNull();
+
+    const replayed = idempotentHarness(true);
+    const second = await replayed.app.request('/api/things', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': 'k1' },
+      body: '{}',
+    });
+    // Advisory, and the reason it is worth setting: without it a retry is
+    // indistinguishable from a first request that happened to succeed.
+    expect(second.headers.get('Idempotency-Replayed')).toBe('true');
+  });
+
+  it('answers a reused key with 409', async () => {
+    const app = new Hono();
+    mountOperations(
+      app,
+      {
+        'acme/create-thing': {
+          input: z.object({ name: z.string().optional() }),
+          http: { method: 'POST', path: '/things' },
+        },
+      },
+      async () =>
+        ({
+          invoke: async () => {
+            throw substratError('conflict', 'key reused', { reason: 'idempotency_key_reused' });
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any,
+    );
+    const res = await app.request('/api/things', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': 'k1' },
+      body: '{}',
+    });
+    // No new vocabulary: `conflict` has been in the taxonomy since #113, and the
+    // classifier reads the code off the throw rather than matching its message.
+    expect(res.status).toBe(409);
+  });
+});
+
 describe('a concurrency-checked operation on the wire (#129)', () => {
   it('answers a guarded read with an ETag, quoted', async () => {
     const { app } = guardedHarness('01J8Z000000000000000000000');
