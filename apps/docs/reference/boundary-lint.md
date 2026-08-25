@@ -26,6 +26,12 @@ consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`, …) are harn
 | **R3** no network | module code never calls `fetch()` or imports an HTTP client |
 | **R4** spine is sacred | module code never *writes* `_substrat_*` tables (reads are fine — timelines are projections) |
 | **R5** tables private | module code never references another module's tables in SQL |
+| **R6** no clock | module code never reads the wall clock (`new Date()`, `Date.now()`) — the operation's instant is `ctx.now()` |
+| **R7** no bare catch | module code never catches an engine error outside [`ctx.atomic`](/concepts/modules) — a `catch` around a raw engine call commits its partial writes |
+
+R7 allows the two shapes that do not swallow: `try`/`finally` with no `catch`, and a catch
+that always rethrows (`catch (e) { log(e); throw e }`) — the operation still fails, so the
+whole transaction rolls back either way.
 
 Table ownership is **derived, never declared**: a table belongs to whichever module's
 `CREATE TABLE` migration created it, and that SQL survives compilation into `dist/`, so
@@ -35,7 +41,9 @@ would drift and wave a real violation through.
 
 ### The escape hatch
 
-R5 alone has an explicit, reviewable opt-out for a one-time extraction handoff (decision 27):
+R5 and R6 have an explicit, reviewable opt-out — R5 for a one-time extraction handoff
+(decision 27), R6 for code that must read the *real* clock (a JWT whose `exp` a remote
+server judges):
 
 ```ts
 // boundary-lint-allow R5 — one-time extraction handoff, removed after the cutover
@@ -43,7 +51,9 @@ const legacy = ctx.sql.query('SELECT * FROM workorder_time_entries');
 // boundary-lint-end R5
 ```
 
-There is no escape hatch for R1–R4.
+There is no escape hatch for R1–R4, and deliberately none for R7: unlike a data handoff or
+a real-clock JWT, there is no legitimate reason to swallow an engine error unprotected, so a
+hatch would only ever be used to silence the rule.
 
 ## Running it
 

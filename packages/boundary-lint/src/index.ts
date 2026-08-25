@@ -51,10 +51,56 @@
  *                      R5 uses. Unlike R5's, this one has a recurring
  *                      legitimate case, so it is a hatch rather than a
  *                      one-time handoff.
+ *   R7 no bare catch   module code never catches an engine error outside
+ *                      `ctx.atomic` (#786, sequenced after #770 so the lint has
+ *                      a mechanism to point at). An engine in-scope function
+ *                      composed inside your transaction has no boundary of its
+ *                      own, so a `catch` around it leaves you holding the
+ *                      engine's partial writes — the rows its invariants were
+ *                      protecting — and commits them. `ctx.atomic(() => …)` is
+ *                      the boundary; inside one, catching is legal and the
+ *                      callee's rows, events, links, grants and platform
+ *                      intents are all discarded. See §2 and §7 of
+ *                      docs/rfc/sub-transactions.md.
+ *
+ *                      `try`/`finally` with no `catch` is fine (it does not
+ *                      swallow), and so is a catch that always rethrows
+ *                      (`catch (e) { log(e); throw e }`) — the operation still
+ *                      fails and the whole transaction rolls back, which is the
+ *                      outcome the rule exists to preserve. There is NO
+ *                      `boundary-lint-allow` hatch: unlike R5's one-time data
+ *                      handoff or R6's real-clock JWT, there is no legitimate
+ *                      reason to swallow an engine error unprotected, and a
+ *                      hatch here would only ever be used to silence the rule.
  *
  * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
  * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
- * unbuilt; this one landed first and took the number, so that rule becomes R7.
+ * unbuilt; the no-clock rule landed first and took the number, so #786 shipped
+ * as R7 — the issue title, and §2/§7/§10 of docs/rfc/sub-transactions.md, still
+ * say R6 because they predate #812. Two rules sharing a number would be worse
+ * than a stale title.
+ *
+ * R7 AND THE PARSER QUESTION (#786 open question 1, decided here). R7 needs two
+ * things R1–R6 do not: which identifiers are bound to an engine import, and
+ * whether a call site sits lexically inside a `ctx.atomic` callback. Neither is
+ * line-local, and both were the argument for pulling in the TypeScript compiler.
+ * They are NOT, and this ships without one: `typescript` in `dependencies` is
+ * ~20MB of runtime dependency in a package that has none today and installs into
+ * every scaffolded vertical, to answer questions that need a token scanner
+ * rather than a type checker. What R7 uses instead is `maskSource` — one pass
+ * that blanks comments, string bodies and regex literals while preserving every
+ * offset — after which brace matching over the masked text answers both
+ * questions exactly. The pass runs ONLY on files that import an
+ * `@substrat-run/engine-*` package at all, so the common case stays a set
+ * lookup.
+ *
+ * The deliberate limits, stated rather than discovered (#786 open question 5 —
+ * a rule that misfires gets suppressed wholesale, which is worse than no rule):
+ * R7 sees only calls written INSIDE the `try`, so an engine call moved into a
+ * local helper is missed; and a conditional rethrow as the catch's last
+ * statement (`catch (e) { if (rare) throw e }`) is read as a rethrow. Both
+ * under-fire. Widening is a change to this file with fixtures, not a change of
+ * character.
  *
  * TABLE OWNERSHIP IS DERIVED FROM MIGRATIONS, NEVER DECLARED. A table is owned
  * by whichever module's `CREATE TABLE` made it. That fact ships inside the
@@ -80,7 +126,7 @@ export interface Violation {
   file: string;
   /** 1-indexed, when the rule is line-anchored. */
   line?: number;
-  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6';
+  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7';
   message: string;
 }
 
@@ -318,6 +364,344 @@ function checkClock(rel: string, source: string, out: Violation[]): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// R7 — catching an engine error outside ctx.atomic (#786)
+//
+// The scanner the header's parser decision commits to. Everything below works on
+// a MASKED copy of the source: same length, same line breaks, same offsets, with
+// comments, string bodies and regex literals blanked to spaces. After that pass,
+// every `{`, `}`, `(` and `)` left in the text is real syntax, so brace matching
+// is exact and a regex cannot be fooled by a brace inside a string.
+// ---------------------------------------------------------------------------
+
+const ENGINE_SCOPE = '@substrat-run/engine-';
+
+/** A `/` here starts a regex, not a division — decided from what precedes it. */
+const REGEX_AFTER_KEYWORD = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'case', 'do', 'else', 'yield',
+  'await', 'delete', 'void', 'throw', 'new',
+]);
+
+function regexAllowed(masked: string[], at: number): boolean {
+  let i = at - 1;
+  while (i >= 0 && /\s/.test(masked[i] ?? '')) i--;
+  if (i < 0) return true;
+  const c = masked[i]!;
+  // Quotes survive masking (only their bodies are blanked), so they count as
+  // operands here too — `'a'.length / 2` must not read as a regex.
+  if (/[\w$)\]'"`]/.test(c)) {
+    // An identifier or a closing bracket: division — unless the identifier is a
+    // keyword that cannot be followed by one (`return /x/.test(s)`).
+    let j = i;
+    while (j >= 0 && /[\w$]/.test(masked[j] ?? '')) j--;
+    return REGEX_AFTER_KEYWORD.has(masked.slice(j + 1, i + 1).join(''));
+  }
+  return true;
+}
+
+/**
+ * Comments, string bodies and regex literals blanked; offsets and newlines kept.
+ *
+ * Template literals keep their `${…}` expressions — an engine call can live in
+ * one, and the braces are balanced either way — and blank only the literal text
+ * between them, which is where a stray `{` or quote would otherwise come from.
+ */
+function maskSource(src: string): string {
+  const out = src.split('');
+  const n = src.length;
+  const blank = (from: number, to: number): void => {
+    for (let k = Math.max(from, 0); k < to && k < n; k++) if (out[k] !== '\n') out[k] = ' ';
+  };
+  // Template-literal nesting: each entry is the `${` depth inside that template.
+  const templates: number[] = [];
+  let i = 0;
+  while (i < n) {
+    const c = src[i]!;
+    const next = src[i + 1];
+
+    if (templates.length > 0 && templates[templates.length - 1] === 0) {
+      // Inside the literal text of a template — blank until `${`, `` ` `` or an escape.
+      if (c === '\\') { blank(i, i + 2); i += 2; continue; }
+      if (c === '`') { templates.pop(); i++; continue; }
+      if (c === '$' && next === '{') { templates[templates.length - 1] = 1; i += 2; continue; }
+      blank(i, i + 1);
+      i++;
+      continue;
+    }
+
+    if (c === '/' && next === '/') {
+      let j = i;
+      while (j < n && src[j] !== '\n') j++;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const j = end < 0 ? n : end + 2;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < n) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === c || src[j] === '\n') break;
+        j++;
+      }
+      blank(i + 1, j);
+      i = j + 1;
+      continue;
+    }
+    if (c === '`') {
+      templates.push(0);
+      i++;
+      continue;
+    }
+    if (c === '/' && regexAllowed(out, i)) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < n) {
+        const d = src[j]!;
+        if (d === '\\') { j += 2; continue; }
+        if (d === '\n') break;
+        if (d === '[') inClass = true;
+        else if (d === ']') inClass = false;
+        else if (d === '/' && !inClass) break;
+        j++;
+      }
+      if (j < n && src[j] === '/') {
+        blank(i + 1, j);
+        i = j + 1;
+        continue;
+      }
+      // Unterminated — it was a division after all.
+    }
+    if (templates.length > 0) {
+      // Inside a `${…}` expression: track its braces so the template resumes.
+      if (c === '{') templates[templates.length - 1]! += 1;
+      else if (c === '}') {
+        templates[templates.length - 1]! -= 1;
+        if (templates[templates.length - 1] === 0) {
+          // Back to literal text.
+        }
+      }
+    }
+    i++;
+  }
+  return out.join('');
+}
+
+interface EngineBindings {
+  /** Local names bound to an engine's value exports. */
+  names: Set<string>;
+  /** Local names bound to `import * as ns` of an engine. */
+  namespaces: Set<string>;
+}
+
+const IMPORT_CLAUSE =
+  /(?:^|[\n;])[ \t]*import\s+([^'"]*?)\s*from\s*['"]([^'"]+)['"]/g;
+
+/**
+ * Which local identifiers in this file call into an engine.
+ *
+ * Aliases (`import { completeWorkOrder as finish }`) resolve to the LOCAL name —
+ * that is the one appearing at the call site. Type-only imports are skipped in
+ * both spellings (`import type { … }` and an inline `type Foo` specifier): a
+ * type never throws.
+ */
+function engineBindings(source: string): EngineBindings {
+  const names = new Set<string>();
+  const namespaces = new Set<string>();
+  IMPORT_CLAUSE.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = IMPORT_CLAUSE.exec(source)); ) {
+    const spec = m[2] ?? '';
+    if (!spec.startsWith(ENGINE_SCOPE)) continue;
+    let clause = (m[1] ?? '').trim();
+    if (/^type\b/.test(clause)) continue;
+
+    const ns = /\*\s*as\s+([A-Za-z_$][\w$]*)/.exec(clause);
+    if (ns?.[1]) namespaces.add(ns[1]);
+
+    const braced = /\{([\s\S]*)\}/.exec(clause);
+    if (braced?.[1] !== undefined) {
+      for (const raw of braced[1].split(',')) {
+        const part = raw.trim();
+        if (!part || /^type\b/.test(part)) continue;
+        const alias = /\bas\s+([A-Za-z_$][\w$]*)\s*$/.exec(part);
+        const local = alias?.[1] ?? part.split(/\s+/)[0];
+        if (local && /^[A-Za-z_$][\w$]*$/.test(local)) names.add(local);
+      }
+      clause = clause.replace(/\{[\s\S]*\}/, '');
+    }
+
+    // Whatever is left of the clause is a default import.
+    const def = clause.replace(/\*\s*as\s+[A-Za-z_$][\w$]*/, '').split(',')[0]?.trim();
+    if (def && /^[A-Za-z_$][\w$]*$/.test(def) && def !== 'type') names.add(def);
+  }
+  return { names, namespaces };
+}
+
+/** Index of the delimiter closing the one at `open`, or -1. */
+function matchDelim(masked: string, open: number, openCh: string, closeCh: string): number {
+  let depth = 0;
+  for (let i = open; i < masked.length; i++) {
+    const c = masked[i];
+    if (c === openCh) depth += 1;
+    else if (c === closeCh) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function isWord(masked: string, at: number, word: string): boolean {
+  if (!masked.startsWith(word, at)) return false;
+  const before = masked[at - 1];
+  const after = masked[at + word.length];
+  return !(before && /[\w$.]/.test(before)) && !(after && /[\w$]/.test(after));
+}
+
+/**
+ * The argument spans of every `ctx.atomic(…)` — the regions in which catching an
+ * engine error is legal.
+ *
+ * Matched on the CALL, not on `ctx`: `atomic` may be reached through a local
+ * alias or destructured off the context (`const { atomic } = ctx`), and both
+ * spellings mean the same boundary. Matching any `atomic(` over-exempts a
+ * same-named local function, which is the direction this rule errs in on
+ * purpose.
+ */
+function atomicRegions(masked: string): Array<[number, number]> {
+  const regions: Array<[number, number]> = [];
+  const re = /(?:^|[^\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)?atomic\s*\(/g;
+  for (let m: RegExpExecArray | null; (m = re.exec(masked)); ) {
+    const open = m.index + m[0].length - 1;
+    const close = matchDelim(masked, open, '(', ')');
+    if (close > 0) regions.push([open, close]);
+    re.lastIndex = open + 1;
+  }
+  return regions;
+}
+
+/** The first engine call in [start, end) that no `ctx.atomic` covers. */
+function unguardedEngineCall(
+  masked: string,
+  start: number,
+  end: number,
+  bindings: EngineBindings,
+  regions: Array<[number, number]>,
+): { name: string; offset: number } | undefined {
+  const region = masked.slice(start, end);
+  const hits: Array<{ name: string; offset: number }> = [];
+
+  const push = (re: RegExp, name: string): void => {
+    re.lastIndex = 0;
+    for (let m: RegExpExecArray | null; (m = re.exec(region)); ) {
+      // `new SlotUnavailable(…)` constructs an error; it never writes rows.
+      if (m[2]) continue;
+      hits.push({ name, offset: start + m.index + (m[1]?.length ?? 0) });
+    }
+  };
+
+  for (const name of bindings.names) {
+    push(new RegExp(`(^|[^.\\w$])(new\\s+)?${name}\\s*\\(`, 'g'), name);
+  }
+  for (const ns of bindings.namespaces) {
+    push(new RegExp(`(^|[^.\\w$])(new\\s+)?${ns}\\s*\\.\\s*[A-Za-z_$][\\w$]*\\s*\\(`, 'g'), ns);
+  }
+
+  hits.sort((a, b) => a.offset - b.offset);
+  return hits.find((h) => !regions.some(([o, c]) => h.offset > o && h.offset < c));
+}
+
+/**
+ * Does this catch block always rethrow?
+ *
+ * True when its LAST top-level statement is a `throw` — `catch (e) { log(e);
+ * throw e }`, the most common legitimate shape. The operation still fails, the
+ * whole transaction rolls back, and nobody is left holding partial writes.
+ * Rethrowing a wrapped error counts for the same reason. `throw` nested inside
+ * an `if` block does not: that catch has a path that swallows.
+ */
+function rethrows(masked: string, start: number, end: number): boolean {
+  let depth = 0;
+  let lastThrow = -1;
+  for (let i = start; i < end; i++) {
+    const c = masked[i]!;
+    if (c === '{' || c === '(' || c === '[') depth += 1;
+    else if (c === '}' || c === ')' || c === ']') depth -= 1;
+    else if (depth === 0 && isWord(masked, i, 'throw')) {
+      lastThrow = i;
+      i += 4;
+    }
+  }
+  if (lastThrow < 0) return false;
+
+  // Everything after that statement must be blank, or the catch resumes.
+  let depth2 = 0;
+  let i = lastThrow + 'throw'.length;
+  for (; i < end; i++) {
+    const c = masked[i]!;
+    if (c === '{' || c === '(' || c === '[') depth2 += 1;
+    else if (c === '}' || c === ')' || c === ']') depth2 -= 1;
+    else if (depth2 === 0 && (c === ';' || c === '\n')) {
+      i += 1;
+      break;
+    }
+  }
+  return masked.slice(i, end).trim() === '';
+}
+
+function lineAt(source: string, offset: number): number {
+  let line = 1;
+  for (let i = 0; i < offset && i < source.length; i++) if (source[i] === '\n') line += 1;
+  return line;
+}
+
+function checkEngineCatch(rel: string, source: string, out: Violation[]): void {
+  if (!source.includes(ENGINE_SCOPE) || !source.includes('try')) return;
+  const bindings = engineBindings(source);
+  if (bindings.names.size === 0 && bindings.namespaces.size === 0) return;
+
+  const masked = maskSource(source);
+  const regions = atomicRegions(masked);
+  const tries = /(?:^|[^\w$.])try\s*\{/g;
+
+  for (let m: RegExpExecArray | null; (m = tries.exec(masked)); ) {
+    const open = m.index + m[0].length - 1;
+    const close = matchDelim(masked, open, '{', '}');
+    tries.lastIndex = open + 1;
+    if (close < 0) continue;
+
+    // `try`/`finally` swallows nothing — question 2, confirmed.
+    let after = close + 1;
+    while (after < masked.length && /\s/.test(masked[after] ?? '')) after += 1;
+    if (!isWord(masked, after, 'catch')) continue;
+
+    const catchOpen = masked.indexOf('{', after);
+    if (catchOpen < 0) continue;
+    const catchClose = matchDelim(masked, catchOpen, '{', '}');
+    if (catchClose < 0) continue;
+    if (rethrows(masked, catchOpen + 1, catchClose)) continue;
+
+    const call = unguardedEngineCall(masked, open + 1, close, bindings, regions);
+    if (!call) continue;
+
+    out.push({
+      file: rel,
+      line: lineAt(source, call.offset),
+      rule: 'R7',
+      message:
+        `engine error caught outside ctx.atomic — '${call.name}' is called in a try whose ` +
+        `catch (line ${lineAt(source, after)}) swallows it, leaving the engine's partial writes ` +
+        `to commit. Wrap the call: await ctx.atomic(() => ${call.name}(…))`,
+    });
+  }
+}
+
 function checkModuleFile(
   file: string,
   rel: string,
@@ -329,6 +713,7 @@ function checkModuleFile(
 
   checkForeignTables(rel, source, pkg.name, tableOwners, out);
   checkClock(rel, source, out);
+  checkEngineCatch(rel, source, out);
 
   for (const spec of importsOf(source)) {
     if (pkg.engine && spec.startsWith('@substrat-run/engine-') && spec !== pkg.name) {

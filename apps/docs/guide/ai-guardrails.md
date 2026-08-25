@@ -60,6 +60,7 @@ consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`) are harness a
 | **R4** spine is sacred | module code never *writes* `_substrat_*` tables (reads are fine — timelines are projections) |
 | **R5** tables private | module code never references another module's tables in SQL |
 | **R6** one clock | time comes from `ctx.now()`, stable for the whole invocation |
+| **R7** no bare catch | an engine error is caught only inside `ctx.atomic` — a bare `catch` commits the engine's partial writes |
 
 Table ownership is **derived, never declared** — a table belongs to whichever module's
 `CREATE TABLE` migration created it. There is deliberately no manifest field for it,
@@ -67,7 +68,8 @@ because a second source of truth would drift and wave a real violation through.
 
 R5 and R6 have an explicit, reviewable opt-out (`boundary-lint-allow R5` … `boundary-lint-end R5`)
 for a one-time extraction handoff and for code that must read the real clock. There is no
-escape hatch for R1–R4. The full reference is [`boundary-lint`](/reference/boundary-lint).
+escape hatch for R1–R4, and deliberately none for R7 — a hatch there would only ever be used
+to silence the rule. The full reference is [`boundary-lint`](/reference/boundary-lint).
 
 ::: warning A green light it had not earned
 Exit codes are load-bearing: `0` clean, `1` violations, and **`2` the linter could not do

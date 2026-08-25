@@ -131,14 +131,28 @@ it happen. Implicit would require either every engine wrapping itself (a convent
 different holder, equally un-lintable) or reifying the call — see §9.
 
 **The issue's objection to explicit — "that is a convention again" — is answered by making it
-lintable, which implicit never could be.** Proposed as `boundary-lint` **R6** (rules are
-`R1`–`R5` today, [boundary-lint/src/index.ts:52](../../packages/boundary-lint/src/index.ts#L52)):
+lintable, which implicit never could be.** Shipped as `boundary-lint` **R7**
+([#786](https://github.com/substrat-run/substrat/issues/786),
+[boundary-lint/src/index.ts](../../packages/boundary-lint/src/index.ts)):
 
 > In module code, a `catch` whose `try` block calls an imported engine in-scope function, and
 > which is not lexically inside a `ctx.atomic` callback, is a violation.
 
 That turns "never catch an engine error" from a sentence in a doc into a mechanical gate.
 Sequenced after the mechanism, so the lint has something to point people at.
+
+**It is R7, not the R6 this document proposed.** Rule numbers are claimed when they ship:
+the no-clock rule ([#812](https://github.com/substrat-run/substrat/issues/812)) landed first
+and took `R6`, so this one became `R7`. Two rules sharing a number would be worse than a
+stale proposal. What it decided, of the questions #786 left open:
+
+| Question | Decision |
+|---|---|
+| A TypeScript AST pass? | **No.** One offset-preserving mask of comments/strings/regexes, then brace matching, run only on files that import an engine — `typescript` in `dependencies` buys a type checker to answer scanner questions |
+| `try`/`finally`, no `catch` | **Allowed** — it swallows nothing |
+| A re-throwing `catch` | **Allowed** — the operation still fails and the whole transaction rolls back. Read as a rethrow when the catch's last top-level statement is a `throw`, wrapped or not |
+| An escape hatch | **None.** Unlike R5's one-time handoff there is no legitimate unprotected swallow, so a hatch would only ever silence the rule |
+| False positives | Under-fires on purpose: an engine call moved into a local helper is invisible to it, and a conditional rethrow reads as a rethrow. Widening is fixtures, not a redesign |
 
 ## 3. D-2 — one closure-shaped adapter method; the kernel owns every semantic
 
@@ -275,7 +289,7 @@ catch" convention. It becomes:
 > An engine call may be wrapped in `await ctx.atomic(() => …)`. If it throws, everything that
 > call wrote — rows, events, links, grants, platform intents — is gone, the vertical's own
 > writes survive, and it all commits once. Outside `ctx.atomic`, catching an engine error is
-> still forbidden, and boundary-lint R6 rejects it.
+> still forbidden, and boundary-lint R7 rejects it.
 
 ## 8. Cost, and one honest caveat
 
@@ -321,4 +335,4 @@ Two adjacent things land on this seam if it exists:
 3. `adapter-sqlite`: `runSub` via savepoints.
 4. `adapter-cloudflare`: `runSub` via nested `storage.transaction`.
 5. CLAUDE.md §engine-composition (§7), and the caveat in §8.
-6. **Separately, after the above**: boundary-lint R6.
+6. **Separately, after the above**: boundary-lint R7 (§2) — done, #786.
