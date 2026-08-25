@@ -7,5 +7,5 @@
   ],
   "source": ".claude/skills/substrat/SKILL.md",
   "target": "packages/create-substrat/template/.substrat/playbook.md",
-  "sourceSha256": "9d3ca76226687a90a62970b4f21abb0bb8a783c6be4435e198791cd51a619863"
+  "sourceSha256": "decbbfc744333c764776f437dcb177fdc5c608a58918014e5f78b6bdf2ac370f"
 }

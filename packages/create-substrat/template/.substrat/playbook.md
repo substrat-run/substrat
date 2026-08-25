@@ -371,10 +371,12 @@ operations + the `ModuleRegistration`. Keep the split — the linter and tests e
   *with quotes*, so a raw `SELECT actor` is a string that resolves against no one — and
   the cursor must be the event `id`, never `occurred_at`, which is identical across every
   event a single operation emits. Your permission check stays your line, above the call.
-  `readHistory` is the same walk plus the payload, the authorizing permission and the PII
-  classification — `piiClass` with the `subjectId` it is keyed by, so a renderer can decide
-  whether an entry is safe to show before it shows it. `subjectId` is null when `piiClass`
-  is `none`, and the payload is `null` after that subject's erasure, which is a supported
+  `readHistory` is the same walk plus the payload, the permissions that authorized the
+  write — each with the grant it resolved through, `null` for a row written before that
+  was recorded, which is not the same fact as `[]` — and the PII classification,
+  `piiClass` with the `subjectId` it is keyed by, so a renderer can decide whether an
+  entry is safe to show before it shows it. `subjectId` is null when `piiClass` is
+  `none`, and the payload is `null` after that subject's erasure, which is a supported
   answer to render rather than an error.
 
 ### `src/seed.ts`

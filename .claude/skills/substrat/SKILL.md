@@ -532,11 +532,16 @@ consumers). `seed.ts` / `server.ts` are harness and exempt.
    `{ id, type, occurredAt, actor }` per entry, `readHistory` for the payload,
    authorization, `piiClass` and `subjectId` as well — the last two are what let a
    renderer decide whether an entry is safe to show before it shows it. `subjectId` is
-   null when `piiClass` is `none`, and `payload` is null after that subject's erasure. Two traps it exists to close: `actor` is stored
-   as JSON over a union (a principal is `"01J…"` *with quotes*, so a raw `SELECT actor`
-   is a string that resolves against nothing), and the cursor must be `id` — never
-   `occurred_at`, which is identical across every event one operation emits and so drops
-   the rest of the burst a page boundary lands in.
+   null when `piiClass` is `none`, and `payload` is null after that subject's erasure.
+   `authorization` is the checks the emitting operation passed and which grant allowed
+   each; null there means UNRECORDED — a row from before the column existed — which is a
+   different fact from `[]`, checked nothing.
+
+   Two traps it exists to close: `actor` is stored as JSON over a union (a principal is
+   `"01J…"` *with quotes*, so a raw `SELECT actor` is a string that resolves against
+   nothing), and the cursor must be `id` — never `occurred_at`, which is identical
+   across every event one operation emits and so drops the rest of the burst a page
+   boundary lands in.
 4. **Another module's tables are private.** Never `SELECT` from `workorder_*` — use the
    engine's exported in-scope functions. This is the rule that matters most and the one
    with **no runtime equivalent**: the shortcut *works*, returns the right rows, and
