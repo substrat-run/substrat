@@ -42,7 +42,7 @@ the only thing that can tell them apart, which is why this is a linter and not a
 | **R4** spine is sacred | module code never *writes* `_substrat_*` tables (reads are fine — timelines are projections) |
 | **R5** tables private | module code never references another module's tables in SQL |
 | **R6** no clock | module code never reads the wall clock (`new Date()`, `Date.now()`) — the operation's instant is `ctx.now()` |
-| **R7** no bare catch | module code never catches an engine error outside `ctx.atomic` — a `catch` around a raw engine call commits its partial writes |
+| **R7** no bare catch | module code never catches an engine error outside `ctx.atomic` — a `catch` around a raw engine call commits its partial writes (under-fires; see below) |
 
 **Module code** is everything reachable from a `ModuleRegistration` — operations and
 consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`, …) are harness, and are
@@ -104,6 +104,28 @@ try {
 `try`/`finally` with no `catch` is fine, and so is a catch that always rethrows
 (`catch (e) { log(e); throw e }`): the operation still fails, so the whole transaction
 rolls back either way.
+
+### What R7 does not catch
+
+A rule that misfires on ordinary code gets suppressed wholesale, which is worse than not
+having it — so where R7 cannot be sure, it stays quiet. **A clean run is not a proof that no
+engine error is swallowed.** Three shapes it does not flag:
+
+```ts
+// 1. The call moved into a local helper — R7 reads only the calls written in the `try`.
+function finish(ctx, id) { return completeWorkOrder(ctx, { orderId: id }); }
+try { await finish(ctx, id); } catch { /* not flagged */ }
+
+// 2. The promise spelling — the rule is the `catch` CLAUSE.
+await completeWorkOrder(ctx, { orderId }).catch(() => null);   // not flagged
+
+// 3. An UNBRACED conditional rethrow as the catch's last statement.
+try { await completeWorkOrder(ctx, { orderId }); }
+catch (e) { if (rare) throw e; }                               // not flagged — reads as a rethrow
+catch (e) { if (rare) { throw e } }                            // flagged: the throw is not the last statement
+```
+
+Widening any of these is a change to the linter with fixtures, not a change of character.
 
 ## The escape hatch
 

@@ -150,9 +150,9 @@ stale proposal. What it decided, of the questions #786 left open:
 |---|---|
 | A TypeScript AST pass? | **No.** One offset-preserving mask of comments/strings/regexes, then brace matching, run only on files that import an engine. Putting `typescript` in `dependencies` would buy a type checker — ~20MB into every scaffolded vertical — to answer two questions a scanner answers exactly |
 | `try`/`finally`, no `catch` | **Allowed** — it swallows nothing |
-| A re-throwing `catch` | **Allowed** — the operation still fails and the whole transaction rolls back. Read as a rethrow when the catch's last top-level statement is a `throw`, wrapped or not |
+| A re-throwing `catch` | **Allowed** — the operation still fails and the whole transaction rolls back. Read as a rethrow when the catch's last top-level statement is a `throw`, wrapped or not. A throw inside an `if` **block** is not that, so `catch (e) { if (fatal(e)) { throw e } return null }` is still flagged |
 | An escape hatch | **None.** Unlike R5's one-time handoff there is no legitimate unprotected swallow, so a hatch would only ever silence the rule |
-| False positives | Under-fires on purpose: an engine call moved into a local helper is invisible to it, a conditional rethrow reads as a rethrow, and the promise spelling (`engineCall(…).catch(…)`) is not the `catch` clause the rule names. Widening is fixtures, not a redesign |
+| False positives | Under-fires on purpose, so a clean run is not a proof: an engine call moved into a local helper is invisible to it; the promise spelling (`engineCall(…).catch(…)`) is not the `catch` clause the rule names; and the *unbraced* `catch (e) { if (rare) throw e; }` sits at top level and reads as an always-rethrow. Widening is fixtures, not a redesign |
 
 ## 3. D-2 — one closure-shaped adapter method; the kernel owns every semantic
 

@@ -4,9 +4,9 @@
 
 Catching an engine error outside `ctx.atomic` is now a lint error
 
-#770 landed `ctx.atomic`, so a vertical *can* catch an engine error safely. It only moved
-the line: **outside** an atomic, a bare `catch` around an engine call is still exactly the
-#770 bug — you are holding the engine's partial writes, the rows its invariants were
+Issue #770 landed `ctx.atomic`, so a vertical *can* catch an engine error safely. It only
+moved the line: **outside** an atomic, a bare `catch` around an engine call is still exactly
+the same bug — you are holding the engine's partial writes, the rows its invariants were
 protecting, and you will commit them. The repo had traded one convention for a narrower
 one, still enforced by review.
 
@@ -31,8 +31,20 @@ try {
 
 Two shapes do not swallow, and both pass: **`try`/`finally` with no `catch`**, and a catch
 that **always rethrows** (`catch (e) { log(e); throw e }`, wrapped or not) — the operation
-still fails, so the whole transaction rolls back either way. A `throw` nested inside an `if`
-does not count: that catch has a path that swallows, and that path is the bug.
+still fails, so the whole transaction rolls back either way.
+
+"Always" is decided by one mechanical test: the catch's **last top-level statement** is a
+`throw`. So a *braced* conditional rethrow is flagged, because the throw is nested and the
+catch runs on past it —
+
+```ts
+catch (e) { if (fatal(e)) { throw e } return null }   // ✗ flagged — there is a path that swallows
+catch (e) { if (fatal(e)) { throw e } }               // ✗ flagged — same, the fall-through swallows
+catch (e) { if (fatal(e)) throw e; }                  // ✓ passes — see the under-fire below
+```
+
+— while the *unbraced* form on the last line is at top level and reads as an always-rethrow.
+That last one is a real hole, listed with the others below.
 
 There is **no** `boundary-lint-allow R7` hatch. Unlike R5's one-time extraction handoff or
 R6's real-clock JWT, there is no legitimate reason to swallow an engine error unprotected,
@@ -50,6 +62,10 @@ runs only on files that import an `@substrat-run/engine-*` package at all. `type
 `dependencies` would have been ~20MB in a package that has none, installed into every
 scaffolded vertical, to answer scanner questions.
 
-It under-fires on purpose (a rule that misfires gets suppressed wholesale): an engine call
-moved into a local helper is invisible to it, and a conditional rethrow as the catch's last
-statement reads as a rethrow. Widening is fixtures, not a redesign.
+It under-fires on purpose — a rule that misfires gets suppressed wholesale, which is worse
+than not having it, so **a clean run is not a proof that no engine error is swallowed**.
+Three shapes it does not flag: an engine call moved into a **local helper** (R7 reads only
+the calls written inside the `try`); the **promise spelling**,
+`await completeWorkOrder(ctx, x).catch(() => null)`, since the rule is the `catch` clause;
+and the **unbraced** conditional rethrow above. Widening any of them is fixtures, not a
+redesign.

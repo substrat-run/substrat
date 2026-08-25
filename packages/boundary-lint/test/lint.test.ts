@@ -478,6 +478,28 @@ describe('R7 — engine errors and ctx.atomic', () => {
     expect(rules(lint(root))).toEqual(['R7']);
   });
 
+  it('the UNBRACED conditional rethrow is a known under-fire, pinned here', () => {
+    // `if (rare) throw e;` puts the throw at the catch's top level, so the
+    // "last top-level statement is a throw" test reads it as an always-rethrow
+    // and R7 stays quiet — while the braced spelling above IS flagged. That is
+    // the documented limit (header, README, reference, RFC); a fixture is what
+    // keeps it a decision rather than something that drifts unnoticed.
+    const root = project(
+      verticalWith(`
+        import { completeWorkOrder } from '@substrat-run/engine-workorder';
+        export async function complete(ctx, id) {
+          try {
+            await completeWorkOrder(ctx, { orderId: id });
+          } catch (e) {
+            if (fatal(e)) throw e;
+          }
+        }
+      `),
+    );
+
+    expect(lint(root)).toEqual([]);
+  });
+
   it('try/finally with no catch passes — it swallows nothing (question 2)', () => {
     const root = project(
       verticalWith(`
@@ -514,7 +536,11 @@ describe('R7 — engine errors and ctx.atomic', () => {
     expect(violations[0]!.message).toContain('finish');
   });
 
-  it('resolves a namespace import', () => {
+  it('resolves a namespace import, and names the MEMBER it saw', () => {
+    // The message quotes the call and suggests wrapping it, so reporting the
+    // binding alone would name something un-callable and hand the developer
+    // `ctx.atomic(() => wo(…))` — code that does not compile and does not
+    // locate the call either.
     const root = project(
       verticalWith(`
         import * as wo from '@substrat-run/engine-workorder';
@@ -528,7 +554,10 @@ describe('R7 — engine errors and ctx.atomic', () => {
       `),
     );
 
-    expect(rules(lint(root))).toEqual(['R7']);
+    const violations = lint(root);
+    expect(rules(violations)).toEqual(['R7']);
+    expect(violations[0]!.message).toContain("'wo.completeWorkOrder'");
+    expect(violations[0]!.message).toContain('ctx.atomic(() => wo.completeWorkOrder(…))');
   });
 
   it('a type-only import binds no callable — nothing to catch', () => {

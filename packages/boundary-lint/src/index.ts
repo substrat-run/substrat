@@ -100,8 +100,11 @@
  *
  *   - R7 sees only calls written INSIDE the `try`, so an engine call moved into
  *     a local helper is missed.
- *   - A conditional rethrow as the catch's last statement
- *     (`catch (e) { if (rare) throw e }`) is read as a rethrow.
+ *   - An UNBRACED conditional rethrow as the catch's last statement
+ *     (`catch (e) { if (rare) throw e; }`) sits at top level and is read as an
+ *     always-rethrow. The braced form (`catch (e) { if (rare) { throw e } }`) is
+ *     flagged, because there the throw is not the catch's last top-level
+ *     statement and the catch runs on past it.
  *   - The rule is the `catch` CLAUSE, as #786 states it. The promise spelling —
  *     `await completeWorkOrder(ctx, x).catch(() => null)` — is the same bug and
  *     is not flagged. No module code in this repo writes it, and widening to it
@@ -598,20 +601,31 @@ function unguardedEngineCall(
   const region = masked.slice(start, end);
   const hits: Array<{ name: string; offset: number }> = [];
 
-  const push = (re: RegExp, name: string): void => {
+  // Group 3, where the pattern has one, is the MEMBER of a namespace call. The
+  // message quotes what the developer wrote and suggests wrapping it, so a
+  // namespace hit has to report `wo.completeWorkOrder` — reporting the binding
+  // alone names something un-callable and suggests `ctx.atomic(() => wo(…))`,
+  // which is not valid code and does not locate the call either.
+  const push = (re: RegExp, binding: string): void => {
     re.lastIndex = 0;
     for (let m: RegExpExecArray | null; (m = re.exec(region)); ) {
       // `new SlotUnavailable(…)` constructs an error; it never writes rows.
       if (m[2]) continue;
-      hits.push({ name, offset: start + m.index + (m[1]?.length ?? 0) });
+      hits.push({
+        name: m[3] ? `${binding}.${m[3]}` : binding,
+        offset: start + m.index + (m[1]?.length ?? 0),
+      });
     }
   };
 
+  // Interpolated only with identifiers this file validated against
+  // /^[A-Za-z_$][\w$]*$/ — no metacharacters reach the pattern, and it has no
+  // nested quantifier to back off through.
   for (const name of bindings.names) {
     push(new RegExp(`(^|[^.\\w$])(new\\s+)?${name}\\s*\\(`, 'g'), name);
   }
   for (const ns of bindings.namespaces) {
-    push(new RegExp(`(^|[^.\\w$])(new\\s+)?${ns}\\s*\\.\\s*[A-Za-z_$][\\w$]*\\s*\\(`, 'g'), ns);
+    push(new RegExp(`(^|[^.\\w$])(new\\s+)?${ns}\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*\\(`, 'g'), ns);
   }
 
   hits.sort((a, b) => a.offset - b.offset);
@@ -624,8 +638,14 @@ function unguardedEngineCall(
  * True when its LAST top-level statement is a `throw` — `catch (e) { log(e);
  * throw e }`, the most common legitimate shape. The operation still fails, the
  * whole transaction rolls back, and nobody is left holding partial writes.
- * Rethrowing a wrapped error counts for the same reason. `throw` nested inside
- * an `if` block does not: that catch has a path that swallows.
+ * Rethrowing a wrapped error counts for the same reason.
+ *
+ * A `throw` inside an `if` BLOCK does not, because it is not the last top-level
+ * statement and the catch runs on past it — `catch (e) { if (fatal(e)) { throw e
+ * } return null }` has a path that swallows, and that path is the bug. The
+ * UNBRACED spelling of the same intent, `catch (e) { if (rare) throw e; }`, is
+ * at top level and does count: the known under-fire named in this file's header,
+ * kept because tightening it means parsing the `if` rather than the block.
  */
 function rethrows(masked: string, start: number, end: number): boolean {
   let depth = 0;
