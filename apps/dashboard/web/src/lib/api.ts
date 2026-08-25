@@ -762,10 +762,16 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
+    // `detail` first, `error` second (#113 phase 4) — the problem body's sentence, then
+    // the deprecated duplicate every SPA read before it.
     const body = (await res.json().catch(() => null)) as
-      | { error?: string; probe?: ConnectionProbeView }
+      | { detail?: string; error?: string; probe?: ConnectionProbeView }
       | null;
-    throw new ApiError(res.status, body?.error ?? `${res.status} ${res.statusText}`, body?.probe);
+    throw new ApiError(
+      res.status,
+      body?.detail ?? body?.error ?? `${res.status} ${res.statusText}`,
+      body?.probe,
+    );
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }

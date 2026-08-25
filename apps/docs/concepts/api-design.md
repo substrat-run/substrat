@@ -11,11 +11,11 @@ mechanically, that is said plainly. Where it is still a convention, that is said
 
 ::: info Status
 Shipping today: the operation spine, boundary parsing, value types, the context clock,
-lost-update safety, request idempotency, additive evolution, and the generated OpenAPI
-document. The **pagination** convention ships in `contracts` and is adopted across the
-platform's own surfaces, but not yet by every engine and vertical. The **error model** is
-designed and unbuilt — it is marked below and links to its issue. Nothing on this page is
-aspirational without saying so.
+lost-update safety, request idempotency, additive evolution, the generated OpenAPI
+document, and the **error model** — every surface answers `application/problem+json`. The
+**pagination** convention ships in `contracts` and is adopted across the platform's own
+surfaces, but not yet by every engine and vertical. Nothing on this page is aspirational
+without saying so.
 :::
 
 ## The shape of one operation
@@ -234,8 +234,8 @@ An error is part of your API surface, not an accident that happens to it. `500 S
 went wrong` is unactionable for a human and worse for an agent; `validation_failed on field
 'email'` can be recovered from without a person reading a log.
 
-The designed shape is [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `problem+json` with
-a closed code taxonomy:
+The shape is [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `problem+json` with a
+closed code taxonomy:
 
 ```json
 {
@@ -258,12 +258,21 @@ One rule that is not a detail: **`internal` never carries a message.** An unreco
 is by definition one nobody reviewed for what it discloses, and a multi-tenant surface is
 the wrong place to find out.
 
-::: warning Designed, unbuilt
-Today every vertical hand-rolls a handler that matches on error *message text* to pick a
-status code. The design above is [#113](https://github.com/substrat-run/substrat/issues/113)
-— see the [error model RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/error-model.md)
-for the taxonomy, the rollout, and the awkward part (typed errors must survive the Durable
-Object RPC hop, which strips subclasses).
+**A body with no `code` is telling you something.** When a transport is relaying a status it
+did not raise — a throw nobody typed, a downstream vertical's own refusal — the body is
+RFC 9457's `about:blank` form: the status, the message, and no taxonomy entry. Inventing a
+code there would put our vocabulary on a failure we cannot describe, and a client switching
+on `code` would match it. So the absence is the honest answer, and it is also the signal
+that a throw site is still untyped.
+
+You get all of this by throwing `substratError('conflict', 'the cart is empty', { reason:
+'cart_empty' })` and letting `problemResponse` render it. `code` is the platform's, `reason`
+is yours.
+
+::: info The deprecated duplicate
+Every body also carries `error`, a copy of `detail`, because every SPA in this repo read
+`{ error }` before the model landed. It exists for one migration window and then goes —
+read `detail`.
 :::
 
 ### 6. Time comes from the context
@@ -487,7 +496,7 @@ Two things follow that are worth stating, because they cut against instinct:
 | Identifiers | ULID | Shipped |
 | Pagination | keyset cursor, declared with `paged`; entries in the body, the walk in `Link` / `X-Total-Count` | Declaration shipped; [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
 | Lost-update safety | `concurrency` + `If-Match` / `ETag`, 412 on a stale tag | Shipped; compile error to omit on a field-bag update |
-| Errors | RFC 9457 problem+json, closed codes | [#113](https://github.com/substrat-run/substrat/issues/113) |
+| Errors | RFC 9457 problem+json, closed codes | Shipped; `about:blank` where a status is all we have |
 | Clock | `ctx.now()` | Shipped; `new Date()` in module code is a lint error |
 | Idempotent writes | `Idempotency-Key`, response replayed for 24h | Shipped; honoured on every write, `idempotency: false` to opt out |
 | Evolution | additive only | Convention + review |

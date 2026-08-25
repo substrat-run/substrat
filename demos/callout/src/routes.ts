@@ -1,6 +1,5 @@
 import type { Context, Hono } from 'hono';
-import { HTTPException } from 'hono/http-exception';
-import { mountOperations, type ResolveStub } from '@substrat-run/vertical-host';
+import { mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
 import {
   calloutEngineRoutes,
   calloutInvoicingRoutes,
@@ -49,23 +48,13 @@ export function mountApi(
 ): { operation: string; method: string; path: string }[] {
   const S = resolveStub;
 
-  // The mount decides the STATUS for everything the kernel itself names — a refused
-  // permission, an input that failed to parse, `resolveStub` refusing an anonymous
-  // call (#791) — and re-throws the rest untouched. This turns the status into THIS
-  // app's `{ error }` body.
-  //
-  // `c.json(...)` rather than `err.getResponse()`, which is what the hand-written
-  // table did: Hono's own response body is not `{ error }`, and the SPA reads
-  // `error` off every failure to decide between "not allowed" and "we broke".
-  app.onError((err, c: Context) => {
-    if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
-    // What is left is PLATFORM vocabulary the mount has no opinion on: a missing
-    // entity, an unknown scope or operation, a feature this tenant does not hold.
-    if (/not found|unknown scope|unknown operation|not entitled/.test(err.message)) {
-      return c.json({ error: err.message }, 404);
-    }
-    return c.json({ error: err.message }, 400);
-  });
+  // One line, and it used to be a table (#113 phase 4). The patterns it replaces —
+  // `not found`, `unknown operation`, `not entitled` — were this app reading the
+  // platform's mind through its error messages, because the platform's own refusals
+  // were as untyped as anything else. They are typed now, so `problemResponse` reads a
+  // code and answers `application/problem+json`; the SPA's `{ error }` survives inside
+  // the body for the deprecation window, which is why nothing above it changed.
+  app.onError((err, c: Context) => problemResponse(c, err));
 
   // ---------------------------------------------------------------------------
   // The two routes that supply a CONSTANT the caller does not choose.

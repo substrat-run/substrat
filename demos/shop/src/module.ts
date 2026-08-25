@@ -21,7 +21,23 @@ import {
   type ListPage,
   type Page,
   operationInputsOf,
+  substratError,
 } from '@substrat-run/contracts';
+
+/**
+ * The shop's own conflicts — the platform owns `conflict`, this vertical owns the
+ * reason (§2 of the error model). `assertTransition` already narrows the same code
+ * with `invalid_transition` for the order lifecycle; these are the rest.
+ */
+type ShopConflictReason =
+  | 'cart_not_open'
+  | 'cart_empty'
+  | 'out_of_stock'
+  | 'code_expired'
+  | 'code_exhausted'
+  | 'below_minimum';
+const conflict = (reason: ShopConflictReason, message: string) =>
+  substratError('conflict', message, { reason });
 import { shopEntities } from './entities.js';
 import {
   assertAllowed,
@@ -295,7 +311,7 @@ function sweepExpired(ctx: OperationContext, variantId: string, nowIso: string):
 
 function getVariant(ctx: OperationContext, variantId: string): VariantRow {
   const v = ctx.sql.query<VariantRow>('SELECT * FROM shop_variants WHERE id = ?', [variantId])[0];
-  if (!v) throw new Error(`variant not found: ${variantId}`);
+  if (!v) throw substratError('not_found', `variant not found: ${variantId}`);
   return v;
 }
 
@@ -304,13 +320,13 @@ function requireOwnOpenCart(ctx: OperationContext, cartId: string): { id: string
     'SELECT id, owner, status FROM shop_carts WHERE id = ?',
     [cartId],
   )[0];
-  if (!cart) throw new Error(`cart not found: ${cartId}`);
+  if (!cart) throw substratError('not_found', `cart not found: ${cartId}`);
   // Cart isolation is by ownership: the near-zero-privilege shopper reaches
   // exactly its own cart, nobody else's (concept §3).
   if (cart.owner !== ctx.principal) {
     throw new PermissionDenied('permission denied — cart belongs to another shopper');
   }
-  if (cart.status !== 'open') throw new Error(`cart ${cartId} is '${cart.status}', not open`);
+  if (cart.status !== 'open') throw conflict('cart_not_open', `cart ${cartId} is '${cart.status}', not open`);
   return { id: cart.id, owner: cart.owner };
 }
 
@@ -340,7 +356,7 @@ const addVariantOp: OperationHandler<
   const product = ctx.sql.query<ProductRow>('SELECT * FROM shop_products WHERE id = ?', [
     input.productId,
   ])[0];
-  if (!product) throw new Error(`product not found: ${input.productId}`);
+  if (!product) throw substratError('not_found', `product not found: ${input.productId}`);
   moneyOf(input.priceAmount, input.currency ?? 'SEK'); // validate money shape at the boundary
   const id = ulid();
   const now = ctx.now();
@@ -364,7 +380,7 @@ const publishProductOp: OperationHandler<{ productId: string; published?: boolea
     input.productId,
   ]);
   const row = ctx.sql.query<ProductRow>('SELECT * FROM shop_products WHERE id = ?', [input.productId])[0];
-  if (!row) throw new Error(`product not found: ${input.productId}`);
+  if (!row) throw substratError('not_found', `product not found: ${input.productId}`);
   return row;
 };
 
@@ -593,7 +609,8 @@ const addToCartOp: OperationHandler<
   sweepExpired(ctx, variant.id, now);
   const available = availableQty(ctx, variant.id, now);
   if (available < qty) {
-    throw new Error(
+    throw conflict(
+      'out_of_stock',
       `out of stock: ${variant.sku} — ${available} available, ${qty} requested`,
     );
   }
@@ -638,7 +655,7 @@ const setLineQtyOp: OperationHandler<
     'SELECT id, variant_id, qty FROM shop_cart_lines WHERE id = ? AND cart_id = ?',
     [input.lineId, input.cartId],
   )[0];
-  if (!line) throw new Error(`cart line not found: ${input.lineId}`);
+  if (!line) throw substratError('not_found', `cart line not found: ${input.lineId}`);
   if (qty === 0) {
     ctx.sql.exec('DELETE FROM shop_cart_lines WHERE id = ?', [line.id]);
     return { lineId: line.id, qty: 0, removed: true };
@@ -650,7 +667,7 @@ const setLineQtyOp: OperationHandler<
     const available = availableQty(ctx, line.variant_id, now); // excludes this line's own hold
     if (available < delta) {
       const v = getVariant(ctx, line.variant_id);
-      throw new Error(`out of stock: ${v.sku} — ${available} available, ${delta} more requested`);
+      throw conflict('out_of_stock', `out of stock: ${v.sku} — ${available} available, ${delta} more requested`);
     }
   }
   const expiresAt = new Date(Date.parse(ctx.now()) + DEFAULT_HOLD_SECONDS * 1000).toISOString();
@@ -801,12 +818,12 @@ function resolveDiscount(
   const row = ctx.sql.query<DiscountRow>('SELECT * FROM shop_discounts WHERE code = ?', [
     code.toUpperCase(),
   ])[0];
-  if (!row) throw new Error(`discount code not found: ${code}`);
-  if (row.valid_to && row.valid_to < today) throw new Error(`discount code expired: ${code}`);
+  if (!row) throw substratError('not_found', `discount code not found: ${code}`);
+  if (row.valid_to && row.valid_to < today) throw conflict('code_expired', `discount code expired: ${code}`);
   if (row.uses_remaining !== null && row.uses_remaining <= 0)
-    throw new Error(`discount code exhausted: ${code}`);
+    throw conflict('code_exhausted', `discount code exhausted: ${code}`);
   if (row.min_spend && compareDecimal(subtotal.amount, row.min_spend) < 0)
-    throw new Error(`discount code below minimum spend: ${code} needs ${row.min_spend}`);
+    throw conflict('below_minimum', `discount code below minimum spend: ${code} needs ${row.min_spend}`);
 
   let amount =
     row.kind === 'pct'
@@ -837,10 +854,10 @@ const checkoutOp: OperationHandler<
   const customer = ctx.sql.query<{ id: string }>('SELECT id FROM shop_customers WHERE id = ?', [
     input.customerId,
   ])[0];
-  if (!customer) throw new Error(`customer not found: ${input.customerId}`);
+  if (!customer) throw substratError('not_found', `customer not found: ${input.customerId}`);
 
   const lines = cartLines(ctx, input.cartId);
-  if (lines.length === 0) throw new Error('cart is empty');
+  if (lines.length === 0) throw conflict('cart_empty', 'cart is empty');
   const currency = lines[0]!.unitPrice.currency;
   // Parse, don't trust: an unknown method would place an order that neither
   // invoices (consumer ignores non-'invoice') nor charges.
@@ -857,7 +874,7 @@ const checkoutOp: OperationHandler<
   for (const [variantId, qty] of needed) {
     if (onHand(ctx, variantId) < qty) {
       const v = getVariant(ctx, variantId);
-      throw new Error(`out of stock: ${v.sku} — reservation elapsed before checkout`);
+      throw conflict('out_of_stock', `out of stock: ${v.sku} — reservation elapsed before checkout`);
     }
   }
 
@@ -997,7 +1014,7 @@ const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: O
 ) => {
   assertAllowed(await ctx.check(SHOP_PERM.orderRead, orderRef(input.orderId)));
   const order = ctx.sql.query<OrderRow>('SELECT * FROM shop_orders WHERE id = ?', [input.orderId])[0];
-  if (!order) throw new Error(`order not found: ${input.orderId}`);
+  if (!order) throw substratError('not_found', `order not found: ${input.orderId}`);
   const lines = ctx.sql.query<OrderLineRow>(
     'SELECT * FROM shop_order_lines WHERE order_id = ? ORDER BY id',
     [input.orderId],
@@ -1044,7 +1061,7 @@ function requireTransition(order: OrderRow, operation: string): void {
 const fulfilOrderOp: OperationHandler<{ orderId: string }, OrderRow> = async (ctx, input) => {
   assertAllowed(await ctx.check(SHOP_PERM.orderFulfil));
   const order = ctx.sql.query<OrderRow>('SELECT * FROM shop_orders WHERE id = ?', [input.orderId])[0];
-  if (!order) throw new Error(`order not found: ${input.orderId}`);
+  if (!order) throw substratError('not_found', `order not found: ${input.orderId}`);
   requireTransition(order, 'shop/fulfil-order');
   ctx.sql.exec("UPDATE shop_orders SET status = 'fulfilled' WHERE id = ?", [order.id]);
   return ctx.sql.query<OrderRow>('SELECT * FROM shop_orders WHERE id = ?', [order.id])[0]!;
@@ -1053,7 +1070,7 @@ const fulfilOrderOp: OperationHandler<{ orderId: string }, OrderRow> = async (ct
 const closeOrderOp: OperationHandler<{ orderId: string }, OrderRow> = async (ctx, input) => {
   assertAllowed(await ctx.check(SHOP_PERM.orderFulfil));
   const order = ctx.sql.query<OrderRow>('SELECT * FROM shop_orders WHERE id = ?', [input.orderId])[0];
-  if (!order) throw new Error(`order not found: ${input.orderId}`);
+  if (!order) throw substratError('not_found', `order not found: ${input.orderId}`);
   requireTransition(order, 'shop/close-order');
   ctx.sql.exec("UPDATE shop_orders SET status = 'closed' WHERE id = ?", [order.id]);
   return ctx.sql.query<OrderRow>('SELECT * FROM shop_orders WHERE id = ?', [order.id])[0]!;

@@ -18,6 +18,7 @@ import {
 } from '@substrat-run/contracts';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { problemResponse } from '@substrat-run/vertical-host';
 import type { RallyWorld } from './seed.js';
 
 /**
@@ -129,12 +130,18 @@ export function createRallyApp(
     c.req.json<Record<string, unknown>>().catch(() => ({}));
 
   app.onError((err, c) => {
-    if (err instanceof PermissionDenied) return c.json({ error: err.message }, 403);
-    // The engine's typed rejection — the console renders it as "just taken" and
-    // keeps everything the receptionist typed.
-    if (err.name === 'SlotUnavailable') return c.json({ error: err.message, code: 'SLOT_UNAVAILABLE' }, 409);
-    if (/not found|unknown scope/.test(err.message)) return c.json({ error: err.message }, 404);
-    return c.json({ error: err.message }, 400);
+    // The one refusal the taxonomy cannot reach, and the reason is worth stating rather
+    // than working around: `engine-booking` publishes `SlotUnavailable` with its own
+    // `code = 'SLOT_UNAVAILABLE'`, which BOTH rally clients switch on to render "just
+    // taken" while keeping everything the receptionist typed. An engine surface evolves
+    // additively only, so giving it a taxonomy code is a dual-emit with a deprecation
+    // window, not a line in a transport change. Until then this stays hand-answered.
+    if (err.name === 'SlotUnavailable') {
+      return c.json({ error: err.message, code: 'SLOT_UNAVAILABLE' }, 409);
+    }
+    // Everything else names its own code — the three lines that used to be here were
+    // this app guessing at statuses from prose (#113 phase 4).
+    return problemResponse(c, err);
   });
 
   app.get('/api/cast', (c) =>

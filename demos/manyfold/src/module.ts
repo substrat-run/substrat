@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { type EntityRef, PROVISION_SIBLING_KIND, ARCHIVE_SCOPE_KIND, assertTransition, defineLifecycles } from '@substrat-run/contracts';
+import {
+  type EntityRef,
+  PROVISION_SIBLING_KIND,
+  ARCHIVE_SCOPE_KIND,
+  assertTransition,
+  defineLifecycles,
+  substratError,
+} from '@substrat-run/contracts';
 import { manyfoldEntities } from './entities.js';
 import {
   assertAllowed,
@@ -18,6 +25,14 @@ import {
 } from './content-types.js';
 import { MF_PERM, manyfoldManifest } from './manifest.js';
 import { manyfoldMigrations } from './migrations.js';
+
+/**
+ * Manyfold's own conflicts — the reason narrows the platform's `conflict` (§2 of the
+ * error model), the same way `assertTransition` narrows it with `invalid_transition`.
+ */
+type ManyfoldConflictReason = 'slug_taken' | 'not_editable' | 'not_restorable' | 'in_use';
+const conflict = (reason: ManyfoldConflictReason, message: string) =>
+  substratError('conflict', message, { reason });
 
 // ============================================================================
 // Manyfold — a multi-scope headless CMS. The vertical owns the content types
@@ -132,7 +147,7 @@ function ensureTypes(ctx: OperationContext): void {
 function loadType(ctx: OperationContext, typeKey: string): ContentTypeDef {
   ensureTypes(ctx);
   const r = ctx.sql.query<ContentTypeRow>('SELECT * FROM manyfold_content_type WHERE key = ?', [typeKey])[0];
-  if (!r) throw new Error(`unknown content type: ${typeKey}`);
+  if (!r) throw substratError('not_found', `unknown content type: ${typeKey}`);
   return rowToDef(r);
 }
 
@@ -143,7 +158,7 @@ function loadTypes(ctx: OperationContext): ContentTypeDef[] {
 
 function getEntry(ctx: OperationContext, id: string): EntryRow {
   const row = ctx.sql.query<EntryRow>('SELECT * FROM manyfold_entry WHERE id = ?', [id])[0];
-  if (!row) throw new Error(`entry not found: ${id}`);
+  if (!row) throw substratError('not_found', `entry not found: ${id}`);
   return row;
 }
 
@@ -241,7 +256,7 @@ const createEntryOp: OperationHandler<z.infer<typeof createEntryInput>, EntryRow
       [id, def.key, 'draft', slug, 1, null, now, now],
     );
   } catch (e) {
-    if (String(e).includes('UNIQUE')) throw new Error(`slug already in use for ${def.key}: ${slug}`);
+    if (String(e).includes('UNIQUE')) throw conflict('slug_taken', `slug already in use for ${def.key}: ${slug}`);
     throw e;
   }
   ctx.sql.exec(
@@ -260,7 +275,10 @@ const saveDraftOp: OperationHandler<z.infer<typeof saveDraftInput>, EntryRow> = 
   const input = saveDraftInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   if (entry.status !== 'draft' && entry.status !== 'unpublished') {
-    throw new Error(`cannot edit: entry is '${entry.status}' — only draft or unpublished entries take new revisions`);
+    throw conflict(
+      'not_editable',
+      `cannot edit: entry is '${entry.status}' — only draft or unpublished entries take new revisions`,
+    );
   }
   const def = loadType(ctx, entry.type_key);
   const { body, slug } = validateBody(def, input.body);
@@ -284,13 +302,13 @@ const restoreRevisionOp: OperationHandler<z.infer<typeof restoreRevisionInput>, 
   const input = restoreRevisionInput.parse(raw);
   const entry = getEntry(ctx, input.entryId);
   if (entry.status !== 'draft' && entry.status !== 'unpublished') {
-    throw new Error(`cannot restore: entry is '${entry.status}'`);
+    throw conflict('not_restorable', `cannot restore: entry is '${entry.status}'`);
   }
   const src = ctx.sql.query<RevisionRow>('SELECT * FROM manyfold_revision WHERE entry_id = ? AND rev_no = ?', [
     entry.id,
     input.revNo,
   ])[0];
-  if (!src) throw new Error(`revision not found: ${input.entryId}@${input.revNo}`);
+  if (!src) throw substratError('not_found', `revision not found: ${input.entryId}@${input.revNo}`);
   // A restore is a NEW revision copying the old body — never a mutation of history.
   const revNo = entry.draft_rev + 1;
   const now = ctx.now();
@@ -483,10 +501,13 @@ const saveTypeOp: OperationHandler<z.infer<typeof saveTypeInput>, ContentTypeDef
   assertAllowed(await ctx.check(MF_PERM.admin));
   ensureTypes(ctx);
   const input = saveTypeInput.parse(raw);
-  if (!input.fields[input.titleField]) throw new Error(`titleField '${input.titleField}' is not a field of ${input.key}`);
-  if (input.slugField && !input.fields[input.slugField]) throw new Error(`slugField '${input.slugField}' is not a field of ${input.key}`);
+  if (!input.fields[input.titleField])
+    throw substratError('validation_failed', `titleField '${input.titleField}' is not a field of ${input.key}`);
+  if (input.slugField && !input.fields[input.slugField])
+    throw substratError('validation_failed', `slugField '${input.slugField}' is not a field of ${input.key}`);
   for (const [name, f] of Object.entries(input.fields)) {
-    if ((f.type === 'ref' || f.type === 'refMany') && !f.target) throw new Error(`field '${name}' is a ${f.type} but names no target type`);
+    if ((f.type === 'ref' || f.type === 'refMany') && !f.target)
+      throw substratError('validation_failed', `field '${name}' is a ${f.type} but names no target type`);
   }
   const now = ctx.now();
   const existing = ctx.sql.query<{ version: number }>('SELECT version FROM manyfold_content_type WHERE key = ?', [input.key])[0];
@@ -540,7 +561,8 @@ const deleteTypeOp: OperationHandler<z.infer<typeof deleteTypeInput>, { deleted:
   assertAllowed(await ctx.check(MF_PERM.admin));
   const { key } = deleteTypeInput.parse(input);
   const n = ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM manyfold_entry WHERE type_key = ?', [key])[0]!.n;
-  if (n > 0) throw new Error(`cannot delete type '${key}': ${n} entr${n === 1 ? 'y' : 'ies'} already use it`);
+  if (n > 0)
+    throw conflict('in_use', `cannot delete type '${key}': ${n} entr${n === 1 ? 'y' : 'ies'} already use it`);
   ctx.sql.exec('DELETE FROM manyfold_content_type WHERE key = ?', [key]);
   return { deleted: key };
 };
@@ -571,7 +593,10 @@ const deliverOp: OperationHandler<z.infer<typeof deliverInput>, DeliveryPayload>
     input.typeKey,
     input.slug,
   ])[0];
-  if (!row) throw new Error(`not published: ${input.typeKey}/${input.slug}`);
+  // 404, and it used to be a 409 — `not published` sat in an app-level pattern list
+  // that meant "conflict", so the public delivery read of a slug nobody published
+  // answered as though the request fought the entry's state. It does not exist yet.
+  if (!row) throw substratError('not_found', `not published: ${input.typeKey}/${input.slug}`);
   const body = JSON.parse(row.body_json) as Record<string, unknown>;
   // Resolve reference fields against the published projection — a draft/archived
   // target comes back as an explicit unresolved marker, a broken link shown honestly.

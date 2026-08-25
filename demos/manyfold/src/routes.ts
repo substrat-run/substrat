@@ -1,6 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
+import type { ScopeStub } from '@substrat-run/kernel';
+import { problemResponse } from '@substrat-run/vertical-host';
 import { API } from './api.js';
 
 /**
@@ -26,21 +27,14 @@ const ALLOWED = new Set<string>(OPERATIONS);
 export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): void {
   // Shared fail-closed error mapping: permission → 403, state-machine/immutability
   // conflicts → 409, missing entity/scope/op → 404, everything else a validation 400.
-  app.onError((err, c) => {
-    if (err instanceof HTTPException) return err.getResponse();
-    const msg = err instanceof Error ? err.message : String(err);
-    // Match by message too, not just instanceof: on the Cloudflare DO adapter the op error
-    // crosses the ScopeDO RPC boundary and is rebuilt as a plain Error, so `instanceof
-    // PermissionDenied` is false there — a denial would otherwise degrade to a 400.
-    if (err instanceof PermissionDenied || /permission denied/i.test(msg)) return c.json({ error: msg }, 403);
-    if (/invalid transition|frozen|already|cannot edit|cannot restore|not published|in use/.test(msg)) {
-      return c.json({ error: msg }, 409);
-    }
-    if (/not found|unknown (content type|site|operation)|not entitled|unknown scope/.test(msg)) {
-      return c.json({ error: msg }, 404);
-    }
-    return c.json({ error: msg }, 400);
-  });
+  // Two pattern lists used to live here, and both existed because this vertical's own
+  // refusals were untyped: `instanceof PermissionDenied` is false once the error has
+  // crossed the ScopeDO hop, so a denial was read out of its message, and every conflict
+  // was read out of a list of verbs (`frozen`, `already`, `cannot edit`) that the code
+  // saying them had no idea it was on. Each throw site names its code now, so this reads
+  // the code instead (#113 phase 4) — and `not published` moved from that 409 list to
+  // the 404 it always was.
+  app.onError((err, c) => problemResponse(c, err));
 
   // One URL per operation (design/api-surface.md §2.2). Full registered names
   // (`/api/op/manyfold/create-entry`) are the documented platform convention;

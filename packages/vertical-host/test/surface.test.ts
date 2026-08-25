@@ -670,3 +670,51 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     expect(res.status).toBe(403);
   });
 });
+
+/**
+ * #113 phase 4: the envelope is a problem document, served as one. `{ error }` survives
+ * inside it for one deprecation window (§1) — which is why every assertion above this
+ * block still reads.
+ */
+describe('mountPlatformSurface — the envelope is problem+json', () => {
+  it('serves the RFC media type, not application/json', async () => {
+    const host = fakeHost({
+      restoreScopeLocal: async () => {
+        throw new Error('FOREIGN KEY constraint failed');
+      },
+    });
+    const res = await appWith(host).request(
+      '/internal/restore',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ scopeId: SCOPE, tables: [] }),
+      },
+      ENV,
+    );
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    const body = (await res.json()) as Record<string, unknown>;
+    // An untyped throw: the status is still the caller's 400 (#559), and the body says
+    // exactly that much rather than naming a taxonomy entry it cannot vouch for.
+    expect(body.type).toBe('about:blank');
+    expect(body.code).toBeUndefined();
+    expect(body.status).toBe(400);
+    expect(body.instance).toBe('/internal/restore');
+    expect(body.error).toBe('FOREIGN KEY constraint failed');
+  });
+
+  it("renders a vertical's own mapError as a problem body too", async () => {
+    const host = fakeHost({
+      exportScopeLocal: async () => {
+        throw new Error('this vertical knows what this is');
+      },
+    });
+    const app = appWith(host, { mapError: () => ({ status: 409, message: 'seat taken' }) });
+    const res = await app.request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(res.status).toBe(409);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.title).toBe('Conflict');
+    expect(body.error).toBe('seat taken');
+  });
+});

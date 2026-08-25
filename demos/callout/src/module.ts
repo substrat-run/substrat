@@ -9,6 +9,7 @@ import {
   pageOf,
   pageVisible,
   operationConcurrencyOf,
+  substratError,
   type CountedPage,
   type EntityRef,
   type EntityRow,
@@ -16,6 +17,16 @@ import {
   type OperationImpl,
   type Page,
 } from '@substrat-run/contracts';
+
+/**
+ * Callout's own conflicts — `conflict` is the platform's code, the reason is this
+ * vertical's (§2: a module never invents a code, it narrows one with a reason it owns).
+ * Declaring the union means a typo is a compile error and the set is readable in one
+ * place, which is how the engines already do it.
+ */
+type CalloutConflictReason = 'no_price' | 'not_open';
+const conflict = (reason: CalloutConflictReason, message: string) =>
+  substratError('conflict', message, { reason });
 
 /** One outbox row as the timeline reads it, plus the rowid its cursor walks. */
 interface TimelineRow {
@@ -157,7 +168,7 @@ const createFacilityOp: OperationHandler<
   const customer = ctx.sql.query<CustomerRow>('SELECT * FROM callout_customers WHERE id = ?', [
     input.customerId,
   ])[0];
-  if (!customer) throw new Error(`customer not found: ${input.customerId}`);
+  if (!customer) throw substratError('not_found', `customer not found: ${input.customerId}`);
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO callout_facilities (id, customer_id, name, address, access_note, created_at)
@@ -191,7 +202,7 @@ const getFacilityOp: OperationHandler<{ facilityId: string }, FacilityRow> = asy
   const row = ctx.sql.query<FacilityRow>('SELECT * FROM callout_facilities WHERE id = ?', [
     input.facilityId,
   ])[0];
-  if (!row) throw new Error(`facility not found: ${input.facilityId}`);
+  if (!row) throw substratError('not_found', `facility not found: ${input.facilityId}`);
   return row;
 };
 
@@ -217,7 +228,7 @@ const updateFacilityOp: OperationHandler<
   const current = ctx.sql.query<FacilityRow>('SELECT * FROM callout_facilities WHERE id = ?', [
     input.facilityId,
   ])[0];
-  if (!current) throw new Error(`facility not found: ${input.facilityId}`);
+  if (!current) throw substratError('not_found', `facility not found: ${input.facilityId}`);
   // COALESCE semantics stated in TypeScript rather than SQL: an omitted field
   // preserves what the row carries. That is what makes this read-modify-write and
   // therefore what makes the precondition load-bearing.
@@ -306,7 +317,7 @@ const createWorkOrderOp: OperationHandler<
   const facility = ctx.sql.query<FacilityRow>('SELECT * FROM callout_facilities WHERE id = ?', [
     input.facilityId,
   ])[0];
-  if (!facility) throw new Error(`facility not found: ${input.facilityId}`);
+  if (!facility) throw substratError('not_found', `facility not found: ${input.facilityId}`);
   return createWorkOrder(ctx, {
     facility: { entityType: 'facility', entityId: facility.id },
     customer: { entityType: 'customer', entityId: facility.customer_id },
@@ -387,7 +398,10 @@ const completeWorkOrderOp: OperationHandler<
   // Material: one billable line per reported line; internal articles dropped.
   for (const m of reported.material) {
     const price = prices.get(m.article);
-    if (!price) throw new Error(`no price for article: ${m.article}`);
+    // `conflict`, not `not_found`: the order the caller addressed is right there, and a
+    // 404 on a report route would say it is not. What is missing is a row in THIS
+    // vertical's price list, which is a state the caller cannot address around.
+    if (!price) throw conflict('no_price', `no price for article: ${m.article}`);
     if (price.internal) continue;
     const unitPrice = moneyOf(price.price_amount, price.currency);
     billable.push({
@@ -422,7 +436,10 @@ const instantiateProtocolOp: OperationHandler<
   const input = instantiateProtocolInput.parse(rawInput);
   const order = getWorkOrder(ctx, input.entityId);
   if (order.status !== 'planned' && order.status !== 'in_progress') {
-    throw new Error(`work order ${order.number} is '${order.status}' — protocols attach to open orders`);
+    throw conflict(
+      'not_open',
+      `work order ${order.number} is '${order.status}' — protocols attach to open orders`,
+    );
   }
   return instantiateProtocol(ctx, {
     templateKey: input.templateKey,

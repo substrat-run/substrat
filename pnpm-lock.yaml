@@ -919,6 +919,9 @@ importers:
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../../packages/vertical-host
       better-auth:
         specifier: ^1.7.1
         version: 1.7.1(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(better-sqlite3@13.0.3)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0))(vue@3.5.39(typescript@7.0.2))
@@ -1021,6 +1024,9 @@ importers:
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../../packages/vertical-host
       better-auth:
         specifier: ^1.7.1
         version: 1.7.1(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(better-sqlite3@13.0.3)(drizzle-orm@0.45.2(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0))(vue@3.5.39(typescript@7.0.2))

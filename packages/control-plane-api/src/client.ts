@@ -120,8 +120,17 @@ export class ControlPlaneClient {
     }
     if (res.status === 404 && allow404) return undefined as T;
     if (!res.ok) {
-      const body = (await res.json().catch(() => null)) as { error?: string } | null;
-      throw new ControlPlaneError(res.status, body?.error ?? `${res.status} ${res.statusText}`);
+      // `detail` first, `error` second (#113 phase 4): the plane answers RFC 9457
+      // problem bodies now, where `detail` is the sentence and `error` is the deprecated
+      // duplicate kept for one window. Reading both means this works either way, and
+      // keeps working the day the duplicate is deleted.
+      const body = (await res.json().catch(() => null)) as
+        | { detail?: string; error?: string }
+        | null;
+      throw new ControlPlaneError(
+        res.status,
+        body?.detail ?? body?.error ?? `${res.status} ${res.statusText}`,
+      );
     }
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
   }

@@ -5,6 +5,7 @@ import {
   dataSubjectId,
   type EntityRef,
   operationInputsOf,
+  substratError,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -14,6 +15,14 @@ import {
   type OperationHandler,
   type PageParams,
 } from '@substrat-run/kernel';
+
+/**
+ * Meridian's own conflicts — `conflict` is the platform's code, the reason is this
+ * vertical's (§2 of the error model: a module never invents a code, it narrows one).
+ */
+type MeridianConflictReason = 'not_submitted' | 'no_terms' | 'no_email';
+const conflict = (reason: MeridianConflictReason, message: string) =>
+  substratError('conflict', message, { reason });
 import {
   bindDocument,
   getProtocol,
@@ -132,13 +141,13 @@ const negate = (d: string): string =>
 
 function getEmployee(ctx: OperationContext, id: string): EmployeeRow {
   const row = ctx.sql.query<EmployeeRow>('SELECT * FROM hr_employees WHERE id = ?', [id])[0];
-  if (!row) throw new Error(`employee not found: ${id}`);
+  if (!row) throw substratError('not_found', `employee not found: ${id}`);
   return row;
 }
 
 function leaveTypeMustExist(ctx: OperationContext, key: string): LeaveTypeRow {
   const row = ctx.sql.query<LeaveTypeRow>('SELECT * FROM hr_leave_types WHERE key = ?', [key])[0];
-  if (!row) throw new Error(`leave type not found: ${key}`);
+  if (!row) throw substratError('not_found', `leave type not found: ${key}`);
   return row;
 }
 
@@ -506,7 +515,7 @@ const logTimeOp: OperationHandler<z.infer<typeof logTimeInput>, TimeEntryRow> = 
   getEmployee(ctx, input.employeeId);
   if (input.projectId) {
     const p = ctx.sql.query<ProjectRow>('SELECT id FROM hr_projects WHERE id = ?', [input.projectId])[0];
-    if (!p) throw new Error(`project not found: ${input.projectId}`);
+    if (!p) throw substratError('not_found', `project not found: ${input.projectId}`);
   }
   const id = ulid();
   ctx.sql.exec(
@@ -579,9 +588,12 @@ const decideExpenseOp: OperationHandler<z.infer<typeof decideExpenseInput>, Expe
   assertAllowed(await ctx.check(HR_PERM.expenseApprove));
   const input = decideExpenseInput.parse(raw);
   const exp = ctx.sql.query<ExpenseRow>('SELECT * FROM hr_expenses WHERE id = ?', [input.expenseId])[0];
-  if (!exp) throw new Error(`expense not found: ${input.expenseId}`);
+  if (!exp) throw substratError('not_found', `expense not found: ${input.expenseId}`);
   if (exp.status !== 'submitted') {
-    throw new Error(`expense ${exp.id} is '${exp.status}' — only a submitted expense can be decided`);
+    throw conflict(
+      'not_submitted',
+      `expense ${exp.id} is '${exp.status}' — only a submitted expense can be decided`,
+    );
   }
   const status = input.decision === 'approve' ? 'approved' : 'rejected';
   ctx.sql.exec(`UPDATE hr_expenses SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?`, [
@@ -832,7 +844,8 @@ const issueContractOp: OperationHandler<
   const input = issueContractInput.parse(raw);
   const employee = getEmployee(ctx, input.employeeId);
   const terms = latestTerms(ctx, employee.id);
-  if (!terms) throw new Error(`no employment terms set for ${employee.number} — set them first`);
+  if (!terms)
+    throw conflict('no_terms', `no employment terms set for ${employee.number} — set them first`);
 
   const instance = instantiateProtocol(ctx, {
     templateKey: input.templateKey,
@@ -858,7 +871,8 @@ const issueContractOp: OperationHandler<
   // employee row with no email cannot be sent a contract, and saying so names the
   // employee instead of a party label.
   if (!employee.email) {
-    throw new Error(
+    throw conflict(
+      'no_email',
       `employee ${employee.number} (${employee.name}) has no email, so the contract has ` +
         'nowhere to go — set one before issuing',
     );
@@ -880,7 +894,8 @@ const issueContractOp: OperationHandler<
     [ctx.principal],
   )[0];
   if (!signer?.email) {
-    throw new Error(
+    throw conflict(
+      'no_email',
       'the issuing user has no email on their employee record — the employer signs the ' +
         'contract too and is invited by mail, so it cannot be sent without one',
     );

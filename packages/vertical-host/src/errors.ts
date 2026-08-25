@@ -15,8 +15,16 @@
  * make `instanceof` a coin toss. So: the class when it is there, the `name` when
  * it is not, and the message last.
  */
+import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { errorCodeOf, PROBLEM_CATALOG } from '@substrat-run/contracts';
+import {
+  errorCodeOf,
+  PROBLEM_CATALOG,
+  PROBLEM_CONTENT_TYPE,
+  problemForStatus,
+  toProblem,
+  type Problem,
+} from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
@@ -109,4 +117,86 @@ export function classifyError(err: unknown): ErrorClassification | undefined {
   if (/not found|unknown scope/i.test(message)) return { status: 404, message };
   if (/invalid transition|immutable/i.test(message)) return { status: 409, message };
   return explicit === undefined ? undefined : { status: explicit, message };
+}
+
+/** A classified failure, rendered — the status to answer with and the body to send. */
+export interface ClassifiedProblem {
+  readonly status: ContentfulStatusCode;
+  readonly body: Problem;
+  /** The runtime failed, not the request — the caller may retry (#559). */
+  readonly platformFault?: boolean;
+}
+
+/**
+ * The typed error underneath a wrapper, when there is one.
+ *
+ * `mountOperations` re-throws what it classifies as `new HTTPException(status, {
+ * message, cause: err })` — deliberately, so an app that owns an error envelope keeps
+ * owning the body. That wrapper carries no code, so reading the OUTER error would
+ * answer `about:blank` for exactly the failures the taxonomy describes best: a refused
+ * permission loses its `permission`, a parse failure loses its `errors[]`. The cause is
+ * where they still are.
+ */
+function typedCause(err: unknown): unknown {
+  if (!(err instanceof HTTPException)) return err;
+  const cause = err.cause;
+  return cause !== undefined && errorCodeOf(cause) !== undefined ? cause : err;
+}
+
+/**
+ * What a throw becomes on the wire — #113 phase 4.
+ *
+ * **The status is `classifyError`'s, unchanged.** This function decides the BODY, not
+ * the blame: every status this surface answers with today it still answers with,
+ * including the two the taxonomy would have argued about — an unrecognised throw's 400
+ * (#559) and a Durable Object fault's 502.
+ *
+ * The body then carries a `code` only when the classified status is what that code
+ * MEANS. Where they disagree the status won and the code did not survive the
+ * disagreement, so claiming it would describe the failure as something the response
+ * line contradicts; `about:blank` says the honest thing instead (`problemForStatus`).
+ */
+export function problemFor(err: unknown, instance?: string): ClassifiedProblem {
+  const seen = classifyError(err) ?? {
+    status: 400 as ContentfulStatusCode,
+    message: messageOf(err),
+  };
+  return problemOf(seen, err, instance);
+}
+
+/**
+ * The same rendering, for a caller that already decided the status.
+ *
+ * `mountPlatformSurface`'s `deps.mapError` is one: a vertical may map its own throws to
+ * a status before this vocabulary is consulted, and its answer must still become a
+ * problem body rather than the only `{ error }` left on the surface.
+ */
+export function problemOf(
+  seen: ErrorClassification,
+  err: unknown,
+  instance?: string,
+): ClassifiedProblem {
+  const inner = typedCause(err);
+  const code = errorCodeOf(inner);
+  const body =
+    code !== undefined && PROBLEM_CATALOG[code].status === seen.status
+      ? toProblem(inner, instance)
+      : problemForStatus(seen.status, seen.message, instance);
+  return { status: seen.status, body, ...(seen.platformFault ? { platformFault: true } : {}) };
+}
+
+/**
+ * The whole of a vertical's error envelope, in one call.
+ *
+ * `c.body` rather than `c.json`: the media type is `application/problem+json` and a
+ * response that says `application/json` is not a problem document, whatever its shape.
+ *
+ * An `HTTPException` that already carries its own `res` is handed back untouched — a
+ * route that attached a response meant it, and re-rendering it would drop headers
+ * (a redirect, a `WWW-Authenticate`) the route chose.
+ */
+export function problemResponse(c: Context, err: unknown): Response {
+  if (err instanceof HTTPException && err.res) return err.getResponse();
+  const { status, body } = problemFor(err, c.req.path);
+  return c.body(JSON.stringify(body), status, { 'content-type': PROBLEM_CONTENT_TYPE });
 }

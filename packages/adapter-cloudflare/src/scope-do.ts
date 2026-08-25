@@ -41,6 +41,7 @@ import {
   SCOPE_QUERY_ROW_MAX,
   listLimitOf,
   requestFingerprint,
+  substratError,
 } from '@substrat-run/contracts';
 import {
   ulid,
@@ -1163,7 +1164,10 @@ export function defineScopeDO(
     }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
-      if (!handler) throw new Error(`unknown operation: ${operation}`);
+      // `not_found`, not a bare throw (#113): every vertical hand-matched this message
+      // to reach a 404, because the platform's own refusals were as untyped as anything
+      // else. Naming the code once here is what lets those patterns go.
+      if (!handler) throw substratError('not_found', `unknown operation: ${operation}`);
       // #304 entitlement gate, scope-local path: fail closed on the projected view exactly as
       // the coordinator fails closed against the CP. Only active once entitlements have been
       // projected (the `entitlements_enforced` marker) — before that the scope trusts upstream,
@@ -1189,7 +1193,8 @@ export function defineScopeDO(
               tenantId,
             )
             .toArray() as { entitlement_key: string; expires_at: string | null }[];
-          throw new Error(
+          throw substratError(
+            'not_found',
             entitlementDenial(
               operation,
               requiredEntitlement,

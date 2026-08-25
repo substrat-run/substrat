@@ -4,12 +4,11 @@ import { dirname, join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import { HTTPException } from 'hono/http-exception';
 import {
   platformActorId, principalId, type PrincipalId } from '@substrat-run/contracts';
 import Database from 'better-sqlite3';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
-import { mountOperations } from '@substrat-run/vertical-host';
+import { mountOperations, problemResponse } from '@substrat-run/vertical-host';
 import {
   handlebarInvoicingRoutes,
   handlebarOperations,
@@ -81,16 +80,11 @@ async function stub(c: Context): Promise<ScopeStub> {
   return host.getScope(await principalOf(c), world.t1, world.s1);
 }
 
-app.onError((err, c) => {
-  // `mountOperations` decides the STATUS for everything the kernel itself names — a
-  // refused permission, an input that failed to parse (#791) — and re-throws it as an
-  // HTTPException. This turns that into THIS app's `{ error }` body, which the SPA
-  // reads off every failure.
-  if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
-  if (err instanceof PermissionDenied) return c.json({ error: err.message }, 403);
-  if (/not found|unknown scope/.test(err.message)) return c.json({ error: err.message }, 404);
-  return c.json({ error: err.message }, 400);
-});
+// `mountOperations` decides the STATUS for everything the kernel itself names — a refused
+// permission, an input that failed to parse (#791) — and re-throws it as an HTTPException.
+// `problemResponse` turns whatever arrives into this app's error envelope, which is a
+// problem document since #113 phase 4 and still carries `{ error }` for the SPA.
+app.onError((err, c) => problemResponse(c, err));
 
 app.get('/api/cast', (c) => c.json(CAST));
 

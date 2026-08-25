@@ -17,7 +17,31 @@ import {
   type ListPage,
   type Page,
   operationInputsOf,
+  substratError,
 } from '@substrat-run/contracts';
+
+/**
+ * RallyPoint's own conflicts — the platform owns `conflict`, this vertical owns the
+ * reason (§2 of the error model: a module never invents a code, it narrows one).
+ *
+ * `engine-booking`'s `SlotUnavailable` is deliberately NOT in here: it is the engine's
+ * own published class, carrying its own `SLOT_UNAVAILABLE` string that both rally
+ * clients switch on, and retyping it is a breaking engine-surface change rather than a
+ * vertical's to make. `routes.ts` still answers it by hand, and says so.
+ */
+type RallyConflictReason =
+  | 'no_venue'
+  | 'no_price_rule'
+  | 'insufficient_balance'
+  | 'subscription_active'
+  | 'club_closed'
+  | 'outside_hours'
+  | 'duration_not_bookable'
+  | 'not_open_match'
+  | 'no_level'
+  | 'level_outside_band';
+const conflict = (reason: RallyConflictReason, message: string) =>
+  substratError('conflict', message, { reason });
 import { bookingEntities } from '@substrat-run/engine-booking';
 import { rallyEntities } from './entities.js';
 import {
@@ -316,7 +340,7 @@ function wallClockInZone(ms: number, timeZone: string): number {
  */
 export function zonedToInstant(date: string, time: string, timeZone: string): string {
   const naive = Date.parse(`${date}T${time.length === 5 ? `${time}:00` : time}Z`);
-  if (Number.isNaN(naive)) throw new Error(`invalid local time: ${date} ${time}`);
+  if (Number.isNaN(naive)) throw substratError('validation_failed', `invalid local time: ${date} ${time}`);
   let candidate = naive - (wallClockInZone(naive, timeZone) - naive);
   candidate = naive - (wallClockInZone(candidate, timeZone) - candidate);
   return new Date(candidate).toISOString();
@@ -431,7 +455,7 @@ const reservationRef = (id: string): EntityRef => ({ entityType: 'reservation', 
 
 function venue(ctx: OperationContext): VenueRow {
   const row = ctx.sql.query<VenueRow>('SELECT * FROM rally_venue WHERE id = ?', ['venue'])[0];
-  if (!row) throw new Error('venue not configured — run rally/set-venue first');
+  if (!row) throw conflict('no_venue', 'venue not configured — run rally/set-venue first');
   return row;
 }
 
@@ -524,7 +548,8 @@ export function resolvePrice(
     if (r.to_date && input.date > r.to_date) return false;
     return true;
   });
-  if (applicable.length === 0) throw new Error(`no price rule matches ${input.date} ${input.time}`);
+  if (applicable.length === 0)
+    throw conflict('no_price_rule', `no price rule matches ${input.date} ${input.time}`);
 
   // Most specific wins: court > duration > season > time-of-day > weekday.
   const specificity = (r: PriceRuleRow): number =>
@@ -590,7 +615,8 @@ export function debitWallet(
 ): number {
   const balance = walletBalance(ctx, input.memberId);
   if (input.amountOre > balance) {
-    throw new Error(
+    throw conflict(
+      'insufficient_balance',
       `insufficient balance: ${(balance / 100).toFixed(2)} available, ${(input.amountOre / 100).toFixed(2)} required`,
     );
   }
@@ -610,7 +636,7 @@ export function creditFromPack(
   const pack = ctx.sql.query<CreditPackRow>('SELECT * FROM rally_credit_packs WHERE key = ?', [
     input.packKey,
   ])[0];
-  if (!pack) throw new Error(`no such credit pack: ${input.packKey}`);
+  if (!pack) throw substratError('not_found', `no such credit pack: ${input.packKey}`);
   addEntry(ctx, {
     memberId: input.memberId,
     deltaOre: pack.credit_ore,
@@ -811,12 +837,12 @@ const subscribeOp: OperationHandler<
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.wallet));
   const plan = ctx.sql.query<PlanRow>('SELECT * FROM rally_plans WHERE key = ?', [input.planKey])[0];
-  if (!plan) throw new Error(`no such plan: ${input.planKey}`);
+  if (!plan) throw substratError('not_found', `no such plan: ${input.planKey}`);
   const open = ctx.sql.query<SubscriptionRow>(
     `SELECT * FROM rally_subscriptions WHERE member_id = ? AND status = 'active'`,
     [input.memberId],
   )[0];
-  if (open) throw new Error(`member already has an active subscription`);
+  if (open) throw conflict('subscription_active', `member already has an active subscription`);
 
   const id = ulid();
   ctx.sql.exec(
@@ -835,7 +861,7 @@ const cancelSubscriptionOp: OperationHandler<{ subscriptionId: string }, Subscri
   const sub = ctx.sql.query<SubscriptionRow>('SELECT * FROM rally_subscriptions WHERE id = ?', [
     input.subscriptionId,
   ])[0];
-  if (!sub) throw new Error(`subscription not found: ${input.subscriptionId}`);
+  if (!sub) throw substratError('not_found', `subscription not found: ${input.subscriptionId}`);
   assertAllowed(await ctx.check(BK.read, memberRef(sub.member_id)));
   ctx.sql.exec(
     `UPDATE rally_subscriptions SET status = 'cancelled', cancelled_at = ? WHERE id = ?`,
@@ -1163,7 +1189,7 @@ const playedWithOp: OperationHandler<
   const me = ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [
     input.memberId,
   ])[0];
-  if (!me) throw new Error(`member not found: ${input.memberId}`);
+  if (!me) throw substratError('not_found', `member not found: ${input.memberId}`);
 
   const tally = new Map<
     string,
@@ -1331,16 +1357,16 @@ const bookCourtOp: OperationHandler<
   const member = ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [
     input.memberId,
   ])[0];
-  if (!member) throw new Error(`member not found: ${input.memberId}`);
+  if (!member) throw substratError('not_found', `member not found: ${input.memberId}`);
 
   const resourceId = input.resourceId ?? pickCourt(ctx, input);
   const window = bookableWindow(ctx, resourceId, input.date);
-  if (!window) throw new Error(`the club is closed on ${input.date}`);
+  if (!window) throw conflict('club_closed', `the club is closed on ${input.date}`);
 
   const startsAt = zonedToInstant(input.date, input.time, v.timezone);
   const endsAt = addMinutes(startsAt, input.duration);
   if (startsAt < window.startsAt || endsAt > window.endsAt) {
-    throw new Error(`${input.time} +${input.duration}min falls outside opening hours`);
+    throw conflict('outside_hours', `${input.time} +${input.duration}min falls outside opening hours`);
   }
 
   const court = ctx.sql.query<CourtRow>('SELECT * FROM rally_courts WHERE resource_id = ?', [
@@ -1348,7 +1374,7 @@ const bookCourtOp: OperationHandler<
   ])[0];
   const allowed = (court?.durations ?? '60,90,120').split(',').map((d) => Number(d.trim()));
   if (!allowed.includes(input.duration)) {
-    throw new Error(`${input.duration} min is not bookable on this court`);
+    throw conflict('duration_not_bookable', `${input.duration} min is not bookable on this court`);
   }
 
   const { price, label } = resolvePrice(ctx, {
@@ -1408,7 +1434,7 @@ const confirmBookingOp: OperationHandler<
     'SELECT member_id, price_amount, currency FROM rally_bookings WHERE reservation_id = ?',
     [input.reservationId],
   )[0];
-  if (!booking) throw new Error(`no RallyPoint booking for ${input.reservationId}`);
+  if (!booking) throw substratError('not_found', `no RallyPoint booking for ${input.reservationId}`);
 
   const price = moneyOf(booking.price_amount, booking.currency);
   const reservation = confirmReservation(ctx, {
@@ -1458,15 +1484,15 @@ const createOpenMatchOp: OperationHandler<
   const host = input.memberId
     ? ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [input.memberId])[0]
     : undefined;
-  if (input.memberId && !host) throw new Error(`member not found: ${input.memberId}`);
+  if (input.memberId && !host) throw substratError('not_found', `member not found: ${input.memberId}`);
 
   const resourceId = input.resourceId ?? pickCourt(ctx, input);
   const window = bookableWindow(ctx, resourceId, input.date);
-  if (!window) throw new Error(`the club is closed on ${input.date}`);
+  if (!window) throw conflict('club_closed', `the club is closed on ${input.date}`);
   const startsAt = zonedToInstant(input.date, input.time, v.timezone);
   const endsAt = addMinutes(startsAt, input.duration);
   if (startsAt < window.startsAt || endsAt > window.endsAt) {
-    throw new Error(`${input.time} +${input.duration}min falls outside opening hours`);
+    throw conflict('outside_hours', `${input.time} +${input.duration}min falls outside opening hours`);
   }
 
   const { price, label } = resolvePrice(ctx, {
@@ -1532,16 +1558,17 @@ const joinMatchOp: OperationHandler<
   const member = ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [
     input.memberId,
   ])[0];
-  if (!member) throw new Error(`member not found: ${input.memberId}`);
+  if (!member) throw substratError('not_found', `member not found: ${input.memberId}`);
 
   const match = ctx.sql.query<{ level_min: string; level_max: string }>(
     'SELECT * FROM rally_matches WHERE reservation_id = ?',
     [input.reservationId],
   )[0];
-  if (!match) throw new Error(`not an open match: ${input.reservationId}`);
-  if (!member.level) throw new Error(`${member.name} has no rated level`);
+  if (!match) throw conflict('not_open_match', `not an open match: ${input.reservationId}`);
+  if (!member.level) throw conflict('no_level', `${member.name} has no rated level`);
   if (Number(member.level) < Number(match.level_min) || Number(member.level) > Number(match.level_max)) {
-    throw new Error(
+    throw conflict(
+      'level_outside_band',
       `level ${member.level} is outside the band ${match.level_min}–${match.level_max}`,
     );
   }
@@ -1760,7 +1787,7 @@ const addPlayerOp: OperationHandler<
   const member = ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [
     input.memberId,
   ])[0];
-  if (!member) throw new Error(`member not found: ${input.memberId}`);
+  if (!member) throw substratError('not_found', `member not found: ${input.memberId}`);
   joinReservation(ctx, {
     reservationId: input.reservationId,
     partyRef: dataSubjectId.parse(member.party_ref),
@@ -1900,7 +1927,7 @@ const openUpOp: OperationHandler<
     'SELECT member_id, price_amount, currency FROM rally_bookings WHERE reservation_id = ?',
     [input.reservationId],
   )[0];
-  if (!booking) throw new Error(`no RallyPoint booking for ${input.reservationId}`);
+  if (!booking) throw substratError('not_found', `no RallyPoint booking for ${input.reservationId}`);
 
   const onIt = joinedCount(ctx, input.reservationId);
   const fillTarget = onIt + input.spots;

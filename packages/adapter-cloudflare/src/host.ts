@@ -2337,7 +2337,8 @@ export class CloudflareScopeHost implements ScopeHost {
           const now = new Date().toISOString();
           const all = await cp.listEntitlements(tenantId).catch(() => []);
           return Promise.reject(
-            new Error(
+            substratError(
+              'not_found',
               entitlementDenial(
                 operation,
                 requiredKey,

@@ -5,7 +5,8 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { PermissionDenied, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
+import { startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
+import { problemResponse } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
@@ -143,15 +144,9 @@ async function stub(c: Context): Promise<ScopeStub> {
 
 const app = new Hono();
 
-app.onError((err, c) => {
-  // An explicit status wins — 401 for "nobody", which is not a refusal.
-  if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
-  if (err instanceof PermissionDenied) return c.json({ error: err.message }, 403);
-  const m = err instanceof Error ? err.message : String(err);
-  if (/permission denied/.test(m)) return c.json({ error: m }, 403);
-  if (/not found|unknown scope/.test(m)) return c.json({ error: m }, 404);
-  return c.json({ error: m }, 400);
-});
+// The shared vocabulary decides the status and renders the body (#113 phase 4). An
+// explicit `HTTPException` status still wins — 401 for "nobody", which is not a refusal.
+app.onError((err, c) => problemResponse(c, err));
 
 // The relying-party endpoints — login, callback, logout. The same flow the worker runs;
 // accounts, passwords and sign-up live at the issuer.

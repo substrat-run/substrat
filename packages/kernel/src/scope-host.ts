@@ -2575,6 +2575,13 @@ export function attachmentBlobKey(scopeId: string, attachmentId: string): string
  * `held` is every key projected for the tenant, expired ones included and marked: a lapsed
  * grant denies exactly like an absent one, and "you have it, it ran out" is a different fix
  * from "you never had it".
+ *
+ * **Its code is `not_found`** at all three throw sites (#113). Not an oversight and not
+ * `forbidden`: the taxonomy's `not_found` row already covers "exists, and must read as
+ * absent" for K-3's cross-tenant case, and every vertical had independently arrived at a
+ * 404 here for the same reason — *"a 403 would confirm the feature exists"*
+ * ([`todo/routes.ts`](../../../demos/todo/src/routes.ts)). Naming the code once is what
+ * retires those hand-written patterns.
  */
 export function entitlementDenial(
   operation: string,
