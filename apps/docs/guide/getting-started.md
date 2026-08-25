@@ -253,6 +253,10 @@ The event row carries the full kernel-stamped envelope — that's your audit tra
 produced as a side effect of the write path rather than as something you remembered to
 log. Nothing in the code above asked for it.
 
+From inside an operation you read the same rows through
+[`readTimeline`](/concepts/events#reading-one-entity-s-history) rather than by hand — it
+decodes `actor` out of the union the column stores it as, and pages on the event id.
+
 ## Next steps
 
 - [Running locally](/guide/running-locally) — the development loop, the demos, the personas

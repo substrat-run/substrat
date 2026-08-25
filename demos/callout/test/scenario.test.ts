@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { Page } from '@substrat-run/contracts';
+import type { Page, TimelineEntry } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { WorkOrder, BillableLine } from '@substrat-run/engine-workorder';
 import {
@@ -94,11 +94,18 @@ describe('FSM demo scenario (spec §8)', () => {
     expect(order.status).toBe('planned');
     expect(order.customer.entityId).toBe(w.grundenId);
 
-    const { entries: timeline } = await anna.invoke<Page<{ type: string }>>('callout/timeline', {
+    const { entries: timeline } = await anna.invoke<Page<TimelineEntry>>('callout/timeline', {
       entityType: 'workorder',
       entityId: orderId,
     });
     expect(timeline.map((e) => e.type)).toContain('workorder.created');
+    // #800: `actor` is anna, not the JSON the outbox column holds. This read
+    // used to hand back `"01J…"` WITH its quotes — a string that looks like an
+    // id, resolves against no principal, and takes a name lookup down with it.
+    expect(timeline[0]!.actor).toBe(w.anna);
+    // And the cursor is the event id, which is the order's version at that
+    // point (#901) — the same token an `If-Match` would carry.
+    expect(timeline[timeline.length - 1]!.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
   });
 
   it('3. assign → start → report time and material', async () => {

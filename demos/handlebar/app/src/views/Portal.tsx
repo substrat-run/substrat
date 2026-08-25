@@ -59,11 +59,11 @@ export function PortalView() {
           {openId === r.id && (
             <>
               <ul className="timeline" style={{ marginTop: 12 }}>
-                {timeline.map((e, i) => (
-                  <li key={i}>
+                {timeline.map((e) => (
+                  <li key={e.id}>
                     {PORTAL_EVENTS[e.type]}
                     <span className="when">
-                      {new Date(e.occurred_at).toLocaleString('sv-SE')}
+                      {new Date(e.occurredAt).toLocaleString('sv-SE')}
                     </span>
                   </li>
                 ))}

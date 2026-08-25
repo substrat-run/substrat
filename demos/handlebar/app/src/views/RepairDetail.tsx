@@ -212,10 +212,10 @@ export function RepairDetailView({ repairId, cast }: { repairId: string; cast: R
         <div className="card grow">
           <h2>Händelser (event spine)</h2>
           <ul className="timeline">
-            {timeline.map((e, i) => (
-              <li key={i}>
+            {timeline.map((e) => (
+              <li key={e.id}>
                 {e.type}
-                <span className="when">{new Date(e.occurred_at).toLocaleTimeString('sv-SE')}</span>
+                <span className="when">{new Date(e.occurredAt).toLocaleTimeString('sv-SE')}</span>
               </li>
             ))}
           </ul>

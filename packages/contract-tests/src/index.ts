@@ -4,6 +4,7 @@ export { permissionContractSuite } from './permission-suite.js';
 export { atomicContractSuite } from './atomic-suite.js';
 export { searchContractSuite } from './search-suite.js';
 export { entityVersionContractSuite } from './entity-version-suite.js';
+export { timelineContractSuite } from './timeline-suite.js';
 export { concurrencyContractSuite } from './concurrency-suite.js';
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';

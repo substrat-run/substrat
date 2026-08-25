@@ -18,10 +18,13 @@ import {
   principalId,
   z,
   type EntityRef,
+  type ListPage,
   type PermissionKey,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
+  readHistory,
+  readTimeline,
   ulid,
   type ConsumerHandler,
   type ModuleRegistration,
@@ -358,6 +361,59 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
   // documented hole, pinned deliberately so it is a known property rather than a
   // surprise. The fix is a compile-checked `concurrency` against `emits` (#129),
   // not a change here.
+  // -- #800: the supported read of an entity's history ------------------------
+  // Emit N events about one entity in ONE invocation. `ctx.now()` is stable for
+  // the whole operation (#812), so every row lands with the IDENTICAL
+  // `occurred_at` — which is what makes a timestamp cursor lose rows, and what
+  // the suite needs to be able to construct on purpose rather than hope for.
+  'test/emit-burst': ((ctx, input: { entityId: string; count: number }) => {
+    for (let n = 0; n < input.count; n++) {
+      ctx.emit({
+        type: 'test.happened',
+        schemaVersion: 1,
+        entity: { entityType: 'test-thing', entityId: input.entityId },
+        piiClass: 'none',
+        payload: { n },
+      });
+    }
+    return ctx.now();
+  }) as OperationHandler<never, unknown>,
+  // The reads under test. They take the whole page shape so the suite can drive
+  // limit, cursor and order without a variant operation per case.
+  'test/timeline': ((ctx, input: { entityType: string; entityId: string } & ListPage) =>
+    readTimeline(
+      ctx,
+      { entityType: input.entityType, entityId: input.entityId },
+      input,
+    )) as OperationHandler<never, unknown>,
+  'test/history': ((ctx, input: { entityType: string; entityId: string } & ListPage) =>
+    readHistory(
+      ctx,
+      { entityType: input.entityType, entityId: input.entityId },
+      input,
+    )) as OperationHandler<never, unknown>,
+  // An event carrying PII, so the suite can shred it and assert the history
+  // degrades to a null payload instead of vanishing or throwing.
+  //
+  // It CHECKS before it emits, unlike `test/emit-about`, and that is the point
+  // rather than politeness: `authorization` is stamped from the checks the
+  // operation passed (K-34), so an operation that checks nothing writes a null
+  // there — indistinguishable from a row predating the column. A history read
+  // has to be driven against an event that actually recorded its authority.
+  'test/emit-about-with-payload': (async (
+    ctx,
+    input: { entityId: string; subject: string; said: string },
+  ) => {
+    assertAllowed(await ctx.check(permissionKey.parse('testmod:use')));
+    ctx.emit({
+      type: 'test.happened',
+      schemaVersion: 1,
+      entity: { entityType: 'test-thing', entityId: input.entityId },
+      piiClass: 'direct',
+      subjectId: dataSubjectId.parse(input.subject),
+      payload: { said: input.said },
+    });
+  }) as OperationHandler<never, unknown>,
   'test/mutate-silently': ((ctx) => {
     ctx.sql.exec('CREATE TABLE IF NOT EXISTS quiet (n INTEGER NOT NULL)');
     ctx.sql.exec('INSERT INTO quiet (n) VALUES (1)');

@@ -16,6 +16,7 @@ import {
   type Money,
   type OperationImpl,
   type Page,
+  type TimelineEntry,
 } from '@substrat-run/contracts';
 
 /**
@@ -28,17 +29,11 @@ type CalloutConflictReason = 'no_price' | 'not_open';
 const conflict = (reason: CalloutConflictReason, message: string) =>
   substratError('conflict', message, { reason });
 
-/** One outbox row as the timeline reads it, plus the rowid its cursor walks. */
-interface TimelineRow {
-  type: string;
-  occurred_at: string;
-  actor: string;
-  _cursor: number;
-}
 import { calloutEntities } from './entities.js';
 import { calloutOperations, instantiateProtocolInput, timelineInput } from './operations.js';
 import {
   assertAllowed,
+  readTimeline,
   ulid,
   type ModuleRegistration,
   type OperationContext,
@@ -463,33 +458,24 @@ const portalOrdersOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ctx
   );
 
 /**
- * #811. Handler-composed: `_substrat_outbox` is the kernel's table, so there is
- * no registry entity for `paged.over` to name. The cursor is the `rowid` because
- * append order is authoritative — ids emitted in the same millisecond are not
- * mutually ordered, so `occurred_at` alone would put a page boundary inside a tie.
+ * #811, over the kernel's own read (#800). `_substrat_outbox` is the kernel's
+ * table, so there is no registry entity for `paged.over` to name — but the walk
+ * across it is the platform's, not this vertical's. `readTimeline` orders by the
+ * event id (creation order, since `ulid()` is monotonic), pages on it, and
+ * decodes `actor` out of the JSON the column actually holds.
+ *
+ * What this vertical still owns is the line above it: the permission check.
  */
 const timelineOp: OperationHandler<
   z.infer<typeof timelineInput> & PageParams,
-  Page<{ type: string; occurred_at: string; actor: string }>
+  Page<TimelineEntry>
 > = async (ctx, input) => {
   // The DECLARED schema, not a second copy of it (#890): `entityType` is a
   // literal there, so a caller naming another entity is refused here rather than
   // reaching `ctx.check` with a ref the declaration never claimed.
   const entity: EntityRef = timelineInput.parse(input);
   assertAllowed(await ctx.check(WO.read, entity));
-  const limit = listLimitOf(input.limit);
-  const rows = ctx.sql.query<TimelineRow>(
-    `SELECT type, occurred_at, actor, rowid AS _cursor FROM _substrat_outbox
-     WHERE entity_type = ? AND entity_id = ?${input.cursor ? ' AND rowid > ?' : ''}
-     ORDER BY rowid LIMIT ?`,
-    input.cursor
-      ? [entity.entityType, entity.entityId, Number(input.cursor), limit]
-      : [entity.entityType, entity.entityId, limit],
-  );
-  // The walk is computed over `_cursor`; `mapPage` then drops it, because the
-  // entry shape is published and the rowid is not.
-  const page = pageOf(rows, limit, (row) => String(row._cursor));
-  return mapPage(page, ({ _cursor: _drop, ...entry }) => entry);
+  return readTimeline(ctx, entity, input);
 };
 
 /**

@@ -46,6 +46,7 @@ import { bookingEntities } from '@substrat-run/engine-booking';
 import { rallyEntities } from './entities.js';
 import {
   assertAllowed,
+  readTimeline,
   ulid,
   type ConsumerHandler,
   type ModuleRegistration,
@@ -1969,6 +1970,13 @@ const portalBookingsOp: OperationHandler<
   return pageBy(visible, input ?? {}, (r) => r.id);
 };
 
+/**
+ * #800. Like Meridian's, this paged on `occurred_at` with an `occurred_at > ?`
+ * step — which drops every row sharing the last one's instant, and events emitted
+ * by one operation all share it (`ctx.now()` is stable for the invocation,
+ * #812). `readTimeline` walks the event id, so a page boundary inside a burst
+ * resumes rather than skips.
+ */
 const timelineOp: OperationHandler<
   { entityType: string; entityId: string } & ListPage,
   Page<TimelineEntry>
@@ -1977,16 +1985,7 @@ const timelineOp: OperationHandler<
     .object({ entityType: z.string().min(1), entityId: z.string().min(1) })
     .parse(input);
   assertAllowed(await ctx.check(BK.read, entity));
-  const limit = Math.min(input.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
-  const rows = ctx.sql.query<TimelineEntry>(
-    `SELECT type, occurred_at, actor FROM _substrat_outbox
-     WHERE entity_type = ? AND entity_id = ?${input.cursor ? ' AND occurred_at > ?' : ''}
-     ORDER BY occurred_at, rowid LIMIT ?`,
-    input.cursor
-      ? [entity.entityType, entity.entityId, input.cursor, limit]
-      : [entity.entityType, entity.entityId, limit],
-  );
-  return pageOf(rows, limit, (r) => r.occurred_at);
+  return readTimeline(ctx, entity, input);
 };
 
 /**

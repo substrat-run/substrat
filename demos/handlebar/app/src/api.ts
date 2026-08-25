@@ -26,7 +26,25 @@
  *    for the ordinary reason instead — the screen reads a repair's entries
  *    unpaginated, and binding it means adopting the generated paged client.
  */
-import { createClient, type HandlebarClient, type ProtocolInstance } from './api.generated';
+import type { TimelineEntry } from '@substrat-run/contracts';
+import {
+  createClient,
+  type HandlebarClient,
+  type Paged,
+  type ProtocolInstance,
+} from './api.generated';
+
+/**
+ * The kernel's shape, not a copy of it (#800).
+ *
+ * `readTimeline` owns what an entry is — `actor` in particular is the spine's
+ * union rather than the raw JSON the outbox column holds — so the route being
+ * hand-mounted is a fact about request binding and says nothing about the response
+ * type. A local interface would be a second description of a contract the kernel
+ * already owns, free to drift from it silently, which is the failure #800 exists
+ * to end. Type-only: nothing of `@substrat-run/contracts` reaches the bundle.
+ */
+export type { TimelineEntry };
 
 export { ApiError } from './api.generated';
 export type {
@@ -67,13 +85,6 @@ export interface CastMember {
   name: string;
   role: string;
   principal: string;
-}
-
-/** What `GET /repairs/{id}/timeline` answers — a hand-mounted route's own shape. */
-export interface TimelineEntry {
-  type: string;
-  occurred_at: string;
-  actor: string;
 }
 
 /** What `GET /repairs/{id}/protocols` answers — likewise. */
@@ -125,11 +136,35 @@ const raw = async <T>(path: string): Promise<T> => {
   return body;
 };
 
+/**
+ * A hand-mounted paged read, walked to the end.
+ *
+ * The route answers ONE page and names the next in a `Link` header (#829). Reading
+ * only the body is how a strip silently stops at `LIST_PAGE_DEFAULT` — twenty
+ * events, which a repair passes without anything looking wrong: the list renders,
+ * it is just missing its own history from the twenty-first event on.
+ *
+ * `api.follow` is the generated client's own walk, so the Link parsing, the persona
+ * header and the error envelope stay in one place rather than being written a
+ * second time here. It collects rather than exposing page controls because the
+ * caller asked for the timeline, not for a page of it.
+ */
+async function walk<T>(path: string): Promise<T[]> {
+  const entries: T[] = [];
+  let next: string | null = `/api${path}`;
+  while (next !== null) {
+    const page: Paged<T> = await api.follow<T>(next);
+    entries.push(...page.entries);
+    next = page.next;
+  }
+  return entries;
+}
+
 export const extra = {
   /** The dev harness's persona list. Not an operation — the node server owns it. */
   cast: () => raw<Record<string, CastMember>>('/cast'),
   /** `bike-shop/timeline`, unbound: the route pins `entityType` (see the header). */
-  timeline: (id: string) => raw<TimelineEntry[]>(`/repairs/${id}/timeline`),
+  timeline: (id: string) => walk<TimelineEntry>(`/repairs/${id}/timeline`),
   /** `protocol/list-for-entity`, unbound for the same reason. */
   repairProtocols: (repairId: string) => raw<ProtocolSummary[]>(`/repairs/${repairId}/protocols`),
 };

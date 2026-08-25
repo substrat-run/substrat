@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { Page, TimelineEntry } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildDemoHost, seedDemo, type ManyfoldWorld, type EntryRow, type EntryStatus } from '../src/index.js';
@@ -287,12 +288,14 @@ describe('Manyfold demo scenario', () => {
     const status = (await emilCafe.invoke<{ entry: EntryRow }>('manyfold/get-entry', { entryId: postId })).entry.status;
     expect(status).toBe<EntryStatus>('archived');
 
-    // The fat events landed on the spine, in order.
-    const timeline = await emilCafe.invoke<{ type: string }[]>('manyfold/timeline', {
+    // The fat events landed on the spine, in order. A PAGE since #800 — the read
+    // is the kernel's `readTimeline`, so an entry edited a hundred times answers
+    // with a page rather than a hundred rows.
+    const timeline = await emilCafe.invoke<Page<TimelineEntry>>('manyfold/timeline', {
       entityType: 'manyfold-entry',
       entityId: postId,
     });
-    expect(timeline.map((e) => e.type)).toEqual([
+    expect(timeline.entries.map((e) => e.type)).toEqual([
       'content.submitted',
       'content.approved',
       'content.published',
