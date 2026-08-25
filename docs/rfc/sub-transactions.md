@@ -152,7 +152,7 @@ stale proposal. What it decided, of the questions #786 left open:
 | `try`/`finally`, no `catch` | **Allowed** — it swallows nothing |
 | A re-throwing `catch` | **Allowed** — the operation still fails and the whole transaction rolls back. Read as a rethrow when the catch's last top-level statement is a `throw`, wrapped or not |
 | An escape hatch | **None.** Unlike R5's one-time handoff there is no legitimate unprotected swallow, so a hatch would only ever silence the rule |
-| False positives | Under-fires on purpose: an engine call moved into a local helper is invisible to it, and a conditional rethrow reads as a rethrow. Widening is fixtures, not a redesign |
+| False positives | Under-fires on purpose: an engine call moved into a local helper is invisible to it, a conditional rethrow reads as a rethrow, and the promise spelling (`engineCall(…).catch(…)`) is not the `catch` clause the rule names. Widening is fixtures, not a redesign |
 
 ## 3. D-2 — one closure-shaped adapter method; the kernel owns every semantic
 

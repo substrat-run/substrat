@@ -95,12 +95,17 @@
  * lookup.
  *
  * The deliberate limits, stated rather than discovered (#786 open question 5 —
- * a rule that misfires gets suppressed wholesale, which is worse than no rule):
- * R7 sees only calls written INSIDE the `try`, so an engine call moved into a
- * local helper is missed; and a conditional rethrow as the catch's last
- * statement (`catch (e) { if (rare) throw e }`) is read as a rethrow. Both
- * under-fire. Widening is a change to this file with fixtures, not a change of
- * character.
+ * a rule that misfires gets suppressed wholesale, which is worse than no rule).
+ * All three under-fire:
+ *
+ *   - R7 sees only calls written INSIDE the `try`, so an engine call moved into
+ *     a local helper is missed.
+ *   - A conditional rethrow as the catch's last statement
+ *     (`catch (e) { if (rare) throw e }`) is read as a rethrow.
+ *   - The rule is the `catch` CLAUSE, as #786 states it. The promise spelling —
+ *     `await completeWorkOrder(ctx, x).catch(() => null)` — is the same bug and
+ *     is not flagged. No module code in this repo writes it, and widening to it
+ *     is a change to this file with fixtures, not a change of character.
  *
  * TABLE OWNERSHIP IS DERIVED FROM MIGRATIONS, NEVER DECLARED. A table is owned
  * by whichever module's `CREATE TABLE` made it. That fact ships inside the
