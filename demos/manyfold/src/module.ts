@@ -6,10 +6,14 @@ import {
   assertTransition,
   defineLifecycles,
   substratError,
+  type ListPage,
+  type Page,
+  type TimelineEntry,
 } from '@substrat-run/contracts';
 import { manyfoldEntities } from './entities.js';
 import {
   assertAllowed,
+  readTimeline,
   ulid,
   type ModuleRegistration,
   type OperationContext,
@@ -638,16 +642,20 @@ const whoamiOp: OperationHandler<undefined, { principal: string; can: Record<str
   };
 };
 
-const timelineOp: OperationHandler<z.infer<typeof timelineInput>, { type: string; occurred_at: string; actor: string }[]> = async (
-  ctx,
-  input,
-) => {
+/**
+ * #800. This was the fifth hand-rolled copy of the spine read, and the only
+ * UNPAGED one — an entry edited fifty times answered with fifty rows because
+ * nothing said a number. `readTimeline` pages it, which makes this the one paged
+ * read in a vertical that predates #811; the rest of Manyfold's lists are still
+ * unbounded, and that is a separate debt rather than something to half-fix here.
+ */
+const timelineOp: OperationHandler<
+  z.infer<typeof timelineInput> & ListPage,
+  Page<TimelineEntry>
+> = async (ctx, input) => {
   const entity = timelineInput.parse(input);
   assertAllowed(await ctx.check(MF_PERM.read));
-  return ctx.sql.query(
-    'SELECT type, occurred_at, actor FROM _substrat_outbox WHERE entity_type = ? AND entity_id = ? ORDER BY rowid',
-    [entity.entityType, entity.entityId],
-  );
+  return readTimeline(ctx, entity, input);
 };
 
 const OPERATIONS = {

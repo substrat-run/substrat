@@ -521,7 +521,20 @@ consumers). `seed.ts` / `server.ts` are harness and exempt.
    register a handler that runs outside the transaction. Never conclude an integration is
    impossible because of this rule; it has an answer.
 3. **Never write `_substrat_*` tables.** Reads are fine (timelines are projections);
-   writes forge the audit spine.
+   writes forge the audit spine. And do not hand-write the timeline read either — the
+   kernel exports it:
+
+   ```ts
+   assertAllowed(await ctx.check(WO.read, entity));   // yours, always
+   return readTimeline(ctx, entity, input);           // { entries, nextCursor }
+   ```
+
+   `{ id, type, occurredAt, actor }` per entry, `readHistory` for the payload,
+   authorization and PII class as well. Two traps it exists to close: `actor` is stored
+   as JSON over a union (a principal is `"01J…"` *with quotes*, so a raw `SELECT actor`
+   is a string that resolves against nothing), and the cursor must be `id` — never
+   `occurred_at`, which is identical across every event one operation emits and so drops
+   the rest of the burst a page boundary lands in.
 4. **Another module's tables are private.** Never `SELECT` from `workorder_*` — use the
    engine's exported in-scope functions. This is the rule that matters most and the one
    with **no runtime equivalent**: the shortcut *works*, returns the right rows, and

@@ -108,3 +108,64 @@ export const domainEvent = z
   })
   .superRefine(piiInvariant);
 export type DomainEvent = z.infer<typeof domainEvent>;
+
+/**
+ * One entry of an entity's TIMELINE — the envelope of an event about it, and
+ * nothing that was said (#800).
+ *
+ * Five demos hand-wrote the `SELECT` behind this and all five published a
+ * different shape for it, which is the small half of the problem. The large half
+ * is that two of the four fields are not what a reader of `_substrat_outbox`
+ * assumes:
+ *
+ * - **`actor` is the union, not an id.** The writer persists
+ *   `JSON.stringify(actor)`, so a principal is stored WITH its quotes and a
+ *   system or connector actor is stored as an object. `SELECT actor` returns a
+ *   string that looks usable and is not — an agent building a timeline hit this
+ *   as a real bug and had to read the adapter to find it. Here the column is
+ *   decoded once, so a caller resolving a name gets the union the spine actually
+ *   recorded rather than a string to trim quotes off.
+ * - **`id` is the entity's VERSION at this point** (#901), not just a row key.
+ *   The same token `versionOf` returns and `If-Match` compares, so "list the
+ *   history", "restore to this version" and "refuse my stale write" speak one
+ *   vocabulary. It is therefore the cursor: `ORDER BY id` is creation order
+ *   because `ulid()` is monotonic, and `OUTBOX_ENTITY_INDEX` makes the walk a
+ *   seek.
+ */
+export const timelineEntry = z.object({
+  id: eventId,
+  type: eventType,
+  occurredAt: instant,
+  actor,
+});
+export type TimelineEntry = z.infer<typeof timelineEntry>;
+
+/**
+ * A timeline entry plus what a history VIEW needs — the second layer of #800.
+ *
+ * `timelineEntry` answers *Anna touched this at 14:02*. A history strip has to
+ * answer *Anna changed Status from Lead to Customer*, and the outbox already
+ * holds the rest of that. Two of these fields have a nullable that is a fact
+ * rather than a gap:
+ *
+ * - **`payload` is null after an erasure.** A shred nulls the payload and keeps
+ *   the row (§5.3: "pseudonymous keys and transaction facts remain"), so a
+ *   history correctly degrades to "someone changed this, then". A renderer must
+ *   expect the null; it is a supported result, not an error.
+ * - **`authorization` is null when UNRECORDED** — a row written before K-34
+ *   added the column — which is a different fact from an empty list (checked
+ *   nothing). Keeping them distinct is the whole reason the column is nullable
+ *   in the DDL.
+ *
+ * Field-level "X → Y" is reconstructed by diffing consecutive payloads: nothing
+ * stores a before-state. For the few fields a history strip actually shows
+ * (status, owner, value), emitting the previous value explicitly in the fat
+ * payload is more honest than making every reader diff — a per-vertical call.
+ */
+export const historyEntry = timelineEntry.extend({
+  payload: z.unknown(),
+  authorization: z.array(eventAuthorization).nullable(),
+  piiClass,
+  subjectId: dataSubjectId.nullable(),
+});
+export type HistoryEntry = z.infer<typeof historyEntry>;

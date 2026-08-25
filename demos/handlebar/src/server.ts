@@ -5,7 +5,15 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
-  platformActorId, principalId, type PrincipalId } from '@substrat-run/contracts';
+  PAGE_LINK_HEADER,
+  listPageQuery,
+  nextPageLink,
+  platformActorId,
+  principalId,
+  type Page,
+  type PrincipalId,
+  type TimelineEntry,
+} from '@substrat-run/contracts';
 import Database from 'better-sqlite3';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { mountOperations, problemResponse } from '@substrat-run/vertical-host';
@@ -106,14 +114,22 @@ app.get('/api/cast', (c) => c.json(CAST));
 // "the hand-written exception wins" is the ordering that stays safe as the
 // declared table grows.
 // ---------------------------------------------------------------------------
-app.get('/api/repairs/:id/timeline', async (c) =>
-  c.json(
-    await (await stub(c)).invoke('bike-shop/timeline', {
-      entityType: 'workorder',
-      entityId: c.req.param('id'),
-    }),
-  ),
-);
+// The page projection, by hand (#829). `mountOperations` does this for every
+// DECLARED route — body is the entries, the walk rides in a `Link` header — and a
+// hand-mounted route gets none of it. So since this operation became paged (#811)
+// it has answered `{ entries, nextCursor }` while the app typed it `TimelineEntry[]`
+// and called `.map` on it: a live break in the browser that no scenario sees,
+// because the scenarios invoke the operation and never the route (#800).
+app.get('/api/repairs/:id/timeline', async (c) => {
+  const page = await (await stub(c)).invoke<Page<TimelineEntry>>('bike-shop/timeline', {
+    entityType: 'workorder',
+    entityId: c.req.param('id'),
+    ...listPageQuery.partial().parse(c.req.query()),
+  });
+  const link = nextPageLink(c.req.url, page.nextCursor);
+  if (link) c.header(PAGE_LINK_HEADER, link);
+  return c.json(page.entries);
+});
 app.get('/api/repairs/:id/protocols', async (c) =>
   c.json(
     await (await stub(c)).invoke('protocol/list-for-entity', {

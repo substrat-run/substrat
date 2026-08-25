@@ -346,6 +346,10 @@ export const meridianOperations = defineOperations(
     permission: { key: 'absence:read', entity: 'employee', idFrom: 'entityId' },
     input: timelineInput,
     output: timelineEntry,
-    paged: { sortKey: 'occurred_at' },
+    // The cursor is `id` — the event's ULID, and this employee's version at that
+    // point (#901). It said `occurred_at`, and the handler walked `occurred_at`
+    // too, which is how the page came to drop every event sharing an instant
+    // (#800): a truthful declaration of a broken cursor.
+    paged: { sortKey: 'id' },
   },
 });

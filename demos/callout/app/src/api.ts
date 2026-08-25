@@ -139,10 +139,18 @@ export const extra = {
   orderProtocols: (orderId: string) => call<ProtocolSummary[]>(`/workorders/${orderId}/protocols`),
 };
 
+/**
+ * The kernel's `timelineEntry` (#800) on the wire. Hand-written here because the
+ * ROUTE is hand-mounted (it pins `entityType`), not because the shape is this
+ * app's — `readTimeline` decides it, and `actor` is the spine's union rather than
+ * the raw JSON the outbox column holds.
+ */
 export interface TimelineEntry {
+  /** The event's ULID — and the work order's version at that point (#901). */
+  id: string;
   type: string;
-  occurred_at: string;
-  actor: string;
+  occurredAt: string;
+  actor: string | { system: string } | { connection: string };
 }
 
 /** What `GET /workorders/{id}/protocols` answers — a hand-mounted route's own shape. */

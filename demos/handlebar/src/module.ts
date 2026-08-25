@@ -18,6 +18,7 @@ import {
   type EntityRow,
   type OperationImpl,
   type Money,
+  type TimelineEntry,
 } from '@substrat-run/contracts';
 
 /**
@@ -29,18 +30,12 @@ const conflict = (reason: HandlebarConflictReason, message: string) =>
   substratError('conflict', message, { reason });
 import { protocolEntities } from '@substrat-run/engine-protocol';
 
-/** One outbox row as the timeline reads it, plus the rowid the cursor walks. */
-interface TimelineRow {
-  type: string;
-  occurred_at: string;
-  actor: string;
-  _cursor: number;
-}
 import { workorderEntities } from '@substrat-run/engine-workorder';
 import { handlebarEntities } from './entities.js';
 import { handlebarOperations, startConditionReportInput, timelineInput } from './operations.js';
 import {
   assertAllowed,
+  readTimeline,
   ulid,
   type ModuleRegistration,
   type OperationContext,
@@ -440,36 +435,21 @@ const portalRepairsOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ct
   );
 
 /**
- * #811. Handler-composed: this reads `_substrat_outbox`, the kernel's own table.
- * Rule 3 permits the projection read; it does not make the spine a registry
- * entity, so there is nothing for `paged.over` to name.
- *
- * The cursor is the `rowid`, because append order is the authority here — ids
- * emitted in the same millisecond are not mutually ordered, so `occurred_at`
- * alone would put a page boundary inside a tie. It is selected as `_cursor` and
- * dropped from the entry, since the row shape is published and the rowid is not.
+ * #811, over the kernel's own read (#800). `_substrat_outbox` is the kernel's
+ * table — rule 3 permits the projection read; it does not make the spine a
+ * registry entity, so there is nothing for `paged.over` to name. The WALK is the
+ * platform's: ordered and paged by the event id, with `actor` decoded out of the
+ * JSON the column holds rather than handed on as text.
  */
 const timelineOp: OperationHandler<
   z.infer<typeof timelineInput> & PageParams,
-  Page<{ type: string; occurred_at: string; actor: string }>
+  Page<TimelineEntry>
 > = async (ctx, input) => {
   // The DECLARED schema (#890), so the literal is enforced here rather than
   // trusted from the mount that happens to supply it.
   const entity: EntityRef = timelineInput.parse(input);
   assertAllowed(await ctx.check(WO.read, entity));
-  const limit = listLimitOf(input.limit);
-  const rows = ctx.sql.query<TimelineRow>(
-    `SELECT type, occurred_at, actor, rowid AS _cursor FROM _substrat_outbox
-     WHERE entity_type = ? AND entity_id = ?${input.cursor ? ' AND rowid > ?' : ''}
-     ORDER BY rowid LIMIT ?`,
-    input.cursor
-      ? [entity.entityType, entity.entityId, Number(input.cursor), limit]
-      : [entity.entityType, entity.entityId, limit],
-  );
-  // The walk is computed over `_cursor`, then `mapPage` drops it — the entry
-  // shape is published and the rowid is not.
-  const page = pageOf(rows, limit, (row) => String(row._cursor));
-  return mapPage(page, ({ _cursor: _drop, ...entry }) => entry);
+  return readTimeline(ctx, entity, input);
 };
 
 /** The handlers bound to `handlebarOperations`. `satisfies` is the drift detector. */

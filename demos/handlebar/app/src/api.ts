@@ -69,11 +69,18 @@ export interface CastMember {
   principal: string;
 }
 
-/** What `GET /repairs/{id}/timeline` answers — a hand-mounted route's own shape. */
+/**
+ * What `GET /repairs/{id}/timeline` answers — the kernel's `timelineEntry` (#800).
+ * Hand-written here because the ROUTE is hand-mounted, not because the shape is
+ * this app's: `readTimeline` owns it, and `actor` is the spine's union rather
+ * than the raw JSON the outbox column holds.
+ */
 export interface TimelineEntry {
+  /** The event's ULID — and the repair's version at that point (#901). */
+  id: string;
   type: string;
-  occurred_at: string;
-  actor: string;
+  occurredAt: string;
+  actor: string | { system: string } | { connection: string };
 }
 
 /** What `GET /repairs/{id}/protocols` answers — likewise. */

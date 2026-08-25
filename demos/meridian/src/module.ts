@@ -11,6 +11,7 @@ import {
   assertAllowed,
   ulid,
   type ModuleRegistration,
+  readTimeline,
   type OperationContext,
   type OperationHandler,
   type PageParams,
@@ -974,22 +975,21 @@ const startOnboardingOp: OperationHandler<z.infer<typeof startOnboardingInput>, 
 // Timeline — a read of the spine for one entity (reads of _substrat_* are fine).
 // ---------------------------------------------------------------------------
 
+/**
+ * #800. This hand-rolled the walk and PAGED IT WRONG: the cursor was
+ * `occurred_at` and the step was `occurred_at > ?`, so every row sharing the last
+ * one's timestamp was skipped. Sharing it is the norm rather than a rare tie —
+ * `ctx.now()` does not move inside an operation (#812), so every event one
+ * operation emits carries the identical instant, and a page boundary landing
+ * inside them lost the rest. `readTimeline` walks the event id instead.
+ */
 const timelineOp: OperationHandler<
   z.infer<typeof timelineInput> & ListPage,
   Page<TimelineEntry>
 > = async (ctx, input) => {
   const entity: EntityRef = timelineInput.parse(input);
   assertAllowed(await ctx.check(HR_PERM.absenceRead, entity));
-  const limit = Math.min(input.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
-  const rows = ctx.sql.query<TimelineEntry>(
-    `SELECT type, occurred_at, actor FROM _substrat_outbox
-     WHERE entity_type = ? AND entity_id = ?${input.cursor ? ' AND occurred_at > ?' : ''}
-     ORDER BY occurred_at, rowid LIMIT ?`,
-    input.cursor
-      ? [entity.entityType, entity.entityId, input.cursor, limit]
-      : [entity.entityType, entity.entityId, limit],
-  );
-  return pageOf(rows, limit, (r) => r.occurred_at);
+  return readTimeline(ctx, entity, input);
 };
 
 export const meridianModule: ModuleRegistration = {

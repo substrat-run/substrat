@@ -1,4 +1,4 @@
-import { defineEngineRoutes, defineOperations, money } from '@substrat-run/contracts';
+import { defineEngineRoutes, defineOperations, money, timelineEntry } from '@substrat-run/contracts';
 import { invoicingEntities, invoicingOperations } from '@substrat-run/engine-invoicing';
 import { protocolEntities, protocolInstanceRow, protocolOperations } from '@substrat-run/engine-protocol';
 import { billableLine, workOrder, workorderEntities, workorderOperations } from '@substrat-run/engine-workorder';
@@ -355,12 +355,21 @@ export const calloutOperations = defineOperations(
      */
     permission: { key: 'workorder:read', entityFrom: 'entityType', idFrom: 'entityId' },
     input: timelineInput,
-    output: z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() }),
+    // The KERNEL's shape (#800), not a fourth copy of it. Five demos published
+    // three different ones for the same four columns, and `actor` was a raw
+    // string in all three — `timelineEntry` decodes it into the union the spine
+    // recorded.
+    output: timelineEntry,
     // Handler-composed: `_substrat_outbox` is a KERNEL table. Rule 3 permits the
     // projection read; it does not make the spine a registry entity, so there is
-    // nothing for `over` to name. The cursor is the rowid — append order is the
-    // authority, and ids minted in one millisecond are not mutually ordered.
-    paged: { sortKey: 'occurred_at' },
+    // nothing for `over` to name.
+    //
+    // The cursor is `id` — the event's ULID, which IS this entity's version at
+    // that point (#901) and the tag `If-Match` compares (#129). This declared
+    // `occurred_at` while the handler actually walked the rowid, which is exactly
+    // the drift `sortKey` cannot catch: both were fields, and neither was the
+    // cursor the other described.
+    paged: { sortKey: 'id' },
   },
 });
 

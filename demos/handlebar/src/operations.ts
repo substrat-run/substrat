@@ -1,4 +1,4 @@
-import { defineEngineRoutes, defineOperations, money } from '@substrat-run/contracts';
+import { defineEngineRoutes, defineOperations, money, timelineEntry } from '@substrat-run/contracts';
 import { invoicingEntities, invoicingOperations } from '@substrat-run/engine-invoicing';
 import { protocolEntities, protocolInstanceRow, protocolOperations } from '@substrat-run/engine-protocol';
 import { billableLine, workOrder, workorderEntities, workorderOperations } from '@substrat-run/engine-workorder';
@@ -203,12 +203,19 @@ export const handlebarOperations = defineOperations(
      */
     permission: { key: 'workorder:read', entityFrom: 'entityType', idFrom: 'entityId' },
     input: timelineInput,
-    output: z.object({ type: z.string(), occurred_at: z.string(), actor: z.string() }),
+    // The KERNEL's shape (#800) — `readTimeline` owns the walk and therefore the
+    // entry, including `actor` as the union the spine recorded rather than the
+    // stored JSON this used to publish as a string.
+    output: timelineEntry,
     // Handler-composed: this walks `_substrat_outbox`, a KERNEL table. It is not
     // a declared entity and never will be — rule 3 permits a projection read of
-    // the spine, not a registry entry over it. Append order is the sort, and
-    // `rowid` is the only honest expression of it.
-    paged: { sortKey: 'occurred_at' },
+    // the spine, not a registry entry over it.
+    //
+    // The cursor is `id`: the event's ULID, which is also this repair's version
+    // at that point (#901). It said `occurred_at` while the handler walked the
+    // rowid — a disagreement `sortKey` could not catch, because both were fields
+    // and neither was the cursor.
+    paged: { sortKey: 'id' },
   },
 });
 

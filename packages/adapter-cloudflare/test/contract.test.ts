@@ -26,6 +26,7 @@ import {
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
+  timelineContractSuite,
   concurrencyContractSuite,
   idempotencyContractSuite,
   listContractSuite,
@@ -1031,6 +1032,19 @@ entityVersionContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     checker: UNSAFE_allowAllChecker,
   });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #800: the supported read of an entity's history. The DEFAULT checker, because
+// the history half asserts K-34 `authorization` — the checks the emitting
+// operation passed — and an allow-all cannot answer a real `ctx.check` at all
+// (it interpolates the subject, which is a structured actor).
+timelineContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      });
   return { host, cleanup: async () => host.close() };
 });
 

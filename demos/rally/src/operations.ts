@@ -398,7 +398,10 @@ export const rallyOperations = defineOperations(
     permission: { key: 'booking:read', entity: 'member', idFrom: 'entityId' },
     input: timelineInput,
     output: timelineEntry,
-    paged: { sortKey: 'occurred_at' },
+    // The cursor is `id` — the event's ULID, and this member's version at that
+    // point (#901). It said `occurred_at`, and so did the handler's walk, which
+    // is how the page came to drop every event sharing an instant (#800).
+    paged: { sortKey: 'id' },
   },
 
   // --- invitations ----------------------------------------------------------

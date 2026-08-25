@@ -214,13 +214,16 @@ export const occupancy = z.object({
 });
 export type Occupancy = z.infer<typeof occupancy>;
 
-/** One entry of the spine, as `rally/timeline` answers it. */
-export const timelineEntry = z.object({
-  type: z.string(),
-  occurred_at: z.string(),
-  actor: z.string(),
-});
-export type TimelineEntry = z.infer<typeof timelineEntry>;
+/**
+ * One entry of the spine, as `rally/timeline` answers it — the KERNEL's shape (#800),
+ * re-exported rather than re-described.
+ *
+ * This was a local `z.object({ type, occurred_at, actor })`, and so were three
+ * other demos' — four descriptions of one table, none of which said that `actor`
+ * is stored as JSON over a union and is not the id it looks like. `readTimeline`
+ * owns the walk, so it owns the entry.
+ */
+export { timelineEntry, type TimelineEntry } from '@substrat-run/contracts';
 
 /** An invitation as rally lists it — the engine's row, plus the member's name. */
 export const invitationListing = invitation.extend({ name: z.string().nullable() });

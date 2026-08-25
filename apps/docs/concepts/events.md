@@ -153,3 +153,52 @@ Because every event carries tenant, scope, actor, entity, and time — stamped, 
 supplied — the event stream *is* the audit log: complete by construction, not by
 discipline. "Who did what, when, to which entity" is a query, and the answer is the same
 data reporting runs on.
+
+## Reading one entity's history
+
+"Show me the history of this thing" has no source but the spine, so a projection read
+of `_substrat_outbox` is sanctioned — rule 3 bans *writes* to `_substrat_*`, not reads.
+What module code does **not** do is write the query:
+
+```ts
+import { readTimeline } from '@substrat-run/kernel';
+
+const timelineOp = async (ctx, input) => {
+  const entity = timelineInput.parse(input);
+  assertAllowed(await ctx.check(WO.read, entity));   // the caller checks, always
+  return readTimeline(ctx, entity, input);           // { entries, nextCursor }
+};
+```
+
+Each entry is `{ id, type, occurredAt, actor }`. Two of those four are not what a
+hand-written `SELECT` would have got:
+
+- **`actor` is the union, decoded.** The column stores `JSON.stringify(actor)` over
+  `PrincipalId | { system } | { connection }`, so a principal is stored *with its
+  quotes*. `SELECT actor` returns a string that looks usable and is not — resolving a
+  name against it misses every time, and the obvious repair (trim the quotes) then
+  breaks on a system actor.
+- **`id` is the entity's version at that point.** The same token
+  [`ctx.versionOf`](/concepts/api-design#_7b-a-read-modify-write-says-what-it-is-writing-over) returns and `If-Match` compares, so listing
+  the history, naming a version, and refusing a stale write are one vocabulary. It is
+  therefore the cursor: `ORDER BY id` is creation order, because `ulid()` is monotonic.
+
+Do not page a spine read on `occurred_at`. `ctx.now()` is stable for a whole invocation,
+so every event one operation emits carries the *identical* instant — a cursor of
+`occurred_at > ?` silently drops the rest of the burst it lands in.
+
+`readHistory` is the same walk with `payload`, `authorization` (which permission and
+which grant allowed the change) and `piiClass`/`subjectId`. Two nullables there are
+facts rather than gaps: `payload` is **null after an erasure** — the envelope survives a
+shred, so a history correctly degrades to "someone changed this, then" — and
+`authorization` is null when the row predates it being recorded, which is not the same
+as having checked nothing.
+
+Field-level "X → Y" comes from diffing consecutive payloads; nothing stores a
+before-state. For the few fields a history strip actually shows — status, owner, value —
+putting the previous value in the fat payload is more honest than making every reader
+diff for it.
+
+Neither read checks a permission. That stays the caller's line, above the call: a helper
+that gated itself would be a second, invisible policy surface, and one that gated itself
+on nothing would be an unchecked path into every event in the scope.

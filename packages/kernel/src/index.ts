@@ -174,6 +174,8 @@ export {
   type EntityVersion,
   type EntityVersionRow,
 } from './entity-version.js';
+export { readTimeline, readHistory } from './timeline.js';
+export type { TimelineReader } from './timeline.js';
 export {
   IDEMPOTENCY_DDL,
   assertIdempotencyKey,

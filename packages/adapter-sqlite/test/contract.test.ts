@@ -10,6 +10,7 @@ import {
   scopeHostContractSuite,
   searchContractSuite,
   entityVersionContractSuite,
+  timelineContractSuite,
   concurrencyContractSuite,
   idempotencyContractSuite,
   listContractSuite,
@@ -107,6 +108,22 @@ searchContractSuite('adapter-sqlite', async () => {
 entityVersionContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-version-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #800: the supported read of an entity's history. The DEFAULT checker, because
+// the history half asserts K-34 `authorization` — the checks the emitting
+// operation passed — and an allow-all cannot answer a real `ctx.check` at all
+// (it interpolates the subject, which is a structured actor).
+timelineContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-timeline-'));
+  const host = new SqliteScopeHost({ dir });
   return {
     host,
     cleanup: async () => {

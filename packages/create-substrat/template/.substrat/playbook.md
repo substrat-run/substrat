@@ -363,6 +363,16 @@ operations + the `ModuleRegistration`. Keep the split — the linter and tests e
   `completeWorkOrder`. One transaction, invariants intact.
 - Portal listing: iterate and `ctx.check(perm, entityRef)` **per entity** — a proof walk,
   not UI filtering.
+- **An entity's history is `readTimeline(ctx, entity, input)` from `@substrat-run/kernel`** —
+  not a `SELECT` against `_substrat_outbox`. Reading the spine is allowed (writes to
+  `_substrat_*` are not); hand-writing the query is what goes wrong. It returns
+  `{ entries, nextCursor }` with `{ id, type, occurredAt, actor }` per entry, and it exists
+  to close two traps: `actor` is stored as JSON over a union — a principal is `"01J…"`
+  *with quotes*, so a raw `SELECT actor` is a string that resolves against no one — and
+  the cursor must be the event `id`, never `occurred_at`, which is identical across every
+  event a single operation emits. Your permission check stays your line, above the call.
+  `readHistory` is the same walk plus the payload, the authorizing permission and the PII
+  class; its payload is `null` after an erasure, which is a supported answer to render.
 
 ### `src/seed.ts`
 
