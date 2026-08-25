@@ -1,5 +1,258 @@
 # @substrat-run/demo-rally
 
+## 0.1.0
+
+### Minor Changes
+
+- 537ad93: RallyPoint declares its operation surface, and its ten list reads page
+
+  Rally's isolation IS its narrowed grants: a player's `booking:read` is granted per member
+  record and per reservation, never at the scope, precisely so a player cannot read the club's
+  book — who holds which court, and who they play with. Eight of rally's checks narrow that way,
+  and undeclared they were not merely untested but **undeclarable**: thirty-eight handlers
+  registered as `'rally/wallet': walletOp as never` described nothing, and to a compiler
+  `ctx.check(BK.read, memberRef(id))` and `ctx.check(BK.read)` are the same (#865/#891).
+
+  `src/operations.ts` declares all thirty-eight, `src/inputs.ts` and `src/schemas.ts` carry the
+  shapes they accept and answer, and `test/entity-checks.test.ts` drives the kit over the six
+  checks it can reach. All six were already honoured; they are now guarded rather than merely
+  correct today.
+
+  `reservation` belongs to **engine-booking**, so three of those checks narrow to an entity the
+  engine owns — `defineOperations`' composed-engine parameter is what allows it.
+
+  **Two checks the format cannot state**, declared as what they are:
+
+  - `rally/cancel-subscription` narrows to the member the SUBSCRIPTION row names, and the input
+    carries only a subscription id. It declares `resolved`, and the kit reports it as uncovered
+    rather than skipping it quietly.
+  - `rally/portal-bookings` declares `narrows` — a per-row proof walk, not one entity check.
+
+  `rally/timeline` declares the constant every call site passes for its caller-named
+  `entityType`. That is #890, and rally is its fourth instance.
+
+  **Breaking at the operation seam:** declaring an operation means declaring its `output`, and a
+  bare-array output with no `paged` beside it is refused (#811). Ten reads now return `Page<T>`.
+  `rally/list-members` is the one plain table walk and is kernel-composed; the rest are folds —
+  a slot grid derived from opening hours and the engine's free intervals, a partner tally over
+  every reservation, a price matrix computed per hour — so the fold runs and the page is taken
+  off it. `rally/portal-bookings` filters per ROW, which cannot use `ctx.page` at all: a page of
+  20 filtered to 3 is not a page, so it keeps its over-fetch and pages after the walk.
+
+  `rally/played-with` now publishes **`partyRef`**. It was always the tally's own key; it simply
+  was not in the answer, and a page needs a unique field to walk. Additive.
+
+  Over HTTP nothing renames: a page's body is still the entries and the walk rides in a `Link`
+  header (#829), so both front-ends are untouched. The `?all=1` match search is the one place
+  that reads entries directly — it merges several clubs into one body, so there is no single
+  walk to hand a cursor for.
+
+  Known gap, flagged rather than smuggled in: **most of rally's handlers still do not parse their
+  input.** Only the booking pair called `.parse()`; the other thirty-six trusted inline TypeScript
+  types. `src/inputs.ts` now writes those shapes down and the compiler holds `idFrom` to them,
+  which is what #891 needs — but turning thirty-six trusting handlers into validating ones is a
+  behaviour change to a live demo, not a declaration, and belongs in its own change. The same is
+  true of the operations `engines/booking` declared in this series.
+
+### Patch Changes
+
+- 537ad93: engine-booking declares its operation surface, and its three list reads page
+
+  Seven of booking's checks narrow to a reservation — `ctx.check(PERM.cancel,
+reservationRef(input.reservationId))`. Undeclared, they were not merely untested but
+  **undeclarable**: `entityCheckConformanceSuite` derives its behavioural pair from an
+  operation's `permission`, and booking had no declared operations to read. To a compiler
+  `ctx.check(PERM.cancel, ref)` and `ctx.check(PERM.cancel)` are the same, and the second
+  lets anyone holding `booking:cancel` anywhere in the scope cancel anyone's booking. On the
+  engine behind a club's court schedule, where a member's whole access to a reservation IS a
+  grant on that one row, that is the check worth having a machine verify (#865/#891).
+
+  `src/operations.ts` declares all seventeen, `src/schemas.ts` carries the shapes they accept
+  and answer, and `test/entity-checks.test.ts` drives the kit. All seven narrowed checks were
+  already honoured; they are now guarded rather than merely correct today.
+
+  **Breaking at the operation seam:** declaring an operation means declaring its `output`, and
+  a bare-array output with no `paged` beside it is refused (#811) — so `booking/list`,
+  `booking/list-resources` and `booking/availability` now return `Page<T>` rather than `T[]`.
+
+  - `booking/list-resources` is kernel-composed (`paged.over`), sorted by `name` as it shipped.
+  - `booking/list` is handler-composed with a cursor on **`id`**. Its window is an overlap test
+    (`starts_at < to AND ends_at > from`), which the kernel's equality-only filter vocabulary
+    cannot express; and a keyset cursor on `starts_at` would skip and repeat rows wherever two
+    reservations share a start, which on a court schedule is every hour. A caller rendering a
+    calendar sorts the page it got.
+  - `booking/availability` is a computed fold, paged on `startsAt` — its segments are disjoint,
+    so that field is unique among them where it is not among reservation rows.
+
+  The **in-scope** `listResources` / `listReservations` / `availability` are unchanged. Those
+  are folds a vertical calls inside its own transaction, where the bound is the vertical's;
+  #811 is about the invocable endpoint. `listResourcesPage` / `listReservationsPage` /
+  `availabilityPage` are the paged siblings the operations use.
+
+  Over HTTP nothing renames: a page's body is still the entries and the walk rides in a `Link`
+  header (#829), which is what let rally adopt this without changing its API's responses.
+
+  Also: `bookingLifecycles` moved to `src/lifecycle.ts` and now checks itself against the
+  declared registry instead of the handler map — the cycle that kept it at the bottom of
+  `index.ts` is gone.
+
+- 6d71731: The host parses a declared operation input, so no handler has to
+
+  `OperationShape.input` described itself as _"the SAME Zod object the handler parses"_. Across the
+  fleet it mostly was not. Of ~85 declared inputs, 40 were parsed; `demos/rally` declared 32 and
+  parsed 2; `demos/shop` declared 14 and parsed none. The declaration was true about the _shape_ —
+  the compiler holds `idFrom` and `entityIdFrom` to it — and false about the parsing, which is the
+  half that refuses a malformed call (#893).
+
+  **A lint rule was the other candidate and is strictly weaker.** It can ask only whether _some_
+  `.parse` appears in a handler body, never whether it is the declared schema, at the boundary,
+  before the first read of a field. And it cannot be satisfied at all where the schema is declared
+  inline — `demos/callout`, `demos/handlebar` and `demos/todo` declare 25 inputs as
+  `input: z.object({…})` with no identifier a handler could name, and the reference implementation
+  is one of them.
+
+  So the host parses instead, from the declaration that already produces the manifest, the routes
+  and the OpenAPI document:
+
+  ```ts
+  export const bookingModule: ModuleRegistration = {
+    manifest: bookingManifest,
+    operations: OPERATIONS,
+    operationInputs: operationInputsOf(bookingOperations),
+  };
+  ```
+
+  `operationInputsOf` derives name → schema; `ModuleRegistration.operationInputs` carries it; both
+  adapters parse before the guards and the handler, outside the transaction. Every path in is
+  covered — HTTP, a scenario test, a seed, a schedule — which is why this is not at the HTTP mount:
+  parsing there alone would have left the demos' own suites exercising the one route the fix did not
+  cover. `mountOperations` already made this argument for the page trio, in those words, and it is
+  the argument here.
+
+  A schema declared for an operation the module does not bind is refused at registration: a schema
+  on nothing enforces nothing while reading as coverage.
+
+  **Adopted by the four packages #893 named** — `engines/booking`, `demos/rally`, `demos/shop`,
+  `demos/meridian`. The rest of the fleet is unchanged and still hand-parses or does not;
+  `inputParseContractSuite` is what makes the guarantee portable once they adopt.
+
+  ## Three things the change turned up, none of them predicted
+
+  **1. A paged read invoked in process was handed `undefined`.** `ImplInput` types a paged
+  handler's input as `… & PagedInput` with no undefined arm, because the platform supplies the page
+  _"whether it declared one or not"_ — and over HTTP that was already true. In process it was not:
+  `invoke('booking/list')` with no argument is the ordinary way a test or another operation reads a
+  list. The empty page is now materialised in the derived schema rather than each paged handler
+  learning to survive `undefined`. A required filter still fails, against `{}` and with a message
+  naming the field.
+
+  **2. `entityCheckConformanceSuite` read its fixture at collect time.** The extras a case is driven
+  with were spread in the `describe` body, before `beforeAll`. A fixture entry holding a value that
+  does not exist yet — rally's spare member, created in `beforeAll` and written into the object the
+  kit was handed, which is the documented way to supply an id the harness must make first —
+  captured the empty placeholder instead. Nothing said so: case 1 only asserts "was not denied",
+  and case 2's permission answer arrived before anything looked at the field. Read per case now.
+
+  **3. Two fixtures had never been valid.** `booking/join`'s conformance `partyRef` was 27
+  characters where the declared `dataSubjectId` wants a 26-character ULID, and `demos/shop`'s
+  scenario §8 reached an elapsed hold by asking for `holdSeconds: 0` — which the declared input has
+  always forbidden (`.positive()`), and which is the exact thing the house rule names instead of
+  `manualClock`. §8 now runs on a clock it advances, the way its own sibling `hold-expiry.test.ts`
+  already did while criticising it.
+
+  All three are the same finding in different clothes: a value nobody parsed was free to be wrong.
+
+- 7cce6cd: auth-server: migrate to `@better-auth/oauth-provider`, and bump the fleet to Better Auth 1.7
+
+  Better Auth 1.7 **removes** the in-core `oidcProvider` plugin (deprecated since 1.6). Our range
+  was already `^1.6.23`, which permits 1.7 — so this was not a migration we could schedule, only
+  one we could be surprised by: any dependency refresh would have taken the plugin away and left
+  `demos/auth-server` unable to compile.
+
+  The fleet bump is free. Only `admin`, `jwt` and `oidcProvider` are used anywhere in the
+  workspace, and only auth-server uses the last two; vertical-auth, control-plane-api, rally,
+  handlebar and shop are on email/password + `admin`, and pass unchanged on 1.7.1 (147 tests).
+
+  **The schema is now generated, because hand-keeping it stopped being plausible.** Three tables
+  became seven, with forty-odd columns. `db/ddl.generated.ts` and `src/auth-schema.generated.ts`
+  are emitted by `scripts/gen-schema.mts` from `getAuthTables(auth.options)` — read off the real
+  `buildAuth` config, not a parallel one — and `test/schema-generated.test.ts` re-emits, compares,
+  and then **executes the DDL against a real database** and drives the adapter through it. That
+  last part is not ceremony: 1.7 adds a required `issuer` column to `account`, a table that
+  already existed, and a diff of hand-written DDL would not have flagged it while every password
+  sign-in on an upgraded install would have failed.
+
+  **Upgrading an existing store is not `IF NOT EXISTS`.** `db/upgrade.ts` runs before the DDL on
+  every boot and handles the two places that construct is silently wrong: `account.issuer` is
+  added and backfilled with `local:<provider_id>` (user credentials — carried, never dropped),
+  and `oauth_access_token` / `oauth_consent`, whose NAMES 1.7 reuses with different columns, are
+  renamed to `legacy_*` so the new DDL creates the new shape instead of leaving the old one in
+  place for the plugin to query columns off. Renamed rather than dropped: a clean break is about
+  not carrying the old registry forward, not about an unattended `DROP` on a live issuer. Per the
+  decision on this change, **relying parties must be re-registered** after an upgrade; what was
+  there stays readable under `legacy_oauth_application`.
+
+  **What changed on the wire** — each of these would strand a relying party silently, so each is
+  pinned in `test/oidc-flow.test.ts`:
+
+  - **PKCE is mandatory**, confidential clients included. No `code_challenge` ⇒ `invalid_request`
+    at the callback. Every RP pointed at this issuer needs it.
+  - **The pending authorize request is no longer server-side state.** It travels as the entire
+    signed query on the redirect to `/login` / `/signup` / `/consent`, and the page hands it back
+    as `oauth_query`. A sign-in that omits it succeeds and resumes _nothing_ — #898's symptom
+    through a new mechanism, so the suite asserts the omission fails as well as the inclusion
+    working.
+  - **Consent** takes `{ accept, oauth_query }` and answers Better Auth's redirect envelope
+    (`{ redirect, url }`), not `consent_code` / `redirectURI`. The signed query is also what
+    makes tampering detectable, since the request now travels through the browser.
+  - **`client_secret_basic` is the default** auth method; the plugin refuses a body-posted secret
+    from such a client. Carried-over integrations must register
+    `token_endpoint_auth_method: 'client_secret_post'` or move the secret to the header.
+  - **Discovery moved to the root** — the plugin serves `/.well-known/openid-configuration`
+    itself, so `routes.ts`'s alias onto `/api/auth/…` is deleted rather than kept.
+  - **The issuer identity is pinned to the clean origin** via `jwt({ jwt: { issuer } })`. Left
+    alone, `oauthProvider` derives it from `baseURL`, which includes `/api/auth`, while every RP
+    is configured with `OIDC_ISSUER = {origin}` and fetches discovery from the root. OIDC requires
+    those to match; strict clients reject the id_token otherwise. Callbacks now also carry `iss`
+    (RFC 9207).
+
+  **The client registry yesterday's work hand-wrote is deleted, and what replaced it is split.**
+  `src/clients.ts` (id minting, secret rotation, comma-joined redirect URIs) is gone: the plugin
+  ships create/rotate, and `clientPrivileges` in `src/auth.ts` admits only the `admin` role —
+  while leaving unauthenticated RFC 7591 registration open, because it consults the hook only
+  when a session is present. What stayed ours is what the plugin models differently: it treats a
+  client as something a USER owns (`client.userId === session.user.id` on every mutating
+  endpoint, and no `disabled` field at all), so listing, editing, disabling and removing are
+  ours, or an operator could never withdraw an application someone else registered. Registering
+  proxies the plugin's `SERVER_ONLY` admin endpoint — that variant can set `skip_consent`, which
+  is a column now instead of a `trustedClients` entry in source, which is why the dashboard can
+  offer it.
+
+  **The demo relying party no longer ships a password.** `trustedClients` is gone as an option,
+  and secrets are hashed at rest, so `substrat-demo-rp` / `demo-rp-secret-not-for-production` —
+  resolved by every deployment, production included — is replaced by a per-boot registration
+  whose minted credentials the dev server prints.
+
+  Driven in a browser end to end, not only in vitest: registering a client through the dashboard,
+  its secret shown once, then an authorize request landing a signed-out visitor on `/login`,
+  signing in there, resuming to `/consent`, approving, and arriving at the relying party's
+  callback with `code`, `state` and `iss`.
+
+- Updated dependencies [537ad93]
+- Updated dependencies [e401927]
+- Updated dependencies [04c61c1]
+- Updated dependencies [d4c66ac]
+- Updated dependencies [cabd449]
+- Updated dependencies [6d71731]
+- Updated dependencies [1c1f23c]
+- Updated dependencies [b3c362d]
+  - @substrat-run/engine-booking@0.6.0
+  - @substrat-run/contracts@0.88.0
+  - @substrat-run/kernel@0.88.0
+  - @substrat-run/adapter-sqlite@0.88.0
+  - @substrat-run/engine-invites@0.4.8
+  - @substrat-run/engine-invoicing@0.9.4
+
 ## 0.0.84
 
 ### Patch Changes

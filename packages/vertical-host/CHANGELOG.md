@@ -1,5 +1,173 @@
 # @substrat-run/vertical-host
 
+## 0.88.0
+
+### Minor Changes
+
+- 04c61c1: kernel: the denial log gets a reader (`listDenials`, `summarizeDenials`)
+
+  K-35 shipped the write side in both adapters four weeks ago. Every enforced `assertAllowed`
+  denial in production has been recorded since — actor, permission, node, operation, `at` —
+  written as a fresh autocommit _after_ the rollback that would otherwise erase the evidence
+  of itself. **Nothing read it.** K-35 said so in its own last clause: the directory-side
+  surfacing "rides §5.4's admin-query RPC, unbuilt". The only consumer in the repo was a
+  contract test (#867).
+
+  That left the platform's three logs two-thirds built and asymmetric: `_substrat_admin_log`
+  holds staff mutations and is readable in the console, `_substrat_access_log` (K-24) holds
+  staff reads, and `_substrat_denials` (K-35) held refusals for nobody. It is the log that
+  matters most of the three, because it is the stronger kind of evidence. A generated
+  conformance report says _"we attempted the attack in CI at commit X"_; these rows say _"on
+  your data, in production, here is every refusal, by whom, against which key"_.
+
+  **The §5.4 RPC turned out to be built.** This is its first caller in the sense the decision
+  meant — two `HostAdmin` reads (`listDenials`, `summarizeDenials`), served as
+  `GET /tenants/:t/scopes/:s/denials[/summary]`, reached through the same delegation ladder as
+  the table reads: a hosted scope through its vertical's platform-gated `/internal/denials`,
+  a co-located one locally. Same `PlatformActorId`, same K-24 access-log entry, same K-3
+  `(tenantId, scopeId)` cross-check failing closed on a mismatch. Reading the denial log is
+  itself logged. The §7 bound holds unchanged: directory metadata and denial rows, never
+  tenant business data.
+
+  **Both of K-35's hedges were built rather than deferred, because both are load-bearing.**
+
+  _Rate-bucketing._ K-35 called it sanctionable up front, and the reason is not tidiness: a
+  probing client mints unlimited rows, so a newest-first page of 200 shows 200 rows from one
+  prober and hides everyone else — the read fails exactly when it matters. So the bucketed
+  view is the default surface, not a refinement, and it is ordered **by count**, which is what
+  keeps the quiet actor on the page beside the loud one. Buckets are (actor, permission) —
+  K-35's own "first occurrence + count per actor/key/window" — and carry `COUNT(DISTINCT
+operation)` beside the count, because one operation refused four hundred times is a broken
+  screen or a misconfigured role while the same count across a dozen is someone walking the
+  surface.
+
+  _The window is not a retention policy._ Rows drain rather than expire (K-24's split), and
+  until a Tier 2 sink exists the window simply **is** the retention. So the summary reports
+  the log's oldest and newest held rows computed **ignoring the filter** — a fact about the
+  log, not about the query. That is what stops an empty result being read as "this never
+  happened" when the truth is "we no longer hold that far back", and an empty log reports a
+  null window rather than a fabricated instant.
+
+  Both adapters answer from one shared SQL builder (`kernel/denial-query.ts`), the same shape
+  `platform-request-query.ts` uses, so the pure-SQLite host and the Durable Object cannot
+  drift on what "newest" means or what a bucket groups by. The filter takes the **logical**
+  actor — a bare principal ULID — and normalizes to the stored `JSON.stringify` encoding, so
+  no call site has to know how the writer spells it.
+
+  Ten contract-suite tests run against both hosts, including the DO path. Three of them pin
+  properties rather than plumbing: that buckets are count-ordered so a flood cannot hide a
+  quiet actor, that a window bound narrows `total` and never the window, and that a bare
+  `ctx.check` a module branches on writes no denial — K-35's deliberate silence, asserted
+  through the read surface an operator actually sees.
+
+  The console renders it per scope, bucketed, with the window stated in the card's own caption.
+
+- 1c1f23c: A read-modify-write says what it is writing over — `concurrency`, `If-Match`, and the 412
+
+  Two people open the same record, both save, and the second write destroys the first. No
+  error, no log line, and nobody notices until the data is gone. An operation that is
+  read-modify-write now declares what it is writing over:
+
+  ```ts
+  'callout/update-facility': {
+    input: z.object({ facilityId: z.string(), name: z.string().optional(), … }),
+    concurrency: { over: 'facility', idFrom: 'facilityId' },
+    emits: { entity: 'facility', entityIdFrom: 'id', type: 'callout.facility-updated', … },
+    http: { method: 'PATCH', path: '/facilities/{facilityId}' },
+  }
+  ```
+
+  One declaration, three consequences. Every response carries the entity's version as an
+  `ETag`. An unsafe method compares the caller's `If-Match` against that version **inside the
+  operation's transaction** and refuses a stale one with `precondition_failed` (412). The
+  generated browser client remembers the tag a read handed back and sends it on the next
+  write to that entity, so an app writes no header code.
+
+  No new error vocabulary: `precondition_failed` → 412 has been declared in the taxonomy
+  since #113, excluded from `DOCUMENTED_ERROR_CODES` precisely so it would appear when
+  something could raise it. It now joins the emitted document **per operation** — on the ones
+  that declared `concurrency` and nowhere else.
+
+  **Opt-in, and not left to memory.** Most declared operations are command-shaped:
+  `todo/rename-list` takes a name, not a whole entity it read and echoed back, and two
+  concurrent renames do not lose an update. But the shape that _does_ lose them is visible in
+  the model — one required field naming the row, every other field optional over that
+  entity's own columns — and an operation of that shape with no `concurrency` is refused at
+  module load, as a bare-array list output with no `paged` already is. It matches nothing in
+  the fleet today, which makes now the cheapest moment it will ever be added.
+
+  ### Three things the implementation had to get right
+
+  **A guarded operation must emit.** An entity's version is the ULID of the last event about
+  it (#901) — there is no version column. So a guarded write that announces nothing is worse
+  than an unguarded one: both writers pass their `If-Match`, neither moves the version, both
+  commit, and both receive a 200 with an `ETag` asserting the write was serialised.
+  `concurrency.over` is compile-checked against the operation's declared `emits`, which is
+  the check `entity-version.ts` asked for by name.
+
+  **The permission answers before the precondition.** The version is snapshotted before the
+  handler (its own `emit` moves it) and compared _after_ — because the permission check lives
+  inside the handler, and refusing on the version first turns any guarded operation into an
+  oracle: a principal with no permission on the entity sends `If-Match: *` and learns whether
+  it exists, or sends a tag and learns whether it changed. Found by driving Callout's
+  two-tab scenario over real HTTP as a technician, which answered 412 where it owed 403.
+
+  **An unacknowledged precondition is refused, not assumed.** Every previous argument added
+  to the coordinator↔ScopeDO RPC was safe for an old DO to ignore — dropping
+  `failureEnvelope` makes it throw, which the caller handles. Dropping `ifMatch` would commit
+  the write and return 200 with nothing compared. So the DO acknowledges that it evaluated
+  the header, and a coordinator that sent one and sees no acknowledgement refuses the success
+  rather than reporting a conditional write that was never conditional.
+
+  ### What each package gained
+
+  - **contracts** — `concurrency` on `OperationShape`; `assertConcurrencyMovesVersion` and
+    `assertFieldBagsDeclareConcurrency` at module load; `operationConcurrencyOf`;
+    `ETAG_HEADER` / `IF_MATCH_HEADER` / `CONCURRENCY_EXPOSED_HEADERS` / `etagOf` /
+    `ifMatchAdmits`; `precondition_failed` carries the refused `entity` (and deliberately not
+    the current version — handing it back turns the obvious client fix into a blind retry
+    that overwrites whatever caused the refusal); the OpenAPI builder emits the header, the
+    `ETag` and the 412 per guarded operation.
+  - **kernel** — `InvokeOptions` as the third argument to `ScopeStub.invoke`: the
+    request-preconditions seam #116 will add `Idempotency-Key` to, plus the reply channel the
+    mount reads the tag from. `assertIfMatch`. `ModuleRegistration.operationConcurrency`.
+  - **adapter-sqlite / adapter-cloudflare** — the comparison, inside the transaction, in the
+    order above; the acknowledgement across the DO hop.
+  - **contract-tests** — `concurrencyContractSuite`, 13 cases both adapters pass.
+  - **vertical-host** — the mount reads `If-Match` on unsafe methods only (on a `GET` the
+    header means a conditional read, and forwarding it would refuse a read for being stale)
+    and sets `ETag`.
+  - **model-emit** — a guarded method routes through a `guarded()` runtime that keys tags by
+    `entityType:id`, evicts on a 412 rather than replacing (auto-retrying with the new tag
+    would overwrite the change that caused the refusal), and exposes the map as
+    `client.versions`. A client with no guarded operation is byte-identical to before.
+
+  ### Callout adopts it, and adopting it found a bug
+
+  `callout/update-facility` is the fleet's first guarded operation, with
+  `callout/get-facility` beside it as the read that hands out the tag — without one, the
+  guard is unreachable, since a client could only acquire a tag by writing.
+
+  `callout/create-facility` had never emitted an event. Nothing caught it, because "every
+  mutation emits a fat event" is enforced by review rather than by `boundary-lint`. The
+  consequence only became visible here: a facility created by a silent write has no version
+  at all, so every conditional update against it is refused forever, against a tag the caller
+  was never given. It emits `callout.facility-created` now.
+
+  Callout's conformance receipt goes from 1 narrowed check to 3, all driven.
+
+### Patch Changes
+
+- Updated dependencies [e401927]
+- Updated dependencies [04c61c1]
+- Updated dependencies [d4c66ac]
+- Updated dependencies [cabd449]
+- Updated dependencies [6d71731]
+- Updated dependencies [1c1f23c]
+- Updated dependencies [b3c362d]
+  - @substrat-run/contracts@0.88.0
+  - @substrat-run/kernel@0.88.0
+
 ## 0.87.0
 
 ### Patch Changes

@@ -1,5 +1,155 @@
 # @substrat-run/control-plane-api
 
+## 0.88.0
+
+### Minor Changes
+
+- 04c61c1: kernel: the denial log gets a reader (`listDenials`, `summarizeDenials`)
+
+  K-35 shipped the write side in both adapters four weeks ago. Every enforced `assertAllowed`
+  denial in production has been recorded since — actor, permission, node, operation, `at` —
+  written as a fresh autocommit _after_ the rollback that would otherwise erase the evidence
+  of itself. **Nothing read it.** K-35 said so in its own last clause: the directory-side
+  surfacing "rides §5.4's admin-query RPC, unbuilt". The only consumer in the repo was a
+  contract test (#867).
+
+  That left the platform's three logs two-thirds built and asymmetric: `_substrat_admin_log`
+  holds staff mutations and is readable in the console, `_substrat_access_log` (K-24) holds
+  staff reads, and `_substrat_denials` (K-35) held refusals for nobody. It is the log that
+  matters most of the three, because it is the stronger kind of evidence. A generated
+  conformance report says _"we attempted the attack in CI at commit X"_; these rows say _"on
+  your data, in production, here is every refusal, by whom, against which key"_.
+
+  **The §5.4 RPC turned out to be built.** This is its first caller in the sense the decision
+  meant — two `HostAdmin` reads (`listDenials`, `summarizeDenials`), served as
+  `GET /tenants/:t/scopes/:s/denials[/summary]`, reached through the same delegation ladder as
+  the table reads: a hosted scope through its vertical's platform-gated `/internal/denials`,
+  a co-located one locally. Same `PlatformActorId`, same K-24 access-log entry, same K-3
+  `(tenantId, scopeId)` cross-check failing closed on a mismatch. Reading the denial log is
+  itself logged. The §7 bound holds unchanged: directory metadata and denial rows, never
+  tenant business data.
+
+  **Both of K-35's hedges were built rather than deferred, because both are load-bearing.**
+
+  _Rate-bucketing._ K-35 called it sanctionable up front, and the reason is not tidiness: a
+  probing client mints unlimited rows, so a newest-first page of 200 shows 200 rows from one
+  prober and hides everyone else — the read fails exactly when it matters. So the bucketed
+  view is the default surface, not a refinement, and it is ordered **by count**, which is what
+  keeps the quiet actor on the page beside the loud one. Buckets are (actor, permission) —
+  K-35's own "first occurrence + count per actor/key/window" — and carry `COUNT(DISTINCT
+operation)` beside the count, because one operation refused four hundred times is a broken
+  screen or a misconfigured role while the same count across a dozen is someone walking the
+  surface.
+
+  _The window is not a retention policy._ Rows drain rather than expire (K-24's split), and
+  until a Tier 2 sink exists the window simply **is** the retention. So the summary reports
+  the log's oldest and newest held rows computed **ignoring the filter** — a fact about the
+  log, not about the query. That is what stops an empty result being read as "this never
+  happened" when the truth is "we no longer hold that far back", and an empty log reports a
+  null window rather than a fabricated instant.
+
+  Both adapters answer from one shared SQL builder (`kernel/denial-query.ts`), the same shape
+  `platform-request-query.ts` uses, so the pure-SQLite host and the Durable Object cannot
+  drift on what "newest" means or what a bucket groups by. The filter takes the **logical**
+  actor — a bare principal ULID — and normalizes to the stored `JSON.stringify` encoding, so
+  no call site has to know how the writer spells it.
+
+  Ten contract-suite tests run against both hosts, including the DO path. Three of them pin
+  properties rather than plumbing: that buckets are count-ordered so a flood cannot hide a
+  quiet actor, that a window bound narrows `total` and never the window, and that a bare
+  `ctx.check` a module branches on writes no denial — K-35's deliberate silence, asserted
+  through the read surface an operator actually sees.
+
+  The console renders it per scope, bucketed, with the window stated in the card's own caption.
+
+### Patch Changes
+
+- 7cce6cd: auth-server: migrate to `@better-auth/oauth-provider`, and bump the fleet to Better Auth 1.7
+
+  Better Auth 1.7 **removes** the in-core `oidcProvider` plugin (deprecated since 1.6). Our range
+  was already `^1.6.23`, which permits 1.7 — so this was not a migration we could schedule, only
+  one we could be surprised by: any dependency refresh would have taken the plugin away and left
+  `demos/auth-server` unable to compile.
+
+  The fleet bump is free. Only `admin`, `jwt` and `oidcProvider` are used anywhere in the
+  workspace, and only auth-server uses the last two; vertical-auth, control-plane-api, rally,
+  handlebar and shop are on email/password + `admin`, and pass unchanged on 1.7.1 (147 tests).
+
+  **The schema is now generated, because hand-keeping it stopped being plausible.** Three tables
+  became seven, with forty-odd columns. `db/ddl.generated.ts` and `src/auth-schema.generated.ts`
+  are emitted by `scripts/gen-schema.mts` from `getAuthTables(auth.options)` — read off the real
+  `buildAuth` config, not a parallel one — and `test/schema-generated.test.ts` re-emits, compares,
+  and then **executes the DDL against a real database** and drives the adapter through it. That
+  last part is not ceremony: 1.7 adds a required `issuer` column to `account`, a table that
+  already existed, and a diff of hand-written DDL would not have flagged it while every password
+  sign-in on an upgraded install would have failed.
+
+  **Upgrading an existing store is not `IF NOT EXISTS`.** `db/upgrade.ts` runs before the DDL on
+  every boot and handles the two places that construct is silently wrong: `account.issuer` is
+  added and backfilled with `local:<provider_id>` (user credentials — carried, never dropped),
+  and `oauth_access_token` / `oauth_consent`, whose NAMES 1.7 reuses with different columns, are
+  renamed to `legacy_*` so the new DDL creates the new shape instead of leaving the old one in
+  place for the plugin to query columns off. Renamed rather than dropped: a clean break is about
+  not carrying the old registry forward, not about an unattended `DROP` on a live issuer. Per the
+  decision on this change, **relying parties must be re-registered** after an upgrade; what was
+  there stays readable under `legacy_oauth_application`.
+
+  **What changed on the wire** — each of these would strand a relying party silently, so each is
+  pinned in `test/oidc-flow.test.ts`:
+
+  - **PKCE is mandatory**, confidential clients included. No `code_challenge` ⇒ `invalid_request`
+    at the callback. Every RP pointed at this issuer needs it.
+  - **The pending authorize request is no longer server-side state.** It travels as the entire
+    signed query on the redirect to `/login` / `/signup` / `/consent`, and the page hands it back
+    as `oauth_query`. A sign-in that omits it succeeds and resumes _nothing_ — #898's symptom
+    through a new mechanism, so the suite asserts the omission fails as well as the inclusion
+    working.
+  - **Consent** takes `{ accept, oauth_query }` and answers Better Auth's redirect envelope
+    (`{ redirect, url }`), not `consent_code` / `redirectURI`. The signed query is also what
+    makes tampering detectable, since the request now travels through the browser.
+  - **`client_secret_basic` is the default** auth method; the plugin refuses a body-posted secret
+    from such a client. Carried-over integrations must register
+    `token_endpoint_auth_method: 'client_secret_post'` or move the secret to the header.
+  - **Discovery moved to the root** — the plugin serves `/.well-known/openid-configuration`
+    itself, so `routes.ts`'s alias onto `/api/auth/…` is deleted rather than kept.
+  - **The issuer identity is pinned to the clean origin** via `jwt({ jwt: { issuer } })`. Left
+    alone, `oauthProvider` derives it from `baseURL`, which includes `/api/auth`, while every RP
+    is configured with `OIDC_ISSUER = {origin}` and fetches discovery from the root. OIDC requires
+    those to match; strict clients reject the id_token otherwise. Callbacks now also carry `iss`
+    (RFC 9207).
+
+  **The client registry yesterday's work hand-wrote is deleted, and what replaced it is split.**
+  `src/clients.ts` (id minting, secret rotation, comma-joined redirect URIs) is gone: the plugin
+  ships create/rotate, and `clientPrivileges` in `src/auth.ts` admits only the `admin` role —
+  while leaving unauthenticated RFC 7591 registration open, because it consults the hook only
+  when a session is present. What stayed ours is what the plugin models differently: it treats a
+  client as something a USER owns (`client.userId === session.user.id` on every mutating
+  endpoint, and no `disabled` field at all), so listing, editing, disabling and removing are
+  ours, or an operator could never withdraw an application someone else registered. Registering
+  proxies the plugin's `SERVER_ONLY` admin endpoint — that variant can set `skip_consent`, which
+  is a column now instead of a `trustedClients` entry in source, which is why the dashboard can
+  offer it.
+
+  **The demo relying party no longer ships a password.** `trustedClients` is gone as an option,
+  and secrets are hashed at rest, so `substrat-demo-rp` / `demo-rp-secret-not-for-production` —
+  resolved by every deployment, production included — is replaced by a per-boot registration
+  whose minted credentials the dev server prints.
+
+  Driven in a browser end to end, not only in vitest: registering a client through the dashboard,
+  its secret shown once, then an authorize request landing a signed-out visitor on `/login`,
+  signing in there, resuming to `/consent`, approving, and arriving at the relying party's
+  callback with `code`, `state` and `iss`.
+
+- Updated dependencies [e401927]
+- Updated dependencies [04c61c1]
+- Updated dependencies [d4c66ac]
+- Updated dependencies [cabd449]
+- Updated dependencies [6d71731]
+- Updated dependencies [1c1f23c]
+- Updated dependencies [b3c362d]
+  - @substrat-run/contracts@0.88.0
+  - @substrat-run/kernel@0.88.0
+
 ## 0.87.0
 
 ### Patch Changes

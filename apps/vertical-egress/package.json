@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/vertical-egress",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "private": true,
   "description": "The dispatch-namespace outbound worker — platform-bound vertical egress loops back through the router (#442, K-27)",
   "type": "module",
