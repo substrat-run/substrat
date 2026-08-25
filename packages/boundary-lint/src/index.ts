@@ -478,15 +478,11 @@ function maskSource(src: string): string {
       }
       // Unterminated — it was a division after all.
     }
+    // Inside a `${…}` expression: count its braces, so that reaching zero hands
+    // the next character back to the literal-text branch at the top.
     if (templates.length > 0) {
-      // Inside a `${…}` expression: track its braces so the template resumes.
       if (c === '{') templates[templates.length - 1]! += 1;
-      else if (c === '}') {
-        templates[templates.length - 1]! -= 1;
-        if (templates[templates.length - 1] === 0) {
-          // Back to literal text.
-        }
-      }
+      else if (c === '}') templates[templates.length - 1]! -= 1;
     }
     i++;
   }
@@ -681,7 +677,16 @@ function checkEngineCatch(rel: string, source: string, out: Violation[]): void {
     while (after < masked.length && /\s/.test(masked[after] ?? '')) after += 1;
     if (!isWord(masked, after, 'catch')) continue;
 
-    const catchOpen = masked.indexOf('{', after);
+    // Step over the binding first: `catch ({ message })` is legal, and its brace
+    // is not the block's.
+    let bodyFrom = after + 'catch'.length;
+    while (bodyFrom < masked.length && /\s/.test(masked[bodyFrom] ?? '')) bodyFrom += 1;
+    if (masked[bodyFrom] === '(') {
+      const paramEnd = matchDelim(masked, bodyFrom, '(', ')');
+      if (paramEnd < 0) continue;
+      bodyFrom = paramEnd + 1;
+    }
+    const catchOpen = masked.indexOf('{', bodyFrom);
     if (catchOpen < 0) continue;
     const catchClose = matchDelim(masked, catchOpen, '{', '}');
     if (catchClose < 0) continue;

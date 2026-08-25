@@ -437,6 +437,25 @@ describe('R7 — engine errors and ctx.atomic', () => {
     expect(lint(root)).toEqual([]);
   });
 
+  it('a destructured catch binding is not mistaken for the catch block', () => {
+    // `catch ({ message })` is legal, and its brace is not the block's. Reading
+    // the binding as the body makes a rethrowing catch look like a swallow.
+    const root = project(
+      verticalWith(`
+        import { completeWorkOrder } from '@substrat-run/engine-workorder';
+        export async function complete(ctx, id) {
+          try {
+            await completeWorkOrder(ctx, { orderId: id });
+          } catch ({ message }) {
+            throw new Error(message);
+          }
+        }
+      `),
+    );
+
+    expect(lint(root)).toEqual([]);
+  });
+
   it('a catch that only SOMETIMES throws is still a violation', () => {
     // The throw is nested in an `if` block, so there is a path that swallows —
     // and that path is the #770 bug.
