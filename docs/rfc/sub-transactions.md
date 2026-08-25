@@ -148,7 +148,7 @@ stale proposal. What it decided, of the questions #786 left open:
 
 | Question | Decision |
 |---|---|
-| A TypeScript AST pass? | **No.** One offset-preserving mask of comments/strings/regexes, then brace matching, run only on files that import an engine — `typescript` in `dependencies` buys a type checker to answer scanner questions |
+| A TypeScript AST pass? | **No.** One offset-preserving mask of comments/strings/regexes, then brace matching, run only on files that import an engine. Putting `typescript` in `dependencies` would buy a type checker — ~20MB into every scaffolded vertical — to answer two questions a scanner answers exactly |
 | `try`/`finally`, no `catch` | **Allowed** — it swallows nothing |
 | A re-throwing `catch` | **Allowed** — the operation still fails and the whole transaction rolls back. Read as a rethrow when the catch's last top-level statement is a `throw`, wrapped or not |
 | An escape hatch | **None.** Unlike R5's one-time handoff there is no legitimate unprotected swallow, so a hatch would only ever silence the rule |
