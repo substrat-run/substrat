@@ -174,6 +174,11 @@ export {
   type EntityVersion,
   type EntityVersionRow,
 } from './entity-version.js';
+export {
+  assertImpersonationLive,
+  impersonatorLabel,
+  stampImpersonation,
+} from './impersonation.js';
 export { readTimeline, readHistory } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 export {

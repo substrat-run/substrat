@@ -7,6 +7,7 @@ import {
   type EventAuthorization,
   type EventId,
   type HistoryEntry,
+  type Impersonation,
   type Instant,
   type ListPage,
   type Page,
@@ -78,7 +79,7 @@ export interface TimelineReader {
 }
 
 /** The envelope columns, in the order `mapTimelineRow` expects. */
-const TIMELINE_COLUMNS = 'id, type, occurred_at, actor';
+const TIMELINE_COLUMNS = 'id, type, occurred_at, actor, impersonation';
 /** …plus what a history VIEW needs. See `historyEntry` for why two are nullable. */
 const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, pii_class, subject_id`;
 
@@ -87,6 +88,8 @@ interface TimelineRow {
   type: string;
   occurred_at: string;
   actor: string;
+  /** K-42, as JSON. Null for the ordinary case: nobody was acting as anybody. */
+  impersonation: string | null;
 }
 
 interface HistoryRow extends TimelineRow {
@@ -149,6 +152,12 @@ function mapTimelineRow(row: TimelineRow): TimelineEntry {
     type: row.type,
     occurredAt: row.occurred_at as Instant,
     actor: actorOf(row.actor),
+    // K-42: OMITTED rather than null when absent, because `impersonation` is an
+    // optional field on the entry — a strip renders "as" only when there is
+    // something to render, and every existing caller keeps the shape it had.
+    ...(row.impersonation == null
+      ? {}
+      : { impersonation: JSON.parse(row.impersonation) as Impersonation }),
   };
 }
 

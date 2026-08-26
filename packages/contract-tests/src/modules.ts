@@ -524,12 +524,47 @@ const authorizedReadOp: OperationHandler<{ permission: PermissionKey }, number> 
 };
 
 const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
-  ctx.sql.query('SELECT id, type, authorization FROM _substrat_outbox ORDER BY id');
+  ctx.sql.query(
+    'SELECT id, type, entity_id, actor, authorization, impersonation ' +
+      'FROM _substrat_outbox ORDER BY id',
+  );
 
 const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query(
-    'SELECT actor, permission, tenant_id, scope_id, operation FROM _substrat_denials ORDER BY id',
+    'SELECT actor, permission, tenant_id, scope_id, operation, impersonation ' +
+      'FROM _substrat_denials ORDER BY id',
   );
+
+/**
+ * K-42: what the CONTEXT says about who is acting (#868).
+ *
+ * `principal` is whoever is being acted as — which is also the permission subject,
+ * and the pair is the assertion: the two can never be allowed to disagree.
+ */
+const whoamiOp: OperationHandler<undefined, unknown> = (ctx) => ({
+  principal: ctx.principal,
+  impersonation: ctx.impersonation ?? null,
+});
+
+/**
+ * K-42's forgery attempt, as an operation: module code CLAIMING a session.
+ *
+ * `impersonation` is not on `DomainEventInput`, so this is a cast — which is
+ * exactly what a module determined to launder an act would write. The suite
+ * asserts the emitted row is unaffected, i.e. that the stamp comes from the door
+ * and the input is parsed against a schema that has no such field.
+ */
+const forgeEmitOp: OperationHandler<{ permission: PermissionKey }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(input.permission));
+  ctx.emit({
+    type: 'perm.acted',
+    schemaVersion: 1,
+    entity: { entityType: 'test-thing', entityId: 'forged' },
+    piiClass: 'none',
+    payload: {},
+    impersonation: { by: { staff: ulid() }, reason: 'forged', expiresAt: '2099-01-01T00:00:00Z' },
+  } as never);
+};
 
 // -- #770 sub-transaction handlers -------------------------------------------
 // Every write a sub-transaction can make is exercised in one place: a row, an
@@ -910,6 +945,28 @@ export const permMod: ModuleRegistration = {
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
     'perm/read-denials': readDenialsOp as OperationHandler<never, unknown>,
+    // K-42 (#868). `whoami` reads the context, `forge-emit` tries to write a session
+    // module code was never handed, and the last two cover the third record a scope
+    // keeps about who did what — the platform-intent journal.
+    'perm/whoami': whoamiOp as OperationHandler<never, unknown>,
+    'perm/forge-emit': forgeEmitOp as OperationHandler<never, unknown>,
+    'perm/request-platform': (async (ctx, input) => {
+      const i = input as { permission: PermissionKey; kind: string };
+      assertAllowed(await ctx.check(i.permission));
+      return { id: ctx.requestPlatform({ kind: i.kind, payload: {} }) };
+    }) as OperationHandler<never, unknown>,
+    'perm/read-platform-requests': ((ctx) => ctx.platformRequests()) as OperationHandler<
+      never,
+      unknown
+    >,
+    // The kernel's own timeline read (#800), so the suite can assert that what a
+    // history strip renders carries the session and not just the actor.
+    'perm/timeline': ((ctx, input: { entityType: string; entityId: string } & ListPage) =>
+      readTimeline(
+        ctx,
+        { entityType: input.entityType, entityId: input.entityId },
+        input,
+      )) as OperationHandler<never, unknown>,
     // #304: read the request-time entitlement view — used by the scope-local (projected)
     // and CP-less path tests to prove a hosted vertical reads entitlements without a CP.
     'perm/read-entitlement': (async (ctx, key) =>

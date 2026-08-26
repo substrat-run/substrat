@@ -4,6 +4,7 @@ import {
   type Actor,
   type DenialBucket,
   type DenialFilter,
+  type Impersonation,
   type PermissionDenial,
   type PermissionKey,
   type ScopeId,
@@ -24,7 +25,8 @@ import {
  */
 
 /** Every column of `_substrat_denials`, in the order `mapDenialRow` expects. */
-export const DENIAL_COLUMNS = 'id, actor, permission, tenant_id, scope_id, operation, at, drained_at';
+export const DENIAL_COLUMNS =
+  'id, actor, permission, tenant_id, scope_id, operation, at, drained_at, impersonation';
 
 /** The raw row shape, as either adapter hands it back. */
 export interface DenialRow {
@@ -36,6 +38,8 @@ export interface DenialRow {
   operation: string | null;
   at: string;
   drained_at: string | null;
+  /** K-42, as JSON. Null on a row nobody was impersonating for — and on a row written before the column. */
+  impersonation?: string | null;
 }
 
 /**
@@ -66,6 +70,11 @@ export function mapDenialRow(row: DenialRow): PermissionDenial {
     operation: row.operation ?? null,
     at: row.at,
     drainedAt: row.drained_at ?? null,
+    // K-42. A row written before the column reads as null, which is the same
+    // answer as "nobody was impersonating" — and unlike K-34's `authorization`,
+    // that conflation costs nothing: impersonation did not exist to be unrecorded.
+    impersonation:
+      row.impersonation == null ? null : (JSON.parse(row.impersonation) as Impersonation),
   };
 }
 

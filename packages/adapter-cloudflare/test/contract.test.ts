@@ -19,6 +19,7 @@ import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } fr
 import {
   atomicContractSuite,
   billedMod,
+  impersonationContractSuite,
   connectorTestFetch,
   permissionContractSuite,
   scheduleContractSuite,
@@ -61,6 +62,19 @@ scopeHostContractSuite(
 // The permission suite runs against the DO's default tuple checker (scope tuples
 // in the ScopeDO, tenant tuples + roles in the ControlPlaneDO).
 permissionContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// K-42 (#868): impersonation, on the DO's default tuple checker. `permMod` is in
+// `contractTestModules`, so the ScopeDO carries it at code time. This adapter is where
+// the session has to survive an RPC hop and be acknowledged back, so the shared suite
+// is asserting materially more here than it is on the pure adapter.
+impersonationContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

@@ -26,6 +26,7 @@ import {
   type EntitlementView,
   type EntityRef,
   type EventAuthorization,
+  type Impersonation,
   type PermissionKey,
   type PrincipalId,
   type ScopeId,
@@ -46,6 +47,7 @@ import {
 import {
   ulid,
   assertAllowed,
+  assertImpersonationLive,
   ConnectionSealingKeyUnavailableError,
   noSealingKeyMessage,
   sealTo,
@@ -168,6 +170,8 @@ interface OutboxRow {
   pii_class: string;
   subject_id: string | null;
   authorization: string | null;
+  /** K-42, as JSON. Null unless the emitting operation ran under an impersonated session. */
+  impersonation: string | null;
   payload: string | null;
 }
 
@@ -190,6 +194,9 @@ const KERNEL_DDL = `
     -- K-34: the checks the emitting operation passed (JSON [{permission, grant?}]).
     -- NULL on rows written before the field existed -- honestly unrecorded, not empty.
     authorization TEXT,
+    -- K-42: WHO was really acting, as JSON {by, reason, expiresAt}, when the actor was
+    -- being impersonated. NULL is the ordinary case and means nobody was.
+    impersonation TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -200,6 +207,9 @@ const KERNEL_DDL = `
     kind TEXT NOT NULL,
     payload TEXT NOT NULL,
     requested_by TEXT NOT NULL,
+    -- K-42: the session requested_by was acting under, as JSON. An intent asks the
+    -- PLATFORM to act, so "who really asked" is a question this journal must answer.
+    impersonation TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
@@ -225,7 +235,10 @@ const KERNEL_DDL = `
     scope_id TEXT,
     operation TEXT,
     at TEXT NOT NULL,
-    drained_at TEXT
+    drained_at TEXT,
+    -- K-42: the session the refused caller was acting under, as JSON. A denial under
+    -- impersonation is the first row an incident asks about.
+    impersonation TEXT
   );
   -- #383: recurring-schedule bookkeeping. One row per schedule operation that has
   -- run on this scope, so the platform sweep can tell what is due. Spine (kernel-
@@ -460,6 +473,8 @@ export interface PlatformRequestRawRow {
   kind: string;
   payload: string;
   requested_by: string;
+  /** K-42, as JSON. Null unless the enqueueing operation ran under an impersonated session. */
+  impersonation: string | null;
   status: string;
   attempts: number;
   last_error: string | null;
@@ -480,6 +495,7 @@ function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
     kind: r.kind,
     payload: JSON.parse(r.payload),
     requestedBy: JSON.parse(r.requested_by),
+    impersonation: r.impersonation == null ? null : JSON.parse(r.impersonation),
     status: r.status,
     attempts: r.attempts,
     lastError: r.last_error,
@@ -646,6 +662,12 @@ export function defineScopeDO(
         // so legacy outbox rows read as "unrecorded". (_substrat_denials is a new table,
         // covered by KERNEL_DDL's IF NOT EXISTS with no ALTER.)
         'ALTER TABLE _substrat_outbox ADD COLUMN authorization TEXT',
+        // K-42: the impersonated session, on the three records a scope writes about who
+        // did what. Nullable on all three, and the null is not a gap here: before this
+        // column there were no sessions, so "unrecorded" and "nobody" are one fact.
+        'ALTER TABLE _substrat_outbox ADD COLUMN impersonation TEXT',
+        'ALTER TABLE _substrat_denials ADD COLUMN impersonation TEXT',
+        'ALTER TABLE _substrat_platform_requests ADD COLUMN impersonation TEXT',
         // #841: refusal attribution on a scope DO that predates it. Nullable, so an
         // intent settled before this column reads as "nobody classified this" rather
         // than claiming an origin the drain never decided.
@@ -1100,11 +1122,23 @@ export function defineScopeDO(
        * cannot set the acknowledgement, which is exactly how the skew is caught.
        */
       invokeOptions?: InvokeOptions,
+      /**
+       * K-42: the impersonated session this invocation runs under (#868).
+       *
+       * Ignoring it would fail the same way `invokeOptions` would — silently, and in
+       * the direction nobody notices: the operation runs, the writes commit, and the
+       * audit records the impersonated principal as if they had acted alone. So the
+       * reply carries `impersonation.recorded`, and a coordinator that sent a session
+       * and does not see the acknowledgement refuses the success. An old DO cannot
+       * set it, which is exactly how the skew is caught.
+       */
+      session?: Impersonation,
     ): Promise<{
       result: unknown;
       platformRequests: number;
       failure?: WireFailure;
       concurrency?: { version: string | null; ifMatchChecked: boolean };
+      impersonation?: { recorded: boolean };
     }> {
       if (!failureEnvelope) {
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
@@ -1120,6 +1154,7 @@ export function defineScopeDO(
             requiredEntitlement,
             systemModuleId,
             invokeOptions,
+            session,
           );
         } catch (err) {
           throw toRpcError(err);
@@ -1136,6 +1171,7 @@ export function defineScopeDO(
           requiredEntitlement,
           systemModuleId,
           invokeOptions,
+          session,
         );
       } catch (err) {
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
@@ -1156,12 +1192,18 @@ export function defineScopeDO(
       requiredEntitlement?: string,
       systemModuleId?: string,
       invokeOptions?: InvokeOptions,
+      session?: Impersonation,
     ): Promise<{
       result: unknown;
       platformRequests: number;
       concurrency?: { version: string | null; ifMatchChecked: boolean };
       idempotency?: { keyHonoured: boolean; replayed: boolean };
+      impersonation?: { recorded: boolean };
     }> {
+      // K-42: per INVOKE. A stub is minted once and held for as long as its holder
+      // likes, so a window checked only at the coordinator's door is decorative — and
+      // this is the side that actually writes the rows.
+      if (session) assertImpersonationLive(session, instant.parse(new Date().toISOString()));
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
       // `not_found`, not a bare throw (#113): every vertical hand-matched this message
@@ -1270,6 +1312,7 @@ export function defineScopeDO(
               connectionId,
               systemModuleId,
               signals,
+              session,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -1339,6 +1382,7 @@ export function defineScopeDO(
               tenantId,
               operation,
               err,
+              session,
             );
           }
           // The ORIGINAL error, deliberately: `invoke` flattens it for the envelope
@@ -1371,6 +1415,9 @@ export function defineScopeDO(
                 },
               }
             : {}),
+          // K-42's acknowledgement (see the parameter). Present only when there was a
+          // session to record, so an ordinary invoke costs nothing.
+          ...(session ? { impersonation: { recorded: true } } : {}),
         };
       });
     }
@@ -2355,6 +2402,8 @@ export function defineScopeDO(
       tenantId: TenantId,
       operation: string,
       err: PermissionDenied,
+      /** K-42: the session the refused caller was acting under, if any. */
+      session?: Impersonation,
     ): void {
       // Only an ENFORCED denial (assertAllowed, which attaches the checked permission +
       // node) is recorded. A module's own hand-thrown `new PermissionDenied('…')` carries
@@ -2368,8 +2417,8 @@ export function defineScopeDO(
             : (subject.id as PrincipalId);
       this.sql.exec(
         `INSERT INTO _substrat_denials
-           (id, actor, permission, tenant_id, scope_id, operation, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (id, actor, permission, tenant_id, scope_id, operation, at, impersonation)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         ulid(),
         JSON.stringify(actor),
         err.permission,
@@ -2377,6 +2426,7 @@ export function defineScopeDO(
         err.node.scopeId ?? null,
         operation,
         new Date().toISOString(),
+        session ? JSON.stringify(session) : null,
       );
     }
 
@@ -2393,6 +2443,7 @@ export function defineScopeDO(
         piiClass: row.pii_class,
         ...(row.subject_id ? { subjectId: row.subject_id } : {}),
         ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
+        ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
         payload: row.payload === null ? undefined : JSON.parse(row.payload),
       });
     }
@@ -2408,6 +2459,11 @@ export function defineScopeDO(
       systemModuleId?: string,
       /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
       signals?: { platformRequests: number },
+      /**
+       * K-42: the impersonated session this invocation runs under. Reaches the context
+       * from the DOOR — never from input — so module code can read it and cannot forge it.
+       */
+      session?: Impersonation,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -2491,6 +2547,7 @@ export function defineScopeDO(
         tenantId,
         scopeId,
         principal,
+        ...(session ? { impersonation: session } : {}),
         sql: doScopedSql(sql),
         now: () => at,
         emit: (event: DomainEventInput) => {
@@ -2503,12 +2560,16 @@ export function defineScopeDO(
             scopeId,
             actor: systemActor ?? derivedActor,
             ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
+            // K-42: stamped here like `actor` and `authorization`, and unavailable to
+            // module code for the same reason — it is not on `DomainEventInput`.
+            ...(session ? { impersonation: session } : {}),
           });
           sql.exec(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
-                entity_type, entity_id, pii_class, subject_id, authorization, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                entity_type, entity_id, pii_class, subject_id, authorization,
+                impersonation, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -2521,6 +2582,7 @@ export function defineScopeDO(
             full.piiClass,
             full.subjectId ?? null,
             full.authorization ? JSON.stringify(full.authorization) : null,
+            full.impersonation ? JSON.stringify(full.impersonation) : null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },
@@ -2542,12 +2604,13 @@ export function defineScopeDO(
           const requestedBy = systemActor ?? derivedActor;
           sql.exec(
             `INSERT INTO _substrat_platform_requests
-               (id, kind, payload, requested_by, status, attempts, requested_at)
-             VALUES (?, ?, ?, ?, 'pending', 0, ?)`,
+               (id, kind, payload, requested_by, impersonation, status, attempts, requested_at)
+             VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)`,
             id,
             input.kind,
             JSON.stringify(input.payload ?? null),
             JSON.stringify(requestedBy),
+            session ? JSON.stringify(session) : null,
             at,
           );
           if (signals) signals.platformRequests += 1;

@@ -5,6 +5,7 @@ import { UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel
 import {
   atomicContractSuite,
   connectorTestFetch,
+  impersonationContractSuite,
   permissionContractSuite,
   scheduleContractSuite,
   scopeHostContractSuite,
@@ -40,6 +41,24 @@ scopeHostContractSuite('adapter-sqlite', async () => {
 // The permission suite runs against the DEFAULT checker (the tuple engine).
 permissionContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-perm-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// K-42 (#868): impersonation. The DEFAULT checker, and it is the whole point — the
+// suite's central claim is that the permission answer is the IMPERSONATED principal's,
+// which an allow-all checker could not tell apart from a skeleton key.
+impersonationContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-imp-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),

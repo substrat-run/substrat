@@ -116,14 +116,18 @@ import {
   type TenantStoreHandle,
   outboundOfManifestJson,
   substratError,
+  type Impersonation,
+  type ImpersonationRequest,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
+  assertImpersonationLive,
   attachmentBlobKey,
   entitlementDenial,
   foldMeterReading,
   parseValidationRecords,
   resolveScopeRecord,
+  stampImpersonation,
   ulid,
   type AccessLogFilter,
   type AuditLogFilter,
@@ -617,6 +621,8 @@ interface PlatformRequestRawRow {
   kind: string;
   payload: string;
   requested_by: string;
+  /** K-42, as JSON. Null unless the enqueueing operation ran under an impersonated session. */
+  impersonation: string | null;
   status: string;
   attempts: number;
   last_error: string | null;
@@ -633,6 +639,7 @@ function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
     kind: r.kind,
     payload: JSON.parse(r.payload),
     requestedBy: JSON.parse(r.requested_by),
+    impersonation: r.impersonation == null ? null : JSON.parse(r.impersonation),
     status: r.status,
     attempts: r.attempts,
     lastError: r.last_error,
@@ -706,6 +713,12 @@ interface ScopeStubRpc {
      * `idempotency` below.
      */
     options?: InvokeOptions,
+    /**
+     * K-42 (#868): the impersonated session this invocation runs under. A ScopeDO
+     * running older code ignores it — which is why the reply has to say whether it
+     * recorded one; see `impersonation` below.
+     */
+    session?: Impersonation,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
@@ -740,6 +753,16 @@ interface ScopeStubRpc {
      * coordinator refuses on, not something it infers.
      */
     idempotency?: { keyHonoured: boolean; replayed: boolean };
+    /**
+     * Present iff the DO understood `session` (K-42).
+     *
+     * The same acknowledgement pattern, in the direction that matters most: an old
+     * DO that drops the session still RUNS the operation and still commits, and the
+     * only thing lost is the record of who was really behind it. Nothing about the
+     * response would look wrong — which is why the coordinator refuses on the
+     * absence rather than inferring success from one.
+     */
+    impersonation?: { recorded: boolean };
   }>;
   /** Whether this scope holds a live `system:<moduleId>` grant (#383) — the schedule switch. */
   hasSystemGrant(moduleId: string): Promise<boolean>;
@@ -2174,6 +2197,40 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * Act as `principal`, with the real actor preserved (K-42, #868).
+   *
+   * The same door as `getScope` in everything that decides what may happen — the
+   * lifecycle gate, the permission subject, the operations available. What differs
+   * is what is RECORDED: every event, denial and platform intent this stub produces
+   * carries the session beside the actor, stamped inside the DO where the rows are
+   * written. And the stub stops working when the session's window closes.
+   *
+   * A staff session is admin-logged BEFORE the stub is minted (K-33's ordering), so
+   * a session that then fails to mint is still visible. A principal acting as
+   * another principal is a tenant's own act and the admin log is the platform's
+   * (§4.4) — attributing it there would need a platform actor it does not have.
+   */
+  async getImpersonatedScope(
+    session: ImpersonationRequest,
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub> {
+    const stamped = stampImpersonation(session, instant.parse(new Date().toISOString()));
+    if (typeof stamped.by !== 'string') {
+      await this.recordAdmin(stamped.by.staff, 'impersonate', { tenantId, scopeId }, null, {
+        principal,
+        reason: stamped.reason,
+        expiresAt: stamped.expiresAt,
+      });
+    }
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options, stamped);
+  }
+
+  /**
    * A scope stub whose authority is a CONNECTION (#97).
    *
    * Three gates, all inherited from what the connection already is rather than
@@ -2307,6 +2364,8 @@ export class CloudflareScopeHost implements ScopeHost {
     connectionId?: ConnectionId,
     systemModuleId?: string,
     options?: ScopeStubOptions,
+    /** K-42: set when this stub acts AS `principal` on somebody's behalf. */
+    session?: Impersonation,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const cp = this.cp;
@@ -2350,6 +2409,9 @@ export class CloudflareScopeHost implements ScopeHost {
             ),
           );
         }
+        // K-42: refused here as well as in the DO. Both sides check because both can
+        // be the stale one, and a session's whole value is that it stops.
+        if (session) assertImpersonationLive(session, instant.parse(new Date().toISOString()));
         const envelope = await stub.invoke(
           operation,
           input,
@@ -2361,6 +2423,7 @@ export class CloudflareScopeHost implements ScopeHost {
           systemModuleId,
           true,
           invokeOptions,
+          session,
         );
         // The operation failed and the DO handed the error back as DATA — so it still
         // has its code and extensions, which a throw across this boundary would have
@@ -2395,6 +2458,20 @@ export class CloudflareScopeHost implements ScopeHost {
             'unavailable',
             `${operation} ran on a scope host that did not honour Idempotency-Key — the ` +
               'operation may have executed a second time. Retry once the scope has been migrated',
+          );
+        }
+        // K-42, the same shape again and the failure that matters most here: an
+        // unacknowledged session means the DO recorded the impersonated principal as
+        // if they had acted alone. The write has committed and nothing here can undo
+        // it — what this refuses is the SUCCESS, because a support session whose trail
+        // does not name the person behind it is precisely the audit failure the whole
+        // feature exists to prevent, and silence is how it would stay unnoticed.
+        if (session && envelope.impersonation?.recorded !== true) {
+          throw substratError(
+            'unavailable',
+            `${operation} ran on a scope host that did not record the impersonated session — ` +
+              'the audit trail names only the principal acted as. Retry once the scope has ' +
+              'been migrated',
           );
         }
         const drained = await this.drainExecutors(tenantId, scopeId);

@@ -5,6 +5,7 @@ import {
   instant,
   moduleId,
   permissionKey,
+  platformActorId,
   principalId,
   scopeId,
   tenantId,
@@ -61,6 +62,60 @@ export const eventAuthorization = z.object({
 });
 export type EventAuthorization = z.infer<typeof eventAuthorization>;
 
+/**
+ * WHO is really acting, when a session acts as somebody else (K-42, #868).
+ *
+ * A support engineer looking at what a named user sees, or a tenant admin
+ * reproducing a member's screen. Deliberately NOT a synthetic principal and not a
+ * fourth `actor` member, for the reason `connectorActor` is its own member: the
+ * record has to be able to say *both* — Nadia, acting as Anna — and an actor
+ * union can only ever say one. So the `actor` stays the impersonated principal,
+ * which is whose authority the operation ran under, and this names the person
+ * behind it.
+ *
+ * A platform staff actor is the object form (`{ staff: '01J…' }`) and a principal
+ * is the bare id, the same encoding `systemActor` uses and for the same reason:
+ * `PlatformActorId` is branded distinctly from `PrincipalId` (K-20) because a
+ * staff member is not a person in any tenant, and a JSON column that collapsed
+ * the two would lose exactly the distinction the audit needs.
+ */
+export const impersonator = z.union([z.object({ staff: platformActorId }), principalId]);
+export type Impersonator = z.infer<typeof impersonator>;
+
+/** How long a bound session may last, and the ceiling on one a caller asks for. */
+export const IMPERSONATION_MAX_MINUTES = 60;
+/** Bounded so the spine cannot be used as free-text storage. */
+export const IMPERSONATION_REASON_MAX = 200;
+
+/**
+ * An impersonated session, as every record it produces carries it.
+ *
+ * `reason` is REQUIRED and not a comment, the same discipline as the conformance
+ * kit's `alsoGrant.because`: an impersonation with no stated reason is the one
+ * nobody can review afterwards, and "there was a ticket" is not recoverable from
+ * a row that does not hold it.
+ *
+ * `expiresAt` is stamped by the host at mint rather than taken on trust
+ * (`impersonationRequest` is the input form), so a session is a session and not a
+ * standing key. K-33's rewind is time-boxed and audited; the precedent decided
+ * this one.
+ */
+export const impersonation = z.object({
+  by: impersonator,
+  reason: z.string().min(1).max(IMPERSONATION_REASON_MAX),
+  /** ISO 8601. The host refuses an invoke at or after it. */
+  expiresAt: instant,
+});
+export type Impersonation = z.infer<typeof impersonation>;
+
+/**
+ * What a caller asks for. `expiresAt` is optional — omitted, the host stamps
+ * `now + IMPERSONATION_MAX_MINUTES`; supplied, it is still capped by it, because
+ * a bound a caller chooses for itself is not a bound.
+ */
+export const impersonationRequest = impersonation.extend({ expiresAt: instant.optional() });
+export type ImpersonationRequest = z.infer<typeof impersonationRequest>;
+
 const piiInvariant = (
   val: { piiClass: PiiClass; subjectId?: unknown },
   ctx: z.RefinementCtx,
@@ -104,6 +159,10 @@ export const domainEvent = z
     // K-34: the checks the emitting operation passed — stamped kernel-side, absent on
     // events written before the field existed (honestly unrecorded, not empty).
     authorization: z.array(eventAuthorization).optional(),
+    // K-42: WHO was really acting, when this ran under an impersonated session.
+    // Stamped kernel-side like `actor`; absent means nobody was acting as anybody,
+    // which is the overwhelmingly common case and not an unrecorded one.
+    impersonation: impersonation.optional(),
     payload: z.unknown(),
   })
   .superRefine(piiInvariant);
@@ -137,6 +196,13 @@ export const timelineEntry = z.object({
   type: eventType,
   occurredAt: instant,
   actor,
+  /**
+   * Present when `actor` is somebody being ACTED AS (K-42). A strip that renders
+   * the actor alone would say *Anna changed this* about a change support made on
+   * Anna's behalf — true about the authority and false about the person, which is
+   * exactly the laundering the actor union refuses for connectors.
+   */
+  impersonation: impersonation.optional(),
 });
 export type TimelineEntry = z.infer<typeof timelineEntry>;
 

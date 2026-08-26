@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { instant, platformRequestId, scopeId } from './ids.js';
-import { actor, domainEvent } from './events.js';
+import { actor, domainEvent, impersonation } from './events.js';
 import { errorCode } from './errors.js';
 
 /**
@@ -75,6 +75,13 @@ export const platformRequest = z.object({
   kind: z.string().min(1),
   payload: z.unknown(),
   requestedBy: actor, // stamped kernel-side from the operation's ambient actor, like an event's `actor`
+  /**
+   * Present when `requestedBy` was being acted AS (K-42). An intent is the vertical
+   * asking the PLATFORM to do something privileged, so "who really asked for this"
+   * is a question the journal has to be able to answer — the same reason the outbox
+   * carries it. `null` when nobody was impersonating.
+   */
+  impersonation: impersonation.nullable(),
   status: platformRequestStatus,
   attempts: z.number().int().nonnegative(),
   lastError: z.string().nullable(),

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { actor } from './events.js';
+import { actor, impersonation } from './events.js';
 import { permissionKey, scopeId, tenantId } from './ids.js';
 
 /**
@@ -42,6 +42,13 @@ export const permissionDenial = z.object({
   id: z.string().min(1),
   /** WHO was refused: a principal, a `{ system }` module, or a `{ connection }`. */
   actor,
+  /**
+   * Present when the refused caller was acting AS `actor` (K-42) — nullable rather
+   * than optional because the row always has the column and "no impersonation" is
+   * the answer, not a gap. A denial is where intent and the model disagree, and a
+   * denial under impersonation is the one an incident asks about first.
+   */
+  impersonation: impersonation.nullable(),
   /** The key `assertAllowed` checked and refused. */
   permission: permissionKey,
   tenantId,

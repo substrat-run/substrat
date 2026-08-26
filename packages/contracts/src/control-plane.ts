@@ -123,6 +123,13 @@ export const adminAction = z.enum([
   // it becomes unreadable. The `after` carries the receipt (how many events, whether a key
   // existed) — an erasure that records no proof it happened is not a fulfilled DSAR.
   'shredSubject',
+  // K-42 (#868) — a staff actor opened a session ACTING AS a principal. Written before
+  // the session exists, so a mint that then fails is still visible, and it is the only
+  // record of the session's own existence: the rows the session goes on to write name
+  // it (`impersonation` on the outbox, the denial log, the intent journal), but a
+  // session that reads and writes nothing would otherwise leave no trace at all. The
+  // `after` carries who was acted as, the stated reason, and when the window closes.
+  'impersonate',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

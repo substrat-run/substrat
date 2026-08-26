@@ -34,6 +34,8 @@ import type {
   EntityRef,
   IdentityLink,
   IdentityPool,
+  Impersonation,
+  ImpersonationRequest,
   Jurisdiction,
   ModuleId,
   ModuleManifest,
@@ -141,6 +143,24 @@ export interface OperationContext {
   readonly tenantId: TenantId;
   readonly scopeId: ScopeId;
   readonly principal: PrincipalId;
+  /**
+   * Set when this invocation is running under an impersonated session (K-42,
+   * #868) — support acting as a named user, a tenant admin reproducing a member's
+   * screen. `principal` is then the person being ACTED AS, which is whose
+   * authority `ctx.check` answers with, and this names who is really there.
+   *
+   * Read-only and kernel-supplied: it arrives from the door the stub was minted
+   * at, never from module input, and module code cannot set or clear it. The
+   * kernel already stamps it onto every record the operation writes — the outbox,
+   * the denial log, the platform-intent journal — so a handler needs this only to
+   * BEHAVE differently, e.g. to refuse an irreversible action to a support session
+   * that has no business taking it:
+   *
+   * ```ts
+   * if (ctx.impersonation) throw substratError('forbidden', 'not while acting as someone else');
+   * ```
+   */
+  readonly impersonation?: Impersonation;
   readonly sql: ScopedSql;
   /**
    * The operation's instant (#812) — the ONLY clock module code may read.
@@ -2792,6 +2812,38 @@ export interface ScopeHost {
    * about what the stub may do.
    */
   getScope(
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub>;
+
+  /**
+   * Mint a stub that ACTS AS `principal`, with the real actor preserved (K-42, #868).
+   *
+   * The door support uses to see what a named user sees. Everything about the
+   * resulting stub is ordinary except two things, and both are the point:
+   *
+   * 1. **The permission model sees `principal`.** `ctx.check` answers exactly what
+   *    it would answer for them — which is the question being asked. The staff
+   *    actor's own authority is not consulted and cannot be: a `PlatformActorId`
+   *    holds no tuples in any tenant (K-20), so intersecting with it would deny
+   *    everything. What gates who may do this is THIS call, which is a platform
+   *    verb, audited before the session exists.
+   * 2. **Every record keeps both.** Events, denials and platform intents this stub
+   *    produces carry `impersonation` beside `actor`, stamped kernel-side like
+   *    K-34's `authorization` — module code can neither supply nor suppress it.
+   *
+   * The session is BOUNDED: `expiresAt` is stamped from the host's clock, capped
+   * at `IMPERSONATION_MAX_MINUTES`, and an invoke after it is refused. `reason` is
+   * required by the schema — the one moment it is knowable is now.
+   *
+   * A staff (`{ staff }`) impersonation is recorded in the admin log before the
+   * stub exists, the ordering K-33 established: the entry precedes the act, so a
+   * session that then fails is still visible.
+   */
+  getImpersonatedScope(
+    session: ImpersonationRequest,
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
