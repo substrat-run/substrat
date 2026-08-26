@@ -978,11 +978,60 @@ const operations = {
       ctx.now(),
       conversation.id,
     ]);
-    // The history moves; the losing row stays, so a customer's old link resolves.
-    ctx.sql.exec('UPDATE ticket0_messages SET conversation_id = ? WHERE conversation_id = ?', [
-      survivor.id,
+    /**
+     * Everything that hangs off the loser moves with it.
+     *
+     * Repointing only the messages left the rest behind, and two of them break
+     * visibly: a `widget_session` still naming the loser resolves to a conversation
+     * whose messages have gone, so the visitor's widget empties itself; and an
+     * `ai_turn` left behind takes the assistant's draft card off the survivor, which
+     * is where the human is now looking.
+     */
+    for (const table of ['ticket0_messages', 'ticket0_ai_turns', 'ticket0_widget_sessions']) {
+      ctx.sql.exec(`UPDATE ${table} SET conversation_id = ? WHERE conversation_id = ?`, [
+        survivor.id,
+        conversation.id,
+      ]);
+    }
+    // Notifications point at whichever conversation a person should open, which is
+    // now the survivor.
+    ctx.sql.exec(
+      'UPDATE ticket0_notifications SET conversation_id = ? WHERE conversation_id = ?',
+      [survivor.id, conversation.id],
+    );
+    // A tag is keyed by (conversation_id, tag), so a blind move collides whenever
+    // both conversations carry the same one. Move what does not collide.
+    ctx.sql.exec(
+      `UPDATE ticket0_conversation_tags SET conversation_id = ? WHERE conversation_id = ?
+         AND tag NOT IN (SELECT tag FROM ticket0_conversation_tags WHERE conversation_id = ?)`,
+      [survivor.id, conversation.id, survivor.id],
+    );
+    ctx.sql.exec('DELETE FROM ticket0_conversation_tags WHERE conversation_id = ?', [
       conversation.id,
     ]);
+    /**
+     * `csat` deliberately stays. It is keyed by the conversation and it is a rating OF
+     * that conversation — moving it would either collide with the survivor's own
+     * rating or silently reattribute one exchange's score to another.
+     */
+
+    // The permission walk follows declared edges, so the moved rows need one to the
+    // survivor. `parents` is an allowlist the kernel accumulates, so this widens
+    // rather than rewrites — and both conversations were reachable by the caller,
+    // which is what `merge` checked on each of them.
+    const survivorRef = conversationRef(survivor.id);
+    for (const [table, entityType] of [
+      ['ticket0_messages', 'message'],
+      ['ticket0_ai_turns', 'aiTurn'],
+      ['ticket0_widget_sessions', 'widgetSession'],
+    ] as const) {
+      for (const row of ctx.sql.query<{ id: string }>(
+        `SELECT id FROM ${table} WHERE conversation_id = ?`,
+        [survivor.id],
+      )) {
+        ctx.link({ entityType, entityId: row.id }, survivorRef);
+      }
+    }
     const row = conversationOrThrow(ctx, conversation.id);
     ctx.emit({
       type: 'ticket0.conversation-merged',

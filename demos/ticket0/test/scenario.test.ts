@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { principalId, type CountedPage, type Page } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
+import { T0_PERM } from '../src/manifest.js';
 import { buildHost, seed, signIdentity, type Desk, type World } from '../src/seed.js';
 
 let dir: string;
@@ -33,6 +34,7 @@ const at = (desk: Desk, role: Role): Promise<ScopeStub> =>
 
 interface Conversation {
   id: string;
+  subject: string;
   state: string;
   contact_id: string;
   first_public_reply_at: string | null;
@@ -139,9 +141,13 @@ describe('what a turn costs, counted once', () => {
       citedArticleIds: [],
       confidence: 0.91,
       outcome: 'drafted',
-    })) as { id: string; input_tokens: number; message_id: string };
+    })) as { id: string; input_tokens: number; confidence: number; message_id: string };
     expect(turn.id).toBe(TURN);
     expect(turn.input_tokens).toBe(1200);
+    // The column is declared INTEGER and holds a fraction — SQLite affinity keeps it
+    // REAL rather than truncating. Asserted, because "0.91 became 0" is exactly the
+    // failure the migration checkpoint is asking about.
+    expect(turn.confidence).toBe(0.91);
   });
 
   it('the drafted answer is INTERNAL — recording is not sending', async () => {
@@ -247,7 +253,11 @@ describe('the assistant’s authority is a grant, not a setting', () => {
   it('Kestrel’s desk refuses the identical call', async () => {
     const omar = await at(world.kestrel, 'agent');
     const page = (await omar.invoke('ticket0/list-conversations', {})) as CountedPage<Conversation>;
-    story.kestrelConversation = page.entries[0]!.id;
+    // By subject, not by position: `entries[0]` is whatever sorted first on the day,
+    // and three later tests hang off this id.
+    story.kestrelConversation = page.entries.find((c) =>
+      c.subject.includes('Rotating an API key'),
+    )!.id;
 
     const assistant = await at(world.kestrel, 'assistant');
     await expect(
@@ -698,7 +708,7 @@ describe('a signed-in customer, by contrast', () => {
     // No role assignment anywhere. One grant, on one contact.
     await host.admin.grant(world.staff, {
       principalId: stranger,
-      permission: 'conversation:read-own' as never,
+      permission: T0_PERM.conversationReadOwn,
       node: { tenantId: desk.tenant, scopeId: desk.scope },
       entity: { entityType: 'contact', entityId: desk.customerContactId },
       grantedBy: stranger,

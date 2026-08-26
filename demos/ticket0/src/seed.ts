@@ -429,10 +429,10 @@ async function seedDesk(
    * In a real deployment this is made when the person first signs in. It is not on
    * the widget path: a stranger in a chat bubble never needs one.
    */
-  for (const permission of [T0_PERM.conversationReadOwn, T0_PERM.conversationReplyOwn]) {
+  {
     await host.admin.grant(staff, {
       principalId: spec.customer.principal,
-      permission,
+      permission: T0_PERM.conversationReadOwn,
       node,
       entity: { entityType: 'contact', entityId: conversation.contact_id },
       grantedBy: spec.customer.principal,

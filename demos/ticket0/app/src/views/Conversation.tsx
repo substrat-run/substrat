@@ -16,7 +16,7 @@ import type { Session } from '../api.js';
 import { ApiError, api, type Contact, type Conversation, type Message, type SavedReply } from '../api.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
-import { Avatar, EventDivider, StateBadge, UnitPrice, clock } from '../ui.js';
+import { Avatar, EventDivider, StateBadge, clock } from '../ui.js';
 
 interface Turn {
   id: string;
@@ -239,10 +239,19 @@ function Thread({
         const turn = turnFor(m.id);
         // Artboard 08: the resolution and the reply that undid it are events in the
         // timeline, not states you have to infer from a badge that already moved on.
+        // The FIRST contact message after the resolution is the one that reopened it.
+        // Marking every later one too would draw the same event over and over.
         const reopened =
           conv.resolved_at &&
           m.author_kind === 'contact' &&
-          new Date(m.created_at) > new Date(conv.resolved_at);
+          new Date(m.created_at) > new Date(conv.resolved_at) &&
+          !messages
+            .slice(0, i)
+            .some(
+              (e) =>
+                e.author_kind === 'contact' &&
+                new Date(e.created_at) > new Date(conv.resolved_at!),
+            );
         return (
           <div key={m.id} style={{ display: 'contents' }}>
             {reopened && i > 0 ? (
@@ -482,10 +491,12 @@ function DraftCard({
       >
         <span className="t-small">Nothing reaches the customer until a person decides.</span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button className="btn btn-ghost" disabled={busy}>
+          {/* Disabled until they do something — the same treatment as “Merge into
+              another…”, so a control that does nothing looks like one. */}
+          <button className="btn btn-ghost" disabled title="Not implemented yet">
             Discard
           </button>
-          <button className="btn" disabled={busy}>
+          <button className="btn" disabled title="Not implemented yet">
             Edit
           </button>
           <button
@@ -857,6 +868,3 @@ function Rail({
     </aside>
   );
 }
-
-/** Unused-import guard for the price treatment, which the usage screen also uses. */
-export { UnitPrice };

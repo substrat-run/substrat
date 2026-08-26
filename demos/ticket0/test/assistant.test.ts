@@ -250,7 +250,6 @@ describe('answering a customer', () => {
     const r = await ask(world.substrat, 'How do I run a migration against a live scope?');
     expect(r.outcome).toBe('answered');
 
-    const widget = await at(world.substrat, 'widget');
     const conv = (await (await at(world.substrat, 'agent')).invoke('ticket0/list-messages', {
       conversationId: r.conversationId,
     })) as Page<{ author_kind: string; visibility: string }>;
@@ -259,7 +258,6 @@ describe('answering a customer', () => {
     const assistantMessages = conv.entries.filter((m) => m.author_kind === 'assistant');
     expect(assistantMessages.some((m) => m.visibility === 'internal')).toBe(true);
     expect(assistantMessages.some((m) => m.visibility === 'public')).toBe(true);
-    expect(widget).toBeDefined();
   });
 
   /**

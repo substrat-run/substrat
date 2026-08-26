@@ -166,9 +166,20 @@
       headers: body ? { 'content-type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
     }).then(function (r) {
-      return r.json().then(function (j) {
+      // Text first. A 502 from a proxy, a 204, or a CORS-stripped body is not JSON,
+      // and `r.json()` on one throws a SyntaxError carrying no status — which is
+      // exactly what `staleSession` needs to see a 404 or 403 and recover.
+      return r.text().then(function (t) {
+        var j = null;
+        if (t) {
+          try {
+            j = JSON.parse(t);
+          } catch (e) {
+            j = null;
+          }
+        }
         if (!r.ok) {
-          var err = new Error((j && (j.detail || j.title)) || 'Request failed');
+          var err = new Error((j && (j.detail || j.title)) || t.slice(0, 120) || 'Request failed');
           err.status = r.status;
           throw err;
         }
@@ -227,8 +238,12 @@
   function schedule() {
     clearInterval(poll);
     poll = null;
-    if (!open || document.hidden) return;
-    poll = setInterval(refresh, waiting ? FAST : IDLE);
+    // A CLOSED panel still polls, slowly: the unread badge counts staff and assistant
+    // replies that arrive while it is shut, and a widget that stops looking has
+    // nothing to count. A hidden tab stops entirely, and a session that does not
+    // exist yet has nothing to poll for.
+    if (document.hidden || !session) return;
+    poll = setInterval(refresh, open && waiting ? FAST : IDLE);
   }
 
   document.addEventListener('visibilitychange', function () {
@@ -260,12 +275,18 @@
       USER && SIGNATURE ? { externalId: USER, email: USER, signature: SIGNATURE } : null;
     return call('POST', '/widget/sessions', { identity: identity }).then(function (s) {
       session = s;
-      localStorage.setItem(STORE, JSON.stringify(s));
+      try {
+        localStorage.setItem(STORE, JSON.stringify(s));
+      } catch (e) {
+        // Private mode, or storage full. The session is live either way; it just
+        // will not survive a reload.
+      }
       return s;
     });
   }
 
   function thread() {
+    if (!session) return Promise.reject(new Error('no session'));
     return call(
       'GET',
       '/widget/sessions/' + session.sessionId + '/messages?token=' + encodeURIComponent(session.token),
@@ -345,7 +366,7 @@
       '<div class="cp"><textarea id="t" placeholder="Ask a question\u2026" rows="1"></textarea>' +
       '<button class="send" id="s">Send</button></div>' +
       '<div class="ft"><span id="ft"></span>' +
-      '<button id="human">Talk to a human</button></div></div>';
+      '<button data-act="human">Talk to a human</button></div></div>';
 
     root.getElementById('c').onclick = function () {
       toggle(false);
@@ -362,7 +383,7 @@
     };
     // Always reachable. The "Did this help?" card is shown once and then gone, so the
     // route to a person cannot live only inside it.
-    root.getElementById('human').onclick = function () {
+    root.querySelector('.ft [data-act="human"]').onclick = function () {
       helpDone = true;
       post('Can a person take a look at this, please?');
     };
@@ -370,11 +391,11 @@
     // Delegated: the log's contents are replaced on every update, so a handler bound
     // to a button inside it would be bound to a button that no longer exists.
     root.getElementById('l').addEventListener('click', function (e) {
-      var id = e.target && e.target.id;
-      if (id === 'yes') {
+      var act = e.target && e.target.getAttribute && e.target.getAttribute('data-act');
+      if (act === 'yes') {
         helpDone = true;
         renderLog();
-      } else if (id === 'human') {
+      } else if (act === 'human') {
         helpDone = true;
         post('Can a person take a look at this, please?');
       }
@@ -443,7 +464,17 @@
       //
       // Two at most. The design shows one; a 360px panel with four stacked sources
       // under every answer buries the answer, and the rest are one click away.
-      var cites = m.citations || [];
+      // Citations come from ingested documentation, which is content rather than
+      // configuration. Anything but http(s) — `javascript:` above all — must not
+      // reach an href.
+      var cites = (m.citations || []).filter(function (c) {
+        try {
+          var scheme = new URL(c.url).protocol;
+          return scheme === 'http:' || scheme === 'https:';
+        } catch (e) {
+          return false;
+        }
+      });
       if (cites.length) {
         body += '<div class="cites">';
         cites.slice(0, 2).forEach(function (c) {
@@ -464,12 +495,12 @@
       // Say so, rather than animating at somebody forever.
       body +=
         '<div class="escape">No answer from the assistant on this one \u2014 ' +
-        'a person will pick it up. <button id="human">Ask for a human now</button></div>';
+        'a person will pick it up. <button data-act="human">Ask for a human now</button></div>';
     } else if (waiting) {
       body +=
         '<div class="wait"><div class="dots"><span></span><span></span><span></span></div>' +
         '<span class="waitlabel">Assistant is reading the docs\u2026</span></div>' +
-        '<div class="escape">Taking long? <button id="human">Talk to a human</button> \u2014 we\u2019re online.</div>';
+        '<div class="escape">Taking long? <button data-act="human">Talk to a human</button> \u2014 we\u2019re online.</div>';
     } else if (
       !helpDone &&
       messages.length >= 2 &&
@@ -477,8 +508,8 @@
     ) {
       body +=
         '<div class="help"><p>Did this help?</p><div>' +
-        '<button class="hb yes" id="yes">Yes, thanks</button>' +
-        '<button class="hb" id="human">Talk to a human</button></div></div>';
+        '<button class="hb yes" data-act="yes">Yes, thanks</button>' +
+        '<button class="hb" data-act="human">Talk to a human</button></div></div>';
     }
 
     log.innerHTML = body;
@@ -504,6 +535,7 @@
 
   function refresh() {
     tickWait();
+    if (!session) return Promise.resolve();
     return thread()
       .then(function (page) {
         var next = page.entries || [];
@@ -529,6 +561,14 @@
   function post(text) {
     text = (text || '').trim();
     if (!text) return;
+    // Without a session there is nowhere to send it. Say so rather than reading
+    // `session.sessionId` off null and leaving the dots spinning forever.
+    if (!session) {
+      error = 'Not connected — reopen the chat to start a new conversation.';
+      waiting = false;
+      draw();
+      return;
+    }
     var ta = root.getElementById('t');
     if (ta) {
       ta.value = '';
@@ -564,8 +604,8 @@
   function toggle(next) {
     open = next;
     if (!open) {
-      clearInterval(poll);
-      poll = null;
+      // Not cleared — re-scheduled at the idle pace so the badge keeps counting.
+      schedule();
       draw();
       return;
     }
@@ -574,9 +614,14 @@
       .then(refresh)
       .then(schedule)
       .catch(function (e) {
-        // A desk that does not embed here, or a rotated secret. Say which.
+        // A desk that does not embed here, or a rotated secret. Say which — and
+        // disable the composer, because there is nothing behind it.
         error = String(e.message || e);
         draw();
+        var ta = root.getElementById('t');
+        var send = root.querySelector('.send');
+        if (ta) ta.disabled = true;
+        if (send) send.disabled = true;
       });
   }
 

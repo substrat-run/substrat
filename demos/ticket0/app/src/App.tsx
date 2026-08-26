@@ -95,10 +95,16 @@ export function App() {
   const [view, navigate] = useHashRoute();
 
   useEffect(() => {
-    void me().then(async (s) => {
-      setSession(s);
-      if (s) setCaps(await probe().catch(() => ({ money: false, configure: false, inbox: false })));
-    });
+    void me()
+      // A rejected `me()` — the API down, the proxy misrouted — used to leave the
+      // splash screen up forever, which reads as a hang rather than as signed-out.
+      .catch(() => null)
+      .then(async (s) => {
+        setSession(s);
+        if (s) {
+          setCaps(await probe().catch(() => ({ money: false, configure: false, inbox: false })));
+        }
+      });
   }, []);
 
   const go = useCallback((v: View) => navigate(v), [navigate]);

@@ -46,6 +46,11 @@ export const API = apiCatalogFrom(ticket0Operations, {
   'ticket0/list-saved-replies': { tag: 'Saved replies' },
   'ticket0/create-saved-reply': { tag: 'Saved replies' },
 
+  'ticket0/list-turns': {
+    tag: 'Assistant',
+    description:
+      'What the assistant produced here, for the human deciding whether to send it. Carries no token counts — cost has one door, and it is `usage:read`.',
+  },
   'ticket0/record-answer': {
     tag: 'Assistant',
     description: 'The draft and its token usage in one transaction; `turnId` dedupes a retry.',

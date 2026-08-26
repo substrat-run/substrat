@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-ticket0
 
-20 keys · 2 modules · 7 roles
+19 keys · 2 modules · 7 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -18,7 +18,6 @@
 | `conversation:read` | See every conversation in this desk, internal notes included | `@substrat-run/demo-ticket0` |
 | `conversation:read-own` | See a conversation that is yours, public messages only | `@substrat-run/demo-ticket0` |
 | `conversation:relay` | Bring messages in from email and read the ones going out — the relay only, no human role | `@substrat-run/demo-ticket0` |
-| `conversation:reply-own` | Add to a conversation that is yours | `@substrat-run/demo-ticket0` |
 | `conversation:reply-public` | Send a reply the customer will receive | `@substrat-run/demo-ticket0` |
 | `conversation:resolve` | Resolve and close a conversation | `@substrat-run/demo-ticket0` |
 | `conversation:widget` | Serve the embedded chat widget — held by the desk’s widget service alone; a visitor is confined by their session token, not by this key | `@substrat-run/demo-ticket0` |
@@ -57,7 +56,6 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `conversation:read` | `agent`, `assistant`, `assistant-autonomous`, `desk-admin` |
 | `conversation:read-own` | — no role — |
 | `conversation:relay` | `relay` |
-| `conversation:reply-own` | — no role — |
 | `conversation:reply-public` | `agent`, `assistant-autonomous`, `desk-admin` |
 | `conversation:resolve` | `agent`, `desk-admin` |
 | `conversation:widget` | `widget` |
@@ -78,7 +76,7 @@ no role in §3 but listed here is deliberate, not a gap.
 
 | Entity type | Permissions granted per entity |
 | --- | --- |
-| `contact` | `conversation:read-own`, `conversation:reply-own` |
+| `contact` | `conversation:read-own` |
 
 ## 5. Not covered by this artifact
 

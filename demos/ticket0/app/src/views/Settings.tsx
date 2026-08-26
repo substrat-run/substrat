@@ -113,10 +113,14 @@ function Desk() {
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
 
   useEffect(() => {
-    void api.getDesk().then(setDesk);
+    void api.getDesk().then(setDesk).catch((e: Error) => setFailed(e.message));
   }, []);
+  // A rejected request is not a slow one. Saying "Loading…" forever is the screen
+  // lying about which of the two happened.
+  if (failed) return <Empty title="Could not load the desk" note={failed} />;
   if (!desk) return <div className="t-meta">Loading…</div>;
 
   const origins: string[] = JSON.parse(desk.allowed_origins || '[]');
@@ -124,14 +128,22 @@ function Desk() {
   const save = async () => {
     setSaving(true);
     setSaved(false);
-    await api.configureDesk({
-      fromAddress: desk.from_address,
-      greeting: desk.greeting,
-      allowedOrigins: origins,
-      businessHours: desk.business_hours,
-    });
-    setSaving(false);
-    setSaved(true);
+    setFailed(null);
+    try {
+      await api.configureDesk({
+        fromAddress: desk.from_address,
+        greeting: desk.greeting,
+        allowedOrigins: origins,
+        businessHours: desk.business_hours,
+      });
+      setSaved(true);
+    } catch (e) {
+      // Reported, not swallowed — and `finally` releases the button either way, so a
+      // failure does not leave "Saving…" wedged on screen.
+      setFailed(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -200,6 +212,11 @@ function Desk() {
           {saving ? 'Saving…' : 'Save'}
         </button>
         {saved ? <span className="t-small" style={{ color: 'var(--green)' }}>Saved.</span> : null}
+        {failed ? (
+          <span className="t-small" style={{ color: 'var(--danger-2)' }}>
+            {failed}
+          </span>
+        ) : null}
       </div>
     </>
   );
@@ -448,10 +465,12 @@ function Knowledge() {
                 disabled={s.status === 'ingesting' || busy === s.id}
                 onClick={() => {
                   setBusy(s.id);
-                  void api.ingestKbSource({ sourceId: s.id }).then(() => {
-                    setBusy(null);
-                    load();
-                  });
+                  void api
+                    .ingestKbSource({ sourceId: s.id })
+                    .then(load)
+                    // `finally`, or a failed re-read leaves "Re-read" disabled for
+                    // the rest of the session — on the row most likely to need it.
+                    .finally(() => setBusy(null));
                 }}
               >
                 Re-read

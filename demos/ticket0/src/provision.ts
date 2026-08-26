@@ -23,7 +23,7 @@ import { MODULES, ROLES } from './seed.js';
 export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
   {
     entityType: 'contact',
-    permissions: [T0_PERM.conversationReadOwn, T0_PERM.conversationReplyOwn],
+    permissions: [T0_PERM.conversationReadOwn],
   },
 ];
 

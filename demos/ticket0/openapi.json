@@ -2526,6 +2526,10 @@
             }
           }
         ],
+        "description": "What the assistant produced here, for the human deciding whether to send it. Carries no token counts — cost has one door, and it is `usage:read`.",
+        "tags": [
+          "Assistant"
+        ],
         "responses": {
           "200": {
             "description": "One page of results. The walk is in the response headers.",

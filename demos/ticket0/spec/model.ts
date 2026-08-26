@@ -412,7 +412,6 @@ export const TICKET0_PERMISSIONS = [
   'conversation:read',
   'conversation:widget',
   'conversation:read-own',
-  'conversation:reply-own',
   'conversation:draft',
   'conversation:reply-public',
   'conversation:assign',

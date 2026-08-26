@@ -54,13 +54,11 @@ async function boot() {
   const host = buildHost(DATA);
 
   let world: World;
-  let fresh = false;
   if (existsSync(CAST)) {
     world = JSON.parse(readFileSync(CAST, 'utf8')) as World;
   } else {
     world = await seed(host);
     writeFileSync(CAST, JSON.stringify(world, null, 2));
-    fresh = true;
   }
 
   // Re-branded on the way in: everything loaded from JSON crossed a serialization
@@ -108,8 +106,45 @@ async function boot() {
   const deskByOrigin = (origin: string): Desk | undefined =>
     desks.find((d) => d.origin === origin || d.devOrigins.includes(origin));
 
+  /**
+   * Origins the browser is allowed to talk from, read from the DESK rather than from
+   * the boot-time seed.
+   *
+   * There were two answers to one question: CORS consulted the seeded list while
+   * `widget-start` consulted `desk_settings.allowed_origins`, so an origin added
+   * through `configure-desk` passed the operation and was blocked by the browser, and
+   * one removed passed the browser and was refused by the operation. Cached briefly
+   * because this runs on every preflight.
+   *
+   * The union is deliberate: the seeded origins are a ROUTING fact (which desk owns
+   * which host — in production the router's job), while the desk's own list is the
+   * authorization fact. Letting a removed origin past CORS means the operation gets to
+   * refuse it with a sentence somebody can read, rather than the browser swallowing it.
+   */
+  let allowed: string[] = desks.flatMap((d) => [d.origin, ...d.devOrigins]);
+  const refreshOrigins = async () => {
+    const declared = await Promise.all(
+      desks.map(async (d) => {
+        try {
+          const admin = await host.getScope(d.admin.principal, d.tenant, d.scope);
+          const settings = await admin.invoke<{ allowed_origins: string }>('ticket0/get-desk', {});
+          return JSON.parse(settings.allowed_origins) as string[];
+        } catch {
+          return [];
+        }
+      }),
+    );
+    allowed = [
+      ...new Set([...desks.flatMap((d) => [d.origin, ...d.devOrigins]), ...declared.flat()]),
+    ];
+  };
+  void refreshOrigins();
+  // Refreshed in the background because the surface asks for this synchronously, on
+  // every preflight. A `configure-desk` change reaches CORS within five seconds.
+  setInterval(() => void refreshOrigins(), 5000).unref();
+
   mountWidgetSurface(app, {
-    allowedOrigins: () => desks.flatMap((d) => [d.origin, ...d.devOrigins]),
+    allowedOrigins: () => allowed,
     resolveDesk: async (origin) => {
       const desk = deskByOrigin(origin);
       if (!desk) return null;
@@ -170,7 +205,10 @@ async function boot() {
   );
 
   // ── The connector-shaped jobs ─────────────────────────────────────────────
-  if (fresh && process.env.TICKET0_SKIP_INGEST !== '1') {
+  // Runs on every boot: a desk whose source failed last time would otherwise never
+  // try again, and the ingest is idempotent on content hash, so a re-read of an
+  // unchanged corpus writes nothing.
+  if (process.env.TICKET0_SKIP_INGEST !== '1') {
     process.stdout.write('\ningesting knowledge bases…\n');
     for (const desk of desks) void ingestFor(host, desk);
   }

@@ -23,7 +23,6 @@ export const T0_PERM = {
   conversationRead: permissionKey.parse('conversation:read'),
   conversationWidget: permissionKey.parse('conversation:widget'),
   conversationReadOwn: permissionKey.parse('conversation:read-own'),
-  conversationReplyOwn: permissionKey.parse('conversation:reply-own'),
   conversationDraft: permissionKey.parse('conversation:draft'),
   conversationReplyPublic: permissionKey.parse('conversation:reply-public'),
   conversationAssign: permissionKey.parse('conversation:assign'),
@@ -42,13 +41,15 @@ export const ticket0Manifest = moduleManifest.parse({
   id: '@substrat-run/demo-ticket0',
   version: '0.1.0',
   kernelContract: '^0.0.1',
-  migrations: { journalDir: './migrations', compatibleFrom: '0.1.0' },
+  // The package root, which is where `journal.json` actually is and where
+  // `tools/emit-migrations.mts` writes it. Naming a directory that does not exist
+  // is the kind of thing that reads as configured until somebody goes looking.
+  migrations: { journalDir: './', compatibleFrom: '0.1.0' },
   ...manifestOperations(ticket0Operations, {
     permissions: {
       'conversation:read': 'See every conversation in this desk, internal notes included',
       'conversation:widget': 'Serve the embedded chat widget — held by the desk’s widget service alone; a visitor is confined by their session token, not by this key',
       'conversation:read-own': 'See a conversation that is yours, public messages only',
-      'conversation:reply-own': 'Add to a conversation that is yours',
       'conversation:draft': 'Write an internal note or record a drafted answer — never leaves the building',
       'conversation:reply-public': 'Send a reply the customer will receive',
       'conversation:assign': 'Assign, snooze, wake and tag a conversation',

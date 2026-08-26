@@ -172,7 +172,7 @@ export function modelFromEnv(env: Record<string, string | undefined> = process.e
 }
 
 export interface AssistantTarget {
-  invoke<T>(operation: string, input: unknown): Promise<T>;
+  invoke<T>(operation: string, input: unknown, options?: { idempotencyKey?: string }): Promise<T>;
 }
 
 export interface AnswerOutcome {
@@ -208,11 +208,15 @@ export async function answerConversation(
    */
   const send = async (text: string, citedArticleIds: string[]): Promise<boolean> => {
     try {
-      await assistant.invoke('ticket0/post-public-reply', {
-        conversationId: input.conversationId,
-        body: text,
-        citedArticleIds,
-      });
+      await assistant.invoke(
+        'ticket0/post-public-reply',
+        { conversationId: input.conversationId, body: text, citedArticleIds },
+        // The platform's own dedupe, keyed by the message being answered: a retried
+        // send returns the first one's recording instead of posting a second public
+        // reply and emitting a second `reply-requested`. `record-answer` already had
+        // this through the ledger's dedupe key; the send did not.
+        { idempotencyKey: `reply:${input.messageId}` },
+      );
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

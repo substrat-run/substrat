@@ -95,15 +95,20 @@ export function Inbox({
   const [people, setPeople] = useState<Map<string, Contact>>(new Map());
 
   const load = useCallback(
-    (showSpinner = false) => {
-    if (showSpinner) setPage(null);
-    api
-      .listConversations(asked(filters))
-      .then((p) => {
-        setPage({ entries: p.entries, total: p.total });
-        setCursor(0);
-      })
-      .catch((e: Error) => setError(e.message));
+    (fromFilters = false) => {
+      if (fromFilters) setPage(null);
+      api
+        .listConversations(asked(filters))
+        .then((p) => {
+          setPage({ entries: p.entries, total: p.total });
+          // Only a deliberate filter change moves the cursor. A background refresh
+          // that reset it would drag the selection back to the top mid-keystroke.
+          if (fromFilters) setCursor(0);
+          // A success means whatever failed before is over; leaving the banner up
+          // makes a working screen look broken.
+          setError(null);
+        })
+        .catch((e: Error) => setError(e.message));
     },
     [filters],
   );

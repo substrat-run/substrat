@@ -126,6 +126,14 @@ function One({ id, go }: { id: string; go: (v: View) => void }) {
   const [comment, setComment] = useState('');
   const [rated, setRated] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Kept apart from `error`, which the early return uses.
+   *
+   * A failed CSAT submission is a problem with the rating, not with the conversation
+   * — writing it to the conversation-level error unmounted the whole thread and left
+   * the customer looking at an error page instead of the exchange they were rating.
+   */
+  const [ratingError, setRatingError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -207,16 +215,18 @@ function One({ id, go }: { id: string; go: (v: View) => void }) {
             <EventDivider tone="resolved" label={conv.state} />
             <RatingCard
               rated={rated}
+              error={ratingError}
               score={score}
               comment={comment}
               setScore={setScore}
               setComment={setComment}
               onSubmit={() => {
                 if (score === null) return;
+                setRatingError(null);
                 void api
                   .submitCsat({ conversationId: id, score, comment: comment || null })
                   .then(() => setRated(true))
-                  .catch((e: Error) => setError(e.message));
+                  .catch((e: Error) => setRatingError(e.message));
               }}
             />
           </>
@@ -238,6 +248,7 @@ function One({ id, go }: { id: string; go: (v: View) => void }) {
 
 function RatingCard({
   rated,
+  error,
   score,
   comment,
   setScore,
@@ -245,6 +256,7 @@ function RatingCard({
   onSubmit,
 }: {
   rated: boolean;
+  error: string | null;
   score: number | null;
   comment: string;
   setScore: (n: number) => void;
@@ -296,6 +308,11 @@ function RatingCard({
       <button className="btn btn-primary" disabled={score === null} onClick={onSubmit}>
         Send rating
       </button>
+      {error ? (
+        <div className="t-small" style={{ marginTop: 8, color: 'var(--danger-2)' }}>
+          {error}
+        </div>
+      ) : null}
     </div>
   );
 }
