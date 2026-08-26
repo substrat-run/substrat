@@ -256,17 +256,13 @@ function notify(
 
 const enc = new TextEncoder();
 
-/**
- * Web Crypto — the same API in node, workerd and browsers, and the only crypto module
- * code is allowed. Declared locally rather than reached through `globalThis` so this
- * file types under BOTH lib sets: `tsconfig.json` compiles it with node's ambient
- * types, `tsconfig.worker.json` with the Workers ones, and `typeof globalThis` does
- * not carry `crypto` in the second. The engines' pattern.
- */
+/** An imported HMAC key. Opaque — handed straight back to `sign`, never inspected. */
 interface ImportedKey {
   readonly __webCryptoKey: unique symbol;
 }
-declare const crypto: {
+
+/** The slice of Web Crypto this module uses. Structural, so it types under both lib sets. */
+interface WebCrypto {
   subtle: {
     digest(algorithm: 'SHA-256', data: Uint8Array): Promise<ArrayBuffer>;
     importKey(
@@ -278,7 +274,20 @@ declare const crypto: {
     ): Promise<ImportedKey>;
     sign(algorithm: 'HMAC', key: ImportedKey, data: Uint8Array): Promise<ArrayBuffer>;
   };
-};
+}
+
+/**
+ * Web Crypto — the same API in node, workerd and browsers, and the only crypto module
+ * code is allowed (never `node:crypto`, never a hand-rolled hash).
+ *
+ * Reached through `globalThis`, which is the rule, and cast rather than declared because
+ * the two lib sets disagree about it: `tsconfig.json` compiles this file with node's
+ * ambient types, `tsconfig.worker.json` with the Workers ones, and `typeof globalThis`
+ * carries no `crypto` in the second. The cast is where that disagreement is absorbed —
+ * one place, named, instead of a bare `declare const crypto` that shadows the global and
+ * would go on type-checking if the global ever stopped being there.
+ */
+const webCrypto = (globalThis as unknown as { crypto: WebCrypto }).crypto;
 
 function hex(buf: ArrayBuffer): string {
   return Array.from(new Uint8Array(buf))
@@ -288,7 +297,7 @@ function hex(buf: ArrayBuffer): string {
 
 /** Web Crypto, the same API in Node, Workers and browsers. Never a hand-rolled hash. */
 async function sha256(value: string): Promise<string> {
-  return hex(await crypto.subtle.digest('SHA-256', enc.encode(value)));
+  return hex(await webCrypto.subtle.digest('SHA-256', enc.encode(value)));
 }
 
 /**
@@ -305,14 +314,14 @@ async function verifyIdentity(
   externalId: string,
   signature: string,
 ): Promise<boolean> {
-  const key = await crypto.subtle.importKey(
+  const key = await webCrypto.subtle.importKey(
     'raw',
     enc.encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   );
-  const expected = hex(await crypto.subtle.sign('HMAC', key, enc.encode(externalId)));
+  const expected = hex(await webCrypto.subtle.sign('HMAC', key, enc.encode(externalId)));
   if (expected.length !== signature.length) return false;
   let diff = 0;
   for (let i = 0; i < expected.length; i += 1) {
