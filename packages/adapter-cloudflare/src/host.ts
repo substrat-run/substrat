@@ -635,6 +635,7 @@ interface PlatformRequestRawRow {
   kind: string;
   payload: string;
   requested_by: string;
+  impersonation: string | null;
   status: string;
   attempts: number;
   last_error: string | null;
@@ -651,6 +652,7 @@ function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
     kind: r.kind,
     payload: JSON.parse(r.payload),
     requestedBy: JSON.parse(r.requested_by),
+    impersonation: r.impersonation == null ? null : JSON.parse(r.impersonation),
     status: r.status,
     attempts: r.attempts,
     lastError: r.last_error,
