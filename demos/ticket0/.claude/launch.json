@@ -1,0 +1,36 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "issuer",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "run",
+        "issuer"
+      ],
+      "port": 8879,
+      "autoPort": false
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "run",
+        "server"
+      ],
+      "port": 8874,
+      "autoPort": false
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--dir",
+        "app",
+        "dev"
+      ],
+      "port": 5281,
+      "autoPort": false
+    }
+  ]
+}
