@@ -10,6 +10,30 @@ export default withMermaid(defineConfig({
     'The hard parts, hosted. A runtime-enforced substrate for building vertical B2B SaaS.',
   lastUpdated: true,
 
+  /**
+   * The ticket0 support widget — OPT-IN, and off unless asked for.
+   *
+   * `TICKET0_WIDGET=1 pnpm --filter @substrat-run/docs dev` embeds the demo desk's
+   * chat bubble on the real documentation site, which is the whole dogfood: the widget
+   * on substrat.net answering out of substrat.net's own `llms-full.txt`.
+   *
+   * Gated on the variable rather than checked in unconditionally because this array is
+   * also what ships to production. A support widget on the live site is a decision for
+   * a person to make deliberately, not a side effect of a demo landing.
+   */
+  head: process.env.TICKET0_WIDGET
+    ? [
+        [
+          'script',
+          {
+            src: `${process.env.TICKET0_API ?? 'http://localhost:8874'}/widget.js`,
+            'data-api': process.env.TICKET0_API ?? 'http://localhost:8874',
+            defer: '',
+          },
+        ],
+      ]
+    : [],
+
   // The package's own changelog is not a docs page. It was being built and
   // served at /CHANGELOG, where nothing linked to it and nothing indexed it.
   srcExclude: ['CHANGELOG.md'],

@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/engine-invites
 
-no declared operation surface · 0 narrowed checks · assessed node-only
+4 operations · 0 narrowed checks · assessed node-only
 
 ## 1. Kernel-enforced properties
 
@@ -28,26 +28,30 @@ inherits them by running on the platform; nothing in the app's own code can opt 
 
 ## 2. This app's entity checks — none, and that is the assessment
 
-Three operations, three node checks: `send`, `read`, `revoke`. An invitation is an administrative act about the SCOPE — who may join it — so the authority to send one, see the pending list, or revoke one is authority over membership rather than over any single invite. The case that would change this is a vertical wanting "revoke only what you sent", which is a policy about the inviter and belongs to whichever vertical wants it.
+Three checked operations, three node checks: `send`, `list`, `revoke`. An invitation is an administrative act about the SCOPE — who may join it — so the authority to send one, see the pending list, or revoke one is authority over membership rather than over any single invite. The case that would change this is a vertical wanting "revoke only what you sent", which is a policy about the inviter and belongs to whichever vertical wants it. The fourth, `accept`, checks nothing and declares `narrows` to say so: the recipient holds nothing yet, and the invitation itself is the authority.
 
-**How this is established, and how much it proves.** This package has no declared
-operation surface for the kit to read, so the claim is a tripwire over the module's own
-source: no two-argument `ctx.check(perm, entityRef)` appears in it. That is weaker than
-the driven pair by a wide margin, and the difference is stated rather than left to be
-discovered:
+**How this is established.** This package declares its operation surface, so the claim is
+read off the declaration by the same `planEntityCheckCoverage` the conformance kit uses:
+the plan is empty. That is exact rather than lexical, and the day an operation declares a
+narrowed check the plan stops being empty and CI goes red.
 
-- It proves an **absence**, never a behaviour. The kit generates a case that fails on a
-  wrong implementation; this one only notices a new call site.
-- It is **lexical**. A check assembled indirectly — a helper taking the ref, a call built
-  across lines — is invisible to it.
-- It says nothing about whether node-only is **right**. That judgement is the prose above.
+A second assertion covers the other way this could read as coverage — an operation with no
+check **at all** also produces an empty plan, so emptiness alone cannot tell "checks at the
+node" from "checks nothing".
 
-What it buys: the day someone narrows an operation here, this goes red, and the change
-has to either declare the check and wire the real kit or rewrite the assessment.
+## 3. The rest of the surface
 
-Source covered: `engines/invites/src/index.ts`
+Not every operation should narrow. Authority over a scope-wide act — creating a record,
+configuring the workspace — belongs at the node, and declaring an entity check there
+would be wrong rather than safer. These are counted here so that "no entity check" reads
+as an assessment rather than as silence.
 
-## 3. Not covered by this artifact
+| Kind | Count | Operations |
+| --- | --- | --- |
+| Node-level check | 3 | `invites/list`, `invites/revoke`, `invites/send` |
+| Per-entity proof walk (`narrows`) | 1 | `invites/accept` |
+
+## 4. Not covered by this artifact
 
 - **This is a statement of what is asserted, not a record that it passed.** The assertions
   live in `test/entity-checks.test.ts` and run on every CI job; a red one blocks the merge.

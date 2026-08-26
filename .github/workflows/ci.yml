@@ -9,7 +9,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # Full history, not the default depth-1. Two checks read it: docs-drift
+      # measures how far a page has fallen behind its source, and lint:changelog
+      # asks whether a changelog entry accounts for the merges in its own week.
+      # On a shallow clone both questions have no answer, and a check that cannot
+      # check is worse than no check — it reports green.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
@@ -95,6 +102,11 @@ jobs:
       # index line cannot be derived — one that opens on a table, or on a fragment
       # too short to tell seven identically-titled engine pages apart.
       - run: pnpm lint:llms --check
+      # The weekly changelog is authored prose, so nothing can re-emit it — but
+      # completeness is mechanical. This walks each entry's declared range and
+      # fails if a merge inside it goes uncited, which is the one way a digest
+      # rots invisibly: the page still reads as finished.
+      - run: pnpm lint:changelog --check
       # The rules a vertical must not violate ship in two places: create-substrat's
       # AGENTS.md, and the published page an agent reads when it never scaffolded
       # anything. Unlike lint:playbook — which guards two documents that diverge on

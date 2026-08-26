@@ -31,6 +31,16 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 - `node tools/boundary-lint.mjs` — the layer rules below, enforced mechanically (runs in CI)
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
+- `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).
+  With no flag it prints a week's raw material — every first-parent merge grouped by
+  area, the commits that landed without a PR, and each package's version span
+  (`--week 2026-w34` for a named week). With `--check`, CI asserts **completeness**:
+  every merge inside an entry's declared `range` is cited somewhere on its page. The
+  prose is authored, not generated, and deliberately carries none of the three marks
+  below — no producer could re-emit a digest. What rots invisibly is coverage, and
+  that is what the gate holds. Written each Monday by the `weekly-changelog` skill,
+  which opens a PR and never merges it. Needs real history, so the CI checkout is
+  `fetch-depth: 0` and the check refuses to run on a shallow clone.
 - `pnpm lint:scaffold` — the scaffold checkpoint (#797): `npm create substrat` at the
   published version, `npm install` from the registry with no workspace links, then the
   three gates a scaffolded project ships with. `packages/create-substrat/template` is

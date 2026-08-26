@@ -1,0 +1,927 @@
+{
+  "entities": {
+    "agentProfile": {
+      "table": "ticket0_agent_profiles",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "avatar_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "display_name",
+          "avatar_url",
+          "signature",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "principal"
+      ],
+      "erasable": [
+        "display_name"
+      ]
+    },
+    "aiTurn": {
+      "table": "ticket0_ai_turns",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "input_tokens": {
+            "type": "number"
+          },
+          "output_tokens": {
+            "type": "number"
+          },
+          "cited_article_ids": {
+            "type": "string"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "drafted",
+              "answered",
+              "escalated",
+              "failed"
+            ]
+          },
+          "meter_entry_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "message_id",
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "cited_article_ids",
+          "confidence",
+          "outcome",
+          "meter_entry_id",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "conversation"
+      ]
+    },
+    "contact": {
+      "table": "ticket0_contacts",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "external_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "principal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "external_id",
+          "principal",
+          "email",
+          "display_name",
+          "verified_at",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "external_id"
+      ],
+      "erasable": [
+        "display_name",
+        "email"
+      ]
+    },
+    "conversation": {
+      "table": "ticket0_conversations",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "contact_id": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "widget",
+              "email"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "new",
+              "open",
+              "snoozed",
+              "resolved",
+              "closed"
+            ]
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "normal",
+              "urgent"
+            ]
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "first_public_reply_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "contact_id",
+          "channel",
+          "subject",
+          "state",
+          "assignee",
+          "priority",
+          "snoozed_until",
+          "first_public_reply_at",
+          "resolved_at",
+          "merged_into",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "contact"
+      ]
+    },
+    "conversationTag": {
+      "table": "ticket0_conversation_tags",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "tag",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "conversation_id",
+        "tag"
+      ]
+    },
+    "csat": {
+      "table": "ticket0_csat",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "submitted_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "score",
+          "comment",
+          "submitted_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "conversation_id"
+      ],
+      "erasable": [
+        "comment"
+      ]
+    },
+    "deskSettings": {
+      "table": "ticket0_desk_settings",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "from_address": {
+            "type": "string"
+          },
+          "greeting": {
+            "type": "string"
+          },
+          "allowed_origins": {
+            "type": "string"
+          },
+          "verification_secret": {
+            "type": "string"
+          },
+          "business_hours": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "from_address",
+          "greeting",
+          "allowed_origins",
+          "verification_secret",
+          "business_hours",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "kbArticle": {
+      "table": "ticket0_kb_articles",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "heading_path": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "ingested_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_id",
+          "url",
+          "title",
+          "heading_path",
+          "body",
+          "content_hash",
+          "ingested_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "kbSource"
+      ],
+      "key": [
+        "source_id",
+        "url"
+      ]
+    },
+    "kbSource": {
+      "table": "ticket0_kb_sources",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "llms-txt",
+              "sitemap",
+              "markdown"
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "ingesting",
+              "failed"
+            ]
+          },
+          "last_ingested_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "url",
+          "label",
+          "status",
+          "last_ingested_at",
+          "last_error",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "url"
+      ]
+    },
+    "message": {
+      "table": "ticket0_messages",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "author_kind": {
+            "type": "string",
+            "enum": [
+              "contact",
+              "agent",
+              "assistant",
+              "system"
+            ]
+          },
+          "author_principal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "public",
+              "internal"
+            ]
+          },
+          "body_text": {
+            "type": "string"
+          },
+          "body_html": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email_in_reply_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cited_article_ids": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "author_kind",
+          "author_principal",
+          "visibility",
+          "body_text",
+          "body_html",
+          "email_message_id",
+          "email_in_reply_to",
+          "delivered_at",
+          "cited_article_ids",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "conversation"
+      ],
+      "erasable": [
+        "body_html",
+        "body_text"
+      ]
+    },
+    "notification": {
+      "table": "ticket0_notifications",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "assigned",
+              "replied",
+              "mentioned",
+              "snooze-woke",
+              "escalated"
+            ]
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "principal",
+          "kind",
+          "conversation_id",
+          "read_at",
+          "created_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "savedReply": {
+      "table": "ticket0_saved_replies",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "body",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "title"
+      ]
+    },
+    "usageRate": {
+      "table": "ticket0_usage_rates",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "meter_key": {
+            "type": "string"
+          },
+          "unit_price": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "effective_from": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meter_key",
+          "unit_price",
+          "currency",
+          "effective_from"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "meter_key",
+        "effective_from"
+      ]
+    },
+    "widgetSession": {
+      "table": "ticket0_widget_sessions",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "contact_id": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "token_hash": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "last_seen_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "contact_id",
+          "origin",
+          "token_hash",
+          "started_at",
+          "last_seen_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "conversation"
+      ],
+      "key": [
+        "token_hash"
+      ]
+    }
+  },
+  "lifecycles": {
+    "conversation": {
+      "field": "state",
+      "initial": "new",
+      "states": {
+        "closed": {
+          "terminal": true
+        },
+        "new": {
+          "on": {
+            "ticket0/assign": "open",
+            "ticket0/post-public-reply": "open",
+            "ticket0/resolve": "resolved"
+          },
+          "allow": [
+            "ticket0/ingest-message",
+            "ticket0/merge",
+            "ticket0/post-note",
+            "ticket0/record-answer",
+            "ticket0/tag-conversation",
+            "ticket0/widget-post"
+          ]
+        },
+        "open": {
+          "on": {
+            "ticket0/resolve": "resolved",
+            "ticket0/snooze": "snoozed"
+          },
+          "allow": [
+            "ticket0/assign",
+            "ticket0/ingest-message",
+            "ticket0/merge",
+            "ticket0/post-note",
+            "ticket0/post-public-reply",
+            "ticket0/record-answer",
+            "ticket0/tag-conversation",
+            "ticket0/widget-post"
+          ]
+        },
+        "resolved": {
+          "on": {
+            "ticket0/close": "closed",
+            "ticket0/ingest-message": "open",
+            "ticket0/post-public-reply": "open",
+            "ticket0/widget-post": "open"
+          },
+          "allow": [
+            "ticket0/post-note",
+            "ticket0/submit-csat",
+            "ticket0/tag-conversation"
+          ]
+        },
+        "snoozed": {
+          "on": {
+            "ticket0/ingest-message": "open",
+            "ticket0/resolve": "resolved",
+            "ticket0/wake": "open",
+            "ticket0/widget-post": "open"
+          },
+          "allow": [
+            "ticket0/assign",
+            "ticket0/post-note",
+            "ticket0/tag-conversation"
+          ]
+        }
+      }
+    }
+  }
+}
